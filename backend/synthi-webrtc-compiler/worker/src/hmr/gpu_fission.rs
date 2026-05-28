@@ -132,6 +132,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
 
     if !candidate.get("includeClosure").is_some_and(Value::is_array) {
         reason_codes.push("fission.includeClosure_missing".to_string());
+    } else if !include_closure_valid(candidate) {
+        reason_codes.push("fission.includeClosure_invalid".to_string());
     }
 
     if !loader_capability_present(candidate.get("loaderCapabilityRequirement")) {
@@ -168,6 +170,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
         "normalizedSourcePaths": normalized_source_paths(candidate),
         "unmappedSourceSpanPaths": unmapped_source_span_paths(candidate),
+        "normalizedIncludeClosurePaths": normalized_include_closure_paths(candidate),
+        "invalidIncludeClosureEntries": invalid_include_closure_entries(candidate),
         "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "selectionScore": fission_selection_score(candidate),
@@ -289,6 +293,64 @@ fn normalized_project_path(path: &str) -> Option<String> {
 fn looks_like_drive_absolute_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
+}
+
+fn include_closure_valid(candidate: &Value) -> bool {
+    invalid_include_closure_entries(candidate).is_empty()
+}
+
+fn normalized_include_closure_paths(candidate: &Value) -> Vec<String> {
+    candidate
+        .get("includeClosure")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(include_closure_entry_path)
+                .filter_map(|path| normalized_project_path(&path))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn invalid_include_closure_entries(candidate: &Value) -> Vec<String> {
+    candidate
+        .get("includeClosure")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    include_closure_entry_path(item)
+                        .and_then(|path| normalized_project_path(&path))
+                        .is_none()
+                })
+                .map(include_closure_entry_label)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn include_closure_entry_path(value: &Value) -> Option<String> {
+    match value {
+        Value::String(path) => Some(path.trim().to_string()),
+        Value::Object(object) => object
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| path.trim().to_string()),
+        _ => None,
+    }
+}
+
+fn include_closure_entry_label(value: &Value) -> String {
+    match include_closure_entry_path(value) {
+        Some(path) if !path.is_empty() => path,
+        _ => "missing-path".to_string(),
+    }
 }
 
 fn loader_capability_present(value: Option<&Value>) -> bool {
@@ -670,6 +732,43 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.source_span_invalid"));
+    }
+
+    #[test]
+    fn accepts_normalized_include_closure_paths() {
+        let mut candidate = valid_candidate();
+        candidate["includeClosure"] = json!([
+            "include/math.h",
+            {"path": ".\\include\\device.h"}
+        ]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(
+            report["normalizedIncludeClosurePaths"],
+            json!(["include/device.h", "include/math.h"])
+        );
+        assert_eq!(report["invalidIncludeClosureEntries"], json!([]));
+    }
+
+    #[test]
+    fn rejects_invalid_include_closure_paths() {
+        let mut candidate = valid_candidate();
+        candidate["includeClosure"] = json!(["include/math.h", "../secrets.h", {"path": ""}]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["invalidIncludeClosureEntries"],
+            json!(["../secrets.h", "missing-path"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.includeClosure_invalid"));
     }
 
     #[test]
