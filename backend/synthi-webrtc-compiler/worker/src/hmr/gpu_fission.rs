@@ -110,6 +110,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         }
     }
 
+    if !deterministic_verifier_evidence_present(candidate) {
+        reason_codes.push("fission.deterministic_verifier_evidence_missing".to_string());
+    }
+
     if !candidate
         .get("sourceSpans")
         .and_then(Value::as_array)
@@ -148,6 +152,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "sourceEditId": candidate.get("sourceEditId").cloned().unwrap_or(Value::Null),
         "aiProposalId": candidate.get("aiProposalId").cloned().unwrap_or(Value::Null),
         "reasonCodes": reason_codes,
+        "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
+        "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
         "selectionScore": fission_selection_score(candidate),
         "verifierEvidenceId": verifier_evidence_id(candidate, status),
         "candidate": candidate,
@@ -206,6 +212,40 @@ fn target_symbols_exported(candidate: &Value) -> bool {
     let targets = string_set(candidate.get("targetSymbols"));
     let exports = string_set(candidate.get("exportedSymbolsExpected"));
     !targets.is_empty() && targets.is_subset(&exports)
+}
+
+fn deterministic_verifier_evidence_present(candidate: &Value) -> bool {
+    !deterministic_verifier_evidence_ids(candidate).is_empty()
+}
+
+fn deterministic_verifier_evidence_ids(candidate: &Value) -> Vec<String> {
+    string_list(candidate.get("verifierEvidenceIds"))
+        .into_iter()
+        .filter(|id| is_deterministic_verifier_evidence_id(id))
+        .collect()
+}
+
+fn non_authoritative_evidence_ids(candidate: &Value) -> Vec<String> {
+    string_list(candidate.get("verifierEvidenceIds"))
+        .into_iter()
+        .filter(|id| !is_deterministic_verifier_evidence_id(id))
+        .collect()
+}
+
+fn is_deterministic_verifier_evidence_id(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.starts_with("ai:")
+        || normalized.starts_with("llm:")
+        || normalized.starts_with("model:")
+        || normalized.contains("proposal")
+    {
+        return false;
+    }
+    normalized.starts_with("evidence:")
+        || normalized.starts_with("verifier:")
+        || normalized.starts_with("fission-verifier:")
+        || normalized.starts_with("proof:")
 }
 
 fn select_narrowest_candidate_index(reports: &[Value]) -> Option<usize> {
@@ -348,6 +388,10 @@ fn line_span_extent(value: &Value) -> Option<u64> {
 }
 
 fn string_set(value: Option<&Value>) -> BTreeSet<String> {
+    string_list(value).into_iter().collect()
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
         .map(|items| {
@@ -446,6 +490,27 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.target_symbol_not_exported"));
+    }
+
+    #[test]
+    fn rejects_ai_only_verifier_evidence_ids() {
+        let mut candidate = valid_candidate();
+        candidate["verifierEvidenceIds"] = json!(["ai:fission:proposal", "llm:reasoning"]);
+        candidate["aiProposalId"] = json!("ai:fission:proposal");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["deterministicVerifierEvidenceIds"], json!([]));
+        assert_eq!(
+            report["nonAuthoritativeEvidenceIds"],
+            json!(["ai:fission:proposal", "llm:reasoning"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
     }
 
     #[test]

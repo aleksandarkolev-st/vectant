@@ -4142,6 +4142,61 @@ mod tests {
     }
 
     #[test]
+    fn ai_fission_candidate_with_ai_only_evidence_is_rejected_by_deterministic_report() {
+        let manifest = gpu_compile_manifest();
+        let fission_candidate = json!({
+            "islandId": "island:sha256:ghi",
+            "sourceEditId": "edit:ghi",
+            "sourcePaths": ["src/render.kernel"],
+            "sourceSpans": [{"path": "src/render.kernel", "startLine": 3, "endLine": 7}],
+            "targetSymbols": ["render_step"],
+            "exportedSymbolsExpected": ["render_step"],
+            "artifactKind": "partial_device_artifact",
+            "includeClosure": [],
+            "dependencyClosureHash": "sha256:dependency",
+            "abiMembraneId": "abi:membrane",
+            "compileRecipeHash": "sha256:recipe",
+            "compileCommandHash": "sha256:command",
+            "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
+            "requiredOracleId": "oracle:render-step",
+            "verifierEvidenceIds": ["ai:fission:proposal"],
+            "aiProposalId": "ai:fission:proposal"
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastGpuAiDeltaVerifierReport": {
+                "schemaVersion": "synthi.gpu.ai_delta_verifier.v1",
+                "status": "pass",
+                "fissionCandidate": fission_candidate,
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/status")
+                .and_then(Value::as_str),
+            Some("reject")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/candidates/0/deterministicVerifierEvidenceIds")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+        assert!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
+                .and_then(Value::as_array)
+                .unwrap()
+                .iter()
+                .any(|code| code == "fission.deterministic_verifier_evidence_missing")
+        );
+    }
+
+    #[test]
     fn run_report_emits_failure_card_for_template_evidence_rejection() {
         let manifest = gpu_compile_manifest();
         let sidecar = json!({
