@@ -175,6 +175,7 @@ services:
     environment:
       SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
       SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
+      SYNTHI_AI_ENGINE_WORKERS: "${SYNTHI_AI_ENGINE_WORKERS:-1}"
       AI_ENGINE_AUTH_DISABLED: "${AI_ENGINE_AUTH_DISABLED:-true}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
