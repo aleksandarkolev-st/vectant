@@ -102,6 +102,7 @@ function stageProofs(input = {}) {
     compile: input.sourceProofs ?? [input.sourceProof],
     'symbol-binding': input.sourceProofs ?? [input.sourceProof],
     abi: [input.abiProof],
+    'artifact-transport': [input.artifactTransportProof],
     'epoch-swap': [input.epochProof],
     'dispatch-observed': [input.dispatchProof],
     'dispatch-safe': [input.dispatchProof],

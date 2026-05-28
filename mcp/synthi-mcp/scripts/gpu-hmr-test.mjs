@@ -2483,7 +2483,7 @@ async function phaseFlow(ctx) {
     summarizeGpuHmrAbiProof(baselineAbiProof),
   );
   const baselineRuntimeArtifactTransport = await runtimeArtifactTransportEvidenceSince(baselineStart);
-  recordArtifactTransportProof(
+  const baselineArtifactTransportProof = recordArtifactTransportProof(
     'FLOW',
     'inward artifact transport proof',
     baselineProofArtifacts,
@@ -2551,6 +2551,7 @@ async function phaseFlow(ctx) {
     sourceProof: baselineGpuProof,
     abiProof: baselineAbiProof,
     fissionProof: baselineFissionProof,
+    artifactTransportProof: baselineArtifactTransportProof,
     epochProof: inwardEpochProof.proof,
     dispatchProof: inwardDispatchProof,
     outputProof: inwardOutputProof,
@@ -2592,7 +2593,7 @@ async function phaseFlow(ctx) {
     summarizeGpuHmrAbiProof(flipAbiProof),
   );
   const flipRuntimeArtifactTransport = await runtimeArtifactTransportEvidenceSince(flipStart);
-  recordArtifactTransportProof(
+  const flipArtifactTransportProof = recordArtifactTransportProof(
     'FLOW',
     'outward artifact transport proof',
     flipProofArtifacts,
@@ -2666,6 +2667,7 @@ async function phaseFlow(ctx) {
     sourceProof: flipGpuProof,
     abiProof: flipAbiProof,
     fissionProof: flipFissionProof,
+    artifactTransportProof: flipArtifactTransportProof,
     epochProof: outwardEpochProof.proof,
     dispatchProof: outwardDispatchProof,
     outputProof: outwardOutputProof,

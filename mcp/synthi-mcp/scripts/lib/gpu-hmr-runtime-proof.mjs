@@ -323,6 +323,18 @@ function fissionProofUsable(proof) {
     && compactStringList(proof.evidenceRefs).length > 0;
 }
 
+function artifactTransportProofUsable(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(proof.evidenceRefs) ? proof.evidenceRefs : []),
+    ...(Array.isArray(proof.evidence_refs) ? proof.evidence_refs : []),
+  ]);
+  return (proof.ramTransportProven === true || proof.ram_transport_proven === true)
+    && (proof.transportEvidenceObserved === true || proof.transport_evidence_observed === true)
+    && (proof.ramArtifactReferenceProvided === true || proof.ram_artifact_reference_provided === true)
+    && evidenceRefs.length > 0;
+}
+
 export function classifyGpuHmrFissionProof(observation = {}) {
   const stageStatuses = compactStringList([
     observation.status,
@@ -1326,6 +1338,14 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   const fissionProofRequired =
     observation.fissionProofRequired === true || fissionProof.required === true;
   const fissionProofAccepted = !fissionProofRequired || fissionProofUsable(fissionProof);
+  const artifactTransportProof =
+    observation.artifactTransportProof && typeof observation.artifactTransportProof === 'object'
+      ? observation.artifactTransportProof
+      : null;
+  const artifactTransportAccepted = artifactTransportProofUsable(artifactTransportProof);
+  const artifactTransportEvidenceObserved =
+    artifactTransportProof?.transportEvidenceObserved === true
+    || artifactTransportProof?.transport_evidence_observed === true;
   const abiRank = effectiveProofRank(abiProof);
   const epochRank = effectiveProofRank(epochProof);
   const embeddedDispatchProof =
@@ -1361,6 +1381,23 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       abiProof?.degradedState ?? 'gpu-hmr-abi-unverified',
       abiProof?.degradedReason ?? 'abi_evidence_not_collected',
     ),
+    {
+      stageId: 'artifact-transport',
+      requiredState: 'gpu-hmr-epoch-swap-proven',
+      status: artifactTransportAccepted ? 'passed' : 'blocked',
+      observedState: artifactTransportAccepted
+        ? 'gpu-hmr-artifact-transport-proven'
+        : artifactTransportProof?.degradedState ?? null,
+      effectiveRank: artifactTransportAccepted ? proofStateRank('gpu-hmr-epoch-swap-proven') : 0,
+      degradedState: artifactTransportAccepted
+        ? null
+        : artifactTransportProof?.degradedState ?? 'gpu-hmr-ram-io-unavailable',
+      degradedReason: artifactTransportAccepted
+        ? null
+        : artifactTransportProof?.degradedReason ?? (artifactTransportEvidenceObserved
+          ? 'ram_artifact_transport_not_proven'
+          : 'artifact_transport_evidence_not_collected'),
+    },
     stageResult(
       'epoch-swap',
       'gpu-hmr-epoch-swap-proven',
@@ -1471,6 +1508,9 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       fissionProofRequired,
       fissionProofObserved: fissionProof.observed === true,
       fissionProofProven: fissionProofUsable(fissionProof),
+      artifactTransportProven: artifactTransportAccepted,
+      artifactTransportObserved: artifactTransportEvidenceObserved,
+      artifactTransportDegradedState: artifactTransportProof?.degradedState ?? null,
     },
   };
 }

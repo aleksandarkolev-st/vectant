@@ -2113,6 +2113,7 @@ async function collectRuntimeEvidence() {
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
     fissionProof: report.fission_proof,
     abiProof: report.abi_proof,
+    artifactTransportProof: report.artifact_transport_proof,
     epochProof: report.epoch_swap_proof,
     dispatchProof: report.dispatch_proof,
     outputProof: report.output_proof,
