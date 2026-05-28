@@ -138,6 +138,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.target_symbol_not_exported".to_string());
     }
 
+    if !safe_export_superset_justified(candidate) {
+        reason_codes.push("fission.safe_export_superset_unverified".to_string());
+    }
+
     let status = if reason_codes.is_empty() {
         reason_codes.push("fission.candidate_verified".to_string());
         "pass"
@@ -154,6 +158,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
+        "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
+        "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "selectionScore": fission_selection_score(candidate),
         "verifierEvidenceId": verifier_evidence_id(candidate, status),
         "candidate": candidate,
@@ -212,6 +218,33 @@ fn target_symbols_exported(candidate: &Value) -> bool {
     let targets = string_set(candidate.get("targetSymbols"));
     let exports = string_set(candidate.get("exportedSymbolsExpected"));
     !targets.is_empty() && targets.is_subset(&exports)
+}
+
+fn safe_export_superset_justified(candidate: &Value) -> bool {
+    let extra_symbols = safe_export_superset_symbols(candidate);
+    extra_symbols.is_empty()
+        || (non_empty_string(candidate.get("safeExportSupersetReason"))
+            && !safe_export_superset_evidence_ids(candidate).is_empty())
+}
+
+fn safe_export_superset_symbols(candidate: &Value) -> Vec<String> {
+    let targets = string_set(candidate.get("targetSymbols"));
+    string_set(candidate.get("exportedSymbolsExpected"))
+        .difference(&targets)
+        .cloned()
+        .collect()
+}
+
+fn safe_export_superset_evidence_ids(candidate: &Value) -> Vec<String> {
+    let specific = string_list(candidate.get("safeExportSupersetEvidenceIds"));
+    if specific.is_empty() {
+        deterministic_verifier_evidence_ids(candidate)
+    } else {
+        specific
+            .into_iter()
+            .filter(|id| is_deterministic_verifier_evidence_id(id))
+            .collect()
+    }
 }
 
 fn deterministic_verifier_evidence_present(candidate: &Value) -> bool {
@@ -435,6 +468,7 @@ mod tests {
             "targetSymbols": ["step"],
             "exportedSymbolsExpected": ["step", "helper"],
             "artifactKind": "device_partial",
+            "safeExportSupersetReason": "helper symbol is verifier-owned dependency closure",
             "includeClosure": [],
             "dependencyClosureHash": "sha256:dependency",
             "abiMembraneId": "abi:membrane",
@@ -490,6 +524,34 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.target_symbol_not_exported"));
+    }
+
+    #[test]
+    fn rejects_unjustified_safe_export_superset() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["safeExportSupersetSymbols"], json!(["helper"]));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.safe_export_superset_unverified"));
+    }
+
+    #[test]
+    fn accepts_exact_export_set_without_superset_reason() {
+        let mut candidate = valid_candidate();
+        candidate["exportedSymbolsExpected"] = json!(["step"]);
+        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["safeExportSupersetSymbols"], json!([]));
     }
 
     #[test]
