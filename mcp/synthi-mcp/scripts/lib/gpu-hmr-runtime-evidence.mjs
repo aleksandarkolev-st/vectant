@@ -483,8 +483,27 @@ function originalHostPathRecord(line) {
   };
 }
 
+function launchBoundaryRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    runtimeSession: fields.runtime_session ?? null,
+    generation: integerValue(fields.generation),
+    complete: boolValue(fields.complete),
+  };
+}
+
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
+  const launchBoundaryRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\blaunch_arg_provenance\b/i.test(String(line ?? '')))
+    .map(launchBoundaryRecord)
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && Number.isFinite(record.generation)
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
   const rawRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) =>
       /\b(original_host_path|host_path_attachment|launch_attachment)\b/i.test(String(line ?? ''))
@@ -499,16 +518,31 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     && record.hostPathId.trim()
     && Number.isFinite(record.generation)
     && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    && launchBoundaryRecords.some((launchRecord) =>
+      launchRecord.runtimeSession === record.runtimeSession
+      && launchRecord.generation === record.generation
+    )
   );
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const latest = records.at(-1) ?? null;
+  const matchingLaunchBoundary = latest
+    ? launchBoundaryRecords.find((record) =>
+        record.runtimeSession === latest.runtimeSession
+        && record.generation === latest.generation
+      ) ?? null
+    : null;
   const evidenceRefs = latest
-    ? [`worker-log:original_host_path:${latest.hostPathId}:${latest.generation}`]
+    ? [
+        `worker-log:original_host_path:${latest.hostPathId}:${latest.generation}`,
+        `worker-log:launch_arg_provenance:${latest.runtimeSession}:${latest.generation}`,
+      ]
     : [];
   return {
     raw_count: rawRecords.length,
     total_count: records.length,
+    launch_boundary_count: launchBoundaryRecords.length,
+    matching_launch_boundary_observed: matchingLaunchBoundary !== null,
     latest,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
@@ -516,7 +550,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     runtime_session_consistent: runtimeSessionConsistent,
     attached_to_original_host_path: latest !== null,
     dispatch_boundary_observed: latest?.dispatchBoundaryObserved === true,
-    runtime_evidence_observed: latest !== null && runtimeSessionConsistent,
+    runtime_evidence_observed: latest !== null && runtimeSessionConsistent && matchingLaunchBoundary !== null,
     evidence_refs: evidenceRefs,
     lines: records.map((record) => record.line).slice(-20),
   };
