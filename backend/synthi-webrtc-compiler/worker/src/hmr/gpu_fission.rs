@@ -23,6 +23,21 @@ const REQUIRED_NON_EMPTY_ARRAY_FIELDS: &[&str] = &[
     "verifierEvidenceIds",
 ];
 
+const COMPILE_COST_HINT_FIELDS: &[&str] = &[
+    "compileCostEstimateMs",
+    "compileCostMs",
+    "estimatedCompileMs",
+    "compileEstimateMs",
+];
+
+const HISTORICAL_TIMING_HINT_FIELDS: &[&str] = &[
+    "historicalCompileMs",
+    "historicalTimingMs",
+    "meanCompileMs",
+    "p50CompileMs",
+    "lastCompileMs",
+];
+
 #[derive(Clone, Copy)]
 struct VerificationEvidenceCategory {
     name: &'static str,
@@ -760,8 +775,8 @@ fn select_narrowest_candidate_index(reports: &[Value]) -> Option<usize> {
         .enumerate()
         .filter(|(_, report)| report.get("status").and_then(Value::as_str) == Some("pass"))
         .min_by(|(left_index, left), (right_index, right)| {
-            let left_score = selection_score_total(left).unwrap_or(u64::MAX);
-            let right_score = selection_score_total(right).unwrap_or(u64::MAX);
+            let left_score = selection_score_key(left);
+            let right_score = selection_score_key(right);
             left_score
                 .cmp(&right_score)
                 .then_with(|| verifier_evidence_id_value(left).cmp(&verifier_evidence_id_value(right)))
@@ -770,11 +785,26 @@ fn select_narrowest_candidate_index(reports: &[Value]) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-fn selection_score_total(report: &Value) -> Option<u64> {
-    report
-        .get("selectionScore")
-        .and_then(|score| score.get("total"))
+fn selection_score_key(report: &Value) -> [u64; 9] {
+    let score = report.get("selectionScore");
+    [
+        selection_score_field(score, "scopeRank"),
+        selection_score_field(score, "missingVerificationCategoryCount"),
+        selection_score_field(score, "targetSymbolCount"),
+        selection_score_field(score, "exportedSymbolOverage"),
+        selection_score_field(score, "sourcePathCount"),
+        selection_score_field(score, "includeClosureCount"),
+        selection_score_field(score, "sourceSpanExtent"),
+        selection_score_field(score, "compileCostPenaltyMs"),
+        selection_score_field(score, "historicalTimingPenaltyMs"),
+    ]
+}
+
+fn selection_score_field(score: Option<&Value>, field: &str) -> u64 {
+    score
+        .and_then(|score| score.get(field))
         .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX)
 }
 
 fn verifier_evidence_id_value(report: &Value) -> String {
@@ -797,23 +827,51 @@ fn fission_selection_score(candidate: &Value) -> Value {
     let source_span_extent = source_span_extent(candidate.get("sourceSpans"));
     let scope_rank = replacement_scope_rank(candidate);
     let exported_symbol_overage = exported_symbol_count.saturating_sub(target_symbol_count);
-    let total = scope_rank
-        .saturating_mul(1_000_000_000)
-        .saturating_add(target_symbol_count.saturating_mul(10_000_000))
+    let missing_verification_category_count =
+        missing_verification_evidence_categories(candidate).len() as u64;
+    let compile_cost_estimate_ms = first_numeric_hint(candidate, COMPILE_COST_HINT_FIELDS);
+    let historical_timing_ms = first_numeric_hint(candidate, HISTORICAL_TIMING_HINT_FIELDS);
+    let compile_cost_penalty_ms = compile_cost_estimate_ms.unwrap_or(9_999).min(9_999);
+    let historical_timing_penalty_ms = historical_timing_ms.unwrap_or(9_999).min(9_999);
+    let narrowness_score = target_symbol_count
+        .saturating_mul(10_000_000)
         .saturating_add(exported_symbol_overage.saturating_mul(1_000_000))
         .saturating_add(source_path_count.saturating_mul(100_000))
         .saturating_add(include_closure_count.saturating_mul(1_000))
         .saturating_add(source_span_extent.min(999));
+    let total = scope_rank
+        .saturating_mul(1_000_000_000)
+        .saturating_add(missing_verification_category_count.saturating_mul(100_000_000))
+        .saturating_add(narrowness_score.saturating_mul(20_000))
+        .saturating_add(compile_cost_penalty_ms)
+        .saturating_add(historical_timing_penalty_ms);
     json!({
         "policy": "narrowest_viable_generic_v1",
+        "comparisonOrder": [
+            "scopeRank",
+            "missingVerificationCategoryCount",
+            "targetSymbolCount",
+            "exportedSymbolOverage",
+            "sourcePathCount",
+            "includeClosureCount",
+            "sourceSpanExtent",
+            "compileCostPenaltyMs",
+            "historicalTimingPenaltyMs"
+        ],
         "total": total,
         "scopeRank": scope_rank,
+        "missingVerificationCategoryCount": missing_verification_category_count,
         "targetSymbolCount": target_symbol_count,
         "exportedSymbolCount": exported_symbol_count,
         "exportedSymbolOverage": exported_symbol_overage,
         "sourcePathCount": source_path_count,
         "includeClosureCount": include_closure_count,
         "sourceSpanExtent": source_span_extent,
+        "narrownessScore": narrowness_score,
+        "compileCostEstimateMs": compile_cost_estimate_ms,
+        "compileCostPenaltyMs": compile_cost_penalty_ms,
+        "historicalTimingMs": historical_timing_ms,
+        "historicalTimingPenaltyMs": historical_timing_penalty_ms,
     })
 }
 
@@ -910,6 +968,20 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn first_numeric_hint(candidate: &Value, fields: &[&str]) -> Option<u64> {
+    fields
+        .iter()
+        .find_map(|field| numeric_hint(candidate.get(*field)))
+}
+
+fn numeric_hint(value: Option<&Value>) -> Option<u64> {
+    match value? {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    }
 }
 
 fn positive_u64(value: Option<&Value>) -> Option<u64> {
@@ -1368,6 +1440,56 @@ mod tests {
         assert_eq!(report["selectedCandidateIndex"], 1);
         assert_eq!(report["candidates"][0]["selected"], false);
         assert_eq!(report["candidates"][1]["selected"], true);
+    }
+
+    #[test]
+    fn ranks_equal_scope_candidates_by_compile_cost_and_history() {
+        let mut slower = valid_candidate();
+        slower["islandId"] = json!("island:slower");
+        slower["compileCostEstimateMs"] = json!(250);
+        slower["historicalTimingMs"] = json!(40);
+
+        let mut faster = valid_candidate();
+        faster["islandId"] = json!("island:faster");
+        faster["compileCostEstimateMs"] = json!(50);
+        faster["historicalTimingMs"] = json!(400);
+
+        let report = verify_fission_candidates(&json!([slower, faster]));
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["selectedIslandId"], "island:faster");
+        assert_eq!(report["selectedCandidateIndex"], 1);
+        assert_eq!(
+            report["candidates"][0]["selectionScore"]["compileCostEstimateMs"],
+            json!(250)
+        );
+        assert_eq!(
+            report["candidates"][1]["selectionScore"]["compileCostEstimateMs"],
+            json!(50)
+        );
+    }
+
+    #[test]
+    fn uses_historical_timing_as_tie_break_after_compile_cost() {
+        let mut slower_history = valid_candidate();
+        slower_history["islandId"] = json!("island:slow-history");
+        slower_history["estimatedCompileMs"] = json!("80");
+        slower_history["p50CompileMs"] = json!(300);
+
+        let mut faster_history = valid_candidate();
+        faster_history["islandId"] = json!("island:fast-history");
+        faster_history["estimatedCompileMs"] = json!("80");
+        faster_history["p50CompileMs"] = json!(20);
+
+        let report = verify_fission_candidates(&json!([slower_history, faster_history]));
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["selectedIslandId"], "island:fast-history");
+        assert_eq!(report["selectedCandidateIndex"], 1);
+        assert_eq!(
+            report["candidates"][1]["selectionScore"]["historicalTimingMs"],
+            json!(20)
+        );
     }
 
     #[test]
