@@ -828,6 +828,31 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
   });
 
+  it("does not accept a retired epoch graph without a matching retirement edge", () => {
+    const graph = epochGenerationGraph();
+    graph.edges = graph.edges.filter((edge) => edge.kind !== "retire");
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:missing-retire-edge"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_retirement_edge_missing");
+  });
+
   it("does not prove epoch swap without runtime session evidence", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,

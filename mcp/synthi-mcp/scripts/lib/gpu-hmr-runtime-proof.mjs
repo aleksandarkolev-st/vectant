@@ -171,6 +171,11 @@ function epochGenerationGraphStatus(graph) {
     retirementState === 'retired'
     || retirementState === 'pending'
     || retirementState === 'not-required';
+  const retirementEdgeObserved = retirementState !== 'retired' || edges.some((edge) =>
+    epochGraphEdgeKind(edge) === 'retire'
+    && epochGraphEdgeGeneration(edge, 'from') === previousGeneration
+    && epochGraphEdgeGeneration(edge, 'to') === activeGeneration
+  );
   const graphRuntimeSessionIds = compactStringList([
     ...(Array.isArray(graph.runtimeSessionIds) ? graph.runtimeSessionIds : []),
     ...(Array.isArray(graph.runtime_session_ids) ? graph.runtime_session_ids : []),
@@ -187,6 +192,7 @@ function epochGenerationGraphStatus(graph) {
     && nodeGenerations.has(activeGeneration)
     && publicationEdgeObserved
     && retirementStateObserved
+    && retirementEdgeObserved
     && runtimeSessionConsistent;
   const reason = valid
     ? null
@@ -202,7 +208,9 @@ function epochGenerationGraphStatus(graph) {
               ? 'epoch_generation_graph_publication_edge_missing'
               : !retirementStateObserved
                 ? 'epoch_generation_graph_retirement_state_missing'
-                : 'epoch_generation_graph_invalid';
+                : !retirementEdgeObserved
+                  ? 'epoch_generation_graph_retirement_edge_missing'
+                  : 'epoch_generation_graph_invalid';
 
   return {
     observed,
@@ -214,6 +222,7 @@ function epochGenerationGraphStatus(graph) {
     runtimeSessionIds: graphRuntimeSessionIds,
     runtimeSessionConsistent,
     retirementState,
+    retirementEdgeObserved,
   };
 }
 
