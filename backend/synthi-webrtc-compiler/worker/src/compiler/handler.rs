@@ -1002,6 +1002,14 @@ struct ClangAstAbiExtraction {
     degraded_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ClangAstAbiAttempt {
+    language: String,
+    command: String,
+    status: String,
+    stderr_summary: String,
+}
+
 fn canonical_clang_type(ty: &str) -> String {
     ty.split_whitespace()
         .collect::<Vec<_>>()
@@ -1133,6 +1141,70 @@ fn has_device_constant_or_global_decl(source: &str) -> bool {
                     .contains('(')
             })
         })
+}
+
+fn abi_extractor_text_summary(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ")
+        .chars()
+        .take(512)
+        .collect()
+}
+
+fn clang_ast_abi_extraction_failure(
+    source: &str,
+    extractor_name: &str,
+    reason: &str,
+    attempts: Vec<ClangAstAbiAttempt>,
+) -> ClangAstAbiExtraction {
+    let attempt_values = attempts
+        .iter()
+        .map(|attempt| {
+            serde_json::json!({
+                "language": &attempt.language,
+                "command": &attempt.command,
+                "status": &attempt.status,
+                "stderrSummary": &attempt.stderr_summary,
+            })
+        })
+        .collect::<Vec<_>>();
+    let evidence_material = serde_json::json!({
+        "extractor": extractor_name,
+        "reason": reason,
+        "inputHash": format!("sha256:{}", sha256_hex_str(source)),
+        "attempts": attempt_values,
+    });
+    let evidence_id = format!(
+        "evidence:abi-extractor:{}",
+        sha256_hex_str(&evidence_material.to_string())
+    );
+    ClangAstAbiExtraction {
+        layout_size_alignment_verified: false,
+        accepted_extractor_evidence_refs: Vec::new(),
+        accepted_extractor_sources: Vec::new(),
+        extractor_provenance: vec![serde_json::json!({
+            "extractorName": extractor_name,
+            "extractorKind": "clang_ast",
+            "extractorVersion": "v1",
+            "evidenceId": evidence_id,
+            "inputHash": format!("sha256:{}", sha256_hex_str(source)),
+            "acceptedByRuntimeCorrectnessPlan": false,
+            "rejectedReason": reason,
+            "evidenceScope": [
+                "kernel_parameter_type_identities",
+                "kernel_parameter_size_alignment",
+                "device_constant_global_absence"
+            ],
+            "attempts": evidence_material["attempts"].clone(),
+        })],
+        kernel_signatures: Vec::new(),
+        parameter_abi_records: Vec::new(),
+        degraded_reason: Some(reason.to_string()),
+    }
 }
 
 fn clang_ast_abi_extraction_from_dump(
@@ -1276,7 +1348,8 @@ async fn clang_ast_abi_extraction(
     workspace: &Path,
     outcome: &DeviceCompileOutcome,
 ) -> Option<ClangAstAbiExtraction> {
-    let compiler = clang_ast_abi_extractor_compiler_candidates()
+    let source_hash = sha256_hex_str(&outcome.compiled_source);
+    let compiler = match clang_ast_abi_extractor_compiler_candidates()
         .into_iter()
         .find(|candidate| {
             std::process::Command::new(candidate)
@@ -1284,20 +1357,40 @@ async fn clang_ast_abi_extraction(
                 .output()
                 .map(|output| output.status.success())
                 .unwrap_or(false)
-        })?;
-    let source_hash = sha256_hex_str(&outcome.compiled_source);
+        }) {
+        Some(compiler) => compiler,
+        None => {
+            return Some(clang_ast_abi_extraction_failure(
+                &outcome.compiled_source,
+                "synthi_clang_ast_kernel_abi_extractor",
+                "clang_ast_extractor_compiler_unavailable",
+                Vec::new(),
+            ));
+        }
+    };
     let abi_dir = workspace.join(".synthi").join("gpu-hmr").join("abi");
     if tokio::fs::create_dir_all(&abi_dir).await.is_err() {
-        return None;
+        return Some(clang_ast_abi_extraction_failure(
+            &outcome.compiled_source,
+            "synthi_clang_ast_kernel_abi_extractor",
+            "clang_ast_extractor_workspace_unavailable",
+            Vec::new(),
+        ));
     }
     let input_path = abi_dir.join(format!("clang-abi-input_{source_hash}.hip"));
     if tokio::fs::write(&input_path, outcome.compiled_source.as_bytes())
         .await
         .is_err()
     {
-        return None;
+        return Some(clang_ast_abi_extraction_failure(
+            &outcome.compiled_source,
+            "synthi_clang_ast_kernel_abi_extractor",
+            "clang_ast_extractor_input_write_failed",
+            Vec::new(),
+        ));
     }
     let mut successful_dump = None;
+    let mut attempts = Vec::new();
     for language in clang_ast_language_candidates(&outcome.compiled_source) {
         let command_display =
             format!("{compiler} -x {language} -fsyntax-only -Xclang -ast-dump <input>");
@@ -1317,12 +1410,51 @@ async fn clang_ast_abi_extraction(
         .await
         {
             Ok(Ok(output)) if output.status.success() => output,
-            _ => continue,
+            Ok(Ok(output)) => {
+                attempts.push(ClangAstAbiAttempt {
+                    language: language.to_string(),
+                    command: command_display,
+                    status: output
+                        .status
+                        .code()
+                        .map(|code| format!("exit:{code}"))
+                        .unwrap_or_else(|| "terminated".to_string()),
+                    stderr_summary: abi_extractor_text_summary(&String::from_utf8_lossy(
+                        &output.stderr,
+                    )),
+                });
+                continue;
+            }
+            Ok(Err(err)) => {
+                attempts.push(ClangAstAbiAttempt {
+                    language: language.to_string(),
+                    command: command_display,
+                    status: "spawn_error".to_string(),
+                    stderr_summary: err.to_string(),
+                });
+                continue;
+            }
+            Err(_) => {
+                attempts.push(ClangAstAbiAttempt {
+                    language: language.to_string(),
+                    command: command_display,
+                    status: "timeout".to_string(),
+                    stderr_summary: "clang AST dump timed out".to_string(),
+                });
+                continue;
+            }
         };
         successful_dump = Some((language.to_string(), command_display, output));
         break;
     }
-    let (language, command_display, output) = successful_dump?;
+    let Some((language, command_display, output)) = successful_dump else {
+        return Some(clang_ast_abi_extraction_failure(
+            &outcome.compiled_source,
+            "synthi_clang_ast_kernel_abi_extractor",
+            "clang_ast_dump_failed",
+            attempts,
+        ));
+    };
     let ast_text = String::from_utf8_lossy(&output.stdout);
     let evidence_material = serde_json::json!({
         "compiler": compiler,
@@ -10509,6 +10641,33 @@ extern "C" __global__ void shade(RenderData* render_data) {}
             extraction.degraded_reason.as_deref(),
             Some("clang_ast_parameter_layout_requires_record_extractor")
         );
+    }
+
+    #[test]
+    fn clang_ast_abi_extractor_records_failed_attempt_provenance() {
+        let extraction = clang_ast_abi_extraction_failure(
+            "extern \"C\" __global__ void shade(float* pixels) {}",
+            "synthi_clang_ast_kernel_abi_extractor",
+            "clang_ast_dump_failed",
+            vec![ClangAstAbiAttempt {
+                language: "hip".to_string(),
+                command: "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>".to_string(),
+                status: "timeout".to_string(),
+                stderr_summary: "clang AST dump timed out".to_string(),
+            }],
+        );
+
+        assert!(!extraction.layout_size_alignment_verified);
+        assert!(extraction.accepted_extractor_evidence_refs.is_empty());
+        assert_eq!(
+            extraction.degraded_reason.as_deref(),
+            Some("clang_ast_dump_failed")
+        );
+        let provenance = &extraction.extractor_provenance[0];
+        assert_eq!(provenance["extractorKind"], "clang_ast");
+        assert_eq!(provenance["acceptedByRuntimeCorrectnessPlan"], false);
+        assert_eq!(provenance["rejectedReason"], "clang_ast_dump_failed");
+        assert_eq!(provenance["attempts"][0]["status"], "timeout");
     }
 
     #[test]
