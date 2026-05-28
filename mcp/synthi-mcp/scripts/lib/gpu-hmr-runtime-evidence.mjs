@@ -1,6 +1,7 @@
 import {
   classifyGpuHmrEpochSwapProof,
   classifyGpuHmrHostPreservationProof,
+  classifyGpuHmrOriginalHostPathProof,
 } from './gpu-hmr-runtime-proof.mjs';
 
 function parseRuntimeKeyValues(line) {
@@ -372,6 +373,74 @@ function expectedRuntimeSessionIds(observation = {}) {
       ? observation.runtimeSessionIds
       : [];
   return compactStringList(explicit);
+}
+
+function originalHostPathRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    event: fields.event ?? null,
+    runtimeSession: fields.runtime_session ?? null,
+    attached: boolValue(fields.attached ?? fields.attachment_proven),
+    dispatchBoundaryObserved: boolValue(fields.dispatch_boundary_observed),
+    hostPathId: fields.host_path_id ?? fields.hostPathId ?? null,
+    dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
+    generation: integerValue(fields.generation),
+  };
+}
+
+export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
+  const expectedSessions = expectedRuntimeSessionIds(observation);
+  const rawRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) =>
+      /\b(original_host_path|host_path_attachment|launch_attachment)\b/i.test(String(line ?? ''))
+    )
+    .map(originalHostPathRecord);
+  const records = rawRecords.filter((record) =>
+    typeof record.runtimeSession === 'string'
+    && record.runtimeSession.trim()
+    && record.attached === true
+    && record.dispatchBoundaryObserved === true
+    && typeof record.hostPathId === 'string'
+    && record.hostPathId.trim()
+    && Number.isFinite(record.generation)
+    && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+  );
+  const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
+  const latest = records.at(-1) ?? null;
+  const evidenceRefs = latest
+    ? [`worker-log:original_host_path:${latest.hostPathId}:${latest.generation}`]
+    : [];
+  return {
+    raw_count: rawRecords.length,
+    total_count: records.length,
+    latest,
+    expected_runtime_session_ids: expectedSessions,
+    runtime_session_ids: runtimeSessionIds,
+    runtime_session_observed: records.length > 0,
+    runtime_session_consistent: runtimeSessionConsistent,
+    attached_to_original_host_path: latest !== null,
+    dispatch_boundary_observed: latest?.dispatchBoundaryObserved === true,
+    runtime_evidence_observed: latest !== null && runtimeSessionConsistent,
+    evidence_refs: evidenceRefs,
+    lines: records.map((record) => record.line).slice(-20),
+  };
+}
+
+export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}) {
+  const evidence = runtimeOriginalHostPathEvidence(lines, observation);
+  const proof = classifyGpuHmrOriginalHostPathProof({
+    required: observation.required === true,
+    attachedToOriginalHostPath: evidence.attached_to_original_host_path,
+    runtimeEvidenceObserved: evidence.runtime_evidence_observed,
+    dispatchBoundaryObserved: evidence.dispatch_boundary_observed,
+    sessionScoped: evidence.runtime_session_observed && evidence.runtime_session_consistent,
+    runtimeSessionIds: evidence.runtime_session_ids,
+    runtimeSessionConsistent: evidence.runtime_session_consistent,
+    evidenceRefs: evidence.evidence_refs,
+  });
+  return { evidence, proof };
 }
 
 function artifactTransportRecord(line) {

@@ -27,6 +27,7 @@ const GPU_HMR_DEGRADED_STATE_RANK_CAPS = new Map([
   ['gpu-hmr-epoch-swap-unverified', proofStateRank('gpu-hmr-abi-proven')],
   ['gpu-hmr-ram-io-unavailable', proofStateRank('gpu-hmr-epoch-swap-proven')],
   ['gpu-hmr-visual-only', proofStateRank('gpu-hmr-dispatch-safe-proven')],
+  ['gpu-hmr-original-host-path-unattached', proofStateRank('gpu-hmr-host-preservation-proven')],
 ]);
 
 const ACCEPTED_ABI_EXTRACTOR_KINDS = new Set([
@@ -98,6 +99,12 @@ function runtimeLaunchArgProvenanceEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:launch_arg_provenance:/i.test(ref));
 }
 
+function runtimeOriginalHostPathEvidenceRefs(refs) {
+  return compactStringList(refs).filter((ref) =>
+    /^worker-log:(original_host_path|host_path_attachment|launch_attachment):/i.test(ref)
+  );
+}
+
 function hostPreservationProofUsable(proof) {
   if (!proof || typeof proof !== 'object') return false;
   return proof.resultState === 'gpu-hmr-host-preservation-proven'
@@ -105,6 +112,16 @@ function hostPreservationProofUsable(proof) {
     && proof.identitySnapshotObserved === true
     && proof.requiredIdentityRolesObserved === true
     && runtimeHostIdentityEvidenceRefs(proof.identityEvidenceRefs).length > 0;
+}
+
+function originalHostPathProofUsable(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  return proof.attachmentProven === true
+    && proof.runtimeEvidenceObserved === true
+    && proof.dispatchBoundaryObserved === true
+    && proof.sessionScoped === true
+    && proof.runtimeSessionConsistent !== false
+    && runtimeOriginalHostPathEvidenceRefs(proof.evidenceRefs).length > 0;
 }
 
 function acceptedAbiExtractorEvidence(observation = {}) {
@@ -789,6 +806,62 @@ export function summarizeGpuHmrHostPreservationProof(proof) {
   return `gpu_host_preservation_proof=${result}${degraded}${reason}${identity}`;
 }
 
+export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
+  const required = observation.required === true;
+  const runtimeSessionIds = runtimeSessionIdsFromObservation(observation);
+  const runtimeSessionObserved = observation.runtimeSessionObserved === true || runtimeSessionIds.length > 0;
+  const runtimeSessionConsistent =
+    observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
+  const sessionScoped = observation.sessionScoped === true && runtimeSessionObserved && runtimeSessionConsistent;
+  const dispatchBoundaryObserved = observation.dispatchBoundaryObserved === true;
+  const attachedToOriginalHostPath = observation.attachedToOriginalHostPath === true;
+  const evidenceRefs = compactStringList(observation.evidenceRefs);
+  const runtimeEvidenceRefs = runtimeOriginalHostPathEvidenceRefs(evidenceRefs);
+  const runtimeEvidenceObserved = observation.runtimeEvidenceObserved === true && runtimeEvidenceRefs.length > 0;
+  const attachmentProven =
+    attachedToOriginalHostPath
+    && runtimeEvidenceObserved
+    && dispatchBoundaryObserved
+    && sessionScoped;
+
+  return {
+    schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+    required,
+    attachmentProven,
+    degradedState: attachmentProven || !required ? null : 'gpu-hmr-original-host-path-unattached',
+    degradedReason: attachmentProven || !required
+      ? null
+      : !attachedToOriginalHostPath
+        ? 'original_host_path_attachment_not_observed'
+        : !runtimeEvidenceObserved
+          ? 'original_host_path_runtime_evidence_not_collected'
+          : !dispatchBoundaryObserved
+            ? 'original_host_path_dispatch_boundary_not_observed'
+            : !sessionScoped
+              ? 'original_host_path_session_scope_not_proven'
+              : 'original_host_path_attachment_not_proven',
+    attachedToOriginalHostPath,
+    runtimeEvidenceObserved,
+    runtimeEvidenceRefs,
+    dispatchBoundaryObserved,
+    sessionScoped,
+    runtimeSessionObserved,
+    runtimeSessionIds,
+    runtimeSessionConsistent,
+    evidenceRefs,
+  };
+}
+
+export function summarizeGpuHmrOriginalHostPathProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_original_host_path_proof=missing';
+  const result = proof.attachmentProven ? 'attached' : proof.required ? 'missing' : 'not-required';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const evidence = proof.runtimeEvidenceObserved ? ' evidence=runtime' : ' evidence=missing';
+  const session = proof.sessionScoped ? ' session=current' : ' session=unproven';
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}`;
+}
+
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   const sourceProofs = Array.isArray(observation.sourceProofs)
     ? observation.sourceProofs.filter((proof) => proof && typeof proof === 'object')
@@ -816,6 +889,14 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     hostPreservationProof?.resultState === 'gpu-hmr-host-preservation-proven' && !hostProofAccepted
       ? 'host_identity_snapshot_provenance_unverified'
       : hostPreservationProof?.degradedReason ?? 'host_identity_checks_not_collected';
+  const originalHostPathProof =
+    observation.originalHostPathProof && typeof observation.originalHostPathProof === 'object'
+      ? observation.originalHostPathProof
+      : classifyGpuHmrOriginalHostPathProof({ required: observation.originalHostPathRequired === true });
+  const originalHostPathRequired =
+    observation.originalHostPathRequired === true || originalHostPathProof.required === true;
+  const originalHostPathAccepted =
+    !originalHostPathRequired || originalHostPathProofUsable(originalHostPathProof);
   const abiRank = effectiveProofRank(abiProof);
   const epochRank = effectiveProofRank(epochProof);
   const embeddedDispatchProof =
@@ -892,11 +973,30 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       hostProofDegradedReason,
     ),
   ];
+  if (originalHostPathRequired) {
+    stages.push({
+      stageId: 'original-host-path',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      status: originalHostPathAccepted ? 'passed' : 'blocked',
+      observedState: originalHostPathProof?.attachmentProven ? 'original-host-path-attached' : null,
+      effectiveRank: originalHostPathAccepted
+        ? proofStateRank('gpu-hmr-full-runtime-proven')
+        : proofStateRank('gpu-hmr-host-preservation-proven'),
+      degradedState: originalHostPathAccepted
+        ? null
+        : originalHostPathProof?.degradedState ?? 'gpu-hmr-original-host-path-unattached',
+      degradedReason: originalHostPathAccepted
+        ? null
+        : originalHostPathProof?.degradedReason ?? 'original_host_path_attachment_not_observed',
+    });
+  }
 
   let resultState = null;
   for (const stage of stages) {
     if (stage.status !== 'passed') break;
-    resultState = stage.requiredState;
+    if (stage.requiredState !== 'gpu-hmr-full-runtime-proven') {
+      resultState = stage.requiredState;
+    }
   }
   const firstBlocked = stages.find((stage) => stage.status !== 'passed') ?? null;
   const fullRuntimeProven = firstBlocked === null;
@@ -920,6 +1020,8 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       outputResultState: outputProof?.resultState ?? null,
       hostEffectiveRank: hostRank,
       hostResultState: hostPreservationProof?.resultState ?? null,
+      originalHostPathRequired,
+      originalHostPathProven: originalHostPathAccepted,
     },
   };
 }

@@ -26,6 +26,7 @@ import {
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  originalHostPathProofFromRuntimeEvidence,
   runtimeArtifactTransportEvidence,
   runtimeEpochSwapEvidence,
   runtimeHostIdentityEvidence,
@@ -42,6 +43,7 @@ import {
   summarizeGpuHmrEpochSwapProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
+  summarizeGpuHmrOriginalHostPathProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
 
@@ -163,6 +165,7 @@ const CFG = {
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
   expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
+  requireOriginalHostPath: process.env.SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH !== '0',
   outputOracleContract: parseOutputOracleContract(
     process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
       ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
@@ -217,6 +220,7 @@ const report = {
       SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
       SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON: process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON ?? '',
       SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON: process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON ?? '',
+      SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH: process.env.SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
       SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
@@ -245,10 +249,12 @@ const report = {
   dispatch_proof: null,
   output_proof: null,
   host_preservation_proof: null,
+  original_host_path_proof: null,
   full_runtime_proof: null,
   compile_projection: {},
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
+  original_host_path_required: CFG.requireOriginalHostPath,
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -1913,6 +1919,10 @@ async function collectRuntimeEvidence() {
     runtimeSessionIds: runtimeSession.unique_ids,
     identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
   });
+  const runtimeOriginalHostPath = originalHostPathProofFromRuntimeEvidence(workerEvidence, {
+    required: CFG.requireOriginalHostPath,
+    runtimeSessionIds: runtimeSession.unique_ids,
+  });
   report.evidence = {
     worker_log_lines: workerEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
@@ -1949,6 +1959,7 @@ async function collectRuntimeEvidence() {
     runtime_epoch_swap: runtimeEpochSwap.evidence,
     runtime_output_oracle: runtimeOutputOracle,
     runtime_host_identity: runtimeHostPreservation.evidence,
+    runtime_original_host_path: runtimeOriginalHostPath.evidence,
     runtime_identity_changes: runtimeIdentityChanges,
   };
   if (runtimeDispatch.failure_count > 0) {
@@ -2020,6 +2031,21 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime host identity evidence', 'warn', 'no host_identity lines captured');
   }
+  if (runtimeOriginalHostPath.evidence.raw_count > 0) {
+    record(
+      'runtime original host path evidence',
+      runtimeOriginalHostPath.proof.degradedState ? 'warn' : 'pass',
+      `records=${runtimeOriginalHostPath.evidence.total_count} raw=${runtimeOriginalHostPath.evidence.raw_count} required=${CFG.requireOriginalHostPath}`,
+    );
+  } else {
+    record(
+      'runtime original host path evidence',
+      CFG.requireOriginalHostPath ? 'warn' : 'skip',
+      CFG.requireOriginalHostPath
+        ? 'no original_host_path attachment lines captured'
+        : 'original host path attachment not required by this validation',
+    );
+  }
   const proofArtifactRecords = await collectGpuProofArtifacts();
   const foundProofArtifactCount = proofArtifactRecords.filter((entry) => entry?.found).length;
   const abiMetadataEvidenceCount = proofArtifactRecords.reduce((count, entry) => {
@@ -2067,6 +2093,7 @@ async function collectRuntimeEvidence() {
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
   report.host_preservation_proof = runtimeHostPreservation.proof;
+  report.original_host_path_proof = runtimeOriginalHostPath.proof;
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
     abiProof: report.abi_proof,
@@ -2074,6 +2101,7 @@ async function collectRuntimeEvidence() {
     dispatchProof: report.dispatch_proof,
     outputProof: report.output_proof,
     hostPreservationProof: report.host_preservation_proof,
+    originalHostPathProof: report.original_host_path_proof,
   });
   record(
     'runtime ABI proof',
@@ -2106,6 +2134,11 @@ async function collectRuntimeEvidence() {
       ? 'warn'
       : 'pass',
     summarizeGpuHmrHostPreservationProof(report.host_preservation_proof),
+  );
+  record(
+    'original host path proof',
+    report.original_host_path_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrOriginalHostPathProof(report.original_host_path_proof),
   );
   record(
     'full runtime proof ladder',
@@ -2204,6 +2237,8 @@ async function writeResults() {
     `OUTPUT_PROOF ${summarizeGpuHmrOutputProof(report.output_proof)}`,
     '',
     `HOST_PRESERVATION_PROOF ${summarizeGpuHmrHostPreservationProof(report.host_preservation_proof)}`,
+    '',
+    `ORIGINAL_HOST_PATH_PROOF ${summarizeGpuHmrOriginalHostPathProof(report.original_host_path_proof)}`,
     '',
     `FULL_RUNTIME_PROOF ${summarizeGpuHmrFullRuntimeProof(report.full_runtime_proof)}`,
     '',

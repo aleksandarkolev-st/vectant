@@ -5,12 +5,14 @@ import {
   classifyGpuHmrEpochSwapProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
+  classifyGpuHmrOriginalHostPathProof,
   classifyGpuHmrOutputProof,
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
   summarizeGpuHmrEpochSwapProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
+  summarizeGpuHmrOriginalHostPathProof,
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
 import {
@@ -21,8 +23,10 @@ import {
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  originalHostPathProofFromRuntimeEvidence,
   runtimeArtifactTransportEvidence,
   runtimeHostIdentityEvidence,
+  runtimeOriginalHostPathEvidence,
   runtimeOutputOracleEvidence,
 } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
 import {
@@ -99,6 +103,18 @@ function preservedHostProof() {
       "worker-log:host_identity:core_state",
       "worker-log:host_identity:stream",
     ],
+  });
+}
+
+function attachedOriginalHostPathProof() {
+  return classifyGpuHmrOriginalHostPathProof({
+    required: true,
+    attachedToOriginalHostPath: true,
+    runtimeEvidenceObserved: true,
+    dispatchBoundaryObserved: true,
+    sessionScoped: true,
+    runtimeSessionIds: ["runtime-session:test"],
+    evidenceRefs: ["worker-log:original_host_path:host-path:3"],
   });
 }
 
@@ -1088,6 +1104,52 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.identityEvidenceRefs).toEqual(["validation:runtime_identity:first_compile"]);
   });
 
+  it("proves original host path attachment only from runtime-scoped attachment evidence", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true host_path_id=host-main dispatch_table_entry_id=entry-1 generation=3 runtime_session=pid1",
+    ], {
+      required: true,
+      runtimeSessionIds: ["pid1"],
+    });
+
+    expect(evidence.total_count).toBe(1);
+    expect(evidence.attached_to_original_host_path).toBe(true);
+    expect(evidence.evidence_refs).toEqual(["worker-log:original_host_path:host-main:3"]);
+    expect(proof.attachmentProven).toBe(true);
+    expect(proof.degradedState).toBeNull();
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("gpu_original_host_path_proof=attached");
+  });
+
+  it("does not prove original host path attachment from static metadata", () => {
+    const proof = classifyGpuHmrOriginalHostPathProof({
+      required: true,
+      attachedToOriginalHostPath: true,
+      runtimeEvidenceObserved: true,
+      dispatchBoundaryObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["pid1"],
+      evidenceRefs: ["metadata:host_path:static"],
+    });
+
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
+    expect(proof.degradedReason).toBe("original_host_path_runtime_evidence_not_collected");
+  });
+
+  it("scopes original host path attachment to the expected runtime session", () => {
+    const evidence = runtimeOriginalHostPathEvidence([
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true host_path_id=old-host dispatch_table_entry_id=entry-1 generation=3 runtime_session=old-session",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true host_path_id=current-host dispatch_table_entry_id=entry-2 generation=4 runtime_session=current-session",
+    ], {
+      runtimeSessionIds: ["current-session"],
+    });
+
+    expect(evidence.raw_count).toBe(2);
+    expect(evidence.total_count).toBe(1);
+    expect(evidence.runtime_session_ids).toEqual(["current-session"]);
+    expect(evidence.evidence_refs).toEqual(["worker-log:original_host_path:current-host:4"]);
+  });
+
   it("requires session dispatch before dispatch proof can be considered", () => {
     const proof = classifyGpuHmrDispatchProof({});
 
@@ -1299,6 +1361,54 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.fullRuntimeProven).toBe(true);
+  });
+
+  it("blocks full runtime proof when original host path attachment is required but missing", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+      originalHostPathRequired: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
+    expect(proof.degradedReason).toBe("original_host_path_attachment_not_observed");
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("blocked=original-host-path");
+  });
+
+  it("reports full runtime proof with required original host path only when attachment proof is runtime-backed", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+      originalHostPathProof: attachedOriginalHostPathProof(),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.fullRuntimeProven).toBe(true);
+    expect(proof.componentStates.originalHostPathRequired).toBe(true);
+    expect(proof.componentStates.originalHostPathProven).toBe(true);
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {
