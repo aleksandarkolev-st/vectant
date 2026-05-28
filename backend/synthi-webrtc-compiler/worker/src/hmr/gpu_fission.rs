@@ -110,6 +110,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         }
     }
 
+    if !source_paths_valid(candidate) {
+        reason_codes.push("fission.source_path_invalid".to_string());
+    }
+
     if !deterministic_verifier_evidence_present(candidate) {
         reason_codes.push("fission.deterministic_verifier_evidence_missing".to_string());
     }
@@ -120,6 +124,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         .is_some_and(|items| items.iter().all(valid_source_span))
     {
         reason_codes.push("fission.source_span_invalid".to_string());
+    }
+
+    if !source_spans_within_declared_paths(candidate) {
+        reason_codes.push("fission.source_span_path_unmapped".to_string());
     }
 
     if !candidate.get("includeClosure").is_some_and(Value::is_array) {
@@ -158,6 +166,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
+        "normalizedSourcePaths": normalized_source_paths(candidate),
+        "unmappedSourceSpanPaths": unmapped_source_span_paths(candidate),
         "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "selectionScore": fission_selection_score(candidate),
@@ -186,7 +196,12 @@ fn valid_source_span(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    if !non_empty_string(object.get("path")) {
+    if !object
+        .get("path")
+        .and_then(Value::as_str)
+        .and_then(normalized_project_path)
+        .is_some()
+    {
         return false;
     }
     let line_range = positive_u64(object.get("startLine"))
@@ -196,6 +211,84 @@ fn valid_source_span(value: &Value) -> bool {
         .zip(zero_based_u64(object.get("endByte")))
         .is_some_and(|(start, end)| start < end);
     line_range || byte_range
+}
+
+fn source_paths_valid(candidate: &Value) -> bool {
+    let paths = string_list(candidate.get("sourcePaths"));
+    !paths.is_empty()
+        && paths
+            .iter()
+            .all(|path| normalized_project_path(path).is_some())
+}
+
+fn source_spans_within_declared_paths(candidate: &Value) -> bool {
+    unmapped_source_span_paths(candidate).is_empty()
+}
+
+fn normalized_source_paths(candidate: &Value) -> Vec<String> {
+    string_list(candidate.get("sourcePaths"))
+        .into_iter()
+        .filter_map(|path| normalized_project_path(&path))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn unmapped_source_span_paths(candidate: &Value) -> Vec<String> {
+    let declared_paths: BTreeSet<String> = normalized_source_paths(candidate).into_iter().collect();
+    candidate
+        .get("sourceSpans")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("path").and_then(Value::as_str))
+                .filter(|path| {
+                    normalized_project_path(path)
+                        .as_ref()
+                        .is_none_or(|normalized| !declared_paths.contains(normalized))
+                })
+                .map(|path| path.trim().to_string())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn normalized_project_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized_separators = trimmed.replace('\\', "/");
+    if normalized_separators.starts_with('/')
+        || normalized_separators.starts_with('~')
+        || normalized_separators.contains("://")
+        || looks_like_drive_absolute_path(&normalized_separators)
+    {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    for segment in normalized_separators.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => return None,
+            value => segments.push(value),
+        }
+    }
+
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments.join("/"))
+    }
+}
+
+fn looks_like_drive_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
 }
 
 fn loader_capability_present(value: Option<&Value>) -> bool {
@@ -524,6 +617,59 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.target_symbol_not_exported"));
+    }
+
+    #[test]
+    fn rejects_source_span_outside_declared_source_paths() {
+        let mut candidate = valid_candidate();
+        candidate["sourceSpans"] =
+            json!([{"path": "src/other.kernel", "startLine": 10, "endLine": 12}]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["unmappedSourceSpanPaths"], json!(["src/other.kernel"]));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.source_span_path_unmapped"));
+    }
+
+    #[test]
+    fn accepts_normalized_source_span_paths() {
+        let mut candidate = valid_candidate();
+        candidate["sourcePaths"] = json!(["src/device.kernel"]);
+        candidate["sourceSpans"] =
+            json!([{"path": ".\\src\\device.kernel", "startLine": 10, "endLine": 12}]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["normalizedSourcePaths"], json!(["src/device.kernel"]));
+        assert_eq!(report["unmappedSourceSpanPaths"], json!([]));
+    }
+
+    #[test]
+    fn rejects_source_paths_that_escape_workspace() {
+        let mut candidate = valid_candidate();
+        candidate["sourcePaths"] = json!(["../device.kernel"]);
+        candidate["sourceSpans"] =
+            json!([{"path": "../device.kernel", "startLine": 10, "endLine": 12}]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.source_path_invalid"));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.source_span_invalid"));
     }
 
     #[test]
