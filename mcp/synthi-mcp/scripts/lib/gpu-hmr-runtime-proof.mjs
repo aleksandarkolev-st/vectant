@@ -28,6 +28,7 @@ const GPU_HMR_DEGRADED_STATE_RANK_CAPS = new Map([
   ['gpu-hmr-ram-io-unavailable', proofStateRank('gpu-hmr-epoch-swap-proven')],
   ['gpu-hmr-visual-only', proofStateRank('gpu-hmr-dispatch-safe-proven')],
   ['gpu-hmr-original-host-path-unattached', proofStateRank('gpu-hmr-host-preservation-proven')],
+  ['gpu-hmr-fission-unverified', 0],
 ]);
 
 const ACCEPTED_ABI_EXTRACTOR_KINDS = new Set([
@@ -307,6 +308,87 @@ function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degrad
     degradedState: passed ? null : degradedState ?? evidenceProof?.degradedState ?? null,
     degradedReason: passed ? null : degradedReason ?? evidenceProof?.degradedReason ?? null,
   };
+}
+
+function normalizedStatus(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+}
+
+function fissionProofUsable(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  return proof.fissionProven === true
+    && proof.observed === true
+    && proof.evidenceObserved === true
+    && compactStringList(proof.evidenceRefs).length > 0;
+}
+
+export function classifyGpuHmrFissionProof(observation = {}) {
+  const stageStatuses = compactStringList([
+    observation.status,
+    observation.stageStatus,
+    ...(Array.isArray(observation.stageStatuses) ? observation.stageStatuses : []),
+  ]).map(normalizedStatus).filter(Boolean);
+  const rejectedStatusObserved = stageStatuses.some((status) =>
+    ['blocked', 'failed', 'fail', 'reject', 'rejected'].includes(status)
+  ) || observation.rejected === true;
+  const passedStatusObserved = stageStatuses.some((status) =>
+    ['passed', 'pass', 'accepted'].includes(status)
+  );
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(observation.evidenceRefs) ? observation.evidenceRefs : []),
+    ...(Array.isArray(observation.verifierEvidenceRefs) ? observation.verifierEvidenceRefs : []),
+  ]);
+  const evidenceObserved = observation.evidenceObserved === true || evidenceRefs.length > 0;
+  const observed = observation.observed === true
+    || evidenceObserved
+    || stageStatuses.length > 0
+    || observation.passed === true
+    || observation.verified === true
+    || observation.accepted === true
+    || observation.rejected === true;
+  const required = observation.required === true || observed;
+  const fissionProven = observed
+    && evidenceObserved
+    && !rejectedStatusObserved
+    && (
+      observation.passed === true
+      || observation.verified === true
+      || observation.accepted === true
+      || passedStatusObserved
+    );
+  const degradedReason = fissionProven || !required
+    ? null
+    : typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
+      ? observation.degradedReason.trim()
+      : !observed
+        ? 'fission_candidate_verification_not_observed'
+        : !evidenceObserved
+          ? 'fission_verifier_evidence_not_collected'
+          : rejectedStatusObserved
+            ? 'fission_candidate_verifier_rejected'
+            : 'fission_candidate_verification_not_proven';
+
+  return {
+    schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+    required,
+    observed,
+    evidenceObserved,
+    fissionProven,
+    resultState: fissionProven ? 'gpu-hmr-fission-candidate-proven' : null,
+    degradedState: fissionProven || !required ? null : 'gpu-hmr-fission-unverified',
+    degradedReason,
+    evidenceRefs,
+    stageStatuses,
+  };
+}
+
+export function summarizeGpuHmrFissionProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_fission_proof=missing';
+  const state = proof.fissionProven ? 'proven' : proof.required ? 'unproven' : 'not-required';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const evidence = Array.isArray(proof.evidenceRefs) ? ` evidence_refs=${proof.evidenceRefs.length}` : '';
+  return `gpu_fission_proof=${state}${degraded}${reason}${evidence}`;
 }
 
 function stageIndex(stages, stageId) {
@@ -1228,6 +1310,12 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     observation.originalHostPathRequired === true || originalHostPathProof.required === true;
   const originalHostPathAccepted =
     !originalHostPathRequired || originalHostPathProofUsable(originalHostPathProof);
+  const fissionProof = observation.fissionProof && typeof observation.fissionProof === 'object'
+    ? observation.fissionProof
+    : classifyGpuHmrFissionProof({ required: observation.fissionProofRequired === true });
+  const fissionProofRequired =
+    observation.fissionProofRequired === true || fissionProof.required === true;
+  const fissionProofAccepted = !fissionProofRequired || fissionProofUsable(fissionProof);
   const abiRank = effectiveProofRank(abiProof);
   const epochRank = effectiveProofRank(epochProof);
   const embeddedDispatchProof =
@@ -1304,6 +1392,21 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       hostProofDegradedReason,
     ),
   ];
+  if (fissionProofRequired) {
+    stages.unshift({
+      stageId: 'fission-candidate-verification',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      status: fissionProofAccepted ? 'passed' : 'blocked',
+      observedState: fissionProof?.resultState ?? null,
+      effectiveRank: fissionProofAccepted ? proofStateRank('gpu-hmr-full-runtime-proven') : 0,
+      degradedState: fissionProofAccepted
+        ? null
+        : fissionProof?.degradedState ?? 'gpu-hmr-fission-unverified',
+      degradedReason: fissionProofAccepted
+        ? null
+        : fissionProof?.degradedReason ?? 'fission_candidate_verification_not_proven',
+    });
+  }
   if (originalHostPathRequired) {
     stages.push({
       stageId: 'original-host-path',
@@ -1355,6 +1458,9 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       hostResultState: hostPreservationProof?.resultState ?? null,
       originalHostPathRequired,
       originalHostPathProven: originalHostPathAccepted,
+      fissionProofRequired,
+      fissionProofObserved: fissionProof.observed === true,
+      fissionProofProven: fissionProofUsable(fissionProof),
     },
   };
 }

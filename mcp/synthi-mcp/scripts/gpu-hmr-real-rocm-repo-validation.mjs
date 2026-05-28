@@ -21,6 +21,7 @@ import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
   abiProofFromProofArtifacts,
   artifactTransportProofFromProofArtifacts,
+  fissionProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
 } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
@@ -42,6 +43,7 @@ import {
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
   summarizeGpuHmrEpochSwapProof,
+  summarizeGpuHmrFissionProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOriginalHostPathProof,
@@ -247,6 +249,7 @@ const report = {
   },
   proof_artifacts: [],
   abi_proof: null,
+  fission_proof: null,
   artifact_transport_proof: null,
   epoch_swap_proof: null,
   dispatch_proof: null,
@@ -2065,6 +2068,7 @@ async function collectRuntimeEvidence() {
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
+  report.fission_proof = fissionProofFromProofArtifacts(proofArtifactRecords);
   report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(
     proofArtifactRecords,
     runtimeArtifactTransport,
@@ -2100,6 +2104,7 @@ async function collectRuntimeEvidence() {
   report.original_host_path_proof = runtimeOriginalHostPath.proof;
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
+    fissionProof: report.fission_proof,
     abiProof: report.abi_proof,
     epochProof: report.epoch_swap_proof,
     dispatchProof: report.dispatch_proof,
@@ -2111,6 +2116,11 @@ async function collectRuntimeEvidence() {
     'runtime ABI proof',
     report.abi_proof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(report.abi_proof),
+  );
+  record(
+    'runtime fission proof',
+    report.fission_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrFissionProof(report.fission_proof),
   );
   record(
     'runtime artifact transport proof',

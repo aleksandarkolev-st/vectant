@@ -3,6 +3,7 @@ import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrDispatchProof,
   classifyGpuHmrEpochSwapProof,
+  classifyGpuHmrFissionProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOriginalHostPathProof,
@@ -10,6 +11,7 @@ import {
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
   summarizeGpuHmrEpochSwapProof,
+  summarizeGpuHmrFissionProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOriginalHostPathProof,
@@ -18,6 +20,7 @@ import {
 import {
   abiProofFromProofArtifacts,
   artifactTransportProofFromProofArtifacts,
+  fissionProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
 } from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
 import {
@@ -168,6 +171,15 @@ function attachedOriginalHostPathProof() {
     sessionScoped: true,
     runtimeSessionIds: ["runtime-session:test"],
     evidenceRefs: ["worker-log:original_host_path:host-path:3"],
+  });
+}
+
+function acceptedFissionProof() {
+  return classifyGpuHmrFissionProof({
+    required: true,
+    observed: true,
+    passed: true,
+    evidenceRefs: ["evidence:fission-verifier-report:abc"],
   });
 }
 
@@ -743,6 +755,62 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.acceptedExtractorEvidenceRefs).toEqual(["evidence:clang-record-layout:def"]);
+  });
+
+  it("proves fission only from verifier stages with evidence", () => {
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:abc",
+          metadata: {
+            status: "pass",
+            selectedIslandId: "island:sha256:abc",
+          },
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:abc"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(true);
+    expect(proof.required).toBe(true);
+    expect(proof.degradedState).toBeNull();
+    expect(proof.evidenceRefs).toEqual(["evidence:fission-verifier-report:abc"]);
+    expect(summarizeGpuHmrFissionProof(proof)).toContain("gpu_fission_proof=proven");
+  });
+
+  it("blocks fission proof when a verifier stage rejects the candidate", () => {
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:def",
+          metadata: {
+            status: "reject",
+            reasonCodes: ["fission.abi_membrane_unverified"],
+          },
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "blocked",
+          evidenceRefs: ["evidence:fission-verifier-report:def"],
+          degradedReason: "fission.abi_membrane_unverified",
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.required).toBe(true);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission.abi_membrane_unverified");
   });
 
   it("reports path-only artifact transport as degraded RAM I/O evidence", () => {
@@ -1632,6 +1700,56 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(true);
     expect(proof.postPublicationDecision.disposition).toBe("accepted");
     expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(true);
+  });
+
+  it("blocks full runtime proof when required fission verifier evidence is missing", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      fissionProofRequired: true,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_candidate_verification_not_observed");
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.componentStates.fissionProofRequired).toBe(true);
+    expect(proof.componentStates.fissionProofProven).toBe(false);
+    expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("blocked=fission-candidate-verification");
+  });
+
+  it("allows full runtime proof when required fission verifier evidence passes", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.fullRuntimeProven).toBe(true);
+    expect(proof.componentStates.fissionProofRequired).toBe(true);
+    expect(proof.componentStates.fissionProofProven).toBe(true);
   });
 
   it("quarantines a published capsule when post-publication gates fail", () => {

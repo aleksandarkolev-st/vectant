@@ -25,6 +25,8 @@ export const GPU_HMR_DEGRADED_STATES = [
   "gpu-hmr-epoch-swap-unverified",
   "gpu-hmr-ram-io-unavailable",
   "gpu-hmr-visual-only",
+  "gpu-hmr-original-host-path-unattached",
+  "gpu-hmr-fission-unverified",
 ] as const;
 
 export interface GpuHmrProofTelemetry {
@@ -67,6 +69,8 @@ const DEGRADED_STATE_RANK_CAPS = new Map<string, number>([
   ["gpu-hmr-epoch-swap-unverified", gpuHmrProofStateRank("gpu-hmr-abi-proven")],
   ["gpu-hmr-ram-io-unavailable", gpuHmrProofStateRank("gpu-hmr-epoch-swap-proven")],
   ["gpu-hmr-visual-only", gpuHmrProofStateRank("gpu-hmr-dispatch-safe-proven")],
+  ["gpu-hmr-original-host-path-unattached", gpuHmrProofStateRank("gpu-hmr-host-preservation-proven")],
+  ["gpu-hmr-fission-unverified", 0],
 ]);
 
 function stringOrNull(value: unknown): string | null {

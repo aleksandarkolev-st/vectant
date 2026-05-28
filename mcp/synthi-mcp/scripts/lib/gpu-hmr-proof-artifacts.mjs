@@ -1,4 +1,7 @@
-import { classifyGpuHmrAbiProof } from './gpu-hmr-runtime-proof.mjs';
+import {
+  classifyGpuHmrAbiProof,
+  classifyGpuHmrFissionProof,
+} from './gpu-hmr-runtime-proof.mjs';
 
 function uniqueStrings(values) {
   return Array.isArray(values)
@@ -33,6 +36,21 @@ function artifactTransportStageFromArtifact(artifact) {
   return stages.find((stage) => {
     const stageId = String(stage?.stageId ?? '').toLowerCase();
     return stageId === 'artifact-transport' || stageId.includes('artifact-transport');
+  });
+}
+
+function fissionVerifierEvidenceId(evidence, artifact, record) {
+  if (typeof evidence?.evidenceId === 'string' && evidence.evidenceId.trim()) {
+    return evidence.evidenceId.trim();
+  }
+  return `${artifact?.proofId ?? record?.proofArtifactPath ?? 'gpu-hmr-proof-artifact'}:fission-verifier-report`;
+}
+
+function fissionStagesFromArtifact(artifact) {
+  const stages = Array.isArray(artifact?.stageResults) ? artifact.stageResults : [];
+  return stages.filter((stage) => {
+    const stageId = String(stage?.stageId ?? '').toLowerCase();
+    return stageId === 'fission-candidate-verification' || stageId.includes('fission');
   });
 }
 
@@ -90,6 +108,66 @@ export function abiProofFromProofArtifacts(records) {
     acceptedExtractorSources: uniqueStrings(acceptedExtractorSources),
     extractorProvenance,
     extractorProvenanceComplete,
+  });
+}
+
+export function fissionProofFromProofArtifacts(records) {
+  const evidenceRefs = [];
+  const stageStatuses = [];
+  let observed = false;
+  let passed = false;
+  let rejected = false;
+  let degradedReason = null;
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const artifact = record?.artifact;
+    if (!artifact || typeof artifact !== 'object') continue;
+
+    const artifactEvidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
+    for (const evidence of artifactEvidenceRefs) {
+      if (evidence?.kind !== 'fission-verifier-report') continue;
+
+      observed = true;
+      evidenceRefs.push(fissionVerifierEvidenceId(evidence, artifact, record));
+      const metadata = evidence?.metadata && typeof evidence.metadata === 'object' ? evidence.metadata : {};
+      const status = String(metadata.status ?? '').trim().toLowerCase();
+      if (status === 'pass' || status === 'passed' || status === 'accepted') {
+        passed = true;
+      } else if (status === 'reject' || status === 'rejected' || status === 'fail' || status === 'failed') {
+        rejected = true;
+      }
+      const reasonCodes = Array.isArray(metadata.reasonCodes)
+        ? metadata.reasonCodes.filter((value) => typeof value === 'string' && value.trim())
+        : [];
+      if (!degradedReason && reasonCodes.length > 0) {
+        degradedReason = reasonCodes[0].trim();
+      }
+    }
+
+    for (const stage of fissionStagesFromArtifact(artifact)) {
+      observed = true;
+      const status = typeof stage?.status === 'string' ? stage.status.trim().toLowerCase() : '';
+      if (status) stageStatuses.push(status);
+      if (status === 'passed' || status === 'pass' || status === 'accepted') {
+        passed = true;
+      } else if (status === 'blocked' || status === 'failed' || status === 'fail' || status === 'rejected') {
+        rejected = true;
+      }
+      evidenceRefs.push(...uniqueStrings(stage?.evidenceRefs));
+      if (!degradedReason && typeof stage?.degradedReason === 'string' && stage.degradedReason.trim()) {
+        degradedReason = stage.degradedReason.trim();
+      }
+    }
+  }
+
+  return classifyGpuHmrFissionProof({
+    required: observed,
+    observed,
+    passed: observed && passed && !rejected,
+    rejected,
+    degradedReason,
+    evidenceRefs: uniqueStrings(evidenceRefs),
+    stageStatuses: uniqueStrings(stageStatuses),
   });
 }
 

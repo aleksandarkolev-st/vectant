@@ -55,6 +55,7 @@ import {
 import {
   abiProofFromProofArtifacts,
   artifactTransportProofFromProofArtifacts,
+  fissionProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
 } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
@@ -68,6 +69,7 @@ import {
   classifyGpuHmrOutputProof,
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
+  summarizeGpuHmrFissionProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
@@ -2463,6 +2465,13 @@ async function phaseFlow(ctx) {
     summarizeProofArtifactRecords(baselineProofArtifacts),
   );
   const baselineAbiProof = abiProofFromProofArtifacts(baselineProofArtifacts);
+  const baselineFissionProof = fissionProofFromProofArtifacts(baselineProofArtifacts);
+  record(
+    'FLOW',
+    'inward fission proof from artifact',
+    baselineFissionProof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrFissionProof(baselineFissionProof),
+  );
   record(
     'FLOW',
     'inward ABI proof from artifact',
@@ -2537,6 +2546,7 @@ async function phaseFlow(ctx) {
   recordRuntimeFullProof('FLOW', 'inward full runtime proof ladder', {
     sourceProof: baselineGpuProof,
     abiProof: baselineAbiProof,
+    fissionProof: baselineFissionProof,
     epochProof: inwardEpochProof.proof,
     dispatchProof: inwardDispatchProof,
     outputProof: inwardOutputProof,
@@ -2564,6 +2574,13 @@ async function phaseFlow(ctx) {
     summarizeProofArtifactRecords(flipProofArtifacts),
   );
   const flipAbiProof = abiProofFromProofArtifacts(flipProofArtifacts);
+  const flipFissionProof = fissionProofFromProofArtifacts(flipProofArtifacts);
+  record(
+    'FLOW',
+    'outward fission proof from artifact',
+    flipFissionProof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrFissionProof(flipFissionProof),
+  );
   record(
     'FLOW',
     'outward ABI proof from artifact',
@@ -2644,6 +2661,7 @@ async function phaseFlow(ctx) {
   recordRuntimeFullProof('FLOW', 'outward full runtime proof ladder', {
     sourceProof: flipGpuProof,
     abiProof: flipAbiProof,
+    fissionProof: flipFissionProof,
     epochProof: outwardEpochProof.proof,
     dispatchProof: outwardDispatchProof,
     outputProof: outwardOutputProof,
