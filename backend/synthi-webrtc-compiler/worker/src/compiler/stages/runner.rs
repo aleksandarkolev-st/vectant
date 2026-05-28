@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::rtp::packet::Packet;
 use webrtc_util::Unmarshal;
 
@@ -18,6 +19,7 @@ use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
+use crate::webrtc::PER_DC_SEND_TIMEOUT;
 
 fn extract_structured_runner_message(line: &str) -> Option<&str> {
     let trimmed = line.trim();
@@ -27,6 +29,32 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
 
     const PREFIX: &str = "[Runner] [HMR-STATUS] ";
     line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
+}
+
+fn should_forward_runner_stderr_line_to_log_dc(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("[gpu-runtime-boundary]")
+}
+
+async fn send_log_dc_text_bounded(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &'static str,
+) -> bool {
+    match tokio::time::timeout(PER_DC_SEND_TIMEOUT, dc.send_text(text)).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(err)) => {
+            debug_log!("[build-log-dc] dropped {label}: {err}");
+            false
+        }
+        Err(_) => {
+            debug_log!(
+                "[build-log-dc] dropped {label}: send exceeded {}ms",
+                PER_DC_SEND_TIMEOUT.as_millis()
+            );
+            false
+        }
+    }
 }
 
 /// Emit a lifecycle-progress message on the build-log DC so the MCP +
@@ -57,10 +85,12 @@ async fn emit_lifecycle_progress(
     if let Some(ms) = estimated_ready_ms {
         payload["warming_progress"]["estimated_ready_at"] = serde_json::Value::from(now_ms() + ms);
     }
-    let _ = ctx
-        .log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
+    let _ = send_log_dc_text_bounded(
+        &ctx.log_dc,
+        serde_json::to_string(&payload).unwrap_or_default(),
+        "lifecycle-progress",
+    )
+    .await;
 }
 
 fn now_ms() -> u64 {
@@ -366,10 +396,12 @@ pub async fn handle_runner_execution(
             "success": true,
             "stage": "runner",
         });
-        let _ = ctx
-            .log_dc
-            .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
-            .await;
+        let _ = send_log_dc_text_bounded(
+            &ctx.log_dc,
+            serde_json::to_string(&done_payload).unwrap_or_default(),
+            "runner-done",
+        )
+        .await;
         return Ok(());
     }
 
@@ -845,10 +877,12 @@ pub async fn handle_runner_execution(
                                         "h": producer_viewport_height,
                                         "dpr": producer_viewport_dpr,
                                     },
-                                }).to_string();
+                                })
+                                .to_string();
                                 let dc = log_dc_for_frame_advance.clone();
                                 tokio::spawn(async move {
-                                    let _ = dc.send_text(msg).await;
+                                    let _ =
+                                        send_log_dc_text_bounded(&dc, msg, "frame-advance").await;
                                 });
                             }
                         }
@@ -919,7 +953,12 @@ pub async fn handle_runner_execution(
                         },
                         "pipeline_budget_estimate_ms": snap.pipeline_budget_estimate_ms,
                     });
-                    let _ = log_dc_for_timing.send_text(payload.to_string()).await;
+                    let _ = send_log_dc_text_bounded(
+                        &log_dc_for_timing,
+                        payload.to_string(),
+                        "frame-timing",
+                    )
+                    .await;
                 }
             });
         }
@@ -1075,10 +1114,12 @@ pub async fn handle_runner_execution(
                     "binary_fingerprint": registered.binary_fingerprint,
                     "expected_wm_class_hint": registered.expected_wm_class_hint,
                 });
-                let _ = ctx
-                    .log_dc
-                    .send_text(serde_json::to_string(&summary).unwrap_or_default())
-                    .await;
+                let _ = send_log_dc_text_bounded(
+                    &ctx.log_dc,
+                    serde_json::to_string(&summary).unwrap_or_default(),
+                    "guest-registered",
+                )
+                .await;
                 eprintln!(
                     "[GuestRegistry] session={} root_pid={} binary={:?}",
                     sid, registered.root_pid, registered.binary_path,
@@ -1111,10 +1152,12 @@ pub async fn handle_runner_execution(
                            "type": "stdout",
                            "line": l
                         });
-                        let _ = ctx_clone
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
+                        let _ = send_log_dc_text_bounded(
+                            &ctx_clone.log_dc,
+                            serde_json::to_string(&payload).unwrap_or_default(),
+                            "runner-stdout",
+                        )
+                        .await;
                     }
                     None => break,
                 }
@@ -1136,9 +1179,18 @@ pub async fn handle_runner_execution(
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
                             if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
-                                let _ = ctx_clone2.log_dc.send_text(structured.to_string()).await;
+                                let _ = send_log_dc_text_bounded(
+                                    &ctx_clone2.log_dc,
+                                    structured.to_string(),
+                                    "runner-structured",
+                                )
+                                .await;
                                 continue;
                             }
+                        }
+
+                        if !should_forward_runner_stderr_line_to_log_dc(&l) {
+                            continue;
                         }
 
                         // Send to frontend
@@ -1147,10 +1199,12 @@ pub async fn handle_runner_execution(
                            "type": "stderr",
                            "line": l
                         });
-                        let _ = ctx_clone2
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
+                        let _ = send_log_dc_text_bounded(
+                            &ctx_clone2.log_dc,
+                            serde_json::to_string(&payload).unwrap_or_default(),
+                            "runner-stderr",
+                        )
+                        .await;
                     }
                     None => break,
                 }
@@ -1260,7 +1314,8 @@ pub async fn handle_runner_execution(
                     "dpr": producer_dpr,
                 },
             });
-            let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
+            let _ =
+                send_log_dc_text_bounded(&ctx.log_dc, gui_start.to_string(), "run-gui-start").await;
         }
 
         // ============================================================
@@ -1404,10 +1459,12 @@ pub async fn handle_runner_execution(
         "success": true,
         "stage": "runner",
     });
-    let _ = ctx
-        .log_dc
-        .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
-        .await;
+    let _ = send_log_dc_text_bounded(
+        &ctx.log_dc,
+        serde_json::to_string(&done_payload).unwrap_or_default(),
+        "runner-done",
+    )
+    .await;
 
     Ok(())
 }
@@ -1417,7 +1474,8 @@ mod tests {
     use super::{
         full_device_abi_from_marker, full_device_abi_restart_marker, next_full_device_abi,
         runner_load_command, runner_reuse_allowed, runner_session_matches,
-        same_session_full_device_abi_changed, RunnerReloadPolicy,
+        same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
+        RunnerReloadPolicy,
     };
 
     #[test]
@@ -1595,5 +1653,18 @@ mod tests {
     fn runner_reuse_policy_blocks_non_inprocess_plan() {
         let policy = RunnerReloadPolicy::require_runner_restart(vec!["process_swap".to_string()]);
         assert!(!runner_reuse_allowed(&policy, true, true, true, true));
+    }
+
+    #[test]
+    fn runtime_boundary_telemetry_stays_out_of_compile_datachannel() {
+        assert!(!should_forward_runner_stderr_line_to_log_dc(
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel=step dispatch=ok"
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            "[Runner] [HMR-STATUS] {\"status\":\"applied\"}"
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            "application stderr remains visible"
+        ));
     }
 }
