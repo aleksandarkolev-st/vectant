@@ -188,6 +188,14 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.source_path_invalid".to_string());
     }
 
+    let generated_role_value_present = generated_role_path_value(candidate).is_some();
+    let generated_role_path_present = generated_role_path(candidate).is_some();
+    if generated_role_value_present && !generated_role_path_present {
+        reason_codes.push("fission.generated_role_path_invalid".to_string());
+    } else if generated_role_path_required(candidate) && !generated_role_path_present {
+        reason_codes.push("fission.generated_role_path_missing".to_string());
+    }
+
     if !deterministic_verifier_evidence_present(candidate) {
         reason_codes.push("fission.deterministic_verifier_evidence_missing".to_string());
     }
@@ -269,6 +277,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
         "hashFieldCoverage": hash_field_coverage(candidate),
         "outputOracleContract": output_oracle_contract_summary(candidate),
+        "generatedRolePathRequired": generated_role_path_required(candidate),
+        "generatedRolePath": generated_role_path(candidate),
         "originalHostLaunchMappingRequired": original_host_launch_mapping_required(candidate),
         "originalHostLaunchMappingId": candidate
             .get("originalHostLaunchMappingId")
@@ -412,6 +422,49 @@ fn normalized_project_path(path: &str) -> Option<String> {
 fn looks_like_drive_absolute_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
+}
+
+fn generated_role_path(candidate: &Value) -> Option<String> {
+    generated_role_path_value(candidate).and_then(|path| normalized_project_path(&path))
+}
+
+fn generated_role_path_value(candidate: &Value) -> Option<String> {
+    for field in ["generatedRolePath", "generatedPath"] {
+        if let Some(path) = candidate.get(field).and_then(Value::as_str) {
+            return Some(path.trim().to_string());
+        }
+    }
+    candidate
+        .get("generatedRole")
+        .and_then(Value::as_object)
+        .and_then(|object| {
+            ["path", "generatedRolePath", "generatedPath"]
+                .iter()
+                .find_map(|field| object.get(*field).and_then(Value::as_str))
+        })
+        .map(str::trim)
+        .map(str::to_string)
+}
+
+fn generated_role_path_required(candidate: &Value) -> bool {
+    bool_true(candidate.get("generatedRolePathRequired"))
+        || generated_role_scope_requires_generated_path(candidate)
+}
+
+fn generated_role_scope_requires_generated_path(candidate: &Value) -> bool {
+    let mut scope_text = Vec::new();
+    for field in ["replacementScope", "artifactScope", "scope", "artifactKind"] {
+        if let Some(value) = candidate.get(field).and_then(Value::as_str) {
+            scope_text.push(normalized_scope_text(value));
+        }
+    }
+    let scope_text = scope_text.join(" ");
+    scope_text.contains("generated")
+        || scope_text.contains("device")
+        || scope_text.contains("module")
+        || scope_text.contains("kernel")
+        || scope_text.contains("source_include")
+        || scope_text.contains("partial")
 }
 
 fn include_closure_valid(candidate: &Value) -> bool {
@@ -1128,6 +1181,7 @@ mod tests {
             "sourceEditId": "edit:1",
             "sourcePaths": ["src/device.kernel"],
             "sourceSpans": [{"path": "src/device.kernel", "startLine": 10, "endLine": 12}],
+            "generatedRolePath": ".synthi/generated/gpu/device.kernel",
             "targetSymbols": ["step"],
             "exportedSymbolsExpected": ["step", "helper"],
             "artifactKind": "device_partial",
@@ -1423,6 +1477,58 @@ mod tests {
         assert_eq!(report["status"], "pass");
         assert_eq!(report["normalizedSourcePaths"], json!(["src/device.kernel"]));
         assert_eq!(report["unmappedSourceSpanPaths"], json!([]));
+    }
+
+    #[test]
+    fn rejects_generated_device_candidate_without_generated_role_path() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("generatedRolePath");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["generatedRolePathRequired"], true);
+        assert_eq!(report["generatedRolePath"], Value::Null);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.generated_role_path_missing"));
+    }
+
+    #[test]
+    fn accepts_source_only_function_body_candidate_without_generated_role_path() {
+        let mut candidate = valid_candidate();
+        candidate["artifactKind"] = json!("function_body");
+        candidate["exportedSymbolsExpected"] = json!(["step"]);
+        candidate.as_object_mut().unwrap().remove("generatedRolePath");
+        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("narrowerCandidateRejections");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["generatedRolePathRequired"], false);
+        assert_eq!(report["generatedRolePath"], Value::Null);
+    }
+
+    #[test]
+    fn rejects_invalid_generated_role_path() {
+        let mut candidate = valid_candidate();
+        candidate["generatedRolePath"] = json!("../outside/device.kernel");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["generatedRolePathRequired"], true);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.generated_role_path_invalid"));
     }
 
     #[test]
