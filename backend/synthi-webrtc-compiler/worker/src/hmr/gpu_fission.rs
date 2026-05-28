@@ -23,6 +23,41 @@ const REQUIRED_NON_EMPTY_ARRAY_FIELDS: &[&str] = &[
     "verifierEvidenceIds",
 ];
 
+#[derive(Clone, Copy)]
+struct VerificationEvidenceCategory {
+    name: &'static str,
+    fields: &'static [&'static str],
+    fallback_tokens: &'static [&'static str],
+}
+
+const REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES: &[VerificationEvidenceCategory] = &[
+    VerificationEvidenceCategory {
+        name: "source_mapping",
+        fields: &["sourceMappingEvidenceIds", "sourceMapEvidenceIds"],
+        fallback_tokens: &["source_mapping", "source_map"],
+    },
+    VerificationEvidenceCategory {
+        name: "include_closure",
+        fields: &["includeClosureEvidenceIds"],
+        fallback_tokens: &["include_closure"],
+    },
+    VerificationEvidenceCategory {
+        name: "symbol_ownership",
+        fields: &["symbolOwnershipEvidenceIds"],
+        fallback_tokens: &["symbol_ownership", "symbol_owner"],
+    },
+    VerificationEvidenceCategory {
+        name: "dependency_closure",
+        fields: &["dependencyClosureEvidenceIds"],
+        fallback_tokens: &["dependency_closure"],
+    },
+    VerificationEvidenceCategory {
+        name: "abi_membrane",
+        fields: &["abiMembraneEvidenceIds", "abiEvidenceIds"],
+        fallback_tokens: &["abi_membrane", "abi_layout"],
+    },
+];
+
 pub fn verify_fission_candidates(value: &Value) -> Value {
     let candidates = collect_candidates(value);
     if candidates.is_empty() {
@@ -118,6 +153,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.deterministic_verifier_evidence_missing".to_string());
     }
 
+    for category in missing_verification_evidence_categories(candidate) {
+        reason_codes.push(format!("fission.{category}_evidence_missing"));
+    }
+
     if !candidate
         .get("sourceSpans")
         .and_then(Value::as_array)
@@ -178,6 +217,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
+        "verificationEvidenceCoverage": verification_evidence_coverage(candidate),
         "normalizedSourcePaths": normalized_source_paths(candidate),
         "unmappedSourceSpanPaths": unmapped_source_span_paths(candidate),
         "normalizedIncludeClosurePaths": normalized_include_closure_paths(candidate),
@@ -533,6 +573,99 @@ fn deterministic_verifier_evidence_present(candidate: &Value) -> bool {
     !deterministic_verifier_evidence_ids(candidate).is_empty()
 }
 
+fn missing_verification_evidence_categories(candidate: &Value) -> Vec<&'static str> {
+    REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+        .iter()
+        .filter_map(|category| {
+            if deterministic_evidence_ids_for_category(
+                candidate,
+                category.fields,
+                category.fallback_tokens,
+            )
+            .is_empty()
+            {
+                Some(category.name)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn verification_evidence_coverage(candidate: &Value) -> Value {
+    let mut categories = Vec::new();
+    let mut missing = Vec::new();
+    for category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
+        let evidence_ids = deterministic_evidence_ids_for_category(
+            candidate,
+            category.fields,
+            category.fallback_tokens,
+        );
+        if evidence_ids.is_empty() {
+            missing.push(category.name);
+        }
+        categories.push(json!({
+            "category": category.name,
+            "evidenceIds": evidence_ids,
+        }));
+    }
+    json!({
+        "requiredCategories": REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+            .iter()
+            .map(|category| category.name)
+            .collect::<Vec<_>>(),
+        "missingCategories": missing,
+        "categories": categories,
+    })
+}
+
+fn deterministic_evidence_ids_for_category(
+    candidate: &Value,
+    fields: &[&str],
+    fallback_tokens: &[&str],
+) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    for field in fields {
+        ids.extend(
+            evidence_id_list(candidate.get(*field))
+                .into_iter()
+                .filter(|id| is_deterministic_verifier_evidence_id(id)),
+        );
+    }
+    ids.extend(
+        deterministic_verifier_evidence_ids(candidate)
+            .into_iter()
+            .filter(|id| evidence_id_matches_any_token(id, fallback_tokens)),
+    );
+    ids.into_iter().collect()
+}
+
+fn evidence_id_list(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) => vec![value.trim().to_string()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .flat_map(|item| evidence_id_list(Some(item)))
+            .collect(),
+        Some(Value::Object(object)) => {
+            let mut ids = Vec::new();
+            for field in ["id", "evidenceId", "proofId", "ref"] {
+                if let Some(value) = object.get(field).and_then(Value::as_str) {
+                    ids.push(value.trim().to_string());
+                }
+            }
+            ids.extend(evidence_id_list(object.get("evidenceIds")));
+            ids
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn evidence_id_matches_any_token(value: &str, tokens: &[&str]) -> bool {
+    let normalized = normalized_scope_text(value);
+    tokens.iter().any(|token| normalized.contains(token))
+}
+
 fn deterministic_verifier_evidence_ids(candidate: &Value) -> Vec<String> {
     string_list(candidate.get("verifierEvidenceIds"))
         .into_iter()
@@ -816,6 +949,11 @@ mod tests {
             "compileCommandHash": "sha256:command",
             "loaderCapabilityRequirement": {"transport": "content_addressed_blob"},
             "requiredOracleId": "oracle:sentinel",
+            "sourceMappingEvidenceIds": ["evidence:source-map"],
+            "includeClosureEvidenceIds": ["evidence:include-closure"],
+            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
             "verifierEvidenceIds": ["evidence:source-map"],
             "narrowerCandidateRejections": [
                 {
@@ -840,6 +978,58 @@ mod tests {
         assert_eq!(
             report["candidates"][0]["reasonCodes"][0],
             "fission.candidate_verified"
+        );
+    }
+
+    #[test]
+    fn rejects_candidate_without_required_phase_evidence() {
+        let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("abiMembraneEvidenceIds");
+        candidate["verifierEvidenceIds"] = json!(["evidence:source-map"]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["abi_membrane"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.abi_membrane_evidence_missing"));
+    }
+
+    #[test]
+    fn accepts_phase_evidence_from_tagged_verifier_ids() {
+        let mut candidate = valid_candidate();
+        for field in [
+            "sourceMappingEvidenceIds",
+            "includeClosureEvidenceIds",
+            "symbolOwnershipEvidenceIds",
+            "dependencyClosureEvidenceIds",
+            "abiMembraneEvidenceIds",
+        ] {
+            candidate.as_object_mut().unwrap().remove(field);
+        }
+        candidate["verifierEvidenceIds"] = json!([
+            "evidence:source-map",
+            "evidence:include-closure",
+            "evidence:symbol-ownership",
+            "evidence:dependency-closure",
+            "evidence:abi-membrane"
+        ]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!([])
         );
     }
 

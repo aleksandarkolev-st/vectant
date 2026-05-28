@@ -4065,6 +4065,11 @@ mod tests {
             "compileCommandHash": "sha256:command",
             "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
             "requiredOracleId": "oracle:render-step",
+            "sourceMappingEvidenceIds": ["evidence:source-map"],
+            "includeClosureEvidenceIds": ["evidence:include-closure"],
+            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
             "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
             "narrowerCandidateRejections": [
                 {
@@ -4118,6 +4123,11 @@ mod tests {
             "compileRecipeHash": "sha256:recipe",
             "compileCommandHash": "sha256:command",
             "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
+            "sourceMappingEvidenceIds": ["evidence:source-map"],
+            "includeClosureEvidenceIds": ["evidence:include-closure"],
+            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
             "verifierEvidenceIds": ["evidence:source-map"],
             "aiProposalId": "ai:fission:def",
             "narrowerCandidateRejections": [
