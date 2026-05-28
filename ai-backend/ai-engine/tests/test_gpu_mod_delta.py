@@ -130,6 +130,24 @@ def test_parse_gpu_diff_response_rejects_invalid_fission_source_span():
     assert "fissionCandidate.sourceSpans[0].endLine" in str(excinfo.value)
 
 
+def test_parse_gpu_diff_response_rejects_placeholder_fission_hashes():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "dependencyClosureHash": "...",
+                "compileRecipeHash": "sha256:not-real",
+                "compileCommandHash": "0" * 64,
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.compileRecipeHash" in str(excinfo.value)
+    assert "SHA-256" in str(excinfo.value)
+
+
 def test_gpu_prompt_contains_runtime_boundary_rule():
     prompt = build_gpu_diff_patch_prompt(GpuDiffPatchRequest(diff="@@"))
     assert "synthi_gpu_launch" in prompt
@@ -143,6 +161,7 @@ def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
     assert "sourceMappingEvidenceIds" in prompt
     assert "Do not invent ids" in prompt
     assert "Use null" in prompt
+    assert "SHA-256" in prompt
 
 
 def test_gpu_prompt_requires_generated_role_anchors():

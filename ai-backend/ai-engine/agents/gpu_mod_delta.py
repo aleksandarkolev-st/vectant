@@ -31,6 +31,7 @@ VALID_GPU_EDIT_MODULES = {"core", "gui", "shared", "host_runner", "device"}
 VALID_GPU_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
 DEVICE_PATHS = {"device.cu", "device.hip"}
 _QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+_SHA256_DIGEST_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 FISSION_CANDIDATE_STRING_FIELDS = {
     "abiMembraneId",
     "aiProposalId",
@@ -44,6 +45,11 @@ FISSION_CANDIDATE_STRING_FIELDS = {
     "originalHostLaunchMappingId",
     "requiredOracleId",
     "sourceEditId",
+}
+FISSION_CANDIDATE_SHA256_FIELDS = {
+    "compileCommandHash",
+    "compileRecipeHash",
+    "dependencyClosureHash",
 }
 FISSION_CANDIDATE_STRING_LIST_FIELDS = {
     "abiEvidenceIds",
@@ -426,6 +432,14 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
     for field in sorted(FISSION_CANDIDATE_STRING_FIELDS):
         if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
             raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a string")
+    for field in sorted(FISSION_CANDIDATE_SHA256_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            value = cleaned[field]
+            if not isinstance(value, str) or not _SHA256_DIGEST_RE.match(value.strip()):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.{field}` must be a SHA-256 digest",
+                )
     for field in sorted(FISSION_CANDIDATE_STRING_LIST_FIELDS):
         if field in cleaned and cleaned[field] is not None:
             cleaned[field] = _validate_fission_string_list(cleaned[field], field)

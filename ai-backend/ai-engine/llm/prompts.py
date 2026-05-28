@@ -4657,6 +4657,9 @@ Rules:
   failure reports. Do not invent ids. If phase evidence is missing for source
   mapping, include closure, symbol ownership, dependency closure, or ABI
   membrane, return null or include the missing phase in `proofFailureReasonCodes`.
+- `dependencyClosureHash`, `compileRecipeHash`, and `compileCommandHash` must be
+  real SHA-256 digests as 64 hex characters, optionally prefixed with `sha256:`.
+  Use null when that digest is not present in provided evidence.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}
