@@ -152,6 +152,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.safe_export_superset_unverified".to_string());
     }
 
+    if !narrower_rejection_coverage_complete(candidate) {
+        reason_codes.push("fission.narrower_candidate_rejections_incomplete".to_string());
+    }
+
     let status = if reason_codes.is_empty() {
         reason_codes.push("fission.candidate_verified".to_string());
         "pass"
@@ -174,6 +178,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "invalidIncludeClosureEntries": invalid_include_closure_entries(candidate),
         "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
+        "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
         "selectionScore": fission_selection_score(candidate),
         "verifierEvidenceId": verifier_evidence_id(candidate, status),
         "candidate": candidate,
@@ -400,6 +405,117 @@ fn safe_export_superset_evidence_ids(candidate: &Value) -> Vec<String> {
             .filter(|id| is_deterministic_verifier_evidence_id(id))
             .collect()
     }
+}
+
+fn narrower_rejection_coverage_complete(candidate: &Value) -> bool {
+    let selected_scope_rank = replacement_scope_rank(candidate);
+    if selected_scope_rank == 0 {
+        return true;
+    }
+    missing_narrower_rejection_ranks(candidate).is_empty()
+}
+
+fn narrower_rejection_coverage(candidate: &Value) -> Value {
+    let selected_scope_rank = replacement_scope_rank(candidate);
+    let covered_ranks = covered_narrower_rejection_ranks(candidate, selected_scope_rank);
+    let missing_ranks = missing_narrower_rejection_ranks(candidate);
+    json!({
+        "selectedScopeRank": selected_scope_rank,
+        "requiredRanks": (0..selected_scope_rank).collect::<Vec<_>>(),
+        "coveredRanks": covered_ranks,
+        "missingRanks": missing_ranks,
+        "evidenceIds": narrower_rejection_evidence_ids(candidate),
+    })
+}
+
+fn missing_narrower_rejection_ranks(candidate: &Value) -> Vec<u64> {
+    let selected_scope_rank = replacement_scope_rank(candidate);
+    let covered: BTreeSet<u64> = covered_narrower_rejection_ranks(candidate, selected_scope_rank)
+        .into_iter()
+        .collect();
+    (0..selected_scope_rank)
+        .filter(|rank| !covered.contains(rank))
+        .collect()
+}
+
+fn covered_narrower_rejection_ranks(candidate: &Value, selected_scope_rank: u64) -> Vec<u64> {
+    candidate
+        .get("narrowerCandidateRejections")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| valid_narrower_rejection_scope_rank(item, selected_scope_rank))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn valid_narrower_rejection_scope_rank(value: &Value, selected_scope_rank: u64) -> Option<u64> {
+    let scope_rank = narrower_rejection_scope_rank(value)?;
+    if scope_rank >= selected_scope_rank {
+        return None;
+    }
+    if !narrower_rejection_reason_present(value)
+        || narrower_rejection_evidence_ids_for(value).is_empty()
+    {
+        return None;
+    }
+    Some(scope_rank)
+}
+
+fn narrower_rejection_scope_rank(value: &Value) -> Option<u64> {
+    if let Some(rank) = value.get("scopeRank").and_then(Value::as_u64) {
+        return Some(rank);
+    }
+
+    let object = value.as_object()?;
+    let has_scope_text = ["replacementScope", "artifactScope", "scope", "artifactKind"]
+        .iter()
+        .any(|field| object.get(*field).and_then(Value::as_str).is_some());
+    if has_scope_text {
+        Some(replacement_scope_rank(value))
+    } else {
+        None
+    }
+}
+
+fn narrower_rejection_reason_present(value: &Value) -> bool {
+    non_empty_string(value.get("reasonCode"))
+        || value
+            .get("reasonCodes")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| non_empty_string(Some(item))))
+}
+
+fn narrower_rejection_evidence_ids(candidate: &Value) -> Vec<String> {
+    candidate
+        .get("narrowerCandidateRejections")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .flat_map(narrower_rejection_evidence_ids_for)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn narrower_rejection_evidence_ids_for(value: &Value) -> Vec<String> {
+    [
+        "verifierEvidenceIds",
+        "evidenceIds",
+        "rejectionEvidenceIds",
+        "proofEvidenceIds",
+    ]
+    .iter()
+    .flat_map(|field| string_list(value.get(*field)))
+    .filter(|id| is_deterministic_verifier_evidence_id(id))
+    .collect()
 }
 
 fn deterministic_verifier_evidence_present(candidate: &Value) -> bool {
@@ -632,6 +748,13 @@ mod tests {
             "loaderCapabilityRequirement": {"transport": "content_addressed_blob"},
             "requiredOracleId": "oracle:sentinel",
             "verifierEvidenceIds": ["evidence:source-map"],
+            "narrowerCandidateRejections": [
+                {
+                    "scopeRank": 0,
+                    "reasonCode": "fission.edit_crosses_body_boundary",
+                    "verifierEvidenceIds": ["evidence:source-map"]
+                }
+            ],
         })
     }
 
@@ -788,6 +911,78 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wider_candidate_without_narrower_rejection_proof() {
+        let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("narrowerCandidateRejections");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["narrowerRejectionCoverage"]["missingRanks"],
+            json!([0])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.narrower_candidate_rejections_incomplete"));
+    }
+
+    #[test]
+    fn rejects_incomplete_narrower_rejection_coverage_for_full_device_candidate() {
+        let mut candidate = valid_candidate();
+        candidate["artifactKind"] = json!("full_device_module");
+        candidate["narrowerCandidateRejections"] = json!([
+            {
+                "scopeRank": 0,
+                "reasonCode": "fission.edit_crosses_body_boundary",
+                "verifierEvidenceIds": ["evidence:source-map"]
+            },
+            {
+                "scopeRank": 1,
+                "reasonCode": "fission.include_closure_unknown",
+                "verifierEvidenceIds": ["evidence:include-closure"]
+            }
+        ]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["narrowerRejectionCoverage"]["coveredRanks"],
+            json!([0, 1])
+        );
+        assert_eq!(
+            report["narrowerRejectionCoverage"]["missingRanks"],
+            json!([2])
+        );
+    }
+
+    #[test]
+    fn accepts_body_scope_without_narrower_rejection_proof() {
+        let mut candidate = valid_candidate();
+        candidate["artifactKind"] = json!("function_body");
+        candidate["exportedSymbolsExpected"] = json!(["step"]);
+        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("narrowerCandidateRejections");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(
+            report["narrowerRejectionCoverage"]["requiredRanks"],
+            json!([])
+        );
+    }
+
+    #[test]
     fn accepts_exact_export_set_without_superset_reason() {
         let mut candidate = valid_candidate();
         candidate["exportedSymbolsExpected"] = json!(["step"]);
@@ -832,6 +1027,23 @@ mod tests {
         ]);
         wide["targetSymbols"] = json!(["shade", "trace"]);
         wide["exportedSymbolsExpected"] = json!(["shade", "trace", "helper"]);
+        wide["narrowerCandidateRejections"] = json!([
+            {
+                "scopeRank": 0,
+                "reasonCode": "fission.edit_crosses_body_boundary",
+                "verifierEvidenceIds": ["evidence:source-map"]
+            },
+            {
+                "scopeRank": 1,
+                "reasonCode": "fission.include_closure_unknown",
+                "verifierEvidenceIds": ["evidence:include-closure"]
+            },
+            {
+                "scopeRank": 2,
+                "reasonCode": "fission.symbol_ownership_ambiguous",
+                "verifierEvidenceIds": ["evidence:symbol-ownership"]
+            }
+        ]);
 
         let mut narrow = valid_candidate();
         narrow["islandId"] = json!("island:narrow");

@@ -4065,7 +4065,14 @@ mod tests {
             "compileCommandHash": "sha256:command",
             "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
             "requiredOracleId": "oracle:render-step",
-            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"]
+            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
+            "narrowerCandidateRejections": [
+                {
+                    "scopeRank": 0,
+                    "reasonCode": "fission.edit_crosses_body_boundary",
+                    "verifierEvidenceIds": ["evidence:source-map"]
+                }
+            ]
         });
         let sidecar = json!({
             "compile_manifest": manifest,
@@ -4112,7 +4119,14 @@ mod tests {
             "compileCommandHash": "sha256:command",
             "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
             "verifierEvidenceIds": ["evidence:source-map"],
-            "aiProposalId": "ai:fission:def"
+            "aiProposalId": "ai:fission:def",
+            "narrowerCandidateRejections": [
+                {
+                    "scopeRank": 0,
+                    "reasonCode": "fission.edit_crosses_body_boundary",
+                    "verifierEvidenceIds": ["evidence:source-map"]
+                }
+            ]
         });
         let sidecar = json!({
             "compile_manifest": manifest,
@@ -4160,7 +4174,14 @@ mod tests {
             "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
             "requiredOracleId": "oracle:render-step",
             "verifierEvidenceIds": ["ai:fission:proposal"],
-            "aiProposalId": "ai:fission:proposal"
+            "aiProposalId": "ai:fission:proposal",
+            "narrowerCandidateRejections": [
+                {
+                    "scopeRank": 0,
+                    "reasonCode": "fission.edit_crosses_body_boundary",
+                    "verifierEvidenceIds": ["evidence:source-map"]
+                }
+            ]
         });
         let sidecar = json!({
             "compile_manifest": manifest,
