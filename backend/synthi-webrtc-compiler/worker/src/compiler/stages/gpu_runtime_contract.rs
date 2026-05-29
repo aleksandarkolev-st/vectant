@@ -15,6 +15,19 @@ use std::path::{Path, PathBuf};
 use crate::hmr::compile_manifest::{DeviceVendor, GpuBuildBlock};
 
 pub const SYNTHI_GPU_RUNTIME_HEADER: &str = "synthi_gpu_runtime.h";
+pub const SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS: &[&str] = &[
+    "synthi_gpu_launch_generation",
+    "synthi_gpu_launch_raw",
+    "synthi_gpu_launch_raw_checked",
+    "synthi_gpu_launch_raw_arg_info",
+    "synthi_gpu_launch_raw_arg_info_checked",
+    "synthi_gpu_pack_buffer",
+    "synthi_gpu_record_host_identity",
+    "synthi_gpu_record_original_host_path",
+    "synthi_gpu_record_output_oracle",
+    "synthi_gpu_register_buffer",
+    "synthi_gpu_restore_buffer",
+];
 
 pub fn render_gpu_runtime_header(gpu: &GpuBuildBlock) -> String {
     let vendor_define = match gpu.vendor {
@@ -112,6 +125,14 @@ struct SynthiGpuLaunchArg {{
         : value_ptr(ptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
     constexpr SynthiGpuLaunchArg(void* ptr)
         : value_ptr(ptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+    constexpr SynthiGpuLaunchArg(const void* ptr, std::size_t size)
+        : value_ptr(ptr), value_size(size), value_kind(SYNTHI_GPU_ARG_KIND_AGGREGATE) {{}}
+    constexpr SynthiGpuLaunchArg(void* ptr, std::size_t size)
+        : value_ptr(ptr), value_size(size), value_kind(SYNTHI_GPU_ARG_KIND_AGGREGATE) {{}}
+    constexpr SynthiGpuLaunchArg(const void* ptr, std::size_t size, std::uint32_t kind)
+        : value_ptr(ptr), value_size(size), value_kind(kind) {{}}
+    constexpr SynthiGpuLaunchArg(void* ptr, std::size_t size, std::uint32_t kind)
+        : value_ptr(ptr), value_size(size), value_kind(kind) {{}}
 
     template <typename T>
     constexpr SynthiGpuLaunchArg(T* ptr)
@@ -452,8 +473,12 @@ void smoke(SynthiGpuRuntime* gpu) {
     int2 resolution{800, 600};
     int value = 0;
     const void* arg = &value;
+    SynthiGpuLaunchArg sized_arg(&resolution, sizeof(resolution));
+    SynthiGpuLaunchArg scalar_arg(&value, sizeof(value), SYNTHI_GPU_ARG_KIND_INTEGER);
     (void)point;
     (void)resolution;
+    (void)sized_arg;
+    (void)scalar_arg;
     (void)synthi_gpu_stream_token(nullptr);
     (void)synthi_gpu_stream_token(static_cast<void*>(nullptr));
     (void)synthi_gpu_stream_token(0);

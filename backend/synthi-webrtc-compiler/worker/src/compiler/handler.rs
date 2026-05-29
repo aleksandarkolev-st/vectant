@@ -37,7 +37,9 @@ use crate::compiler::stages::ai_utils::{
     update_ai_split_cache_role,
 };
 use crate::compiler::stages::compile_core::compile_core;
-use crate::compiler::stages::compile_device::{compile_device_phase0, DeviceCompileOutcome};
+use crate::compiler::stages::compile_device::{
+    compile_device_phase0, DeviceCompileOutcome, DeviceCompileProofMetadata,
+};
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::compile_runner::{
     compile_runner, CompileRunnerOptions, HOST_RUNNER_FILENAME,
@@ -1054,24 +1056,94 @@ fn scalar_type_layout(ty: &str) -> Option<(usize, usize)> {
     }
 }
 
-fn is_builtin_or_void_type(ty: &str) -> bool {
-    scalar_type_layout(ty).is_some() || matches!(layout_type_without_cv(ty).as_str(), "void")
+fn record_type_layout_key(ty: &str) -> String {
+    let mut key = layout_type_without_cv(ty);
+    for prefix in ["struct ", "class ", "union "] {
+        if let Some(stripped) = key.strip_prefix(prefix) {
+            key = stripped.trim().to_string();
+            break;
+        }
+    }
+    key
+}
+
+fn parse_clang_record_layout_name(line: &str) -> Option<String> {
+    let (_, rhs) = line.split_once('|')?;
+    let leading_spaces = rhs.chars().take_while(|ch| *ch == ' ').count();
+    if leading_spaces > 1 {
+        return None;
+    }
+    let trimmed = rhs.trim();
+    let rest = ["struct ", "class ", "union "]
+        .into_iter()
+        .find_map(|prefix| trimmed.strip_prefix(prefix))?;
+    let name = rest
+        .split(" (")
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty() || name.starts_with("(anonymous") {
+        return None;
+    }
+    Some(record_type_layout_key(name))
+}
+
+fn parse_clang_record_layout_size_alignment(line: &str) -> Option<(usize, usize)> {
+    let size_re = regex::Regex::new(r"sizeof=([0-9]+)").ok()?;
+    let align_re = regex::Regex::new(r"align=([0-9]+)").ok()?;
+    let size = size_re
+        .captures(line)?
+        .get(1)?
+        .as_str()
+        .parse::<usize>()
+        .ok()?;
+    let alignment = align_re
+        .captures(line)?
+        .get(1)?
+        .as_str()
+        .parse::<usize>()
+        .ok()?;
+    Some((size, alignment))
+}
+
+fn clang_record_layouts(ast_text: &str) -> BTreeMap<String, (usize, usize)> {
+    let mut layouts = BTreeMap::new();
+    let mut current_record: Option<String> = None;
+    let mut pending_layout = false;
+
+    for line in ast_text.lines() {
+        if line.contains("Dumping AST Record Layout") {
+            current_record = None;
+            pending_layout = true;
+            continue;
+        }
+        if pending_layout && current_record.is_none() {
+            current_record = parse_clang_record_layout_name(line);
+            continue;
+        }
+        if let Some(record) = current_record.clone() {
+            if let Some((size, alignment)) = parse_clang_record_layout_size_alignment(line) {
+                layouts.insert(record, (size, alignment));
+                current_record = None;
+                pending_layout = false;
+            }
+        }
+    }
+
+    layouts
 }
 
 fn abi_record_from_clang_param(
     kernel: &str,
     arg_index: usize,
     ty: &str,
+    record_layouts: &BTreeMap<String, (usize, usize)>,
 ) -> Option<serde_json::Value> {
     let canonical = canonical_clang_type(ty);
     if canonical.contains('&') || canonical.contains('[') || canonical.contains(']') {
         return None;
     }
     if canonical.contains('*') {
-        let base = canonical.trim_end_matches('*').trim();
-        if !is_builtin_or_void_type(base) {
-            return None;
-        }
         return Some(serde_json::json!({
             "kernel": kernel,
             "argIndex": arg_index,
@@ -1081,14 +1153,40 @@ fn abi_record_from_clang_param(
             "addressSpace": "generic_pointer"
         }));
     }
-    let (size, alignment) = scalar_type_layout(&canonical)?;
+    if let Some((size, alignment)) = scalar_type_layout(&canonical) {
+        return Some(serde_json::json!({
+            "kernel": kernel,
+            "argIndex": arg_index,
+            "typeIdentity": canonical,
+            "size": size,
+            "alignment": alignment,
+            "addressSpace": "by_value"
+        }));
+    }
+    clang_param_record_layout(kernel, arg_index, &canonical, record_layouts)
+}
+
+fn clang_param_record_layout(
+    kernel: &str,
+    arg_index: usize,
+    ty: &str,
+    record_layouts: &BTreeMap<String, (usize, usize)>,
+) -> Option<serde_json::Value> {
+    let canonical = canonical_clang_type(ty);
+    if canonical.contains('*') || canonical.contains('&') || canonical.contains('[') {
+        return None;
+    }
+    let record_key = record_type_layout_key(&canonical);
+    let (size, alignment) = record_layouts.get(&record_key)?;
     Some(serde_json::json!({
         "kernel": kernel,
         "argIndex": arg_index,
         "typeIdentity": canonical,
         "size": size,
         "alignment": alignment,
-        "addressSpace": "by_value"
+        "addressSpace": "by_value",
+        "layoutKind": "record",
+        "recordLayoutSource": "clang_record_layout"
     }))
 }
 
@@ -1221,6 +1319,7 @@ fn clang_ast_abi_extraction_from_dump(
         target_symbols.to_vec()
     };
     let ast_signatures = clang_ast_kernel_signatures(ast_text, &target_symbols);
+    let record_layouts = clang_record_layouts(ast_text);
     let mut kernel_signatures = Vec::new();
     let mut parameter_abi_records = Vec::new();
     let mut missing_symbols = Vec::new();
@@ -1239,7 +1338,7 @@ fn clang_ast_abi_extraction_from_dump(
                 .map(split_clang_function_params)
                 .unwrap_or_default();
             for (index, param) in params.iter().enumerate() {
-                match abi_record_from_clang_param(symbol, index, param) {
+                match abi_record_from_clang_param(symbol, index, param, &record_layouts) {
                     Some(record) => parameter_abi_records.push(record),
                     None => unsupported_params.push(format!("{symbol}:{index}:{param}")),
                 }
@@ -1247,6 +1346,22 @@ fn clang_ast_abi_extraction_from_dump(
         }
     }
 
+    let mut record_layout_values = record_layouts
+        .iter()
+        .map(|(type_identity, (size, alignment))| {
+            serde_json::json!({
+                "typeIdentity": type_identity,
+                "size": size,
+                "alignment": alignment,
+                "layoutSource": "clang_record_layout"
+            })
+        })
+        .collect::<Vec<_>>();
+    record_layout_values.sort_by(|a, b| {
+        a.get("typeIdentity")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&b.get("typeIdentity").and_then(serde_json::Value::as_str))
+    });
     kernel_signatures.sort();
     kernel_signatures.dedup();
     let globals_unverified = has_device_constant_or_global_decl(source);
@@ -1281,6 +1396,7 @@ fn clang_ast_abi_extraction_from_dump(
         ],
         "kernelSignatures": kernel_signatures,
         "parameterAbiRecords": parameter_abi_records,
+        "recordLayouts": record_layout_values,
     });
     if let Some(reason) = degraded_reason.as_deref() {
         provenance["rejectedReason"] = serde_json::Value::String(reason.to_string());
@@ -1345,6 +1461,179 @@ fn clang_ast_language_candidates(source: &str) -> Vec<&'static str> {
     candidates
 }
 
+fn clang_ast_include_dir_args(
+    workspace: &Path,
+    metadata: &DeviceCompileProofMetadata,
+) -> Vec<String> {
+    let mut dirs = BTreeSet::new();
+    dirs.insert(workspace.to_string_lossy().replace('\\', "/"));
+    if let Some(source_filename) = metadata.source_filename.as_deref() {
+        let source_path = workspace.join(source_filename);
+        if let Some(parent) = source_path.parent() {
+            dirs.insert(parent.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    dirs.into_iter()
+        .flat_map(|dir| ["-I".to_string(), dir])
+        .collect()
+}
+
+fn clang_ast_passthrough_separate_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "-I"
+            | "-isystem"
+            | "-iquote"
+            | "-idirafter"
+            | "-include"
+            | "--include"
+            | "--include-directory"
+            | "--system-include"
+            | "-D"
+            | "-U"
+            | "-std"
+            | "--std"
+            | "--target"
+            | "-target"
+            | "--sysroot"
+            | "-isysroot"
+            | "--gcc-toolchain"
+            | "--cuda-path"
+            | "--rocm-path"
+            | "--hip-path"
+    )
+}
+
+fn clang_ast_passthrough_joined_flag(flag: &str) -> bool {
+    [
+        "-I",
+        "-isystem",
+        "-iquote",
+        "-idirafter",
+        "-D",
+        "-U",
+        "-std=",
+        "--std=",
+        "--include=",
+        "--include-directory=",
+        "--system-include=",
+        "--target=",
+        "-target=",
+        "--sysroot=",
+        "-isysroot=",
+        "--gcc-toolchain=",
+        "--cuda-path=",
+        "--rocm-path=",
+        "--hip-path=",
+    ]
+    .iter()
+    .any(|prefix| flag.starts_with(prefix))
+}
+
+fn clang_ast_compile_context_args(metadata: &DeviceCompileProofMetadata) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut iter = metadata.effective_device_flags.iter().peekable();
+    while let Some(flag) = iter.next() {
+        if clang_ast_passthrough_separate_flag(flag) {
+            args.push(flag.clone());
+            if let Some(value) = iter.next() {
+                args.push(value.clone());
+            }
+        } else if clang_ast_passthrough_joined_flag(flag) {
+            args.push(flag.clone());
+        }
+    }
+    args
+}
+
+fn clang_ast_gpu_language_args(
+    language: &str,
+    metadata: &DeviceCompileProofMetadata,
+) -> Vec<String> {
+    match language {
+        "hip" => {
+            let has_arch = metadata
+                .effective_device_flags
+                .iter()
+                .any(|flag| flag.starts_with("--offload-arch"));
+            if has_arch {
+                Vec::new()
+            } else {
+                metadata
+                    .gpu_arch
+                    .iter()
+                    .filter(|arch| !arch.trim().is_empty())
+                    .map(|arch| format!("--offload-arch={arch}"))
+                    .collect()
+            }
+        }
+        "cuda" => {
+            let mut args = vec!["-nocudainc".to_string(), "-nocudalib".to_string()];
+            let has_arch = metadata
+                .effective_device_flags
+                .iter()
+                .any(|flag| flag.starts_with("--cuda-gpu-arch") || flag.starts_with("-arch="));
+            if !has_arch {
+                args.extend(
+                    metadata
+                        .gpu_arch
+                        .iter()
+                        .filter(|arch| !arch.trim().is_empty())
+                        .map(|arch| format!("--cuda-gpu-arch={arch}")),
+                );
+            }
+            args
+        }
+        "c++" => vec![
+            "-D__global__=".to_string(),
+            "-D__device__=".to_string(),
+            "-D__host__=".to_string(),
+            "-D__shared__=".to_string(),
+            "-D__constant__=".to_string(),
+            "-D__managed__=".to_string(),
+            "-D__launch_bounds__(...)=".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn clang_ast_abi_extractor_args(
+    workspace: &Path,
+    metadata: &DeviceCompileProofMetadata,
+    language: &str,
+    input_path: &Path,
+) -> Vec<String> {
+    let mut args = vec!["-x".to_string(), language.to_string(), "-fsyntax-only".to_string()];
+    args.extend(clang_ast_include_dir_args(workspace, metadata));
+    args.extend(clang_ast_compile_context_args(metadata));
+    args.extend(clang_ast_gpu_language_args(language, metadata));
+    args.extend([
+        "-Xclang".to_string(),
+        "-ast-dump".to_string(),
+        "-Xclang".to_string(),
+        "-fdump-record-layouts".to_string(),
+        input_path.to_string_lossy().to_string(),
+    ]);
+    args
+}
+
+fn clang_ast_command_display(compiler: &str, args: &[String], input_path: &Path) -> String {
+    let input = input_path.to_string_lossy().replace('\\', "/");
+    let displayed_args = args
+        .iter()
+        .map(|arg| {
+            if arg.replace('\\', "/") == input {
+                "<input>".to_string()
+            } else if arg.chars().any(char::is_whitespace) {
+                format!("{arg:?}")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    format!("{compiler} {}", displayed_args.join(" "))
+}
+
 async fn clang_ast_abi_extraction(
     workspace: &Path,
     outcome: &DeviceCompileOutcome,
@@ -1393,17 +1682,15 @@ async fn clang_ast_abi_extraction(
     let mut successful_dump = None;
     let mut attempts = Vec::new();
     for language in clang_ast_language_candidates(&outcome.compiled_source) {
-        let command_display =
-            format!("{compiler} -x {language} -fsyntax-only -Xclang -ast-dump <input>");
+        let args = clang_ast_abi_extractor_args(
+            workspace,
+            &outcome.proof_metadata,
+            language,
+            &input_path,
+        );
+        let command_display = clang_ast_command_display(&compiler, &args, &input_path);
         let mut command = tokio::process::Command::new(&compiler);
-        command
-            .current_dir(workspace)
-            .arg("-x")
-            .arg(language)
-            .arg("-fsyntax-only")
-            .arg("-Xclang")
-            .arg("-ast-dump")
-            .arg(&input_path);
+        command.current_dir(workspace).args(&args);
         let output = match tokio::time::timeout(
             std::time::Duration::from_secs(20),
             command.output(),
@@ -1456,7 +1743,11 @@ async fn clang_ast_abi_extraction(
             attempts,
         ));
     };
-    let ast_text = String::from_utf8_lossy(&output.stdout);
+    let ast_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let evidence_material = serde_json::json!({
         "compiler": compiler,
         "language": language,
@@ -11220,6 +11511,53 @@ __constant__ int scale;
     }
 
     #[test]
+    fn clang_ast_abi_extractor_uses_compile_context_without_codegen_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let input_path = temp
+            .path()
+            .join(".synthi")
+            .join("gpu-hmr")
+            .join("abi")
+            .join("input.hip");
+        let metadata = DeviceCompileProofMetadata {
+            source_filename: Some("src/device.hip".to_string()),
+            effective_device_flags: vec![
+                "-O3".to_string(),
+                "-lineinfo".to_string(),
+                "-Isrc".to_string(),
+                "-isystem".to_string(),
+                "thirdparty/include".to_string(),
+                "-DVALUE=1".to_string(),
+                "-std=gnu++20".to_string(),
+            ],
+            gpu_arch: vec!["gfx1201".to_string()],
+            ..Default::default()
+        };
+
+        let args = clang_ast_abi_extractor_args(temp.path(), &metadata, "hip", &input_path);
+        let joined = args.join("\n");
+
+        assert!(args.windows(2).any(|window| {
+            window[0] == "-I"
+                && window[1].replace('\\', "/") == temp.path().to_string_lossy().replace('\\', "/")
+        }));
+        assert!(joined.contains("-Isrc"));
+        assert!(args.windows(2).any(|window| {
+            window[0] == "-isystem" && window[1] == "thirdparty/include"
+        }));
+        assert!(joined.contains("-DVALUE=1"));
+        assert!(joined.contains("-std=gnu++20"));
+        assert!(joined.contains("--offload-arch=gfx1201"));
+        assert!(joined.contains("-fdump-record-layouts"));
+        assert!(!args.iter().any(|arg| arg == "-O3"));
+        assert!(!args.iter().any(|arg| arg == "-lineinfo"));
+
+        let cxx_args = clang_ast_abi_extractor_args(temp.path(), &metadata, "c++", &input_path);
+        assert!(cxx_args.iter().any(|arg| arg == "-D__global__="));
+        assert!(cxx_args.iter().any(|arg| arg == "-D__launch_bounds__(...)="));
+    }
+
+    #[test]
     fn clang_ast_abi_extractor_accepts_builtin_pointer_kernel_params() {
         let source = r#"
 extern "C" __global__ void shade(const float* input, float* pixels, int count, unsigned long long frame) {}
@@ -11254,13 +11592,79 @@ extern "C" __global__ void shade(const float* input, float* pixels, int count, u
     }
 
     #[test]
-    fn clang_ast_abi_extractor_rejects_record_pointer_without_layout_dump() {
+    fn clang_ast_abi_extractor_accepts_opaque_record_pointer_params() {
         let source = r#"
 struct RenderData { int count; };
 extern "C" __global__ void shade(RenderData* render_data) {}
 "#;
         let ast = r#"
 `-FunctionDecl 0x1 <device.hip:3:1, col:64> col:28 shade 'void (RenderData *)'
+"#;
+
+        let extraction = clang_ast_abi_extraction_from_dump(
+            source,
+            ast,
+            &symbols(&["shade"]),
+            "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
+            "evidence:abi-extractor:test".to_string(),
+        );
+
+        assert!(extraction.layout_size_alignment_verified);
+        assert_eq!(extraction.parameter_abi_records.len(), 1);
+        assert_eq!(extraction.parameter_abi_records[0]["typeIdentity"], "RenderData*");
+        assert_eq!(extraction.parameter_abi_records[0]["size"], 8);
+        assert_eq!(extraction.degraded_reason, None);
+    }
+
+    #[test]
+    fn clang_ast_abi_extractor_accepts_record_by_value_with_layout_dump() {
+        let source = r#"
+struct RenderData { int count; float weight; };
+extern "C" __global__ void shade(RenderData render_data) {}
+"#;
+        let ast = r#"
+`-FunctionDecl 0x1 <device.hip:3:1, col:64> col:28 shade 'void (RenderData)'
+
+*** Dumping AST Record Layout
+         0 | struct RenderData
+         0 |   int count
+         4 |   float weight
+           | [sizeof=8, dsize=8, align=4,
+           |  nvsize=8, nvalign=4]
+"#;
+
+        let extraction = clang_ast_abi_extraction_from_dump(
+            source,
+            ast,
+            &symbols(&["shade"]),
+            "clang++ -x hip -fsyntax-only -Xclang -ast-dump -Xclang -fdump-record-layouts <input>",
+            "evidence:abi-extractor:test".to_string(),
+        );
+
+        assert!(extraction.layout_size_alignment_verified);
+        assert_eq!(extraction.parameter_abi_records.len(), 1);
+        assert_eq!(extraction.parameter_abi_records[0]["typeIdentity"], "RenderData");
+        assert_eq!(extraction.parameter_abi_records[0]["size"], 8);
+        assert_eq!(extraction.parameter_abi_records[0]["alignment"], 4);
+        assert_eq!(
+            extraction.parameter_abi_records[0]["recordLayoutSource"],
+            "clang_record_layout"
+        );
+        assert_eq!(
+            extraction.accepted_extractor_evidence_refs,
+            vec!["evidence:abi-extractor:test".to_string()]
+        );
+        assert_eq!(extraction.degraded_reason, None);
+    }
+
+    #[test]
+    fn clang_ast_abi_extractor_rejects_record_by_value_without_layout_dump() {
+        let source = r#"
+struct RenderData { int count; };
+extern "C" __global__ void shade(RenderData render_data) {}
+"#;
+        let ast = r#"
+`-FunctionDecl 0x1 <device.hip:3:1, col:64> col:28 shade 'void (RenderData)'
 "#;
 
         let extraction = clang_ast_abi_extraction_from_dump(

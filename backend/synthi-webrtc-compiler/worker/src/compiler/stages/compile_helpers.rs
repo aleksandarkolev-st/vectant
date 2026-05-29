@@ -36,6 +36,7 @@
 // ccache becomes the broader-equivalence backstop for cases the
 // content-hash cache misses.
 
+use crate::compiler::stages::gpu_runtime_contract::SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS;
 use crate::infra::utils::system_command;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -246,6 +247,96 @@ pub fn link_object_to_so_command(
     }
     cmd.current_dir(workspace_dir);
     cmd
+}
+
+/// Shared objects are hot-loaded with `dlopen`, so missing runtime
+/// dependencies must be surfaced during compile/heal instead of later in the
+/// runner. The Synthi runtime boundary symbols are intentionally supplied by
+/// the runner process; other unresolved externals are treated as link
+/// provenance that manifest heal can act on.
+pub async fn shared_object_runtime_dependency_report(so_path: &Path) -> Option<String> {
+    let mut cmd = system_command("ldd");
+    cmd.arg("-r").arg(so_path);
+    cmd.kill_on_drop(true);
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("[LinkFlags] runtime dependency check unavailable: {e}");
+            return None;
+        }
+    };
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+            .await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                eprintln!("[LinkFlags] runtime dependency check failed: {e}");
+                return None;
+            }
+            Err(_) => {
+                eprintln!("[LinkFlags] runtime dependency check timed out");
+                return None;
+            }
+        };
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    shared_object_runtime_dependency_report_from_text(&text)
+}
+
+fn shared_object_runtime_dependency_report_from_text(text: &str) -> Option<String> {
+    let mut missing = Vec::new();
+    for line in text.lines() {
+        if let Some(symbol) = runtime_undefined_symbol_from_line(line) {
+            if !is_runner_provided_runtime_symbol(&symbol) {
+                missing.push(format!("undefined reference to `{symbol}'"));
+            }
+            continue;
+        }
+        if let Some(library) = runtime_missing_library_from_line(line) {
+            missing.push(format!("missing runtime library `{library}'"));
+        }
+    }
+    if missing.is_empty() {
+        None
+    } else {
+        Some(missing.join("\n"))
+    }
+}
+
+fn runtime_undefined_symbol_from_line(line: &str) -> Option<String> {
+    let marker = "undefined symbol:";
+    let pos = line.find(marker)?;
+    let after = line[pos + marker.len()..].trim();
+    let symbol = after
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c| c == '\'' || c == '`' || c == '"' || c == ',');
+    if symbol.is_empty() {
+        None
+    } else {
+        Some(symbol.to_string())
+    }
+}
+
+fn runtime_missing_library_from_line(line: &str) -> Option<String> {
+    let marker = "=> not found";
+    let pos = line.find(marker)?;
+    let before = line[..pos].trim();
+    let library = before.split_whitespace().next().unwrap_or_default();
+    if library.is_empty() {
+        None
+    } else {
+        Some(library.to_string())
+    }
+}
+
+fn is_runner_provided_runtime_symbol(symbol: &str) -> bool {
+    SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS.contains(&symbol)
 }
 
 /// Derive the .o output path that corresponds to a given .so output
@@ -644,6 +735,35 @@ mod tests {
         assert!(!filtered.contains(&"-lmissing".to_string()));
 
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn runtime_dependency_report_rejects_unresolved_non_contract_symbols() {
+        let report = shared_object_runtime_dependency_report_from_text(
+            "undefined symbol: unresolved_external_symbol (/tmp/libmodule.so)\n",
+        )
+        .unwrap();
+
+        assert!(report.contains("unresolved_external_symbol"));
+    }
+
+    #[test]
+    fn runtime_dependency_report_allows_runner_contract_symbols() {
+        let report = shared_object_runtime_dependency_report_from_text(
+            "undefined symbol: synthi_gpu_register_buffer (/tmp/libcore.so)\n",
+        );
+
+        assert!(report.is_none());
+    }
+
+    #[test]
+    fn runtime_dependency_report_rejects_missing_libraries() {
+        let report = shared_object_runtime_dependency_report_from_text(
+            "\tlibmissing_renderer.so => not found\n",
+        )
+        .unwrap();
+
+        assert!(report.contains("libmissing_renderer.so"));
     }
 
     #[test]
