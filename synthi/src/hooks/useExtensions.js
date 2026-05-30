@@ -134,6 +134,12 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const vscodeServerConnectedRef = useRef(false);
   const connectingVSCodeServerRef = useRef(false);
   const vscodeServerSlugRef = useRef(null);
+  // Auto-reconnect backoff budget for the VS Code Server. Declared here (with
+  // the other VS Code Server refs) rather than next to its effect so the mount
+  // effect's WebRTC-reconnect / tab-visible handlers can reset it — otherwise a
+  // transient network suspension (ERR_NETWORK_IO_SUSPENDED) burns all 5 attempts
+  // and the server stays dead until a full page reload.
+  const reconnectAttemptRef = useRef(0);
   const lastWorkspaceIdRef = useRef(workspaceId);
   const contextValuesRef = useRef({});
   const lastAuthDeviceCodeRef = useRef(null);
@@ -1024,13 +1030,30 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       restorePersistedExtensions();
     });
 
-    // Listen for WebRTC connection to establish VS Code Server
+    // Listen for WebRTC connection to establish VS Code Server.
+    // A fresh transport means a fresh reconnect budget: reset the backoff
+    // counter so a prior "gave up after 5 attempts" (e.g. caused by a network
+    // suspension while the worker-side manager was still booting) doesn't
+    // permanently block reconnection once the datachannel is healthy again.
     const handleWebRTCConnect = () => {
       console.log('[useExtensions] synthi:webrtc-connected event received, connecting VS Code Server');
+      reconnectAttemptRef.current = 0;
       connectVSCodeServer().catch(() => {});
     };
+
+    // When the user returns to a backgrounded/suspended tab, the datachannel
+    // may already be healthy but the auto-reconnect budget exhausted. Give it a
+    // fresh attempt instead of leaving the server permanently disconnected.
+    const handleVisible = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+      if (vscodeServerConnectedRef.current) return;
+      reconnectAttemptRef.current = 0;
+      connectVSCodeServer().catch(() => {});
+    };
+
     if (typeof window !== 'undefined') {
       window.addEventListener('synthi:webrtc-connected', handleWebRTCConnect);
+      document.addEventListener('visibilitychange', handleVisible);
     }
 
     // ── Polling fallback: retry VS Code Server connection until it succeeds
@@ -1058,6 +1081,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       clearInterval(retryInterval);
       if (typeof window !== 'undefined') {
         window.removeEventListener('synthi:webrtc-connected', handleWebRTCConnect);
+        document.removeEventListener('visibilitychange', handleVisible);
       }
       if (systemRef.current) {
         systemRef.current.dispose();
@@ -1070,8 +1094,6 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   // When the DataChannel crashes (e.g. buffer overflow), the disconnect
   // handler resets flags and sets state to 'disconnected'.  This effect
   // detects that state and retries with exponential backoff.
-  const reconnectAttemptRef = useRef(0);
-
   useEffect(() => {
     if (vscodeServerState !== 'disconnected') {
       // Reset attempt counter when we're not in disconnected state
