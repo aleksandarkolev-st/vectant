@@ -173,11 +173,14 @@ services:
     volumes:
       - collab-data:/data
     environment:
-      SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
+      SYNTHI_AI_MODEL: "gemini-3.1-flash-lite-preview"
       SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
       AI_ENGINE_AUTH_DISABLED: "${AI_ENGINE_AUTH_DISABLED:-true}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      # GEMINI_API_KEY / GOOGLE_API_KEY are supplied via the env_file (.env.local)
+      # above. Do NOT redeclare them here as "${VAR:-}" — an empty interpolated
+      # value in `environment:` overrides the env_file and silently strips the
+      # key, which makes the embedder raise "Embedding API key is not configured"
+      # and every /code-intel/* call 500.
       OPENAI_API_KEY: "dummy"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
