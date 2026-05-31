@@ -590,6 +590,18 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const oracleReadbackTimestampObserved =
     (typeof oracleReadbackTimestamp === 'string' && oracleReadbackTimestamp.trim().length > 0)
     || Number.isFinite(oracleReadbackTimestamp);
+  const oracleRuntimeSessionId =
+    typeof rawOracle.runtimeSessionId === 'string' && rawOracle.runtimeSessionId.trim()
+      ? rawOracle.runtimeSessionId.trim()
+      : typeof rawOracle.runtimeSession === 'string' && rawOracle.runtimeSession.trim()
+        ? rawOracle.runtimeSession.trim()
+        : typeof rawOracle.runtime_session === 'string' && rawOracle.runtime_session.trim()
+          ? rawOracle.runtime_session.trim()
+          : typeof rawOracle.sessionId === 'string' && rawOracle.sessionId.trim()
+            ? rawOracle.sessionId.trim()
+            : typeof rawOracle.session_id === 'string' && rawOracle.session_id.trim()
+              ? rawOracle.session_id.trim()
+              : null;
   const oracleArtifactId = typeof rawOracle.artifactId === 'string' && rawOracle.artifactId.trim()
     ? rawOracle.artifactId.trim()
     : typeof rawOracle.artifact_id === 'string' && rawOracle.artifact_id.trim()
@@ -599,6 +611,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     oracleProducer !== null
     && oracleOutputTargetId !== null
     && oracleReadbackTimestampObserved
+    && oracleRuntimeSessionId !== null
     && oracleArtifactId !== null;
   const hasTolerance = Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance')
     && rawOracle.tolerance !== null
@@ -641,6 +654,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     producer: oracleProducer,
     outputTargetId: oracleOutputTargetId,
     readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
+    runtimeSessionId: oracleRuntimeSessionId,
     artifactId: oracleArtifactId,
     valuesCompatible: oracleValuesCompatible,
     kind: oracleKind,

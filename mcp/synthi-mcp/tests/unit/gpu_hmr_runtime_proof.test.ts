@@ -147,6 +147,7 @@ function deterministicOutputOracle() {
     actual: "expected-sentinel",
     outputTargetId: "output:sentinel",
     readbackTimestamp: "1779980000000",
+    runtimeSessionId: "runtime-session:test",
     artifactId: "artifact:sentinel",
     evidenceRefs: ["evidence:readback:abc"],
   };
@@ -384,6 +385,25 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.deterministic_oracle_passed).toBe(true);
     expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
     expect(proof.degradedReason).toBe("output_oracle_provenance_incomplete");
+    expect(proof.outputOracle.provenanceComplete).toBe(false);
+  });
+
+  it("does not prove output from an oracle missing runtime session provenance", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        runtimeSessionId: undefined,
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("output_oracle_provenance_incomplete");
+    expect(proof.outputOracle.runtimeSessionId).toBeNull();
     expect(proof.outputOracle.provenanceComplete).toBe(false);
   });
 
