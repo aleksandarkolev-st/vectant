@@ -109,6 +109,10 @@ function runtimeSessionIdsFromObservation(observation = {}) {
   ]);
 }
 
+function dispatchRuntimeArtifactIdsFromProof(dispatchProof) {
+  return compactStringList(dispatchProof?.runtimeArtifactIds).filter((id) => /^artifact:/i.test(id));
+}
+
 function streamScopeObserved(streamScope, streamIds) {
   if (streamScope === 'none') {
     return streamIds.length === 1 && streamIds[0] === 'none';
@@ -630,6 +634,11 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     : typeof rawOracle.artifact_id === 'string' && rawOracle.artifact_id.trim()
       ? rawOracle.artifact_id.trim()
       : null;
+  const dispatchArtifactIds = dispatchRuntimeArtifactIdsFromProof(dispatchProof);
+  const oracleArtifactMatchesDispatch =
+    oracleArtifactId !== null
+    && dispatchArtifactIds.length > 0
+    && dispatchArtifactIds.includes(oracleArtifactId);
   const oracleProvenanceComplete =
     oracleProducer !== null
     && oracleOutputTargetId !== null
@@ -670,6 +679,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleEvidenceObserved
     && oracleProvenanceComplete
     && oracleRuntimeSessionMatchesDispatch
+    && oracleArtifactMatchesDispatch
     && oracleValuesCompatible
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
@@ -684,6 +694,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
     runtimeSessionId: oracleRuntimeSessionId,
     artifactId: oracleArtifactId,
+    artifactMatchesDispatch: oracleArtifactMatchesDispatch,
+    dispatchArtifactIds,
     valuesCompatible: oracleValuesCompatible,
     kind: oracleKind,
     kindAccepted: oracleKindAccepted,
@@ -777,9 +789,11 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       ? 'output_oracle_provenance_incomplete'
       : oracleOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
         ? 'output_oracle_session_mismatch'
-      : visualFrameObserved
-        ? 'visual_frame_without_deterministic_output_oracle'
-        : 'output_oracle_not_collected';
+        : oracleOtherwisePassed && !oracleArtifactMatchesDispatch
+          ? 'output_oracle_artifact_mismatch'
+          : visualFrameObserved
+            ? 'visual_frame_without_deterministic_output_oracle'
+            : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

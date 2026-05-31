@@ -1960,6 +1960,22 @@ function runtimeArtifactMatchesSelected(runtimeDispatch, selectedArtifactIds) {
     && runtimeDispatch.runtimeArtifactIds.some((artifactId) => selected.has(artifactId));
 }
 
+function runtimeArtifactIdForOutputOracle(dispatchProof) {
+  const runtimeArtifactIds = [...new Set(
+    (Array.isArray(dispatchProof?.runtimeArtifactIds) ? dispatchProof.runtimeArtifactIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter((id) => /^artifact:/i.test(id)),
+  )];
+  const selectedArtifactIds = new Set(
+    (Array.isArray(dispatchProof?.selectedArtifactIds) ? dispatchProof.selectedArtifactIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter((id) => /^artifact:/i.test(id)),
+  );
+  return runtimeArtifactIds.find((id) => selectedArtifactIds.size === 0 || selectedArtifactIds.has(id))
+    ?? runtimeArtifactIds[0]
+    ?? null;
+}
+
 function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
 }
@@ -2691,7 +2707,7 @@ async function phaseFlow(ctx) {
       outputTargetId: `${CFG.slug}:runtime-readback-trend`,
       readbackTimestamp: Date.now(),
       runtimeSessionId: inwardDispatchProof?.runtimeSessionIds?.[0] ?? null,
-      artifactId: baselineGpuProof?.proofId ?? baselineAbiProof?.proofId ?? null,
+      artifactId: runtimeArtifactIdForOutputOracle(inwardDispatchProof),
       evidenceRefs: inwardTrend.snippet ? [inwardTrend.snippet] : [],
     },
     visualFrameObserved: Boolean(inwardScreenshot),
@@ -2822,7 +2838,7 @@ async function phaseFlow(ctx) {
       outputTargetId: `${CFG.slug}:runtime-readback-trend`,
       readbackTimestamp: Date.now(),
       runtimeSessionId: outwardDispatchProof?.runtimeSessionIds?.[0] ?? null,
-      artifactId: flipGpuProof?.proofId ?? flipAbiProof?.proofId ?? null,
+      artifactId: runtimeArtifactIdForOutputOracle(outwardDispatchProof),
       evidenceRefs: trend.snippet ? [trend.snippet] : [],
     },
     visualFrameObserved: Boolean(outwardScreenshot),
