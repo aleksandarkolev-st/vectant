@@ -444,6 +444,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
   const preservedRoles = [];
   const changedRoles = [];
   const lineageMissingRoles = [];
+  const optionalLineageMissingRoles = [];
   for (const [role, roleRecords] of byRole) {
     const relevantRecords = expectedGenerationLineage
       ? roleRecords.filter((record) =>
@@ -452,6 +453,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
       : roleRecords;
     const identities = new Set(relevantRecords.map((record) => `${record.ptr}:${record.aux ?? ''}`));
     const generations = new Set(relevantRecords.map((record) => record.generation));
+    const roleCategory = hostIdentityRoleCategory(role);
     const lineageComplete = expectedGenerationLineage
       ? generations.has(expectedGenerationLineage.previousGeneration)
         && generations.has(expectedGenerationLineage.activeGeneration)
@@ -461,12 +463,17 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     } else if (identities.size > 1) {
       changedRoles.push(role);
     } else if (expectedGenerationLineage && relevantRecords.length > 0 && !lineageComplete) {
-      lineageMissingRoles.push(role);
+      if (roleCategory === null) {
+        optionalLineageMissingRoles.push(role);
+      } else {
+        lineageMissingRoles.push(role);
+      }
     }
   }
   preservedRoles.sort();
   changedRoles.sort();
   lineageMissingRoles.sort();
+  optionalLineageMissingRoles.sort();
   const preservedRoleCategories = compactStringList(
     preservedRoles.map((role) => hostIdentityRoleCategory(role)),
   );
@@ -496,6 +503,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     identity_snapshot_lineage_observed: expectedGenerationLineageObserved,
     lineage_identity_roles_observed: expectedGenerationLineage ? preservedRoles : [],
     lineage_identity_roles_missing: lineageMissingRoles,
+    optional_lineage_identity_roles_missing: optionalLineageMissingRoles,
     preserved_roles: preservedRoles,
     changed_roles: changedRoles,
     preserved_role_categories: preservedRoleCategories,
