@@ -3513,7 +3513,7 @@ async function selfCheck() {
     || dispatchProof.degradedState !== null
     || unknownArgDispatchProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
     || fullProof.fullRuntimeProven
-    || fullProof.degradedState !== 'gpu-hmr-output-unobserved'
+    || fullProof.degradedState !== 'gpu-hmr-visual-only'
   ) {
     console.error('gpu-hmr-test self-check failed: dispatch/output proof classifier failed');
     process.exitCode = 1;

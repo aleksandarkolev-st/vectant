@@ -1515,8 +1515,8 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       'gpu-hmr-output-oracle-proven',
       outputRank,
       outputProof,
-      'gpu-hmr-output-unobserved',
-      'output_oracle_not_collected',
+      outputProof?.degradedState ?? 'gpu-hmr-output-unobserved',
+      outputProof?.degradedReason ?? 'output_oracle_not_collected',
     ),
     stageResult(
       'host-preservation',

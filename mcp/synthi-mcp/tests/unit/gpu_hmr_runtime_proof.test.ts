@@ -2204,6 +2204,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(true);
   });
 
+  it("preserves specific output degraded state in the full ladder", () => {
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualEvidenceRequired: true,
+      visualFrameObserved: false,
+      visualEvidenceRefs: [],
+    });
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-evidence-missing");
+    expect(proof.stages.find((stage) => stage.stageId === "output")?.degradedState)
+      .toBe("gpu-hmr-visual-evidence-missing");
+  });
+
   it("does not accept claimed host preservation without runtime identity snapshot provenance", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
