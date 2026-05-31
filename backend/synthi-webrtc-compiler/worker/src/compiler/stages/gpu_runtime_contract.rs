@@ -26,6 +26,7 @@ pub const SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS: &[&str] = &[
     "synthi_gpu_record_output_buffer_checksum",
     "synthi_gpu_record_output_buffer_checksum_with_provenance",
     "synthi_gpu_record_original_host_path",
+    "synthi_gpu_record_original_host_path_with_provenance",
     "synthi_gpu_record_output_oracle",
     "synthi_gpu_record_output_oracle_with_provenance",
     "synthi_gpu_register_buffer",
@@ -276,6 +277,12 @@ void synthi_gpu_record_original_host_path(
     const char* dispatch_table_entry_id,
     bool dispatch_boundary_observed);
 
+void synthi_gpu_record_original_host_path_with_provenance(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    bool dispatch_boundary_observed);
+
 bool synthi_gpu_pack_buffer(const char* semantic_name, const void* ptr, std::size_t bytes);
 bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_name, void** out_ptr);
 
@@ -442,6 +449,18 @@ inline void synthi_original_host_path(
         dispatch_boundary_observed);
 }}
 
+inline void synthi_original_host_path_with_provenance(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    bool dispatch_boundary_observed = true) {{
+    synthi_gpu_record_original_host_path_with_provenance(
+        host_path_id,
+        dispatch_table_entry_id,
+        attachment_provenance,
+        dispatch_boundary_observed);
+}}
+
 #endif // SYNTHI_GPU_RUNTIME_H
 "#
     )
@@ -527,6 +546,8 @@ mod tests {
         assert!(h.contains("inline bool synthi_output_buffer_checksum_with_provenance"));
         assert!(h.contains("synthi_gpu_record_original_host_path"));
         assert!(h.contains("inline void synthi_original_host_path"));
+        assert!(h.contains("synthi_gpu_record_original_host_path_with_provenance"));
+        assert!(h.contains("inline void synthi_original_host_path_with_provenance"));
     }
 
     #[test]
@@ -582,6 +603,7 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_output_buffer_checksum("buffer", &value, sizeof(value), "sha256:missing");
     (void)synthi_output_buffer_checksum_with_provenance("buffer", &value, sizeof(value), "sha256:missing", "probe", "target", "artifact", nullptr);
     synthi_original_host_path("host-loop", "entry-noop", true);
+    synthi_original_host_path_with_provenance("host-loop", "entry-noop", "source_instrumented", true);
 }
 "#,
         )

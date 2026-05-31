@@ -939,6 +939,26 @@ pub extern "C" fn synthi_gpu_record_original_host_path(
 }
 
 #[no_mangle]
+pub extern "C" fn synthi_gpu_record_original_host_path_with_provenance(
+    host_path_id: *const c_char,
+    dispatch_table_entry_id: *const c_char,
+    attachment_provenance: *const c_char,
+    dispatch_boundary_observed: bool,
+) {
+    let host_path_id = cstr(host_path_id).unwrap_or_else(|| "<unknown>".to_string());
+    let dispatch_table_entry_id =
+        cstr(dispatch_table_entry_id).unwrap_or_else(|| "<unknown>".to_string());
+    let attachment_provenance =
+        cstr(attachment_provenance).unwrap_or_else(|| "<unspecified>".to_string());
+    record_original_host_path_event(
+        host_path_id,
+        dispatch_table_entry_id,
+        dispatch_boundary_observed,
+        attachment_provenance,
+    );
+}
+
+#[no_mangle]
 pub extern "C" fn synthi_gpu_launch_generation() -> u64 {
     current_launch_generation()
 }
@@ -1760,6 +1780,31 @@ mod tests {
         assert!(records[0].dispatch_boundary_observed);
         assert_eq!(records[0].attachment_provenance, "runtime_explicit");
         assert_eq!(records[0].generation, current_launch_generation());
+        assert_eq!(records[0].runtime_session_id, runtime_session_id());
+    }
+
+    #[test]
+    fn original_host_path_boundary_records_attachment_provenance() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let host_path_id = CString::new("host-render-loop").unwrap();
+        let dispatch_entry_id = CString::new("kernel-entry").unwrap();
+        let provenance = CString::new("source_instrumented").unwrap();
+
+        synthi_gpu_record_original_host_path_with_provenance(
+            host_path_id.as_ptr(),
+            dispatch_entry_id.as_ptr(),
+            provenance.as_ptr(),
+            true,
+        );
+
+        let records = original_host_path_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].host_path_id, "host-render-loop");
+        assert_eq!(records[0].dispatch_table_entry_id, "kernel-entry");
+        assert!(records[0].dispatch_boundary_observed);
+        assert_eq!(records[0].attachment_provenance, "source_instrumented");
         assert_eq!(records[0].runtime_session_id, runtime_session_id());
     }
 
