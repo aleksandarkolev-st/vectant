@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::runtime::capability::HmrStatus;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedBufferRecord {
@@ -609,6 +610,56 @@ fn record_original_host_path_event(
     );
 }
 
+fn record_output_oracle_event(
+    oracle_id: String,
+    kind: String,
+    expected: String,
+    actual: String,
+    passed: bool,
+) {
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.output_oracles.push(OutputOracleRecord {
+            oracle_id: oracle_id.clone(),
+            kind: kind.clone(),
+            expected: expected.clone(),
+            actual: actual.clone(),
+            passed,
+            generation,
+            runtime_session_id: runtime_session.clone(),
+        });
+    }
+    eprintln!(
+        "[gpu-runtime-boundary] output_oracle id={} kind={} expected={} actual={} passed={} generation={} runtime_session={}",
+        log_token(&oracle_id),
+        log_token(&kind),
+        log_token(&expected),
+        log_token(&actual),
+        passed,
+        generation,
+        runtime_session
+    );
+}
+
+fn sha256_checksum_value(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn normalize_checksum_value(value: String) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() == 64 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        format!("sha256:{}", trimmed.to_ascii_lowercase())
+    } else if let Some(rest) = trimmed.strip_prefix("sha256:") {
+        format!("sha256:{}", rest.to_ascii_lowercase())
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn synthi_gpu_register_buffer(
     _gpu: *mut c_void,
@@ -673,30 +724,34 @@ pub extern "C" fn synthi_gpu_record_output_oracle(
     let kind = cstr(kind).unwrap_or_else(|| "<unknown>".to_string());
     let expected = cstr(expected_value).unwrap_or_default();
     let actual = cstr(actual_value).unwrap_or_default();
-    let generation = current_launch_generation();
-    let runtime_session = runtime_session_id().to_string();
-    {
-        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
-        guard.output_oracles.push(OutputOracleRecord {
-            oracle_id: oracle_id.clone(),
-            kind: kind.clone(),
-            expected: expected.clone(),
-            actual: actual.clone(),
-            passed,
-            generation,
-            runtime_session_id: runtime_session.clone(),
-        });
-    }
-    eprintln!(
-        "[gpu-runtime-boundary] output_oracle id={} kind={} expected={} actual={} passed={} generation={} runtime_session={}",
-        log_token(&oracle_id),
-        log_token(&kind),
-        log_token(&expected),
-        log_token(&actual),
+    record_output_oracle_event(oracle_id, kind, expected, actual, passed);
+}
+
+#[no_mangle]
+pub extern "C" fn synthi_gpu_record_output_buffer_checksum(
+    oracle_id: *const c_char,
+    data: *const c_void,
+    bytes: usize,
+    expected_sha256: *const c_char,
+) -> bool {
+    let oracle_id = cstr(oracle_id).unwrap_or_else(|| "<unknown>".to_string());
+    let expected = normalize_checksum_value(cstr(expected_sha256).unwrap_or_default());
+    let (actual, passed) = if data.is_null() || bytes == 0 {
+        ("<invalid-buffer>".to_string(), false)
+    } else {
+        let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
+        let actual = sha256_checksum_value(data);
+        let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
+        (actual, passed)
+    };
+    record_output_oracle_event(
+        oracle_id,
+        "buffer_checksum".to_string(),
+        expected,
+        actual,
         passed,
-        generation,
-        runtime_session
     );
+    passed
 }
 
 #[no_mangle]
@@ -1361,6 +1416,55 @@ mod tests {
         assert!(records[0].passed);
         assert_eq!(records[0].generation, current_launch_generation());
         assert_eq!(records[0].runtime_session_id, runtime_session_id());
+    }
+
+    #[test]
+    fn output_buffer_checksum_boundary_hashes_runtime_bytes() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let bytes = b"deterministic output bytes";
+        let expected_text = sha256_checksum_value(bytes);
+        let expected = CString::new(expected_text.clone()).unwrap();
+        let oracle_id = CString::new("probe.buffer").unwrap();
+
+        assert!(synthi_gpu_record_output_buffer_checksum(
+            oracle_id.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            expected.as_ptr(),
+        ));
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].oracle_id, "probe.buffer");
+        assert_eq!(records[0].kind, "buffer_checksum");
+        assert_eq!(records[0].expected, expected_text);
+        assert_eq!(records[0].actual, expected_text);
+        assert!(records[0].passed);
+    }
+
+    #[test]
+    fn output_buffer_checksum_boundary_rejects_missing_expected_value() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let bytes = b"deterministic output bytes";
+        let oracle_id = CString::new("probe.buffer").unwrap();
+
+        assert!(!synthi_gpu_record_output_buffer_checksum(
+            oracle_id.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            std::ptr::null(),
+        ));
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, "buffer_checksum");
+        assert_eq!(records[0].expected, "");
+        assert!(records[0].actual.starts_with("sha256:"));
+        assert!(!records[0].passed);
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub const SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS: &[&str] = &[
     "synthi_gpu_launch_raw_arg_info_checked",
     "synthi_gpu_pack_buffer",
     "synthi_gpu_record_host_identity",
+    "synthi_gpu_record_output_buffer_checksum",
     "synthi_gpu_record_original_host_path",
     "synthi_gpu_record_output_oracle",
     "synthi_gpu_register_buffer",
@@ -240,6 +241,12 @@ void synthi_gpu_record_output_oracle(
     const char* actual_value,
     bool passed);
 
+bool synthi_gpu_record_output_buffer_checksum(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256);
+
 void synthi_gpu_record_original_host_path(
     const char* host_path_id,
     const char* dispatch_table_entry_id,
@@ -345,6 +352,18 @@ inline void synthi_output_oracle(
     synthi_gpu_record_output_oracle(oracle_id, kind, expected_value, actual_value, passed);
 }}
 
+inline bool synthi_output_buffer_checksum(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256) {{
+    return synthi_gpu_record_output_buffer_checksum(
+        oracle_id,
+        data,
+        bytes,
+        expected_sha256);
+}}
+
 inline void synthi_original_host_path(
     const char* host_path_id,
     const char* dispatch_table_entry_id,
@@ -432,6 +451,8 @@ mod tests {
         assert!(h.contains("inline void synthi_host_identity"));
         assert!(h.contains("synthi_gpu_record_output_oracle"));
         assert!(h.contains("inline void synthi_output_oracle"));
+        assert!(h.contains("synthi_gpu_record_output_buffer_checksum"));
+        assert!(h.contains("inline bool synthi_output_buffer_checksum"));
         assert!(h.contains("synthi_gpu_record_original_host_path"));
         assert!(h.contains("inline void synthi_original_host_path"));
     }
@@ -485,6 +506,7 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
     synthi_host_identity("smoke", gpu, 0);
     synthi_output_oracle("smoke", "sentinel", "1", "1", true);
+    (void)synthi_output_buffer_checksum("buffer", &value, sizeof(value), "sha256:missing");
     synthi_original_host_path("host-loop", "entry-noop", true);
 }
 "#,
