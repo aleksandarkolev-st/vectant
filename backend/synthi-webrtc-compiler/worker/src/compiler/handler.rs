@@ -3634,6 +3634,8 @@ fn device_hmr_proof_stage_results(
     compiler_evidence_id: &str,
     symbol_evidence_id: &str,
     abi_evidence_id: &str,
+    abi_stage_proven: bool,
+    abi_stage_degraded_reason: Option<String>,
     symbol_bound: bool,
     proof: &GpuHmrProofTelemetry,
 ) -> Vec<GpuHmrProofStageResult> {
@@ -3643,6 +3645,7 @@ fn device_hmr_proof_stage_results(
     } else {
         Some("expected_device_symbols_not_bound".to_string())
     };
+    let abi_stage_status = if abi_stage_proven { "passed" } else { "blocked" };
 
     vec![
         GpuHmrProofStageResult {
@@ -3691,14 +3694,26 @@ fn device_hmr_proof_stage_results(
         GpuHmrProofStageResult {
             stage_id: "abi-compatibility".to_string(),
             stage_name: "Device ABI compatibility".to_string(),
-            status: "blocked".to_string(),
+            status: abi_stage_status.to_string(),
             started_at: created_at.to_string(),
             completed_at: created_at.to_string(),
             input_artifact_ids: vec![selected_artifact_id.to_string()],
-            output_artifact_ids: Vec::new(),
+            output_artifact_ids: if abi_stage_proven {
+                vec![selected_artifact_id.to_string()]
+            } else {
+                Vec::new()
+            },
             evidence_refs: vec![abi_evidence_id.to_string()],
-            degraded_state: Some(GpuHmrDegradedState::AbiUnverified.as_str().to_string()),
-            degraded_reason: Some("abi_layout_size_alignment_unverified".to_string()),
+            degraded_state: if abi_stage_proven {
+                None
+            } else {
+                Some(GpuHmrDegradedState::AbiUnverified.as_str().to_string())
+            },
+            degraded_reason: if abi_stage_proven {
+                None
+            } else {
+                abi_stage_degraded_reason
+            },
         },
         GpuHmrProofStageResult {
             stage_id: "runtime-dispatch-observation".to_string(),
@@ -3721,6 +3736,114 @@ fn abi_metadata_accepted_extractor_count(abi_material: &serde_json::Value) -> us
         .and_then(serde_json::Value::as_array)
         .map(Vec::len)
         .unwrap_or(0)
+}
+
+fn abi_metadata_accepted_extractor_provenance(
+    abi_material: &serde_json::Value,
+) -> (bool, Vec<String>, Vec<String>) {
+    const ACCEPTED_ABI_EXTRACTOR_KINDS: &[&str] = &[
+        "clang_ast",
+        "clang_record_layout",
+        "compiled_artifact_symbol_table",
+        "compiler_invocation_metadata",
+        "runtime_wrapper_instrumentation",
+    ];
+
+    let explicit_refs = string_array_field(abi_material, "acceptedExtractorEvidenceRefs");
+    let explicit_sources = string_array_field(abi_material, "acceptedExtractorSources");
+    let mut refs = BTreeSet::new();
+    let mut sources = BTreeSet::new();
+
+    if let Some(records) = abi_material
+        .get("extractorProvenance")
+        .and_then(serde_json::Value::as_array)
+    {
+        for record in records {
+            let kind = record
+                .get("kind")
+                .or_else(|| record.get("extractorKind"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_default();
+            let evidence_id = record
+                .get("evidenceId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let extractor_name = record
+                .get("extractorName")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let extractor_version = record
+                .get("extractorVersion")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let input_hash = record
+                .get("inputHash")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let explicitly_rejected = record
+                .get("acceptedByRuntimeCorrectnessPlan")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false);
+
+            if ACCEPTED_ABI_EXTRACTOR_KINDS.contains(&kind)
+                && evidence_id.is_some()
+                && extractor_name.is_some()
+                && extractor_version.is_some()
+                && input_hash.is_some()
+                && !explicitly_rejected
+            {
+                refs.insert(evidence_id.unwrap().to_string());
+                sources.insert(kind.to_string());
+            }
+        }
+    }
+
+    let refs = refs.into_iter().collect::<Vec<_>>();
+    let sources = sources.into_iter().collect::<Vec<_>>();
+    let refs_match = explicit_refs.is_empty()
+        || explicit_refs.iter().all(|explicit| refs.iter().any(|value| value == explicit));
+    let sources_match = explicit_sources.is_empty()
+        || explicit_sources
+            .iter()
+            .all(|explicit| sources.iter().any(|value| value == explicit));
+    (!refs.is_empty() && refs_match && sources_match, refs, sources)
+}
+
+fn abi_stage_verdict_from_metadata(abi_material: &serde_json::Value) -> (bool, Option<String>) {
+    let layout_size_alignment_verified = abi_material
+        .get("layoutSizeAlignmentVerified")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let extractor_provenance_complete = abi_material
+        .get("extractorProvenanceComplete")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false);
+    let (accepted_extractor_provenance_observed, _, _) =
+        abi_metadata_accepted_extractor_provenance(abi_material);
+
+    if layout_size_alignment_verified
+        && accepted_extractor_provenance_observed
+        && extractor_provenance_complete
+    {
+        return (true, None);
+    }
+
+    let degraded_reason = string_field(abi_material, "degradedReason").or_else(|| {
+        if !layout_size_alignment_verified {
+            Some("abi_layout_size_alignment_unverified".to_string())
+        } else if !accepted_extractor_provenance_observed {
+            Some("abi_extractor_provenance_unverified".to_string())
+        } else {
+            Some("abi_extractor_provenance_incomplete".to_string())
+        }
+    });
+    (false, degraded_reason)
 }
 
 fn device_abi_evidence_summary(
@@ -4390,6 +4513,8 @@ async fn write_device_hmr_proof_artifact(
         "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
         "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
     });
+    let (abi_stage_proven, abi_stage_degraded_reason) =
+        abi_stage_verdict_from_metadata(&abi_material);
     let abi_evidence_hash = sha256_hex_str(&abi_material.to_string());
     let abi_evidence_id = format!("evidence:device-abi-metadata:{abi_evidence_hash}");
 
@@ -4556,6 +4681,8 @@ async fn write_device_hmr_proof_artifact(
         &compiler_evidence_id,
         &symbol_evidence_id,
         &abi_evidence_id,
+        abi_stage_proven,
+        abi_stage_degraded_reason,
         symbol_bound,
         proof,
     );
@@ -10879,6 +11006,8 @@ mod gpu_host_contract_tests {
             "evidence:compiler",
             "evidence:symbols",
             "evidence:abi",
+            false,
+            Some("abi_layout_size_alignment_unverified".to_string()),
             artifact_exports_expected_device_symbols(&outcome),
             &proof,
         );
@@ -10911,6 +11040,86 @@ mod gpu_host_contract_tests {
         assert_eq!(
             stages[4].degraded_state.as_deref(),
             Some("gpu-hmr-dispatch-unobserved")
+        );
+    }
+
+    #[test]
+    fn abi_stage_verdict_requires_accepted_extractor_provenance() {
+        let abi_material = serde_json::json!({
+            "layoutSizeAlignmentVerified": true,
+            "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:abc"],
+            "acceptedExtractorSources": ["clang_ast"],
+            "extractorProvenance": [{
+                "extractorName": "clang++",
+                "extractorKind": "clang_ast",
+                "extractorVersion": "17.0.0",
+                "evidenceId": "evidence:clang-ast:abc",
+                "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "acceptedByRuntimeCorrectnessPlan": true
+            }]
+        });
+
+        let (proven, reason) = abi_stage_verdict_from_metadata(&abi_material);
+
+        assert!(proven);
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn abi_stage_verdict_blocks_unmatched_extractor_refs() {
+        let abi_material = serde_json::json!({
+            "layoutSizeAlignmentVerified": true,
+            "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:other"],
+            "acceptedExtractorSources": ["clang_ast"],
+            "extractorProvenance": [{
+                "extractorName": "clang++",
+                "extractorKind": "clang_ast",
+                "extractorVersion": "17.0.0",
+                "evidenceId": "evidence:clang-ast:abc",
+                "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "acceptedByRuntimeCorrectnessPlan": true
+            }]
+        });
+
+        let (proven, reason) = abi_stage_verdict_from_metadata(&abi_material);
+
+        assert!(!proven);
+        assert_eq!(
+            reason.as_deref(),
+            Some("abi_extractor_provenance_unverified")
+        );
+    }
+
+    #[test]
+    fn device_hmr_proof_artifact_records_passed_abi_stage() {
+        let outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let stages = device_hmr_proof_stage_results(
+            "2026-05-26T00:00:00Z",
+            "source-edit:abc",
+            "artifact:sha256:def",
+            "evidence:artifact",
+            "evidence:transport",
+            "evidence:compiler",
+            "evidence:symbols",
+            "evidence:abi",
+            true,
+            None,
+            artifact_exports_expected_device_symbols(&outcome),
+            &proof,
+        );
+
+        let abi_stage = stages
+            .iter()
+            .find(|stage| stage.stage_id == "abi-compatibility")
+            .expect("ABI proof stage should be recorded");
+        assert_eq!(abi_stage.status, "passed");
+        assert_eq!(abi_stage.degraded_state, None);
+        assert_eq!(abi_stage.degraded_reason, None);
+        assert_eq!(
+            abi_stage.output_artifact_ids,
+            vec!["artifact:sha256:def".to_string()]
         );
     }
 
@@ -11148,7 +11357,7 @@ __constant__ int scale;
         );
         assert_eq!(
             abi_stage.degraded_reason.as_deref(),
-            Some("abi_layout_size_alignment_unverified")
+            Some("device_constant_or_global_layout_unverified")
         );
         assert_eq!(
             abi_stage.evidence_refs,
