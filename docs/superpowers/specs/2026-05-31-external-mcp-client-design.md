@@ -304,7 +304,7 @@ detail view (discovered tools with allowlist checkboxes, Test button, Remove).
 |---|-------|-----------|------------|
 | **1** | **Foundation + External MCP client (this doc)** | Connect in-app + drivable | — |
 | 2 | Git provider abstraction (GitLab/Bitbucket/enterprise, OAuth device-flow, webhooks) | Connect in-app | 1 |
-| 3 | Workspace toolchains (Docker/K8s CLIs, devcontainers spec inside workspace) | Run in workspace | — |
+| 3 | **Workspace Program Runtime & Marketplace** (revised & expanded — supersedes "Workspace toolchains"; see `docs/superpowers/specs/2026-06-01-workspace-program-runtime-design.md`) | Run in workspace | — (reuses Slice 1 vault/roles/audit) |
 | 4 | Deploy targets (OCI registries, K8s, PaaS) | Deploy out | 1, 3 |
 | 5 | Make Synthi drivable (harden MCP server, inbound webhooks/REST) | Drivable | 1 |
 | 6 | DAP / debugging (wire the stubbed `extensions/api/debug.js`) | Cross-cutting | LSP |
