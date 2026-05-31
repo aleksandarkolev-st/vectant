@@ -37,6 +37,9 @@ import {
   validationCommandMetadata,
 } from "../../scripts/lib/docker-validation-metadata.mjs";
 import {
+  REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS,
+} from "../../scripts/lib/real-rocm-validation-command-env.mjs";
+import {
   buildValidationRuntimeProofArtifact,
 } from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
 
@@ -293,6 +296,48 @@ describe("validation runtime metadata", () => {
       SYNTHI_GPU_ARCH: "",
     });
     expect(Object.prototype.hasOwnProperty.call(metadata.env, "SECRET_TOKEN")).toBe(false);
+  });
+
+  it("captures run-defining real repository validation env keys without ambient secrets", () => {
+    const metadata = validationCommandMetadata({
+      cwd: "/repo",
+      argv: ["node", "scripts/gpu-hmr-real-rocm-repo-validation.mjs"],
+      env: {
+        SYNTHI_REAL_ROCM_DELTA_BEFORE: "old()",
+        MCP_TRANSPORT: "docker",
+        SYNTHI_VALIDATION_AUTHLESS_WORKSPACE: "1",
+        GOOGLE_API_KEY: "secret",
+      },
+      envKeys: [
+        "SYNTHI_REAL_ROCM_DELTA_BEFORE",
+        "SYNTHI_REAL_ROCM_DELTA_AFTER",
+        "MCP_TRANSPORT",
+        "SYNTHI_VALIDATION_AUTHLESS_WORKSPACE",
+      ],
+    });
+
+    expect(metadata.env).toEqual({
+      SYNTHI_REAL_ROCM_DELTA_BEFORE: "old()",
+      SYNTHI_REAL_ROCM_DELTA_AFTER: "",
+      MCP_TRANSPORT: "docker",
+      SYNTHI_VALIDATION_AUTHLESS_WORKSPACE: "1",
+    });
+    expect(Object.prototype.hasOwnProperty.call(metadata.env, "GOOGLE_API_KEY")).toBe(false);
+  });
+
+  it("keeps the real repository validation command allow-list complete and non-secret", () => {
+    expect(REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS).toEqual(
+      expect.arrayContaining([
+        "SYNTHI_REAL_ROCM_DELTA_BEFORE",
+        "SYNTHI_REAL_ROCM_DELTA_AFTER",
+        "SYNTHI_REAL_ROCM_BUILD_METADATA_DIR",
+        "SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON",
+        "MCP_TRANSPORT",
+        "SYNTHI_VALIDATION_AUTHLESS_WORKSPACE",
+      ])
+    );
+    expect(REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS).not.toContain("GOOGLE_API_KEY");
+    expect(REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS).not.toContain("GEMINI_API_KEY");
   });
 });
 

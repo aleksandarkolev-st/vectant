@@ -1884,6 +1884,58 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
   };
 }
 
+function selectedArtifactDispatchLineRegex(expectedKernels = [], selectedArtifactIds = []) {
+  const ids = [...new Set(
+    (Array.isArray(selectedArtifactIds) ? selectedArtifactIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter((id) => /^artifact:/i.test(id)),
+  )];
+  if (!ids.length) return null;
+  const kernelPattern = expectedKernels.length
+    ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
+    : String.raw`\S+`;
+  const artifactPattern = `(?:${ids.map(escapeRegex).join('|')})`;
+  return new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b`
+    + String.raw`(?=[^\r\n]*\bdispatch=ok\b)`
+    + String.raw`(?=[^\r\n]*\bartifact_id=${artifactPattern}(?=\s|$))[^\r\n]*`,
+  );
+}
+
+function runtimeSessionIdsFromDispatchRecords(records = []) {
+  const ids = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    const runtimeSession = logField(record?.line, 'runtime_session');
+    if (runtimeSession) ids.push(runtimeSession);
+  }
+  return [...new Set(ids)];
+}
+
+function scopeRuntimeDispatchWindowToSelectedArtifact(logText, selectedArtifactIds = [], selectedRuntimeSessionIds = []) {
+  const artifactIds = [...new Set(
+    (Array.isArray(selectedArtifactIds) ? selectedArtifactIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter((id) => /^artifact:/i.test(id)),
+  )];
+  const runtimeSessions = [...new Set(
+    (Array.isArray(selectedRuntimeSessionIds) ? selectedRuntimeSessionIds : [])
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean),
+  )];
+  if (!artifactIds.length || !runtimeSessions.length) return String(logText ?? '');
+
+  return String(logText ?? '')
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (!line.trim()) return false;
+      if (artifactIds.some((artifactId) => line.includes(artifactId))) return true;
+      const runtimeSession = logField(line, 'runtime_session');
+      if (runtimeSession && runtimeSessions.includes(runtimeSession)) return true;
+      return /\bruntime_ownership\b/i.test(line);
+    })
+    .join('\n');
+}
+
 function selectedArtifactIdsFromProofArtifacts(records) {
   const ids = new Set();
   for (const record of Array.isArray(records) ? records : []) {
@@ -2314,16 +2366,34 @@ async function awaitRuntimeDispatchProof(
     : checkpoint?.at
       ? { since: checkpoint.at }
       : {};
-  const tail = await readWorkerLogTail(maxBytes, logOpts);
-  const window = workerLogSearchWindow(tail, { after: checkpoint });
-  const provenance = launchArgProvenanceEvidence(window, expectedKernels);
-  const runtimeSession = runtimeSessionEvidence(window);
-  const runtimeOwnership = runtimeOwnershipEvidence(window);
-  const runtimeDispatchArtifacts = runtimeDispatchArtifactEvidence(window, expectedKernels);
   const selectedArtifactIds = Array.isArray(proofContext.selectedArtifactIds)
     ? proofContext.selectedArtifactIds
     : [];
-  const epochSwap = epochSwapProofFromRuntimeEvidence(String(window ?? '').split(/\r?\n/));
+  const selectedArtifactDispatchRegex = dispatchObserved
+    ? selectedArtifactDispatchLineRegex(expectedKernels, selectedArtifactIds)
+    : null;
+  if (selectedArtifactDispatchRegex) {
+    await awaitWorkerLogRegex(
+      selectedArtifactDispatchRegex,
+      timeoutMs,
+      { after: checkpoint, maxBytes },
+    );
+  }
+  const tail = await readWorkerLogTail(maxBytes, logOpts);
+  const window = workerLogSearchWindow(tail, { after: checkpoint });
+  const initialDispatchArtifacts = runtimeDispatchArtifactEvidence(window, expectedKernels);
+  const selectedDispatchRecords = selectedArtifactIds.length
+    ? initialDispatchArtifacts.records.filter((record) => selectedArtifactIds.includes(record.artifactId))
+    : [];
+  const selectedRuntimeSessionIds = runtimeSessionIdsFromDispatchRecords(selectedDispatchRecords);
+  const evidenceWindow = selectedDispatchRecords.length
+    ? scopeRuntimeDispatchWindowToSelectedArtifact(window, selectedArtifactIds, selectedRuntimeSessionIds)
+    : window;
+  const provenance = launchArgProvenanceEvidence(evidenceWindow, expectedKernels);
+  const runtimeSession = runtimeSessionEvidence(evidenceWindow);
+  const runtimeOwnership = runtimeOwnershipEvidence(evidenceWindow);
+  const runtimeDispatchArtifacts = runtimeDispatchArtifactEvidence(evidenceWindow, expectedKernels);
+  const epochSwap = epochSwapProofFromRuntimeEvidence(String(evidenceWindow ?? '').split(/\r?\n/));
   return recordRuntimeDispatchProof(phase, name, {
     dispatchObserved,
     sessionScoped: runtimeSession.recordCount > 0,
@@ -3533,6 +3603,24 @@ async function selfCheck() {
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:self dispatcher_registration_id=dispatcher:sha256:self dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n',
     ['kernel_a'],
   );
+  const selectedDispatchRegex = selectedArtifactDispatchLineRegex(
+    ['kernel_a'],
+    ['artifact:sha256:new'],
+  );
+  const staleDispatchLine =
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:old dispatcher_registration_id=dispatcher:sha256:old dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n';
+  const selectedDispatchLine =
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-2 artifact_id=artifact:sha256:new dispatcher_registration_id=dispatcher:sha256:new dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n';
+  const selectedDispatchScope = scopeRuntimeDispatchWindowToSelectedArtifact(
+    staleDispatchLine
+    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=1 complete=true known_args=1 unknown_args=0\n'
+    + selectedDispatchLine
+    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-2 generation=2 complete=true known_args=1 unknown_args=0\n',
+    ['artifact:sha256:new'],
+    ['session-2'],
+  );
+  const selectedScopeSessionEvidence = runtimeSessionEvidence(selectedDispatchScope);
+  const selectedScopeArtifacts = runtimeDispatchArtifactEvidence(selectedDispatchScope, ['kernel_a']);
   const argProvenanceEvidence = launchArgProvenanceEvidence(
     '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0\n',
     ['kernel_a'],
@@ -3547,6 +3635,10 @@ async function selfCheck() {
     || !sessionEvidence.consistent
     || sessionEvidence.uniqueIds[0] !== 'session-1'
     || dispatchArtifacts.runtimeArtifactIds[0] !== 'artifact:sha256:self'
+    || !selectedDispatchRegex?.test(`${staleDispatchLine}${selectedDispatchLine}`)
+    || selectedDispatchRegex.test(staleDispatchLine)
+    || selectedScopeSessionEvidence.uniqueIds.join(',') !== 'session-2'
+    || selectedScopeArtifacts.runtimeArtifactIds.join(',') !== 'artifact:sha256:new'
     || argProvenanceEvidence.evidenceRefs[0] !== 'worker-log:launch_arg_provenance:kernel_a:session-1:2'
   ) {
     console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');

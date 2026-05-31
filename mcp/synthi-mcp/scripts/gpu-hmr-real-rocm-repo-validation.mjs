@@ -52,6 +52,8 @@ import {
 import {
   writeValidationRuntimeProofArtifact,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
+import { validationCommandMetadata } from './lib/docker-validation-metadata.mjs';
+import { REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS } from './lib/real-rocm-validation-command-env.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -207,37 +209,7 @@ const report = {
     worker: CFG.workerContainer,
     ai_engine: CFG.aiEngineContainer,
   },
-  command: {
-    cwd: process.cwd(),
-    argv: process.argv,
-    env: {
-      SYNTHI_REAL_ROCM_REPO_URL: process.env.SYNTHI_REAL_ROCM_REPO_URL ?? '',
-      SYNTHI_REAL_ROCM_COMMIT: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
-      SYNTHI_REAL_ROCM_ENTRY: process.env.SYNTHI_REAL_ROCM_ENTRY ?? '',
-      SYNTHI_REAL_ROCM_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_DELTA_FILE ?? '',
-      SYNTHI_REAL_ROCM_SECOND_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE ?? '',
-      SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
-      SYNTHI_REAL_ROCM_TARGET: process.env.SYNTHI_REAL_ROCM_TARGET ?? '',
-      SYNTHI_REAL_ROCM_BUILD_SUBDIR: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? '',
-      SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
-      SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS: process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ?? '',
-      SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
-      SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
-      SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
-      SYNTHI_REAL_ROCM_COMPILE_TRANSPORT: process.env.SYNTHI_REAL_ROCM_COMPILE_TRANSPORT ?? '',
-      SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
-      SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON: process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON ?? '',
-      SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON: process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON ?? '',
-      SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH: process.env.SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH ?? '',
-      SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
-      SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
-      SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
-      SYNTHI_GPU_ARCH: process.env.SYNTHI_GPU_ARCH ?? '',
-      MCP_CONTAINER: process.env.MCP_CONTAINER ?? '',
-      WORKER_CONTAINER: process.env.WORKER_CONTAINER ?? '',
-      AI_ENGINE_CONTAINER: process.env.AI_ENGINE_CONTAINER ?? '',
-    },
-  },
+  command: validationCommandMetadata({ envKeys: REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS }),
   file_count: 0,
   seeded_file_count: 0,
   skipped_file_count: 0,
