@@ -348,6 +348,25 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
   });
 
+  it("accepts render visual evidence refs carried by the oracle record", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        visualEvidenceRef: "artifacts/oracle-frame.png",
+      },
+      visualEvidenceRequired: true,
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.visualEvidenceComplete).toBe(true);
+    expect(proof.visualEvidenceRefs).toEqual(["artifacts/oracle-frame.png"]);
+  });
+
   it("can prove output from a structured runtime oracle line", () => {
     const evidence = runtimeOutputOracleEvidence([
       "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:abc",

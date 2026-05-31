@@ -671,9 +671,15 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const evidenceRefs = Array.isArray(observation.evidenceRefs)
     ? observation.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
-  const visualEvidenceRefs = Array.isArray(observation.visualEvidenceRefs)
-    ? observation.visualEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
-    : [];
+  const visualEvidenceRefs = compactStringList([
+    ...(Array.isArray(observation.visualEvidenceRefs) ? observation.visualEvidenceRefs : []),
+    ...(Array.isArray(rawOracle.visualEvidenceRefs) ? rawOracle.visualEvidenceRefs : []),
+    ...(Array.isArray(rawOracle.visual_evidence_refs) ? rawOracle.visual_evidence_refs : []),
+    rawOracle.visualEvidenceRef,
+    rawOracle.visual_evidence_ref,
+    rawOracle.visualRef,
+    rawOracle.visual_ref,
+  ]);
   const visualEvidenceRequired = observation.visualEvidenceRequired === true;
   const visualEvidenceComplete = !visualEvidenceRequired
     || (visualFrameObserved && visualEvidenceRefs.length > 0);
