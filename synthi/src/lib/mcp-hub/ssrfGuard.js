@@ -21,26 +21,40 @@ function inV4Cidr(ipInt, base, maskBits) {
   return (ipInt & mask) === (ipv4ToInt(base) & mask);
 }
 
-/** True if an IP literal (v4 or v6) is in a blocked range. */
+/** True if a 32-bit IPv4 int falls in any blocked range. */
+function isBlockedV4(ipInt) {
+  return (
+    inV4Cidr(ipInt, '0.0.0.0', 8) ||
+    inV4Cidr(ipInt, '10.0.0.0', 8) ||
+    inV4Cidr(ipInt, '100.64.0.0', 10) ||
+    inV4Cidr(ipInt, '127.0.0.0', 8) ||
+    inV4Cidr(ipInt, '169.254.0.0', 16) ||
+    inV4Cidr(ipInt, '172.16.0.0', 12) ||
+    inV4Cidr(ipInt, '192.168.0.0', 16)
+  );
+}
+
+/** True if an IP literal (v4 or v6) is in a blocked range. Tolerates [bracketed] IPv6. */
 export function isBlockedIp(ip) {
-  const v4 = ipv4ToInt(ip);
-  if (v4 !== null) {
-    return (
-      inV4Cidr(v4, '0.0.0.0', 8) ||
-      inV4Cidr(v4, '10.0.0.0', 8) ||
-      inV4Cidr(v4, '100.64.0.0', 10) ||
-      inV4Cidr(v4, '127.0.0.0', 8) ||
-      inV4Cidr(v4, '169.254.0.0', 16) ||
-      inV4Cidr(v4, '172.16.0.0', 12) ||
-      inV4Cidr(v4, '192.168.0.0', 16)
-    );
-  }
-  const lower = String(ip).toLowerCase();
+  let lower = String(ip).toLowerCase();
+  // A URL's .hostname keeps the brackets on IPv6 literals ("[::1]"); strip them.
+  if (lower.startsWith('[') && lower.endsWith(']')) lower = lower.slice(1, -1);
+
+  const v4 = ipv4ToInt(lower);
+  if (v4 !== null) return isBlockedV4(v4);
+
   if (lower === '::1' || lower === '::') return true;
-  // IPv4-mapped IPv6 (::ffff:a.b.c.d)
+  // IPv4-mapped IPv6, dotted form (::ffff:a.b.c.d).
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
   if (mapped) return isBlockedIp(mapped[1]);
-  // Unique-local fc00::/7 and link-local fe80::/10
+  // IPv4-mapped IPv6, hex-group form (::ffff:HHHH:HHHH) — the WHATWG URL parser
+  // normalizes "::ffff:127.0.0.1" to this form, so it must be decoded too.
+  const hexMapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower);
+  if (hexMapped) {
+    const v4int = ((parseInt(hexMapped[1], 16) << 16) >>> 0) + parseInt(hexMapped[2], 16);
+    return isBlockedV4(v4int);
+  }
+  // Unique-local fc00::/7 and link-local fe80::/10.
   if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;
   if (/^fe[89ab][0-9a-f]:/.test(lower)) return true;
   return false;
@@ -64,8 +78,9 @@ export async function assertSafeUrl(urlString, opts = {}) {
   } catch {
     throw ssrfError('invalid URL');
   }
-  const host = url.hostname.toLowerCase();
-  const onAllowlist = allowlist.map((h) => h.toLowerCase()).includes(host);
+  // Normalize a trailing dot (FQDN form) so "localhost." can't dodge the blocklist.
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  const onAllowlist = allowlist.some((h) => h.toLowerCase() === host);
 
   if (url.protocol !== 'https:' && !onAllowlist) {
     throw ssrfError('non-https URL not on allowlist');
