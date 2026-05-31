@@ -759,15 +759,33 @@ fn record_original_host_path_event(
     dispatch_boundary_observed: bool,
     attachment_provenance: String,
 ) {
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    let runtime_dispatch_table_entry_id = dispatch_boundary_observed
+        .then(|| latest_runtime_dispatch_table_entry_id(generation, &runtime_session))
+        .flatten();
     record_original_host_path_event_at(
         host_path_id,
         dispatch_table_entry_id,
-        None,
+        runtime_dispatch_table_entry_id,
         dispatch_boundary_observed,
         attachment_provenance,
-        current_launch_generation(),
-        runtime_session_id().to_string(),
+        generation,
+        runtime_session,
     );
+}
+
+fn latest_runtime_dispatch_table_entry_id(generation: u64, runtime_session: &str) -> Option<String> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard
+        .launches
+        .iter()
+        .rev()
+        .find(|record| {
+            record.active_generation == generation && record.runtime_session_id == runtime_session
+        })
+        .and_then(|record| record.dispatch_table_entry_id.clone())
+        .filter(|entry_id| !entry_id.trim().is_empty())
 }
 
 fn record_output_oracle_event(
@@ -2176,6 +2194,74 @@ mod tests {
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
         assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
         assert_eq!(launches[0].kernel_name, "trace_primary");
+    }
+
+    #[test]
+    fn original_host_path_record_binds_to_latest_runtime_launch_boundary() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let kernel = CString::new("trace_primary").unwrap();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:host-path".to_string()),
+                dispatch_table_hash: Some("0xfeed".to_string()),
+                changed_symbols: vec!["trace_primary".to_string()],
+                function_handle_ids: vec!["trace_primary:0x42".to_string()],
+            },
+        );
+
+        let grid = [1_u32, 1, 1];
+        let block = [64_u32, 1, 1];
+        let value = 42_u32;
+        let arg = SynthiGpuLaunchArg {
+            value_ptr: (&value as *const u32).cast(),
+            value_size: std::mem::size_of_val(&value),
+            value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
+        };
+        assert!(synthi_gpu_launch_raw_arg_info_checked(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            &arg,
+            1,
+            current_launch_generation(),
+        ));
+
+        let host_path_id = CString::new("host-render-loop").unwrap();
+        let dispatch_entry_id = CString::new("host-declared-entry").unwrap();
+        let provenance = CString::new("runtime_explicit").unwrap();
+        synthi_gpu_record_original_host_path_with_provenance(
+            host_path_id.as_ptr(),
+            dispatch_entry_id.as_ptr(),
+            provenance.as_ptr(),
+            true,
+        );
+
+        let host_paths = original_host_path_records_snapshot();
+        let launches = launch_records_snapshot();
+        assert_eq!(host_paths.len(), 1);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(host_paths[0].host_path_id, "host-render-loop");
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "host-declared-entry");
+        assert_eq!(
+            host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
+            Some("trace_primary:0x42")
+        );
+        assert!(host_paths[0].dispatch_entry_runtime_verified);
+        assert!(host_paths[0].dispatch_boundary_observed);
+        assert_eq!(host_paths[0].generation, launches[0].active_generation);
+        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
     }
 
     #[test]
