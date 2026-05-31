@@ -392,6 +392,31 @@ fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u
     (entries.into_iter().collect(), table_hash)
 }
 
+fn artifact_id_for_hash(hash: &str) -> String {
+    format!("artifact:sha256:{}", hash.trim().trim_start_matches("sha256:"))
+}
+
+fn changed_function_handle_ids(
+    table: &HashMap<String, u64>,
+    changed_symbols: &[String],
+) -> String {
+    let mut ids = changed_symbols
+        .iter()
+        .filter_map(|symbol| {
+            table
+                .get(symbol)
+                .map(|handle| format!("{}:0x{:x}", symbol, handle))
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(",")
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StreamOrderingDrain {
     outcome: DrainOutcome,
@@ -507,6 +532,10 @@ pub struct GpuModuleAdapter {
     /// than `*mut c_void` so `GpuModuleAdapter: Send` falls out for
     /// free — the actual pointer crossing is a Phase 3 concern.
     active_module_handle: Option<u64>,
+    /// Content-addressed artifact id for the currently published dispatch
+    /// generation. Epoch proof uses this to describe capsule lineage without
+    /// relying on target-specific paths.
+    active_generation_artifact_id: Option<String>,
     /// Live kernel name → CUfunction-handle-as-u64 map. Empty in
     /// Phase 2; populated when Phase 3 calls `cuModuleGetFunction`
     /// for every kernel in the manifest right after a successful
@@ -557,6 +586,7 @@ impl GpuModuleAdapter {
             phase: GpuPhase::Uninitialized,
             reload_count: 0,
             active_module_handle: None,
+            active_generation_artifact_id: None,
             kernel_table: HashMap::new(),
             health: AdapterHealth::Unknown,
             driver: None,
@@ -844,6 +874,9 @@ impl Adapter for GpuModuleAdapter {
         if let Some(primary) = self.module_manager.primary() {
             extra.insert("active_module_bytes".into(), primary.blob_bytes.to_string());
         }
+        if let Some(artifact_id) = &self.active_generation_artifact_id {
+            extra.insert("active_generation_artifact_id".into(), artifact_id.clone());
+        }
         if let Some(err) = &self.last_driver_error {
             extra.insert("driver_error".into(), err.short_label().into());
         }
@@ -904,6 +937,7 @@ impl Adapter for GpuModuleAdapter {
         // runs dlclose in its Drop impl as long as no other Arc
         // clone outlives this adapter.
         self.active_module_handle = None;
+        self.active_generation_artifact_id = None;
         self.kernel_table.clear();
         self.driver = None;
         self.module_manager = GpuModuleManager::new();
@@ -1031,6 +1065,7 @@ impl Adapter for GpuModuleAdapter {
             };
         }
         let artifact_hash = sha256_hex_bytes(&blob);
+        let new_artifact_id = artifact_id_for_hash(&artifact_hash);
         let ram_artifact_reference_provided = ram_artifact.is_some();
         let ram_blob_id = ram_artifact
             .map(|artifact| artifact.blob_id.as_str())
@@ -1191,6 +1226,11 @@ impl Adapter for GpuModuleAdapter {
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
             let previous_table = self.module_manager.kernel_table().clone();
             let previous_dispatch_table_hash = dispatch_table_hash(&previous_table);
+            let previous_artifact_id = self
+                .active_generation_artifact_id
+                .as_deref()
+                .unwrap_or("none")
+                .to_string();
             match loader_transport {
                 ArtifactLoaderTransport::FilesystemPath => {
                     self.module_manager
@@ -1235,6 +1275,13 @@ impl Adapter for GpuModuleAdapter {
             let retired_module_count = retired.len();
             let (dispatcher_kernels, dispatch_table_hash) =
                 active_dispatch_table(&self.module_manager);
+            let changed_symbols_for_log = if expected_symbols.is_empty() {
+                "none".to_string()
+            } else {
+                expected_symbols.join(",")
+            };
+            let function_handle_ids =
+                changed_function_handle_ids(&dispatcher_kernels, &expected_symbols);
             record_hmr_runtime_identity_snapshot();
             let previous_generation = current_launch_generation();
             install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
@@ -1277,10 +1324,15 @@ impl Adapter for GpuModuleAdapter {
             eprintln!("{artifact_transport_line}");
             runtime_log_lines.push(artifact_transport_line);
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} changed_symbols={} function_handle_ids={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
                 previous_generation,
                 active_generation,
+                previous_artifact_id,
+                new_artifact_id,
+                artifact_hash,
+                changed_symbols_for_log,
+                function_handle_ids,
                 previous_dispatch_table_hash,
                 dispatch_table_hash,
                 dispatch_table_hash,
@@ -1314,6 +1366,7 @@ impl Adapter for GpuModuleAdapter {
                 eprintln!("{retired_line}");
                 runtime_log_lines.push(retired_line);
             }
+            self.active_generation_artifact_id = Some(new_artifact_id.clone());
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
                 expected_symbols,
@@ -1782,9 +1835,11 @@ mod tests {
         a.initialize().unwrap();
         a.kernel_table.insert("vec_add".into(), 0xdead_beef);
         a.active_module_handle = Some(0x1234_5678);
+        a.active_generation_artifact_id = Some("artifact:sha256:test".into());
         a.last_device_abi_version = Some("sig-v1".into());
         assert!(a.shutdown().is_ok());
         assert!(a.active_module_handle.is_none());
+        assert!(a.active_generation_artifact_id.is_none());
         assert!(a.kernel_table.is_empty());
         assert!(a.last_device_abi_version.is_none());
     }
@@ -2101,6 +2156,8 @@ mod tests {
         let mut second = tempfile::NamedTempFile::new().unwrap();
         first.write_all(b"fake-cubin-1").unwrap();
         second.write_all(b"fake-cubin-2").unwrap();
+        let first_hash = sha256_hex_bytes(b"fake-cubin-1");
+        let second_hash = sha256_hex_bytes(b"fake-cubin-2");
         let first_path = first.path().to_string_lossy().to_string();
         let second_path = second.path().to_string_lossy().to_string();
         let mut a = adapter_with_symbols(stub_symbols());
@@ -2125,12 +2182,26 @@ mod tests {
 
         assert!(unload_generation > first_generation);
         assert_eq!(unload_generation, current_launch_generation());
-        assert!(a.last_reload_log().iter().any(|line| line
+        let publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("dispatcher epoch publication report");
+        assert!(publish
             .contains("dispatcher_epoch event=published")
-            && line.contains("dispatch_table_hash_before=0x")
-            && line.contains("dispatch_table_hash_after=0x")
-            && line.contains("retired_modules=1")
-            && line.contains("stream_ordering_proven=true")));
+            && publish.contains("dispatch_table_hash_before=0x")
+            && publish.contains("dispatch_table_hash_after=0x")
+            && publish.contains("retired_modules=1")
+            && publish.contains("stream_ordering_proven=true"));
+        assert!(publish.contains(&format!(
+            "old_artifact_id=artifact:sha256:{first_hash}"
+        )));
+        assert!(publish.contains(&format!(
+            "new_artifact_id=artifact:sha256:{second_hash}"
+        )));
+        assert!(publish.contains(&format!("new_artifact_hash=sha256:{second_hash}")));
+        assert!(publish.contains("changed_symbols=vec_add"));
+        assert!(publish.contains("function_handle_ids=vec_add:0x"));
         assert!(a
             .last_reload_log()
             .iter()

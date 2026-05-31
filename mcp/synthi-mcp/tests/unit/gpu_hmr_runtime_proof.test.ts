@@ -1247,6 +1247,28 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
   });
 
+  it("carries capsule lineage metadata into the runtime epoch graph", () => {
+    const oldHash = "a".repeat(64);
+    const newHash = "b".repeat(64);
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 old_artifact_id=artifact:sha256:${oldHash} new_artifact_id=artifact:sha256:${newHash} new_artifact_hash=sha256:${newHash} changed_symbols=shade,trace function_handle_ids=shade:0x10,trace:0x20 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=2 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true",
+    ]);
+
+    const publishEdge = evidence.epoch_generation_graph?.edges.find((edge) => edge.kind === "publish");
+    expect(evidence.capsule_metadata_observed).toBe(true);
+    expect(evidence.latest_publication?.oldArtifactId).toBe(`artifact:sha256:${oldHash}`);
+    expect(evidence.latest_publication?.newArtifactId).toBe(`artifact:sha256:${newHash}`);
+    expect(evidence.latest_publication?.changedSymbols).toEqual(["shade", "trace"]);
+    expect(evidence.latest_publication?.functionHandleIds).toEqual(["shade:0x10", "trace:0x20"]);
+    expect(publishEdge?.oldArtifactId).toBe(`artifact:sha256:${oldHash}`);
+    expect(publishEdge?.newArtifactId).toBe(`artifact:sha256:${newHash}`);
+    expect(publishEdge?.newArtifactHash).toBe(`sha256:${newHash}`);
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.capsuleMetadataObserved).toBe(true);
+    expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("capsule=observed");
+  });
+
   it("keeps runtime epoch evidence pending until matching retirement is observed", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",

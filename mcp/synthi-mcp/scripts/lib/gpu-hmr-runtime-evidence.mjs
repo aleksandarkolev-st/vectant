@@ -58,6 +58,11 @@ function epochRecord(line) {
     runtimeSession: fields.runtime_session ?? null,
     previousGeneration: integerValue(fields.previous_generation),
     activeGeneration: integerValue(fields.active_generation),
+    oldArtifactId: fields.old_artifact_id ?? fields.previous_artifact_id ?? null,
+    newArtifactId: fields.new_artifact_id ?? fields.active_artifact_id ?? null,
+    newArtifactHash: fields.new_artifact_hash ?? fields.artifact_hash ?? null,
+    changedSymbols: commaList(fields.changed_symbols),
+    functionHandleIds: commaList(fields.function_handle_ids),
     dispatchTableHashBefore: fields.dispatch_table_hash_before ?? null,
     dispatchTableHashAfter: fields.dispatch_table_hash_after ?? null,
     dispatchTableHash: fields.dispatch_table_hash ?? null,
@@ -128,6 +133,11 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         previousGeneration: record.previousGeneration,
         activeGeneration: record.activeGeneration,
         runtimeSession: record.runtimeSession,
+        oldArtifactId: record.oldArtifactId,
+        newArtifactId: record.newArtifactId,
+        newArtifactHash: record.newArtifactHash,
+        changedSymbols: record.changedSymbols,
+        functionHandleIds: record.functionHandleIds,
         evidenceRef: `worker-log:dispatcher_epoch:published:${record.previousGeneration}->${record.activeGeneration}`,
       });
     } else if (record.event === 'retired') {
@@ -160,6 +170,11 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
     latestPublication: {
       previousGeneration: latestPublication.previousGeneration,
       activeGeneration: latestPublication.activeGeneration,
+      oldArtifactId: latestPublication.oldArtifactId,
+      newArtifactId: latestPublication.newArtifactId,
+      newArtifactHash: latestPublication.newArtifactHash,
+      changedSymbols: latestPublication.changedSymbols,
+      functionHandleIds: latestPublication.functionHandleIds,
     },
     retirementState: publicationRetirementComplete
       ? 'not-required'
@@ -221,6 +236,13 @@ export function runtimeEpochSwapEvidence(lines) {
   const streamOrderingProven =
     streamOrderingRequested
     && streamScopeEvidenceSupported;
+  const capsuleMetadataObserved =
+    typeof latestPublication?.newArtifactId === 'string'
+    && latestPublication.newArtifactId.trim().length > 0
+    && typeof latestPublication?.newArtifactHash === 'string'
+    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactHash.trim())
+    && latestPublication.changedSymbols.length > 0
+    && latestPublication.functionHandleIds.length > 0;
 
   return {
     total_count: records.length,
@@ -246,6 +268,7 @@ export function runtimeEpochSwapEvidence(lines) {
     stream_scope: streamScope,
     stream_scope_supported: streamScopeEvidenceSupported,
     stream_ids: streamIds,
+    capsule_metadata_observed: capsuleMetadataObserved,
     drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
     matching_retirement: retirement,
@@ -265,6 +288,7 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     dispatchTableHashAfterObserved: evidence.dispatch_table_hash_after_observed,
     dispatchTableHashChanged: evidence.dispatch_table_hash_changed,
     changedEntriesObserved: evidence.changed_entries_observed,
+    capsuleMetadataObserved: evidence.capsule_metadata_observed,
     runtimeSessionObserved: evidence.runtime_session_observed,
     runtimeSessionIds: evidence.runtime_session_ids,
     runtimeSessionConsistent: evidence.runtime_session_consistent,

@@ -157,6 +157,7 @@ function epochGenerationGraphStatus(graph) {
       valid: false,
       reason: 'epoch_generation_graph_not_collected',
       graph: null,
+      capsuleMetadataObserved: false,
       runtimeSessionIds: [],
       runtimeSessionConsistent: true,
     };
@@ -183,6 +184,20 @@ function epochGenerationGraphStatus(graph) {
     && epochGraphEdgeGeneration(edge, 'from') === previousGeneration
     && epochGraphEdgeGeneration(edge, 'to') === activeGeneration
   );
+  const publicationEdge = edges.find((edge) =>
+    epochGraphEdgeKind(edge) === 'publish'
+    && epochGraphEdgeGeneration(edge, 'from') === previousGeneration
+    && epochGraphEdgeGeneration(edge, 'to') === activeGeneration
+  ) ?? null;
+  const newArtifactId = String(latest.newArtifactId ?? latest.new_artifact_id ?? publicationEdge?.newArtifactId ?? publicationEdge?.new_artifact_id ?? '').trim();
+  const newArtifactHash = String(latest.newArtifactHash ?? latest.new_artifact_hash ?? publicationEdge?.newArtifactHash ?? publicationEdge?.new_artifact_hash ?? '').trim();
+  const changedSymbols = compactStringList(latest.changedSymbols ?? latest.changed_symbols ?? publicationEdge?.changedSymbols ?? publicationEdge?.changed_symbols);
+  const functionHandleIds = compactStringList(latest.functionHandleIds ?? latest.function_handle_ids ?? publicationEdge?.functionHandleIds ?? publicationEdge?.function_handle_ids);
+  const capsuleMetadataObserved =
+    newArtifactId.length > 0
+    && /^sha256:[0-9a-f]{64}$/i.test(newArtifactHash)
+    && changedSymbols.length > 0
+    && functionHandleIds.length > 0;
   const retirementState = typeof graph.retirementState === 'string'
     ? graph.retirementState.trim()
     : typeof graph.retirement_state === 'string'
@@ -240,6 +255,7 @@ function epochGenerationGraphStatus(graph) {
     graph,
     previousGeneration,
     activeGeneration,
+    capsuleMetadataObserved,
     runtimeSessionIds: graphRuntimeSessionIds,
     runtimeSessionConsistent,
     retirementState,
@@ -1095,6 +1111,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && dispatchTableHashAfterObserved
     && dispatchTableHashChanged;
   const changedEntriesObserved = observation.changedEntriesObserved === true;
+  const capsuleMetadataObserved =
+    observation.capsuleMetadataObserved === true || epochGraph.capsuleMetadataObserved === true;
   const streamScope = typeof observation.streamScope === 'string' && observation.streamScope.trim()
     ? observation.streamScope.trim()
     : null;
@@ -1138,6 +1156,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       dispatchTableHashAfterObserved: true,
       dispatchTableHashChanged: true,
       changedEntriesObserved: true,
+      capsuleMetadataObserved,
       streamOrderingProven: true,
       streamScope,
       streamIds,
@@ -1176,6 +1195,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       dispatchTableHashAfterObserved: true,
       dispatchTableHashChanged: true,
       changedEntriesObserved: true,
+      capsuleMetadataObserved,
       streamOrderingProven: true,
       streamScope,
       streamIds,
@@ -1225,6 +1245,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     dispatchTableHashAfterObserved,
     dispatchTableHashChanged,
     changedEntriesObserved,
+    capsuleMetadataObserved,
     streamOrderingProven,
     streamScope,
     streamIds,
@@ -1248,7 +1269,8 @@ export function summarizeGpuHmrEpochSwapProof(proof) {
       : ' graph=missing';
   const stream = proof.streamOrderingProven ? ' stream_ordering=proven' : ' stream_ordering=unproven';
   const retired = proof.oldGenerationRetired ? ' retired=yes' : ' retired=no';
-  return `gpu_epoch_swap_proof=${result}${degraded}${reason}${publication}${session}${graph}${stream}${retired}`;
+  const capsule = proof.capsuleMetadataObserved ? ' capsule=observed' : ' capsule=missing';
+  return `gpu_epoch_swap_proof=${result}${degraded}${reason}${publication}${session}${graph}${stream}${retired}${capsule}`;
 }
 
 export function classifyGpuHmrHostPreservationProof(observation = {}) {
