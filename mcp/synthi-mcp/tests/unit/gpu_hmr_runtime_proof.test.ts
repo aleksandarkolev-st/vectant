@@ -310,6 +310,43 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.kind).toBe("sentinel_buffer_value");
   });
 
+  it("blocks render output proof when required visual evidence is missing", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualEvidenceRequired: true,
+      visualFrameObserved: false,
+      visualEvidenceRefs: [],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-evidence-missing");
+    expect(proof.degradedReason).toBe("visual_frame_not_observed");
+    expect(proof.outputOracle.passed).toBe(true);
+    expect(proof.visualEvidenceComplete).toBe(false);
+  });
+
+  it("accepts render output proof when oracle and visual evidence are both present", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualEvidenceRequired: true,
+      visualFrameObserved: true,
+      visualEvidenceRefs: ["artifacts/frame.png"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.visualEvidenceComplete).toBe(true);
+    expect(proof.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
+  });
+
   it("can prove output from a structured runtime oracle line", () => {
     const evidence = runtimeOutputOracleEvidence([
       "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:abc",

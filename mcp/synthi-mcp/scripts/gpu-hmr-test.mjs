@@ -2539,6 +2539,7 @@ async function phaseFlow(ctx) {
       evidenceRefs: inwardTrend.snippet ? [inwardTrend.snippet] : [],
     },
     visualFrameObserved: Boolean(inwardScreenshot),
+    visualEvidenceRequired: true,
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
   const inwardEpochProof = await runtimeEpochSwapProofSince(baselineStart);
@@ -2665,6 +2666,7 @@ async function phaseFlow(ctx) {
       evidenceRefs: trend.snippet ? [trend.snippet] : [],
     },
     visualFrameObserved: Boolean(outwardScreenshot),
+    visualEvidenceRequired: true,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
   const outwardEpochProof = await runtimeEpochSwapProofSince(flipStart);
@@ -3480,13 +3482,28 @@ async function selfCheck() {
     argProvenanceComplete: false,
     unknownArgCount: 1,
   });
+  const artifactTransportProof = {
+    ramTransportProven: true,
+    transportEvidenceObserved: true,
+    ramArtifactReferenceProvided: true,
+    evidenceRefs: ['evidence:ram-transport:self-check'],
+  };
+  const hostPreservationProof = {
+    resultState: 'gpu-hmr-host-preservation-proven',
+    identityChecksPassed: true,
+    identitySnapshotObserved: true,
+    identitySnapshotLineageObserved: true,
+    requiredIdentityRolesObserved: true,
+    identityEvidenceRefs: ['worker-log:host_identity:runner_process:session-1'],
+  };
   const fullProof = classifyGpuHmrFullRuntimeProof({
     sourceProof: { resultState: 'gpu-hmr-symbol-bound' },
     abiProof: { resultState: 'gpu-hmr-abi-proven' },
+    artifactTransportProof,
     epochProof: { resultState: 'gpu-hmr-epoch-swap-proven' },
     dispatchProof,
     outputProof,
-    hostPreservationProof: { resultState: 'gpu-hmr-host-preservation-proven' },
+    hostPreservationProof,
   });
   if (
     outputProof.resultState !== 'gpu-hmr-dispatch-safe-proven'

@@ -27,6 +27,7 @@ const GPU_HMR_DEGRADED_STATE_RANK_CAPS = new Map([
   ['gpu-hmr-epoch-swap-unverified', proofStateRank('gpu-hmr-abi-proven')],
   ['gpu-hmr-ram-io-unavailable', proofStateRank('gpu-hmr-epoch-swap-proven')],
   ['gpu-hmr-visual-only', proofStateRank('gpu-hmr-dispatch-safe-proven')],
+  ['gpu-hmr-visual-evidence-missing', proofStateRank('gpu-hmr-dispatch-safe-proven')],
   ['gpu-hmr-original-host-path-unattached', proofStateRank('gpu-hmr-host-preservation-proven')],
   ['gpu-hmr-fission-unverified', 0],
 ]);
@@ -659,6 +660,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const visualEvidenceRefs = Array.isArray(observation.visualEvidenceRefs)
     ? observation.visualEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const visualEvidenceRequired = observation.visualEvidenceRequired === true;
+  const visualEvidenceComplete = !visualEvidenceRequired
+    || (visualFrameObserved && visualEvidenceRefs.length > 0);
 
   if (!dispatchUsable) {
     return {
@@ -668,6 +672,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedReason: dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
       outputOracle: { ...outputOracle, passed: false },
       visualFrameObserved,
+      visualEvidenceRequired,
+      visualEvidenceComplete,
       evidenceRefs,
       visualEvidenceRefs,
       dispatchProof,
@@ -675,6 +681,24 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   }
 
   if (deterministicOraclePassed) {
+    if (!visualEvidenceComplete) {
+      return {
+        schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+        resultState: dispatchProof?.resultState ?? 'gpu-hmr-dispatch-safe-proven',
+        degradedState: 'gpu-hmr-visual-evidence-missing',
+        degradedReason: visualFrameObserved
+          ? 'visual_evidence_refs_missing'
+          : 'visual_frame_not_observed',
+        outputOracle,
+        visualFrameObserved,
+        visualEvidenceRequired,
+        visualEvidenceComplete,
+        evidenceRefs,
+        visualEvidenceRefs,
+        dispatchProof,
+      };
+    }
+
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
       resultState: 'gpu-hmr-output-oracle-proven',
@@ -682,6 +706,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedReason: null,
       outputOracle,
       visualFrameObserved,
+      visualEvidenceRequired,
+      visualEvidenceComplete,
       evidenceRefs,
       visualEvidenceRefs,
       dispatchProof,
@@ -712,6 +738,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     degradedReason,
     outputOracle: { ...outputOracle, passed: false },
     visualFrameObserved,
+    visualEvidenceRequired,
+    visualEvidenceComplete,
     evidenceRefs,
     visualEvidenceRefs,
     dispatchProof,
