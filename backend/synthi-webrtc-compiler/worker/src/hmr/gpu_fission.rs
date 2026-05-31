@@ -55,6 +55,7 @@ const ACCEPTED_OUTPUT_ORACLE_KINDS: &[&str] = &[
     "selected_pixel_values",
     "per_pass_checksum",
     "dispatch_counter",
+    "buffer_checksum",
 ];
 
 #[derive(Clone, Copy)]
@@ -1456,6 +1457,24 @@ mod tests {
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
         assert_eq!(report["outputOracleContract"]["proposalKind"], "selected_pixels");
+    }
+
+    #[test]
+    fn accepts_candidate_with_buffer_checksum_output_oracle_proposal() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "buffer_checksum",
+            "producer": "deterministic_probe",
+            "expectedHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "outputTargetId": "buffer:primary"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], true);
+        assert_eq!(report["outputOracleContract"]["proposalKind"], "buffer_checksum");
     }
 
     #[test]
