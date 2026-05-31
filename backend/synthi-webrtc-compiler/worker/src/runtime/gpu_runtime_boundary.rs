@@ -278,6 +278,16 @@ fn dispatcher_metadata_snapshot() -> Option<ActiveDispatcherMetadata> {
         .clone()
 }
 
+fn active_dispatcher_artifact_id() -> Option<String> {
+    dispatcher_metadata_snapshot()
+        .and_then(|metadata| metadata.artifact_id)
+        .filter(|artifact_id| !artifact_id.trim().is_empty())
+}
+
+fn cstr_or_active_artifact_id(ptr: *const c_char) -> Option<String> {
+    cstr(ptr).or_else(active_dispatcher_artifact_id)
+}
+
 fn dispatch_table_entry_id_for_kernel(
     metadata: &ActiveDispatcherMetadata,
     kernel_name: &str,
@@ -973,7 +983,7 @@ pub extern "C" fn synthi_gpu_record_output_oracle_with_provenance(
             producer: cstr(producer),
             output_target_id: cstr(output_target_id),
             readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: cstr(artifact_id),
+            artifact_id: cstr_or_active_artifact_id(artifact_id),
             visual_evidence_ref: cstr(visual_evidence_ref),
         },
     );
@@ -1038,7 +1048,7 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_provenance(
             producer: cstr(producer),
             output_target_id: cstr(output_target_id),
             readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: cstr(artifact_id),
+            artifact_id: cstr_or_active_artifact_id(artifact_id),
             visual_evidence_ref: cstr(visual_evidence_ref),
         },
     );
@@ -1966,6 +1976,63 @@ mod tests {
         assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:def"));
         assert_eq!(records[0].visual_evidence_ref, None);
         assert!(records[0].passed);
+    }
+
+    #[test]
+    fn output_oracle_provenance_uses_active_artifact_when_not_supplied() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:active".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+
+        let oracle_id = CString::new("probe.pixel").unwrap();
+        let kind = CString::new("selected_pixels").unwrap();
+        let expected = CString::new("0.25").unwrap();
+        let actual = CString::new("0.25").unwrap();
+        let producer = CString::new("runtime_probe").unwrap();
+        let output_target = CString::new("target:color").unwrap();
+        synthi_gpu_record_output_oracle_with_provenance(
+            oracle_id.as_ptr(),
+            kind.as_ptr(),
+            expected.as_ptr(),
+            actual.as_ptr(),
+            std::ptr::null(),
+            producer.as_ptr(),
+            output_target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            true,
+        );
+
+        let bytes = b"deterministic output bytes";
+        let expected_text = sha256_checksum_value(bytes);
+        let expected_checksum = CString::new(expected_text).unwrap();
+        let checksum_id = CString::new("probe.buffer").unwrap();
+        assert!(synthi_gpu_record_output_buffer_checksum_with_provenance(
+            checksum_id.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            expected_checksum.as_ptr(),
+            producer.as_ptr(),
+            output_target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+        ));
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:active"));
+        assert_eq!(records[1].artifact_id.as_deref(), Some("artifact:active"));
     }
 
     #[test]
