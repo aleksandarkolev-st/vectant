@@ -586,6 +586,26 @@ fn record_launch_host_identities(
     }
 }
 
+pub fn record_hmr_runtime_identity_snapshot() {
+    let pid = std::process::id() as usize;
+    let session_hash = stable_hash64(runtime_session_id());
+    record_host_identity_event(
+        "runner_process".to_string(),
+        pid as *const c_void,
+        session_hash,
+    );
+    record_host_identity_event(
+        "hmr_boundary_state".to_string(),
+        (state() as *const Mutex<BoundaryState>).cast::<c_void>(),
+        stable_hash64("hmr_boundary_state"),
+    );
+    record_host_identity_event(
+        "runtime_context".to_string(),
+        (dispatcher_slot() as *const Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>).cast::<c_void>(),
+        stable_hash64("runtime_context"),
+    );
+}
+
 fn record_original_host_path_event(
     host_path_id: String,
     dispatch_table_entry_id: String,
@@ -1534,6 +1554,32 @@ mod tests {
             launch_identities[0].runtime_session_id,
             launch_identities[1].runtime_session_id
         );
+    }
+
+    #[test]
+    fn hmr_runtime_identity_snapshot_records_generation_lineage() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        record_hmr_runtime_identity_snapshot();
+        clear_launch_dispatcher();
+        record_hmr_runtime_identity_snapshot();
+
+        let identities = host_identity_records_snapshot();
+        for role in ["runner_process", "hmr_boundary_state", "runtime_context"] {
+            let role_records = identities
+                .iter()
+                .filter(|record| record.role == role)
+                .collect::<Vec<_>>();
+            assert_eq!(role_records.len(), 2);
+            assert_eq!(role_records[0].ptr, role_records[1].ptr);
+            assert_eq!(role_records[0].aux, role_records[1].aux);
+            assert_ne!(role_records[0].generation, role_records[1].generation);
+            assert_eq!(
+                role_records[0].runtime_session_id,
+                role_records[1].runtime_session_id
+            );
+        }
     }
 
     #[test]

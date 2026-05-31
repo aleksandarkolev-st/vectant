@@ -77,8 +77,8 @@ use crate::hmr::gpu_reload_orchestrator::{
 use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher,
-    launch_records_snapshot, managed_buffers_snapshot, runtime_session_id, GpuLaunchDispatcher,
-    GpuLaunchRequest,
+    launch_records_snapshot, managed_buffers_snapshot, record_hmr_runtime_identity_snapshot,
+    runtime_session_id, GpuLaunchDispatcher, GpuLaunchRequest,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -1235,12 +1235,14 @@ impl Adapter for GpuModuleAdapter {
             let retired_module_count = retired.len();
             let (dispatcher_kernels, dispatch_table_hash) =
                 active_dispatch_table(&self.module_manager);
+            record_hmr_runtime_identity_snapshot();
             let previous_generation = current_launch_generation();
             install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
                 symbols,
                 kernels: dispatcher_kernels,
             }));
             let active_generation = current_launch_generation();
+            record_hmr_runtime_identity_snapshot();
             let mut runtime_log_lines = Vec::new();
             let ram_transport_proven = ram_artifact_reference_provided
                 && loader_transport == ArtifactLoaderTransport::RamBytes;
