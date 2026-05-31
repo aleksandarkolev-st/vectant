@@ -1415,6 +1415,21 @@ function runtimeEvidenceFromValidationLogs({ workerLogs, upstreamRunLog, slug })
   };
 }
 
+function runtimeEvidenceScope(scopedWorkerLogs, upstreamRunEvidence) {
+  const workerSessionMarkerObserved = scopedWorkerLogs?.marker_found === true;
+  const upstreamRunEvidenceObserved =
+    Array.isArray(upstreamRunEvidence) && upstreamRunEvidence.length > 0;
+  return {
+    observed: workerSessionMarkerObserved || upstreamRunEvidenceObserved,
+    workerSessionMarkerObserved,
+    upstreamRunEvidenceObserved,
+    scopeKinds: [
+      ...(workerSessionMarkerObserved ? ['worker-session-marker'] : []),
+      ...(upstreamRunEvidenceObserved ? ['current-upstream-run-log'] : []),
+    ],
+  };
+}
+
 function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
@@ -1782,6 +1797,46 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('original host run runtime evidence was not accepted');
   }
+  const upstreamOnlyRuntimeEvidence = runtimeEvidenceFromValidationLogs({
+    slug: 'target-session',
+    workerLogs: '',
+    upstreamRunLog: [
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original',
+      '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+    ].join('\n'),
+  });
+  const upstreamOnlyScope = runtimeEvidenceScope(
+    upstreamOnlyRuntimeEvidence.scopedWorkerLogs,
+    upstreamOnlyRuntimeEvidence.upstreamRunEvidence,
+  );
+  const upstreamOnlyDispatch = runtimeDispatchEvidence(upstreamOnlyRuntimeEvidence.runtimeEvidence);
+  const upstreamOnlySession = runtimeSessionEvidence(upstreamOnlyRuntimeEvidence.runtimeEvidence);
+  const upstreamOnlyArgProvenance =
+    runtimeArgProvenanceEvidence(upstreamOnlyRuntimeEvidence.runtimeEvidence);
+  const upstreamOnlyDispatchProof = classifyGpuHmrDispatchProof({
+    dispatchObserved: upstreamOnlyDispatch.success_count > 0 && upstreamOnlyScope.observed,
+    sessionScoped: upstreamOnlyScope.observed && upstreamOnlySession.record_count > 0,
+    runtimeSessionIds: upstreamOnlySession.unique_ids,
+    runtimeSessionConsistent: upstreamOnlySession.consistent,
+    argProvenanceObserved: upstreamOnlyArgProvenance.total_count > 0,
+    argProvenanceComplete: upstreamOnlyArgProvenance.complete_count > 0
+      && upstreamOnlyArgProvenance.incomplete_count === 0
+      && upstreamOnlyArgProvenance.unknown_arg_count === 0,
+    argProvenanceEvidenceRefs: upstreamOnlyArgProvenance.evidence_refs,
+    unknownArgCount: upstreamOnlyArgProvenance.unknown_arg_count,
+    abiProven: true,
+    epochSwapProven: true,
+    streamOrderingProven: true,
+    replacementScopeProven: true,
+  });
+  if (
+    !upstreamOnlyScope.observed
+    || !upstreamOnlyScope.upstreamRunEvidenceObserved
+    || upstreamOnlyScope.workerSessionMarkerObserved
+    || upstreamOnlyDispatchProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
+  ) {
+    throw new Error('current upstream run runtime evidence did not establish dispatch scope');
+  }
   const hostIdentityEvidence = runtimeHostIdentityEvidence([
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1',
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1',
@@ -1943,6 +1998,7 @@ async function collectRuntimeEvidence() {
     upstreamRunLog: report.logs.upstream_run,
     slug: CFG.slug,
   });
+  const runtimeScope = runtimeEvidenceScope(scopedWorkerLogs, upstreamRunEvidence);
   const unscopedWorkerEvidence = evidenceLines(
     workerLogs,
     RUNTIME_EVIDENCE_PATTERN,
@@ -1993,6 +2049,9 @@ async function collectRuntimeEvidence() {
       stop_marker_found: scopedWorkerLogs.stop_marker_found,
       stale_runtime_lines_dropped: scopedWorkerLogs.stale_runtime_lines_dropped,
       total_lines: scopedWorkerLogs.total_lines,
+      runtime_evidence_scope_observed: runtimeScope.observed,
+      runtime_evidence_scope_kinds: runtimeScope.scopeKinds,
+      upstream_run_evidence_observed: runtimeScope.upstreamRunEvidenceObserved,
     },
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
@@ -2030,10 +2089,14 @@ async function collectRuntimeEvidence() {
       runtimeDispatch.failure_lines.slice(0, 3).join(' | ').slice(0, 1200),
     );
     process.exitCode = 1;
-  } else if (runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found) {
-    record('runtime dispatch successes', 'pass', `dispatch_ok=${runtimeDispatch.success_count}`);
-  } else if (!scopedWorkerLogs.marker_found) {
-    record('runtime dispatch evidence', 'warn', `no worker log session marker captured for slug=${CFG.slug}`);
+  } else if (runtimeDispatch.success_count > 0 && runtimeScope.observed) {
+    record(
+      'runtime dispatch successes',
+      'pass',
+      `dispatch_ok=${runtimeDispatch.success_count} scope=${runtimeScope.scopeKinds.join(',')}`,
+    );
+  } else if (!runtimeScope.observed) {
+    record('runtime dispatch evidence', 'warn', `no runtime evidence scope captured for slug=${CFG.slug}`);
   } else {
     record('runtime dispatch evidence', 'warn', 'no synthi_gpu_launch dispatch lines captured');
   }
@@ -2129,8 +2192,8 @@ async function collectRuntimeEvidence() {
   );
   report.epoch_swap_proof = runtimeEpochSwap.proof;
   report.dispatch_proof = classifyGpuHmrDispatchProof({
-    dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
-    sessionScoped: scopedWorkerLogs.marker_found && runtimeSession.record_count > 0,
+    dispatchObserved: runtimeDispatch.success_count > 0 && runtimeScope.observed,
+    sessionScoped: runtimeScope.observed && runtimeSession.record_count > 0,
     runtimeSessionIds: runtimeSession.unique_ids,
     runtimeSessionConsistent: runtimeSession.record_count === 0 ? true : runtimeSession.consistent,
     argProvenanceObserved: runtimeArgProvenance.total_count > 0,
