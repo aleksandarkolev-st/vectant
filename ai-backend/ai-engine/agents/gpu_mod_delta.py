@@ -71,6 +71,8 @@ FISSION_CANDIDATE_STRING_LIST_FIELDS = {
     "loaderCapabilityEvidenceIds",
     "loaderEvidenceIds",
     "oracleEvidenceIds",
+    "originalHostLaunchMappingEvidenceIds",
+    "originalHostPathEvidenceIds",
     "outputOracleEvidenceIds",
     "proofEvidenceIds",
     "proofFailureReasonCodes",

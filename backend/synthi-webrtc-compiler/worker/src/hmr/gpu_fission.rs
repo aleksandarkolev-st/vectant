@@ -58,6 +58,13 @@ const ACCEPTED_OUTPUT_ORACLE_KINDS: &[&str] = &[
     "buffer_checksum",
 ];
 
+const ORIGINAL_HOST_LAUNCH_MAPPING_EVIDENCE_FIELDS: &[&str] = &[
+    "originalHostLaunchMappingEvidenceIds",
+    "originalHostPathEvidenceIds",
+    "hostPathAttachmentEvidenceIds",
+    "launchAttachmentEvidenceIds",
+];
+
 #[derive(Clone, Copy)]
 struct VerificationEvidenceCategory {
     name: &'static str,
@@ -270,6 +277,11 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     {
         reason_codes.push("fission.original_host_launch_mapping_missing".to_string());
     }
+    if original_host_launch_mapping_required(candidate)
+        && original_host_launch_mapping_evidence_ids(candidate).is_empty()
+    {
+        reason_codes.push("fission.original_host_launch_mapping_evidence_missing".to_string());
+    }
 
     if stream_ordering_required(candidate) && stream_ordering_evidence_ids(candidate).is_empty() {
         reason_codes.push("fission.stream_ordering_evidence_missing".to_string());
@@ -317,6 +329,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
             .get("originalHostLaunchMappingId")
             .cloned()
             .unwrap_or(Value::Null),
+        "originalHostLaunchMappingEvidenceIds": original_host_launch_mapping_evidence_ids(candidate),
         "streamOrderingRequired": stream_ordering_required(candidate),
         "streamOrderingEvidenceIds": stream_ordering_evidence_ids(candidate),
         "epochRetirementRequired": epoch_retirement_required(candidate),
@@ -1021,6 +1034,19 @@ fn epoch_retirement_evidence_ids(candidate: &Value) -> Vec<String> {
     )
 }
 
+fn original_host_launch_mapping_evidence_ids(candidate: &Value) -> Vec<String> {
+    deterministic_evidence_ids_for_category(
+        candidate,
+        ORIGINAL_HOST_LAUNCH_MAPPING_EVIDENCE_FIELDS,
+        &[
+            "original_host_launch_mapping",
+            "original_host_path",
+            "host_path_attachment",
+            "launch_attachment",
+        ],
+    )
+}
+
 fn bool_true(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool) == Some(true)
 }
@@ -1618,6 +1644,8 @@ mod tests {
             "reason": "attach through preserved runtime launch boundary"
         });
         candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -1627,6 +1655,27 @@ mod tests {
             report["originalHostLaunchMappingId"],
             "host-launch:mapped-runtime-boundary"
         );
+        assert_eq!(
+            report["originalHostLaunchMappingEvidenceIds"],
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"])
+        );
+    }
+
+    #[test]
+    fn rejects_original_host_attachment_candidate_without_mapping_evidence() {
+        let mut candidate = valid_candidate();
+        candidate["requiresOriginalHostPath"] = json!(true);
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_launch_mapping_evidence_missing"));
+        assert_eq!(report["originalHostLaunchMappingEvidenceIds"], json!([]));
     }
 
     #[test]

@@ -92,6 +92,7 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
                 "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
                 "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
                 "outputOracleEvidenceIds": ["evidence:output-oracle"],
+                "originalHostLaunchMappingEvidenceIds": ["evidence:original-host-launch-mapping"],
                 "safeExportSupersetEvidenceIds": ["evidence:safe-export"],
                 "narrowerCandidateRejections": [
                     {
@@ -113,6 +114,9 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
     assert candidate["compileRecipeEvidenceIds"] == ["evidence:compile-recipe"]
     assert candidate["loaderCapabilityEvidenceIds"] == ["evidence:loader-capability"]
     assert candidate["outputOracleEvidenceIds"] == ["evidence:output-oracle"]
+    assert candidate["originalHostLaunchMappingEvidenceIds"] == [
+        "evidence:original-host-launch-mapping"
+    ]
     assert candidate["safeExportSupersetEvidenceIds"] == ["evidence:safe-export"]
     assert candidate["narrowerCandidateRejections"][0]["scopeRank"] == 0
     assert candidate["sourceSpans"][0]["startLine"] == 7
@@ -229,6 +233,7 @@ def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
     assert "compileRecipeEvidenceIds" in prompt
     assert "loaderCapabilityEvidenceIds" in prompt
     assert "outputOracleEvidenceIds" in prompt
+    assert "originalHostLaunchMappingEvidenceIds" in prompt
     assert "narrowerCandidateRejections" in prompt
     assert "Do not invent ids" in prompt
     assert "Use null" in prompt
