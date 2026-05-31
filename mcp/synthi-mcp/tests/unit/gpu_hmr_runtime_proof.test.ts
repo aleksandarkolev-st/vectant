@@ -571,6 +571,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.evidence_refs).toEqual(["worker-log:output_oracle:probe.expected"]);
   });
 
+  it("filters runtime oracle records by contract provenance fields", () => {
+    const outputOracleContract = {
+      oracleId: "probe.expected",
+      kind: "buffer_checksum",
+      expected: "sha256:def",
+      producer: "runtime_probe",
+      outputTargetId: "target:main",
+      artifactId: "artifact:def",
+      runtimeSessionId: "pid1",
+    };
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:other readback_timestamp=1779980000000 artifact_id=artifact:def",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid2 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
+    ], { outputOracleContract });
+    const mismatchedArtifact = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:other",
+    ], { outputOracleContract });
+
+    expect(evidence.matched_count).toBe(1);
+    expect(evidence.output_oracle?.outputTargetId).toBe("target:main");
+    expect(evidence.output_oracle?.artifactId).toBe("artifact:def");
+    expect(evidence.expected_contract?.outputTargetId).toBe("target:main");
+    expect(mismatchedArtifact.matched_count).toBe(0);
+    expect(mismatchedArtifact.deterministic_oracle_passed).toBe(false);
+  });
+
   it("only accepts runtime oracle records from the expected runtime session", () => {
     const evidence = runtimeOutputOracleEvidence([
       "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=old-session",

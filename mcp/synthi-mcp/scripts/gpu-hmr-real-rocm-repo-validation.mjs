@@ -82,16 +82,37 @@ function parseOutputOracleContract(raw) {
     throw new Error('invalid output oracle contract: expected object');
   }
   const contract = {};
-  for (const field of ['id', 'oracleId', 'kind', 'expected']) {
-    if (Object.prototype.hasOwnProperty.call(parsed, field)) {
-      if (typeof parsed[field] !== 'string' || !parsed[field].trim()) {
-        throw new Error(`invalid output oracle contract field ${field}: expected non-empty string`);
+  const aliases = {
+    oracleId: ['id', 'oracleId', 'oracle_id'],
+    kind: ['kind'],
+    expected: ['expected', 'expectedValue', 'expected_value', 'expectedHash', 'expected_hash'],
+    producer: ['producer', 'producerId', 'producer_id', 'producerSubsystem', 'producer_subsystem'],
+    outputTargetId: ['outputTargetId', 'output_target_id', 'outputTarget', 'output_target', 'target'],
+    artifactId: ['artifactId', 'artifact_id', 'artifact'],
+    runtimeSessionId: [
+      'runtimeSessionId',
+      'runtime_session_id',
+      'runtimeSession',
+      'runtime_session',
+      'sessionId',
+      'session_id',
+    ],
+  };
+  for (const [canonical, fields] of Object.entries(aliases)) {
+    for (const field of fields) {
+      if (Object.prototype.hasOwnProperty.call(parsed, field)) {
+        if (typeof parsed[field] !== 'string' || !parsed[field].trim()) {
+          throw new Error(`invalid output oracle contract field ${field}: expected non-empty string`);
+        }
+        contract[canonical] = parsed[field].trim();
+        break;
       }
-      contract[field] = parsed[field].trim();
     }
   }
-  if (!contract.id && !contract.oracleId && !contract.kind && !contract.expected) {
-    throw new Error('invalid output oracle contract: at least one of id, oracleId, kind, or expected is required');
+  if (!Object.keys(contract).length) {
+    throw new Error(
+      'invalid output oracle contract: at least one supported string field is required',
+    );
   }
   return contract;
 }
@@ -1910,13 +1931,15 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime artifact transport evidence parser failed');
   }
-  const outputOracleContract = parseOutputOracleContract('{"id":"probe.expected","kind":"buffer_checksum","expected":"sha256:def"}');
+  const outputOracleContract = parseOutputOracleContract(
+    '{"id":"probe.expected","kind":"buffer_checksum","expected":"sha256:def","producer":"runtime_probe","outputTargetId":"target:main","artifactId":"artifact:def"}',
+  );
   const constrainedOutputOracleEvidence = runtimeOutputOracleEvidence([
-    '[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
-    '[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
+    '[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:other artifact_id=artifact:def',
+    '[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main artifact_id=artifact:def',
   ], { outputOracleContract });
   const mismatchedOutputOracleEvidence = runtimeOutputOracleEvidence([
-    '[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
+    '[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main artifact_id=artifact:other',
   ], { outputOracleContract });
   if (
     constrainedOutputOracleEvidence.matched_count !== 1

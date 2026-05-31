@@ -565,18 +565,53 @@ function outputOracleRecord(line) {
 
 function normalizeOracleContract(contract) {
   if (!contract || typeof contract !== 'object') return null;
-  const normalized = {};
-  for (const field of ['id', 'oracleId', 'kind', 'expected']) {
-    if (typeof contract[field] === 'string' && contract[field].trim()) {
-      normalized[field] = contract[field].trim();
+  const stringAlias = (aliases) => {
+    for (const field of aliases) {
+      if (typeof contract[field] === 'string' && contract[field].trim()) {
+        return contract[field].trim();
+      }
     }
+    return null;
+  };
+  const oracleId = stringAlias(['id', 'oracleId', 'oracle_id']);
+  const kind = stringAlias(['kind']);
+  const expected = stringAlias(['expected', 'expectedValue', 'expected_value', 'expectedHash', 'expected_hash']);
+  const producer = stringAlias(['producer', 'producerId', 'producer_id', 'producerSubsystem', 'producer_subsystem']);
+  const outputTargetId = stringAlias([
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]);
+  const artifactId = stringAlias(['artifactId', 'artifact_id', 'artifact']);
+  const runtimeSessionId = stringAlias([
+    'runtimeSessionId',
+    'runtime_session_id',
+    'runtimeSession',
+    'runtime_session',
+    'sessionId',
+    'session_id',
+  ]);
+  if (
+    oracleId === null
+    && kind === null
+    && expected === null
+    && producer === null
+    && outputTargetId === null
+    && artifactId === null
+    && runtimeSessionId === null
+  ) {
+    return null;
   }
-  const oracleId = normalized.id ?? normalized.oracleId ?? null;
-  if (oracleId === null && !normalized.kind && !normalized.expected) return null;
   return {
     oracleId,
-    kind: normalized.kind ?? null,
-    expected: normalized.expected ?? null,
+    kind,
+    expected,
+    producer,
+    outputTargetId,
+    artifactId,
+    runtimeSessionId,
   };
 }
 
@@ -585,6 +620,10 @@ function oracleMatchesContract(record, contract) {
   if (contract.oracleId !== null && record.oracleId !== contract.oracleId) return false;
   if (contract.kind !== null && record.kind !== contract.kind) return false;
   if (contract.expected !== null && record.expected !== contract.expected) return false;
+  if (contract.producer !== null && record.producer !== contract.producer) return false;
+  if (contract.outputTargetId !== null && record.outputTargetId !== contract.outputTargetId) return false;
+  if (contract.artifactId !== null && record.artifactId !== contract.artifactId) return false;
+  if (contract.runtimeSessionId !== null && record.runtimeSession !== contract.runtimeSessionId) return false;
   return true;
 }
 
