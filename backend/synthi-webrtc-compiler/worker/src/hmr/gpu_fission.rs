@@ -271,6 +271,14 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.original_host_launch_mapping_missing".to_string());
     }
 
+    if stream_ordering_required(candidate) && stream_ordering_evidence_ids(candidate).is_empty() {
+        reason_codes.push("fission.stream_ordering_evidence_missing".to_string());
+    }
+
+    if epoch_retirement_required(candidate) && epoch_retirement_evidence_ids(candidate).is_empty() {
+        reason_codes.push("fission.epoch_retirement_unavailable".to_string());
+    }
+
     if ai_proposal_id_required(candidate) && !non_empty_string(candidate.get("aiProposalId")) {
         reason_codes.push("fission.ai_proposal_id_missing".to_string());
     }
@@ -309,6 +317,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
             .get("originalHostLaunchMappingId")
             .cloned()
             .unwrap_or(Value::Null),
+        "streamOrderingRequired": stream_ordering_required(candidate),
+        "streamOrderingEvidenceIds": stream_ordering_evidence_ids(candidate),
+        "epochRetirementRequired": epoch_retirement_required(candidate),
+        "epochRetirementEvidenceIds": epoch_retirement_evidence_ids(candidate),
         "selectionScore": fission_selection_score(candidate),
         "verifierEvidenceId": verifier_evidence_id(candidate, status),
         "candidate": candidate,
@@ -956,11 +968,64 @@ fn original_host_launch_mapping_required(candidate: &Value) -> bool {
         || runtime_ownership_requires_original_host(candidate.get("runtimeAttachmentRequirement"))
 }
 
+fn stream_ordering_required(candidate: &Value) -> bool {
+    bool_true(candidate.get("requiresStreamOrdering"))
+        || bool_true(candidate.get("streamOrderingRequired"))
+        || explicit_requirement_enabled(candidate.get("streamOrderingRequirement"))
+        || explicit_requirement_enabled(candidate.get("runtimeOrderingRequirement"))
+        || epoch_publication_required(candidate)
+        || epoch_retirement_required(candidate)
+}
+
+fn epoch_publication_required(candidate: &Value) -> bool {
+    bool_true(candidate.get("epochPublicationRequired"))
+        || explicit_requirement_enabled(candidate.get("epochPublicationRequirement"))
+        || explicit_requirement_enabled(candidate.get("capsulePublicationRequirement"))
+}
+
+fn epoch_retirement_required(candidate: &Value) -> bool {
+    bool_true(candidate.get("epochRetirementRequired"))
+        || bool_true(candidate.get("streamRetirementRequired"))
+        || explicit_requirement_enabled(candidate.get("epochRetirementRequirement"))
+        || explicit_requirement_enabled(candidate.get("streamRetirementRequirement"))
+}
+
+fn stream_ordering_evidence_ids(candidate: &Value) -> Vec<String> {
+    deterministic_evidence_ids_for_category(
+        candidate,
+        &[
+            "streamOrderingEvidenceIds",
+            "runtimeOrderingEvidenceIds",
+            "streamEvidenceIds",
+        ],
+        &["stream_ordering", "stream_order", "runtime_ordering"],
+    )
+}
+
+fn epoch_retirement_evidence_ids(candidate: &Value) -> Vec<String> {
+    deterministic_evidence_ids_for_category(
+        candidate,
+        &[
+            "epochRetirementEvidenceIds",
+            "streamRetirementEvidenceIds",
+            "retirementFenceEvidenceIds",
+            "epochPublicationEvidenceIds",
+        ],
+        &[
+            "epoch_retirement",
+            "stream_retirement",
+            "retirement_fence",
+            "epoch_publication",
+            "epoch_swap",
+        ],
+    )
+}
+
 fn bool_true(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool) == Some(true)
 }
 
-fn explicit_original_host_requirement(value: Option<&Value>) -> bool {
+fn explicit_requirement_enabled(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
         Some(Value::String(value)) => requirement_text_enabled(value),
@@ -974,6 +1039,10 @@ fn explicit_original_host_requirement(value: Option<&Value>) -> bool {
         }
         _ => false,
     }
+}
+
+fn explicit_original_host_requirement(value: Option<&Value>) -> bool {
+    explicit_requirement_enabled(value)
 }
 
 fn runtime_ownership_requires_original_host(value: Option<&Value>) -> bool {
@@ -1557,6 +1626,54 @@ mod tests {
         assert_eq!(
             report["originalHostLaunchMappingId"],
             "host-launch:mapped-runtime-boundary"
+        );
+    }
+
+    #[test]
+    fn rejects_epoch_candidate_without_stream_and_retirement_evidence() {
+        let mut candidate = valid_candidate();
+        candidate["epochPublicationRequired"] = json!(true);
+        candidate["epochRetirementRequirement"] = json!("required");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["streamOrderingRequired"], true);
+        assert_eq!(report["epochRetirementRequired"], true);
+        assert_eq!(report["streamOrderingEvidenceIds"], json!([]));
+        assert_eq!(report["epochRetirementEvidenceIds"], json!([]));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.stream_ordering_evidence_missing"));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.epoch_retirement_unavailable"));
+    }
+
+    #[test]
+    fn accepts_epoch_candidate_with_deterministic_stream_and_retirement_evidence() {
+        let mut candidate = valid_candidate();
+        candidate["streamOrderingRequirement"] = json!({"required": true});
+        candidate["streamRetirementRequired"] = json!(true);
+        candidate["streamOrderingEvidenceIds"] = json!(["evidence:stream-ordering:launch"]);
+        candidate["epochRetirementEvidenceIds"] = json!(["evidence:epoch-retirement:fence"]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["streamOrderingRequired"], true);
+        assert_eq!(report["epochRetirementRequired"], true);
+        assert_eq!(
+            report["streamOrderingEvidenceIds"],
+            json!(["evidence:stream-ordering:launch"])
+        );
+        assert_eq!(
+            report["epochRetirementEvidenceIds"],
+            json!(["evidence:epoch-retirement:fence"])
         );
     }
 
