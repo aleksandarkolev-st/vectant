@@ -1400,6 +1400,21 @@ function evidenceLines(text, pattern) {
     .slice(-300);
 }
 
+const RUNTIME_EVIDENCE_PATTERN =
+  /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i;
+
+function runtimeEvidenceFromValidationLogs({ workerLogs, upstreamRunLog, slug }) {
+  const scopedWorkerLogs = scopeLogTextToSession(workerLogs, slug);
+  const scopedWorkerEvidence = evidenceLines(scopedWorkerLogs.text, RUNTIME_EVIDENCE_PATTERN);
+  const upstreamRunEvidence = evidenceLines(upstreamRunLog, RUNTIME_EVIDENCE_PATTERN);
+  return {
+    scopedWorkerLogs,
+    scopedWorkerEvidence,
+    upstreamRunEvidence,
+    runtimeEvidence: [...scopedWorkerEvidence, ...upstreamRunEvidence],
+  };
+}
+
 function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
@@ -1745,6 +1760,28 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime epoch evidence parser failed');
   }
+  const originalHostRuntimeEvidence = runtimeEvidenceFromValidationLogs({
+    slug: 'target-session',
+    workerLogs: [
+      '[Runner] Session ID from env: target-session',
+      '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=/x expected_symbols=kernel touched_symbols=kernel retired_modules=0 replaced_primary=false',
+    ].join('\n'),
+    upstreamRunLog: [
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original',
+      '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+      '[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=host_runtime_explicit host_path_id=host-loop dispatch_table_entry_id=entry-kernel generation=3 runtime_session=pid-original',
+    ].join('\n'),
+  });
+  const originalHostPath = originalHostPathProofFromRuntimeEvidence(
+    originalHostRuntimeEvidence.runtimeEvidence,
+    { required: true, runtimeSessionIds: ['pid-original'] },
+  );
+  if (
+    originalHostRuntimeEvidence.upstreamRunEvidence.length !== 3
+    || !originalHostPath.proof.attachmentProven
+  ) {
+    throw new Error('original host run runtime evidence was not accepted');
+  }
   const hostIdentityEvidence = runtimeHostIdentityEvidence([
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1',
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1',
@@ -1896,14 +1933,19 @@ async function collectRuntimeEvidence() {
     120000,
     false,
   );
-  const scopedWorkerLogs = scopeLogTextToSession(workerLogs, CFG.slug);
-  const workerEvidence = evidenceLines(
-    scopedWorkerLogs.text,
-    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
-  );
+  const {
+    scopedWorkerLogs,
+    scopedWorkerEvidence,
+    upstreamRunEvidence,
+    runtimeEvidence: workerEvidence,
+  } = runtimeEvidenceFromValidationLogs({
+    workerLogs,
+    upstreamRunLog: report.logs.upstream_run,
+    slug: CFG.slug,
+  });
   const unscopedWorkerEvidence = evidenceLines(
     workerLogs,
-    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
+    RUNTIME_EVIDENCE_PATTERN,
   );
   const aiEvidence = evidenceLines(
     aiLogs,
@@ -1939,6 +1981,8 @@ async function collectRuntimeEvidence() {
   });
   report.evidence = {
     worker_log_lines: workerEvidence,
+    worker_service_log_lines: scopedWorkerEvidence,
+    upstream_run_log_lines: upstreamRunEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
     worker_session_scope: {
       slug: CFG.slug,
@@ -1976,6 +2020,9 @@ async function collectRuntimeEvidence() {
     runtime_original_host_path: runtimeOriginalHostPath.evidence,
     runtime_identity_changes: runtimeIdentityChanges,
   };
+  if (upstreamRunEvidence.length > 0) {
+    record('runtime original host run evidence', 'pass', `lines=${upstreamRunEvidence.length}`);
+  }
   if (runtimeDispatch.failure_count > 0) {
     record(
       'runtime dispatch failures',
