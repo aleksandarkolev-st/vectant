@@ -204,6 +204,11 @@ detail view (discovered tools with allowlist checkboxes, Test button, Remove).
 
 ### Tool-call flow (in-app AI)
 
+> **Naming note:** the spec writes external tool names illustratively as `ext__<connId>__<tool>`.
+> The implementation (Plan 1a) uses a shorter **numeric alias `ext_<i>`** (e.g. `ext_0`) mapped to
+> `{connId, toolName}` via an in-memory alias map, to stay within Gemini's function-name length and
+> charset limits. The `ext_` prefix and the routing semantics below are unchanged.
+
 1. `/api/chat` resolves the caller's scope `{userId, workspaceSlug}` and calls
    `resolveToolConfigs(scope)` → enabled + allowlisted connections with decrypted secrets.
 2. For each connection, `buildToolDeclarations()` calls `hub.listTools(config)` and appends the

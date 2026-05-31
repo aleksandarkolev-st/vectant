@@ -1497,7 +1497,16 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 **Files:**
 - Modify: `synthi/src/app/api/chat/route.js`
 
-This is an integration edit into `streamGeminiWithTools`. Locate exact anchors with grep before editing (line numbers drift).
+This is an integration edit into `streamGeminiWithTools`. Line numbers drift — locate each anchor
+with the grep given in the step.
+
+> **Scope source (verified against the code):** No param threading or call-site edit is needed.
+> `streamGeminiWithTools` already receives `userId` (resolved from the NextAuth session at
+> ~L1802–1808) and `workspacePath` (param at ~L859). The frontend sends the **workspace slug as the
+> `workspacePath` body field** (`synthi/src/components/chat/AIChatWindow.jsx:128` →
+> `workspacePath: workspaceSlug`). Therefore inside `streamGeminiWithTools`, the scope is
+> `{ userId, workspaceSlug: workspacePath || null }`. The POST handler has **no `slug` variable** —
+> do not reference one.
 
 - [ ] **Step 1: Import the module**
 
@@ -1508,68 +1517,23 @@ At the top of `synthi/src/app/api/chat/route.js`, just after the existing import
 import { buildExternalTools, isExternalToolName, callExternalTool } from './externalTools.js';
 ```
 
-- [ ] **Step 2: Thread `workspaceSlug` into `streamGeminiWithTools`**
+- [ ] **Step 2: Build external declarations before the tool loop**
 
-The function signature is at line ~853 (`const streamGeminiWithTools = async ({`). Its parameter
-list contains a `userId,` param (around line 860). Add a sibling param on the line immediately
-after `userId,`:
-
-```js
-    userId,
-    workspaceSlug,
-```
-
-(If `userId` in the current file has a default like `userId = null,`, keep that default and simply
-add `workspaceSlug = null,` on the next line — match the existing style.)
-
-- [ ] **Step 3: Update the call site**
-
-The single call site is at lines ~1939–1948 (find it with
-`grep -n "streamGeminiWithTools({" src/app/api/chat/route.js`). The POST handler destructures the
-body around lines 1782–1794 with **plain `slug` and `userId`** (no `slugRaw`/`effectiveUserId`
-aliases), so `slug` is already in scope. The call currently passes `userId,` as a shorthand
-property:
-
-```js
-            stream = await streamGeminiWithTools({
-                model,
-                apiKey: providerKey,
-                userContent,
-                conversationHistory: history,
-                attachments,
-                workspacePath,
-                userId,
-                signal,
-            });
-```
-
-Add `workspaceSlug: slug || null,` immediately after the `userId,` line:
-
-```js
-                workspacePath,
-                userId,
-                workspaceSlug: slug || null,
-                signal,
-```
-
-(Indentation: 16 spaces, matching the surrounding properties.)
-
-- [ ] **Step 4: Build external declarations before the tool loop**
-
-Find the line (grep `const tools = [{ functionDeclarations: TOOL_DECLARATIONS }];`). Replace that
-single line with:
+Find the line with `grep -n "const tools = \[{ functionDeclarations: TOOL_DECLARATIONS }\];" src/app/api/chat/route.js`
+(inside `streamGeminiWithTools`, ~L873). Replace that single line with:
 
 ```js
     // Built-in tools + user-connected external MCP tools (degrade gracefully).
+    // The frontend sends the workspace slug as `workspacePath` (AIChatWindow.jsx:128).
     const { declarations: extDecls, aliasMap: extAliasMap } =
-        await buildExternalTools({ userId, workspaceSlug });
+        await buildExternalTools({ userId, workspaceSlug: workspacePath || null });
     const tools = [{ functionDeclarations: [...TOOL_DECLARATIONS, ...extDecls] }];
 ```
 
-- [ ] **Step 5: Route `ext_*` calls inside the dispatch loop**
+- [ ] **Step 3: Route `ext_*` calls inside the dispatch loop**
 
-Find the final `else` branch of the per-call dispatch (grep
-`// Non-command tools execute immediately`). It currently reads:
+Find the final `else` branch of the per-call dispatch with
+`grep -n "// Non-command tools execute immediately" src/app/api/chat/route.js` (~L1096). It reads:
 
 ```js
                     } else {
@@ -1581,7 +1545,8 @@ Find the final `else` branch of the per-call dispatch (grep
                     }
 ```
 
-Insert a new branch immediately BEFORE that `} else {` so external aliases are handled first:
+Change that `} else {` into an `} else if (...) { ... } else {` chain by inserting a new branch
+immediately before it (keep the original `else` body intact):
 
 ```js
                     } else if (isExternalToolName(name)) {
@@ -1589,16 +1554,19 @@ Insert a new branch immediately BEFORE that `} else {` so external aliases are h
                         const extEntry = extAliasMap[name];
                         const label = extEntry ? `${extEntry.connName}:${extEntry.toolName}` : name;
                         await writeEvent({ toolCall: { tool: label, args, status: 'running' } });
-                        const result = await callExternalTool(name, args, extAliasMap, { userId, workspaceSlug });
+                        const result = await callExternalTool(name, args, extAliasMap, { userId, workspaceSlug: workspacePath || null });
                         await writeEvent({ toolCall: { tool: label, args, status: result?.error ? 'error' : 'done' } });
                         fnResponses.push({ functionResponse: { name, response: result } });
                     } else {
+                        // Non-command tools execute immediately (read_file, search, etc.)
+                        await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
+                        const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                        await writeEvent({ toolCall: { tool: name, args, status: 'done' } });
+                        fnResponses.push({ functionResponse: { name, response: result } });
+                    }
 ```
 
-(The new branch reuses the existing `} else {` that follows — i.e. change the existing `} else {`
-into the tail of this `} else if (...) { ... } else {` chain. Keep the original `else` body intact.)
-
-- [ ] **Step 6: Verify the existing test suite still passes and the route compiles**
+- [ ] **Step 4: Verify the test suite still passes and the route compiles**
 
 Run: `cd synthi && npx vitest run src/app/api/chat`
 Expected: PASS (externalTools tests still green).
@@ -1606,7 +1574,7 @@ Expected: PASS (externalTools tests still green).
 Run: `cd synthi && npx eslint src/app/api/chat/route.js`
 Expected: no new errors introduced by the edit (pre-existing warnings are acceptable).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add synthi/src/app/api/chat/route.js
