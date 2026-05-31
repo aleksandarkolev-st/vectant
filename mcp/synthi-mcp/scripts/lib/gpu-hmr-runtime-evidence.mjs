@@ -37,6 +37,11 @@ function compactStringList(values) {
     : [];
 }
 
+function observedEvidenceList(values) {
+  const raw = typeof values === 'string' ? values.split(',') : values;
+  return compactStringList(raw).filter((value) => value.toLowerCase() !== 'none');
+}
+
 function commaList(value) {
   if (typeof value !== 'string') return [];
   return compactStringList(value.split(','));
@@ -238,11 +243,11 @@ export function runtimeEpochSwapEvidence(lines) {
     && streamScopeEvidenceSupported;
   const capsuleMetadataObserved =
     typeof latestPublication?.newArtifactId === 'string'
-    && latestPublication.newArtifactId.trim().length > 0
+    && /^artifact:sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactId.trim())
     && typeof latestPublication?.newArtifactHash === 'string'
     && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactHash.trim())
-    && latestPublication.changedSymbols.length > 0
-    && latestPublication.functionHandleIds.length > 0;
+    && observedEvidenceList(latestPublication.changedSymbols).length > 0
+    && observedEvidenceList(latestPublication.functionHandleIds).length > 0;
 
   return {
     total_count: records.length,

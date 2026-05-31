@@ -95,6 +95,11 @@ function compactStringList(values) {
     : [];
 }
 
+function observedEvidenceList(values) {
+  const raw = typeof values === 'string' ? values.split(',') : values;
+  return compactStringList(raw).filter((value) => value.toLowerCase() !== 'none');
+}
+
 function runtimeSessionIdsFromObservation(observation = {}) {
   return compactStringList([
     observation.runtimeSessionId,
@@ -191,10 +196,10 @@ function epochGenerationGraphStatus(graph) {
   ) ?? null;
   const newArtifactId = String(latest.newArtifactId ?? latest.new_artifact_id ?? publicationEdge?.newArtifactId ?? publicationEdge?.new_artifact_id ?? '').trim();
   const newArtifactHash = String(latest.newArtifactHash ?? latest.new_artifact_hash ?? publicationEdge?.newArtifactHash ?? publicationEdge?.new_artifact_hash ?? '').trim();
-  const changedSymbols = compactStringList(latest.changedSymbols ?? latest.changed_symbols ?? publicationEdge?.changedSymbols ?? publicationEdge?.changed_symbols);
-  const functionHandleIds = compactStringList(latest.functionHandleIds ?? latest.function_handle_ids ?? publicationEdge?.functionHandleIds ?? publicationEdge?.function_handle_ids);
+  const changedSymbols = observedEvidenceList(latest.changedSymbols ?? latest.changed_symbols ?? publicationEdge?.changedSymbols ?? publicationEdge?.changed_symbols);
+  const functionHandleIds = observedEvidenceList(latest.functionHandleIds ?? latest.function_handle_ids ?? publicationEdge?.functionHandleIds ?? publicationEdge?.function_handle_ids);
   const capsuleMetadataObserved =
-    newArtifactId.length > 0
+    /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
     && /^sha256:[0-9a-f]{64}$/i.test(newArtifactHash)
     && changedSymbols.length > 0
     && functionHandleIds.length > 0;
@@ -1133,6 +1138,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && generationLineageObserved
     && dispatchTableHashObserved
     && changedEntriesObserved
+    && capsuleMetadataObserved
     && streamOrderingProven
     && retirementTracked
     && oldGenerationRetired
@@ -1173,6 +1179,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && generationLineageObserved
     && dispatchTableHashObserved
     && changedEntriesObserved
+    && capsuleMetadataObserved
     && streamOrderingProven
     && retirementTracked
     && evidenceObserved;
@@ -1231,7 +1238,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
                   ? 'epoch_stream_scope_not_collected'
                   : !evidenceObserved
                     ? 'epoch_evidence_refs_not_collected'
-                    : 'epoch_retirement_tracking_not_collected',
+                    : !capsuleMetadataObserved
+                      ? 'epoch_capsule_metadata_not_collected'
+                      : 'epoch_retirement_tracking_not_collected',
     published,
     runtimeSessionObserved,
     runtimeSessionIds,
