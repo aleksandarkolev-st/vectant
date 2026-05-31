@@ -146,6 +146,37 @@ function proofStageResult(stage, input, createdAt) {
   };
 }
 
+function proofLimitations(stages, fullRuntimeProof) {
+  const limitations = [];
+  for (const stage of Array.isArray(stages) ? stages : []) {
+    if (stage.status === 'passed' && !stage.degradedState && !stage.degradedReason) continue;
+    limitations.push({
+      stageId: stage.stageId,
+      status: stage.status,
+      requiredState: stage.requiredState ?? null,
+      observedState: stage.observedState ?? null,
+      degradedState: stage.degradedState ?? null,
+      degradedReason: stage.degradedReason ?? null,
+    });
+  }
+  if (
+    limitations.length === 0
+    && fullRuntimeProof
+    && fullRuntimeProof.fullRuntimeProven !== true
+    && (fullRuntimeProof.degradedState || fullRuntimeProof.degradedReason)
+  ) {
+    limitations.push({
+      stageId: 'full-runtime',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      observedState: fullRuntimeProof.resultState ?? null,
+      degradedState: fullRuntimeProof.degradedState ?? null,
+      degradedReason: fullRuntimeProof.degradedReason ?? null,
+    });
+  }
+  return limitations;
+}
+
 export function buildValidationRuntimeProofArtifact(input = {}) {
   const createdAt = input.createdAt ?? new Date().toISOString();
   const fullRuntimeProof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
@@ -158,6 +189,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
     : [];
+  const limitations = proofLimitations(stages, fullRuntimeProof);
   const evidenceStrings = compactStringList([
     ...stages.flatMap((stage) => stage.evidenceRefs),
     ...visualEvidenceRefs,
@@ -186,6 +218,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     degradedState: fullRuntimeProof?.degradedState ?? null,
     degradedReason: fullRuntimeProof?.degradedReason ?? null,
     stages,
+    limitations,
     evidenceStrings,
     proofMaterial,
     validationContext,
@@ -206,6 +239,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     degradedReason: fullRuntimeProof?.degradedReason ?? null,
     fullRuntimeProven: fullRuntimeProof?.fullRuntimeProven === true,
     stageResults: stages,
+    limitations,
     evidenceRefs,
     visualEvidenceRefs,
     runtimeEvidence,

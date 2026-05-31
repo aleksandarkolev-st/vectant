@@ -2394,6 +2394,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("artifact-transport");
     expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("host-preservation");
+    expect(artifact.limitations).toEqual([]);
     expect(artifact.stageResults.every((stage) => Array.isArray(stage.evidenceRefs))).toBe(true);
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:artifact_transport:sha256:abc");
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:core_state");
@@ -2408,6 +2409,46 @@ describe("GPU HMR runtime output proof classification", () => {
       "worker-log:host_identity:renderer_state",
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
+  });
+
+  it("records blocked proof stages as first-class validation limitations", () => {
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      runtimeSessionIds: ["runtime-session:test"],
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+      createdAt: "2026-05-28T00:00:00.000Z",
+    });
+
+    expect(artifact.fullRuntimeProven).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stageId: "dispatch-observed",
+          status: "blocked",
+          degradedState: "gpu-hmr-dispatch-unobserved",
+          degradedReason: "current_session_dispatch_not_proven",
+        }),
+        expect.objectContaining({
+          stageId: "output",
+          status: "blocked",
+          degradedState: "gpu-hmr-output-unobserved",
+          degradedReason: "output_oracle_not_collected",
+        }),
+      ])
+    );
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {
