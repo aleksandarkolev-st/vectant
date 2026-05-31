@@ -1510,28 +1510,49 @@ import { buildExternalTools, isExternalToolName, callExternalTool } from './exte
 
 - [ ] **Step 2: Thread `workspaceSlug` into `streamGeminiWithTools`**
 
-The function signature is at line ~853 (`const streamGeminiWithTools = async ({`). It destructures
-`userId = null,` among its params (line ~860). Add a sibling param immediately after it:
+The function signature is at line ~853 (`const streamGeminiWithTools = async ({`). Its parameter
+list contains a `userId,` param (around line 860). Add a sibling param on the line immediately
+after `userId,`:
 
 ```js
-    userId = null,
-    workspaceSlug = null,
+    userId,
+    workspaceSlug,
 ```
+
+(If `userId` in the current file has a default like `userId = null,`, keep that default and simply
+add `workspaceSlug = null,` on the next line — match the existing style.)
 
 - [ ] **Step 3: Update the call site**
 
-The single call site is at line ~1911 (find it with `grep -n "streamGeminiWithTools({" src/app/api/chat/route.js`).
-The handler already destructures `slug` from the body on line ~1773
-(`const { messages = [], model, apiKey, workspacePath, ..., userId, slug } = body;`), so `slug`
-is in scope. The call currently includes the line `userId: effectiveUserId,`. Add a sibling line
-immediately after it:
+The single call site is at lines ~1939–1948 (find it with
+`grep -n "streamGeminiWithTools({" src/app/api/chat/route.js`). The POST handler destructures the
+body around lines 1782–1794 with **plain `slug` and `userId`** (no `slugRaw`/`effectiveUserId`
+aliases), so `slug` is already in scope. The call currently passes `userId,` as a shorthand
+property:
 
 ```js
-                userId: effectiveUserId,
-                workspaceSlug: slug || null,
+            stream = await streamGeminiWithTools({
+                model,
+                apiKey: providerKey,
+                userContent,
+                conversationHistory: history,
+                attachments,
+                workspacePath,
+                userId,
+                signal,
+            });
 ```
 
-(Indentation: match the surrounding object — the call's properties are indented 16 spaces.)
+Add `workspaceSlug: slug || null,` immediately after the `userId,` line:
+
+```js
+                workspacePath,
+                userId,
+                workspaceSlug: slug || null,
+                signal,
+```
+
+(Indentation: 16 spaces, matching the surrounding properties.)
 
 - [ ] **Step 4: Build external declarations before the tool loop**
 
