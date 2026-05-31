@@ -96,6 +96,12 @@ pub struct OutputOracleRecord {
     pub kind: String,
     pub expected: String,
     pub actual: String,
+    pub tolerance: Option<String>,
+    pub producer: Option<String>,
+    pub output_target_id: Option<String>,
+    pub readback_timestamp_ms: Option<u128>,
+    pub artifact_id: Option<String>,
+    pub visual_evidence_ref: Option<String>,
     pub passed: bool,
     pub generation: u64,
     pub runtime_session_id: String,
@@ -617,6 +623,50 @@ fn record_output_oracle_event(
     actual: String,
     passed: bool,
 ) {
+    record_output_oracle_event_with_metadata(
+        oracle_id,
+        kind,
+        expected,
+        actual,
+        passed,
+        OutputOracleMetadata::default(),
+    );
+}
+
+#[derive(Default)]
+struct OutputOracleMetadata {
+    tolerance: Option<String>,
+    producer: Option<String>,
+    output_target_id: Option<String>,
+    readback_timestamp_ms: Option<u128>,
+    artifact_id: Option<String>,
+    visual_evidence_ref: Option<String>,
+}
+
+fn epoch_millis_now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn append_log_token(line: &mut String, key: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        line.push(' ');
+        line.push_str(key);
+        line.push('=');
+        line.push_str(&log_token(value));
+    }
+}
+
+fn record_output_oracle_event_with_metadata(
+    oracle_id: String,
+    kind: String,
+    expected: String,
+    actual: String,
+    passed: bool,
+    metadata: OutputOracleMetadata,
+) {
     let generation = current_launch_generation();
     let runtime_session = runtime_session_id().to_string();
     {
@@ -626,12 +676,18 @@ fn record_output_oracle_event(
             kind: kind.clone(),
             expected: expected.clone(),
             actual: actual.clone(),
+            tolerance: metadata.tolerance.clone(),
+            producer: metadata.producer.clone(),
+            output_target_id: metadata.output_target_id.clone(),
+            readback_timestamp_ms: metadata.readback_timestamp_ms,
+            artifact_id: metadata.artifact_id.clone(),
+            visual_evidence_ref: metadata.visual_evidence_ref.clone(),
             passed,
             generation,
             runtime_session_id: runtime_session.clone(),
         });
     }
-    eprintln!(
+    let mut line = format!(
         "[gpu-runtime-boundary] output_oracle id={} kind={} expected={} actual={} passed={} generation={} runtime_session={}",
         log_token(&oracle_id),
         log_token(&kind),
@@ -641,6 +697,24 @@ fn record_output_oracle_event(
         generation,
         runtime_session
     );
+    append_log_token(&mut line, "tolerance", metadata.tolerance.as_deref());
+    append_log_token(&mut line, "producer", metadata.producer.as_deref());
+    append_log_token(
+        &mut line,
+        "output_target_id",
+        metadata.output_target_id.as_deref(),
+    );
+    if let Some(readback_timestamp_ms) = metadata.readback_timestamp_ms {
+        line.push_str(" readback_timestamp=");
+        line.push_str(&readback_timestamp_ms.to_string());
+    }
+    append_log_token(&mut line, "artifact_id", metadata.artifact_id.as_deref());
+    append_log_token(
+        &mut line,
+        "visual_evidence_ref",
+        metadata.visual_evidence_ref.as_deref(),
+    );
+    eprintln!("{line}");
 }
 
 fn sha256_checksum_value(bytes: &[u8]) -> String {
@@ -728,6 +802,40 @@ pub extern "C" fn synthi_gpu_record_output_oracle(
 }
 
 #[no_mangle]
+pub extern "C" fn synthi_gpu_record_output_oracle_with_provenance(
+    oracle_id: *const c_char,
+    kind: *const c_char,
+    expected_value: *const c_char,
+    actual_value: *const c_char,
+    tolerance: *const c_char,
+    producer: *const c_char,
+    output_target_id: *const c_char,
+    artifact_id: *const c_char,
+    visual_evidence_ref: *const c_char,
+    passed: bool,
+) {
+    let oracle_id = cstr(oracle_id).unwrap_or_else(|| "<unknown>".to_string());
+    let kind = cstr(kind).unwrap_or_else(|| "<unknown>".to_string());
+    let expected = cstr(expected_value).unwrap_or_default();
+    let actual = cstr(actual_value).unwrap_or_default();
+    record_output_oracle_event_with_metadata(
+        oracle_id,
+        kind,
+        expected,
+        actual,
+        passed,
+        OutputOracleMetadata {
+            tolerance: cstr(tolerance),
+            producer: cstr(producer),
+            output_target_id: cstr(output_target_id),
+            readback_timestamp_ms: Some(epoch_millis_now()),
+            artifact_id: cstr(artifact_id),
+            visual_evidence_ref: cstr(visual_evidence_ref),
+        },
+    );
+}
+
+#[no_mangle]
 pub extern "C" fn synthi_gpu_record_output_buffer_checksum(
     oracle_id: *const c_char,
     data: *const c_void,
@@ -750,6 +858,45 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum(
         expected,
         actual,
         passed,
+    );
+    passed
+}
+
+#[no_mangle]
+pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_provenance(
+    oracle_id: *const c_char,
+    data: *const c_void,
+    bytes: usize,
+    expected_sha256: *const c_char,
+    producer: *const c_char,
+    output_target_id: *const c_char,
+    artifact_id: *const c_char,
+    visual_evidence_ref: *const c_char,
+) -> bool {
+    let oracle_id = cstr(oracle_id).unwrap_or_else(|| "<unknown>".to_string());
+    let expected = normalize_checksum_value(cstr(expected_sha256).unwrap_or_default());
+    let (actual, passed) = if data.is_null() || bytes == 0 {
+        ("<invalid-buffer>".to_string(), false)
+    } else {
+        let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
+        let actual = sha256_checksum_value(data);
+        let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
+        (actual, passed)
+    };
+    record_output_oracle_event_with_metadata(
+        oracle_id,
+        "buffer_checksum".to_string(),
+        expected,
+        actual,
+        passed,
+        OutputOracleMetadata {
+            tolerance: None,
+            producer: cstr(producer),
+            output_target_id: cstr(output_target_id),
+            readback_timestamp_ms: Some(epoch_millis_now()),
+            artifact_id: cstr(artifact_id),
+            visual_evidence_ref: cstr(visual_evidence_ref),
+        },
     );
     passed
 }
@@ -1419,6 +1566,47 @@ mod tests {
     }
 
     #[test]
+    fn output_oracle_with_provenance_records_complete_runtime_metadata() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let oracle_id = CString::new("probe.pixel").unwrap();
+        let kind = CString::new("selected_pixels").unwrap();
+        let expected = CString::new("0.25").unwrap();
+        let actual = CString::new("0.251").unwrap();
+        let tolerance = CString::new("0.005").unwrap();
+        let producer = CString::new("runtime_probe").unwrap();
+        let output_target = CString::new("target:color").unwrap();
+        let artifact_id = CString::new("artifact:abc").unwrap();
+        let visual_ref = CString::new("screenshot:frame").unwrap();
+
+        synthi_gpu_record_output_oracle_with_provenance(
+            oracle_id.as_ptr(),
+            kind.as_ptr(),
+            expected.as_ptr(),
+            actual.as_ptr(),
+            tolerance.as_ptr(),
+            producer.as_ptr(),
+            output_target.as_ptr(),
+            artifact_id.as_ptr(),
+            visual_ref.as_ptr(),
+            true,
+        );
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].oracle_id, "probe.pixel");
+        assert_eq!(records[0].kind, "selected_pixels");
+        assert_eq!(records[0].tolerance.as_deref(), Some("0.005"));
+        assert_eq!(records[0].producer.as_deref(), Some("runtime_probe"));
+        assert_eq!(records[0].output_target_id.as_deref(), Some("target:color"));
+        assert!(records[0].readback_timestamp_ms.is_some());
+        assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:abc"));
+        assert_eq!(records[0].visual_evidence_ref.as_deref(), Some("screenshot:frame"));
+        assert!(records[0].passed);
+    }
+
+    #[test]
     fn output_buffer_checksum_boundary_hashes_runtime_bytes() {
         let _guard = test_guard_for_test();
         reset_for_test();
@@ -1441,6 +1629,44 @@ mod tests {
         assert_eq!(records[0].kind, "buffer_checksum");
         assert_eq!(records[0].expected, expected_text);
         assert_eq!(records[0].actual, expected_text);
+        assert!(records[0].passed);
+    }
+
+    #[test]
+    fn output_buffer_checksum_with_provenance_records_runtime_metadata() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let bytes = b"deterministic output bytes";
+        let expected_text = sha256_checksum_value(bytes);
+        let expected = CString::new(expected_text.clone()).unwrap();
+        let oracle_id = CString::new("probe.buffer").unwrap();
+        let producer = CString::new("runtime_probe").unwrap();
+        let output_target = CString::new("buffer:color").unwrap();
+        let artifact_id = CString::new("artifact:def").unwrap();
+
+        assert!(synthi_gpu_record_output_buffer_checksum_with_provenance(
+            oracle_id.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            expected.as_ptr(),
+            producer.as_ptr(),
+            output_target.as_ptr(),
+            artifact_id.as_ptr(),
+            std::ptr::null(),
+        ));
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].oracle_id, "probe.buffer");
+        assert_eq!(records[0].kind, "buffer_checksum");
+        assert_eq!(records[0].expected, expected_text);
+        assert_eq!(records[0].actual, expected_text);
+        assert_eq!(records[0].producer.as_deref(), Some("runtime_probe"));
+        assert_eq!(records[0].output_target_id.as_deref(), Some("buffer:color"));
+        assert!(records[0].readback_timestamp_ms.is_some());
+        assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:def"));
+        assert_eq!(records[0].visual_evidence_ref, None);
         assert!(records[0].passed);
     }
 
