@@ -2279,6 +2279,7 @@ async function writeResults() {
       hostPreservationProof: report.host_preservation_proof,
       originalHostPathProof: report.original_host_path_proof,
       fullRuntimeProof: report.full_runtime_proof,
+      runtimeEvidence: report.evidence,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: report.screenshots.map((shot) => shot.path).filter(Boolean),
     });

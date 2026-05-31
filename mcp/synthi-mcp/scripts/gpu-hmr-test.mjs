@@ -2542,10 +2542,15 @@ async function phaseFlow(ctx) {
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
   const inwardEpochProof = await runtimeEpochSwapProofSince(baselineStart);
+  const inwardHostProofWithEvidence = await runtimeHostPreservationProofSince(
+    baselineStart,
+    inwardDispatchProof,
+    inwardEpochProof.proof,
+  );
   const inwardHostProof = recordRuntimeHostPreservationProof(
     'FLOW',
     'inward host preservation proof',
-    await runtimeHostPreservationProofSince(baselineStart, inwardDispatchProof, inwardEpochProof.proof),
+    inwardHostProofWithEvidence,
   );
   recordRuntimeFullProof('FLOW', 'inward full runtime proof ladder', {
     sourceProof: baselineGpuProof,
@@ -2556,6 +2561,11 @@ async function phaseFlow(ctx) {
     dispatchProof: inwardDispatchProof,
     outputProof: inwardOutputProof,
     hostPreservationProof: inwardHostProof,
+    runtimeEvidence: {
+      artifactTransport: baselineRuntimeArtifactTransport,
+      epochSwap: inwardEpochProof.evidence,
+      hostPreservation: inwardHostProofWithEvidence.evidence,
+    },
   });
 
   const flipStart = await workerLogCheckpoint(8 * 1024 * 1024);
@@ -2658,10 +2668,15 @@ async function phaseFlow(ctx) {
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
   const outwardEpochProof = await runtimeEpochSwapProofSince(flipStart);
+  const outwardHostProofWithEvidence = await runtimeHostPreservationProofSince(
+    flipStart,
+    outwardDispatchProof,
+    outwardEpochProof.proof,
+  );
   const outwardHostProof = recordRuntimeHostPreservationProof(
     'FLOW',
     'outward host preservation proof',
-    await runtimeHostPreservationProofSince(flipStart, outwardDispatchProof, outwardEpochProof.proof),
+    outwardHostProofWithEvidence,
   );
   recordRuntimeFullProof('FLOW', 'outward full runtime proof ladder', {
     sourceProof: flipGpuProof,
@@ -2672,6 +2687,11 @@ async function phaseFlow(ctx) {
     dispatchProof: outwardDispatchProof,
     outputProof: outwardOutputProof,
     hostPreservationProof: outwardHostProof,
+    runtimeEvidence: {
+      artifactTransport: flipRuntimeArtifactTransport,
+      epochSwap: outwardEpochProof.evidence,
+      hostPreservation: outwardHostProofWithEvidence.evidence,
+    },
   });
 }
 

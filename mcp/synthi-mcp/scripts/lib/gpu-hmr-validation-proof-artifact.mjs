@@ -63,10 +63,16 @@ function evidenceStringsFromValue(value, seen = new Set()) {
     refs.push(...compactStringList(value[key]));
   }
   refs.push(...proofArtifactRefs(value));
-  for (const childKey of ['outputOracle', 'output_oracle', 'dispatchProof', 'dispatch_proof']) {
-    refs.push(...evidenceStringsFromValue(value[childKey], seen));
+  const childValues = Array.isArray(value) ? value : Object.values(value);
+  for (const childValue of childValues) {
+    refs.push(...evidenceStringsFromValue(childValue, seen));
   }
   return compactStringList(refs);
+}
+
+function runtimeEvidenceSnapshot(input = {}) {
+  const evidence = input.runtimeEvidence ?? input.runtime_evidence ?? null;
+  return evidence && typeof evidence === 'object' ? evidence : null;
 }
 
 function evidenceKind(ref) {
@@ -141,6 +147,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ? input.fullRuntimeProof
     : null;
   const sessionId = runtimeSessionId(input);
+  const runtimeEvidence = runtimeEvidenceSnapshot(input);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
@@ -149,6 +156,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...stages.flatMap((stage) => stage.evidenceRefs),
     ...visualEvidenceRefs,
     ...evidenceStringsFromValue(fullRuntimeProof),
+    ...evidenceStringsFromValue(runtimeEvidence),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) => evidenceRefObject(ref, createdAt, sessionId));
   const proofMaterial = {
@@ -162,6 +170,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     outputProof: input.outputProof ?? null,
     hostPreservationProof: input.hostPreservationProof ?? null,
     originalHostPathProof: input.originalHostPathProof ?? null,
+    runtimeEvidence,
   };
   const materialHash = sha256Hex(stableJson({
     workspaceSlug: input.workspaceSlug ?? null,
@@ -188,6 +197,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     stageResults: stages,
     evidenceRefs,
     visualEvidenceRefs,
+    runtimeEvidence,
     createdAt,
     proofMaterial,
   };

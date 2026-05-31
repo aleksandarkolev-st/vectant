@@ -2057,6 +2057,14 @@ describe("GPU HMR runtime output proof classification", () => {
       hostPreservationProof: preservedHostProof(),
       originalHostPathProof: attachedOriginalHostPathProof(),
       fullRuntimeProof,
+      runtimeEvidence: {
+        hostIdentitySnapshots: {
+          evidence_refs: ["worker-log:host_identity:renderer_state"],
+          lines: [
+            "[gpu-runtime-boundary] host_identity role=renderer_state ptr=0x1000 generation=3 runtime_session=test",
+          ],
+        },
+      },
       visualEvidenceRefs: ["artifacts/frame.png"],
       createdAt: "2026-05-28T00:00:00.000Z",
     });
@@ -2069,8 +2077,13 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.stageResults.every((stage) => Array.isArray(stage.evidenceRefs))).toBe(true);
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:artifact_transport:sha256:abc");
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:core_state");
+    expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:renderer_state");
     expect(artifact.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
+    expect(artifact.runtimeEvidence.hostIdentitySnapshots.lines[0]).toContain("renderer_state");
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
+    expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
+      "worker-log:host_identity:renderer_state",
+    ]);
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {
