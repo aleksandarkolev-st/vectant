@@ -297,6 +297,7 @@ function originalHostPathProofUsable(proof) {
   return proof.attachmentProven === true
     && proof.runtimeEvidenceObserved === true
     && proof.dispatchBoundaryObserved === true
+    && proof.dispatchEntryRuntimeVerified === true
     && proof.sessionScoped === true
     && proof.runtimeSessionConsistent !== false
     && runtimeOriginalHostPathEvidenceRefs(proof.evidenceRefs).length > 0;
@@ -1403,6 +1404,7 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
   const sessionScoped = observation.sessionScoped === true && runtimeSessionObserved && runtimeSessionConsistent;
   const dispatchBoundaryObserved = observation.dispatchBoundaryObserved === true;
+  const dispatchEntryRuntimeVerified = observation.dispatchEntryRuntimeVerified === true;
   const attachedToOriginalHostPath = observation.attachedToOriginalHostPath === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
   const runtimeEvidenceRefs = runtimeOriginalHostPathEvidenceRefs(evidenceRefs);
@@ -1411,6 +1413,7 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     attachedToOriginalHostPath
     && runtimeEvidenceObserved
     && dispatchBoundaryObserved
+    && dispatchEntryRuntimeVerified
     && sessionScoped;
 
   return {
@@ -1426,13 +1429,16 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
           ? 'original_host_path_runtime_evidence_not_collected'
           : !dispatchBoundaryObserved
             ? 'original_host_path_dispatch_boundary_not_observed'
-            : !sessionScoped
-              ? 'original_host_path_session_scope_not_proven'
-              : 'original_host_path_attachment_not_proven',
+            : !dispatchEntryRuntimeVerified
+              ? 'original_host_path_dispatch_entry_not_runtime_verified'
+              : !sessionScoped
+                ? 'original_host_path_session_scope_not_proven'
+                : 'original_host_path_attachment_not_proven',
     attachedToOriginalHostPath,
     runtimeEvidenceObserved,
     runtimeEvidenceRefs,
     dispatchBoundaryObserved,
+    dispatchEntryRuntimeVerified,
     sessionScoped,
     runtimeSessionObserved,
     runtimeSessionIds,
@@ -1448,7 +1454,8 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
   const evidence = proof.runtimeEvidenceObserved ? ' evidence=runtime' : ' evidence=missing';
   const session = proof.sessionScoped ? ' session=current' : ' session=unproven';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}`;
+  const entry = proof.dispatchEntryRuntimeVerified ? ' entry=runtime' : ' entry=unverified';
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {

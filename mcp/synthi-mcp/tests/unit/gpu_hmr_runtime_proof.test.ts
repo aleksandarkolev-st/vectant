@@ -205,6 +205,7 @@ function attachedOriginalHostPathProof() {
     attachedToOriginalHostPath: true,
     runtimeEvidenceObserved: true,
     dispatchBoundaryObserved: true,
+    dispatchEntryRuntimeVerified: true,
     sessionScoped: true,
     runtimeSessionIds: ["runtime-session:test"],
     evidenceRefs: ["worker-log:original_host_path:host-path:3"],
@@ -1699,7 +1700,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("proves original host path attachment only from runtime-scoped attachment evidence", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=entry-1 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=declared-entry runtime_dispatch_table_entry_id=entry-1 dispatch_entry_runtime_verified=true generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=3 runtime_session=pid1 complete=true known_args=1 unknown_args=0",
     ], {
       required: true,
@@ -1709,6 +1710,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.total_count).toBe(1);
     expect(evidence.matching_launch_boundary_observed).toBe(true);
     expect(evidence.attached_to_original_host_path).toBe(true);
+    expect(evidence.dispatch_entry_runtime_verified).toBe(true);
+    expect(evidence.runtime_dispatch_table_entry_id).toBe("entry-1");
     expect(evidence.evidence_refs).toEqual([
       "worker-log:original_host_path:host-main:3",
       "worker-log:launch_arg_provenance:pid1:3",
@@ -1720,7 +1723,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove original host path attachment without matching launch boundary provenance", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=entry-1 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=declared-entry runtime_dispatch_table_entry_id=entry-1 dispatch_entry_runtime_verified=true generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=4 runtime_session=pid1 complete=true known_args=1 unknown_args=0",
     ], {
       required: true,
@@ -1738,7 +1741,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove original host path attachment from launch-wrapper auto evidence", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=launch_boundary_auto host_path_id=synthi-gpu-launch-1 dispatch_table_entry_id=entry-1 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=launch_boundary_auto host_path_id=synthi-gpu-launch-1 dispatch_table_entry_id=declared-entry runtime_dispatch_table_entry_id=entry-1 dispatch_entry_runtime_verified=true generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=3 runtime_session=pid1 complete=true known_args=1 unknown_args=0",
     ], {
       required: true,
@@ -1751,12 +1754,29 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
   });
 
+  it("does not prove original host path attachment without runtime dispatch entry verification", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=declared-entry runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=3 runtime_session=pid1 complete=true known_args=1 unknown_args=0",
+    ], {
+      required: true,
+      runtimeSessionIds: ["pid1"],
+    });
+
+    expect(evidence.raw_count).toBe(1);
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.dispatch_entry_runtime_verified).toBe(false);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedReason).toBe("original_host_path_attachment_not_observed");
+  });
+
   it("does not prove original host path attachment from static metadata", () => {
     const proof = classifyGpuHmrOriginalHostPathProof({
       required: true,
       attachedToOriginalHostPath: true,
       runtimeEvidenceObserved: true,
       dispatchBoundaryObserved: true,
+      dispatchEntryRuntimeVerified: true,
       sessionScoped: true,
       runtimeSessionIds: ["pid1"],
       evidenceRefs: ["metadata:host_path:static"],
@@ -1769,9 +1789,9 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("scopes original host path attachment to the expected runtime session", () => {
     const evidence = runtimeOriginalHostPathEvidence([
-      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=old-host dispatch_table_entry_id=entry-1 generation=3 runtime_session=old-session",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=old-host dispatch_table_entry_id=declared-old runtime_dispatch_table_entry_id=entry-1 dispatch_entry_runtime_verified=true generation=3 runtime_session=old-session",
       "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=3 runtime_session=old-session complete=true known_args=1 unknown_args=0",
-      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=current-host dispatch_table_entry_id=entry-2 generation=4 runtime_session=current-session",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=current-host dispatch_table_entry_id=declared-current runtime_dispatch_table_entry_id=entry-2 dispatch_entry_runtime_verified=true generation=4 runtime_session=current-session",
       "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=4 runtime_session=current-session complete=true known_args=1 unknown_args=0",
     ], {
       runtimeSessionIds: ["current-session"],

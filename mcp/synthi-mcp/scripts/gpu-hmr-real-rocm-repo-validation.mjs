@@ -1834,7 +1834,7 @@ function selfCheckRuntimeDispatchEvidence() {
     upstreamRunLog: [
       '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original',
       '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
-      '[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=host_runtime_explicit host_path_id=host-loop dispatch_table_entry_id=entry-kernel generation=3 runtime_session=pid-original',
+      '[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=host_runtime_explicit host_path_id=host-loop dispatch_table_entry_id=declared-entry runtime_dispatch_table_entry_id=entry-kernel dispatch_entry_runtime_verified=true generation=3 runtime_session=pid-original',
     ].join('\n'),
   });
   const originalHostPath = originalHostPathProofFromRuntimeEvidence(

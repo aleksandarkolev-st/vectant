@@ -604,6 +604,16 @@ function originalHostPathRecord(line) {
       ?? null,
     hostPathId: fields.host_path_id ?? fields.hostPathId ?? null,
     dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
+    runtimeDispatchTableEntryId:
+      fields.runtime_dispatch_table_entry_id
+      ?? fields.runtimeDispatchTableEntryId
+      ?? null,
+    dispatchEntryRuntimeVerified: boolValue(
+      fields.dispatch_entry_runtime_verified
+      ?? fields.dispatchEntryRuntimeVerified
+      ?? fields.dispatch_entry_matches_runtime
+      ?? fields.dispatchEntryMatchesRuntime,
+    ),
     generation: integerValue(fields.generation),
   };
 }
@@ -653,6 +663,10 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     && originalHostPathAttachmentProvenanceAccepted(record.attachmentProvenance)
     && typeof record.hostPathId === 'string'
     && record.hostPathId.trim()
+    && typeof record.runtimeDispatchTableEntryId === 'string'
+    && record.runtimeDispatchTableEntryId.trim()
+    && record.runtimeDispatchTableEntryId !== 'none'
+    && record.dispatchEntryRuntimeVerified === true
     && Number.isFinite(record.generation)
     && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     && launchBoundaryRecords.some((launchRecord) =>
@@ -688,6 +702,8 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     attached_to_original_host_path: latest !== null,
     dispatch_boundary_observed: latest?.dispatchBoundaryObserved === true,
     runtime_evidence_observed: latest !== null && runtimeSessionConsistent && matchingLaunchBoundary !== null,
+    dispatch_entry_runtime_verified: latest?.dispatchEntryRuntimeVerified === true,
+    runtime_dispatch_table_entry_id: latest?.runtimeDispatchTableEntryId ?? null,
     evidence_refs: evidenceRefs,
     lines: records.map((record) => record.line).slice(-20),
   };
@@ -700,6 +716,7 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     attachedToOriginalHostPath: evidence.attached_to_original_host_path,
     runtimeEvidenceObserved: evidence.runtime_evidence_observed,
     dispatchBoundaryObserved: evidence.dispatch_boundary_observed,
+    dispatchEntryRuntimeVerified: evidence.dispatch_entry_runtime_verified,
     sessionScoped: evidence.runtime_session_observed && evidence.runtime_session_consistent,
     runtimeSessionIds: evidence.runtime_session_ids,
     runtimeSessionConsistent: evidence.runtime_session_consistent,

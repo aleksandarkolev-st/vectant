@@ -115,6 +115,8 @@ pub struct OutputOracleRecord {
 pub struct OriginalHostPathRecord {
     pub host_path_id: String,
     pub dispatch_table_entry_id: String,
+    pub runtime_dispatch_table_entry_id: Option<String>,
+    pub dispatch_entry_runtime_verified: bool,
     pub dispatch_boundary_observed: bool,
     pub attachment_provenance: String,
     pub generation: u64,
@@ -274,6 +276,24 @@ fn dispatcher_metadata_snapshot() -> Option<ActiveDispatcherMetadata> {
         .lock()
         .expect("gpu runtime dispatcher metadata mutex poisoned")
         .clone()
+}
+
+fn dispatch_table_entry_id_for_kernel(
+    metadata: &ActiveDispatcherMetadata,
+    kernel_name: &str,
+) -> Option<String> {
+    metadata
+        .changed_symbols
+        .iter()
+        .position(|symbol| symbol == kernel_name)
+        .and_then(|index| metadata.function_handle_ids.get(index).cloned())
+        .or_else(|| {
+            metadata
+                .changed_symbols
+                .iter()
+                .any(|symbol| symbol == kernel_name)
+                .then(|| format!("symbol:{kernel_name}"))
+        })
 }
 
 fn cstr(ptr: *const c_char) -> Option<String> {
@@ -688,16 +708,22 @@ pub fn record_hmr_runtime_identity_snapshot() {
 fn record_original_host_path_event_at(
     host_path_id: String,
     dispatch_table_entry_id: String,
+    runtime_dispatch_table_entry_id: Option<String>,
     dispatch_boundary_observed: bool,
     attachment_provenance: String,
     generation: u64,
     runtime_session: String,
 ) {
+    let dispatch_entry_runtime_verified = runtime_dispatch_table_entry_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty() && value != "none");
     {
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         guard.original_host_paths.push(OriginalHostPathRecord {
             host_path_id: host_path_id.clone(),
             dispatch_table_entry_id: dispatch_table_entry_id.clone(),
+            runtime_dispatch_table_entry_id: runtime_dispatch_table_entry_id.clone(),
+            dispatch_entry_runtime_verified,
             dispatch_boundary_observed,
             attachment_provenance: attachment_provenance.clone(),
             generation,
@@ -705,11 +731,13 @@ fn record_original_host_path_event_at(
         });
     }
     eprintln!(
-        "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed={} attachment_provenance={} host_path_id={} dispatch_table_entry_id={} generation={} runtime_session={}",
+        "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed={} attachment_provenance={} host_path_id={} dispatch_table_entry_id={} runtime_dispatch_table_entry_id={} dispatch_entry_runtime_verified={} generation={} runtime_session={}",
         dispatch_boundary_observed,
         log_token(&attachment_provenance),
         log_token(&host_path_id),
         log_token(&dispatch_table_entry_id),
+        log_token(runtime_dispatch_table_entry_id.as_deref().unwrap_or("none")),
+        dispatch_entry_runtime_verified,
         generation,
         runtime_session
     );
@@ -724,6 +752,7 @@ fn record_original_host_path_event(
     record_original_host_path_event_at(
         host_path_id,
         dispatch_table_entry_id,
+        None,
         dispatch_boundary_observed,
         attachment_provenance,
         current_launch_generation(),
@@ -1259,11 +1288,15 @@ fn synthi_gpu_launch_raw_impl(
     let runtime_session_id = runtime_session_id().to_string();
     let active_dispatcher_metadata = dispatcher_metadata_snapshot()
         .filter(|metadata| metadata.generation == active_generation);
+    let active_dispatch_table_entry_id = active_dispatcher_metadata
+        .as_ref()
+        .and_then(|metadata| dispatch_table_entry_id_for_kernel(metadata, &kernel_name));
     record_launch_host_identities(&kernel_name, kernel_name_ptr, _gpu.cast_const(), stream_token);
     if let Some(attachment) = original_host_path {
         record_original_host_path_event_at(
             attachment.host_path_id,
             attachment.dispatch_table_entry_id,
+            active_dispatch_table_entry_id.clone(),
             true,
             attachment.attachment_provenance,
             active_generation,
@@ -1319,20 +1352,7 @@ fn synthi_gpu_launch_raw_impl(
             dispatch_table_hash: active_dispatcher_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.dispatch_table_hash.clone()),
-            dispatch_table_entry_id: active_dispatcher_metadata.as_ref().and_then(|metadata| {
-                metadata
-                    .changed_symbols
-                    .iter()
-                    .position(|symbol| symbol == &kernel_name)
-                    .and_then(|index| metadata.function_handle_ids.get(index).cloned())
-                    .or_else(|| {
-                        metadata
-                            .changed_symbols
-                            .iter()
-                            .any(|symbol| symbol == &kernel_name)
-                            .then(|| format!("symbol:{kernel_name}"))
-                    })
-            }),
+            dispatch_table_entry_id: active_dispatch_table_entry_id.clone(),
             arg_provenance: arg_provenance.clone(),
             arg_provenance_complete,
             dispatched: false,
@@ -1415,22 +1435,8 @@ fn synthi_gpu_launch_raw_impl(
         .as_ref()
         .and_then(|metadata| metadata.dispatch_table_hash.as_deref())
         .unwrap_or("none");
-    let dispatch_table_entry_id = active_dispatcher_metadata
-        .as_ref()
-        .and_then(|metadata| {
-            metadata
-                .changed_symbols
-                .iter()
-                .position(|symbol| symbol == &kernel_name)
-                .and_then(|index| metadata.function_handle_ids.get(index).cloned())
-                .or_else(|| {
-                    metadata
-                        .changed_symbols
-                        .iter()
-                        .any(|symbol| symbol == &kernel_name)
-                        .then(|| format!("symbol:{kernel_name}"))
-                })
-        })
+    let dispatch_table_entry_id = active_dispatch_table_entry_id
+        .clone()
         .unwrap_or_else(|| "none".to_string());
 
     if let Some(error) = dispatch_error.as_deref() {
@@ -2003,6 +2009,8 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].host_path_id, "host-main-loop");
         assert_eq!(records[0].dispatch_table_entry_id, "kernel-entry");
+        assert_eq!(records[0].runtime_dispatch_table_entry_id, None);
+        assert!(!records[0].dispatch_entry_runtime_verified);
         assert!(records[0].dispatch_boundary_observed);
         assert_eq!(records[0].attachment_provenance, "runtime_explicit");
         assert_eq!(records[0].generation, current_launch_generation());
@@ -2029,6 +2037,8 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].host_path_id, "host-render-loop");
         assert_eq!(records[0].dispatch_table_entry_id, "kernel-entry");
+        assert_eq!(records[0].runtime_dispatch_table_entry_id, None);
+        assert!(!records[0].dispatch_entry_runtime_verified);
         assert!(records[0].dispatch_boundary_observed);
         assert_eq!(records[0].attachment_provenance, "source_instrumented");
         assert_eq!(records[0].runtime_session_id, runtime_session_id());
@@ -2041,8 +2051,21 @@ mod tests {
 
         let kernel = CString::new("trace_primary").unwrap();
         let host_path_id = CString::new("host-render-loop").unwrap();
-        let dispatch_entry_id = CString::new("kernel:trace_primary").unwrap();
+        let dispatch_entry_id = CString::new("host-declared-entry").unwrap();
         let provenance = CString::new("source_instrumented").unwrap();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:host-path".to_string()),
+                dispatch_table_hash: Some("0xfeed".to_string()),
+                changed_symbols: vec!["trace_primary".to_string()],
+                function_handle_ids: vec!["trace_primary:0x42".to_string()],
+            },
+        );
         let grid = [1_u32, 1, 1];
         let block = [64_u32, 1, 1];
         let value = 42_u32;
@@ -2069,13 +2092,18 @@ mod tests {
             provenance.as_ptr(),
         );
 
-        assert!(!ok);
+        assert!(ok);
         let host_paths = original_host_path_records_snapshot();
         let launches = launch_records_snapshot();
         assert_eq!(host_paths.len(), 1);
         assert_eq!(launches.len(), 1);
         assert_eq!(host_paths[0].host_path_id, "host-render-loop");
-        assert_eq!(host_paths[0].dispatch_table_entry_id, "kernel:trace_primary");
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "host-declared-entry");
+        assert_eq!(
+            host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
+            Some("trace_primary:0x42")
+        );
+        assert!(host_paths[0].dispatch_entry_runtime_verified);
         assert!(host_paths[0].dispatch_boundary_observed);
         assert_eq!(host_paths[0].attachment_provenance, "source_instrumented");
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
