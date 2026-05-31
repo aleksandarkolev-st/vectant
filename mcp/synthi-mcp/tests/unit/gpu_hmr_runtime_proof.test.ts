@@ -2065,6 +2065,28 @@ describe("GPU HMR runtime output proof classification", () => {
           ],
         },
       },
+      validationContext: {
+        command: {
+          cwd: "/repo/mcp/synthi-mcp",
+          argv: ["node", "scripts/gpu-hmr-test.mjs"],
+          env: { SYNTHI_GPU_VENDOR: "rocm" },
+        },
+        docker: {
+          enabled: true,
+          containers: {
+            worker: {
+              image_id: "sha256:worker-image",
+              status: "running",
+              restart_count: 0,
+            },
+          },
+        },
+        timings: {
+          started_at: "2026-05-28T00:00:00.000Z",
+          finished_at: "2026-05-28T00:00:01.000Z",
+          duration_ms: 1000,
+        },
+      },
       visualEvidenceRefs: ["artifacts/frame.png"],
       createdAt: "2026-05-28T00:00:00.000Z",
     });
@@ -2080,10 +2102,14 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:renderer_state");
     expect(artifact.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
     expect(artifact.runtimeEvidence.hostIdentitySnapshots.lines[0]).toContain("renderer_state");
+    expect(artifact.validationContextHash).toMatch(/^sha256:/);
+    expect(artifact.validationContext.docker.containers.worker.image_id).toBe("sha256:worker-image");
+    expect(artifact.validationContext.command.argv).toEqual(["node", "scripts/gpu-hmr-test.mjs"]);
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
     expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
       "worker-log:host_identity:renderer_state",
     ]);
+    expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {

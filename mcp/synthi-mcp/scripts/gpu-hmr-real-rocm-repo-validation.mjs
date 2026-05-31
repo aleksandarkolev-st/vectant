@@ -2262,6 +2262,42 @@ async function dockerContainerSnapshot(containerName) {
 
 async function writeResults() {
   report.finished_at = new Date().toISOString();
+  const startedMs = Date.parse(report.started_at);
+  const finishedMs = Date.parse(report.finished_at);
+  report.duration_ms = Number.isFinite(startedMs) && Number.isFinite(finishedMs)
+    ? Math.max(0, finishedMs - startedMs)
+    : null;
+  const validationContext = {
+    command: report.command,
+    docker: report.docker,
+    containers: report.containers,
+    urls: {
+      frontend: CFG.frontendUrl,
+      collab: CFG.collabUrl,
+      signaling: CFG.signalingUrl,
+    },
+    model: report.model,
+    gpu_vendor: report.gpu_vendor,
+    gpu_arch: report.gpu_arch,
+    compile_transport: report.compile_transport,
+    output_oracle_contract: report.output_oracle_contract,
+    timings: {
+      started_at: report.started_at,
+      finished_at: report.finished_at,
+      duration_ms: report.duration_ms,
+      phases: report.phases.map((phase) => ({
+        name: phase.name,
+        timings: phase.timings ?? null,
+      })),
+    },
+    result_counts: {
+      total: report.checks.length,
+      passed: report.checks.filter((check) => check.status === 'pass').length,
+      warned: report.checks.filter((check) => check.status === 'warn').length,
+      failed: report.checks.filter((check) => check.status === 'fail').length,
+      skipped: report.checks.filter((check) => check.status === 'skip').length,
+    },
+  };
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
@@ -2280,6 +2316,7 @@ async function writeResults() {
       originalHostPathProof: report.original_host_path_proof,
       fullRuntimeProof: report.full_runtime_proof,
       runtimeEvidence: report.evidence,
+      validationContext,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: report.screenshots.map((shot) => shot.path).filter(Boolean),
     });
@@ -2304,6 +2341,7 @@ async function writeResults() {
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
+    `duration_ms: ${report.duration_ms}`,
     `containers: ${JSON.stringify(report.containers)}`,
     `docker: ${JSON.stringify(report.docker)}`,
     `runtime_identity: ${JSON.stringify(report.runtime_identity)}`,

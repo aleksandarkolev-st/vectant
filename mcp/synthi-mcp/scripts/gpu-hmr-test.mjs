@@ -3188,6 +3188,47 @@ async function writeSummary() {
   const warned = results.filter((r) => r.status === 'warn').length;
   const failed = results.filter((r) => r.status === 'fail').length;
   const skipped = results.filter((r) => r.status === 'skip').length;
+  const finishedAt = new Date().toISOString();
+  const durationMs = Date.now() - RUN_STARTED_MS;
+  const commandMetadata = validationCommandMetadata({
+    envKeys: [
+      'SYNTHI_GPU_HMR',
+      'SYNTHI_GPU_HMR_FIXTURE',
+      'ONLY_PHASES',
+      'SYNTHI_GPU_VENDOR',
+      'SYNTHI_GPU_ARCH',
+      'SYNTHI_GEMINI_MODEL',
+      'MCP_TRANSPORT',
+      'MCP_CONTAINER',
+      'WORKER_CONTAINER',
+      'AI_ENGINE_CONTAINER',
+    ],
+  });
+  const dockerMetadata = await collectDockerValidationMetadata();
+  const validationContext = {
+    command: commandMetadata,
+    docker: dockerMetadata,
+    urls: {
+      frontend: CFG.frontendUrl,
+      collab: CFG.collabUrl,
+      signaling: CFG.signalingUrl,
+      ai_engine: CFG.aiEngineUrl,
+    },
+    containers: {
+      mcp: CFG.mcpContainer,
+      worker: CFG.workerContainer,
+      ai_engine: CFG.aiEngineContainer,
+    },
+    model: CFG.geminiModel,
+    gpu_vendor: CFG.vendor,
+    gpu_arch: CFG.gpuArch ?? null,
+    timings: {
+      started_at: RUN_STARTED_AT.toISOString(),
+      finished_at: finishedAt,
+      duration_ms: durationMs,
+    },
+    result_counts: { total: results.length, passed, warned, failed, skipped },
+  };
   console.log(`  Checked ${results.length}: ${color.green}${passed} PASS${color.reset}  ${color.yellow}${warned} WARN${color.reset}  ${color.red}${failed} FAIL${color.reset}  ${color.dim}${skipped} SKIP${color.reset}`);
 
   // Phase headline
@@ -3222,6 +3263,7 @@ async function writeSummary() {
       fullRuntimeProof: entry.proof,
       label: `${entry.phase}-${entry.name}`,
       visualEvidenceRefs: outputVisualRefs,
+      validationContext,
     });
     runtimeProofArtifactRecords.push({
       phase: entry.phase,
@@ -3241,25 +3283,12 @@ async function writeSummary() {
     gpu_hmr_flag: CFG.gpuHmr,
     run_at: RUN_STARTED_AT.toISOString(),
     started_at: RUN_STARTED_AT.toISOString(),
-    finished_at: new Date().toISOString(),
-    duration_ms: Date.now() - RUN_STARTED_MS,
+    finished_at: finishedAt,
+    duration_ms: durationMs,
     model: CFG.geminiModel,
     gpu_vendor: CFG.vendor,
     gpu_arch: CFG.gpuArch ?? null,
-    command: validationCommandMetadata({
-      envKeys: [
-        'SYNTHI_GPU_HMR',
-        'SYNTHI_GPU_HMR_FIXTURE',
-        'ONLY_PHASES',
-        'SYNTHI_GPU_VENDOR',
-        'SYNTHI_GPU_ARCH',
-        'SYNTHI_GEMINI_MODEL',
-        'MCP_TRANSPORT',
-        'MCP_CONTAINER',
-        'WORKER_CONTAINER',
-        'AI_ENGINE_CONTAINER',
-      ],
-    }),
+    command: commandMetadata,
     urls: {
       frontend: CFG.frontendUrl,
       collab: CFG.collabUrl,
@@ -3271,7 +3300,7 @@ async function writeSummary() {
       worker: CFG.workerContainer,
       ai_engine: CFG.aiEngineContainer,
     },
-    docker: await collectDockerValidationMetadata(),
+    docker: dockerMetadata,
     paths: {
       logs: LOG_DIR,
       artifacts: ARTIFACT_DIR,

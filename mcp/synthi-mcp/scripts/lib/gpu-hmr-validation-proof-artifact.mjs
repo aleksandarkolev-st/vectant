@@ -75,6 +75,11 @@ function runtimeEvidenceSnapshot(input = {}) {
   return evidence && typeof evidence === 'object' ? evidence : null;
 }
 
+function validationContextSnapshot(input = {}) {
+  const context = input.validationContext ?? input.validation_context ?? null;
+  return context && typeof context === 'object' ? context : null;
+}
+
 function evidenceKind(ref) {
   if (/\.png$/i.test(ref) || /\.jpe?g$/i.test(ref) || /\.webp$/i.test(ref)) return 'visual-artifact';
   if (/^worker-log:/i.test(ref)) return 'worker-log';
@@ -148,6 +153,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     : null;
   const sessionId = runtimeSessionId(input);
   const runtimeEvidence = runtimeEvidenceSnapshot(input);
+  const validationContext = validationContextSnapshot(input);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
@@ -171,6 +177,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     hostPreservationProof: input.hostPreservationProof ?? null,
     originalHostPathProof: input.originalHostPathProof ?? null,
     runtimeEvidence,
+    validationContext,
   };
   const materialHash = sha256Hex(stableJson({
     workspaceSlug: input.workspaceSlug ?? null,
@@ -181,7 +188,11 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     stages,
     evidenceStrings,
     proofMaterial,
+    validationContext,
   }));
+  const validationContextHash = validationContext
+    ? `sha256:${sha256Hex(stableJson(validationContext))}`
+    : null;
 
   return {
     schemaVersion: GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
@@ -198,6 +209,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     evidenceRefs,
     visualEvidenceRefs,
     runtimeEvidence,
+    validationContext,
+    validationContextHash,
     createdAt,
     proofMaterial,
   };
