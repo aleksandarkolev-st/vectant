@@ -1,8 +1,16 @@
 # Slice 1 — Foundation + External MCP Client
 
 **Date:** 2026-05-31
-**Branch:** `tool-compatability`
+**Branch:** `tool-compatibility`
 **Status:** Approved design, pending implementation plan
+
+> **⚠️ Amended by review addendum R1 (2026-06-01):** see
+> `docs/superpowers/plans/2026-05-31-external-mcp-client-plan-1a-addendum-R1.md`. Where this
+> document conflicts with R1, **R1 wins.** Notably: `toolAllowlist` is fail-closed `String[]`
+> (no "null = all"); the canonical external tool name is the numeric alias `ext_<i>` (not
+> `ext__connId__tool`); rate limiting lives in the Next.js routes/hub (not the gateway); health is
+> last-known + manual retest; the effective tool set is keyed by connection **id**, never name;
+> workspace authz uses membership **roles**; and CLI-agent success (criterion #4) moves to Plan 1b.
 
 ---
 

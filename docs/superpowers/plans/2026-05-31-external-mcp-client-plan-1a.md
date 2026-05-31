@@ -1,5 +1,13 @@
 # External MCP Client — Plan 1a (Foundation + Hub + In-App AI)
 
+> **⚠️ READ FIRST — Review addendum R1 (2026-06-01):**
+> `docs/superpowers/plans/2026-05-31-external-mcp-client-plan-1a-addendum-R1.md` amends this plan.
+> When dispatching each remaining task, merge the matching R1 section(s) into the implementer
+> prompt. R1 overrides the base text where they conflict. Key CODE changes: Task 3 reopened
+> (header-name denylist + bounded schema converter); Task 4 (SSRF pin + redirect re-validation);
+> Task 5 (audit columns + `WorkspaceMembership.role`); Task 7/8 (read vs write authz, header
+> validation); Task 9 (schema caps, richer audit, concurrency/turn caps); new Task 13 (rate limit).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the in-app AI chat call tools from user-connected remote (HTTP/SSE) MCP servers, with an encrypted credential vault, a connections registry, and a "Connected Tools" panel that matches the app.
@@ -15,7 +23,7 @@
 - Run all `npm` / test commands from inside `synthi/` (e.g. `cd synthi && npm test`).
 - Run a single test file with: `cd synthi && npx vitest run <path-relative-to-synthi>`.
 - Commit messages end with the trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
-- Work happens on the `tool-compatability` branch (already checked out).
+- Work happens on the `tool-compatibility` branch (already checked out).
 
 ---
 
