@@ -162,6 +162,12 @@ function safeDispatchProof({ runtimeSession = "runtime-session:test" } = {}) {
     epochProof: retiredEpochProof(),
     streamOrderingProven: true,
     replacementScopeProven: true,
+    selectedArtifactIds: ["artifact:sha256:test"],
+    runtimeArtifactIds: ["artifact:sha256:test"],
+    dispatcherRegistrationIds: ["dispatcher:sha256:test"],
+    dispatchTableEntryIds: ["shade:0x10"],
+    dispatchTableHashes: ["0xabc"],
+    runtimeArtifactMatchesSelected: true,
   });
 }
 
@@ -1872,6 +1878,35 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+  });
+
+  it("does not prove dispatch safety without runtime selected artifact binding", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      argProvenanceEvidenceRefs: [
+        "worker-log:launch_arg_provenance:test:runtime-session.test:2",
+      ],
+      unknownArgCount: 0,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+      selectedArtifactIds: ["artifact:sha256:selected"],
+      runtimeArtifactIds: ["artifact:sha256:other"],
+      dispatcherRegistrationIds: ["dispatcher:sha256:test"],
+      dispatchTableEntryIds: ["shade:0x10"],
+      dispatchTableHashes: ["0xabc"],
+      runtimeArtifactMatchesSelected: false,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("runtime_artifact_does_not_match_selected_artifact");
+    expect(proof.runtimeArtifactMatchesSelected).toBe(false);
   });
 
   it("reports dispatch-safe-proven only with complete ABI, epoch, stream, scope, and argument gates", () => {

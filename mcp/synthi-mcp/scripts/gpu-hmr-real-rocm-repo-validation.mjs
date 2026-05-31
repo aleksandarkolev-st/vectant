@@ -1546,12 +1546,62 @@ function runtimeDispatchEvidence(workerEvidence) {
     workerEvidence,
     /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i,
   );
+  const successRecords = dispatchSuccessLines.map((line) => {
+    const artifactId = logField(line, 'artifact_id');
+    const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
+    const dispatchTableHash = logField(line, 'dispatch_table_hash');
+    const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    return {
+      line,
+      artifactId: artifactId && artifactId !== 'none' ? artifactId : null,
+      dispatcherRegistrationId: dispatcherRegistrationId && dispatcherRegistrationId !== 'none'
+        ? dispatcherRegistrationId
+        : null,
+      dispatchTableHash: dispatchTableHash && dispatchTableHash !== 'none' ? dispatchTableHash : null,
+      dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
+        ? dispatchTableEntryId
+        : null,
+    };
+  });
   return {
     success_count: dispatchSuccessCount,
     success_lines: dispatchSuccessLines.slice(-20),
+    success_records: successRecords.slice(-20),
+    runtime_artifact_ids: [...new Set(successRecords.map((record) => record.artifactId).filter(Boolean))],
+    dispatcher_registration_ids: [
+      ...new Set(successRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
+    ],
+    dispatch_table_hashes: [...new Set(successRecords.map((record) => record.dispatchTableHash).filter(Boolean))],
+    dispatch_table_entry_ids: [
+      ...new Set(successRecords.map((record) => record.dispatchTableEntryId).filter(Boolean)),
+    ],
     failure_count: dispatchFailureLines.length,
     failure_lines: dispatchFailureLines.slice(0, 20),
   };
+}
+
+function selectedArtifactIdsFromProofArtifacts(records) {
+  const ids = new Set();
+  for (const record of Array.isArray(records) ? records : []) {
+    const artifact = record?.artifact;
+    if (!artifact || typeof artifact !== 'object') continue;
+    if (typeof artifact.selectedArtifactId === 'string' && artifact.selectedArtifactId.trim()) {
+      ids.add(artifact.selectedArtifactId.trim());
+    }
+    const stages = Array.isArray(artifact.stageResults) ? artifact.stageResults : [];
+    for (const stage of stages) {
+      for (const value of Array.isArray(stage?.outputArtifactIds) ? stage.outputArtifactIds : []) {
+        if (typeof value === 'string' && value.trim()) ids.add(value.trim());
+      }
+    }
+  }
+  return [...ids].filter((id) => /^artifact:/i.test(id));
+}
+
+function runtimeArtifactMatchesSelected({ runtimeDispatch, selectedArtifactIds }) {
+  const selected = new Set(selectedArtifactIds);
+  return selected.size > 0
+    && runtimeDispatch.runtime_artifact_ids.some((artifactId) => selected.has(artifactId));
 }
 
 function runtimeArgProvenanceEvidence(workerEvidence) {
@@ -1801,7 +1851,7 @@ function selfCheckRuntimeDispatchEvidence() {
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
-      '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original artifact_id=artifact:sha256:abc dispatcher_registration_id=dispatcher:sha256:def dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1',
       '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
     ].join('\n'),
   });
@@ -1828,11 +1878,21 @@ function selfCheckRuntimeDispatchEvidence() {
     epochSwapProven: true,
     streamOrderingProven: true,
     replacementScopeProven: true,
+    selectedArtifactIds: ['artifact:sha256:abc'],
+    runtimeArtifactIds: upstreamOnlyDispatch.runtime_artifact_ids,
+    dispatcherRegistrationIds: upstreamOnlyDispatch.dispatcher_registration_ids,
+    dispatchTableEntryIds: upstreamOnlyDispatch.dispatch_table_entry_ids,
+    dispatchTableHashes: upstreamOnlyDispatch.dispatch_table_hashes,
+    runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected({
+      runtimeDispatch: upstreamOnlyDispatch,
+      selectedArtifactIds: ['artifact:sha256:abc'],
+    }),
   });
   if (
     !upstreamOnlyScope.observed
     || !upstreamOnlyScope.upstreamRunEvidenceObserved
     || upstreamOnlyScope.workerSessionMarkerObserved
+    || upstreamOnlyDispatch.runtime_artifact_ids[0] !== 'artifact:sha256:abc'
     || upstreamOnlyDispatchProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
   ) {
     throw new Error('current upstream run runtime evidence did not establish dispatch scope');
@@ -2171,6 +2231,10 @@ async function collectRuntimeEvidence() {
     );
   }
   const proofArtifactRecords = await collectGpuProofArtifacts();
+  const selectedArtifactIds = selectedArtifactIdsFromProofArtifacts(proofArtifactRecords);
+  report.evidence.selected_artifact_ids = selectedArtifactIds;
+  report.evidence.runtime_dispatch.runtime_artifact_matches_selected =
+    runtimeArtifactMatchesSelected({ runtimeDispatch, selectedArtifactIds });
   const foundProofArtifactCount = proofArtifactRecords.filter((entry) => entry?.found).length;
   const abiMetadataEvidenceCount = proofArtifactRecords.reduce((count, entry) => {
     const refs = Array.isArray(entry?.artifact?.evidenceRefs) ? entry.artifact.evidenceRefs : [];
@@ -2206,6 +2270,12 @@ async function collectRuntimeEvidence() {
     epochProof: report.epoch_swap_proof,
     streamOrderingProven: runtimeEpochSwap.evidence.stream_ordering_proven,
     replacementScopeProven: runtimeOwnership.scope_proven_count > 0,
+    selectedArtifactIds,
+    runtimeArtifactIds: runtimeDispatch.runtime_artifact_ids,
+    dispatcherRegistrationIds: runtimeDispatch.dispatcher_registration_ids,
+    dispatchTableEntryIds: runtimeDispatch.dispatch_table_entry_ids,
+    dispatchTableHashes: runtimeDispatch.dispatch_table_hashes,
+    runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
   report.output_proof = classifyGpuHmrOutputProof({
     dispatchProof: report.dispatch_proof,

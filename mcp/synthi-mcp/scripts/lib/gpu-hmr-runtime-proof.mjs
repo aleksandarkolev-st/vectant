@@ -841,7 +841,12 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const streamOrderingProven = observation.streamOrderingProven === true;
   const replacementScopeProven = observation.replacementScopeProven === true;
   const runtimeTouchedSymbolsMatch = observation.runtimeTouchedSymbolsMatch !== false;
-  const runtimeArtifactMatchesSelected = observation.runtimeArtifactMatchesSelected !== false;
+  const runtimeArtifactMatchesSelected = observation.runtimeArtifactMatchesSelected === true;
+  const selectedArtifactIds = compactStringList(observation.selectedArtifactIds);
+  const runtimeArtifactIds = compactStringList(observation.runtimeArtifactIds);
+  const dispatcherRegistrationIds = compactStringList(observation.dispatcherRegistrationIds);
+  const dispatchTableEntryIds = compactStringList(observation.dispatchTableEntryIds);
+  const dispatchTableHashes = compactStringList(observation.dispatchTableHashes);
 
   if (!dispatchObserved || dispatchFailureObserved || !sessionScoped || !runtimeSessionConsistent) {
     return {
@@ -932,6 +937,11 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       replacementScopeProven,
       runtimeTouchedSymbolsMatch,
       runtimeArtifactMatchesSelected,
+      selectedArtifactIds,
+      runtimeArtifactIds,
+      dispatcherRegistrationIds,
+      dispatchTableEntryIds,
+      dispatchTableHashes,
     };
   }
 
@@ -961,6 +971,11 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       replacementScopeProven,
       runtimeTouchedSymbolsMatch,
       runtimeArtifactMatchesSelected,
+      selectedArtifactIds,
+      runtimeArtifactIds,
+      dispatcherRegistrationIds,
+      dispatchTableEntryIds,
+      dispatchTableHashes,
     };
   }
 
@@ -988,6 +1003,11 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       replacementScopeProven: true,
       runtimeTouchedSymbolsMatch,
       runtimeArtifactMatchesSelected,
+      selectedArtifactIds,
+      runtimeArtifactIds,
+      dispatcherRegistrationIds,
+      dispatchTableEntryIds,
+      dispatchTableHashes,
     };
   }
 
@@ -1012,6 +1032,11 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     replacementScopeProven: true,
     runtimeTouchedSymbolsMatch: true,
     runtimeArtifactMatchesSelected: true,
+    selectedArtifactIds,
+    runtimeArtifactIds,
+    dispatcherRegistrationIds,
+    dispatchTableEntryIds,
+    dispatchTableHashes,
   };
 }
 
@@ -1027,7 +1052,7 @@ export function summarizeGpuHmrDispatchProof(proof) {
     : ' provenance=missing';
   const gates = proof.resultState === 'gpu-hmr-dispatch-safe-proven'
     ? ' safety=passed'
-    : ` safety=blocked abi=${proof.abiProven === true ? 'passed' : 'missing'} epoch=${proof.epochSwapProven === true ? 'passed' : 'missing'} stream=${proof.streamOrderingProven === true ? 'passed' : 'missing'} scope=${proof.replacementScopeProven === true ? 'passed' : 'missing'}`;
+    : ` safety=blocked abi=${proof.abiProven === true ? 'passed' : 'missing'} epoch=${proof.epochSwapProven === true ? 'passed' : 'missing'} stream=${proof.streamOrderingProven === true ? 'passed' : 'missing'} scope=${proof.replacementScopeProven === true ? 'passed' : 'missing'} artifact=${proof.runtimeArtifactMatchesSelected === true ? 'matched' : 'missing'}`;
   const unknown = Number.isFinite(proof.unknownArgCount) ? ` unknown_args=${proof.unknownArgCount}` : '';
   return `gpu_dispatch_proof=${result}${degraded}${reason}${dispatch}${session}${provenance}${gates}${unknown}`;
 }

@@ -75,6 +75,10 @@ pub struct LaunchRecord {
     pub arg_count: usize,
     pub expected_generation: u64,
     pub active_generation: u64,
+    pub active_artifact_id: Option<String>,
+    pub dispatcher_registration_id: Option<String>,
+    pub dispatch_table_hash: Option<String>,
+    pub dispatch_table_entry_id: Option<String>,
     pub arg_provenance: Vec<LaunchArgProvenance>,
     pub arg_provenance_complete: bool,
     pub dispatched: bool,
@@ -135,6 +139,24 @@ pub trait GpuLaunchDispatcher: Send + Sync {
     ) -> Result<(), String>;
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GpuLaunchDispatcherMetadata {
+    pub artifact_id: Option<String>,
+    pub dispatch_table_hash: Option<String>,
+    pub changed_symbols: Vec<String>,
+    pub function_handle_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ActiveDispatcherMetadata {
+    generation: u64,
+    registration_id: String,
+    artifact_id: Option<String>,
+    dispatch_table_hash: Option<String>,
+    changed_symbols: Vec<String>,
+    function_handle_ids: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 struct BoundaryState {
     buffers_by_ptr: HashMap<usize, ManagedBufferRecord>,
@@ -148,6 +170,7 @@ struct BoundaryState {
 
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
 static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceLock::new();
+static DISPATCHER_METADATA: OnceLock<Mutex<Option<ActiveDispatcherMetadata>>> = OnceLock::new();
 static LAUNCH_GENERATION: AtomicU64 = AtomicU64::new(1);
 static RUNTIME_SESSION_ID: OnceLock<String> = OnceLock::new();
 #[cfg(test)]
@@ -161,15 +184,30 @@ fn dispatcher_slot() -> &'static Mutex<Option<Arc<dyn GpuLaunchDispatcher>>> {
     DISPATCHER.get_or_init(|| Mutex::new(None))
 }
 
+fn dispatcher_metadata_slot() -> &'static Mutex<Option<ActiveDispatcherMetadata>> {
+    DISPATCHER_METADATA.get_or_init(|| Mutex::new(None))
+}
+
 pub fn install_launch_dispatcher(
     dispatcher: Arc<dyn GpuLaunchDispatcher>,
 ) -> Option<Arc<dyn GpuLaunchDispatcher>> {
+    install_launch_dispatcher_with_metadata(dispatcher, GpuLaunchDispatcherMetadata::default()).0
+}
+
+pub fn install_launch_dispatcher_with_metadata(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: GpuLaunchDispatcherMetadata,
+) -> (Option<Arc<dyn GpuLaunchDispatcher>>, u64) {
     let mut guard = dispatcher_slot()
         .lock()
         .expect("gpu runtime dispatcher mutex poisoned");
     let previous = guard.replace(dispatcher);
-    LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst);
-    previous
+    let generation = LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let active = active_dispatcher_metadata(generation, metadata);
+    *dispatcher_metadata_slot()
+        .lock()
+        .expect("gpu runtime dispatcher metadata mutex poisoned") = Some(active);
+    (previous, generation)
 }
 
 pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
@@ -178,6 +216,9 @@ pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
         .expect("gpu runtime dispatcher mutex poisoned");
     let previous = guard.take();
     LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst);
+    *dispatcher_metadata_slot()
+        .lock()
+        .expect("gpu runtime dispatcher metadata mutex poisoned") = None;
     previous
 }
 
@@ -195,6 +236,44 @@ pub fn runtime_session_id() -> &'static str {
             format!("pid{}-{}", std::process::id(), start_nanos)
         })
         .as_str()
+}
+
+fn active_dispatcher_metadata(
+    generation: u64,
+    metadata: GpuLaunchDispatcherMetadata,
+) -> ActiveDispatcherMetadata {
+    let mut material = String::new();
+    material.push_str(&generation.to_string());
+    material.push('|');
+    material.push_str(metadata.artifact_id.as_deref().unwrap_or(""));
+    material.push('|');
+    material.push_str(metadata.dispatch_table_hash.as_deref().unwrap_or(""));
+    material.push('|');
+    material.push_str(&metadata.changed_symbols.join(","));
+    material.push('|');
+    material.push_str(&metadata.function_handle_ids.join(","));
+    let registration_id = format!("dispatcher:sha256:{}", sha256_hex_raw(material.as_bytes()));
+    ActiveDispatcherMetadata {
+        generation,
+        registration_id,
+        artifact_id: metadata.artifact_id,
+        dispatch_table_hash: metadata.dispatch_table_hash,
+        changed_symbols: metadata.changed_symbols,
+        function_handle_ids: metadata.function_handle_ids,
+    }
+}
+
+fn sha256_hex_raw(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn dispatcher_metadata_snapshot() -> Option<ActiveDispatcherMetadata> {
+    dispatcher_metadata_slot()
+        .lock()
+        .expect("gpu runtime dispatcher metadata mutex poisoned")
+        .clone()
 }
 
 fn cstr(ptr: *const c_char) -> Option<String> {
@@ -1178,6 +1257,8 @@ fn synthi_gpu_launch_raw_impl(
     let block = block_decoded.dims;
     let active_generation = current_launch_generation();
     let runtime_session_id = runtime_session_id().to_string();
+    let active_dispatcher_metadata = dispatcher_metadata_snapshot()
+        .filter(|metadata| metadata.generation == active_generation);
     record_launch_host_identities(&kernel_name, kernel_name_ptr, _gpu.cast_const(), stream_token);
     if let Some(attachment) = original_host_path {
         record_original_host_path_event_at(
@@ -1229,6 +1310,29 @@ fn synthi_gpu_launch_raw_impl(
             arg_count,
             expected_generation,
             active_generation,
+            active_artifact_id: active_dispatcher_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.artifact_id.clone()),
+            dispatcher_registration_id: active_dispatcher_metadata
+                .as_ref()
+                .map(|metadata| metadata.registration_id.clone()),
+            dispatch_table_hash: active_dispatcher_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.dispatch_table_hash.clone()),
+            dispatch_table_entry_id: active_dispatcher_metadata.as_ref().and_then(|metadata| {
+                metadata
+                    .changed_symbols
+                    .iter()
+                    .position(|symbol| symbol == &kernel_name)
+                    .and_then(|index| metadata.function_handle_ids.get(index).cloned())
+                    .or_else(|| {
+                        metadata
+                            .changed_symbols
+                            .iter()
+                            .any(|symbol| symbol == &kernel_name)
+                            .then(|| format!("symbol:{kernel_name}"))
+                    })
+            }),
             arg_provenance: arg_provenance.clone(),
             arg_provenance_complete,
             dispatched: false,
@@ -1299,10 +1403,39 @@ fn synthi_gpu_launch_raw_impl(
     } else {
         "missing-dispatcher"
     };
+    let active_artifact_id = active_dispatcher_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.artifact_id.as_deref())
+        .unwrap_or("none");
+    let dispatcher_registration_id = active_dispatcher_metadata
+        .as_ref()
+        .map(|metadata| metadata.registration_id.as_str())
+        .unwrap_or("none");
+    let dispatch_table_hash = active_dispatcher_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.dispatch_table_hash.as_deref())
+        .unwrap_or("none");
+    let dispatch_table_entry_id = active_dispatcher_metadata
+        .as_ref()
+        .and_then(|metadata| {
+            metadata
+                .changed_symbols
+                .iter()
+                .position(|symbol| symbol == &kernel_name)
+                .and_then(|index| metadata.function_handle_ids.get(index).cloned())
+                .or_else(|| {
+                    metadata
+                        .changed_symbols
+                        .iter()
+                        .any(|symbol| symbol == &kernel_name)
+                        .then(|| format!("symbol:{kernel_name}"))
+                })
+        })
+        .unwrap_or_else(|| "none".to_string());
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} error={}",
             kernel_name,
             grid,
             block,
@@ -1311,12 +1444,16 @@ fn synthi_gpu_launch_raw_impl(
             shared_bytes,
             dispatch_label,
             runtime_session_id,
+            log_token(active_artifact_id),
+            log_token(dispatcher_registration_id),
+            log_token(dispatch_table_hash),
+            log_token(&dispatch_table_entry_id),
             log_safe(error)
         );
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={}",
             kernel_name,
             grid,
             block,
@@ -1324,7 +1461,11 @@ fn synthi_gpu_launch_raw_impl(
             stream_token,
             shared_bytes,
             dispatch_label,
-            runtime_session_id
+            runtime_session_id,
+            log_token(active_artifact_id),
+            log_token(dispatcher_registration_id),
+            log_token(dispatch_table_hash),
+            log_token(&dispatch_table_entry_id)
         );
     }
     let known_arg_count = arg_provenance
@@ -2211,6 +2352,62 @@ mod tests {
         );
 
         assert!(original_host_path_records_snapshot().is_empty());
+    }
+
+    #[test]
+    fn launch_records_dispatcher_artifact_binding_metadata() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (_previous, generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:test".to_string()),
+                dispatch_table_hash: Some("0xabc".to_string()),
+                changed_symbols: vec!["bound_kernel".to_string()],
+                function_handle_ids: vec!["bound_kernel:0x10".to_string()],
+            },
+        );
+
+        let kernel = CString::new("bound_kernel").unwrap();
+        let dim = 1_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].active_generation, generation);
+        assert_eq!(
+            launches[0].active_artifact_id.as_deref(),
+            Some("artifact:sha256:test")
+        );
+        assert_eq!(
+            launches[0].dispatch_table_hash.as_deref(),
+            Some("0xabc")
+        );
+        assert_eq!(
+            launches[0].dispatch_table_entry_id.as_deref(),
+            Some("bound_kernel:0x10")
+        );
+        assert!(
+            launches[0]
+                .dispatcher_registration_id
+                .as_deref()
+                .is_some_and(|value| value.starts_with("dispatcher:sha256:"))
+        );
     }
 
     #[test]

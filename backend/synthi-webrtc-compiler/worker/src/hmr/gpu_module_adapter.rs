@@ -76,9 +76,9 @@ use crate::hmr::gpu_reload_orchestrator::{
 };
 use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
-    clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher,
+    clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher_with_metadata,
     launch_records_snapshot, managed_buffers_snapshot, record_hmr_runtime_identity_snapshot,
-    runtime_session_id, GpuLaunchDispatcher, GpuLaunchRequest,
+    runtime_session_id, GpuLaunchDispatcher, GpuLaunchDispatcherMetadata, GpuLaunchRequest,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -1284,10 +1284,22 @@ impl Adapter for GpuModuleAdapter {
                 changed_function_handle_ids(&dispatcher_kernels, &expected_symbols);
             record_hmr_runtime_identity_snapshot();
             let previous_generation = current_launch_generation();
-            install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
-                symbols,
-                kernels: dispatcher_kernels,
-            }));
+            install_launch_dispatcher_with_metadata(
+                Arc::new(DriverLaunchDispatcher {
+                    symbols,
+                    kernels: dispatcher_kernels,
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some(new_artifact_id.clone()),
+                    dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
+                    changed_symbols: expected_symbols.clone(),
+                    function_handle_ids: function_handle_ids
+                        .split(',')
+                        .filter(|value| !value.trim().is_empty() && *value != "none")
+                        .map(str::to_string)
+                        .collect(),
+                },
+            );
             let active_generation = current_launch_generation();
             record_hmr_runtime_identity_snapshot();
             let mut runtime_log_lines = Vec::new();
