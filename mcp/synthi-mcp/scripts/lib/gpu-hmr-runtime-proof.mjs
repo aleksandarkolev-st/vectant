@@ -564,6 +564,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const dispatchUsable = dispatchProof
     ? proofMeets(dispatchProof, 'gpu-hmr-dispatch-safe-proven')
     : observation.dispatchSafeProven === true;
+  const dispatchRuntimeSessionIds = compactStringList(dispatchProof?.runtimeSessionIds);
   const rawOracle = observation.outputOracle && typeof observation.outputOracle === 'object'
     ? observation.outputOracle
     : {};
@@ -613,6 +614,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleReadbackTimestampObserved
     && oracleRuntimeSessionId !== null
     && oracleArtifactId !== null;
+  const oracleRuntimeSessionMatchesDispatch =
+    oracleRuntimeSessionId !== null
+    && (dispatchRuntimeSessionIds.length === 0 || dispatchRuntimeSessionIds.includes(oracleRuntimeSessionId));
   const hasTolerance = Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance')
     && rawOracle.tolerance !== null
     && rawOracle.tolerance !== undefined;
@@ -643,6 +647,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && deterministicOracleProvided
     && oracleEvidenceObserved
     && oracleProvenanceComplete
+    && oracleRuntimeSessionMatchesDispatch
     && oracleValuesCompatible
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
@@ -651,6 +656,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     passed: deterministicOraclePassed,
     evidenceObserved: oracleEvidenceObserved,
     provenanceComplete: oracleProvenanceComplete,
+    runtimeSessionMatchesDispatch: oracleRuntimeSessionMatchesDispatch,
     producer: oracleProducer,
     outputTargetId: oracleOutputTargetId,
     readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
@@ -747,6 +753,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     ? 'output_oracle_kind_unaccepted'
     : oracleOtherwisePassed && !oracleProvenanceComplete
       ? 'output_oracle_provenance_incomplete'
+      : oracleOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
+        ? 'output_oracle_session_mismatch'
       : visualFrameObserved
         ? 'visual_frame_without_deterministic_output_oracle'
         : 'output_oracle_not_collected';

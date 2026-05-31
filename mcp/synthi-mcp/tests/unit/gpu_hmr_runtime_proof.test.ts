@@ -122,15 +122,15 @@ function retiredEpochProof() {
   });
 }
 
-function safeDispatchProof() {
+function safeDispatchProof({ runtimeSession = "runtime-session:test" } = {}) {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     sessionScoped: true,
-    runtimeSessionIds: ["runtime-session:test"],
+    runtimeSessionIds: [runtimeSession],
     argProvenanceObserved: true,
     argProvenanceComplete: true,
     argProvenanceEvidenceRefs: [
-      "worker-log:launch_arg_provenance:test:runtime-session.test:2",
+      `worker-log:launch_arg_provenance:test:${runtimeSession}:2`,
     ],
     abiProof: acceptedAbiProof(),
     epochProof: retiredEpochProof(),
@@ -372,7 +372,7 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:abc",
     ]);
     const proof = classifyGpuHmrOutputProof({
-      dispatchProof: safeDispatchProof(),
+      dispatchProof: safeDispatchProof({ runtimeSession: "pid1" }),
       deterministicOutputObserved: evidence.deterministic_output_observed,
       deterministicOracleProvided: evidence.deterministic_oracle_provided,
       deterministicOraclePassed: evidence.deterministic_oracle_passed,
@@ -393,7 +393,7 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1",
     ]);
     const proof = classifyGpuHmrOutputProof({
-      dispatchProof: safeDispatchProof(),
+      dispatchProof: safeDispatchProof({ runtimeSession: "pid1" }),
       deterministicOutputObserved: evidence.deterministic_output_observed,
       deterministicOracleProvided: evidence.deterministic_oracle_provided,
       deterministicOraclePassed: evidence.deterministic_oracle_passed,
@@ -424,6 +424,25 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("output_oracle_provenance_incomplete");
     expect(proof.outputOracle.runtimeSessionId).toBeNull();
     expect(proof.outputOracle.provenanceComplete).toBe(false);
+  });
+
+  it("does not prove output from an oracle bound to a different runtime session", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        runtimeSessionId: "runtime-session:old",
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("output_oracle_session_mismatch");
+    expect(proof.outputOracle.provenanceComplete).toBe(true);
+    expect(proof.outputOracle.runtimeSessionMatchesDispatch).toBe(false);
   });
 
   it("only accepts runtime oracle records matching an explicit contract", () => {
@@ -493,7 +512,7 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=artifact:scalar",
     ]);
     const proof = classifyGpuHmrOutputProof({
-      dispatchProof: safeDispatchProof(),
+      dispatchProof: safeDispatchProof({ runtimeSession: "pid1" }),
       deterministicOutputObserved: evidence.deterministic_output_observed,
       deterministicOracleProvided: evidence.deterministic_oracle_provided,
       deterministicOraclePassed: evidence.deterministic_oracle_passed,
