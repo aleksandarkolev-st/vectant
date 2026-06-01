@@ -124,6 +124,7 @@ function epochRetirementFields({
 function epochGenerationGraph({
   previousGeneration = 2,
   activeGeneration = 3,
+  publishTimestampMs = 1779979998000,
   runtimeSession = "runtime-session:test",
   retirementState = "retired",
   capsuleMetadata = true,
@@ -132,11 +133,12 @@ function epochGenerationGraph({
 } = {}) {
   const runtimeSessionFields = runtimeSession ? { runtimeSession } : {};
   const capsuleFields = capsuleMetadata ? epochCapsuleMetadata() : {};
+  const publicationFields = { publishTimestampMs };
   const retirementFields = { retirementFenceIds, delayedUnloadResult };
   return {
     schemaVersion: "synthi.gpu.epoch_graph.v1",
     runtimeSessionIds: runtimeSession ? [runtimeSession] : [],
-    latestPublication: { previousGeneration, activeGeneration, ...capsuleFields, ...retirementFields },
+    latestPublication: { previousGeneration, activeGeneration, ...publicationFields, ...capsuleFields, ...retirementFields },
     retirementState,
     retirementRequired: retirementState !== "not-required",
     matchingRetirementObserved: retirementState === "retired",
@@ -159,6 +161,7 @@ function epochGenerationGraph({
         to: `generation:${activeGeneration}`,
         previousGeneration,
         activeGeneration,
+        ...publicationFields,
         ...capsuleFields,
         ...retirementFields,
         ...runtimeSessionFields,
@@ -2398,6 +2401,34 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.schemaVersionValid).toBe(false);
   });
 
+  it("does not accept an epoch graph without publication timestamp provenance", () => {
+    const graph = epochGenerationGraph();
+    delete graph.latestPublication.publishTimestampMs;
+    delete graph.edges[0].publishTimestampMs;
+
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:missing-publish-timestamp"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_publish_timestamp_missing");
+    expect(proof.publishTimestampObserved).toBe(false);
+  });
+
   it("does not prove epoch swap without runtime session evidence", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
@@ -2520,7 +2551,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("proves epoch swap from runtime publish and retire evidence", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
       `[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields()}`,
     ]);
 
@@ -2528,6 +2559,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.stream_ids).toEqual(["default"]);
     expect(evidence.runtime_session_ids).toEqual(["pid1"]);
     expect(evidence.epoch_generation_graph?.schemaVersion).toBe("synthi.gpu.epoch_graph.v1");
+    expect(evidence.epoch_generation_graph?.latestPublication.publishTimestampMs).toBe(1779979998000);
     expect(evidence.epoch_generation_graph?.nodes.map((node) => node.id)).toEqual([
       "generation:2",
       "generation:3",
@@ -2551,7 +2583,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const oldHash = "a".repeat(64);
     const newHash = "b".repeat(64);
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields({ oldHash, newHash, symbols: ["shade", "trace"], functionHandles: ["shade:0x10", "trace:0x20"] })} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=2 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields({ oldHash, newHash, symbols: ["shade", "trace"], functionHandles: ["shade:0x10", "trace:0x20"] })} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=2 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
       `[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields()}`,
     ]);
 
@@ -2635,7 +2667,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("does not prove runtime epoch swap when the capsule artifact id and hash disagree", () => {
     const mismatchedHash = "9".repeat(64);
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} new_artifact_hash=sha256:${mismatchedHash} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields()} new_artifact_hash=sha256:${mismatchedHash} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.capsule_metadata_observed).toBe(false);
@@ -2646,7 +2678,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not treat placeholder capsule metadata as observed lineage", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 old_artifact_id=none new_artifact_id=artifact:sha256:${TEST_NEW_ARTIFACT_HASH} new_artifact_hash=sha256:${TEST_NEW_ARTIFACT_HASH} changed_symbols=none function_handle_ids=none dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 old_artifact_id=none new_artifact_id=artifact:sha256:${TEST_NEW_ARTIFACT_HASH} new_artifact_hash=sha256:${TEST_NEW_ARTIFACT_HASH} changed_symbols=none function_handle_ids=none dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.capsule_metadata_observed).toBe(false);
@@ -2657,7 +2689,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("keeps runtime epoch evidence pending until matching retirement is observed", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.old_generation_retired).toBe(false);
@@ -2667,7 +2699,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove runtime epoch swap from legacy single dispatch table hash only", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
     ]);
 
     expect(evidence.dispatch_table_hash_observed).toBe(false);
@@ -2680,7 +2712,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove runtime epoch swap when before and after dispatch table hashes are identical", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xabc dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xabc dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
     ]);
 
     expect(evidence.dispatch_table_hash_before_observed).toBe(true);
@@ -2694,7 +2726,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove runtime epoch swap when no dispatch entries changed", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=0 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=0 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
     ]);
 
     expect(evidence.dispatch_table_hash_changed).toBe(true);
@@ -2706,7 +2738,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("keeps publication-only retirement pending without explicit zero retired modules", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.retirement_not_required).toBe(false);
@@ -2717,7 +2749,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("accepts publication-only retirement when zero retired modules is explicit", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "not_required" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "not_required" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.retirement_not_required).toBe(true);
@@ -2728,7 +2760,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("accepts no-stream epoch ordering only when no affected streams are explicitly recorded", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields({ streamEpochCounters: { none: 3 } })} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=none stream_ordering_proven=true ${epochRetirementFields({ retirementFenceIds: ["none"], delayedUnloadResult: "not_required" })} drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields({ streamEpochCounters: { none: 3 } })} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=none stream_ordering_proven=true ${epochRetirementFields({ retirementFenceIds: ["none"], delayedUnloadResult: "not_required" })} drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.stream_scope_supported).toBe(true);
@@ -2739,7 +2771,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove no-stream epoch ordering when the no-stream assertion is omitted", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
     ]);
 
     expect(evidence.stream_scope_supported).toBe(false);
@@ -2751,7 +2783,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not prove no-stream epoch ordering when stream ids contradict the scope", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
     ]);
 
     expect(evidence.stream_scope_supported).toBe(false);
@@ -2763,7 +2795,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("downgrades runtime epoch evidence when stream ordering is missing from the publication", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context",
     ]);
 
     expect(evidence.stream_ordering_proven).toBe(false);
@@ -2774,7 +2806,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not accept context-wide drain as epoch stream ordering proof", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
     ]);
 
     expect(evidence.stream_ordering_proven).toBe(false);

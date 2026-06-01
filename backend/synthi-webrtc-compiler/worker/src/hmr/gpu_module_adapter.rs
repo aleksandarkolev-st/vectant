@@ -54,7 +54,7 @@ use std::ffi::c_void;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -383,6 +383,13 @@ fn dispatch_table_hash(table: &KernelTable) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entries.hash(&mut hasher);
     hasher.finish()
+}
+
+fn epoch_millis_now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u64) {
@@ -1426,9 +1433,11 @@ impl Adapter for GpuModuleAdapter {
             } else {
                 "pending"
             };
+            let publish_timestamp_ms = epoch_millis_now();
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
+                publish_timestamp_ms,
                 previous_generation,
                 active_generation,
                 previous_artifact_id,
@@ -2221,6 +2230,7 @@ mod tests {
             .iter()
             .find(|line| line.contains("dispatcher_epoch event=published"))
             .expect("dispatcher epoch publication report");
+        assert!(publish.contains("publish_timestamp_ms="));
         assert!(publish.contains("capsule_id=capsule:sha256:"));
         assert!(publish.contains(
             "fission_island_id=fission-island:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -2347,6 +2357,7 @@ mod tests {
             .expect("dispatcher epoch publication report");
         assert!(publish
             .contains("dispatcher_epoch event=published")
+            && publish.contains("publish_timestamp_ms=")
             && publish.contains("dispatch_table_hash_before=0x")
             && publish.contains("dispatch_table_hash_after=0x")
             && publish.contains("retired_modules=1")

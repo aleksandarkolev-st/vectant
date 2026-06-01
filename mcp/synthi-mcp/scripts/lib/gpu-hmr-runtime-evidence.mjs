@@ -87,6 +87,7 @@ function epochRecord(line) {
     line,
     event: fields.event ?? null,
     runtimeSession: fields.runtime_session ?? null,
+    publishTimestampMs: integerValue(fields.publish_timestamp_ms ?? fields.publish_timestamp),
     previousGeneration: integerValue(fields.previous_generation),
     activeGeneration: integerValue(fields.active_generation),
     oldArtifactId: fields.old_artifact_id ?? fields.previous_artifact_id ?? null,
@@ -188,6 +189,7 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         previousGeneration: record.previousGeneration,
         activeGeneration: record.activeGeneration,
         runtimeSession: record.runtimeSession,
+        publishTimestampMs: record.publishTimestampMs,
         oldArtifactId: record.oldArtifactId,
         newArtifactId: record.newArtifactId,
         newArtifactHash: record.newArtifactHash,
@@ -235,6 +237,7 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
     latestPublication: {
       previousGeneration: latestPublication.previousGeneration,
       activeGeneration: latestPublication.activeGeneration,
+      publishTimestampMs: latestPublication.publishTimestampMs,
       oldArtifactId: latestPublication.oldArtifactId,
       newArtifactId: latestPublication.newArtifactId,
       newArtifactHash: latestPublication.newArtifactHash,
