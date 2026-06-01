@@ -130,6 +130,52 @@ function fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy) {
   return { proven: true, reason: null };
 }
 
+function fissionCandidateAccepted(candidate) {
+  const status = String(candidate?.status ?? '').trim().toLowerCase();
+  return status === 'pass' || status === 'passed' || status === 'accepted';
+}
+
+function fissionSelectionScoreKey(candidate) {
+  const score = objectValue(candidate?.selectionScore);
+  return REQUIRED_FISSION_SELECTION_ORDER.map((field) => score[field]);
+}
+
+function compareFissionSelectionScoreKey(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] < right[index]) return -1;
+    if (left[index] > right[index]) return 1;
+  }
+  return 0;
+}
+
+function fissionSelectedCandidateNarrownessIntegrity(metadata, selectionPolicy, selectedCandidate) {
+  const selectedIndex = metadata.selectedCandidateIndex;
+  const selectedScoreIntegrity = fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy);
+  if (!selectedScoreIntegrity.proven) return selectedScoreIntegrity;
+  const candidates = Array.isArray(metadata.candidates) ? metadata.candidates : [];
+  const selectedKey = fissionSelectionScoreKey(selectedCandidate);
+  const selectedEvidenceId = nonEmptyString(selectedCandidate.verifierEvidenceId) ?? '';
+  for (const [index, candidate] of candidates.entries()) {
+    if (!candidate || typeof candidate !== 'object' || !fissionCandidateAccepted(candidate)) continue;
+    const candidateScoreIntegrity = fissionSelectionScoreIntegrity(candidate, selectionPolicy);
+    if (!candidateScoreIntegrity.proven) {
+      return { proven: false, reason: 'fission_candidate_selection_score_unverified' };
+    }
+    const candidateKey = fissionSelectionScoreKey(candidate);
+    const scoreOrder = compareFissionSelectionScoreKey(candidateKey, selectedKey);
+    const candidateEvidenceId = nonEmptyString(candidate.verifierEvidenceId) ?? '';
+    const evidenceOrder = candidateEvidenceId.localeCompare(selectedEvidenceId);
+    if (
+      scoreOrder < 0
+      || (scoreOrder === 0 && evidenceOrder < 0)
+      || (scoreOrder === 0 && evidenceOrder === 0 && index < selectedIndex)
+    ) {
+      return { proven: false, reason: 'fission_selected_candidate_not_narrowest' };
+    }
+  }
+  return { proven: true, reason: null };
+}
+
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -567,9 +613,13 @@ function fissionReportPassIntegrity(metadata) {
   if (nonEmptyString(selectedCandidate.islandId) !== selectedIslandId) {
     return { proven: false, reason: 'fission_selected_candidate_identity_mismatch' };
   }
-  const scoreIntegrity = fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy);
-  if (!scoreIntegrity.proven) {
-    return { proven: false, reason: scoreIntegrity.reason };
+  const narrownessIntegrity = fissionSelectedCandidateNarrownessIntegrity(
+    metadata,
+    selectionPolicy,
+    selectedCandidate,
+  );
+  if (!narrownessIntegrity.proven) {
+    return { proven: false, reason: narrownessIntegrity.reason };
   }
   const contractIntegrity = fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslandId);
   if (!contractIntegrity.proven) {

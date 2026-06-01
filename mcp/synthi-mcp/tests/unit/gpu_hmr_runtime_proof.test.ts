@@ -1936,6 +1936,45 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selected_candidate_selection_score_missing");
   });
 
+  it("does not prove fission when selected candidate is not the narrowest accepted island", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    const narrowerCandidate = JSON.parse(JSON.stringify(metadata.candidates[0]));
+    narrowerCandidate.selected = false;
+    narrowerCandidate.islandId = "island:sha256:narrower";
+    narrowerCandidate.candidate = acceptedSelectedIslandContract("island:sha256:narrower");
+    narrowerCandidate.candidate.artifactKind = "function_body";
+    narrowerCandidate.candidate.exportedSymbolsExpected = ["kernel_main"];
+    narrowerCandidate.candidate.includeClosure = [];
+    narrowerCandidate.candidate.narrowerCandidateRejections = [];
+    narrowerCandidate.selectionScore.total = 0;
+    narrowerCandidate.selectionScore.scopeRank = 0;
+    narrowerCandidate.selectionScore.includeClosureCount = 0;
+    metadata.candidateCount = 2;
+    metadata.acceptedCount = 2;
+    metadata.candidates.push(narrowerCandidate);
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:not-narrowest",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:not-narrowest"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_candidate_not_narrowest");
+  });
+
   it("does not prove fission when the selected island contract is incomplete", () => {
     const metadata = acceptedFissionVerifierMetadata();
     delete metadata.candidates[0].candidate.compileCommandHash;
