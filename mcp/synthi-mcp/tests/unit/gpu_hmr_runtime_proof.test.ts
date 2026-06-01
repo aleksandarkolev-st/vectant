@@ -649,6 +649,55 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.dispatchArtifactIds).toEqual([TEST_ARTIFACT_ID]);
   });
 
+  it("requires visual evidence for render output oracle kinds", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        kind: "render_target_hash",
+        outputTargetId: "render-target:rgba32f",
+        expected: `sha256:${"4".repeat(64)}`,
+        actual: `sha256:${"4".repeat(64)}`,
+      },
+      visualFrameObserved: false,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-evidence-missing");
+    expect(proof.degradedReason).toBe("visual_frame_not_observed");
+    expect(proof.renderVisualEvidenceRequired).toBe(true);
+    expect(proof.visualEvidenceRequired).toBe(true);
+    expect(proof.outputOracle.passed).toBe(true);
+  });
+
+  it("accepts render output oracle proof when visual evidence is present", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        kind: "selected_pixels",
+        outputTargetId: "render-target:rgba32f",
+        expected: [0.1, 0.2, 0.3, 1],
+        actual: [0.1, 0.2, 0.3, 1],
+        tolerance: 0,
+        visualEvidenceRefs: ["validation:screenshot:after-hmr"],
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.renderVisualEvidenceRequired).toBe(true);
+    expect(proof.visualEvidenceComplete).toBe(true);
+    expect(proof.visualEvidenceRefs).toEqual(["validation:screenshot:after-hmr"]);
+  });
+
   it("rejects raw log snippets as output oracle evidence", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),

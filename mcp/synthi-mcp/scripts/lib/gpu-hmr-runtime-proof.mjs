@@ -54,6 +54,13 @@ const ACCEPTED_OUTPUT_ORACLE_KINDS = new Set([
   'buffer_checksum',
 ]);
 
+const RENDER_OUTPUT_ORACLE_KINDS = new Set([
+  'render_target_hash',
+  'accumulation_buffer_hash',
+  'selected_pixels',
+  'selected_pixel_values',
+]);
+
 export function gpuHmrOutputOracleKindAccepted(kind) {
   return typeof kind === 'string'
     && ACCEPTED_OUTPUT_ORACLE_KINDS.has(kind.trim().toLowerCase());
@@ -1218,7 +1225,11 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     rawOracle.visualRef,
     rawOracle.visual_ref,
   ]);
-  const visualEvidenceRequired = observation.visualEvidenceRequired === true;
+  const renderVisualEvidenceRequired =
+    oracleKind !== null
+    && RENDER_OUTPUT_ORACLE_KINDS.has(oracleKind.trim().toLowerCase());
+  const visualEvidenceRequired =
+    observation.visualEvidenceRequired === true || renderVisualEvidenceRequired;
   const visualEvidenceComplete = !visualEvidenceRequired
     || (visualFrameObserved && visualEvidenceRefs.length > 0);
 
@@ -1231,6 +1242,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       outputOracle: { ...outputOracle, passed: false },
       visualFrameObserved,
       visualEvidenceRequired,
+      renderVisualEvidenceRequired,
       visualEvidenceComplete,
       evidenceRefs,
       visualEvidenceRefs,
@@ -1250,6 +1262,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
         outputOracle,
         visualFrameObserved,
         visualEvidenceRequired,
+        renderVisualEvidenceRequired,
         visualEvidenceComplete,
         evidenceRefs,
         visualEvidenceRefs,
@@ -1265,6 +1278,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       outputOracle,
       visualFrameObserved,
       visualEvidenceRequired,
+      renderVisualEvidenceRequired,
       visualEvidenceComplete,
       evidenceRefs,
       visualEvidenceRefs,
@@ -1318,6 +1332,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     outputOracle: { ...outputOracle, passed: false },
     visualFrameObserved,
     visualEvidenceRequired,
+    renderVisualEvidenceRequired,
     visualEvidenceComplete,
     evidenceRefs,
     visualEvidenceRefs,
