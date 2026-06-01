@@ -62,7 +62,8 @@ function acceptedAbiProof() {
       evidenceId: "evidence:clang-ast:abc",
       extractorName: "test_clang_ast",
       extractorVersion: "v1",
-      inputHash: "sha256:abc",
+      command: "clang++ -Xclang -ast-dump=json",
+      inputHash: `sha256:${"a".repeat(64)}`,
     }],
   });
 }
@@ -1209,6 +1210,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.layoutSizeAlignmentVerified).toBe(true);
     expect(proof.acceptedExtractorProvenanceObserved).toBe(true);
     expect(proof.abiFingerprintHashesObserved).toBe(true);
+    expect(proof.acceptedExtractorCommands).toEqual(["clang++ -Xclang -ast-dump=json"]);
+    expect(proof.acceptedExtractorInputHashes).toEqual([`sha256:${"a".repeat(64)}`]);
   });
 
   it("does not prove ABI when accepted extractor provenance is missing", () => {
@@ -1238,6 +1241,41 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.acceptedExtractorProvenanceObserved).toBe(false);
   });
 
+  it("does not prove ABI without extractor command and digest input provenance", () => {
+    const missingCommand = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      extractorProvenance: [{
+        extractorKind: "clang_ast",
+        evidenceId: "evidence:clang-ast:abc",
+        extractorName: "test_clang_ast",
+        extractorVersion: "v1",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+    const invalidInputHash = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      extractorProvenance: [{
+        extractorKind: "clang_ast",
+        evidenceId: "evidence:clang-ast:abc",
+        extractorName: "test_clang_ast",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -ast-dump=json",
+        inputHash: "sha256:abc",
+      }],
+    });
+
+    expect(missingCommand.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(missingCommand.degradedReason).toBe("abi_extractor_provenance_unverified");
+    expect(invalidInputHash.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(invalidInputHash.degradedReason).toBe("abi_extractor_provenance_unverified");
+  });
+
   it("does not prove ABI without kernel and constant/global ABI fingerprints", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
@@ -1247,7 +1285,8 @@ describe("GPU HMR runtime output proof classification", () => {
         evidenceId: "evidence:clang-record-layout:abc",
         extractorName: "test_clang_record_layout",
         extractorVersion: "v1",
-        inputHash: "sha256:abc",
+        command: "clang++ -Xclang -fdump-record-layouts",
+        inputHash: `sha256:${"a".repeat(64)}`,
       }],
     });
 
@@ -1268,7 +1307,8 @@ describe("GPU HMR runtime output proof classification", () => {
         evidenceId: "evidence:clang-record-layout:abc",
         extractorName: "test_clang_record_layout",
         extractorVersion: "v1",
-        inputHash: "sha256:abc",
+        command: "clang++ -Xclang -fdump-record-layouts",
+        inputHash: `sha256:${"a".repeat(64)}`,
       }],
     });
 
@@ -1288,7 +1328,8 @@ describe("GPU HMR runtime output proof classification", () => {
         evidenceId: "evidence:clang-ast:abc",
         extractorName: "test_clang_ast",
         extractorVersion: "v1",
-        inputHash: "sha256:abc",
+        command: "clang++ -Xclang -ast-dump=json",
+        inputHash: `sha256:${"a".repeat(64)}`,
         acceptedByRuntimeCorrectnessPlan: false,
       }],
     });
@@ -1390,7 +1431,8 @@ describe("GPU HMR runtime output proof classification", () => {
               evidenceId: "evidence:clang-record-layout:def",
               extractorName: "test_clang_record_layout",
               extractorVersion: "v1",
-              inputHash: "sha256:def",
+              command: "clang++ -Xclang -fdump-record-layouts",
+              inputHash: `sha256:${"d".repeat(64)}`,
             }],
           },
         }],
@@ -1404,6 +1446,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.acceptedExtractorEvidenceRefs).toEqual(["evidence:clang-record-layout:def"]);
+    expect(proof.acceptedExtractorCommands).toEqual(["clang++ -Xclang -fdump-record-layouts"]);
+    expect(proof.acceptedExtractorInputHashes).toEqual([`sha256:${"d".repeat(64)}`]);
     expect(proof.kernelAbiFingerprintHashes).toEqual(["d".repeat(64)]);
     expect(proof.constantGlobalLayoutHashes).toEqual(["3476900567878811119"]);
   });

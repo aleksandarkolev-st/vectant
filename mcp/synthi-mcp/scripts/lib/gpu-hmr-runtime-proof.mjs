@@ -587,18 +587,29 @@ function acceptedAbiExtractorEvidence(observation = {}) {
     const evidenceId = String(record.evidenceId ?? '').trim();
     const extractorName = String(record.extractorName ?? '').trim();
     const extractorVersion = String(record.extractorVersion ?? '').trim();
+    const command = String(record.command ?? record.extractorCommand ?? record.extractor_command ?? '').trim();
     const inputHash = String(record.inputHash ?? '').trim();
+    const inputHashAccepted = /^sha256:[0-9a-f]{64}$/i.test(inputHash);
     const explicitlyRejected = record.acceptedByRuntimeCorrectnessPlan === false;
     return ACCEPTED_ABI_EXTRACTOR_KINDS.has(kind)
       && evidenceId
       && extractorName
       && extractorVersion
-      && inputHash
+      && command
+      && inputHashAccepted
       && !explicitlyRejected;
   });
   const refs = compactStringList(acceptedRecords.map((record) => String(record.evidenceId).trim()));
   const sources = compactStringList(
     acceptedRecords.map((record) => String(record.kind ?? record.extractorKind).trim()),
+  );
+  const commands = compactStringList(
+    acceptedRecords.map((record) =>
+      String(record.command ?? record.extractorCommand ?? record.extractor_command).trim()
+    ),
+  );
+  const inputHashes = compactStringList(
+    acceptedRecords.map((record) => String(record.inputHash).trim()),
   );
   const explicitRefsMatched = explicitRefs.length === 0
     || explicitRefs.every((ref) => refs.includes(ref));
@@ -609,6 +620,8 @@ function acceptedAbiExtractorEvidence(observation = {}) {
     accepted: refs.length > 0 && explicitRefsMatched && explicitSourcesMatched,
     refs,
     sources,
+    commands,
+    inputHashes,
   };
 }
 
@@ -1885,6 +1898,8 @@ export function classifyGpuHmrAbiProof(observation = {}) {
       acceptedExtractorProvenanceObserved: true,
       acceptedExtractorEvidenceRefs: acceptedExtractor.refs,
       acceptedExtractorSources: acceptedExtractor.sources,
+      acceptedExtractorCommands: acceptedExtractor.commands,
+      acceptedExtractorInputHashes: acceptedExtractor.inputHashes,
       evidenceRefs,
     };
   }
@@ -1912,6 +1927,8 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     acceptedExtractorProvenanceObserved,
     acceptedExtractorEvidenceRefs: acceptedExtractor.refs,
     acceptedExtractorSources: acceptedExtractor.sources,
+    acceptedExtractorCommands: acceptedExtractor.commands,
+    acceptedExtractorInputHashes: acceptedExtractor.inputHashes,
     evidenceRefs,
   };
 }
