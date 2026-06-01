@@ -1129,6 +1129,12 @@ def _source_launch_graph_contract(
             "wrappers, placeholder buffers, or test-only data."
         ),
         (
+            "When preserving a listed source launch in generated runtime code, prefer "
+            "`synthi_gpu_launch_source_location(...)` with the record `site` as "
+            "the host path id and `source_instrumented` provenance so runtime "
+            "proof can bind the dispatch back to the source host path."
+        ),
+        (
             "If a listed owner expression cannot be represented in generated core "
             "without inventing state, do not emit that source launch. A verifier "
             "rejection is safer than a launch with different argument ownership."

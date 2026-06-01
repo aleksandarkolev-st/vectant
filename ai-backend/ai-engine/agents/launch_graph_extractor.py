@@ -49,7 +49,10 @@ _RAW_LAUNCH_RE = re.compile(
     r"(?P<kernel>[A-Za-z_][A-Za-z0-9_]*)\s*<<<(?P<config>.*?)>>>\s*\(",
     re.DOTALL,
 )
-_BOUNDARY_CALL_RE = re.compile(r"\bsynthi_gpu_launch\s*\(", re.DOTALL)
+_BOUNDARY_CALL_RE = re.compile(
+    r"\b(?P<name>synthi_gpu_launch(?:_original_host_path|_source_location)?)\s*\(",
+    re.DOTALL,
+)
 _OWNER_EXPR = (
     r"[A-Za-z_][A-Za-z0-9_:]*"
     r"(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_:]*|\s*\[[^\]\n;]+\])*"
@@ -106,21 +109,67 @@ def _extract_boundary_launches(path: str, source: str) -> Iterable[LaunchSite]:
     for match in _BOUNDARY_CALL_RE.finditer(source):
         body, _ = _read_balanced(source, match.end() - 1, "(", ")")
         parts = _split_top_level(body)
-        if len(parts) < 6:
+        normalized = _normalize_boundary_launch_parts(match.group("name"), parts)
+        if normalized is None:
             continue
-        kernel = _strip_quotes(parts[1])
+        kernel = _strip_quotes(normalized["kernel"])
         if not kernel:
             continue
         yield LaunchSite(
             site=_site(path, source, match.start()),
             kernel=kernel,
-            grid=parts[2].strip(),
-            block=parts[3].strip(),
-            shared=parts[4].strip() or "0",
-            stream=parts[5].strip() or "0",
-            args=_extract_boundary_args(parts[6] if len(parts) > 6 else ""),
-            form="synthi_gpu_launch",
+            grid=normalized["grid"].strip(),
+            block=normalized["block"].strip(),
+            shared=normalized["shared"].strip() or "0",
+            stream=normalized["stream"].strip() or "0",
+            args=_extract_boundary_args(normalized["args"]),
+            form=match.group("name"),
         )
+
+
+def _normalize_boundary_launch_parts(name: str, parts: List[str]) -> Optional[dict]:
+    if name == "synthi_gpu_launch":
+        if len(parts) < 6:
+            return None
+        return {
+            "kernel": parts[1],
+            "grid": parts[2],
+            "block": parts[3],
+            "shared": parts[4],
+            "stream": parts[5],
+            "args": parts[6] if len(parts) > 6 else "",
+        }
+    if name == "synthi_gpu_launch_source_location":
+        if len(parts) < 8:
+            return None
+        return {
+            "kernel": parts[3],
+            "grid": parts[4],
+            "block": parts[5],
+            "shared": parts[6],
+            "stream": parts[7],
+            "args": parts[8] if len(parts) > 8 else "",
+        }
+    if name == "synthi_gpu_launch_original_host_path":
+        if len(parts) >= 10:
+            return {
+                "kernel": parts[4],
+                "grid": parts[5],
+                "block": parts[6],
+                "shared": parts[7],
+                "stream": parts[8],
+                "args": parts[9],
+            }
+        if len(parts) >= 9:
+            return {
+                "kernel": parts[3],
+                "grid": parts[4],
+                "block": parts[5],
+                "shared": parts[6],
+                "stream": parts[7],
+                "args": parts[8],
+            }
+    return None
 
 
 def _extract_boundary_args(arg_expr: str) -> List[str]:

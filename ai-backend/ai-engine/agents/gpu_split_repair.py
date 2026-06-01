@@ -8,6 +8,7 @@ verifier. They intentionally avoid fixture- or symbol-specific rules.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -1825,12 +1826,19 @@ def _source_launch_site_to_synthi_call_with_evidence(
     if not launch_args:
         return None, availability
     return (
-        f'synthi_gpu_launch(nullptr, "{site.kernel}", '
+        "synthi_gpu_launch_source_location(nullptr, "
+        f"{_cpp_string_literal(site.site)}, "
+        '"source_instrumented", '
+        f"{_cpp_string_literal(site.kernel)}, "
         f"{_launch_dim_expr_for_boundary(site.grid)}, "
         f"{_launch_dim_expr_for_boundary(site.block)}, "
         f"{site.shared}, {site.stream}, "
         "{ " + ", ".join(launch_args) + " });"
     ), availability
+
+
+def _cpp_string_literal(value: object) -> str:
+    return json.dumps(str(value or ""), ensure_ascii=True)
 
 
 def _source_launch_site_availability(

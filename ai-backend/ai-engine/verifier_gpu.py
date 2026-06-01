@@ -589,7 +589,7 @@ _RAW_LAUNCH_CALL_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*<<<[^;]{0,256}?>>>",
 )
 _SYNTHI_LAUNCH_CALL_RE = re.compile(
-    r"\bsynthi_gpu_launch\s*\(\s*[^,]+,\s*[\"'](?P<name>[A-Za-z_][A-Za-z0-9_]*)[\"']",
+    r"\b(?P<function>synthi_gpu_launch(?:_original_host_path|_source_location)?)\s*\(",
     re.DOTALL,
 )
 _SYNTHI_LAUNCH_BYPASS_RE = re.compile(
@@ -649,6 +649,85 @@ def _iter_call_bodies(source: str, name: str) -> Iterable[str]:
             cursor = i
         else:
             return
+
+
+@dataclass(frozen=True)
+class _SynthiLaunchCall:
+    function: str
+    body: str
+    parts: List[str]
+    valid_signature: bool
+    kernel_arg: str
+    grid_arg: str
+    block_arg: str
+    shared_arg: str
+    stream_arg: str
+    initializer_arg: str
+
+
+def _iter_synthi_launch_calls(source: str) -> Iterable[_SynthiLaunchCall]:
+    for match in _SYNTHI_LAUNCH_CALL_RE.finditer(source):
+        open_index = source.find("(", match.start())
+        if open_index < 0:
+            continue
+        i = open_index + 1
+        depth = 1
+        while i < len(source) and depth:
+            if source[i] == "(":
+                depth += 1
+            elif source[i] == ")":
+                depth -= 1
+            i += 1
+        if depth != 0:
+            return
+        body = source[open_index + 1 : i - 1]
+        parts = _split_top_level_args(body)
+        normalized = _normalize_synthi_launch_parts(match.group("function"), body, parts)
+        if normalized is not None:
+            yield normalized
+
+
+def _normalize_synthi_launch_parts(
+    function: str,
+    body: str,
+    parts: List[str],
+) -> Optional[_SynthiLaunchCall]:
+    if function == "synthi_gpu_launch":
+        if len(parts) < 2:
+            return None
+        valid_signature = len(parts) == 7
+        kernel_index = 1
+    elif function == "synthi_gpu_launch_source_location":
+        if len(parts) < 4:
+            return None
+        valid_signature = len(parts) == 9
+        kernel_index = 3
+    elif function == "synthi_gpu_launch_original_host_path":
+        if len(parts) >= 10:
+            valid_signature = len(parts) == 10
+            kernel_index = 4
+        elif len(parts) >= 9:
+            valid_signature = len(parts) == 9
+            kernel_index = 3
+        else:
+            return None
+    else:
+        return None
+
+    initializer_index = kernel_index + 5
+    kernel_arg = parts[kernel_index] if kernel_index < len(parts) else ""
+    return _SynthiLaunchCall(
+        function=function,
+        body=body,
+        parts=parts,
+        valid_signature=valid_signature,
+        kernel_arg=kernel_arg,
+        grid_arg=parts[kernel_index + 1] if kernel_index + 1 < len(parts) else "",
+        block_arg=parts[kernel_index + 2] if kernel_index + 2 < len(parts) else "",
+        shared_arg=parts[kernel_index + 3] if kernel_index + 3 < len(parts) else "",
+        stream_arg=parts[kernel_index + 4] if kernel_index + 4 < len(parts) else "",
+        initializer_arg=parts[initializer_index] if initializer_index < len(parts) else "",
+    )
 
 
 def _split_top_level_args(body: str) -> List[str]:
@@ -1425,14 +1504,13 @@ def _missing_init_launch_buffer_sources(core_source: str, device_source: str) ->
     required: Set[str] = set()
     required_by_kernel: dict[str, Set[str]] = {}
     initialized: Set[str] = set()
-    for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
-        args = _split_top_level_args(body)
-        if len(args) != 7:
+    for launch in _iter_synthi_launch_calls(core_source):
+        if not launch.valid_signature:
             continue
-        kernel_name = _launch_kernel_name(args[1])
+        kernel_name = _launch_kernel_name(launch.kernel_arg)
         if not kernel_name:
             continue
-        launch_args = _launch_initializer_args(args[-1])
+        launch_args = _launch_initializer_args(launch.initializer_arg)
         if not launch_args:
             continue
         pointer_requirements = _device_kernel_pointer_param_init_requirements(
@@ -2309,24 +2387,24 @@ def verify_split_output(
                 offending_module=core_path,
             )
         )
-    for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
-        args = _split_top_level_args(body)
-        if len(args) != 7 or not args[-1].lstrip().startswith("{"):
+    for launch in _iter_synthi_launch_calls(core_source):
+        if not launch.valid_signature or not launch.initializer_arg.lstrip().startswith("{"):
             violations.append(
                 Violation(
                     rule="invalid_synthi_launch_signature",
                     message=(
-                        "synthi_gpu_launch must have exactly 7 arguments: "
-                        "gpu, kernel name, grid, block, shared bytes, stream, "
-                        "and an initializer-list literal `{ &arg0, ... }`."
+                        f"{launch.function} must pass gpu/runtime metadata, "
+                        "kernel name, grid, block, shared bytes, stream, and "
+                        "an initializer-list literal `{ &arg0, ... }` in the "
+                        "runtime contract order."
                     ),
                     offending_module=core_path,
                 )
             )
             continue
 
-        kernel_name = _launch_kernel_name(args[1])
-        launch_args = args[-1].strip()
+        kernel_name = _launch_kernel_name(launch.kernel_arg)
+        launch_args = launch.initializer_arg.strip()
         if "(uintptr_t)" in launch_args or "reinterpret_cast" in launch_args or re.search(
             r"\(\s*const\s+void\s*\*\s*\)", launch_args
         ):
@@ -2345,8 +2423,8 @@ def verify_split_output(
 
         if launch_args.endswith("}"):
             entries = _split_top_level_args(launch_args[1:-1])
-            invalid_grid = _invalid_launch_dim_reason(core_source, args[2], "grid")
-            invalid_block = _invalid_launch_dim_reason(core_source, args[3], "block")
+            invalid_grid = _invalid_launch_dim_reason(core_source, launch.grid_arg, "grid")
+            invalid_block = _invalid_launch_dim_reason(core_source, launch.block_arg, "block")
             if invalid_grid or invalid_block:
                 reason = invalid_grid or invalid_block or "invalid launch dimensions"
                 violations.append(
@@ -2381,7 +2459,7 @@ def verify_split_output(
                         )
                     )
                 launch_bound = _device_kernel_launch_bound(device_semantic_source, kernel_name)
-                block_threads = _launch_block_thread_count(core_source, args[3])
+                block_threads = _launch_block_thread_count(core_source, launch.block_arg)
                 if (
                     launch_bound is not None
                     and block_threads is not None
@@ -2917,9 +2995,13 @@ def verify_split_output(
                     offending_symbol=symbol,
                 )
             )
-        for match in _SYNTHI_LAUNCH_CALL_RE.finditer(src):
+        for launch in _iter_synthi_launch_calls(src):
+            if not launch.valid_signature:
+                continue
             synthi_launch_count += 1
-            kernel = match.group("name")
+            kernel = _launch_kernel_name(launch.kernel_arg)
+            if not kernel:
+                continue
             if kernel not in declared_kernels:
                 violations.append(
                     Violation(

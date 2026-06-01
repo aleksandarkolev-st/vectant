@@ -21,6 +21,49 @@ void step() {
     assert graph[0]["args"] == ["a", "b", "c", "n"]
 
 
+def test_extracts_source_location_launch_boundary():
+    graph = launch_graph_as_dicts(
+        {
+            "core.cpp": """
+void step() {
+  synthi_gpu_launch_source_location(
+      gpu, "src/render.cpp:42", "source_instrumented", "shade",
+      { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });
+}
+""",
+        }
+    )
+
+    assert len(graph) == 1
+    assert graph[0]["kernel"] == "shade"
+    assert graph[0]["form"] == "synthi_gpu_launch_source_location"
+    assert graph[0]["grid"] == "{ width, height, 1 }"
+    assert graph[0]["block"] == "{ 8, 8, 1 }"
+    assert graph[0]["stream"] == "stream"
+    assert graph[0]["args"] == ["launch_args"]
+
+
+def test_extracts_original_host_path_launch_boundary():
+    graph = launch_graph_as_dicts(
+        {
+            "core.cpp": """
+void step() {
+  synthi_gpu_launch_original_host_path(
+      gpu, "src/render.cpp:42", "shade:0x1", "host_runtime_explicit",
+      "shade", grid, block, 0, stream, { &payload });
+}
+""",
+        }
+    )
+
+    assert len(graph) == 1
+    assert graph[0]["kernel"] == "shade"
+    assert graph[0]["form"] == "synthi_gpu_launch_original_host_path"
+    assert graph[0]["grid"] == "grid"
+    assert graph[0]["block"] == "block"
+    assert graph[0]["args"] == ["payload"]
+
+
 def test_extracts_raw_launch_for_pre_rewrite_source():
     graph = launch_graph_as_dicts({"core.cpp": "void step(){ vec_add<<<grid, block, 0, stream>>>(a, b, c, n); }"})
     assert len(graph) == 1

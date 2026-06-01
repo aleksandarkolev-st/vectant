@@ -923,7 +923,7 @@ def test_repair_materializes_missing_source_launch_when_core_has_owned_args():
     assert report["repaired"] is True
     assert "repair.source_launch_sites" in report["repairRules"]
     assert (
-        'synthi_gpu_launch(nullptr, "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
+        'synthi_gpu_launch_source_location(nullptr, "src/render.cpp:1", "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
         in repaired["core.cpp"]
     )
     after = verify_split_output(

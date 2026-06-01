@@ -714,6 +714,8 @@ def test_source_launch_graph_contract_includes_bounded_source_snippets():
     assert '"sourceSnippet"' in contract
     assert "MegaKernel<<<grid, block, 0, stream>>>(render_data)" in contract
     assert '"requiredHostArgumentOwners":["render_data"]' in contract
+    assert "synthi_gpu_launch_source_location" in contract
+    assert "source_instrumented" in contract
 
 
 def test_split_repair_retry_notes_surface_launch_arg_repairs():
