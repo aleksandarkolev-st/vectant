@@ -59,25 +59,44 @@ function acceptedAbiProof() {
 
 const TEST_OLD_ARTIFACT_HASH = "a".repeat(64);
 const TEST_NEW_ARTIFACT_HASH = "b".repeat(64);
+const TEST_CAPSULE_HASH = "c".repeat(64);
+const TEST_ABI_HASH = "d".repeat(64);
+const TEST_DEPENDENCY_HASH = "e".repeat(64);
+const TEST_PROOF_HASH = "f".repeat(64);
 
 function epochCapsuleMetadata({
   oldHash = TEST_OLD_ARTIFACT_HASH,
   newHash = TEST_NEW_ARTIFACT_HASH,
+  capsuleHash = TEST_CAPSULE_HASH,
+  abiHash = TEST_ABI_HASH,
+  dependencyHash = TEST_DEPENDENCY_HASH,
+  proofHash = TEST_PROOF_HASH,
+  fissionIslandId = `fission-island:sha256:${TEST_PROOF_HASH}`,
   symbols = ["shade"],
   functionHandles = ["shade:0x10"],
+  streamEpochCounters = { default: 3 },
 } = {}) {
   return {
     oldArtifactId: `artifact:sha256:${oldHash}`,
     newArtifactId: `artifact:sha256:${newHash}`,
     newArtifactHash: `sha256:${newHash}`,
+    capsuleId: `capsule:sha256:${capsuleHash}`,
+    fissionIslandId,
+    abiMembraneHash: `sha256:${abiHash}`,
+    dependencyClosureHash: `sha256:${dependencyHash}`,
+    proofHash: `sha256:${proofHash}`,
     changedSymbols: symbols,
     functionHandleIds: functionHandles,
+    streamEpochCounters,
   };
 }
 
 function epochCapsuleFields(options = {}) {
   const metadata = epochCapsuleMetadata(options);
-  return `old_artifact_id=${metadata.oldArtifactId} new_artifact_id=${metadata.newArtifactId} new_artifact_hash=${metadata.newArtifactHash} changed_symbols=${metadata.changedSymbols.join(",")} function_handle_ids=${metadata.functionHandleIds.join(",")}`;
+  const streamEpochCounters = Object.entries(metadata.streamEpochCounters)
+    .map(([stream, epoch]) => `${stream}:${epoch}`)
+    .join(",");
+  return `old_artifact_id=${metadata.oldArtifactId} new_artifact_id=${metadata.newArtifactId} new_artifact_hash=${metadata.newArtifactHash} capsule_id=${metadata.capsuleId} fission_island_id=${metadata.fissionIslandId} abi_membrane_hash=${metadata.abiMembraneHash} dependency_closure_hash=${metadata.dependencyClosureHash} proof_hash=${metadata.proofHash} changed_symbols=${metadata.changedSymbols.join(",")} function_handle_ids=${metadata.functionHandleIds.join(",")} stream_epoch_counters=${streamEpochCounters}`;
 }
 
 function epochGenerationGraph({
@@ -1463,7 +1482,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const oldHash = "a".repeat(64);
     const newHash = "b".repeat(64);
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 old_artifact_id=artifact:sha256:${oldHash} new_artifact_id=artifact:sha256:${newHash} new_artifact_hash=sha256:${newHash} changed_symbols=shade,trace function_handle_ids=shade:0x10,trace:0x20 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=2 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields({ oldHash, newHash, symbols: ["shade", "trace"], functionHandles: ["shade:0x10", "trace:0x20"] })} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=2 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
       "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true",
     ]);
 
@@ -1476,6 +1495,12 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(publishEdge?.oldArtifactId).toBe(`artifact:sha256:${oldHash}`);
     expect(publishEdge?.newArtifactId).toBe(`artifact:sha256:${newHash}`);
     expect(publishEdge?.newArtifactHash).toBe(`sha256:${newHash}`);
+    expect(publishEdge?.capsuleId).toBe(`capsule:sha256:${TEST_CAPSULE_HASH}`);
+    expect(publishEdge?.fissionIslandId).toBe(`fission-island:sha256:${TEST_PROOF_HASH}`);
+    expect(publishEdge?.abiMembraneHash).toBe(`sha256:${TEST_ABI_HASH}`);
+    expect(publishEdge?.dependencyClosureHash).toBe(`sha256:${TEST_DEPENDENCY_HASH}`);
+    expect(publishEdge?.proofHash).toBe(`sha256:${TEST_PROOF_HASH}`);
+    expect(publishEdge?.streamEpochCounters).toEqual({ default: 3 });
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.capsuleMetadataObserved).toBe(true);
     expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("capsule=observed");

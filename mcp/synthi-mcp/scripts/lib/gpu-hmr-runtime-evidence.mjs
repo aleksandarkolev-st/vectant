@@ -47,6 +47,24 @@ function commaList(value) {
   return compactStringList(value.split(','));
 }
 
+function tokenOrNull(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed && trimmed.toLowerCase() !== 'none' ? trimmed : null;
+}
+
+function keyValueTokenMap(value) {
+  return commaList(value).reduce((out, item) => {
+    const index = item.lastIndexOf(':');
+    if (index <= 0 || index >= item.length - 1) return out;
+    const key = item.slice(0, index).trim();
+    const parsed = integerValue(item.slice(index + 1));
+    if (!key || parsed === null) return out;
+    out[key] = parsed;
+    return out;
+  }, {});
+}
+
 function streamScopeSupported(streamScope, streamIds) {
   if (streamScope === 'none') {
     return streamIds.length === 1 && streamIds[0] === 'none';
@@ -66,8 +84,14 @@ function epochRecord(line) {
     oldArtifactId: fields.old_artifact_id ?? fields.previous_artifact_id ?? null,
     newArtifactId: fields.new_artifact_id ?? fields.active_artifact_id ?? null,
     newArtifactHash: fields.new_artifact_hash ?? fields.artifact_hash ?? null,
+    capsuleId: tokenOrNull(fields.capsule_id),
+    fissionIslandId: tokenOrNull(fields.fission_island_id),
+    abiMembraneHash: tokenOrNull(fields.abi_membrane_hash),
+    dependencyClosureHash: tokenOrNull(fields.dependency_closure_hash),
+    proofHash: tokenOrNull(fields.proof_hash),
     changedSymbols: commaList(fields.changed_symbols),
     functionHandleIds: commaList(fields.function_handle_ids),
+    streamEpochCounters: keyValueTokenMap(fields.stream_epoch_counters),
     dispatchTableHashBefore: fields.dispatch_table_hash_before ?? null,
     dispatchTableHashAfter: fields.dispatch_table_hash_after ?? null,
     dispatchTableHash: fields.dispatch_table_hash ?? null,
@@ -141,8 +165,14 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         oldArtifactId: record.oldArtifactId,
         newArtifactId: record.newArtifactId,
         newArtifactHash: record.newArtifactHash,
+        capsuleId: record.capsuleId,
+        fissionIslandId: record.fissionIslandId,
+        abiMembraneHash: record.abiMembraneHash,
+        dependencyClosureHash: record.dependencyClosureHash,
+        proofHash: record.proofHash,
         changedSymbols: record.changedSymbols,
         functionHandleIds: record.functionHandleIds,
+        streamEpochCounters: record.streamEpochCounters,
         evidenceRef: `worker-log:dispatcher_epoch:published:${record.previousGeneration}->${record.activeGeneration}`,
       });
     } else if (record.event === 'retired') {
@@ -178,8 +208,14 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
       oldArtifactId: latestPublication.oldArtifactId,
       newArtifactId: latestPublication.newArtifactId,
       newArtifactHash: latestPublication.newArtifactHash,
+      capsuleId: latestPublication.capsuleId,
+      fissionIslandId: latestPublication.fissionIslandId,
+      abiMembraneHash: latestPublication.abiMembraneHash,
+      dependencyClosureHash: latestPublication.dependencyClosureHash,
+      proofHash: latestPublication.proofHash,
       changedSymbols: latestPublication.changedSymbols,
       functionHandleIds: latestPublication.functionHandleIds,
+      streamEpochCounters: latestPublication.streamEpochCounters,
     },
     retirementState: publicationRetirementComplete
       ? 'not-required'
@@ -246,8 +282,17 @@ export function runtimeEpochSwapEvidence(lines) {
     && /^artifact:sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactId.trim())
     && typeof latestPublication?.newArtifactHash === 'string'
     && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactHash.trim())
+    && typeof latestPublication?.capsuleId === 'string'
+    && /^capsule:sha256:[0-9a-f]{64}$/i.test(latestPublication.capsuleId.trim())
+    && typeof latestPublication?.abiMembraneHash === 'string'
+    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.abiMembraneHash.trim())
+    && typeof latestPublication?.dependencyClosureHash === 'string'
+    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.dependencyClosureHash.trim())
+    && typeof latestPublication?.proofHash === 'string'
+    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.proofHash.trim())
     && observedEvidenceList(latestPublication.changedSymbols).length > 0
-    && observedEvidenceList(latestPublication.functionHandleIds).length > 0;
+    && observedEvidenceList(latestPublication.functionHandleIds).length > 0
+    && Object.keys(latestPublication.streamEpochCounters ?? {}).length > 0;
 
   return {
     total_count: records.length,

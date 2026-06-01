@@ -167,7 +167,7 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
                 .map(|rest| ("load_device", rest))
         });
     if let Some((command, rest)) = gpu_marker {
-        let mut fields = rest.splitn(3, ':');
+        let mut fields = rest.splitn(4, ':');
         let vendor = fields
             .next()
             .filter(|s| matches!(*s, "cuda" | "rocm"))
@@ -179,7 +179,18 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
             })?;
         let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
         let abi = fields.next().filter(|s| !s.is_empty());
-        if let Some(abi) = abi {
+        let capsule = fields.next().filter(|s| !s.is_empty());
+        if let Some(capsule) = capsule {
+            Ok(format!(
+                "{} {} {} {} {} {}\n",
+                command,
+                vendor,
+                path,
+                kernels,
+                abi.unwrap_or("-"),
+                capsule
+            ))
+        } else if let Some(abi) = abi {
             Ok(format!(
                 "{} {} {} {} {}\n",
                 command, vendor, path, kernels, abi
@@ -194,7 +205,7 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
 
 fn full_device_abi_from_marker(name: &str) -> Option<&str> {
     let rest = name.strip_prefix("__gpu_device:")?;
-    let mut fields = rest.splitn(3, ':');
+    let mut fields = rest.splitn(4, ':');
     fields.next()?;
     fields.next()?;
     fields.next().filter(|abi| !abi.is_empty())
@@ -1496,6 +1507,18 @@ mod tests {
     }
 
     #[test]
+    fn gpu_device_load_command_carries_capsule_token_when_present() {
+        assert_eq!(
+            runner_load_command(
+                "__gpu_device:rocm:advance,init:12345:capsulev1_abcd",
+                "/tmp/device.hsaco"
+            )
+            .unwrap(),
+            "load_device rocm /tmp/device.hsaco advance,init 12345 capsulev1_abcd\n"
+        );
+    }
+
+    #[test]
     fn gpu_device_partial_load_command_uses_partial_runner_verb() {
         assert_eq!(
             runner_load_command(
@@ -1511,6 +1534,10 @@ mod tests {
     fn full_device_abi_tracking_ignores_partial_markers() {
         assert_eq!(
             full_device_abi_from_marker("__gpu_device:rocm:advance:abi-full"),
+            Some("abi-full")
+        );
+        assert_eq!(
+            full_device_abi_from_marker("__gpu_device:rocm:advance:abi-full:capsulev1_abcd"),
             Some("abi-full")
         );
         assert_eq!(

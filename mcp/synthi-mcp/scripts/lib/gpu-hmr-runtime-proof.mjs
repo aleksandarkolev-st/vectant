@@ -227,13 +227,28 @@ function epochGenerationGraphStatus(graph) {
   ) ?? null;
   const newArtifactId = String(latest.newArtifactId ?? latest.new_artifact_id ?? publicationEdge?.newArtifactId ?? publicationEdge?.new_artifact_id ?? '').trim();
   const newArtifactHash = String(latest.newArtifactHash ?? latest.new_artifact_hash ?? publicationEdge?.newArtifactHash ?? publicationEdge?.new_artifact_hash ?? '').trim();
+  const capsuleId = String(latest.capsuleId ?? latest.capsule_id ?? publicationEdge?.capsuleId ?? publicationEdge?.capsule_id ?? '').trim();
+  const fissionIslandId = String(latest.fissionIslandId ?? latest.fission_island_id ?? publicationEdge?.fissionIslandId ?? publicationEdge?.fission_island_id ?? '').trim();
+  const abiMembraneHash = String(latest.abiMembraneHash ?? latest.abi_membrane_hash ?? publicationEdge?.abiMembraneHash ?? publicationEdge?.abi_membrane_hash ?? '').trim();
+  const dependencyClosureHash = String(latest.dependencyClosureHash ?? latest.dependency_closure_hash ?? publicationEdge?.dependencyClosureHash ?? publicationEdge?.dependency_closure_hash ?? '').trim();
+  const proofHash = String(latest.proofHash ?? latest.proof_hash ?? publicationEdge?.proofHash ?? publicationEdge?.proof_hash ?? '').trim();
   const changedSymbols = observedEvidenceList(latest.changedSymbols ?? latest.changed_symbols ?? publicationEdge?.changedSymbols ?? publicationEdge?.changed_symbols);
   const functionHandleIds = observedEvidenceList(latest.functionHandleIds ?? latest.function_handle_ids ?? publicationEdge?.functionHandleIds ?? publicationEdge?.function_handle_ids);
+  const streamEpochCounters = latest.streamEpochCounters ?? latest.stream_epoch_counters ?? publicationEdge?.streamEpochCounters ?? publicationEdge?.stream_epoch_counters;
+  const streamEpochCounterCount =
+    streamEpochCounters && typeof streamEpochCounters === 'object'
+      ? Object.keys(streamEpochCounters).length
+      : 0;
   const capsuleMetadataObserved =
     /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
     && /^sha256:[0-9a-f]{64}$/i.test(newArtifactHash)
+    && /^capsule:sha256:[0-9a-f]{64}$/i.test(capsuleId)
+    && /^sha256:[0-9a-f]{64}$/i.test(abiMembraneHash)
+    && /^sha256:[0-9a-f]{64}$/i.test(dependencyClosureHash)
+    && /^sha256:[0-9a-f]{64}$/i.test(proofHash)
     && changedSymbols.length > 0
-    && functionHandleIds.length > 0;
+    && functionHandleIds.length > 0
+    && streamEpochCounterCount > 0;
   const retirementState = typeof graph.retirementState === 'string'
     ? graph.retirementState.trim()
     : typeof graph.retirement_state === 'string'
@@ -292,6 +307,12 @@ function epochGenerationGraphStatus(graph) {
     previousGeneration,
     activeGeneration,
     capsuleMetadataObserved,
+    capsuleId,
+    fissionIslandId,
+    abiMembraneHash,
+    dependencyClosureHash,
+    proofHash,
+    streamEpochCounters,
     runtimeSessionIds: graphRuntimeSessionIds,
     runtimeSessionConsistent,
     retirementState,

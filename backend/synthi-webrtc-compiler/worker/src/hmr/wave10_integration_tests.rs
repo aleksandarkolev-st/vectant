@@ -38,6 +38,7 @@ mod tests {
             changed_files: vec!["src/main.c".into()],
             build_manifest: test_manifest(artifact),
             artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: true,
             timeout_ms: 5000,
         }
@@ -91,6 +92,7 @@ mod tests {
             changed_files: vec!["Main.java".into()],
             build_manifest: test_manifest("app.jar"),
             artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: false,
             timeout_ms: 5000,
         };
@@ -117,6 +119,7 @@ mod tests {
             changed_files: vec!["main.go".into()],
             build_manifest: test_manifest("/tmp/app_v2"),
             artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: false,
             timeout_ms: 5000,
         };

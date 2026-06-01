@@ -61,6 +61,7 @@ use serde::{Deserialize, Serialize};
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
+    ReloadCapsuleMetadata,
 };
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
@@ -396,6 +397,33 @@ fn artifact_id_for_hash(hash: &str) -> String {
     format!("artifact:sha256:{}", hash.trim().trim_start_matches("sha256:"))
 }
 
+fn log_optional_token(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn capsule_id_for_publication(
+    artifact_id: &str,
+    capsule_metadata: Option<&ReloadCapsuleMetadata>,
+) -> String {
+    let mut material = String::new();
+    material.push_str(artifact_id);
+    if let Some(metadata) = capsule_metadata {
+        material.push('|');
+        material.push_str(metadata.fission_island_id.as_deref().unwrap_or(""));
+        material.push('|');
+        material.push_str(metadata.abi_membrane_hash.as_deref().unwrap_or(""));
+        material.push('|');
+        material.push_str(metadata.dependency_closure_hash.as_deref().unwrap_or(""));
+        material.push('|');
+        material.push_str(metadata.proof_hash.as_deref().unwrap_or(""));
+    }
+    format!("capsule:sha256:{}", sha256_hex_bytes(material.as_bytes()))
+}
+
 fn changed_function_handle_ids(
     table: &HashMap<String, u64>,
     changed_symbols: &[String],
@@ -457,6 +485,24 @@ impl StreamOrderingDrain {
                 } else {
                     format!("0x{token:x}")
                 }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn stream_epoch_counters_for_log(&self, generation: u64) -> String {
+        if self.stream_tokens.is_empty() {
+            return format!("none:{generation}");
+        }
+        self.stream_tokens
+            .iter()
+            .map(|token| {
+                let stream_id = if *token == 0 {
+                    "default".to_string()
+                } else {
+                    format!("0x{token:x}")
+                };
+                format!("{stream_id}:{generation}")
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -1066,6 +1112,23 @@ impl Adapter for GpuModuleAdapter {
         }
         let artifact_hash = sha256_hex_bytes(&blob);
         let new_artifact_id = artifact_id_for_hash(&artifact_hash);
+        let capsule_metadata = req.capsule_metadata.as_ref();
+        let capsule_id = capsule_id_for_publication(&new_artifact_id, capsule_metadata);
+        let fission_island_id = log_optional_token(
+            capsule_metadata
+                .and_then(|metadata| metadata.fission_island_id.as_deref()),
+        );
+        let abi_membrane_hash = log_optional_token(
+            capsule_metadata
+                .and_then(|metadata| metadata.abi_membrane_hash.as_deref()),
+        );
+        let dependency_closure_hash = log_optional_token(
+            capsule_metadata
+                .and_then(|metadata| metadata.dependency_closure_hash.as_deref()),
+        );
+        let proof_hash = log_optional_token(
+            capsule_metadata.and_then(|metadata| metadata.proof_hash.as_deref()),
+        );
         let ram_artifact_reference_provided = ram_artifact.is_some();
         let ram_blob_id = ram_artifact
             .map(|artifact| artifact.blob_id.as_str())
@@ -1303,6 +1366,7 @@ impl Adapter for GpuModuleAdapter {
             let active_generation = current_launch_generation();
             record_hmr_runtime_identity_snapshot();
             let mut runtime_log_lines = Vec::new();
+            let stream_epoch_counters = drain.stream_epoch_counters_for_log(active_generation);
             let ram_transport_proven = ram_artifact_reference_provided
                 && loader_transport == ArtifactLoaderTransport::RamBytes;
             let (degraded_state, degraded_reason) = if ram_transport_proven {
@@ -1336,15 +1400,21 @@ impl Adapter for GpuModuleAdapter {
             eprintln!("{artifact_transport_line}");
             runtime_log_lines.push(artifact_transport_line);
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} changed_symbols={} function_handle_ids={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
                 previous_generation,
                 active_generation,
                 previous_artifact_id,
                 new_artifact_id,
                 artifact_hash,
+                capsule_id,
+                fission_island_id,
+                abi_membrane_hash,
+                dependency_closure_hash,
+                proof_hash,
                 changed_symbols_for_log,
                 function_handle_ids,
+                stream_epoch_counters,
                 previous_dispatch_table_hash,
                 dispatch_table_hash,
                 dispatch_table_hash,
@@ -1472,7 +1542,9 @@ impl Adapter for GpuModuleAdapter {
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::AdapterFamily;
-    use crate::hmr::adapter_trait::{AdapterReloadRequest, ReloadArtifactBlob};
+    use crate::hmr::adapter_trait::{
+        AdapterReloadRequest, ReloadArtifactBlob, ReloadCapsuleMetadata,
+    };
     use crate::hmr::build_manifest::BuildManifest;
     use crate::hmr::gpu_driver_loader::{
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
@@ -1492,6 +1564,7 @@ mod tests {
             changed_files: vec!["device.cu".into()],
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
             artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -1702,6 +1775,7 @@ mod tests {
             changed_files,
             build_manifest: manifest,
             artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -2091,6 +2165,46 @@ mod tests {
         assert!(transport.contains("ram_transport_proven=false"));
         assert!(transport.contains("degraded_state=gpu-hmr-ram-io-unavailable"));
         assert!(transport.contains("degraded_reason=selected_loader_uses_filesystem_path"));
+    }
+
+    #[test]
+    fn phase3_epoch_publication_records_capsule_metadata() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.capsule_metadata = Some(ReloadCapsuleMetadata {
+            fission_island_id: Some(format!(
+                "fission-island:sha256:{}",
+                "a".repeat(64)
+            )),
+            abi_membrane_hash: Some(format!("sha256:{}", "b".repeat(64))),
+            dependency_closure_hash: Some(format!("sha256:{}", "c".repeat(64))),
+            proof_hash: Some(format!("sha256:{}", "d".repeat(64))),
+        });
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&req);
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("dispatcher epoch publication report");
+        assert!(publish.contains("capsule_id=capsule:sha256:"));
+        assert!(publish.contains(
+            "fission_island_id=fission-island:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(publish.contains(
+            "abi_membrane_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+        assert!(publish.contains(
+            "dependency_closure_hash=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ));
+        assert!(publish.contains(
+            "proof_hash=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ));
+        assert!(publish.contains("stream_epoch_counters=none:"));
     }
 
     #[test]

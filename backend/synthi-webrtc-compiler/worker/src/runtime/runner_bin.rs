@@ -190,7 +190,8 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
-    Adapter, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
+    decode_reload_capsule_metadata_token, Adapter, AdapterReloadRequest, AdapterReloadResult,
+    ReloadArtifactBlob, ReloadCapsuleMetadata,
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
@@ -311,6 +312,18 @@ fn gpu_artifact_loader_transport_from_env_for_reload(
 ) -> ArtifactLoaderTransport {
     let configured_transport = std::env::var("SYNTHI_GPU_HMR_ARTIFACT_LOADER_TRANSPORT").ok();
     gpu_artifact_loader_transport_for_reload(configured_transport.as_deref(), artifact_blob)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn gpu_reload_capsule_metadata_from_token(token: Option<&str>) -> Option<ReloadCapsuleMetadata> {
+    let token = token
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")?;
+    let metadata = decode_reload_capsule_metadata_token(token);
+    if metadata.is_none() {
+        eprintln!("[Runner] [GPU HMR] Ignoring invalid reload capsule metadata token");
+    }
+    metadata
 }
 
 // ============================================================
@@ -1615,6 +1628,8 @@ fn main() {
                             })
                             .collect();
                         let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
+                        let capsule_metadata =
+                            gpu_reload_capsule_metadata_from_token(parts.get(5).copied());
 
                         let (language, vendor) = match vendor_raw {
                             "cuda" => ("cuda", GpuVendor::Cuda),
@@ -1667,6 +1682,7 @@ fn main() {
                             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
                             build_manifest: manifest,
                             artifact_blob,
+                            capsule_metadata,
                             preserve_state: true,
                             timeout_ms: 5000,
                         };
@@ -2174,7 +2190,8 @@ mod tests {
     #[cfg(feature = "gpu-hmr")]
     use super::{
         gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
-        parse_gpu_artifact_loader_transport, ArtifactLoaderTransport, ReloadArtifactBlob,
+        gpu_reload_capsule_metadata_from_token, parse_gpu_artifact_loader_transport,
+        ArtifactLoaderTransport, ReloadArtifactBlob,
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
@@ -2290,6 +2307,35 @@ mod tests {
         assert_eq!(blob.blob_id, format!("artifact:sha256:{artifact_hash}"));
         assert_eq!(blob.content_hash, format!("sha256:{artifact_hash}"));
         assert_eq!(blob.bytes, b"runtime-artifact");
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_capsule_metadata_decodes_runner_protocol_token() {
+        let token = worker::hmr::adapter_trait::encode_reload_capsule_metadata_token(
+            &worker::hmr::adapter_trait::ReloadCapsuleMetadata {
+                fission_island_id: Some("fission-island:sha256:abc".into()),
+                abi_membrane_hash: Some("sha256:def".into()),
+                dependency_closure_hash: Some("sha256:123".into()),
+                proof_hash: Some("sha256:456".into()),
+            },
+        )
+        .expect("capsule token");
+
+        let metadata = gpu_reload_capsule_metadata_from_token(Some(&token))
+            .expect("runner capsule metadata");
+
+        assert_eq!(
+            metadata.fission_island_id.as_deref(),
+            Some("fission-island:sha256:abc")
+        );
+        assert_eq!(metadata.abi_membrane_hash.as_deref(), Some("sha256:def"));
+        assert_eq!(
+            metadata.dependency_closure_hash.as_deref(),
+            Some("sha256:123")
+        );
+        assert_eq!(metadata.proof_hash.as_deref(), Some("sha256:456"));
+        assert!(gpu_reload_capsule_metadata_from_token(Some("-")).is_none());
     }
 
     #[cfg(feature = "gpu-hmr")]

@@ -6,6 +6,7 @@
 // language-specific or family-specific branches.
 // ============================================================
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -30,6 +31,67 @@ pub struct ReloadArtifactBlob {
     pub bytes: Vec<u8>,
 }
 
+/// Optional proof/capsule identity metadata for a hot-reload publication.
+///
+/// Adapters may ignore fields they cannot use, but GPU epoch publication
+/// proof records this metadata when present so validation can distinguish a
+/// real generation capsule from a path-only module swap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReloadCapsuleMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fission_island_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abi_membrane_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependency_closure_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_hash: Option<String>,
+}
+
+const RELOAD_CAPSULE_METADATA_TOKEN_PREFIX: &str = "capsulev1_";
+
+fn non_empty_token(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "none")
+}
+
+fn normalized_reload_capsule_metadata(
+    metadata: &ReloadCapsuleMetadata,
+) -> Option<ReloadCapsuleMetadata> {
+    let normalized = ReloadCapsuleMetadata {
+        fission_island_id: non_empty_token(metadata.fission_island_id.clone()),
+        abi_membrane_hash: non_empty_token(metadata.abi_membrane_hash.clone()),
+        dependency_closure_hash: non_empty_token(metadata.dependency_closure_hash.clone()),
+        proof_hash: non_empty_token(metadata.proof_hash.clone()),
+    };
+    (normalized.fission_island_id.is_some()
+        || normalized.abi_membrane_hash.is_some()
+        || normalized.dependency_closure_hash.is_some()
+        || normalized.proof_hash.is_some())
+    .then_some(normalized)
+}
+
+pub fn encode_reload_capsule_metadata_token(metadata: &ReloadCapsuleMetadata) -> Option<String> {
+    let metadata = normalized_reload_capsule_metadata(metadata)?;
+    let json = serde_json::to_vec(&metadata).ok()?;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
+    Some(format!(
+        "{RELOAD_CAPSULE_METADATA_TOKEN_PREFIX}{payload}"
+    ))
+}
+
+pub fn decode_reload_capsule_metadata_token(token: &str) -> Option<ReloadCapsuleMetadata> {
+    let payload = token
+        .trim()
+        .strip_prefix(RELOAD_CAPSULE_METADATA_TOKEN_PREFIX)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.as_bytes())
+        .ok()?;
+    let metadata = serde_json::from_slice::<ReloadCapsuleMetadata>(&bytes).ok()?;
+    normalized_reload_capsule_metadata(&metadata)
+}
+
 /// High-level reload request that the planner feeds to an adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterReloadRequest {
@@ -44,6 +106,9 @@ pub struct AdapterReloadRequest {
     /// Optional RAM artifact payload for adapters with byte/blob loaders.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub artifact_blob: Option<ReloadArtifactBlob>,
+    /// Optional capsule proof metadata for generation-published reloads.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub capsule_metadata: Option<ReloadCapsuleMetadata>,
     /// Whether state preservation is requested.
     pub preserve_state: bool,
     /// Timeout for this reload (millis).
@@ -161,5 +226,36 @@ mod tests {
         assert_eq!(adapter.info().name, "noop");
         assert!(adapter.initialize().is_ok());
         assert_eq!(adapter.healthcheck(), AdapterHealth::Unknown);
+    }
+
+    #[test]
+    fn reload_capsule_metadata_token_round_trips_non_empty_fields() {
+        let metadata = ReloadCapsuleMetadata {
+            fission_island_id: Some(" fission-island:sha256:abc ".into()),
+            abi_membrane_hash: Some("sha256:def".into()),
+            dependency_closure_hash: Some("".into()),
+            proof_hash: Some("sha256:123".into()),
+        };
+
+        let token = encode_reload_capsule_metadata_token(&metadata).expect("capsule token");
+        assert!(token.starts_with("capsulev1_"));
+        assert!(!token.contains(':'));
+        assert!(!token.contains(' '));
+
+        let decoded =
+            decode_reload_capsule_metadata_token(&token).expect("decoded capsule metadata");
+        assert_eq!(
+            decoded.fission_island_id.as_deref(),
+            Some("fission-island:sha256:abc")
+        );
+        assert_eq!(decoded.abi_membrane_hash.as_deref(), Some("sha256:def"));
+        assert_eq!(decoded.dependency_closure_hash, None);
+        assert_eq!(decoded.proof_hash.as_deref(), Some("sha256:123"));
+    }
+
+    #[test]
+    fn reload_capsule_metadata_token_omits_empty_metadata() {
+        assert!(encode_reload_capsule_metadata_token(&ReloadCapsuleMetadata::default()).is_none());
+        assert!(decode_reload_capsule_metadata_token("not-a-capsule-token").is_none());
     }
 }

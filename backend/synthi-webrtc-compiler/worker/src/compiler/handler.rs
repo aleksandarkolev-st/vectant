@@ -724,7 +724,10 @@ fn apply_edit_list(
 }
 
 use crate::hmr::adapted_project::{detect_adapted_project, AdaptedProjectStatus};
-use crate::hmr::adapter_trait::{AdapterReloadResult, ReloadArtifactBlob};
+use crate::hmr::adapter_trait::{
+    encode_reload_capsule_metadata_token, AdapterReloadResult, ReloadArtifactBlob,
+    ReloadCapsuleMetadata,
+};
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 use crate::hmr::compile_enrichment::CompileEnrichment;
@@ -4445,6 +4448,94 @@ async fn reload_artifact_blob_from_outcome(
         content_hash: format!("sha256:{artifact_hash}"),
         bytes,
     })
+}
+
+fn normalized_capsule_hash(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let digest = value.strip_prefix("sha256:").unwrap_or(value);
+    (digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .then(|| format!("sha256:{}", digest.to_ascii_lowercase()))
+}
+
+fn proof_id_capsule_hash(proof_id: &str) -> Option<String> {
+    let digest = proof_id
+        .trim()
+        .strip_prefix("gpu-proof:")
+        .unwrap_or(proof_id.trim());
+    normalized_capsule_hash(Some(digest))
+}
+
+fn first_proof_evidence<'a>(
+    proof: &'a serde_json::Value,
+    kind: &str,
+) -> Option<&'a serde_json::Value> {
+    proof
+        .get("evidenceRefs")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value == kind)
+            })
+        })
+}
+
+fn proof_fission_island_id(proof: &serde_json::Value) -> Option<String> {
+    first_proof_evidence(proof, "fission-verifier-report")
+        .and_then(|evidence| evidence.get("metadata"))
+        .and_then(|metadata| {
+            metadata
+                .get("selectedIslandId")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    metadata
+                        .pointer("/candidates/0/islandId")
+                        .and_then(serde_json::Value::as_str)
+                })
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "none")
+        .map(str::to_string)
+}
+
+fn proof_abi_membrane_hash(proof: &serde_json::Value) -> Option<String> {
+    first_proof_evidence(proof, "device-abi-metadata")
+        .and_then(|evidence| evidence.get("contentHash"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| normalized_capsule_hash(Some(value)))
+}
+
+fn proof_dependency_closure_hash(
+    proof: &serde_json::Value,
+    outcome: &DeviceCompileOutcome,
+) -> Option<String> {
+    first_proof_evidence(proof, "fission-island-input")
+        .and_then(|evidence| evidence.get("metadata"))
+        .and_then(|metadata| metadata.get("dependencyClosureHash"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| normalized_capsule_hash(Some(value)))
+        .or_else(|| {
+            normalized_capsule_hash(outcome.proof_metadata.dependency_hash.as_deref())
+        })
+}
+
+async fn reload_capsule_metadata_from_proof_artifact(
+    proof_artifact: &GpuHmrProofArtifactWrite,
+    outcome: &DeviceCompileOutcome,
+) -> ReloadCapsuleMetadata {
+    let proof = tokio::fs::read_to_string(&proof_artifact.path)
+        .await
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    ReloadCapsuleMetadata {
+        fission_island_id: proof.as_ref().and_then(proof_fission_island_id),
+        abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
+        dependency_closure_hash: proof
+            .as_ref()
+            .and_then(|proof| proof_dependency_closure_hash(proof, outcome)),
+        proof_hash: proof_id_capsule_hash(&proof_artifact.proof_id),
+    }
 }
 
 async fn write_device_hmr_proof_artifact(
@@ -9767,6 +9858,7 @@ pub async fn handle_compile_request(
     }
     let mut device_hmr_proof: Option<GpuHmrProofTelemetry> = None;
     let mut device_reload_artifact_blob: Option<ReloadArtifactBlob> = None;
+    let mut device_reload_capsule_metadata: Option<ReloadCapsuleMetadata> = None;
     if let Some(ref out) = device_compile_outcome {
         device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
         let proof = device_hmr_proof_telemetry(out);
@@ -9782,6 +9874,8 @@ pub async fn handle_compile_request(
             proof_sidecar_meta.as_ref(),
         )
         .await?;
+        device_reload_capsule_metadata =
+            Some(reload_capsule_metadata_from_proof_artifact(&proof_artifact, out).await);
         let proof = proof.with_artifact_ref(proof_artifact.proof_id, proof_artifact.relative_path);
         let selected_artifact_bytes = out
             .selected_artifact_bytes
@@ -10132,6 +10226,7 @@ pub async fn handle_compile_request(
                         gpu_language,
                         &device_manifest,
                         device_reload_artifact_blob.clone(),
+                        device_reload_capsule_metadata.clone(),
                         &format!("{}-device", reload_id),
                     )
             };
@@ -10326,13 +10421,20 @@ pub async fn handle_compile_request(
                     .unwrap_or_else(|| "none".to_string())
             );
             eprintln!("[compile-device] {}", proof.to_log_line());
-            let device_cmd = format!(
+            let mut device_cmd = format!(
                 "{}:{}:{}:{}",
                 marker,
                 gpu.vendor.as_str(),
                 encode_gpu_kernel_command_specs(&kernel_symbol_specs),
                 kernel_abi_hash
             );
+            if let Some(capsule_token) = device_reload_capsule_metadata
+                .as_ref()
+                .and_then(encode_reload_capsule_metadata_token)
+            {
+                device_cmd.push(':');
+                device_cmd.push_str(&capsule_token);
+            }
             modules_to_load.insert(
                 0,
                 (
@@ -11643,6 +11745,25 @@ __constant__ int scale;
                 .and_then(serde_json::Value::as_array)
                 .map(Vec::len),
             Some(0)
+        );
+        let capsule_metadata = reload_capsule_metadata_from_proof_artifact(&written, &outcome).await;
+        assert_eq!(
+            capsule_metadata.fission_island_id.as_deref(),
+            report
+                .get("selectedIslandId")
+                .and_then(serde_json::Value::as_str)
+        );
+        assert!(capsule_metadata
+            .abi_membrane_hash
+            .as_deref()
+            .is_some_and(|value| value.starts_with("sha256:")));
+        assert_eq!(
+            capsule_metadata.dependency_closure_hash.as_deref(),
+            normalized_capsule_hash(outcome.proof_metadata.dependency_hash.as_deref()).as_deref()
+        );
+        assert_eq!(
+            capsule_metadata.proof_hash.as_deref(),
+            proof_id_capsule_hash(&written.proof_id).as_deref()
         );
     }
 
