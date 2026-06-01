@@ -192,7 +192,7 @@ function deterministicOutputOracle({
     readbackTimestamp: "1779980000000",
     runtimeSessionId: runtimeSession,
     artifactId,
-    evidenceRefs: ["evidence:readback:abc"],
+    evidenceRefs: ["evidence:output-oracle:readback:abc"],
   };
 }
 
@@ -397,6 +397,26 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.kind).toBe("sentinel_buffer_value");
     expect(proof.outputOracle.artifactMatchesDispatch).toBe(true);
     expect(proof.outputOracle.dispatchArtifactIds).toEqual(["artifact:sha256:test"]);
+  });
+
+  it("rejects raw log snippets as output oracle evidence", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        evidenceRefs: ["[gpu-demo] trend=expected"],
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-only");
+    expect(proof.degradedReason).toBe("output_oracle_evidence_unaccepted");
+    expect(proof.outputOracle.evidenceRefs).toEqual([]);
+    expect(proof.outputOracle.rejectedEvidenceRefs).toEqual(["[gpu-demo] trend=expected"]);
   });
 
   it("blocks render output proof when required visual evidence is missing", () => {

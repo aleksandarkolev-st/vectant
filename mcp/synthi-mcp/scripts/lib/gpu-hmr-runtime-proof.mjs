@@ -95,6 +95,15 @@ function compactStringList(values) {
     : [];
 }
 
+function runtimeOutputOracleEvidenceRefs(values) {
+  return compactStringList(values).filter((ref) =>
+    /^worker-log:output_oracle:/i.test(ref)
+    || /^evidence:output-oracle:/i.test(ref)
+    || /^validation:output-oracle:/i.test(ref)
+    || /(^|[\\/])runtime-output-oracles[\\/][^\\/]+\.json$/i.test(ref)
+  );
+}
+
 function observedEvidenceList(values) {
   const raw = typeof values === 'string' ? values.split(',') : values;
   return compactStringList(raw).filter((value) => value.toLowerCase() !== 'none');
@@ -629,9 +638,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     ? rawOracle.kind.trim()
     : null;
   const oracleKindAccepted = gpuHmrOutputOracleKindAccepted(oracleKind);
-  const oracleEvidenceRefs = Array.isArray(rawOracle.evidenceRefs)
-    ? rawOracle.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
-    : [];
+  const rawOracleEvidenceRefs = compactStringList(rawOracle.evidenceRefs);
+  const oracleEvidenceRefs = runtimeOutputOracleEvidenceRefs(rawOracleEvidenceRefs);
+  const rejectedOracleEvidenceRefs = rawOracleEvidenceRefs.filter((ref) => !oracleEvidenceRefs.includes(ref));
   const oracleEvidenceObserved = oracleEvidenceRefs.length > 0;
   const oracleProducer = typeof rawOracle.producer === 'string' && rawOracle.producer.trim()
     ? rawOracle.producer.trim()
@@ -743,6 +752,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     toleranceApplied: valueCompatibility.toleranceApplied,
     toleranceValid: valueCompatibility.toleranceValid,
     evidenceRefs: oracleEvidenceRefs,
+    rejectedEvidenceRefs: rejectedOracleEvidenceRefs,
   };
   const visualFrameObserved = observation.visualFrameObserved === true;
   const evidenceRefs = Array.isArray(observation.evidenceRefs)
@@ -811,10 +821,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     };
   }
 
-  const oracleOtherwisePassed =
+  const oraclePayloadOtherwisePassed =
     deterministicOutputObserved
     && deterministicOracleProvided
-    && oracleEvidenceObserved
     && oracleValuesCompatible
     && observation.deterministicOraclePassed === true;
   const degradedState = visualFrameObserved
@@ -822,19 +831,23 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     : 'gpu-hmr-output-unobserved';
   const degradedReason = oracleKind !== null && !oracleKindAccepted
     ? 'output_oracle_kind_unaccepted'
-    : oracleOtherwisePassed && !oracleProvenanceComplete
-      ? 'output_oracle_provenance_incomplete'
-      : oracleOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
-        ? 'output_oracle_session_mismatch'
-        : oracleOtherwisePassed && !oracleArtifactMatchesDispatch
-          ? 'output_oracle_artifact_mismatch'
-          : oracleOtherwisePassed && !dispatchTimestampObserved
-            ? 'output_oracle_dispatch_timestamp_missing'
-            : oracleOtherwisePassed && !oracleReadbackAfterDispatch
-              ? 'output_oracle_precedes_dispatch'
-              : visualFrameObserved
-                ? 'visual_frame_without_deterministic_output_oracle'
-                : 'output_oracle_not_collected';
+    : oraclePayloadOtherwisePassed && rawOracleEvidenceRefs.length > 0 && !oracleEvidenceObserved
+      ? 'output_oracle_evidence_unaccepted'
+      : oraclePayloadOtherwisePassed && !oracleEvidenceObserved
+        ? 'output_oracle_evidence_missing'
+        : oraclePayloadOtherwisePassed && !oracleProvenanceComplete
+          ? 'output_oracle_provenance_incomplete'
+          : oraclePayloadOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
+            ? 'output_oracle_session_mismatch'
+            : oraclePayloadOtherwisePassed && !oracleArtifactMatchesDispatch
+              ? 'output_oracle_artifact_mismatch'
+              : oraclePayloadOtherwisePassed && !dispatchTimestampObserved
+                ? 'output_oracle_dispatch_timestamp_missing'
+                : oraclePayloadOtherwisePassed && !oracleReadbackAfterDispatch
+                  ? 'output_oracle_precedes_dispatch'
+                  : visualFrameObserved
+                    ? 'visual_frame_without_deterministic_output_oracle'
+                    : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

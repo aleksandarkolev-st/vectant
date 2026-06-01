@@ -41,6 +41,7 @@
 //   GOOGLE_API_KEY               (only needed if MCP attach is exercised)
 
 import { spawn, execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -128,6 +129,7 @@ const CFG = {
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
+const OUTPUT_ORACLE_ARTIFACT_DIR = path.join(LOG_DIR, 'runtime-output-oracles');
 const MCP_STDERR_LOG = path.join(LOG_DIR, 'mcp.stderr.log');
 
 // ───────────────────────── log + results ─────────────────────────
@@ -1981,6 +1983,64 @@ function runtimeArtifactIdForOutputOracle(dispatchProof) {
     ?? null;
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function safeArtifactToken(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'artifact';
+}
+
+async function writeRuntimeOutputOracleEvidenceArtifact(input) {
+  const createdAt = new Date().toISOString();
+  const material = {
+    schemaVersion: 'synthi.gpu.hmr.output_oracle_evidence.v1',
+    phase: input.phase ?? null,
+    name: input.name ?? null,
+    kind: input.kind ?? null,
+    producer: input.producer ?? null,
+    expected: input.expected ?? null,
+    actual: input.actual ?? null,
+    outputTargetId: input.outputTargetId ?? null,
+    readbackTimestamp: input.readbackTimestamp ?? null,
+    runtimeSessionId: input.runtimeSessionId ?? null,
+    artifactId: input.artifactId ?? null,
+    source: input.source ?? 'runtime_readback',
+    rawEvidence: input.rawEvidence ? summarizeLogLine(input.rawEvidence) : null,
+    visualEvidenceRefs: Array.isArray(input.visualEvidenceRefs)
+      ? input.visualEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+      : [],
+    createdAt,
+  };
+  const materialHash = createHash('sha256').update(stableJson(material)).digest('hex');
+  const evidenceId = `evidence:output-oracle:sha256:${materialHash}`;
+  const artifact = {
+    ...material,
+    evidenceId,
+    contentHash: `sha256:${materialHash}`,
+  };
+  await mkdir(OUTPUT_ORACLE_ARTIFACT_DIR, { recursive: true });
+  const filePath = path.join(
+    OUTPUT_ORACLE_ARTIFACT_DIR,
+    `${safeArtifactToken(CFG.slug)}-${safeArtifactToken(input.phase)}-${safeArtifactToken(input.name)}-${materialHash}.json`,
+  );
+  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    evidenceId,
+    path: filePath,
+    refs: [evidenceId, filePath],
+    artifact,
+  };
+}
+
 function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
 }
@@ -2700,6 +2760,24 @@ async function phaseFlow(ctx) {
     inwardTrend.snippet || 'inward trend not observed before timeout');
 
   const inwardScreenshot = await captureMcpScreenshot('flow-inward');
+  const inwardReadbackTimestamp = Date.now();
+  const inwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
+  const inwardRuntimeSessionId = inwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
+  const inwardArtifactId = runtimeArtifactIdForOutputOracle(inwardDispatchProof);
+  const inwardOutputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
+    phase: 'FLOW',
+    name: 'inward output proof',
+    kind: 'edit_contract',
+    producer: 'runtime_readback',
+    expected: 'inward',
+    actual: inwardTrend.matched ? 'inward' : null,
+    outputTargetId: inwardOutputTargetId,
+    readbackTimestamp: inwardReadbackTimestamp,
+    runtimeSessionId: inwardRuntimeSessionId,
+    artifactId: inwardArtifactId,
+    rawEvidence: inwardTrend.snippet,
+    visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
+  });
   const inwardOutputProof = recordRuntimeOutputProof('FLOW', 'inward output proof', {
     dispatchProof: inwardDispatchProof,
     deterministicOutputObserved: inwardTrend.matched,
@@ -2710,11 +2788,11 @@ async function phaseFlow(ctx) {
       producer: 'runtime_readback',
       expected: 'inward',
       actual: inwardTrend.matched ? 'inward' : null,
-      outputTargetId: `${CFG.slug}:runtime-readback-trend`,
-      readbackTimestamp: Date.now(),
-      runtimeSessionId: inwardDispatchProof?.runtimeSessionIds?.[0] ?? null,
-      artifactId: runtimeArtifactIdForOutputOracle(inwardDispatchProof),
-      evidenceRefs: inwardTrend.snippet ? [inwardTrend.snippet] : [],
+      outputTargetId: inwardOutputTargetId,
+      readbackTimestamp: inwardReadbackTimestamp,
+      runtimeSessionId: inwardRuntimeSessionId,
+      artifactId: inwardArtifactId,
+      evidenceRefs: inwardOutputEvidence.refs,
     },
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRequired: true,
@@ -2831,6 +2909,24 @@ async function phaseFlow(ctx) {
     trend.snippet || 'outward trend not observed before timeout');
 
   const outwardScreenshot = await captureMcpScreenshot('flow-outward');
+  const outwardReadbackTimestamp = Date.now();
+  const outwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
+  const outwardRuntimeSessionId = outwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
+  const outwardArtifactId = runtimeArtifactIdForOutputOracle(outwardDispatchProof);
+  const outwardOutputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
+    phase: 'FLOW',
+    name: 'outward output proof',
+    kind: 'edit_contract',
+    producer: 'runtime_readback',
+    expected: 'outward',
+    actual: trend.matched ? 'outward' : null,
+    outputTargetId: outwardOutputTargetId,
+    readbackTimestamp: outwardReadbackTimestamp,
+    runtimeSessionId: outwardRuntimeSessionId,
+    artifactId: outwardArtifactId,
+    rawEvidence: trend.snippet,
+    visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
+  });
   const outwardOutputProof = recordRuntimeOutputProof('FLOW', 'outward output proof', {
     dispatchProof: outwardDispatchProof,
     deterministicOutputObserved: trend.matched,
@@ -2841,11 +2937,11 @@ async function phaseFlow(ctx) {
       producer: 'runtime_readback',
       expected: 'outward',
       actual: trend.matched ? 'outward' : null,
-      outputTargetId: `${CFG.slug}:runtime-readback-trend`,
-      readbackTimestamp: Date.now(),
-      runtimeSessionId: outwardDispatchProof?.runtimeSessionIds?.[0] ?? null,
-      artifactId: runtimeArtifactIdForOutputOracle(outwardDispatchProof),
-      evidenceRefs: trend.snippet ? [trend.snippet] : [],
+      outputTargetId: outwardOutputTargetId,
+      readbackTimestamp: outwardReadbackTimestamp,
+      runtimeSessionId: outwardRuntimeSessionId,
+      artifactId: outwardArtifactId,
+      evidenceRefs: outwardOutputEvidence.refs,
     },
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRequired: true,
