@@ -41,6 +41,18 @@ _KERNEL_DECL_RE = re.compile(
     GPU_DEVICE_MARKER_RE.pattern,
     GPU_DEVICE_MARKER_RE.flags,
 )
+_GPU_RUNTIME_LAUNCH_API_RE = re.compile(
+    r"\b(?:"
+    r"oroModuleLaunchKernel"
+    r"|hipModuleLaunchKernel"
+    r"|cuModuleLaunchKernel"
+    r"|cudaLaunchKernel"
+    r"|clEnqueueNDRangeKernel"
+    r"|zeCommandListAppendLaunchKernel"
+    r"|vkCmdDispatch(?:Indirect)?"
+    r")\b",
+    re.I,
+)
 _TEMPLATE_EVIDENCE_BASENAMES = {
     "template-evidence.json",
     "template_evidence.json",
@@ -138,6 +150,10 @@ def _launches_any_kernel(path: str, source: str, kernel_names: set[str]) -> bool
     )
 
 
+def _has_runtime_launch_boundary(source: str) -> bool:
+    return bool(_GPU_RUNTIME_LAUNCH_API_RE.search(source or ""))
+
+
 def _reason_and_priority(
     path: str,
     source: str,
@@ -154,6 +170,8 @@ def _reason_and_priority(
         return (1, "build_metadata")
     if normalized.lower().endswith((".cu", ".cuh", ".hip")) and _KERNEL_DECL_RE.search(parsed_source):
         return (2, "device_translation_unit")
+    if _has_runtime_launch_boundary(parsed_source):
+        return (2, "runtime_launch_boundary")
     if looks_like_source_file(normalized) and _KERNEL_DECL_RE.search(parsed_source):
         if "/kernels/" in normalized:
             return (3, "kernel_declaration")
