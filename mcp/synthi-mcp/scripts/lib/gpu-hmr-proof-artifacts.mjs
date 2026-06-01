@@ -78,6 +78,81 @@ function fissionVerifierDegradedReason(metadata) {
     ?? null;
 }
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function nonEmptyStringArray(value) {
+  return Array.isArray(value)
+    ? uniqueStrings(value)
+    : [];
+}
+
+function fissionReportPassIntegrity(metadata) {
+  if (!metadata || typeof metadata !== 'object') {
+    return { proven: false, reason: 'fission_verifier_report_missing' };
+  }
+  if (metadata.schemaVersion !== 'synthi.gpu.fission_verifier.v1') {
+    return { proven: false, reason: 'fission_verifier_schema_unverified' };
+  }
+  const status = String(metadata.status ?? '').trim().toLowerCase();
+  if (status !== 'pass' && status !== 'passed' && status !== 'accepted') {
+    return { proven: false, reason: 'fission_candidate_verifier_rejected' };
+  }
+  const acceptedCount = Number.isInteger(metadata.acceptedCount) ? metadata.acceptedCount : null;
+  const candidateCount = Number.isInteger(metadata.candidateCount) ? metadata.candidateCount : null;
+  if (acceptedCount === null || acceptedCount <= 0 || candidateCount === null || candidateCount < acceptedCount) {
+    return { proven: false, reason: 'fission_accepted_candidate_count_unverified' };
+  }
+  const selectedIslandId = nonEmptyString(metadata.selectedIslandId);
+  if (!selectedIslandId || selectedIslandId.toLowerCase() === 'none') {
+    return { proven: false, reason: 'fission_selected_island_unverified' };
+  }
+  if (!Number.isInteger(metadata.selectedCandidateIndex) || metadata.selectedCandidateIndex < 0) {
+    return { proven: false, reason: 'fission_selected_candidate_index_unverified' };
+  }
+  const candidates = Array.isArray(metadata.candidates) ? metadata.candidates : [];
+  const selectedCandidate = candidates[metadata.selectedCandidateIndex];
+  if (!selectedCandidate || typeof selectedCandidate !== 'object') {
+    return { proven: false, reason: 'fission_selected_candidate_missing' };
+  }
+  const candidateStatus = String(selectedCandidate.status ?? '').trim().toLowerCase();
+  if (candidateStatus !== 'pass' && candidateStatus !== 'passed' && candidateStatus !== 'accepted') {
+    return { proven: false, reason: 'fission_selected_candidate_not_verified' };
+  }
+  if (selectedCandidate.selected !== true) {
+    return { proven: false, reason: 'fission_selected_candidate_marker_missing' };
+  }
+  if (nonEmptyString(selectedCandidate.islandId) !== selectedIslandId) {
+    return { proven: false, reason: 'fission_selected_candidate_identity_mismatch' };
+  }
+  if (!nonEmptyString(selectedCandidate.verifierEvidenceId)) {
+    return { proven: false, reason: 'fission_selected_candidate_verifier_evidence_missing' };
+  }
+  if (nonEmptyStringArray(selectedCandidate.deterministicVerifierEvidenceIds).length === 0) {
+    return { proven: false, reason: 'fission_selected_candidate_deterministic_evidence_missing' };
+  }
+  const coverage = selectedCandidate.verificationEvidenceCoverage;
+  const missingCategories = Array.isArray(coverage?.missingCategories)
+    ? coverage.missingCategories
+    : null;
+  if (!Array.isArray(missingCategories) || missingCategories.length > 0) {
+    return { proven: false, reason: 'fission_selected_candidate_evidence_coverage_incomplete' };
+  }
+  const narrowerCoverage = selectedCandidate.narrowerRejectionCoverage;
+  const missingRanks = Array.isArray(narrowerCoverage?.missingRanks)
+    ? narrowerCoverage.missingRanks
+    : null;
+  if (!Array.isArray(missingRanks) || missingRanks.length > 0) {
+    return { proven: false, reason: 'fission_selected_candidate_narrower_coverage_incomplete' };
+  }
+  const reasonCodes = nonEmptyStringArray(selectedCandidate.reasonCodes);
+  if (!reasonCodes.includes('fission.candidate_verified')) {
+    return { proven: false, reason: 'fission_selected_candidate_verified_code_missing' };
+  }
+  return { proven: true, reason: null };
+}
+
 export function abiProofFromProofArtifacts(records) {
   const evidenceRefs = [];
   const acceptedExtractorEvidenceRefs = [];
@@ -142,6 +217,7 @@ export function fissionProofFromProofArtifacts(records) {
   let passed = false;
   let rejected = false;
   let degradedReason = null;
+  let structuredPassObserved = false;
 
   for (const record of Array.isArray(records) ? records : []) {
     const artifact = record?.artifact;
@@ -156,7 +232,14 @@ export function fissionProofFromProofArtifacts(records) {
       const metadata = evidence?.metadata && typeof evidence.metadata === 'object' ? evidence.metadata : {};
       const status = String(metadata.status ?? '').trim().toLowerCase();
       if (status === 'pass' || status === 'passed' || status === 'accepted') {
-        passed = true;
+        const integrity = fissionReportPassIntegrity(metadata);
+        if (integrity.proven) {
+          structuredPassObserved = true;
+          passed = true;
+        } else {
+          rejected = true;
+          if (!degradedReason) degradedReason = integrity.reason;
+        }
       } else if (status === 'reject' || status === 'rejected' || status === 'fail' || status === 'failed') {
         rejected = true;
       }
@@ -171,7 +254,12 @@ export function fissionProofFromProofArtifacts(records) {
       const status = typeof stage?.status === 'string' ? stage.status.trim().toLowerCase() : '';
       if (status) stageStatuses.push(status);
       if (status === 'passed' || status === 'pass' || status === 'accepted') {
-        passed = true;
+        if (!structuredPassObserved) {
+          rejected = true;
+          if (!degradedReason) {
+            degradedReason = 'fission_structured_verifier_report_not_proven';
+          }
+        }
       } else if (status === 'blocked' || status === 'failed' || status === 'fail' || status === 'rejected') {
         rejected = true;
       }
@@ -185,7 +273,7 @@ export function fissionProofFromProofArtifacts(records) {
   return classifyGpuHmrFissionProof({
     required: observed,
     observed,
-    passed: observed && passed && !rejected,
+    passed: observed && structuredPassObserved && passed && !rejected,
     rejected,
     degradedReason,
     evidenceRefs: uniqueStrings(evidenceRefs),

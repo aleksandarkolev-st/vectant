@@ -254,6 +254,37 @@ function acceptedFissionProof() {
   });
 }
 
+function acceptedFissionVerifierMetadata() {
+  return {
+    schemaVersion: "synthi.gpu.fission_verifier.v1",
+    selectionPolicy: "narrowest_viable_generic_v1",
+    status: "pass",
+    candidateCount: 1,
+    acceptedCount: 1,
+    rejectedCount: 0,
+    selectedIslandId: "island:sha256:abc",
+    selectedCandidateIndex: 0,
+    reasonCodes: ["fission.candidate_accepted"],
+    candidates: [{
+      status: "pass",
+      selected: true,
+      islandId: "island:sha256:abc",
+      reasonCodes: ["fission.candidate_verified"],
+      verifierEvidenceId: `fission-verifier:sha256:${"a".repeat(64)}`,
+      deterministicVerifierEvidenceIds: ["evidence:source-map"],
+      verificationEvidenceCoverage: {
+        requiredCategories: ["source_mapping"],
+        missingCategories: [],
+      },
+      narrowerRejectionCoverage: {
+        requiredRanks: [0],
+        coveredRanks: [0],
+        missingRanks: [],
+      },
+    }],
+  };
+}
+
 function acceptedArtifactTransportProof() {
   return {
     schemaVersion: "synthi.gpu.hmr.artifact_transport_proof.v1",
@@ -1162,10 +1193,7 @@ describe("GPU HMR runtime output proof classification", () => {
         evidenceRefs: [{
           kind: "fission-verifier-report",
           evidenceId: "evidence:fission-verifier-report:abc",
-          metadata: {
-            status: "pass",
-            selectedIslandId: "island:sha256:abc",
-          },
+          metadata: acceptedFissionVerifierMetadata(),
         }],
         stageResults: [{
           stageId: "fission-candidate-verification",
@@ -1180,6 +1208,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
     expect(proof.evidenceRefs).toEqual(["evidence:fission-verifier-report:abc"]);
     expect(summarizeGpuHmrFissionProof(proof)).toContain("gpu_fission_proof=proven");
+  });
+
+  it("does not prove fission from a shallow pass report without selected candidate coverage", () => {
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:shallow",
+          metadata: {
+            status: "pass",
+            selectedIslandId: "island:sha256:shallow",
+          },
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:shallow"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.required).toBe(true);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_verifier_schema_unverified");
   });
 
   it("blocks fission proof when a verifier stage rejects the candidate", () => {
