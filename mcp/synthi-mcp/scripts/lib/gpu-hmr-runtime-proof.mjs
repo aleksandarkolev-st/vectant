@@ -649,6 +649,7 @@ function fissionProofUsable(proof) {
     && proof.observed === true
     && proof.evidenceObserved === true
     && proof.deterministicVerifierEvidenceObserved === true
+    && proof.selectedIslandObserved === true
     && compactStringList(proof.evidenceRefs).length > 0;
 }
 
@@ -712,6 +713,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     observation.selectedIslandId,
     ...(Array.isArray(observation.selectedIslandIds) ? observation.selectedIslandIds : []),
   ]);
+  const selectedIslandObserved = selectedIslandIds.length > 0;
   const stageStatuses = compactStringList([
     observation.status,
     observation.stageStatus,
@@ -745,6 +747,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
   const fissionProven = observed
     && evidenceObserved
     && deterministicVerifierEvidenceObserved
+    && selectedIslandObserved
     && !rejectedStatusObserved
     && aiProposalPromotionObserved
     && (
@@ -763,11 +766,13 @@ export function classifyGpuHmrFissionProof(observation = {}) {
           ? 'fission_verifier_evidence_not_collected'
           : !deterministicVerifierEvidenceObserved
             ? 'fission_deterministic_verifier_evidence_not_collected'
-            : rejectedStatusObserved
-              ? 'fission_candidate_verifier_rejected'
-              : !aiProposalPromotionObserved
-                ? 'fission_ai_proposal_deterministic_promotion_missing'
-                : 'fission_candidate_verification_not_proven';
+            : !selectedIslandObserved
+              ? 'fission_selected_island_not_collected'
+              : rejectedStatusObserved
+                ? 'fission_candidate_verifier_rejected'
+                : !aiProposalPromotionObserved
+                  ? 'fission_ai_proposal_deterministic_promotion_missing'
+                  : 'fission_candidate_verification_not_proven';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -775,6 +780,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     observed,
     evidenceObserved,
     deterministicVerifierEvidenceObserved,
+    selectedIslandObserved,
     fissionProven,
     resultState: fissionProven ? 'gpu-hmr-fission-candidate-proven' : null,
     degradedState: fissionProven || !required ? null : 'gpu-hmr-fission-unverified',
