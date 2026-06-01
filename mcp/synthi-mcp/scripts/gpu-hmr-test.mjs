@@ -1991,6 +1991,32 @@ function stableJson(value) {
   ).join(',')}}`;
 }
 
+function deterministicOutputProbeContract(input) {
+  const mode = String(input.mode ?? 'fixed_validation_probe').trim() || 'fixed_validation_probe';
+  const config = {
+    mode,
+    workspaceSlug: CFG.slug,
+    fixture: CFG.fixture,
+    gpuVendor: CFG.vendor,
+    gpuArch: CFG.gpuArch ?? null,
+    outputTargetId: input.outputTargetId ?? null,
+    expected: input.expected ?? null,
+    readbackSource: input.readbackSource ?? null,
+    syncPoint: input.syncPoint ?? 'post_dispatch_runtime_readback',
+    stableDispatchOrder: true,
+    accumulationReset: input.accumulationReset ?? true,
+    frameIndexPolicy: input.frameIndexPolicy ?? 'post_hmr_observed_frame',
+    sampleCount: input.sampleCount ?? 1,
+    deterministicInputHash: input.deterministicInputHash ?? null,
+  };
+  const configHash = `sha256:${createHash('sha256').update(stableJson(config)).digest('hex')}`;
+  return {
+    mode,
+    config,
+    configHash,
+  };
+}
+
 function safeArtifactToken(value) {
   return String(value ?? '')
     .trim()
@@ -2013,6 +2039,12 @@ async function writeRuntimeOutputOracleEvidenceArtifact(input) {
     readbackTimestamp: input.readbackTimestamp ?? null,
     runtimeSessionId: input.runtimeSessionId ?? null,
     artifactId: input.artifactId ?? null,
+    probeMode: input.probeMode ?? null,
+    probeConfig: input.probeConfig ?? null,
+    probeConfigHash: input.probeConfigHash ?? null,
+    probeEvidenceRefs: Array.isArray(input.probeEvidenceRefs)
+      ? input.probeEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+      : [],
     source: input.source ?? 'runtime_readback',
     rawEvidence: input.rawEvidence ? summarizeLogLine(input.rawEvidence) : null,
     visualEvidenceRefs: Array.isArray(input.visualEvidenceRefs)
@@ -2764,6 +2796,11 @@ async function phaseFlow(ctx) {
   const inwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const inwardRuntimeSessionId = inwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
   const inwardArtifactId = runtimeArtifactIdForOutputOracle(inwardDispatchProof);
+  const inwardProbeContract = deterministicOutputProbeContract({
+    outputTargetId: inwardOutputTargetId,
+    expected: 'inward',
+    readbackSource: 'worker-log-runtime-readback',
+  });
   const inwardOutputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
     phase: 'FLOW',
     name: 'inward output proof',
@@ -2775,6 +2812,9 @@ async function phaseFlow(ctx) {
     readbackTimestamp: inwardReadbackTimestamp,
     runtimeSessionId: inwardRuntimeSessionId,
     artifactId: inwardArtifactId,
+    probeMode: inwardProbeContract.mode,
+    probeConfig: inwardProbeContract.config,
+    probeConfigHash: inwardProbeContract.configHash,
     rawEvidence: inwardTrend.snippet,
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
@@ -2792,6 +2832,9 @@ async function phaseFlow(ctx) {
       readbackTimestamp: inwardReadbackTimestamp,
       runtimeSessionId: inwardRuntimeSessionId,
       artifactId: inwardArtifactId,
+      probeMode: inwardProbeContract.mode,
+      probeConfigHash: inwardProbeContract.configHash,
+      probeEvidenceRefs: inwardOutputEvidence.refs,
       evidenceRefs: inwardOutputEvidence.refs,
     },
     visualFrameObserved: Boolean(inwardScreenshot),
@@ -2913,6 +2956,11 @@ async function phaseFlow(ctx) {
   const outwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const outwardRuntimeSessionId = outwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
   const outwardArtifactId = runtimeArtifactIdForOutputOracle(outwardDispatchProof);
+  const outwardProbeContract = deterministicOutputProbeContract({
+    outputTargetId: outwardOutputTargetId,
+    expected: 'outward',
+    readbackSource: 'worker-log-runtime-readback',
+  });
   const outwardOutputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
     phase: 'FLOW',
     name: 'outward output proof',
@@ -2924,6 +2972,9 @@ async function phaseFlow(ctx) {
     readbackTimestamp: outwardReadbackTimestamp,
     runtimeSessionId: outwardRuntimeSessionId,
     artifactId: outwardArtifactId,
+    probeMode: outwardProbeContract.mode,
+    probeConfig: outwardProbeContract.config,
+    probeConfigHash: outwardProbeContract.configHash,
     rawEvidence: trend.snippet,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
@@ -2941,6 +2992,9 @@ async function phaseFlow(ctx) {
       readbackTimestamp: outwardReadbackTimestamp,
       runtimeSessionId: outwardRuntimeSessionId,
       artifactId: outwardArtifactId,
+      probeMode: outwardProbeContract.mode,
+      probeConfigHash: outwardProbeContract.configHash,
+      probeEvidenceRefs: outwardOutputEvidence.refs,
       evidenceRefs: outwardOutputEvidence.refs,
     },
     visualFrameObserved: Boolean(outwardScreenshot),

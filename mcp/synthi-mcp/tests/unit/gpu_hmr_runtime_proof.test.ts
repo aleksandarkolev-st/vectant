@@ -211,6 +211,9 @@ function deterministicOutputOracle({
     readbackTimestamp: "1779980000000",
     runtimeSessionId: runtimeSession,
     artifactId,
+    probeMode: "fixed_validation_probe",
+    probeConfigHash: `sha256:${"a".repeat(64)}`,
+    probeEvidenceRefs: ["evidence:output-oracle:readback:abc"],
     evidenceRefs: ["evidence:output-oracle:readback:abc"],
   };
 }
@@ -438,6 +441,24 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.rejectedEvidenceRefs).toEqual(["[gpu-demo] trend=expected"]);
   });
 
+  it("does not prove output without a deterministic probe contract", () => {
+    const { probeMode: _probeMode, probeConfigHash: _probeConfigHash, probeEvidenceRefs: _probeEvidenceRefs, ...oracle } =
+      deterministicOutputOracle();
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: oracle,
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-only");
+    expect(proof.degradedReason).toBe("output_oracle_probe_contract_missing");
+    expect(proof.outputOracle.probeContractComplete).toBe(false);
+  });
+
   it("blocks render output proof when required visual evidence is missing", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
@@ -496,7 +517,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("can prove output from a structured runtime oracle line", () => {
     const evidence = runtimeOutputOracleEvidence([
-      "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:abc",
+      `[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:abc probe_mode=fixed_validation_probe probe_config_hash=sha256:${"b".repeat(64)}`,
     ]);
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof({ runtimeSession: "pid1", artifactId: "artifact:abc" }),
@@ -513,6 +534,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.output_oracle?.outputTargetId).toBe("target:main");
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
     expect(proof.outputOracle.evidenceRefs).toEqual(["worker-log:output_oracle:probe.checksum"]);
+    expect(proof.outputOracle.probeContractComplete).toBe(true);
     expect(proof.outputOracle.readbackAfterDispatch).toBe(true);
   });
 
@@ -740,7 +762,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("accepts tolerant numeric runtime oracle records only inside tolerance", () => {
     const evidence = runtimeOutputOracleEvidence([
-      "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=artifact:scalar",
+      `[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=artifact:scalar probe_mode=fixed_validation_probe probe_config_hash=sha256:${"c".repeat(64)}`,
     ]);
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof({ runtimeSession: "pid1", artifactId: "artifact:scalar" }),

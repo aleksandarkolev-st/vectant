@@ -663,6 +663,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const oracleEvidenceRefs = runtimeOutputOracleEvidenceRefs(rawOracleEvidenceRefs);
   const rejectedOracleEvidenceRefs = rawOracleEvidenceRefs.filter((ref) => !oracleEvidenceRefs.includes(ref));
   const oracleEvidenceObserved = oracleEvidenceRefs.length > 0;
+  const probeContract = gpuHmrProbeContract(rawOracle, observation, oracleEvidenceRefs);
+  const probeContractComplete = probeContract.complete;
   const oracleProducer = typeof rawOracle.producer === 'string' && rawOracle.producer.trim()
     ? rawOracle.producer.trim()
     : null;
@@ -743,6 +745,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleRuntimeSessionMatchesDispatch
     && oracleArtifactMatchesDispatch
     && oracleReadbackAfterDispatch
+    && probeContractComplete
     && oracleValuesCompatible
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
@@ -774,6 +777,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     toleranceValid: valueCompatibility.toleranceValid,
     evidenceRefs: oracleEvidenceRefs,
     rejectedEvidenceRefs: rejectedOracleEvidenceRefs,
+    probeContract,
+    probeContractComplete,
   };
   const visualFrameObserved = observation.visualFrameObserved === true;
   const evidenceRefs = Array.isArray(observation.evidenceRefs)
@@ -856,19 +861,21 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       ? 'output_oracle_evidence_unaccepted'
       : oraclePayloadOtherwisePassed && !oracleEvidenceObserved
         ? 'output_oracle_evidence_missing'
-        : oraclePayloadOtherwisePassed && !oracleProvenanceComplete
-          ? 'output_oracle_provenance_incomplete'
-          : oraclePayloadOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
-            ? 'output_oracle_session_mismatch'
-            : oraclePayloadOtherwisePassed && !oracleArtifactMatchesDispatch
-              ? 'output_oracle_artifact_mismatch'
-              : oraclePayloadOtherwisePassed && !dispatchTimestampObserved
-                ? 'output_oracle_dispatch_timestamp_missing'
-                : oraclePayloadOtherwisePassed && !oracleReadbackAfterDispatch
-                  ? 'output_oracle_precedes_dispatch'
-                  : visualFrameObserved
-                    ? 'visual_frame_without_deterministic_output_oracle'
-                    : 'output_oracle_not_collected';
+          : oraclePayloadOtherwisePassed && !oracleProvenanceComplete
+            ? 'output_oracle_provenance_incomplete'
+            : oraclePayloadOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
+              ? 'output_oracle_session_mismatch'
+              : oraclePayloadOtherwisePassed && !oracleArtifactMatchesDispatch
+                ? 'output_oracle_artifact_mismatch'
+                : oraclePayloadOtherwisePassed && !dispatchTimestampObserved
+                  ? 'output_oracle_dispatch_timestamp_missing'
+                  : oraclePayloadOtherwisePassed && !oracleReadbackAfterDispatch
+                    ? 'output_oracle_precedes_dispatch'
+                    : oraclePayloadOtherwisePassed && !probeContractComplete
+                      ? 'output_oracle_probe_contract_missing'
+                      : visualFrameObserved
+                        ? 'visual_frame_without_deterministic_output_oracle'
+                        : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -893,8 +900,87 @@ export function summarizeGpuHmrOutputProof(proof) {
   const oracle = proof.outputOracle
     ? ` oracle=${proof.outputOracle.passed ? 'passed' : proof.outputOracle.provided ? 'failed' : 'missing'}`
     : '';
+  const probe = proof.outputOracle?.probeContractComplete
+    ? ` probe=${proof.outputOracle.probeContract?.mode ?? 'declared'}`
+    : '';
   const visual = proof.visualFrameObserved ? ' visual=fresh-frame' : ' visual=none';
-  return `gpu_output_proof=${result}${degraded}${reason}${oracle}${visual}`;
+  return `gpu_output_proof=${result}${degraded}${reason}${oracle}${probe}${visual}`;
+}
+
+function gpuHmrProbeContract(rawOracle = {}, observation = {}, acceptedOracleEvidenceRefs = []) {
+  const mode = stringField(
+    rawOracle.probeMode,
+    rawOracle.probe_mode,
+    rawOracle.deterministicProbeMode,
+    rawOracle.deterministic_probe_mode,
+    observation.probeMode,
+    observation.probe_mode,
+  );
+  const config = objectField(
+    rawOracle.probeConfig,
+    rawOracle.probe_config,
+    rawOracle.deterministicProbeConfig,
+    rawOracle.deterministic_probe_config,
+    observation.probeConfig,
+    observation.probe_config,
+  );
+  const configHash = stringField(
+    rawOracle.probeConfigHash,
+    rawOracle.probe_config_hash,
+    rawOracle.deterministicProbeConfigHash,
+    rawOracle.deterministic_probe_config_hash,
+    observation.probeConfigHash,
+    observation.probe_config_hash,
+  );
+  const rawEvidenceRefs = compactStringList([
+    ...(Array.isArray(rawOracle.probeEvidenceRefs) ? rawOracle.probeEvidenceRefs : []),
+    ...(Array.isArray(rawOracle.probe_evidence_refs) ? rawOracle.probe_evidence_refs : []),
+    rawOracle.probeEvidenceRef,
+    rawOracle.probe_evidence_ref,
+    ...(Array.isArray(observation.probeEvidenceRefs) ? observation.probeEvidenceRefs : []),
+    ...(Array.isArray(observation.probe_evidence_refs) ? observation.probe_evidence_refs : []),
+    observation.probeEvidenceRef,
+    observation.probe_evidence_ref,
+  ]);
+  const acceptedProbeEvidenceRefs = runtimeOutputOracleEvidenceRefs(rawEvidenceRefs);
+  const evidenceRefs = acceptedProbeEvidenceRefs.length
+    ? acceptedProbeEvidenceRefs
+    : acceptedOracleEvidenceRefs;
+  const configHashValid = sha256DigestString(configHash);
+  const configPresent = config !== null && Object.keys(config).length > 0;
+  const complete = mode !== null
+    && (configPresent || configHashValid)
+    && evidenceRefs.length > 0;
+  return {
+    mode,
+    configPresent,
+    configHash: configHashValid ? configHash : null,
+    configHashValid,
+    evidenceRefs,
+    complete,
+  };
+}
+
+function stringField(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function objectField(...values) {
+  for (const value of values) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function sha256DigestString(value) {
+  if (typeof value !== 'string') return false;
+  const digest = value.trim().replace(/^sha256:/i, '');
+  return /^[0-9a-f]{64}$/i.test(digest);
 }
 
 export function classifyGpuHmrDispatchProof(observation = {}) {

@@ -605,6 +605,13 @@ function outputOracleRecord(line) {
       ?? null,
     artifactId: fields.artifact_id ?? fields.artifact ?? null,
     visualEvidenceRef: fields.visual_evidence_ref ?? fields.visual_ref ?? null,
+    probeMode: fields.probe_mode ?? fields.deterministic_probe_mode ?? null,
+    probeConfigHash:
+      fields.probe_config_hash
+      ?? fields.deterministic_probe_config_hash
+      ?? fields.probe_hash
+      ?? null,
+    probeEvidenceRef: fields.probe_evidence_ref ?? fields.probe_ref ?? null,
   };
 }
 
@@ -980,6 +987,12 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           readbackTimestamp: latest.readbackTimestamp,
           artifactId: latest.artifactId,
           visualEvidenceRef: latest.visualEvidenceRef,
+          probeMode: latest.probeMode,
+          probeConfigHash: latest.probeConfigHash,
+          probeEvidenceRefs: compactStringList([
+            latest.probeEvidenceRef,
+            ...evidenceRefs,
+          ]),
           kindAccepted: oracleKindAccepted,
           evidenceRefs,
         }
