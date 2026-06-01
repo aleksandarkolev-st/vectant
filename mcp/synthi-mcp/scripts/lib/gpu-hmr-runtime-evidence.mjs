@@ -849,6 +849,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       && typeof record.dispatchTableEntryId === 'string'
       && record.dispatchTableEntryId.trim()
       && record.dispatchTableEntryId !== 'none'
+      && record.complete === true
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
   const dispatchBoundaryRecords = (Array.isArray(lines) ? lines : [])
