@@ -1368,6 +1368,21 @@ async function analyzeImage(input) {
   return { width: info.width, height: info.height, visible_pixels: visible, mean_luma: lumaTotal / pixels };
 }
 
+function screenshotQualifiesAsVisualEvidence(shot) {
+  return Boolean(
+    shot
+      && Number(shot.width) >= 320
+      && Number(shot.height) >= 240
+      && Number(shot.visible_pixels) > 500
+      && typeof shot.path === 'string'
+      && shot.path.trim(),
+  );
+}
+
+function visualEvidenceFrames() {
+  return report.screenshots.filter(screenshotQualifiesAsVisualEvidence);
+}
+
 function editSource(source, before, after, label) {
   if (!before || before === after) throw new Error(`${label} source delta must be non-empty and change the source`);
   if (!source.includes(before)) throw new Error(`${label} source delta did not match the selected file`);
@@ -1882,6 +1897,14 @@ function summarizeGpuProof(proof) {
 }
 
 function selfCheckRuntimeDispatchEvidence() {
+  const visualRows = [
+    { path: 'blank.png', width: 800, height: 600, visible_pixels: 0 },
+    { path: 'tiny.png', width: 120, height: 90, visible_pixels: 10800 },
+    { path: 'fresh.png', width: 800, height: 600, visible_pixels: 480000 },
+  ].filter(screenshotQualifiesAsVisualEvidence);
+  if (visualRows.length !== 1 || visualRows[0]?.path !== 'fresh.png') {
+    throw new Error('visual evidence frame predicate accepted a diagnostic-only screenshot');
+  }
   const parsedCmakeArgs = parseStringArrayEnv(
     '["-DNAME=value with spaces","-DENABLE_FEATURE=ON"]',
     'SELF_CHECK_CMAKE_ARGS',
@@ -2513,9 +2536,7 @@ async function collectRuntimeEvidence() {
     foundProofArtifactCount > 0 ? 'pass' : 'warn',
     `found=${foundProofArtifactCount}/${proofArtifactRecords.length} abi_metadata=${abiMetadataEvidenceCount}`,
   );
-  const freshVisualFrames = report.screenshots.filter(
-    (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
-  );
+  const freshVisualFrames = visualEvidenceFrames();
   report.source_proof = sourceProofFromProofArtifacts(
     proofArtifactRecords,
     report.phases.map((phase) => phase.gpu_proof).filter(Boolean).at(-1) ?? null,
@@ -2738,7 +2759,7 @@ async function writeResults() {
       runtimeEvidence: report.evidence,
       validationContext,
       label: 'real-rocm-runtime-proof',
-      visualEvidenceRefs: report.screenshots.map((shot) => shot.path).filter(Boolean),
+      visualEvidenceRefs: visualEvidenceFrames().map((shot) => shot.path),
     });
     report.runtime_proof_artifact_path = written.path;
     report.runtime_proof_artifact = {
