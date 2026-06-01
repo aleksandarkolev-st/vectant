@@ -3780,31 +3780,37 @@ async function selfCheck() {
       degradedReason: 'runtime_dispatch_not_observed',
     },
   });
+  const selfArtifactId = `artifact:sha256:${'1'.repeat(64)}`;
+  const staleArtifactId = `artifact:sha256:${'2'.repeat(64)}`;
+  const selectedArtifactId = `artifact:sha256:${'3'.repeat(64)}`;
+  const selfDispatcherId = `dispatcher:sha256:${'4'.repeat(64)}`;
+  const staleDispatcherId = `dispatcher:sha256:${'5'.repeat(64)}`;
+  const selectedDispatcherId = `dispatcher:sha256:${'6'.repeat(64)}`;
   const ownership = runtimeOwnershipEvidence(
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=x expected_symbols=kernel_a,kernel_b touched_symbols=kernel_a,kernel_b retired_modules=1 replaced_primary=false\n',
   );
   const sessionEvidence = runtimeSessionEvidence(
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:self dispatcher_registration_id=dispatcher:sha256:self dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n'
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0\n',
   );
   const dispatchArtifacts = runtimeDispatchArtifactEvidence(
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:self dispatcher_registration_id=dispatcher:sha256:self dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n',
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
     ['kernel_a'],
   );
   const selectedDispatchRegex = selectedArtifactDispatchLineRegex(
     ['kernel_a'],
-    ['artifact:sha256:new'],
+    [selectedArtifactId],
   );
   const staleDispatchLine =
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:old dispatcher_registration_id=dispatcher:sha256:old dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n';
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=${staleArtifactId} dispatcher_registration_id=${staleDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`;
   const selectedDispatchLine =
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-2 artifact_id=artifact:sha256:new dispatcher_registration_id=dispatcher:sha256:new dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n';
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-2 artifact_id=${selectedArtifactId} dispatcher_registration_id=${selectedDispatcherId} dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n`;
   const selectedDispatchScope = scopeRuntimeDispatchWindowToSelectedArtifact(
     staleDispatchLine
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=1 complete=true known_args=1 unknown_args=0\n'
     + selectedDispatchLine
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-2 generation=2 complete=true known_args=1 unknown_args=0\n',
-    ['artifact:sha256:new'],
+    [selectedArtifactId],
     ['session-2'],
   );
   const selectedScopeSessionEvidence = runtimeSessionEvidence(selectedDispatchScope);
@@ -3822,12 +3828,12 @@ async function selfCheck() {
     || ownership.primaryRetainedCount !== 1
     || !sessionEvidence.consistent
     || sessionEvidence.uniqueIds[0] !== 'session-1'
-    || dispatchArtifacts.runtimeArtifactIds[0] !== 'artifact:sha256:self'
+    || dispatchArtifacts.runtimeArtifactIds[0] !== selfArtifactId
     || dispatchArtifacts.dispatchTimestamps[0] !== 1779979999000
     || !selectedDispatchRegex?.test(`${staleDispatchLine}${selectedDispatchLine}`)
     || selectedDispatchRegex.test(staleDispatchLine)
     || selectedScopeSessionEvidence.uniqueIds.join(',') !== 'session-2'
-    || selectedScopeArtifacts.runtimeArtifactIds.join(',') !== 'artifact:sha256:new'
+    || selectedScopeArtifacts.runtimeArtifactIds.join(',') !== selectedArtifactId
     || argProvenanceEvidence.evidenceRefs[0] !== 'worker-log:launch_arg_provenance:kernel_a:session-1:2'
   ) {
     console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');
@@ -3849,14 +3855,15 @@ async function selfCheck() {
     epochSwapProven: true,
     streamOrderingProven: true,
     replacementScopeProven: true,
-    selectedArtifactIds: ['artifact:sha256:self'],
+    selectedArtifactIds: [selfArtifactId],
     runtimeArtifactIds: dispatchArtifacts.runtimeArtifactIds,
     dispatcherRegistrationIds: dispatchArtifacts.dispatcherRegistrationIds,
     dispatchTableEntryIds: dispatchArtifacts.dispatchTableEntryIds,
     dispatchTableHashes: dispatchArtifacts.dispatchTableHashes,
+    dispatchTimestamps: dispatchArtifacts.dispatchTimestamps,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
       dispatchArtifacts,
-      ['artifact:sha256:self'],
+      [selfArtifactId],
     ),
   });
   const unknownArgDispatchProof = classifyGpuHmrDispatchProof({

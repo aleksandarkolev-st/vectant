@@ -159,7 +159,11 @@ function runtimeSessionIdsFromObservation(observation = {}) {
 }
 
 function dispatchRuntimeArtifactIdsFromProof(dispatchProof) {
-  return compactStringList(dispatchProof?.runtimeArtifactIds).filter((id) => /^artifact:/i.test(id));
+  return contentAddressedArtifactIds(dispatchProof?.runtimeArtifactIds);
+}
+
+function contentAddressedArtifactIds(values) {
+  return compactStringList(values).filter((id) => /^artifact:sha256:[0-9a-f]{64}$/i.test(id));
 }
 
 function streamScopeObserved(streamScope, streamIds) {
@@ -1119,8 +1123,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const replacementScopeProven = observation.replacementScopeProven === true;
   const runtimeTouchedSymbolsMatch = observation.runtimeTouchedSymbolsMatch !== false;
   const runtimeArtifactMatchesSelected = observation.runtimeArtifactMatchesSelected === true;
-  const selectedArtifactIds = compactStringList(observation.selectedArtifactIds);
-  const runtimeArtifactIds = compactStringList(observation.runtimeArtifactIds);
+  const selectedArtifactIds = contentAddressedArtifactIds(observation.selectedArtifactIds);
+  const runtimeArtifactIds = contentAddressedArtifactIds(observation.runtimeArtifactIds);
   const dispatcherRegistrationIds = compactStringList(observation.dispatcherRegistrationIds);
   const dispatchTableEntryIds = compactStringList(observation.dispatchTableEntryIds);
   const dispatchTableHashes = compactStringList(observation.dispatchTableHashes);
@@ -1289,6 +1293,47 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       replacementScopeProven: true,
       runtimeTouchedSymbolsMatch,
       runtimeArtifactMatchesSelected,
+      selectedArtifactIds,
+      runtimeArtifactIds,
+      dispatcherRegistrationIds,
+      dispatchTableEntryIds,
+      dispatchTableHashes,
+      dispatchTimestamps,
+    };
+  }
+
+  const dispatchIdentityDegradedReason = (() => {
+    if (!selectedArtifactIds.length) return 'selected_artifact_identity_not_observed';
+    if (!runtimeArtifactIds.length) return 'runtime_artifact_identity_not_observed';
+    if (!dispatcherRegistrationIds.length) return 'dispatcher_registration_identity_not_observed';
+    if (!dispatchTableEntryIds.length) return 'dispatch_table_entry_identity_not_observed';
+    if (!dispatchTableHashes.length) return 'dispatch_table_hash_not_observed';
+    if (!dispatchTimestamps.length) return 'dispatch_timestamp_not_observed';
+    return null;
+  })();
+
+  if (dispatchIdentityDegradedReason) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: 'gpu-hmr-dispatch-observed',
+      degradedState: 'gpu-hmr-dispatch-unobserved',
+      degradedReason: dispatchIdentityDegradedReason,
+      dispatchObserved: true,
+      sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
+      runtimeSessionConsistent,
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      argProvenanceEvidenceObserved: true,
+      argProvenanceEvidenceRefs,
+      unknownArgCount: 0,
+      abiProven: true,
+      epochSwapProven: true,
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+      runtimeTouchedSymbolsMatch: true,
+      runtimeArtifactMatchesSelected: true,
       selectedArtifactIds,
       runtimeArtifactIds,
       dispatcherRegistrationIds,

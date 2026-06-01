@@ -1852,11 +1852,13 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('original host run runtime evidence was not accepted');
   }
+  const syntheticArtifactId = `artifact:sha256:${'1'.repeat(64)}`;
+  const syntheticDispatcherId = `dispatcher:sha256:${'2'.repeat(64)}`;
   const upstreamOnlyRuntimeEvidence = runtimeEvidenceFromValidationLogs({
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
-      '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original artifact_id=artifact:sha256:abc dispatcher_registration_id=dispatcher:sha256:def dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1',
+      `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original artifact_id=${syntheticArtifactId} dispatcher_registration_id=${syntheticDispatcherId} dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1 dispatch_timestamp=1779979999000`,
       '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
     ].join('\n'),
   });
@@ -1883,21 +1885,22 @@ function selfCheckRuntimeDispatchEvidence() {
     epochSwapProven: true,
     streamOrderingProven: true,
     replacementScopeProven: true,
-    selectedArtifactIds: ['artifact:sha256:abc'],
+    selectedArtifactIds: [syntheticArtifactId],
     runtimeArtifactIds: upstreamOnlyDispatch.runtime_artifact_ids,
     dispatcherRegistrationIds: upstreamOnlyDispatch.dispatcher_registration_ids,
     dispatchTableEntryIds: upstreamOnlyDispatch.dispatch_table_entry_ids,
     dispatchTableHashes: upstreamOnlyDispatch.dispatch_table_hashes,
+    dispatchTimestamps: upstreamOnlyDispatch.dispatch_timestamps,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected({
       runtimeDispatch: upstreamOnlyDispatch,
-      selectedArtifactIds: ['artifact:sha256:abc'],
+      selectedArtifactIds: [syntheticArtifactId],
     }),
   });
   if (
     !upstreamOnlyScope.observed
     || !upstreamOnlyScope.upstreamRunEvidenceObserved
     || upstreamOnlyScope.workerSessionMarkerObserved
-    || upstreamOnlyDispatch.runtime_artifact_ids[0] !== 'artifact:sha256:abc'
+    || upstreamOnlyDispatch.runtime_artifact_ids[0] !== syntheticArtifactId
     || upstreamOnlyDispatchProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
   ) {
     throw new Error('current upstream run runtime evidence did not establish dispatch scope');
