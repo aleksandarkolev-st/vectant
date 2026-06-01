@@ -3284,6 +3284,26 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.argProvenanceRecords[0].allocationSize).toBeNull();
   });
 
+  it("does not prove dispatch safety for device allocations without allocation identity", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      argProvenanceRecords: [{
+        argIndex: 0,
+        category: "device_allocation",
+        provenance: "runtime_observed",
+        confidence: "verified",
+        allocationSize: 8,
+        valueSize: 8,
+      }],
+      argProvenanceKnownArgCount: 1,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_records_incomplete");
+    expect(proof.argProvenanceRecords[0].allocationId).toBeNull();
+  });
+
   it("uses complete record-level argument provenance when aggregate completeness is stale", () => {
     const proof = classifyGpuHmrDispatchProof({
       ...safeDispatchProof(),

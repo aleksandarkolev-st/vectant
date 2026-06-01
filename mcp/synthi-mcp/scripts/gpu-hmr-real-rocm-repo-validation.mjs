@@ -1737,11 +1737,16 @@ function parseLaunchArgProvenanceDetails(details, context = {}) {
     const index = Number(pieces.shift());
     const kind = pieces.shift() ?? '';
     const observedValue = pieces.find((piece) => /^0x[0-9a-f]+$/i.test(piece)) ?? null;
+    const allocationIdToken = pieces.find((piece) => /^alloc_id=[A-Za-z0-9._-]+$/i.test(piece)) ?? null;
+    const allocationId = allocationIdToken
+      ? allocationIdToken.slice('alloc_id='.length)
+      : null;
     const allocationBytes = numberFromToken(pieces.find((piece) => /^alloc_bytes=\d+$/i.test(piece)));
     const allocationOffset = numberFromToken(pieces.find((piece) => /^alloc_offset=\d+$/i.test(piece)));
     const allocationName = pieces
       .filter((piece) =>
         !/^0x[0-9a-f]+$/i.test(piece)
+        && !/^alloc_id=[A-Za-z0-9._-]+$/i.test(piece)
         && !/^alloc_bytes=\d+$/i.test(piece)
         && !/^alloc_offset=\d+$/i.test(piece)
       )
@@ -1760,14 +1765,14 @@ function parseLaunchArgProvenanceDetails(details, context = {}) {
         launchKey,
         expectedArgCount,
         allocationName,
-        allocationId: allocationName ? `allocation:${allocationName}` : null,
+        allocationId: allocationId ?? (allocationName ? `allocation:${allocationName}` : null),
         allocationBytes,
         allocationSize: allocationBytes,
         allocationOffset,
         observedValue,
         valueSize: Number(sizeMatch[1]),
         runtimeProven: category === 'literal'
-          || (category === 'device_allocation' && allocationBytes !== null),
+          || (category === 'device_allocation' && allocationBytes !== null && Boolean(allocationId ?? allocationName)),
       }
       : null;
   }).filter(Boolean);
@@ -1895,7 +1900,7 @@ function selfCheckRuntimeDispatchEvidence() {
   }
   const provenance = runtimeArgProvenanceEvidence([
     '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 complete=false known_args=1 unknown_args=2 degradedState=gpu-hmr-unknown-arg-provenance details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8,1:scalar-value:size=4',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:alloc_id=runtime-allocation-self:0x10:alloc_bytes=8:alloc_offset=0:size=8,1:scalar-value:size=4',
   ]);
   if (
     provenance.total_count !== 2
@@ -1904,6 +1909,8 @@ function selfCheckRuntimeDispatchEvidence() {
     || provenance.known_arg_count !== 3
     || provenance.detail_record_count !== 3
     || provenance.records[1]?.category !== 'device_allocation'
+    || provenance.records[1]?.allocationId !== 'runtime-allocation-self'
+    || provenance.records[1]?.allocationName !== null
     || provenance.records[1]?.allocationSize !== 8
     || provenance.records[2]?.category !== 'literal'
     || provenance.evidence_refs[0] !== 'worker-log:launch_arg_provenance:known:pid1:2'

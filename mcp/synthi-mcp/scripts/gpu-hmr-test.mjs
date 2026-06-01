@@ -1860,11 +1860,16 @@ function parseLaunchArgProvenanceDetails(details, context = {}) {
     const index = Number(pieces.shift());
     const kind = pieces.shift() ?? '';
     const observedValue = pieces.find((piece) => /^0x[0-9a-f]+$/i.test(piece)) ?? null;
+    const allocationIdToken = pieces.find((piece) => /^alloc_id=[A-Za-z0-9._-]+$/i.test(piece)) ?? null;
+    const allocationId = allocationIdToken
+      ? allocationIdToken.slice('alloc_id='.length)
+      : null;
     const allocationBytes = numberFromToken(pieces.find((piece) => /^alloc_bytes=\d+$/i.test(piece)));
     const allocationOffset = numberFromToken(pieces.find((piece) => /^alloc_offset=\d+$/i.test(piece)));
     const allocationName = pieces
       .filter((piece) =>
         !/^0x[0-9a-f]+$/i.test(piece)
+        && !/^alloc_id=[A-Za-z0-9._-]+$/i.test(piece)
         && !/^alloc_bytes=\d+$/i.test(piece)
         && !/^alloc_offset=\d+$/i.test(piece)
       )
@@ -1883,14 +1888,14 @@ function parseLaunchArgProvenanceDetails(details, context = {}) {
         launchKey,
         expectedArgCount,
         allocationName,
-        allocationId: allocationName ? `allocation:${allocationName}` : null,
+        allocationId: allocationId ?? (allocationName ? `allocation:${allocationName}` : null),
         allocationBytes,
         allocationSize: allocationBytes,
         allocationOffset,
         observedValue,
         valueSize: Number(sizeMatch[1]),
         runtimeProven: category === 'literal'
-          || (category === 'device_allocation' && allocationBytes !== null),
+          || (category === 'device_allocation' && allocationBytes !== null && Boolean(allocationId ?? allocationName)),
       }
       : null;
   }).filter(Boolean);
@@ -3997,7 +4002,7 @@ async function selfCheck() {
   const selectedScopeSessionEvidence = runtimeSessionEvidence(selectedDispatchScope);
   const selectedScopeArtifacts = runtimeDispatchArtifactEvidence(selectedDispatchScope, ['kernel_a']);
   const argProvenanceEvidence = launchArgProvenanceEvidence(
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:alloc_bytes=8:alloc_offset=0:size=8\n',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0 details=0:device-allocation:alloc_id=runtime-allocation-self:0x10:alloc_bytes=8:alloc_offset=0:size=8\n',
     ['kernel_a'],
   );
   if (
@@ -4023,6 +4028,8 @@ async function selfCheck() {
     || argProvenanceEvidence.evidenceRefs[0] !== 'worker-log:launch_arg_provenance:kernel_a:session-1:2'
     || !argProvenanceEvidence.recordComplete
     || argProvenanceEvidence.records[0]?.category !== 'device_allocation'
+    || argProvenanceEvidence.records[0]?.allocationId !== 'runtime-allocation-self'
+    || argProvenanceEvidence.records[0]?.allocationName !== null
     || argProvenanceEvidence.records[0]?.allocationSize !== 8
   ) {
     console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');

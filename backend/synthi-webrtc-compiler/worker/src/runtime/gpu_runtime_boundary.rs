@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 pub struct ManagedBufferRecord {
     pub ptr: usize,
     pub bytes: usize,
+    pub allocation_id: String,
     pub semantic_name: Option<String>,
     pub lifetime_hint: Option<String>,
     pub dirty: bool,
@@ -41,6 +42,7 @@ pub struct LaunchArgProvenance {
     pub value_size: usize,
     pub observed_value: Option<usize>,
     pub kind: String,
+    pub allocation_id: Option<String>,
     pub allocation_name: Option<String>,
     pub allocation_ptr: Option<usize>,
     pub allocation_bytes: Option<usize>,
@@ -167,6 +169,7 @@ struct ActiveDispatcherMetadata {
 struct BoundaryState {
     buffers_by_ptr: HashMap<usize, ManagedBufferRecord>,
     ptr_by_name: HashMap<String, usize>,
+    next_allocation_sequence: u64,
     launches: Vec<LaunchRecord>,
     host_identities: Vec<HostIdentityRecord>,
     output_oracles: Vec<OutputOracleRecord>,
@@ -242,6 +245,11 @@ pub fn runtime_session_id() -> &'static str {
             format!("pid{}-{}", std::process::id(), start_nanos)
         })
         .as_str()
+}
+
+fn allocation_identity(ptr: usize, bytes: usize, sequence: u64) -> String {
+    let material = format!("{}:{ptr:x}:{bytes}:{sequence}", runtime_session_id());
+    format!("runtime-allocation-{:016x}", stable_hash64(&material))
 }
 
 fn active_dispatcher_metadata(
@@ -418,6 +426,7 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "missing-arg-storage".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -432,6 +441,7 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "legacy-unknown-size".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -449,6 +459,7 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "scalar-value".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -463,6 +474,7 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "aggregate-value".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -477,6 +489,7 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "scalar-value".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -491,6 +504,7 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "aggregate-value".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -506,6 +520,7 @@ fn classify_arg_value(
             value_size,
             observed_value: Some(0),
             kind: "null-value".to_string(),
+            allocation_id: None,
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -520,6 +535,7 @@ fn classify_arg_value(
             value_size,
             observed_value: Some(observed_value),
             kind: "device-allocation".to_string(),
+            allocation_id: Some(record.allocation_id.clone()),
             allocation_name: record.semantic_name.clone(),
             allocation_ptr: Some(record.ptr),
             allocation_bytes: Some(record.bytes),
@@ -539,6 +555,7 @@ fn classify_arg_value(
         value_size,
         observed_value: Some(observed_value),
         kind: unknown_kind.to_string(),
+        allocation_id: None,
         allocation_name: None,
         allocation_ptr: None,
         allocation_bytes: None,
@@ -546,8 +563,15 @@ fn classify_arg_value(
     }
 }
 
-fn arg_kind_is_runtime_proven(kind: &str) -> bool {
-    matches!(kind, "device-allocation" | "scalar-value")
+fn arg_provenance_is_runtime_proven(arg: &LaunchArgProvenance) -> bool {
+    match arg.kind.as_str() {
+        "scalar-value" => true,
+        "device-allocation" => {
+            arg.allocation_id.as_deref().is_some_and(|id| !id.is_empty())
+                && arg.allocation_bytes.is_some()
+        }
+        _ => false,
+    }
 }
 
 fn classify_launch_args(
@@ -624,6 +648,11 @@ fn arg_provenance_details(args: &[LaunchArgProvenance]) -> String {
                 .as_deref()
                 .map(|name| format!(":{name}"))
                 .unwrap_or_default();
+            let allocation_id = arg
+                .allocation_id
+                .as_deref()
+                .map(|id| format!(":alloc_id={id}"))
+                .unwrap_or_default();
             let observed = arg
                 .observed_value
                 .map(|value| format!(":0x{value:x}"))
@@ -637,10 +666,11 @@ fn arg_provenance_details(args: &[LaunchArgProvenance]) -> String {
                 .map(|offset| format!(":alloc_offset={offset}"))
                 .unwrap_or_default();
             format!(
-                "{}:{}{}{}{}{}:size={}",
+                "{}:{}{}{}{}{}{}:size={}",
                 arg.index,
                 arg.kind,
                 allocation,
+                allocation_id,
                 observed,
                 allocation_bytes,
                 allocation_offset,
@@ -967,11 +997,14 @@ pub extern "C" fn synthi_gpu_register_buffer(
     let lifetime_hint = cstr(lifetime_hint);
     let key = ptr as usize;
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.next_allocation_sequence = guard.next_allocation_sequence.saturating_add(1);
+    let allocation_id = allocation_identity(key, bytes, guard.next_allocation_sequence);
     guard.buffers_by_ptr.insert(
         key,
         ManagedBufferRecord {
             ptr: key,
             bytes,
+            allocation_id: allocation_id.clone(),
             semantic_name: semantic_name.clone(),
             lifetime_hint: lifetime_hint.clone(),
             dirty: true,
@@ -982,8 +1015,9 @@ pub extern "C" fn synthi_gpu_register_buffer(
     }
 
     eprintln!(
-        "[gpu-runtime-boundary] registered buffer name={} ptr=0x{:x} bytes={} lifetime={}",
+        "[gpu-runtime-boundary] registered buffer name={} allocation_id={} ptr=0x{:x} bytes={} lifetime={}",
         semantic_name.as_deref().unwrap_or("<unnamed>"),
+        log_token(&allocation_id),
         key,
         bytes,
         lifetime_hint.as_deref().unwrap_or("<unset>")
@@ -1532,7 +1566,7 @@ fn synthi_gpu_launch_raw_impl(
         let arg_provenance = classify_launch_args(&guard, args, arg_info, arg_count);
         let arg_provenance_complete = arg_provenance
             .iter()
-            .all(|arg| arg_kind_is_runtime_proven(&arg.kind));
+            .all(arg_provenance_is_runtime_proven);
         let launch_index = guard.launches.len();
         guard.launches.push(LaunchRecord {
             runtime_session_id: runtime_session_id.clone(),
@@ -1684,7 +1718,7 @@ fn synthi_gpu_launch_raw_impl(
     }
     let known_arg_count = arg_provenance
         .iter()
-        .filter(|arg| arg_kind_is_runtime_proven(&arg.kind))
+        .filter(|arg| arg_provenance_is_runtime_proven(arg))
         .count();
     let unknown_arg_count = arg_provenance.len().saturating_sub(known_arg_count);
     let degraded_state = if arg_provenance_complete {
@@ -1909,6 +1943,7 @@ mod tests {
 
         let buffers = managed_buffers_snapshot();
         assert_eq!(buffers.len(), 1);
+        assert!(buffers[0].allocation_id.starts_with("runtime-allocation-"));
         assert_eq!(buffers[0].semantic_name.as_deref(), Some("positions"));
         assert_eq!(buffers[0].lifetime_hint.as_deref(), Some("persistent"));
         assert!(synthi_gpu_pack_buffer(
@@ -2779,6 +2814,12 @@ mod tests {
         assert_eq!(launches.len(), 1);
         assert!(launches[0].arg_provenance_complete);
         assert_eq!(launches[0].arg_provenance[0].kind, "device-allocation");
+        assert!(
+            launches[0].arg_provenance[0]
+                .allocation_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("runtime-allocation-"))
+        );
         assert_eq!(
             launches[0].arg_provenance[0].allocation_name.as_deref(),
             Some("registered")
@@ -2791,9 +2832,60 @@ mod tests {
         assert_eq!(launches[0].arg_provenance[1].kind, "scalar-value");
         let details = arg_provenance_details(&launches[0].arg_provenance);
         assert!(details.contains("0:device-allocation:registered"));
+        assert!(details.contains(":alloc_id=runtime-allocation-"));
         assert!(details.contains("alloc_bytes=4"));
         assert!(details.contains("alloc_offset=0"));
         assert!(details.contains("1:scalar-value:size=4"));
+    }
+
+    #[test]
+    fn unnamed_registered_pointer_provenance_carries_runtime_allocation_identity() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let mut device_value = 11_u32;
+        synthi_gpu_register_buffer(
+            std::ptr::null_mut(),
+            (&mut device_value as *mut u32).cast(),
+            std::mem::size_of_val(&device_value),
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+
+        let device_ptr = (&mut device_value as *mut u32).cast::<c_void>();
+        let args = [SynthiGpuLaunchArg {
+            value_ptr: (&device_ptr as *const *mut c_void).cast(),
+            value_size: std::mem::size_of_val(&device_ptr),
+            value_kind: SYNTHI_GPU_ARG_KIND_POINTER,
+        }];
+        let kernel = CString::new("unnamed_registered").unwrap();
+        let dim = 1_u32;
+
+        let ok = synthi_gpu_launch_raw_arg_info(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            args.as_ptr(),
+            args.len(),
+        );
+
+        assert!(!ok);
+        let launches = launch_records_snapshot();
+        assert!(launches[0].arg_provenance_complete);
+        assert_eq!(launches[0].arg_provenance[0].kind, "device-allocation");
+        assert!(launches[0].arg_provenance[0].allocation_name.is_none());
+        let allocation_id = launches[0].arg_provenance[0]
+            .allocation_id
+            .as_deref()
+            .unwrap();
+        assert!(allocation_id.starts_with("runtime-allocation-"));
+        let details = arg_provenance_details(&launches[0].arg_provenance);
+        assert!(details.contains(&format!("0:device-allocation:alloc_id={allocation_id}")));
+        assert!(details.contains("alloc_bytes=4"));
     }
 
     #[test]
