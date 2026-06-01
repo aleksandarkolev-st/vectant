@@ -1549,6 +1549,8 @@ function runtimeDispatchEvidence(workerEvidence) {
     /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i,
   );
   const successRecords = dispatchSuccessLines.map((line) => {
+    const kernelName = logField(line, 'kernel');
+    const runtimeSession = logField(line, 'runtime_session');
     const artifactId = logField(line, 'artifact_id');
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
@@ -1560,6 +1562,8 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatchTimestamp = Number(logField(line, 'dispatch_timestamp'));
     return {
       line,
+      kernelName: kernelName && kernelName !== 'none' ? kernelName : null,
+      runtimeSession: runtimeSession && runtimeSession !== 'none' ? runtimeSession : null,
       artifactId: artifactId && artifactId !== 'none' ? artifactId : null,
       dispatcherRegistrationId: dispatcherRegistrationId && dispatcherRegistrationId !== 'none'
         ? dispatcherRegistrationId
@@ -1579,10 +1583,15 @@ function runtimeDispatchEvidence(workerEvidence) {
         : null,
     };
   });
+  const dispatchEvidenceRefs = [...new Set(successRecords.map((record) => {
+    if (!record.runtimeSession || !record.kernelName) return null;
+    return `worker-log:synthi_gpu_launch:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
+  }).filter(Boolean))];
   return {
     success_count: dispatchSuccessCount,
     success_lines: dispatchSuccessLines.slice(-20),
     success_records: successRecords.slice(-20),
+    evidence_refs: dispatchEvidenceRefs,
     runtime_artifact_ids: [...new Set(successRecords.map((record) => record.artifactId).filter(Boolean))],
     dispatcher_registration_ids: [
       ...new Set(successRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
@@ -2020,6 +2029,7 @@ function selfCheckRuntimeDispatchEvidence() {
     runtimeArgProvenanceEvidence(upstreamOnlyRuntimeEvidence.runtimeEvidence);
   const upstreamOnlyDispatchProof = classifyGpuHmrDispatchProof({
     dispatchObserved: upstreamOnlyDispatch.success_count > 0 && upstreamOnlyScope.observed,
+    dispatchEvidenceRefs: upstreamOnlyDispatch.evidence_refs,
     sessionScoped: upstreamOnlyScope.observed && upstreamOnlySession.record_count > 0,
     runtimeSessionIds: upstreamOnlySession.unique_ids,
     runtimeSessionConsistent: upstreamOnlySession.consistent,
@@ -2062,6 +2072,7 @@ function selfCheckRuntimeDispatchEvidence() {
     || !upstreamOnlyScope.upstreamRunEvidenceObserved
     || upstreamOnlyScope.workerSessionMarkerObserved
     || upstreamOnlyDispatch.runtime_artifact_ids[0] !== syntheticArtifactId
+    || upstreamOnlyDispatch.evidence_refs[0] !== 'worker-log:synthi_gpu_launch:pid-original:kernel'
     || upstreamOnlyDispatchProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
   ) {
     throw new Error('current upstream run runtime evidence did not establish dispatch scope');
@@ -2134,6 +2145,7 @@ function selfCheckRuntimeDispatchEvidence() {
   });
   const dispatchUnknownProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    dispatchEvidenceRefs: ['worker-log:synthi_gpu_launch:runtime-session:self-check:kernel'],
     sessionScoped: true,
     runtimeSessionIds: ['runtime-session:self-check'],
     argProvenanceObserved: true,
@@ -2180,6 +2192,7 @@ function selfCheckRuntimeDispatchEvidence() {
     abiProof: abiMetadataOnlyProof,
     dispatchProof: classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      dispatchEvidenceRefs: ['worker-log:synthi_gpu_launch:runtime-session:self-check:kernel'],
       sessionScoped: true,
       runtimeSessionIds: ['runtime-session:self-check'],
       argProvenanceObserved: true,
@@ -2461,6 +2474,7 @@ async function collectRuntimeEvidence() {
       && runtimeArgProvenance.incomplete_count === 0
       && runtimeArgProvenance.unknown_arg_count === 0,
     argProvenanceEvidenceRefs: runtimeArgProvenance.evidence_refs,
+    dispatchEvidenceRefs: runtimeDispatch.evidence_refs,
     argProvenanceRecords: runtimeArgProvenance.records,
     argProvenanceRecordComplete: runtimeArgProvenance.record_complete,
     argProvenanceKnownArgCount: runtimeArgProvenance.known_arg_count,

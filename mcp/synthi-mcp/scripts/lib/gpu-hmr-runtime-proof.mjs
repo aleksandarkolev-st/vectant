@@ -613,6 +613,10 @@ function runtimeLaunchArgProvenanceEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:launch_arg_provenance:/i.test(ref));
 }
 
+function runtimeDispatchEvidenceRefs(refs) {
+  return compactStringList(refs).filter((ref) => /^worker-log:synthi_gpu_launch:/i.test(ref));
+}
+
 function runtimeOriginalHostPathEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) =>
     /^worker-log:(original_host_path|host_path_attachment|launch_attachment):/i.test(ref)
@@ -1456,6 +1460,12 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const sessionScoped = requestedSessionScoped && runtimeSessionObserved;
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
+  const dispatchEvidenceRefs = runtimeDispatchEvidenceRefs([
+    ...(Array.isArray(observation.dispatchEvidenceRefs) ? observation.dispatchEvidenceRefs : []),
+    ...(Array.isArray(observation.runtimeDispatchEvidenceRefs) ? observation.runtimeDispatchEvidenceRefs : []),
+    ...(Array.isArray(observation.evidenceRefs) ? observation.evidenceRefs : []),
+  ]);
+  const dispatchEvidenceObserved = dispatchEvidenceRefs.length > 0;
   const argProvenanceObserved = observation.argProvenanceObserved === true;
   const unknownArgCount = Number.isFinite(observation.unknownArgCount)
     ? Math.max(0, Number(observation.unknownArgCount))
@@ -1516,6 +1526,12 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   ]);
   const abiProofEvidenceObserved = abiProofEvidenceRefs.length > 0;
   const epochProofEvidenceObserved = epochProofEvidenceRefs.length > 0;
+  const evidenceRefs = compactStringList([
+    ...dispatchEvidenceRefs,
+    ...argProvenanceEvidenceRefs,
+    ...abiProofEvidenceRefs,
+    ...epochProofEvidenceRefs,
+  ]);
   const streamOrderingProven = observation.streamOrderingProven === true;
   const replacementScopeProven = observation.replacementScopeProven === true;
   const runtimeTouchedSymbolsMatch = observation.runtimeTouchedSymbolsMatch !== false;
@@ -1560,21 +1576,32 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     ?? [],
   );
 
-  if (!dispatchObserved || dispatchFailureObserved || !sessionScoped || !runtimeSessionConsistent) {
+  if (
+    !dispatchObserved
+    || dispatchFailureObserved
+    || !sessionScoped
+    || !runtimeSessionConsistent
+    || !dispatchEvidenceObserved
+  ) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
       resultState: null,
       degradedState: 'gpu-hmr-dispatch-unobserved',
-      degradedReason: dispatchFailureObserved
-        ? 'current_session_dispatch_failed'
+      degradedReason: !dispatchObserved
+        ? 'runtime_dispatch_not_observed'
+        : dispatchFailureObserved
+          ? 'current_session_dispatch_failed'
         : !sessionScoped
           ? requestedSessionScoped && !runtimeSessionObserved
             ? 'runtime_session_identity_not_collected'
             : 'current_session_dispatch_not_proven'
           : !runtimeSessionConsistent
             ? 'runtime_session_identity_inconsistent'
-            : 'runtime_dispatch_not_observed',
+            : 'runtime_dispatch_evidence_refs_not_collected',
       dispatchObserved: false,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1602,6 +1629,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
           : 'launch_argument_provenance_incomplete'
         : 'launch_argument_provenance_not_collected',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1623,6 +1653,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedState: 'gpu-hmr-unknown-arg-provenance',
       degradedReason: 'launch_argument_provenance_evidence_refs_not_collected',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1644,6 +1677,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedState: 'gpu-hmr-abi-unverified',
       degradedReason: abiProof?.degradedReason ?? 'dispatch_abi_proof_not_collected',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1684,6 +1720,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedState: 'gpu-hmr-abi-unverified',
       degradedReason: 'dispatch_abi_proof_evidence_refs_not_collected',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1728,6 +1767,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
           ? 'dispatch_stream_ordering_proof_not_collected'
           : 'dispatch_replacement_scope_proof_not_collected',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1768,6 +1810,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedState: 'gpu-hmr-epoch-swap-unverified',
       degradedReason: 'dispatch_epoch_proof_evidence_refs_not_collected',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1810,6 +1855,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
         ? 'runtime_touched_symbols_do_not_match_selected_artifact'
         : 'runtime_artifact_does_not_match_selected_artifact',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1851,6 +1899,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedState: 'gpu-hmr-unknown-arg-provenance',
       degradedReason: 'launch_argument_provenance_records_incomplete',
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1906,6 +1957,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedState: 'gpu-hmr-dispatch-unobserved',
       degradedReason: dispatchIdentityDegradedReason,
       dispatchObserved: true,
+      dispatchEvidenceObserved,
+      dispatchEvidenceRefs,
+      evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,
       runtimeSessionIds,
@@ -1946,6 +2000,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     degradedState: null,
     degradedReason: null,
     dispatchObserved: true,
+    dispatchEvidenceObserved,
+    dispatchEvidenceRefs,
+    evidenceRefs,
     sessionScoped,
     runtimeSessionObserved,
     runtimeSessionIds,

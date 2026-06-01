@@ -236,6 +236,9 @@ function recordRuntimeDispatchProof(phase, name, observation) {
       argProvenanceEvidenceRefs: Array.isArray(observation?.argProvenanceEvidenceRefs)
         ? observation.argProvenanceEvidenceRefs
         : [],
+      dispatchEvidenceRefs: Array.isArray(observation?.dispatchEvidenceRefs)
+        ? observation.dispatchEvidenceRefs
+        : [],
       unknownArgCount: Number.isFinite(observation?.unknownArgCount)
         ? Number(observation.unknownArgCount)
         : null,
@@ -1966,6 +1969,8 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     new RegExp(String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=ok\b`),
   );
   const records = lines.map((line) => {
+    const kernelName = logField(line, 'kernel');
+    const runtimeSession = logField(line, 'runtime_session');
     const artifactId = logField(line, 'artifact_id');
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
@@ -1977,6 +1982,8 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     const dispatchTimestamp = Number(logField(line, 'dispatch_timestamp'));
     return {
       line,
+      kernelName: kernelName && kernelName !== 'none' ? kernelName : null,
+      runtimeSession: runtimeSession && runtimeSession !== 'none' ? runtimeSession : null,
       artifactId: artifactId && artifactId !== 'none' ? artifactId : null,
       dispatcherRegistrationId: dispatcherRegistrationId && dispatcherRegistrationId !== 'none'
         ? dispatcherRegistrationId
@@ -1996,8 +2003,13 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
         : null,
     };
   });
+  const dispatchEvidenceRefs = [...new Set(records.map((record) => {
+    if (!record.runtimeSession || !record.kernelName) return null;
+    return `worker-log:synthi_gpu_launch:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
+  }).filter(Boolean))];
   return {
     records,
+    dispatchEvidenceRefs,
     runtimeArtifactIds: [...new Set(records.map((record) => record.artifactId).filter(Boolean))],
     dispatcherRegistrationIds: [
       ...new Set(records.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
@@ -2662,6 +2674,7 @@ async function awaitRuntimeDispatchProof(
     argProvenanceObserved: provenance.totalCount > 0,
     argProvenanceComplete: provenance.complete,
     argProvenanceEvidenceRefs: provenance.evidenceRefs,
+    dispatchEvidenceRefs: runtimeDispatchArtifacts.dispatchEvidenceRefs,
     argProvenanceRecords: provenance.records,
     argProvenanceRecordComplete: provenance.recordComplete,
     argProvenanceKnownArgCount: provenance.knownArgCount,
@@ -3997,6 +4010,7 @@ async function selfCheck() {
     || !sessionEvidence.consistent
     || sessionEvidence.uniqueIds[0] !== 'session-1'
     || dispatchArtifacts.runtimeArtifactIds[0] !== selfArtifactId
+    || dispatchArtifacts.dispatchEvidenceRefs[0] !== 'worker-log:synthi_gpu_launch:session-1:kernel_a'
     || dispatchArtifacts.dispatchTimestamps[0] !== 1779979999000
     || dispatchArtifacts.gridDimensions[0] !== '1x1x1'
     || dispatchArtifacts.blockDimensions[0] !== '32x1x1'
@@ -4023,6 +4037,7 @@ async function selfCheck() {
     dispatchObserved: true,
     sessionScoped: true,
     runtimeSessionIds: ['session-1'],
+    dispatchEvidenceRefs: dispatchArtifacts.dispatchEvidenceRefs,
     argProvenanceObserved: true,
     argProvenanceComplete: true,
     argProvenanceEvidenceRefs: ['worker-log:launch_arg_provenance:kernel_a:session-1:2'],
@@ -4058,6 +4073,7 @@ async function selfCheck() {
     dispatchObserved: true,
     sessionScoped: true,
     runtimeSessionIds: ['session-1'],
+    dispatchEvidenceRefs: dispatchArtifacts.dispatchEvidenceRefs,
     argProvenanceObserved: true,
     argProvenanceComplete: false,
     unknownArgCount: 1,

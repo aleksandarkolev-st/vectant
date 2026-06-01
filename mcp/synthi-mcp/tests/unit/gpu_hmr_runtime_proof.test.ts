@@ -50,6 +50,10 @@ const TEST_OTHER_ARTIFACT_ID = `artifact:sha256:${"2".repeat(64)}`;
 const TEST_SCALAR_ARTIFACT_ID = `artifact:sha256:${"3".repeat(64)}`;
 const TEST_DISPATCHER_ID = `dispatcher:sha256:${"4".repeat(64)}`;
 
+function dispatchEvidenceRefs(runtimeSession = "runtime-session:test", kernel = "shade") {
+  return [`worker-log:synthi_gpu_launch:${runtimeSession}:${kernel}`];
+}
+
 function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
     metadataObserved: true,
@@ -188,6 +192,7 @@ function safeDispatchProof({
 } = {}) {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    dispatchEvidenceRefs: dispatchEvidenceRefs(runtimeSession),
     sessionScoped: true,
     runtimeSessionIds: [runtimeSession],
     argProvenanceObserved: true,
@@ -2910,9 +2915,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("runtime_session_identity_not_collected");
   });
 
+  it("requires runtime launch evidence refs before dispatch proof can be considered", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      argProvenanceEvidenceRefs: [
+        "worker-log:launch_arg_provenance:test:runtime-session.test:2",
+      ],
+      unknownArgCount: 0,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("runtime_dispatch_evidence_refs_not_collected");
+    expect(proof.dispatchEvidenceObserved).toBe(false);
+  });
+
   it("downgrades observed dispatch without argument provenance", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      dispatchEvidenceRefs: dispatchEvidenceRefs(),
       sessionScoped: true,
       runtimeSessionIds: ["runtime-session:test"],
     });
@@ -2925,6 +2954,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("does not prove dispatch safety from argument provenance booleans without runtime evidence refs", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      dispatchEvidenceRefs: dispatchEvidenceRefs(),
       sessionScoped: true,
       runtimeSessionIds: ["runtime-session:test"],
       argProvenanceObserved: true,
@@ -2945,6 +2975,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("does not accept non-runtime argument provenance evidence refs", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      dispatchEvidenceRefs: dispatchEvidenceRefs(),
       sessionScoped: true,
       runtimeSessionIds: ["runtime-session:test"],
       argProvenanceObserved: true,
@@ -2965,6 +2996,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("reports dispatch-observed but not safe when ABI proof is missing", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      dispatchEvidenceRefs: dispatchEvidenceRefs(),
       sessionScoped: true,
       runtimeSessionIds: ["runtime-session:test"],
       argProvenanceObserved: true,
@@ -3026,6 +3058,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("does not prove dispatch safety without runtime selected artifact binding", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      dispatchEvidenceRefs: dispatchEvidenceRefs(),
       sessionScoped: true,
       runtimeSessionIds: ["runtime-session:test"],
       argProvenanceObserved: true,
@@ -3057,6 +3090,8 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
     expect(proof.degradedState).toBeNull();
+    expect(proof.dispatchEvidenceRefs).toEqual(dispatchEvidenceRefs());
+    expect(proof.evidenceRefs).toEqual(expect.arrayContaining(dispatchEvidenceRefs()));
     expect(summarizeGpuHmrDispatchProof(proof)).toContain("provenance=complete");
     expect(summarizeGpuHmrDispatchProof(proof)).toContain("safety=passed");
   });
@@ -3191,6 +3226,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: classifyGpuHmrDispatchProof({
         dispatchObserved: true,
+        dispatchEvidenceRefs: dispatchEvidenceRefs(),
         sessionScoped: true,
         runtimeSessionIds: ["runtime-session:test"],
         argProvenanceObserved: true,
@@ -3299,6 +3335,7 @@ describe("GPU HMR runtime output proof classification", () => {
       epochProof: retiredEpochProof(),
       dispatchProof: classifyGpuHmrDispatchProof({
         dispatchObserved: true,
+        dispatchEvidenceRefs: dispatchEvidenceRefs(),
         sessionScoped: true,
         runtimeSessionIds: ["runtime-session:test"],
         argProvenanceObserved: true,
@@ -3643,7 +3680,7 @@ describe("GPU HMR runtime output proof classification", () => {
           stageId: "dispatch-observed",
           status: "blocked",
           degradedState: "gpu-hmr-dispatch-unobserved",
-          degradedReason: "current_session_dispatch_not_proven",
+          degradedReason: "runtime_dispatch_not_observed",
         }),
         expect.objectContaining({
           stageId: "output",
