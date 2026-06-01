@@ -122,6 +122,55 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
     assert candidate["sourceSpans"][0]["startLine"] == 7
 
 
+def test_parse_gpu_diff_response_preserves_output_oracle_provenance_fields():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "outputOracleProposal": {
+                    "kind": "selected_pixels",
+                    "producer": "deterministic_probe",
+                    "expected": "[[0,0,[1,0,0,1]]]",
+                    "tolerance": 0.001,
+                    "outputTargetId": "render-target:primary",
+                    "readbackPlan": "after-hmr-frame-1",
+                    "probeMode": "fixed_scene",
+                    "artifactId": "artifact:sha256:abc",
+                    "runtimeSessionId": "runtime-session:abc",
+                    "visualEvidenceRef": "artifacts/frame.png",
+                },
+            },
+        }
+    )
+    parsed = parse_gpu_diff_response(raw)
+    proposal = parsed["fissionCandidate"]["outputOracleProposal"]
+    assert proposal["outputTargetId"] == "render-target:primary"
+    assert proposal["artifactId"] == "artifact:sha256:abc"
+    assert proposal["runtimeSessionId"] == "runtime-session:abc"
+    assert proposal["tolerance"] == 0.001
+
+
+def test_parse_gpu_diff_response_rejects_malformed_output_oracle_proposal():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "outputOracleProposal": {
+                    "kind": "selected_pixels",
+                    "producer": "deterministic_probe",
+                    "outputTargetId": 7,
+                    "tolerance": -0.1,
+                },
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.outputOracleProposal.outputTargetId" in str(excinfo.value)
+
+
 def test_parse_gpu_diff_response_rejects_invalid_fission_evidence_shape():
     raw = json.dumps(
         {
@@ -222,6 +271,7 @@ def test_parse_gpu_diff_response_rejects_placeholder_fission_hashes():
 def test_gpu_prompt_contains_runtime_boundary_rule():
     prompt = build_gpu_diff_patch_prompt(GpuDiffPatchRequest(diff="@@"))
     assert "synthi_gpu_launch" in prompt
+    assert "synthi_gpu_launch_original_host_path" in prompt
     assert "reload_plan" in prompt
 
 
@@ -233,6 +283,9 @@ def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
     assert "compileRecipeEvidenceIds" in prompt
     assert "loaderCapabilityEvidenceIds" in prompt
     assert "outputOracleEvidenceIds" in prompt
+    assert "outputOracleProposal" in prompt
+    assert "outputTargetId" in prompt
+    assert "artifactId" in prompt
     assert "originalHostLaunchMappingEvidenceIds" in prompt
     assert "narrowerCandidateRejections" in prompt
     assert "Do not invent ids" in prompt

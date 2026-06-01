@@ -4608,7 +4608,19 @@ Return a JSON object:
     "compileCommandHash": "...",
     "loaderCapabilityRequirement": {},
     "requiredOracleId": "...",
-    "outputOracleProposal": {},
+    "outputOracleProposal": {
+      "id": "...",
+      "kind": "...",
+      "producer": "...",
+      "expected": "...",
+      "tolerance": 0.0,
+      "outputTargetId": "...",
+      "readbackPlan": "...",
+      "probeMode": "...",
+      "artifactId": "...",
+      "runtimeSessionId": "...",
+      "visualEvidenceRef": "..."
+    },
     "originalHostLaunchMappingId": "...",
     "sourceMappingEvidenceIds": ["..."],
     "includeClosureEvidenceIds": ["..."],
@@ -4637,6 +4649,10 @@ Return a JSON object:
 Rules:
 - Keep the Synthi GPU runtime boundary intact. Host launch sites must use
   `synthi_gpu_launch(...)`, not raw `kernel<<<...>>>(...)`.
+- When deterministic original host launch mapping evidence is present, preserve
+  the real host launch path by using `synthi_gpu_launch_original_host_path(...)`
+  with the mapped host path id and dispatch table entry id. If that evidence is
+  missing, do not invent a mapping and do not claim original-host attachment.
 - Do not add wrapper kernels such as `_safe`, `_v2`, `_fallback`, or
   `safe_<kernel>`. Patch existing kernels in place.
 - Do not create new `.cu` or `.hip` files. The Phase-1/2 contract has a
@@ -4665,6 +4681,11 @@ Rules:
   provided evidence. Do not claim proof: the worker's deterministic verifier
   will accept or reject the proposal. Use null when any required field would be
   guessed.
+- `outputOracleProposal` must be an explicit deterministic contract when
+  present: include a known oracle kind, producer, expected value or hash, and
+  an output target id, readback plan, or probe mode. Include artifact id,
+  runtime session id, tolerance, and visual evidence ref only when they are
+  present in evidence; do not use screenshots as the expected value.
 - Evidence id fields are provenance for the deterministic verifier to re-check,
   not proof claims. Use ids already present in the mapping, compile, reload, or
   failure reports. Do not invent ids. If phase evidence is missing for source

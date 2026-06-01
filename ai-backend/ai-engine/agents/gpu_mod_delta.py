@@ -117,6 +117,49 @@ FISSION_CANDIDATE_ALIASES = {
     "oracleProposal": "outputOracleProposal",
     "symbols": "targetSymbols",
 }
+FISSION_OUTPUT_ORACLE_STRING_FIELDS = {
+    "artifact",
+    "artifactId",
+    "artifact_id",
+    "expected",
+    "expectedHash",
+    "expectedValue",
+    "expected_hash",
+    "expected_value",
+    "id",
+    "kind",
+    "oracleId",
+    "oracle_id",
+    "outputTarget",
+    "outputTargetId",
+    "output_target",
+    "output_target_id",
+    "probeMode",
+    "producer",
+    "producerId",
+    "producerSubsystem",
+    "producer_id",
+    "producer_subsystem",
+    "readbackPlan",
+    "runtimeSession",
+    "runtimeSessionId",
+    "runtime_session",
+    "runtime_session_id",
+    "sessionId",
+    "session_id",
+    "target",
+    "visualEvidenceRef",
+    "visualRef",
+    "visual_evidence_ref",
+    "visual_ref",
+}
+FISSION_OUTPUT_ORACLE_NUMERIC_FIELDS = {
+    "absoluteTolerance",
+    "absTolerance",
+    "absolute_tolerance",
+    "abs_tolerance",
+    "tolerance",
+}
 FISSION_REJECTION_STRING_FIELDS = {
     "artifactKind",
     "artifactScope",
@@ -498,6 +541,10 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
     for field in sorted(FISSION_CANDIDATE_OBJECT_FIELDS):
         if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], dict):
             raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be an object")
+    if "outputOracleProposal" in cleaned and cleaned["outputOracleProposal"] is not None:
+        cleaned["outputOracleProposal"] = _validate_fission_output_oracle_proposal(
+            cleaned["outputOracleProposal"]
+        )
     for field in sorted(FISSION_CANDIDATE_BOOL_FIELDS):
         if field in cleaned and cleaned[field] is not None and type(cleaned[field]) is not bool:
             raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a boolean")
@@ -510,6 +557,30 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
         cleaned["narrowerCandidateRejections"] = _validate_fission_rejections(
             cleaned["narrowerCandidateRejections"]
         )
+    return cleaned
+
+
+def _validate_fission_output_oracle_proposal(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.outputOracleProposal` must be an object",
+        )
+    cleaned = dict(value)
+    for field in sorted(FISSION_OUTPUT_ORACLE_STRING_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.outputOracleProposal.{field}` must be a string",
+            )
+    for field in sorted(FISSION_OUTPUT_ORACLE_NUMERIC_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            number = cleaned[field]
+            if type(number) not in {int, float} or number < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.outputOracleProposal.{field}` must be a non-negative number",
+                )
     return cleaned
 
 
