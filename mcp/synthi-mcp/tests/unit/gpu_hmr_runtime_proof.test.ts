@@ -318,6 +318,7 @@ function acceptedSourceProof(options: {
     symbolBindingProven: !options.compileOnly,
     sourceProofProven: !options.compileOnly,
     proofArtifactPaths: [".synthi/gpu-hmr/proofs/source-proof.json"],
+    artifactIds: [`artifact:sha256:${"9".repeat(64)}`],
     evidenceRefs: [...compileRefs, ...symbolRefs],
     compileEvidenceRefs: compileRefs,
     symbolEvidenceRefs: symbolRefs,
@@ -2893,6 +2894,19 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("artifact-transport");
     expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("host-preservation");
+    const compileStage = artifact.stageResults.find((stage) => stage.stageId === "compile");
+    const symbolStage = artifact.stageResults.find((stage) => stage.stageId === "symbol-binding");
+    expect(compileStage?.evidenceRefs).toEqual(expect.arrayContaining([
+      ".synthi/gpu-hmr/proofs/source-proof.json",
+      "evidence:source:device-artifact",
+      "evidence:source:device-compiler",
+    ]));
+    expect(compileStage?.evidenceRefs).not.toContain("evidence:source:device-symbols");
+    expect(symbolStage?.evidenceRefs).toEqual(expect.arrayContaining([
+      ".synthi/gpu-hmr/proofs/source-proof.json",
+      "evidence:source:device-symbols",
+    ]));
+    expect(symbolStage?.evidenceRefs).not.toContain("evidence:source:device-compiler");
     expect(artifact.limitations).toEqual([]);
     expect(artifact.stageResults.every((stage) => Array.isArray(stage.evidenceRefs))).toBe(true);
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:artifact_transport:sha256:abc");

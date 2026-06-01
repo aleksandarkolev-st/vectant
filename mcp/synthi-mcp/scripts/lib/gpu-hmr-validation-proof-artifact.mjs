@@ -44,6 +44,8 @@ function proofArtifactRefs(proof) {
     proof.proof_artifact_path,
     proof.proofId,
     proof.proof_id,
+    ...(Array.isArray(proof.proofArtifactPaths) ? proof.proofArtifactPaths : []),
+    ...(Array.isArray(proof.proof_artifact_paths) ? proof.proof_artifact_paths : []),
   ]);
 }
 
@@ -123,9 +125,33 @@ function stageProofs(input = {}) {
   };
 }
 
+function sourceProofStageEvidenceRefs(stageId, proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  const refs = [
+    ...proofArtifactRefs(proof),
+    ...(Array.isArray(proof.artifactIds) ? proof.artifactIds : []),
+    ...(Array.isArray(proof.artifact_ids) ? proof.artifact_ids : []),
+  ];
+  if (stageId === 'compile') {
+    refs.push(
+      ...(Array.isArray(proof.compileEvidenceRefs) ? proof.compileEvidenceRefs : []),
+      ...(Array.isArray(proof.compile_evidence_refs) ? proof.compile_evidence_refs : []),
+    );
+  } else if (stageId === 'symbol-binding') {
+    refs.push(
+      ...(Array.isArray(proof.symbolEvidenceRefs) ? proof.symbolEvidenceRefs : []),
+      ...(Array.isArray(proof.symbol_evidence_refs) ? proof.symbol_evidence_refs : []),
+    );
+  }
+  return compactStringList(refs);
+}
+
 function stageEvidenceRefs(stageId, input = {}) {
-  return compactStringList((stageProofs(input)[stageId] ?? [])
-    .flatMap((proof) => evidenceStringsFromValue(proof)));
+  const proofs = stageProofs(input)[stageId] ?? [];
+  if (stageId === 'compile' || stageId === 'symbol-binding') {
+    return compactStringList(proofs.flatMap((proof) => sourceProofStageEvidenceRefs(stageId, proof)));
+  }
+  return compactStringList(proofs.flatMap((proof) => evidenceStringsFromValue(proof)));
 }
 
 function proofStageResult(stage, input, createdAt) {
