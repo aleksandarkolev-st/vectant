@@ -512,6 +512,25 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.provenanceComplete).toBe(false);
   });
 
+  it("does not prove output from an oracle with malformed readback timestamp provenance", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        readbackTimestamp: "after-dispatch",
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("output_oracle_provenance_incomplete");
+    expect(proof.outputOracle.readbackTimestamp).toBeNull();
+    expect(proof.outputOracle.provenanceComplete).toBe(false);
+  });
+
   it("does not prove output from an oracle bound to a different runtime session", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),

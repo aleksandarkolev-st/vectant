@@ -128,6 +128,17 @@ function integerValue(value) {
   return Number.isInteger(parsed) && String(parsed) === value.trim() ? parsed : null;
 }
 
+function finiteNonNegativeNumber(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function epochGraphGenerationId(generation) {
   return Number.isInteger(generation) && generation >= 0 ? `generation:${generation}` : null;
 }
@@ -612,11 +623,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     : typeof rawOracle.outputTarget === 'string' && rawOracle.outputTarget.trim()
       ? rawOracle.outputTarget.trim()
       : null;
-  const oracleReadbackTimestamp =
+  const rawOracleReadbackTimestamp =
     rawOracle.readbackTimestamp ?? rawOracle.readback_timestamp ?? rawOracle.readbackTs ?? rawOracle.readback_ts ?? null;
-  const oracleReadbackTimestampObserved =
-    (typeof oracleReadbackTimestamp === 'string' && oracleReadbackTimestamp.trim().length > 0)
-    || Number.isFinite(oracleReadbackTimestamp);
+  const oracleReadbackTimestamp = finiteNonNegativeNumber(rawOracleReadbackTimestamp);
+  const oracleReadbackTimestampObserved = oracleReadbackTimestamp !== null;
   const oracleRuntimeSessionId =
     typeof rawOracle.runtimeSessionId === 'string' && rawOracle.runtimeSessionId.trim()
       ? rawOracle.runtimeSessionId.trim()
