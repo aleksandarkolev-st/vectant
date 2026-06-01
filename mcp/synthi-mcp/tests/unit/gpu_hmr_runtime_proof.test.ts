@@ -284,6 +284,38 @@ function attachedOriginalHostPathProof() {
   });
 }
 
+function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
+  return {
+    schemaVersion: "synthi.gpu.fission_island.v1",
+    islandId,
+    sourceEditId: "source-edit:abc",
+    sourcePaths: ["src/gpu/kernel.hpp"],
+    sourceSpans: [{
+      path: "src/gpu/kernel.hpp",
+      startLine: 10,
+      endLine: 24,
+    }],
+    generatedRolePath: ".synthi/generated/gpu/device.hip",
+    generatedRolePathRequired: true,
+    targetSymbols: ["kernel_main"],
+    exportedSymbolsExpected: ["kernel_main"],
+    artifactKind: "source_include_bridge",
+    includeClosure: [{ path: "src/gpu/kernel.hpp" }],
+    dependencyClosureHash: "b".repeat(64),
+    abiMembraneId: "abi-membrane:abc",
+    compileRecipeHash: "c".repeat(64),
+    compileCommandHash: "d".repeat(64),
+    loaderCapabilityRequirement: {
+      acceptedTransports: ["ram_blob", "filesystem_path"],
+      selectedArtifactId: TEST_ARTIFACT_ID,
+    },
+    requiredOracleId: "oracle:required:abc",
+    originalHostLaunchMappingId: null,
+    originalHostLaunchMappingRequired: false,
+    verifierEvidenceIds: ["evidence:source-map"],
+  };
+}
+
 function acceptedFissionProof() {
   return classifyGpuHmrFissionProof({
     required: true,
@@ -293,6 +325,7 @@ function acceptedFissionProof() {
     verifierEvidenceRefs: [`fission-verifier:sha256:${"a".repeat(64)}`],
     deterministicVerifierEvidenceRefs: ["evidence:fission-deterministic:abc"],
     selectedIslandIds: ["fission-island:abc"],
+    selectedIslandContracts: [acceptedSelectedIslandContract()],
   });
 }
 
@@ -311,6 +344,7 @@ function acceptedFissionVerifierMetadata() {
       status: "pass",
       selected: true,
       islandId: "island:sha256:abc",
+      candidate: acceptedSelectedIslandContract("island:sha256:abc"),
       reasonCodes: ["fission.candidate_verified"],
       verifierEvidenceId: `fission-verifier:sha256:${"a".repeat(64)}`,
       deterministicVerifierEvidenceIds: ["evidence:source-map"],
@@ -1548,6 +1582,24 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selected_island_not_collected");
   });
 
+  it("does not prove fission without the selected island contract", () => {
+    const proof = classifyGpuHmrFissionProof({
+      required: true,
+      observed: true,
+      passed: true,
+      evidenceRefs: ["evidence:fission-verifier-report:abc"],
+      verifierEvidenceRefs: [`fission-verifier:sha256:${"a".repeat(64)}`],
+      deterministicVerifierEvidenceRefs: ["evidence:fission-deterministic:abc"],
+      selectedIslandIds: ["fission-island:abc"],
+    });
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandObserved).toBe(true);
+    expect(proof.selectedIslandContractObserved).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_island_contract_not_collected");
+  });
+
   it("records AI fission proposal ids separately from deterministic verifier evidence", () => {
     const metadata = acceptedFissionVerifierMetadata();
     metadata.candidates[0].aiProposalIdRequired = true;
@@ -1642,6 +1694,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.required).toBe(true);
     expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
     expect(proof.degradedReason).toBe("fission_verifier_schema_unverified");
+  });
+
+  it("does not prove fission when the selected island contract is incomplete", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.candidates[0].candidate.compileCommandHash;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:contract",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:contract"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContractObserved).toBe(true);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_island_compile_contract_unverified");
   });
 
   it("blocks fission proof when a verifier stage rejects the candidate", () => {

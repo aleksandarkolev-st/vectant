@@ -122,6 +122,149 @@ function sha256Digest(value) {
     : null;
 }
 
+function sha256LikeDigest(value) {
+  return typeof value === 'string'
+    ? value.trim().match(/^(?:sha256:)?([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+    : null;
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function sourceSpanRecords(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((span) => span && typeof span === 'object' && !Array.isArray(span))
+    .map((span) => ({
+      path: nonEmptyString(span.path),
+      startLine: Number.isInteger(span.startLine) ? span.startLine : null,
+      endLine: Number.isInteger(span.endLine) ? span.endLine : null,
+    }))
+    .filter((span) =>
+      span.path
+      && Number.isInteger(span.startLine)
+      && Number.isInteger(span.endLine)
+      && span.startLine > 0
+      && span.endLine >= span.startLine
+    );
+}
+
+function includeClosureRecords(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === 'string') return { path: nonEmptyString(entry) };
+      if (entry && typeof entry === 'object') return { path: nonEmptyString(entry.path) };
+      return null;
+    })
+    .filter((entry) => entry?.path);
+}
+
+function fissionSelectedIslandContract(selectedCandidate) {
+  if (!selectedCandidate || typeof selectedCandidate !== 'object') return null;
+  const island = objectValue(selectedCandidate.candidate) ?? selectedCandidate;
+  const outputOracleContract = objectValue(selectedCandidate.outputOracleContract)
+    ?? objectValue(island.outputOracleContract);
+  const oracleProposal = objectValue(island.oracleProposal)
+    ?? objectValue(selectedCandidate.oracleProposal);
+  const loaderCapabilityRequirement = objectValue(island.loaderCapabilityRequirement)
+    ?? objectValue(selectedCandidate.loaderCapabilityRequirement);
+  return {
+    schemaVersion: nonEmptyString(island.schemaVersion ?? selectedCandidate.schemaVersion),
+    islandId: nonEmptyString(island.islandId ?? selectedCandidate.islandId),
+    sourceEditId: nonEmptyString(island.sourceEditId ?? selectedCandidate.sourceEditId),
+    sourcePaths: nonEmptyStringArray(island.sourcePaths ?? selectedCandidate.sourcePaths),
+    sourceSpans: sourceSpanRecords(island.sourceSpans ?? selectedCandidate.sourceSpans),
+    generatedRolePath: nonEmptyString(island.generatedRolePath ?? selectedCandidate.generatedRolePath),
+    generatedRolePathRequired:
+      island.generatedRolePathRequired === true || selectedCandidate.generatedRolePathRequired === true,
+    targetSymbols: nonEmptyStringArray(island.targetSymbols ?? selectedCandidate.targetSymbols),
+    exportedSymbolsExpected:
+      nonEmptyStringArray(island.exportedSymbolsExpected ?? selectedCandidate.exportedSymbolsExpected),
+    artifactKind: nonEmptyString(island.artifactKind ?? selectedCandidate.artifactKind),
+    includeClosure: includeClosureRecords(island.includeClosure ?? selectedCandidate.includeClosure),
+    dependencyClosureHash:
+      nonEmptyString(island.dependencyClosureHash ?? selectedCandidate.dependencyClosureHash),
+    abiMembraneId: nonEmptyString(island.abiMembraneId ?? selectedCandidate.abiMembraneId),
+    compileRecipeHash: nonEmptyString(island.compileRecipeHash ?? selectedCandidate.compileRecipeHash),
+    compileCommandHash: nonEmptyString(island.compileCommandHash ?? selectedCandidate.compileCommandHash),
+    loaderCapabilityRequirement,
+    requiredOracleId: nonEmptyString(
+      island.requiredOracleId
+      ?? selectedCandidate.requiredOracleId
+      ?? outputOracleContract?.requiredOracleId
+    ),
+    oracleProposal,
+    outputOracleContract,
+    originalHostLaunchMappingId: nonEmptyString(
+      island.originalHostLaunchMappingId ?? selectedCandidate.originalHostLaunchMappingId
+    ),
+    originalHostLaunchMappingRequired:
+      island.originalHostLaunchMappingRequired === true
+      || selectedCandidate.originalHostLaunchMappingRequired === true,
+    verifierEvidenceIds:
+      nonEmptyStringArray(island.verifierEvidenceIds ?? selectedCandidate.verifierEvidenceIds),
+    aiProposalId: nonEmptyString(selectedCandidate.aiProposalId ?? island.aiProposalId),
+    replacementScope: nonEmptyString(island.replacementScope ?? selectedCandidate.replacementScope),
+    selectionScore: objectValue(selectedCandidate.selectionScore),
+    narrowerCandidateRejections: Array.isArray(island.narrowerCandidateRejections)
+      ? island.narrowerCandidateRejections
+      : [],
+  };
+}
+
+function fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslandId) {
+  const contract = fissionSelectedIslandContract(selectedCandidate);
+  if (!contract) return { proven: false, reason: 'fission_selected_island_contract_missing', contract: null };
+  if (contract.schemaVersion !== 'synthi.gpu.fission_island.v1') {
+    return { proven: false, reason: 'fission_selected_island_contract_schema_unverified', contract };
+  }
+  if (!contract.islandId || contract.islandId !== selectedIslandId) {
+    return { proven: false, reason: 'fission_selected_island_contract_identity_mismatch', contract };
+  }
+  if (!contract.sourceEditId || contract.sourcePaths.length === 0 || contract.sourceSpans.length === 0) {
+    return { proven: false, reason: 'fission_selected_island_source_mapping_incomplete', contract };
+  }
+  if (contract.generatedRolePathRequired && !contract.generatedRolePath) {
+    return { proven: false, reason: 'fission_selected_island_generated_role_missing', contract };
+  }
+  if (contract.targetSymbols.length === 0 || contract.exportedSymbolsExpected.length === 0) {
+    return { proven: false, reason: 'fission_selected_island_symbol_contract_incomplete', contract };
+  }
+  if (!contract.artifactKind || contract.includeClosure.length === 0) {
+    return { proven: false, reason: 'fission_selected_island_artifact_contract_incomplete', contract };
+  }
+  if (sha256LikeDigest(contract.dependencyClosureHash) === null) {
+    return { proven: false, reason: 'fission_selected_island_dependency_closure_unverified', contract };
+  }
+  if (!contract.abiMembraneId) {
+    return { proven: false, reason: 'fission_selected_island_abi_membrane_missing', contract };
+  }
+  if (
+    sha256LikeDigest(contract.compileRecipeHash) === null
+    || sha256LikeDigest(contract.compileCommandHash) === null
+  ) {
+    return { proven: false, reason: 'fission_selected_island_compile_contract_unverified', contract };
+  }
+  if (
+    !contract.loaderCapabilityRequirement
+    || nonEmptyStringArray(contract.loaderCapabilityRequirement.acceptedTransports).length === 0
+  ) {
+    return { proven: false, reason: 'fission_selected_island_loader_capability_missing', contract };
+  }
+  if (!contract.requiredOracleId && !contract.oracleProposal) {
+    return { proven: false, reason: 'fission_selected_island_output_oracle_contract_missing', contract };
+  }
+  if (contract.originalHostLaunchMappingRequired && !contract.originalHostLaunchMappingId) {
+    return { proven: false, reason: 'fission_selected_island_original_host_mapping_unverified', contract };
+  }
+  if (contract.verifierEvidenceIds.length === 0) {
+    return { proven: false, reason: 'fission_selected_island_verifier_evidence_missing', contract };
+  }
+  return { proven: true, reason: null, contract };
+}
+
 function stageEvidenceRefs(stage) {
   return new Set(nonEmptyStringArray(stage?.evidenceRefs));
 }
@@ -365,6 +508,10 @@ function fissionReportPassIntegrity(metadata) {
   if (nonEmptyString(selectedCandidate.islandId) !== selectedIslandId) {
     return { proven: false, reason: 'fission_selected_candidate_identity_mismatch' };
   }
+  const contractIntegrity = fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslandId);
+  if (!contractIntegrity.proven) {
+    return { proven: false, reason: contractIntegrity.reason };
+  }
   if (!nonEmptyString(selectedCandidate.verifierEvidenceId)) {
     return { proven: false, reason: 'fission_selected_candidate_verifier_evidence_missing' };
   }
@@ -481,6 +628,7 @@ export function fissionProofFromProofArtifacts(records) {
   const aiProposalIds = [];
   const aiProposalDeterministicPromotionEvidenceRefs = [];
   const selectedIslandIds = [];
+  const selectedIslandContracts = [];
   const stageStatuses = [];
   let observed = false;
   let passed = false;
@@ -503,6 +651,8 @@ export function fissionProofFromProofArtifacts(records) {
       const selectedCandidate = fissionSelectedCandidate(metadata);
       if (selectedCandidate) {
         selectedIslandIds.push(...uniqueStrings([selectedCandidate.islandId]));
+        const contract = fissionSelectedIslandContract(selectedCandidate);
+        if (contract) selectedIslandContracts.push(contract);
         verifierEvidenceRefs.push(...uniqueStrings([selectedCandidate.verifierEvidenceId]));
         deterministicVerifierEvidenceRefs.push(
           ...nonEmptyStringArray(selectedCandidate.deterministicVerifierEvidenceIds),
@@ -569,6 +719,7 @@ export function fissionProofFromProofArtifacts(records) {
     aiProposalDeterministicPromotionEvidenceRefs:
       uniqueStrings(aiProposalDeterministicPromotionEvidenceRefs),
     selectedIslandIds: uniqueStrings(selectedIslandIds),
+    selectedIslandContracts,
     stageStatuses: uniqueStrings(stageStatuses),
   });
 }

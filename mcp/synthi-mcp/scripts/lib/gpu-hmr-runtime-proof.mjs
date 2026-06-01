@@ -656,6 +656,7 @@ function fissionProofUsable(proof) {
     && proof.verifierEvidenceObserved === true
     && proof.deterministicVerifierEvidenceObserved === true
     && proof.selectedIslandObserved === true
+    && proof.selectedIslandContractObserved === true
     && compactStringList(proof.evidenceRefs).length > 0;
 }
 
@@ -720,6 +721,10 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     ...(Array.isArray(observation.selectedIslandIds) ? observation.selectedIslandIds : []),
   ]);
   const selectedIslandObserved = selectedIslandIds.length > 0;
+  const selectedIslandContracts = Array.isArray(observation.selectedIslandContracts)
+    ? observation.selectedIslandContracts.filter((contract) => contract && typeof contract === 'object')
+    : [];
+  const selectedIslandContractObserved = selectedIslandContracts.length > 0;
   const stageStatuses = compactStringList([
     observation.status,
     observation.stageStatus,
@@ -756,6 +761,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     && verifierEvidenceObserved
     && deterministicVerifierEvidenceObserved
     && selectedIslandObserved
+    && selectedIslandContractObserved
     && !rejectedStatusObserved
     && aiProposalPromotionObserved
     && (
@@ -780,9 +786,11 @@ export function classifyGpuHmrFissionProof(observation = {}) {
                 ? 'fission_selected_island_not_collected'
                 : rejectedStatusObserved
                   ? 'fission_candidate_verifier_rejected'
-                  : !aiProposalPromotionObserved
-                    ? 'fission_ai_proposal_deterministic_promotion_missing'
-                    : 'fission_candidate_verification_not_proven';
+                  : !selectedIslandContractObserved
+                    ? 'fission_selected_island_contract_not_collected'
+                    : !aiProposalPromotionObserved
+                      ? 'fission_ai_proposal_deterministic_promotion_missing'
+                      : 'fission_candidate_verification_not_proven';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -792,6 +800,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     verifierEvidenceObserved,
     deterministicVerifierEvidenceObserved,
     selectedIslandObserved,
+    selectedIslandContractObserved,
     fissionProven,
     resultState: fissionProven ? 'gpu-hmr-fission-candidate-proven' : null,
     degradedState: fissionProven || !required ? null : 'gpu-hmr-fission-unverified',
@@ -804,6 +813,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     aiProposalPromotionRequired,
     aiProposalDeterministicPromotionEvidenceRefs,
     selectedIslandIds,
+    selectedIslandContracts,
     stageStatuses,
   };
 }
