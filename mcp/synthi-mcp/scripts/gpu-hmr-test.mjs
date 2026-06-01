@@ -3881,8 +3881,28 @@ async function selfCheck() {
     requiredIdentityRolesObserved: true,
     identityEvidenceRefs: ['worker-log:host_identity:runner_process:session-1'],
   };
+  const selfCheckSourceProof = {
+    schemaVersion: 'synthi.gpu.hmr.source_proof.v1',
+    resultState: 'gpu-hmr-symbol-bound',
+    compileEvidenceObserved: true,
+    compileProven: true,
+    symbolBindingEvidenceObserved: true,
+    symbolBindingProven: true,
+    sourceProofProven: true,
+    proofArtifactPaths: ['.synthi/gpu-hmr/proofs/self-check.json'],
+    evidenceRefs: [
+      'evidence:source:device-artifact',
+      'evidence:source:device-compiler',
+      'evidence:source:device-symbols',
+    ],
+    compileEvidenceRefs: [
+      'evidence:source:device-artifact',
+      'evidence:source:device-compiler',
+    ],
+    symbolEvidenceRefs: ['evidence:source:device-symbols'],
+  };
   const fullProof = classifyGpuHmrFullRuntimeProof({
-    sourceProof: { resultState: 'gpu-hmr-symbol-bound' },
+    sourceProof: selfCheckSourceProof,
     abiProof: { resultState: 'gpu-hmr-abi-proven' },
     artifactTransportProof,
     epochProof: { resultState: 'gpu-hmr-epoch-swap-proven' },

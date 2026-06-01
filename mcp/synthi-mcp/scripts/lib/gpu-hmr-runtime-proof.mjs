@@ -85,6 +85,46 @@ function highestEffectiveProof(proofs) {
   return best ?? { proof: null, effectiveRank: 0 };
 }
 
+function sourceCompileProofUsable(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  return proof.schemaVersion === 'synthi.gpu.hmr.source_proof.v1'
+    && proof.compileEvidenceObserved === true
+    && proof.compileProven === true
+    && compactStringList(proof.compileEvidenceRefs).length >= 2
+    && compactStringList(proof.evidenceRefs).length >= 2
+    && compactStringList(proof.proofArtifactPaths).length > 0;
+}
+
+function sourceSymbolProofUsable(proof) {
+  if (!sourceCompileProofUsable(proof)) return false;
+  return proof.symbolBindingEvidenceObserved === true
+    && proof.symbolBindingProven === true
+    && proof.sourceProofProven === true
+    && compactStringList(proof.symbolEvidenceRefs).length > 0;
+}
+
+function effectiveSourceProofRank(proof) {
+  const rawRank = Math.min(effectiveProofRank(proof), proofStateRank('gpu-hmr-symbol-bound'));
+  if (rawRank >= proofStateRank('gpu-hmr-symbol-bound') && sourceSymbolProofUsable(proof)) {
+    return proofStateRank('gpu-hmr-symbol-bound');
+  }
+  if (rawRank >= proofStateRank('gpu-hmr-compile-proven') && sourceCompileProofUsable(proof)) {
+    return proofStateRank('gpu-hmr-compile-proven');
+  }
+  return 0;
+}
+
+function highestEffectiveSourceProof(proofs) {
+  let best = null;
+  for (const proof of proofs) {
+    const effectiveRank = effectiveSourceProofRank(proof);
+    if (effectiveRank > (best?.effectiveRank ?? 0)) {
+      best = { proof, effectiveRank };
+    }
+  }
+  return best ?? { proof: null, effectiveRank: 0 };
+}
+
 function proofMeets(proof, requiredState) {
   return effectiveProofRank(proof) >= proofStateRank(requiredState);
 }
@@ -1723,7 +1763,7 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     : observation.sourceProof && typeof observation.sourceProof === 'object'
       ? [observation.sourceProof]
       : [];
-  const source = highestEffectiveProof(sourceProofs);
+  const source = highestEffectiveSourceProof(sourceProofs);
   const outputProof = observation.outputProof && typeof observation.outputProof === 'object'
     ? observation.outputProof
     : null;

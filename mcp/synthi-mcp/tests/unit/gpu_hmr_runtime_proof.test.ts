@@ -301,6 +301,34 @@ function acceptedArtifactTransportProof() {
   };
 }
 
+function acceptedSourceProof(options: {
+  partial?: boolean;
+  compileOnly?: boolean;
+} = {}) {
+  const compileRefs = ["evidence:source:device-artifact", "evidence:source:device-compiler"];
+  const symbolRefs = options.compileOnly ? [] : ["evidence:source:device-symbols"];
+  return {
+    schemaVersion: "synthi.gpu.hmr.source_proof.v1",
+    resultState: options.compileOnly ? "gpu-hmr-compile-proven" : "gpu-hmr-symbol-bound",
+    degradedState: null,
+    degradedReason: options.compileOnly ? "device_symbol_evidence_unverified" : null,
+    compileEvidenceObserved: true,
+    compileProven: true,
+    symbolBindingEvidenceObserved: !options.compileOnly,
+    symbolBindingProven: !options.compileOnly,
+    sourceProofProven: !options.compileOnly,
+    proofArtifactPaths: [".synthi/gpu-hmr/proofs/source-proof.json"],
+    evidenceRefs: [...compileRefs, ...symbolRefs],
+    compileEvidenceRefs: compileRefs,
+    symbolEvidenceRefs: symbolRefs,
+    partialArtifactReplacement: options.partial === true,
+    partialModule: options.partial === true,
+    label: options.partial ? "gpu-hmr-partial" : "gpu-hmr-full-device",
+    selectedArtifactKind: options.partial ? "partial_device_region" : "full_device",
+    requestedArtifactKind: options.partial ? "partial_device_region" : "full_device",
+  };
+}
+
 function sourceProofArtifactRecord({
   artifactHash = "a".repeat(64),
   compilerHash = "b".repeat(64),
@@ -2521,7 +2549,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("blocks full runtime proof at ABI when source proof has not reached ABI", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-symbol-bound" }],
+      sourceProofs: [acceptedSourceProof()],
       outputProof: classifyGpuHmrOutputProof({
         dispatchObserved: true,
         visualFrameObserved: true,
@@ -2537,7 +2565,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("blocks full runtime proof when ABI evidence is metadata-only", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-symbol-bound" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: classifyGpuHmrAbiProof({
         metadataObserved: true,
         evidenceRefs: ["evidence:device-abi-metadata:abc"],
@@ -2562,7 +2590,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("blocks full runtime proof when artifact transport evidence is missing", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       epochProof: retiredEpochProof(),
       dispatchProof: safeDispatchProof(),
@@ -2586,7 +2614,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("blocks full runtime proof at dispatch when argument provenance is incomplete", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2616,7 +2644,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("reports full-runtime-proven only when every required component passes", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2640,7 +2668,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("blocks full runtime proof when required fission verifier evidence is missing", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       fissionProofRequired: true,
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
@@ -2667,11 +2695,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("requires fission verifier evidence for partial artifact replacements", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{
-        resultState: "gpu-hmr-abi-proven",
-        label: "gpu-hmr-partial",
-        selectedArtifactKind: "source_include_bridge",
-      }],
+      sourceProofs: [acceptedSourceProof({ partial: true })],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2696,7 +2720,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("allows full runtime proof when required fission verifier evidence passes", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       fissionProof: acceptedFissionProof(),
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
@@ -2721,7 +2745,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("quarantines a published capsule when post-publication gates fail", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2745,7 +2769,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("blocks full runtime proof when original host path attachment is required but missing", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2770,7 +2794,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("reports full runtime proof with required original host path only when attachment proof is runtime-backed", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2795,10 +2819,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("materializes runtime proof ladder as a structured validation artifact", () => {
     const dispatchProof = safeDispatchProof();
-    const sourceProof = {
-      resultState: "gpu-hmr-abi-proven",
-      proofArtifactPath: ".synthi/gpu-hmr/proofs/source.json",
-    };
+    const sourceProof = acceptedSourceProof();
     const outputProof = classifyGpuHmrOutputProof({
       dispatchProof,
       deterministicOutputObserved: true,
@@ -2890,8 +2911,9 @@ describe("GPU HMR runtime output proof classification", () => {
   });
 
   it("records blocked proof stages as first-class validation limitations", () => {
+    const sourceProof = acceptedSourceProof();
     const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [sourceProof],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2901,7 +2923,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const artifact = buildValidationRuntimeProofArtifact({
       workspaceSlug: "workspace",
       runtimeSessionIds: ["runtime-session:test"],
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [sourceProof],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2931,7 +2953,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not reconstruct dispatch proof from output state alone", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2946,7 +2968,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("uses dispatch proof embedded in output proof for the full ladder", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2964,6 +2986,30 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(true);
   });
 
+  it("does not accept label-only source proof for compile or symbol gates", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-symbol-bound" }],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("compile_evidence_not_collected");
+    expect(proof.stages.find((stage) => stage.stageId === "compile")?.status).toBe("blocked");
+    expect(proof.stages.find((stage) => stage.stageId === "symbol-binding")?.status).toBe("blocked");
+    expect(proof.fullRuntimeProven).toBe(false);
+  });
+
   it("preserves specific output degraded state in the full ladder", () => {
     const outputProof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
@@ -2976,7 +3022,7 @@ describe("GPU HMR runtime output proof classification", () => {
       visualEvidenceRefs: [],
     });
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -2993,7 +3039,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not accept claimed host preservation without runtime identity snapshot provenance", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),
@@ -3015,7 +3061,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("keeps host replacement as a full-runtime blocker after output proof", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
-      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      sourceProofs: [acceptedSourceProof()],
       abiProof: acceptedAbiProof(),
       artifactTransportProof: acceptedArtifactTransportProof(),
       epochProof: retiredEpochProof(),

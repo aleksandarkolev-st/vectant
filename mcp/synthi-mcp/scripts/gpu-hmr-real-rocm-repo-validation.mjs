@@ -1991,8 +1991,28 @@ function selfCheckRuntimeDispatchEvidence() {
     metadataObserved: true,
     evidenceRefs: ['evidence:device-abi-metadata:test'],
   });
+  const selfCheckSourceProof = {
+    schemaVersion: 'synthi.gpu.hmr.source_proof.v1',
+    resultState: 'gpu-hmr-symbol-bound',
+    compileEvidenceObserved: true,
+    compileProven: true,
+    symbolBindingEvidenceObserved: true,
+    symbolBindingProven: true,
+    sourceProofProven: true,
+    proofArtifactPaths: ['.synthi/gpu-hmr/proofs/self-check.json'],
+    evidenceRefs: [
+      'evidence:source:device-artifact',
+      'evidence:source:device-compiler',
+      'evidence:source:device-symbols',
+    ],
+    compileEvidenceRefs: [
+      'evidence:source:device-artifact',
+      'evidence:source:device-compiler',
+    ],
+    symbolEvidenceRefs: ['evidence:source:device-symbols'],
+  };
   const fullRuntimeBlockedProof = classifyGpuHmrFullRuntimeProof({
-    sourceProofs: [{ resultState: 'gpu-hmr-symbol-bound' }],
+    sourceProofs: [selfCheckSourceProof],
     abiProof: abiMetadataOnlyProof,
     dispatchProof: classifyGpuHmrDispatchProof({
       dispatchObserved: true,
