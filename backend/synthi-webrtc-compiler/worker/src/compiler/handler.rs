@@ -4089,6 +4089,38 @@ fn partial_fission_line_count(
     u64::try_from(count).unwrap_or(u64::MAX)
 }
 
+fn partial_fission_artifact_requires_original_host_path(kind: &str) -> bool {
+    let normalized = normalized_fission_scope_text(kind);
+    normalized.contains("source_include") || normalized.contains("host_path")
+}
+
+fn partial_fission_sources_require_original_host_path(
+    sources: Option<&DeviceCompileSources>,
+) -> bool {
+    let Some(sources) = sources else {
+        return false;
+    };
+    !sources.direct_workspace_source
+        && (sources.partial_required
+            || sources.partial_source.is_some()
+            || sources.partial_filename.is_some()
+            || !sources.partial_source_paths.is_empty()
+            || sources
+                .partial_artifact_kind
+                .as_deref()
+                .is_some_and(partial_fission_artifact_requires_original_host_path))
+}
+
+fn partial_fission_requires_original_host_path(
+    artifact_kind: &str,
+    replacement_scope: &str,
+    sources: Option<&DeviceCompileSources>,
+) -> bool {
+    partial_fission_artifact_requires_original_host_path(artifact_kind)
+        || partial_fission_artifact_requires_original_host_path(replacement_scope)
+        || partial_fission_sources_require_original_host_path(sources)
+}
+
 fn partial_fission_symbol_identity_mappings(
     target_symbols: &[String],
     exported_symbols: &[String],
@@ -4263,6 +4295,8 @@ fn partial_fission_candidate_and_evidence(
     } else {
         artifact_kind
     };
+    let requires_original_host_path =
+        partial_fission_requires_original_host_path(artifact_kind, replacement_scope, sources);
     let compile_recipe_material = serde_json::json!({
         "compileProvenance": &outcome.proof_metadata,
         "artifactKind": artifact_kind,
@@ -4353,6 +4387,30 @@ fn partial_fission_candidate_and_evidence(
             "kind": "partial_artifact_selection_metadata"
         },
     });
+    if requires_original_host_path {
+        if let Some(object) = candidate.as_object_mut() {
+            object.insert(
+                "originalHostLaunchMappingRequired".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            object.insert(
+                "originalHostPathRequirement".to_string(),
+                serde_json::json!({
+                    "required": true,
+                    "reason": "source-backed partial artifact replacement requires deterministic attachment to a preserved runtime host launch boundary",
+                }),
+            );
+            object.insert(
+                "runtimeAttachmentRequirement".to_string(),
+                serde_json::json!({
+                    "requiresOriginalHostPath": true,
+                    "replacementScope": replacement_scope,
+                    "artifactKind": artifact_kind,
+                    "evidenceRequired": "originalHostLaunchMappingId plus deterministic original-host launch mapping evidence",
+                }),
+            );
+        }
+    }
     if let Some(extra) = candidate
         .get("exportedSymbolsExpected")
         .and_then(serde_json::Value::as_array)
@@ -4591,13 +4649,32 @@ fn proof_fission_island_id(proof: &serde_json::Value) -> Option<String> {
     first_proof_evidence(proof, "fission-verifier-report")
         .and_then(|evidence| evidence.get("metadata"))
         .and_then(|metadata| {
+            if metadata.get("status").and_then(serde_json::Value::as_str) != Some("pass") {
+                return None;
+            }
             metadata
                 .get("selectedIslandId")
                 .and_then(serde_json::Value::as_str)
                 .or_else(|| {
                     metadata
-                        .pointer("/candidates/0/islandId")
-                        .and_then(serde_json::Value::as_str)
+                        .get("candidates")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|candidates| {
+                            candidates.iter().find_map(|candidate| {
+                                let selected =
+                                    candidate.get("selected").and_then(serde_json::Value::as_bool)
+                                        == Some(true);
+                                let passed = candidate
+                                    .get("status")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("pass");
+                                if selected && passed {
+                                    candidate.get("islandId").and_then(serde_json::Value::as_str)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
                 })
         })
         .map(str::trim)
@@ -11995,11 +12072,38 @@ __constant__ int scale;
             .metadata
             .as_ref()
             .expect("fission report metadata should be present");
-        assert_eq!(fission_stage.status, "passed");
+        assert_eq!(fission_stage.status, "blocked");
+        assert!(matches!(
+            fission_stage.degraded_reason.as_deref(),
+            Some("fission.original_host_launch_mapping_missing")
+                | Some("fission.original_host_launch_mapping_evidence_missing")
+        ));
         assert_eq!(
             report.get("status").and_then(serde_json::Value::as_str),
-            Some("pass")
+            Some("reject")
         );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/originalHostLaunchMappingRequired")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report.pointer("/candidates/0/originalHostLaunchMappingId"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.original_host_launch_mapping_missing")));
+        assert!(report
+            .pointer("/candidates/0/reasonCodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|codes| codes
+                .iter()
+                .any(|code| code == "fission.original_host_launch_mapping_evidence_missing")));
         assert_eq!(
             report
                 .pointer("/candidates/0/candidate/sourcePaths/0")
@@ -12042,18 +12146,28 @@ __constant__ int scale;
         );
         assert_eq!(
             report
+                .pointer("/candidates/0/candidate/originalHostLaunchMappingRequired")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
+                .pointer(
+                    "/candidates/0/candidate/runtimeAttachmentRequirement/requiresOriginalHostPath"
+                )
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
                 .pointer("/candidates/0/narrowerRejectionCoverage/missingRanks")
                 .and_then(serde_json::Value::as_array)
                 .map(Vec::len),
             Some(0)
         );
-        let capsule_metadata = reload_capsule_metadata_from_proof_artifact(&written, &outcome).await;
-        assert_eq!(
-            capsule_metadata.fission_island_id.as_deref(),
-            report
-                .get("selectedIslandId")
-                .and_then(serde_json::Value::as_str)
-        );
+        let capsule_metadata =
+            reload_capsule_metadata_from_proof_artifact(&written, &outcome).await;
+        assert_eq!(capsule_metadata.fission_island_id, None);
         assert!(capsule_metadata
             .abi_membrane_hash
             .as_deref()
