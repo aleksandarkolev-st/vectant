@@ -277,11 +277,20 @@ export function runtimeEpochSwapEvidence(lines) {
   const streamOrderingProven =
     streamOrderingRequested
     && streamScopeEvidenceSupported;
+  const newArtifactIdHash = typeof latestPublication?.newArtifactId === 'string'
+    ? latestPublication.newArtifactId.match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+    : null;
+  const newArtifactHashDigest = typeof latestPublication?.newArtifactHash === 'string'
+    ? latestPublication.newArtifactHash.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+    : null;
   const capsuleMetadataObserved =
-    typeof latestPublication?.newArtifactId === 'string'
+    typeof latestPublication?.oldArtifactId === 'string'
+    && /^artifact:sha256:[0-9a-f]{64}$/i.test(latestPublication.oldArtifactId.trim())
+    && typeof latestPublication?.newArtifactId === 'string'
     && /^artifact:sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactId.trim())
     && typeof latestPublication?.newArtifactHash === 'string'
     && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactHash.trim())
+    && newArtifactIdHash === newArtifactHashDigest
     && typeof latestPublication?.capsuleId === 'string'
     && /^capsule:sha256:[0-9a-f]{64}$/i.test(latestPublication.capsuleId.trim())
     && typeof latestPublication?.abiMembraneHash === 'string'

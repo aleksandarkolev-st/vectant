@@ -1553,6 +1553,48 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("capsule=missing");
   });
 
+  it("does not prove epoch swap when capsule lineage omits the old artifact id", () => {
+    const graph = epochGenerationGraph();
+    delete graph.latestPublication.oldArtifactId;
+    for (const edge of graph.edges) {
+      delete edge.oldArtifactId;
+    }
+
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:no-old-artifact-id"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_capsule_metadata_not_collected");
+    expect(proof.capsuleMetadataObserved).toBe(false);
+  });
+
+  it("does not prove runtime epoch swap when the capsule artifact id and hash disagree", () => {
+    const mismatchedHash = "9".repeat(64);
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} new_artifact_hash=sha256:${mismatchedHash} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+    ]);
+
+    expect(evidence.capsule_metadata_observed).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_capsule_metadata_not_collected");
+  });
+
   it("does not treat placeholder capsule metadata as observed lineage", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
       `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 old_artifact_id=none new_artifact_id=artifact:sha256:${TEST_NEW_ARTIFACT_HASH} new_artifact_hash=sha256:${TEST_NEW_ARTIFACT_HASH} changed_symbols=none function_handle_ids=none dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,

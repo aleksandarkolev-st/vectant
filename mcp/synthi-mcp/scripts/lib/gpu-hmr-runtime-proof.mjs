@@ -225,8 +225,11 @@ function epochGenerationGraphStatus(graph) {
     && epochGraphEdgeGeneration(edge, 'from') === previousGeneration
     && epochGraphEdgeGeneration(edge, 'to') === activeGeneration
   ) ?? null;
+  const oldArtifactId = String(latest.oldArtifactId ?? latest.old_artifact_id ?? publicationEdge?.oldArtifactId ?? publicationEdge?.old_artifact_id ?? '').trim();
   const newArtifactId = String(latest.newArtifactId ?? latest.new_artifact_id ?? publicationEdge?.newArtifactId ?? publicationEdge?.new_artifact_id ?? '').trim();
   const newArtifactHash = String(latest.newArtifactHash ?? latest.new_artifact_hash ?? publicationEdge?.newArtifactHash ?? publicationEdge?.new_artifact_hash ?? '').trim();
+  const newArtifactIdHash = newArtifactId.match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+  const newArtifactHashDigest = newArtifactHash.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
   const capsuleId = String(latest.capsuleId ?? latest.capsule_id ?? publicationEdge?.capsuleId ?? publicationEdge?.capsule_id ?? '').trim();
   const fissionIslandId = String(latest.fissionIslandId ?? latest.fission_island_id ?? publicationEdge?.fissionIslandId ?? publicationEdge?.fission_island_id ?? '').trim();
   const abiMembraneHash = String(latest.abiMembraneHash ?? latest.abi_membrane_hash ?? publicationEdge?.abiMembraneHash ?? publicationEdge?.abi_membrane_hash ?? '').trim();
@@ -240,8 +243,10 @@ function epochGenerationGraphStatus(graph) {
       ? Object.keys(streamEpochCounters).length
       : 0;
   const capsuleMetadataObserved =
-    /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
+    /^artifact:sha256:[0-9a-f]{64}$/i.test(oldArtifactId)
+    && /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
     && /^sha256:[0-9a-f]{64}$/i.test(newArtifactHash)
+    && newArtifactIdHash === newArtifactHashDigest
     && /^capsule:sha256:[0-9a-f]{64}$/i.test(capsuleId)
     && /^sha256:[0-9a-f]{64}$/i.test(abiMembraneHash)
     && /^sha256:[0-9a-f]{64}$/i.test(dependencyClosureHash)
@@ -307,6 +312,9 @@ function epochGenerationGraphStatus(graph) {
     previousGeneration,
     activeGeneration,
     capsuleMetadataObserved,
+    oldArtifactId,
+    newArtifactId,
+    newArtifactHash,
     capsuleId,
     fissionIslandId,
     abiMembraneHash,
