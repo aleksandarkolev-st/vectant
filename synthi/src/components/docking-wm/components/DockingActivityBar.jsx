@@ -14,6 +14,7 @@ import {
   Search,
   GitBranch,
   GitPullRequest,
+  Plug,
   Puzzle,
   Settings,
   Sparkles,
@@ -63,7 +64,8 @@ const TOP_ITEMS = [
   { id: 'git',        panelType: IDE_PANEL.GIT,        label: 'Source Control',  Icon: GitBranch },
   { id: 'extensions', panelType: IDE_PANEL.EXTENSIONS, label: 'Extensions',      Icon: Puzzle },
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
-  { id: 'ai-healing', panelType: IDE_PANEL.AI_HEALING, label: 'AI Healing',      Icon: Sparkles },
+  { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: Sparkles },
+  { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
   { id: 'pullrequests', panelType: IDE_PANEL.PULL_REQUESTS, label: 'Pull Requests', Icon: GitPullRequest },
 ];
 

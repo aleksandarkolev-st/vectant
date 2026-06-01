@@ -22,4 +22,5 @@ export const IDE_PANEL = Object.freeze({
   PULL_REQUESTS: 'pullrequests',
   COMMIT_HISTORY: 'commithistory',
   AI_HEALING: 'ai-healing',
+  INTEGRATIONS: 'integrations',
 });

@@ -95,6 +95,11 @@ const HealingSettingsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const ConnectedToolsPanel = dynamic(
+  () => import('@/components/integrations/ConnectedToolsPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -412,6 +417,24 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
 });
 
 // ────────────────────────────────────────────────────────
+//  Integrations Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const IntegrationsPanelWrapper = memo(function IntegrationsPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="integrations"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ConnectedToolsPanel />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
 //  Wrapper registry (type → component)
 // ────────────────────────────────────────────────────────
 
@@ -431,4 +454,5 @@ export const PANEL_WRAPPERS = {
   pullrequests:    PullRequestsPanelWrapper,
   commithistory:   CommitHistoryPanelWrapper,
   'ai-healing':    AIHealingPanelWrapper,
+  integrations:    IntegrationsPanelWrapper,
 };

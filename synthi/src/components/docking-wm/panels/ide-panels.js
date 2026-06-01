@@ -27,6 +27,7 @@ import {
   PullRequestsPanelWrapper,
   CommitHistoryPanelWrapper,
   AIHealingPanelWrapper,
+  IntegrationsPanelWrapper,
 } from './panel-wrappers';
 import { IDE_PANEL } from './panel-types';
 
@@ -201,6 +202,16 @@ export const IDE_PANEL_DEFINITIONS = [
     icon: 'sparkles',
     category: 'sidebar',
     component: AIHealingPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.INTEGRATIONS,
+    displayName: 'Connected Tools',
+    icon: 'plug',
+    category: 'sidebar',
+    component: IntegrationsPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'left',
     closable: true,
