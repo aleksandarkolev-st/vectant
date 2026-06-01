@@ -58,6 +58,8 @@ import {
   artifactTransportProofFromProofArtifacts,
   fissionProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
+  sourceProofFromProofArtifacts,
+  summarizeGpuHmrSourceProof,
 } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
   epochSwapProofFromRuntimeEvidence,
@@ -2736,6 +2738,13 @@ async function phaseFlow(ctx) {
   );
   const baselineAbiProof = abiProofFromProofArtifacts(baselineProofArtifacts);
   const baselineFissionProof = fissionProofFromProofArtifacts(baselineProofArtifacts);
+  const baselineSourceProof = sourceProofFromProofArtifacts(baselineProofArtifacts, baselineGpuProof);
+  record(
+    'FLOW',
+    'inward source proof from artifact',
+    baselineSourceProof.resultState ? 'pass' : 'warn',
+    summarizeGpuHmrSourceProof(baselineSourceProof),
+  );
   record(
     'FLOW',
     'inward fission proof from artifact',
@@ -2853,7 +2862,7 @@ async function phaseFlow(ctx) {
     inwardHostProofWithEvidence,
   );
   recordRuntimeFullProof('FLOW', 'inward full runtime proof ladder', {
-    sourceProof: baselineGpuProof,
+    sourceProof: baselineSourceProof,
     abiProof: baselineAbiProof,
     fissionProof: baselineFissionProof,
     artifactTransportProof: baselineArtifactTransportProof,
@@ -2890,6 +2899,13 @@ async function phaseFlow(ctx) {
   );
   const flipAbiProof = abiProofFromProofArtifacts(flipProofArtifacts);
   const flipFissionProof = fissionProofFromProofArtifacts(flipProofArtifacts);
+  const flipSourceProof = sourceProofFromProofArtifacts(flipProofArtifacts, flipGpuProof);
+  record(
+    'FLOW',
+    'outward source proof from artifact',
+    flipSourceProof.resultState ? 'pass' : 'warn',
+    summarizeGpuHmrSourceProof(flipSourceProof),
+  );
   record(
     'FLOW',
     'outward fission proof from artifact',
@@ -3013,7 +3029,7 @@ async function phaseFlow(ctx) {
     outwardHostProofWithEvidence,
   );
   recordRuntimeFullProof('FLOW', 'outward full runtime proof ladder', {
-    sourceProof: flipGpuProof,
+    sourceProof: flipSourceProof,
     abiProof: flipAbiProof,
     fissionProof: flipFissionProof,
     artifactTransportProof: flipArtifactTransportProof,

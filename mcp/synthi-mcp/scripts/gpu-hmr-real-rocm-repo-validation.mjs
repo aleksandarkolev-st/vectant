@@ -23,6 +23,8 @@ import {
   artifactTransportProofFromProofArtifacts,
   fissionProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
+  sourceProofFromProofArtifacts,
+  summarizeGpuHmrSourceProof,
 } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
   epochSwapProofFromRuntimeEvidence,
@@ -2253,6 +2255,11 @@ async function collectRuntimeEvidence() {
   const freshVisualFrames = report.screenshots.filter(
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
+  report.source_proof = sourceProofFromProofArtifacts(
+    proofArtifactRecords,
+    report.phases.map((phase) => phase.gpu_proof).filter(Boolean).at(-1) ?? null,
+  );
+  report.source_proofs = [report.source_proof].filter(Boolean);
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
   report.fission_proof = fissionProofFromProofArtifacts(proofArtifactRecords);
   report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(
@@ -2296,7 +2303,7 @@ async function collectRuntimeEvidence() {
   report.host_preservation_proof = runtimeHostPreservation.proof;
   report.original_host_path_proof = runtimeOriginalHostPath.proof;
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
-    sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
+    sourceProofs: report.source_proofs,
     fissionProof: report.fission_proof,
     abiProof: report.abi_proof,
     artifactTransportProof: report.artifact_transport_proof,
@@ -2306,6 +2313,11 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
   });
+  record(
+    'runtime source proof',
+    report.source_proof.resultState ? 'pass' : 'warn',
+    summarizeGpuHmrSourceProof(report.source_proof),
+  );
   record(
     'runtime ABI proof',
     report.abi_proof.degradedState ? 'warn' : 'pass',
@@ -2444,7 +2456,7 @@ async function writeResults() {
     const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
       workspaceSlug: report.slug,
       runtimeSessionIds: report.dispatch_proof?.runtimeSessionIds ?? report.evidence?.runtime_session?.unique_ids ?? [],
-      sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
+      sourceProofs: report.source_proofs,
       fissionProof: report.fission_proof,
       abiProof: report.abi_proof,
       artifactTransportProof: report.artifact_transport_proof,

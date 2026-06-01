@@ -24,6 +24,18 @@ function abiStageFromArtifact(artifact) {
   });
 }
 
+function sourceEvidenceId(evidence, artifact, record, kind) {
+  if (typeof evidence?.evidenceId === 'string' && evidence.evidenceId.trim()) {
+    return evidence.evidenceId.trim();
+  }
+  return `${artifact?.proofId ?? record?.proofArtifactPath ?? 'gpu-hmr-proof-artifact'}:${kind}`;
+}
+
+function sourceStageFromArtifact(artifact, stageId) {
+  const stages = Array.isArray(artifact?.stageResults) ? artifact.stageResults : [];
+  return stages.find((stage) => String(stage?.stageId ?? '').trim().toLowerCase() === stageId);
+}
+
 function artifactTransportEvidenceId(evidence, artifact, record) {
   if (typeof evidence?.evidenceId === 'string' && evidence.evidenceId.trim()) {
     return evidence.evidenceId.trim();
@@ -86,6 +98,224 @@ function nonEmptyStringArray(value) {
   return Array.isArray(value)
     ? uniqueStrings(value)
     : [];
+}
+
+function artifactSha256Digest(value) {
+  return typeof value === 'string'
+    ? value.trim().match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+    : null;
+}
+
+function sha256Digest(value) {
+  return typeof value === 'string'
+    ? value.trim().match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+    : null;
+}
+
+function stageEvidenceRefs(stage) {
+  return new Set(nonEmptyStringArray(stage?.evidenceRefs));
+}
+
+function stagePassed(stage) {
+  const status = String(stage?.status ?? '').trim().toLowerCase();
+  return status === 'passed' || status === 'pass' || status === 'accepted';
+}
+
+function nonEmptyStringOrArray(value) {
+  if (typeof value === 'string' && value.trim()) return true;
+  return Array.isArray(value) && nonEmptyStringArray(value).length > 0;
+}
+
+function compileProvenanceComplete(metadata) {
+  const provenance = metadata?.compileProvenance;
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return false;
+  const requiredStringFields = [
+    'compilerExecutable',
+    'compilerIdentity',
+    'deviceCompiler',
+    'gpuVendor',
+    'targetTriple',
+    'sdkVersion',
+    'sourceFilename',
+    'compileCommandHash',
+    'dependencyHash',
+    'dependencyMethod',
+    'artifactCacheKey',
+  ];
+  return requiredStringFields.every((field) => nonEmptyString(provenance[field]))
+    && nonEmptyStringOrArray(provenance.gpuArch);
+}
+
+function finiteNonNegative(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function proofArtifactPath(record) {
+  return nonEmptyString(record?.proofArtifactPath) ?? nonEmptyString(record?.containerPath);
+}
+
+export function sourceProofFromProofArtifacts(records, fallbackProof = null) {
+  const proofArtifactPaths = [];
+  const evidenceRefs = [];
+  const compileEvidenceRefs = [];
+  const symbolEvidenceRefs = [];
+  const artifactIds = [];
+  const selectedArtifactKinds = [];
+  const requestedArtifactKinds = [];
+  const degradedReasons = [];
+  let compileProven = false;
+  let symbolBindingProven = false;
+  let compileEvidenceObserved = false;
+  let symbolBindingEvidenceObserved = false;
+  let partialArtifactReplacement = fallbackProof?.partialArtifactReplacement === true
+    || fallbackProof?.partialModule === true;
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const artifact = record?.artifact;
+    if (!artifact || typeof artifact !== 'object') continue;
+    const path = proofArtifactPath(record);
+    if (path) proofArtifactPaths.push(path);
+
+    const artifactEvidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
+    const deviceArtifact = artifactEvidenceRefs.find((evidence) => evidence?.kind === 'device-artifact');
+    const compilerOutput = artifactEvidenceRefs.find((evidence) => evidence?.kind === 'device-compiler-output');
+    const symbolSet = artifactEvidenceRefs.find((evidence) => evidence?.kind === 'device-symbol-set');
+    const deviceArtifactEvidenceId = sourceEvidenceId(deviceArtifact, artifact, record, 'device-artifact');
+    const compilerEvidenceId = sourceEvidenceId(compilerOutput, artifact, record, 'device-compiler-output');
+    const symbolEvidenceId = sourceEvidenceId(symbolSet, artifact, record, 'device-symbol-set');
+    const compileStage = sourceStageFromArtifact(artifact, 'device-compile');
+    const symbolStage = sourceStageFromArtifact(artifact, 'symbol-binding');
+    const compileStageRefs = stageEvidenceRefs(compileStage);
+    const symbolStageRefs = stageEvidenceRefs(symbolStage);
+
+    const artifactDigest = artifactSha256Digest(deviceArtifact?.artifactUri);
+    const artifactContentDigest = sha256Digest(deviceArtifact?.contentHash);
+    const compilerContentDigest = sha256Digest(compilerOutput?.contentHash);
+    const symbolArtifactDigest = artifactSha256Digest(symbolSet?.artifactUri);
+    const symbolContentDigest = sha256Digest(symbolSet?.contentHash);
+    const artifactBytes = deviceArtifact?.metadata?.artifactBytes;
+    const compileMetadata = compilerOutput?.metadata;
+    const symbolMetadata = symbolSet?.metadata;
+
+    const artifactEvidenceValid =
+      Boolean(deviceArtifact)
+      && artifactDigest !== null
+      && artifactDigest === artifactContentDigest
+      && Number.isInteger(artifactBytes)
+      && artifactBytes > 0;
+    const compilerEvidenceValid =
+      Boolean(compilerOutput)
+      && compilerContentDigest !== null
+      && finiteNonNegative(compileMetadata?.compilerElapsedMs)
+      && finiteNonNegative(compileMetadata?.stderrBytes)
+      && compileProvenanceComplete(compileMetadata);
+    const compileStageLinked =
+      stagePassed(compileStage)
+      && compileStageRefs.has(deviceArtifactEvidenceId)
+      && compileStageRefs.has(compilerEvidenceId)
+      && Array.isArray(compileStage?.outputArtifactIds)
+      && compileStage.outputArtifactIds.includes(deviceArtifact?.artifactUri);
+    const compileRecordProven = artifactEvidenceValid && compilerEvidenceValid && compileStageLinked;
+
+    if (deviceArtifact || compilerOutput || compileStage) compileEvidenceObserved = true;
+    if (compileRecordProven) {
+      compileProven = true;
+      compileEvidenceRefs.push(deviceArtifactEvidenceId, compilerEvidenceId);
+      evidenceRefs.push(deviceArtifactEvidenceId, compilerEvidenceId);
+      artifactIds.push(deviceArtifact.artifactUri);
+    } else if (!compileProven) {
+      if (!artifactEvidenceValid) degradedReasons.push('device_artifact_evidence_unverified');
+      if (!compilerEvidenceValid) degradedReasons.push('device_compiler_evidence_unverified');
+      if (!compileStageLinked) degradedReasons.push('device_compile_stage_not_linked');
+    }
+
+    if (deviceArtifact?.metadata?.partialModule === true) {
+      partialArtifactReplacement = true;
+    }
+    selectedArtifactKinds.push(...uniqueStrings([deviceArtifact?.metadata?.selectedArtifactKind]));
+    requestedArtifactKinds.push(...uniqueStrings([deviceArtifact?.metadata?.requestedArtifactKind]));
+
+    const targetSymbols = nonEmptyStringArray(symbolMetadata?.targetSymbols);
+    const exportedSymbols = nonEmptyStringArray(symbolMetadata?.artifactExportedSymbols);
+    const symbolEvidenceValid =
+      Boolean(symbolSet)
+      && symbolArtifactDigest !== null
+      && artifactDigest !== null
+      && symbolArtifactDigest === artifactDigest
+      && symbolContentDigest !== null
+      && symbolMetadata?.symbolBound === true
+      && targetSymbols.length > 0
+      && exportedSymbols.length > 0;
+    const symbolStageLinked =
+      stagePassed(symbolStage)
+      && symbolStageRefs.has(symbolEvidenceId)
+      && Array.isArray(symbolStage?.outputArtifactIds)
+      && symbolStage.outputArtifactIds.includes(symbolSet?.artifactUri);
+    const symbolRecordProven = compileRecordProven && symbolEvidenceValid && symbolStageLinked;
+
+    if (symbolSet || symbolStage) symbolBindingEvidenceObserved = true;
+    if (symbolRecordProven) {
+      symbolBindingProven = true;
+      symbolEvidenceRefs.push(symbolEvidenceId);
+      evidenceRefs.push(symbolEvidenceId);
+    } else if (compileRecordProven && !symbolBindingProven) {
+      if (!symbolEvidenceValid) degradedReasons.push('device_symbol_evidence_unverified');
+      if (!symbolStageLinked) degradedReasons.push('symbol_binding_stage_not_linked');
+    }
+  }
+
+  const fallbackLabel = nonEmptyString(fallbackProof?.label ?? fallbackProof?.resultLabel);
+  const fallbackSelectedKind = nonEmptyString(
+    fallbackProof?.selectedArtifactKind ?? fallbackProof?.artifactKind,
+  );
+  const fallbackRequestedKind = nonEmptyString(fallbackProof?.requestedArtifactKind);
+  if (fallbackSelectedKind) selectedArtifactKinds.push(fallbackSelectedKind);
+  if (fallbackRequestedKind) requestedArtifactKinds.push(fallbackRequestedKind);
+
+  const resultState = symbolBindingProven
+    ? 'gpu-hmr-symbol-bound'
+    : compileProven
+      ? 'gpu-hmr-compile-proven'
+      : null;
+  const degradedReason = resultState
+    ? symbolBindingProven
+      ? null
+      : uniqueStrings(degradedReasons)[0] ?? 'symbol_binding_evidence_not_collected'
+    : uniqueStrings(degradedReasons)[0] ?? (compileEvidenceObserved
+      ? 'compile_evidence_unverified'
+      : 'compile_evidence_not_collected');
+
+  return {
+    schemaVersion: 'synthi.gpu.hmr.source_proof.v1',
+    resultState,
+    degradedState: null,
+    degradedReason,
+    compileEvidenceObserved,
+    compileProven,
+    symbolBindingEvidenceObserved,
+    symbolBindingProven,
+    sourceProofProven: symbolBindingProven,
+    proofArtifactPaths: uniqueStrings(proofArtifactPaths),
+    artifactIds: uniqueStrings(artifactIds),
+    evidenceRefs: uniqueStrings(evidenceRefs),
+    compileEvidenceRefs: uniqueStrings(compileEvidenceRefs),
+    symbolEvidenceRefs: uniqueStrings(symbolEvidenceRefs),
+    partialArtifactReplacement,
+    partialModule: partialArtifactReplacement,
+    label: fallbackLabel,
+    selectedArtifactKind: uniqueStrings(selectedArtifactKinds)[0] ?? null,
+    requestedArtifactKind: uniqueStrings(requestedArtifactKinds)[0] ?? null,
+  };
+}
+
+export function summarizeGpuHmrSourceProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_source_proof=missing';
+  const state = proof.resultState ?? 'unproven';
+  const compile = proof.compileProven ? 'compile=proven' : 'compile=unproven';
+  const symbol = proof.symbolBindingProven ? 'symbol=proven' : 'symbol=unproven';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const refs = Array.isArray(proof.evidenceRefs) ? ` evidence_refs=${proof.evidenceRefs.length}` : '';
+  return `gpu_source_proof=${state} ${compile} ${symbol}${reason}${refs}`;
 }
 
 function fissionReportPassIntegrity(metadata) {

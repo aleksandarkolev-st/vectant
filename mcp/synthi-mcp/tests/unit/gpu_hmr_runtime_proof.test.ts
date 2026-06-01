@@ -21,7 +21,9 @@ import {
   abiProofFromProofArtifacts,
   artifactTransportProofFromProofArtifacts,
   fissionProofFromProofArtifacts,
+  sourceProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
+  summarizeGpuHmrSourceProof,
 } from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
 import {
   epochSwapProofFromRuntimeEvidence,
@@ -296,6 +298,90 @@ function acceptedArtifactTransportProof() {
     evidenceRefs: ["worker-log:artifact_transport:sha256:abc"],
     degradedState: null,
     degradedReason: null,
+  };
+}
+
+function sourceProofArtifactRecord({
+  artifactHash = "a".repeat(64),
+  compilerHash = "b".repeat(64),
+  symbolHash = "c".repeat(64),
+  symbolBound = true,
+  artifactBytes = 128,
+  compileProvenance = {},
+} = {}) {
+  const artifactId = `artifact:sha256:${artifactHash}`;
+  const artifactEvidenceId = `evidence:device-artifact:${artifactHash}`;
+  const compilerEvidenceId = `evidence:device-compiler:${compilerHash}`;
+  const symbolEvidenceId = `evidence:device-symbols:${symbolHash}`;
+  return {
+    proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+    artifact: {
+      proofId: "proof:gpu-hmr:source",
+      evidenceRefs: [
+        {
+          kind: "device-artifact",
+          evidenceId: artifactEvidenceId,
+          contentHash: `sha256:${artifactHash}`,
+          artifactUri: artifactId,
+          metadata: {
+            artifactBytes,
+            partialModule: true,
+            selectedArtifactKind: "partial_device_region",
+            requestedArtifactKind: "partial_device_region",
+          },
+        },
+        {
+          kind: "device-compiler-output",
+          evidenceId: compilerEvidenceId,
+          contentHash: `sha256:${compilerHash}`,
+          metadata: {
+            compilerElapsedMs: 12,
+            stderrBytes: 0,
+            compileProvenance: {
+              compilerExecutable: "/toolchain/device-compiler",
+              compilerIdentity: "compiler-identity",
+              deviceCompiler: "device-compiler",
+              gpuVendor: "generic-vendor",
+              gpuArch: ["generic-arch"],
+              targetTriple: "generic-vendor:generic-arch",
+              sdkVersion: "sdk:version",
+              sourceFilename: "src/device.kernel",
+              compileCommandHash: "compile-command-hash",
+              dependencyHash: "dependency-hash",
+              dependencyMethod: "dependency-metadata",
+              artifactCacheKey: "artifact-cache-key",
+              ...compileProvenance,
+            },
+          },
+        },
+        {
+          kind: "device-symbol-set",
+          evidenceId: symbolEvidenceId,
+          contentHash: `sha256:${symbolHash}`,
+          artifactUri: artifactId,
+          metadata: {
+            targetSymbols: ["device_kernel"],
+            artifactExportedSymbols: ["device_kernel_export"],
+            symbolBound,
+          },
+        },
+      ],
+      stageResults: [
+        {
+          stageId: "device-compile",
+          status: "passed",
+          outputArtifactIds: [artifactId],
+          evidenceRefs: [artifactEvidenceId, compilerEvidenceId],
+        },
+        {
+          stageId: "symbol-binding",
+          status: symbolBound ? "passed" : "blocked",
+          outputArtifactIds: symbolBound ? [artifactId] : [],
+          evidenceRefs: [symbolEvidenceId],
+          degradedReason: symbolBound ? null : "expected_device_symbols_not_bound",
+        },
+      ],
+    },
   };
 }
 
@@ -1149,6 +1235,44 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.layoutSizeAlignmentVerified).toBe(false);
     expect(proof.acceptedExtractorProvenanceObserved).toBe(false);
     expect(proof.evidenceRefs).toEqual(["evidence:device-abi-metadata:abc"]);
+  });
+
+  it("proves source compile and symbol binding only from linked proof artifact evidence", () => {
+    const proof = sourceProofFromProofArtifacts([sourceProofArtifactRecord()]);
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.compileProven).toBe(true);
+    expect(proof.symbolBindingProven).toBe(true);
+    expect(proof.partialArtifactReplacement).toBe(true);
+    expect(proof.compileEvidenceRefs).toEqual([
+      `evidence:device-artifact:${"a".repeat(64)}`,
+      `evidence:device-compiler:${"b".repeat(64)}`,
+    ]);
+    expect(proof.symbolEvidenceRefs).toEqual([`evidence:device-symbols:${"c".repeat(64)}`]);
+    expect(summarizeGpuHmrSourceProof(proof)).toContain("gpu_source_proof=gpu-hmr-symbol-bound");
+  });
+
+  it("keeps source proof at compile when symbol binding evidence is not proven", () => {
+    const proof = sourceProofFromProofArtifacts([sourceProofArtifactRecord({ symbolBound: false })]);
+
+    expect(proof.resultState).toBe("gpu-hmr-compile-proven");
+    expect(proof.compileProven).toBe(true);
+    expect(proof.symbolBindingProven).toBe(false);
+    expect(proof.degradedReason).toBe("device_symbol_evidence_unverified");
+  });
+
+  it("does not prove source compile from label-only telemetry or incomplete compiler provenance", () => {
+    const proof = sourceProofFromProofArtifacts([
+      sourceProofArtifactRecord({
+        compileProvenance: { compilerIdentity: "" },
+      }),
+    ], { resultState: "gpu-hmr-symbol-bound", label: "gpu-hmr-partial" });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.compileProven).toBe(false);
+    expect(proof.symbolBindingProven).toBe(false);
+    expect(proof.label).toBe("gpu-hmr-partial");
+    expect(proof.degradedReason).toBe("device_compiler_evidence_unverified");
   });
 
   it("proves ABI from artifact metadata only with layout proof and accepted extractor evidence", () => {
