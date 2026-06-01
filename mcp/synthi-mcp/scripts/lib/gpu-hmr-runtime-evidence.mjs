@@ -784,6 +784,16 @@ function launchBoundaryRecord(line) {
   };
 }
 
+function dispatchBoundaryRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    runtimeSession: fields.runtime_session ?? null,
+    dispatch: fields.dispatch ?? null,
+    dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
+  };
+}
+
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const launchBoundaryRecords = (Array.isArray(lines) ? lines : [])
@@ -793,6 +803,18 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       typeof record.runtimeSession === 'string'
       && record.runtimeSession.trim()
       && Number.isFinite(record.generation)
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
+  const dispatchBoundaryRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\bsynthi_gpu_launch\b/i.test(String(line ?? '')))
+    .map(dispatchBoundaryRecord)
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && String(record.dispatch ?? '').trim().toLowerCase() === 'ok'
+      && typeof record.dispatchTableEntryId === 'string'
+      && record.dispatchTableEntryId.trim()
+      && record.dispatchTableEntryId !== 'none'
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
   const rawRecords = (Array.isArray(lines) ? lines : [])
@@ -816,6 +838,10 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       launchRecord.runtimeSession === record.runtimeSession
       && launchRecord.generation === record.generation
     )
+    && dispatchBoundaryRecords.some((dispatchRecord) =>
+      dispatchRecord.runtimeSession === record.runtimeSession
+      && dispatchRecord.dispatchTableEntryId === record.runtimeDispatchTableEntryId
+    )
   );
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
@@ -826,10 +852,17 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         && record.generation === latest.generation
       ) ?? null
     : null;
+  const matchingDispatchBoundary = latest
+    ? dispatchBoundaryRecords.find((record) =>
+        record.runtimeSession === latest.runtimeSession
+        && record.dispatchTableEntryId === latest.runtimeDispatchTableEntryId
+      ) ?? null
+    : null;
   const evidenceRefs = latest
     ? [
         `worker-log:original_host_path:${latest.hostPathId}:${latest.generation}`,
         `worker-log:launch_arg_provenance:${latest.runtimeSession}:${latest.generation}`,
+        `worker-log:synthi_gpu_launch:${latest.runtimeSession}:${latest.runtimeDispatchTableEntryId}`,
       ]
     : [];
   return {
@@ -837,6 +870,8 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     total_count: records.length,
     launch_boundary_count: launchBoundaryRecords.length,
     matching_launch_boundary_observed: matchingLaunchBoundary !== null,
+    dispatch_boundary_count: dispatchBoundaryRecords.length,
+    matching_dispatch_boundary_observed: matchingDispatchBoundary !== null,
     latest,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
@@ -844,7 +879,11 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     runtime_session_consistent: runtimeSessionConsistent,
     attached_to_original_host_path: latest !== null,
     dispatch_boundary_observed: latest?.dispatchBoundaryObserved === true,
-    runtime_evidence_observed: latest !== null && runtimeSessionConsistent && matchingLaunchBoundary !== null,
+    runtime_evidence_observed:
+      latest !== null
+      && runtimeSessionConsistent
+      && matchingLaunchBoundary !== null
+      && matchingDispatchBoundary !== null,
     dispatch_entry_runtime_verified: latest?.dispatchEntryRuntimeVerified === true,
     runtime_dispatch_table_entry_id: latest?.runtimeDispatchTableEntryId ?? null,
     evidence_refs: evidenceRefs,
