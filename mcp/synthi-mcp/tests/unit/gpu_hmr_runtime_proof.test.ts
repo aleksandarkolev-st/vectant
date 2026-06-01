@@ -229,6 +229,8 @@ function deterministicOutputOracle({
   artifactId = TEST_ARTIFACT_ID,
 } = {}) {
   return {
+    oracleId: "oracle:required:test-output",
+    requiredOracleId: "oracle:required:test-output",
     kind: "sentinel_buffer_value",
     producer: "deterministic_probe",
     expected: "expected-sentinel",
@@ -712,6 +714,40 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(reportedFailure.outputOracle.reportedPassed).toBe(false);
   });
 
+  it("does not prove output without a bound oracle contract id", () => {
+    const { oracleId: _oracleId, requiredOracleId: _requiredOracleId, ...oracleWithoutId } =
+      deterministicOutputOracle();
+    const missingId = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: oracleWithoutId,
+      visualFrameObserved: true,
+    });
+
+    expect(missingId.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(missingId.degradedReason).toBe("output_oracle_contract_id_missing");
+    expect(missingId.outputOracle.contractIdObserved).toBe(false);
+
+    const mismatchedRequiredId = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        oracleId: "oracle:required:observed",
+        requiredOracleId: "oracle:required:expected",
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(mismatchedRequiredId.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(mismatchedRequiredId.degradedReason).toBe("output_oracle_contract_mismatch");
+    expect(mismatchedRequiredId.outputOracle.requiredContractMatched).toBe(false);
+  });
+
   it("blocks render output proof when required visual evidence is missing", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
@@ -938,6 +974,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evidence.total_count).toBe(2);
     expect(evidence.matched_count).toBe(1);
+    expect(evidence.output_oracle?.oracleId).toBe("probe.expected");
     expect(evidence.output_oracle?.actual).toBe("sha256:def");
     expect(evidence.output_oracle?.runtimeSession).toBe("pid1");
     expect(evidence.evidence_refs).toEqual(["worker-log:output_oracle:probe.expected"]);

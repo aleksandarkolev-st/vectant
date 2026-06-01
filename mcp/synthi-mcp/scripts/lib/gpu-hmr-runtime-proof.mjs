@@ -981,6 +981,25 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     : {};
   const hasExpected = Object.prototype.hasOwnProperty.call(rawOracle, 'expected');
   const hasActual = Object.prototype.hasOwnProperty.call(rawOracle, 'actual');
+  const oracleId = stringField(
+    rawOracle.oracleId,
+    rawOracle.oracle_id,
+    rawOracle.id,
+    rawOracle.editContractId,
+    rawOracle.edit_contract_id,
+  );
+  const requiredOracleId = stringField(
+    rawOracle.requiredOracleId,
+    rawOracle.required_oracle_id,
+    rawOracle.requiredOracle,
+    rawOracle.required_oracle,
+    observation.requiredOracleId,
+    observation.required_oracle_id,
+  );
+  const oracleContractIdObserved = oracleId !== null;
+  const oracleRequiredContractMatched =
+    requiredOracleId === null
+    || (oracleId !== null && oracleId === requiredOracleId);
   const oracleReportedPassed = oraclePassedValue(rawOracle);
   const oraclePassStatusObserved = oracleReportedPassed !== null;
   const oraclePassStatusPassed = oracleReportedPassed === true;
@@ -1076,6 +1095,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleReadbackAfterDispatch
     && probeContractComplete
     && oracleValuesCompatible
+    && oracleContractIdObserved
+    && oracleRequiredContractMatched
     && oraclePassStatusPassed
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
@@ -1097,6 +1118,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     artifactMatchesDispatch: oracleArtifactMatchesDispatch,
     dispatchArtifactIds,
     valuesCompatible: oracleValuesCompatible,
+    oracleId,
+    requiredOracleId,
+    contractIdObserved: oracleContractIdObserved,
+    requiredContractMatched: oracleRequiredContractMatched,
     passStatusObserved: oraclePassStatusObserved,
     reportedPassed: oracleReportedPassed,
     kind: oracleKind,
@@ -1205,13 +1230,17 @@ export function classifyGpuHmrOutputProof(observation = {}) {
                     ? 'output_oracle_precedes_dispatch'
                     : oraclePayloadOtherwisePassed && !probeContractComplete
                       ? 'output_oracle_probe_contract_missing'
-                      : oraclePayloadOtherwisePassed && !oraclePassStatusObserved
-                        ? 'output_oracle_pass_status_missing'
-                        : oraclePayloadOtherwisePassed && !oraclePassStatusPassed
-                          ? 'output_oracle_reported_failed'
-                          : visualFrameObserved
-                            ? 'visual_frame_without_deterministic_output_oracle'
-                            : 'output_oracle_not_collected';
+                      : oraclePayloadOtherwisePassed && !oracleContractIdObserved
+                        ? 'output_oracle_contract_id_missing'
+                        : oraclePayloadOtherwisePassed && !oracleRequiredContractMatched
+                          ? 'output_oracle_contract_mismatch'
+                          : oraclePayloadOtherwisePassed && !oraclePassStatusObserved
+                            ? 'output_oracle_pass_status_missing'
+                            : oraclePayloadOtherwisePassed && !oraclePassStatusPassed
+                              ? 'output_oracle_reported_failed'
+                              : visualFrameObserved
+                                ? 'visual_frame_without_deterministic_output_oracle'
+                                : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

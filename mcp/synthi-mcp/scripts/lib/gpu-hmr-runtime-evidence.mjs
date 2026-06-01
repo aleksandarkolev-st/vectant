@@ -1010,6 +1010,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     tolerance_valid: valueCompatibility.toleranceValid,
     output_oracle: latest
       ? {
+          oracleId: latest.oracleId,
           kind: latest.kind,
           producer: latest.producer,
           expected: latest.expected,

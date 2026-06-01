@@ -2114,6 +2114,18 @@ function stableJson(value) {
   ).join(',')}}`;
 }
 
+function requiredOracleIdFromFissionProof(proof) {
+  const contracts = [
+    ...(Array.isArray(proof?.selectedIslandContracts) ? proof.selectedIslandContracts : []),
+    ...(proof?.selectedIslandContract ? [proof.selectedIslandContract] : []),
+  ];
+  for (const contract of contracts) {
+    const id = String(contract?.requiredOracleId ?? contract?.outputOracleContract?.requiredOracleId ?? '').trim();
+    if (id) return id;
+  }
+  return null;
+}
+
 function deterministicOutputProbeContract(input) {
   const mode = String(input.mode ?? 'fixed_validation_probe').trim() || 'fixed_validation_probe';
   const config = {
@@ -2133,10 +2145,12 @@ function deterministicOutputProbeContract(input) {
     deterministicInputHash: input.deterministicInputHash ?? null,
   };
   const configHash = `sha256:${createHash('sha256').update(stableJson(config)).digest('hex')}`;
+  const oracleId = String(input.oracleId ?? input.requiredOracleId ?? '').trim() || `oracle:required:${configHash}`;
   return {
     mode,
     config,
     configHash,
+    oracleId,
   };
 }
 
@@ -2154,6 +2168,8 @@ async function writeRuntimeOutputOracleEvidenceArtifact(input) {
     schemaVersion: 'synthi.gpu.hmr.output_oracle_evidence.v1',
     phase: input.phase ?? null,
     name: input.name ?? null,
+    oracleId: input.oracleId ?? null,
+    requiredOracleId: input.requiredOracleId ?? null,
     kind: input.kind ?? null,
     producer: input.producer ?? null,
     expected: input.expected ?? null,
@@ -2941,7 +2957,9 @@ async function phaseFlow(ctx) {
   const inwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const inwardRuntimeSessionId = inwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
   const inwardArtifactId = runtimeArtifactIdForOutputOracle(inwardDispatchProof);
+  const inwardRequiredOracleId = requiredOracleIdFromFissionProof(baselineFissionProof);
   const inwardProbeContract = deterministicOutputProbeContract({
+    requiredOracleId: inwardRequiredOracleId,
     outputTargetId: inwardOutputTargetId,
     expected: 'inward',
     readbackSource: 'worker-log-runtime-readback',
@@ -2949,6 +2967,8 @@ async function phaseFlow(ctx) {
   const inwardOutputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
     phase: 'FLOW',
     name: 'inward output proof',
+    oracleId: inwardProbeContract.oracleId,
+    requiredOracleId: inwardRequiredOracleId ?? inwardProbeContract.oracleId,
     kind: 'edit_contract',
     producer: 'runtime_readback',
     expected: 'inward',
@@ -2970,6 +2990,8 @@ async function phaseFlow(ctx) {
     deterministicOracleProvided: true,
     deterministicOraclePassed: inwardTrend.matched,
     outputOracle: {
+      oracleId: inwardProbeContract.oracleId,
+      requiredOracleId: inwardRequiredOracleId ?? inwardProbeContract.oracleId,
       kind: 'edit_contract',
       producer: 'runtime_readback',
       expected: 'inward',
@@ -3110,7 +3132,9 @@ async function phaseFlow(ctx) {
   const outwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const outwardRuntimeSessionId = outwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
   const outwardArtifactId = runtimeArtifactIdForOutputOracle(outwardDispatchProof);
+  const outwardRequiredOracleId = requiredOracleIdFromFissionProof(flipFissionProof);
   const outwardProbeContract = deterministicOutputProbeContract({
+    requiredOracleId: outwardRequiredOracleId,
     outputTargetId: outwardOutputTargetId,
     expected: 'outward',
     readbackSource: 'worker-log-runtime-readback',
@@ -3118,6 +3142,8 @@ async function phaseFlow(ctx) {
   const outwardOutputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
     phase: 'FLOW',
     name: 'outward output proof',
+    oracleId: outwardProbeContract.oracleId,
+    requiredOracleId: outwardRequiredOracleId ?? outwardProbeContract.oracleId,
     kind: 'edit_contract',
     producer: 'runtime_readback',
     expected: 'outward',
@@ -3139,6 +3165,8 @@ async function phaseFlow(ctx) {
     deterministicOracleProvided: true,
     deterministicOraclePassed: trend.matched,
     outputOracle: {
+      oracleId: outwardProbeContract.oracleId,
+      requiredOracleId: outwardRequiredOracleId ?? outwardProbeContract.oracleId,
       kind: 'edit_contract',
       producer: 'runtime_readback',
       expected: 'outward',
