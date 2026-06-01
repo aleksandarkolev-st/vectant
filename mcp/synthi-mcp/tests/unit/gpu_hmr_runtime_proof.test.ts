@@ -1809,6 +1809,34 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("epoch_stream_ordering_not_collected");
   });
 
+  it("does not prove epoch stream ordering when stream counters do not cover the observed stream", () => {
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: epochGenerationGraph({
+        capsuleMetadata: true,
+        retirementState: "retired",
+      }),
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["untracked-stream"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:stream-counter-mismatch"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_stream_epoch_counter_unverified");
+    expect(proof.streamEpochCounterIds).toEqual(["default"]);
+    expect(proof.streamEpochCountersCoverScope).toBe(false);
+  });
+
   it("proves epoch swap from runtime publish and retire evidence", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
       `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
@@ -2014,7 +2042,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("accepts no-stream epoch ordering only when no affected streams are explicitly recorded", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
-      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=none stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000`,
+      `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 ${epochCapsuleFields({ streamEpochCounters: { none: 3 } })} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=none stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000`,
     ]);
 
     expect(evidence.stream_scope_supported).toBe(true);

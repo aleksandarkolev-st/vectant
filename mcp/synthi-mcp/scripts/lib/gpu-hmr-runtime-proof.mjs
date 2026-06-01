@@ -268,6 +268,24 @@ function streamScopeObserved(streamScope, streamIds) {
   return streamIds.length > 0 && !streamIds.includes('none');
 }
 
+function streamEpochCounterEntries(counters) {
+  if (!counters || typeof counters !== 'object' || Array.isArray(counters)) return [];
+  return Object.entries(counters)
+    .map(([streamId, epoch]) => [String(streamId).trim(), integerValue(epoch)])
+    .filter(([streamId, epoch]) => streamId && epoch !== null && epoch >= 0);
+}
+
+function streamEpochCountersCoverScope(streamScope, streamIds, counters) {
+  const counterIds = new Set(streamEpochCounterEntries(counters).map(([streamId]) => streamId));
+  if (streamScope === 'none') {
+    return streamIds.length === 1 && streamIds[0] === 'none' && counterIds.has('none');
+  }
+  if (streamScope !== 'stream' && streamScope !== 'affected') return false;
+  return streamIds.length > 0
+    && !streamIds.includes('none')
+    && streamIds.every((streamId) => counterIds.has(streamId));
+}
+
 function integerValue(value) {
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value !== 'string') return null;
@@ -417,10 +435,8 @@ function epochGenerationGraphStatus(graph) {
   const changedSymbols = observedEvidenceList(latest.changedSymbols ?? latest.changed_symbols ?? publicationEdge?.changedSymbols ?? publicationEdge?.changed_symbols);
   const functionHandleIds = observedEvidenceList(latest.functionHandleIds ?? latest.function_handle_ids ?? publicationEdge?.functionHandleIds ?? publicationEdge?.function_handle_ids);
   const streamEpochCounters = latest.streamEpochCounters ?? latest.stream_epoch_counters ?? publicationEdge?.streamEpochCounters ?? publicationEdge?.stream_epoch_counters;
-  const streamEpochCounterCount =
-    streamEpochCounters && typeof streamEpochCounters === 'object'
-      ? Object.keys(streamEpochCounters).length
-      : 0;
+  const streamEpochCounterIds = streamEpochCounterEntries(streamEpochCounters).map(([streamId]) => streamId);
+  const streamEpochCountersValid = streamEpochCounterIds.length > 0;
   const capsuleMetadataObserved =
     /^artifact:sha256:[0-9a-f]{64}$/i.test(oldArtifactId)
     && /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
@@ -432,7 +448,7 @@ function epochGenerationGraphStatus(graph) {
     && /^sha256:[0-9a-f]{64}$/i.test(proofHash)
     && changedSymbols.length > 0
     && functionHandleIds.length > 0
-    && streamEpochCounterCount > 0;
+    && streamEpochCountersValid;
   const retirementState = typeof graph.retirementState === 'string'
     ? graph.retirementState.trim()
     : typeof graph.retirement_state === 'string'
@@ -512,6 +528,8 @@ function epochGenerationGraphStatus(graph) {
     dependencyClosureHash,
     proofHash,
     streamEpochCounters,
+    streamEpochCounterIds,
+    streamEpochCountersValid,
     runtimeSessionIds: graphRuntimeSessionIds,
     runtimeSessionConsistent,
     retirementState,
@@ -1752,7 +1770,13 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const streamScopeEvidenceObserved = streamScopeObserved(streamScope, streamIds);
   const streamOrderingRequested =
     observation.streamOrderingRequested === true || observation.streamOrderingProven === true;
-  const streamOrderingProven = streamOrderingRequested && streamScopeEvidenceObserved;
+  const streamEpochCountersMatchScope = streamEpochCountersCoverScope(
+    streamScope,
+    streamIds,
+    epochGraph.streamEpochCounters,
+  );
+  const streamOrderingProven =
+    streamOrderingRequested && streamScopeEvidenceObserved && streamEpochCountersMatchScope;
   const retirementTracked = observation.retirementTracked === true;
   const oldGenerationRetired = observation.oldGenerationRetired === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
@@ -1796,6 +1820,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       streamOrderingProven: true,
       streamScope,
       streamIds,
+      streamEpochCounterIds: epochGraph.streamEpochCounterIds,
+      streamEpochCountersCoverScope: true,
       retirementTracked: true,
       oldGenerationRetired: true,
       evidenceRefs,
@@ -1839,6 +1865,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       streamOrderingProven: true,
       streamScope,
       streamIds,
+      streamEpochCounterIds: epochGraph.streamEpochCounterIds,
+      streamEpochCountersCoverScope: true,
       retirementTracked: true,
       oldGenerationRetired: false,
       evidenceRefs,
@@ -1873,7 +1901,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
                     ? 'epoch_evidence_refs_not_collected'
                     : !capsuleMetadataObserved
                       ? 'epoch_capsule_metadata_not_collected'
-                      : 'epoch_retirement_tracking_not_collected',
+                      : !streamEpochCountersMatchScope
+                        ? 'epoch_stream_epoch_counter_unverified'
+                        : 'epoch_retirement_tracking_not_collected',
     published,
     runtimeSessionObserved,
     runtimeSessionIds,
@@ -1894,6 +1924,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     streamOrderingProven,
     streamScope,
     streamIds,
+    streamEpochCounterIds: epochGraph.streamEpochCounterIds,
+    streamEpochCountersCoverScope: streamEpochCountersMatchScope,
     retirementTracked,
     oldGenerationRetired,
     evidenceRefs,
