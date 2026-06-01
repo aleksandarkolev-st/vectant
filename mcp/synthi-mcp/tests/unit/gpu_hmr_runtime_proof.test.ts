@@ -244,17 +244,30 @@ function deterministicOutputOracle({
   };
 }
 
+function preservedHostIdentityRefs() {
+  return [
+    "worker-log:host_identity:runner_process",
+    "worker-log:host_identity:core_state",
+    "worker-log:host_identity:stream",
+  ];
+}
+
+function preservedHostSnapshotRefs() {
+  return [
+    "worker-log:host_identity_snapshot:runtime-session:test:runner_process:2->3",
+    "worker-log:host_identity_snapshot:runtime-session:test:core_state:2->3",
+    "worker-log:host_identity_snapshot:runtime-session:test:stream:2->3",
+  ];
+}
+
 function preservedHostProof() {
   return classifyGpuHmrHostPreservationProof({
     identityChecksPassed: true,
     identitySnapshotObserved: true,
     identitySnapshotLineageObserved: true,
     requiredIdentityRolesObserved: true,
-    identityEvidenceRefs: [
-      "worker-log:host_identity:runner_process",
-      "worker-log:host_identity:core_state",
-      "worker-log:host_identity:stream",
-    ],
+    identityEvidenceRefs: preservedHostIdentityRefs(),
+    identitySnapshotEvidenceRefs: preservedHostSnapshotRefs(),
   });
 }
 
@@ -1113,20 +1126,28 @@ describe("GPU HMR runtime output proof classification", () => {
       identitySnapshotObserved: true,
       identitySnapshotLineageObserved: true,
       requiredIdentityRolesObserved: true,
-      identityEvidenceRefs: [
-        "worker-log:host_identity:runner_process",
-        "worker-log:host_identity:core_state",
-        "worker-log:host_identity:stream",
-      ],
+      identityEvidenceRefs: preservedHostIdentityRefs(),
+      identitySnapshotEvidenceRefs: preservedHostSnapshotRefs(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
-    expect(proof.runtimeIdentityEvidenceRefs).toEqual([
-      "worker-log:host_identity:runner_process",
-      "worker-log:host_identity:core_state",
-      "worker-log:host_identity:stream",
-    ]);
+    expect(proof.runtimeIdentityEvidenceRefs).toEqual(preservedHostIdentityRefs());
+    expect(proof.runtimeIdentitySnapshotEvidenceRefs).toEqual(preservedHostSnapshotRefs());
+  });
+
+  it("does not prove host preservation from role refs without runtime snapshot evidence refs", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+      identitySnapshotObserved: true,
+      identitySnapshotLineageObserved: true,
+      requiredIdentityRolesObserved: true,
+      identityEvidenceRefs: preservedHostIdentityRefs(),
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_snapshot_evidence_refs_not_collected");
+    expect(proof.runtimeIdentitySnapshotEvidenceRefs).toEqual([]);
   });
 
   it("does not prove host preservation from identity booleans without evidence refs", () => {
@@ -1157,11 +1178,7 @@ describe("GPU HMR runtime output proof classification", () => {
       identityChecksPassed: true,
       identitySnapshotObserved: true,
       requiredIdentityRolesObserved: true,
-      identityEvidenceRefs: [
-        "worker-log:host_identity:runner_process",
-        "worker-log:host_identity:core_state",
-        "worker-log:host_identity:stream",
-      ],
+      identityEvidenceRefs: preservedHostIdentityRefs(),
     });
 
     expect(proof.resultState).toBeNull();
@@ -2308,6 +2325,12 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.identity_snapshot_lineage_observed).toBe(true);
     expect(evidence.preserved_roles).toEqual(["core_state", "renderer", "runner_process", "stream"]);
     expect(evidence.preserved_role_categories).toEqual(["host_state", "runner_process", "runtime_resource"]);
+    expect(evidence.snapshot_evidence_refs).toEqual([
+      "worker-log:host_identity_snapshot:pid1:core_state:2->3",
+      "worker-log:host_identity_snapshot:pid1:renderer:2->3",
+      "worker-log:host_identity_snapshot:pid1:runner_process:2->3",
+      "worker-log:host_identity_snapshot:pid1:stream:2->3",
+    ]);
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.runtimeIdentityEvidenceRefs).toEqual([
@@ -2315,6 +2338,12 @@ describe("GPU HMR runtime output proof classification", () => {
       "worker-log:host_identity:renderer",
       "worker-log:host_identity:runner_process",
       "worker-log:host_identity:stream",
+    ]);
+    expect(proof.runtimeIdentitySnapshotEvidenceRefs).toEqual([
+      "worker-log:host_identity_snapshot:pid1:core_state:2->3",
+      "worker-log:host_identity_snapshot:pid1:renderer:2->3",
+      "worker-log:host_identity_snapshot:pid1:runner_process:2->3",
+      "worker-log:host_identity_snapshot:pid1:stream:2->3",
     ]);
   });
 
@@ -2359,6 +2388,11 @@ describe("GPU HMR runtime output proof classification", () => {
       "stream",
     ]);
     expect(evidence.identity_checks_passed).toBe(true);
+    expect(evidence.snapshot_evidence_refs).toEqual([
+      "worker-log:host_identity_snapshot:pid1:core_state:2->3",
+      "worker-log:host_identity_snapshot:pid1:runner_process:2->3",
+      "worker-log:host_identity_snapshot:pid1:stream:2->3",
+    ]);
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
   });
 
@@ -2378,6 +2412,11 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.identity_checks_passed).toBe(true);
     expect(evidence.lineage_identity_roles_missing).toEqual([]);
     expect(evidence.optional_lineage_identity_roles_missing).toEqual(["launch_kernel_abc123"]);
+    expect(evidence.snapshot_evidence_refs).toEqual([
+      "worker-log:host_identity_snapshot:pid1:hmr_boundary_state:2->3",
+      "worker-log:host_identity_snapshot:pid1:runner_process:2->3",
+      "worker-log:host_identity_snapshot:pid1:runtime_context:2->3",
+    ]);
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
   });
 
@@ -3293,6 +3332,9 @@ describe("GPU HMR runtime output proof classification", () => {
       runtimeEvidence: {
         hostIdentitySnapshots: {
           evidence_refs: ["worker-log:host_identity:renderer_state"],
+          snapshot_evidence_refs: [
+            "worker-log:host_identity_snapshot:test:renderer_state:2->3",
+          ],
           lines: [
             "[gpu-runtime-boundary] host_identity role=renderer_state ptr=0x1000 generation=3 runtime_session=test",
           ],
@@ -3347,6 +3389,12 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:artifact_transport:sha256:abc");
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:core_state");
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:renderer_state");
+    expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain(
+      "worker-log:host_identity_snapshot:runtime-session:test:core_state:2->3",
+    );
+    expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain(
+      "worker-log:host_identity_snapshot:test:renderer_state:2->3",
+    );
     expect(artifact.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
     expect(artifact.runtimeEvidence.hostIdentitySnapshots.lines[0]).toContain("renderer_state");
     expect(artifact.validationContextHash).toMatch(/^sha256:/);
@@ -3355,6 +3403,9 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
     expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
       "worker-log:host_identity:renderer_state",
+    ]);
+    expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.snapshot_evidence_refs).toEqual([
+      "worker-log:host_identity_snapshot:test:renderer_state:2->3",
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
   });

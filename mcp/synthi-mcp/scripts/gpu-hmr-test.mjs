@@ -4042,6 +4042,9 @@ async function selfCheck() {
     identitySnapshotLineageObserved: true,
     requiredIdentityRolesObserved: true,
     identityEvidenceRefs: ['worker-log:host_identity:runner_process:session-1'],
+    identitySnapshotEvidenceRefs: [
+      'worker-log:host_identity_snapshot:session-1:runner_process:1->2',
+    ],
   };
   const selfCheckSourceProof = {
     schemaVersion: 'synthi.gpu.hmr.source_proof.v1',

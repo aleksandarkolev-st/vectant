@@ -53,6 +53,14 @@ function tokenOrNull(value) {
   return trimmed && trimmed.toLowerCase() !== 'none' ? trimmed : null;
 }
 
+function evidenceRefToken(value) {
+  const token = String(value ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return token || 'unknown';
+}
+
 function keyValueTokenMap(value) {
   return commaList(value).reduce((out, item) => {
     const index = item.lastIndexOf(':');
@@ -540,6 +548,14 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     && preservedRoles.length > 0
     && changedRoles.length === 0
     && lineageMissingRoles.length === 0;
+  const snapshotEvidenceRefs =
+    expectedGenerationLineageObserved
+    && runtimeSessionConsistent
+    && runtimeSessionIds.length === 1
+      ? preservedRoles.map((role) =>
+        `worker-log:host_identity_snapshot:${evidenceRefToken(runtimeSessionIds[0])}:${evidenceRefToken(role)}:${expectedGenerationLineage.previousGeneration}->${expectedGenerationLineage.activeGeneration}`
+      )
+      : [];
 
   return {
     raw_count: rawRecords.length,
@@ -572,6 +588,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
       && preservedRoles.length > 0
       && requiredRolesObserved,
     evidence_refs: preservedRoles.map((role) => `worker-log:host_identity:${role}`),
+    snapshot_evidence_refs: snapshotEvidenceRefs,
     lines: records.map((record) => record.line).slice(-20),
   };
 }
@@ -581,6 +598,9 @@ export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}
   const externalIdentityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const externalIdentitySnapshotEvidenceRefs = Array.isArray(observation.identitySnapshotEvidenceRefs)
+    ? observation.identitySnapshotEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+    : [];
   const proof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: observation.hostRestartObserved === true,
     hostReplacementObserved: observation.hostReplacementObserved === true,
@@ -589,6 +609,10 @@ export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}
     identitySnapshotLineageObserved: evidence.identity_snapshot_lineage_observed,
     requiredIdentityRolesObserved: evidence.required_roles_observed,
     identityEvidenceRefs: [...evidence.evidence_refs, ...externalIdentityEvidenceRefs],
+    identitySnapshotEvidenceRefs: [
+      ...evidence.snapshot_evidence_refs,
+      ...externalIdentitySnapshotEvidenceRefs,
+    ],
   });
   return { evidence, proof };
 }

@@ -545,6 +545,10 @@ function runtimeHostIdentityEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:host_identity:/i.test(ref));
 }
 
+function runtimeHostIdentitySnapshotEvidenceRefs(refs) {
+  return compactStringList(refs).filter((ref) => /^worker-log:host_identity_snapshot:/i.test(ref));
+}
+
 function runtimeLaunchArgProvenanceEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:launch_arg_provenance:/i.test(ref));
 }
@@ -562,7 +566,8 @@ function hostPreservationProofUsable(proof) {
     && proof.identitySnapshotObserved === true
     && proof.identitySnapshotLineageObserved === true
     && proof.requiredIdentityRolesObserved === true
-    && runtimeHostIdentityEvidenceRefs(proof.identityEvidenceRefs).length > 0;
+    && runtimeHostIdentityEvidenceRefs(proof.identityEvidenceRefs).length > 0
+    && runtimeHostIdentitySnapshotEvidenceRefs(proof.identitySnapshotEvidenceRefs).length > 0;
 }
 
 function originalHostPathProofUsable(proof) {
@@ -2187,9 +2192,16 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const identitySnapshotEvidenceRefs = Array.isArray(observation.identitySnapshotEvidenceRefs)
+    ? observation.identitySnapshotEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+    : [];
   const identityEvidenceObserved = identityEvidenceRefs.length > 0;
   const runtimeIdentityEvidenceRefs = runtimeHostIdentityEvidenceRefs(identityEvidenceRefs);
   const runtimeIdentityEvidenceObserved = runtimeIdentityEvidenceRefs.length > 0;
+  const identitySnapshotEvidenceObserved = identitySnapshotEvidenceRefs.length > 0;
+  const runtimeIdentitySnapshotEvidenceRefs =
+    runtimeHostIdentitySnapshotEvidenceRefs(identitySnapshotEvidenceRefs);
+  const runtimeIdentitySnapshotEvidenceObserved = runtimeIdentitySnapshotEvidenceRefs.length > 0;
 
   if (hostReplacementObserved) {
     return {
@@ -2204,6 +2216,10 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       identityEvidenceObserved,
       identityEvidenceRefs,
       runtimeIdentityEvidenceRefs,
+      identitySnapshotEvidenceObserved,
+      identitySnapshotEvidenceRefs,
+      runtimeIdentitySnapshotEvidenceRefs,
+      runtimeIdentitySnapshotEvidenceObserved,
     };
   }
 
@@ -2213,6 +2229,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     && identitySnapshotLineageObserved
     && requiredIdentityRolesObserved
     && runtimeIdentityEvidenceObserved
+    && runtimeIdentitySnapshotEvidenceObserved
   ) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -2226,6 +2243,10 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       identityEvidenceObserved: true,
       identityEvidenceRefs,
       runtimeIdentityEvidenceRefs,
+      identitySnapshotEvidenceObserved: true,
+      identitySnapshotEvidenceRefs,
+      runtimeIdentitySnapshotEvidenceRefs,
+      runtimeIdentitySnapshotEvidenceObserved: true,
     };
   }
 
@@ -2240,9 +2261,11 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
           ? 'host_identity_evidence_refs_not_collected'
           : !identitySnapshotLineageObserved
             ? 'host_identity_epoch_lineage_not_collected'
-            : !requiredIdentityRolesObserved
-              ? 'host_identity_required_roles_not_collected'
-              : 'host_identity_checks_not_collected'
+            : !runtimeIdentitySnapshotEvidenceObserved
+              ? 'host_identity_snapshot_evidence_refs_not_collected'
+              : !requiredIdentityRolesObserved
+                ? 'host_identity_required_roles_not_collected'
+                : 'host_identity_checks_not_collected'
       : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
     identitySnapshotObserved,
@@ -2251,6 +2274,10 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     identityEvidenceObserved,
     identityEvidenceRefs,
     runtimeIdentityEvidenceRefs,
+    identitySnapshotEvidenceObserved,
+    identitySnapshotEvidenceRefs,
+    runtimeIdentitySnapshotEvidenceRefs,
+    runtimeIdentitySnapshotEvidenceObserved,
   };
 }
 
