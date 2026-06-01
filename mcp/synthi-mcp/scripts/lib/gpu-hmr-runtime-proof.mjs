@@ -383,11 +383,13 @@ function epochGenerationGraphStatus(graph) {
       reason: 'epoch_generation_graph_not_collected',
       graph: null,
       capsuleMetadataObserved: false,
+      schemaVersionValid: false,
       runtimeSessionIds: [],
       runtimeSessionConsistent: true,
     };
   }
 
+  const schemaVersionValid = graph.schemaVersion === 'synthi.gpu.epoch_graph.v1';
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter((node) => node && typeof node === 'object') : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter((edge) => edge && typeof edge === 'object') : [];
   const nodeGenerations = new Set(nodes.map(epochGraphNodeGeneration).filter((generation) => generation !== null));
@@ -495,6 +497,7 @@ function epochGenerationGraphStatus(graph) {
   const observed = nodes.length > 0 || edges.length > 0;
   const valid =
     observed
+    && schemaVersionValid
     && lineageValid
     && previousGenerationId !== null
     && activeGenerationId !== null
@@ -511,25 +514,27 @@ function epochGenerationGraphStatus(graph) {
     ? null
     : !observed
       ? 'epoch_generation_graph_not_collected'
-      : !runtimeSessionConsistent
-        ? 'epoch_generation_graph_session_unscoped'
-      : !lineageValid
-        ? 'epoch_generation_graph_lineage_invalid'
-        : !nodeIdentitiesValid
-          ? 'epoch_generation_graph_node_invalid'
-        : !nodeGenerations.has(previousGeneration) || !nodeGenerations.has(activeGeneration)
-          ? 'epoch_generation_graph_node_missing'
-          : !edgeClosureValid
-            ? 'epoch_generation_graph_edge_invalid'
-            : !graphAcyclic
-              ? 'epoch_generation_graph_cycle_detected'
-              : !publicationEdgeObserved
-                ? 'epoch_generation_graph_publication_edge_missing'
-                : !retirementStateObserved
-                  ? 'epoch_generation_graph_retirement_state_missing'
-                  : !retirementEdgeObserved
-                    ? 'epoch_generation_graph_retirement_edge_missing'
-                    : 'epoch_generation_graph_invalid';
+      : !schemaVersionValid
+        ? 'epoch_generation_graph_schema_unverified'
+        : !runtimeSessionConsistent
+          ? 'epoch_generation_graph_session_unscoped'
+          : !lineageValid
+            ? 'epoch_generation_graph_lineage_invalid'
+            : !nodeIdentitiesValid
+              ? 'epoch_generation_graph_node_invalid'
+              : !nodeGenerations.has(previousGeneration) || !nodeGenerations.has(activeGeneration)
+                ? 'epoch_generation_graph_node_missing'
+                : !edgeClosureValid
+                  ? 'epoch_generation_graph_edge_invalid'
+                  : !graphAcyclic
+                    ? 'epoch_generation_graph_cycle_detected'
+                    : !publicationEdgeObserved
+                      ? 'epoch_generation_graph_publication_edge_missing'
+                      : !retirementStateObserved
+                        ? 'epoch_generation_graph_retirement_state_missing'
+                        : !retirementEdgeObserved
+                          ? 'epoch_generation_graph_retirement_edge_missing'
+                          : 'epoch_generation_graph_invalid';
 
   return {
     observed,
@@ -539,6 +544,7 @@ function epochGenerationGraphStatus(graph) {
     previousGeneration,
     activeGeneration,
     capsuleMetadataObserved,
+    schemaVersionValid,
     nodeIdentitiesValid,
     edgeClosureValid,
     graphAcyclic,
@@ -2189,6 +2195,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && epochGraph.runtimeSessionConsistent !== false;
   const generationGraphObserved = epochGraph.observed;
   const generationGraphValid = epochGraph.valid;
+  const schemaVersionValid = epochGraph.schemaVersionValid === true;
   const nodeIdentitiesValid = epochGraph.nodeIdentitiesValid === true;
   const edgeClosureValid = epochGraph.edgeClosureValid === true;
   const graphAcyclic = epochGraph.graphAcyclic === true;
@@ -2269,6 +2276,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationGraphObserved: true,
       generationGraphValid: true,
+      schemaVersionValid,
       nodeIdentitiesValid,
       edgeClosureValid,
       graphAcyclic,
@@ -2322,6 +2330,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationGraphObserved: true,
       generationGraphValid: true,
+      schemaVersionValid,
       nodeIdentitiesValid,
       edgeClosureValid,
       graphAcyclic,
@@ -2393,6 +2402,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     runtimeSessionConsistent,
     generationGraphObserved,
     generationGraphValid,
+    schemaVersionValid: epochGraph.schemaVersionValid === true,
     nodeIdentitiesValid,
     edgeClosureValid,
     graphAcyclic,
