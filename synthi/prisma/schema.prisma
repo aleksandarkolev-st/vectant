@@ -97,8 +97,8 @@ model McpConnection {
 
 model McpCallAudit {
   id            String   @id @default(cuid())
-  connectionId  String
-  connection    McpConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connectionId  String?                    // null for unknown-alias audit rows
+  connection    McpConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
   serverName    String
   toolName      String                     // original MCP tool name
   userId        String?

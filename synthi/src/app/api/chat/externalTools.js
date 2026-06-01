@@ -133,7 +133,7 @@ async function writeAudit(row) {
   try {
     await prisma.mcpCallAudit.create({
       data: {
-        connectionId: row.connId || '__unknown__',
+        connectionId: row.connId || null,
         serverName: row.connName || 'unknown',
         toolName: row.toolName || 'unknown',
         userId: row.scope?.userId || null,

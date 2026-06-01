@@ -4,6 +4,7 @@ import { authOptions } from '@/app/auth';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 import { buildExternalTools, isExternalToolName, callExternalTool } from './externalTools.js';
+import { resolveActor } from '@/lib/integrations/session';
 
 const encoder = new TextEncoder();
 
@@ -874,8 +875,19 @@ const streamGeminiWithTools = async ({
     // Built-in tools + user-connected external MCP tools (degrade gracefully).
     // The frontend sends the workspace slug as `workspacePath` (AIChatWindow.jsx:128);
     // buildExternalTools gates workspace tools behind membership (R1-9).
+    //
+    // External-tool ownership keys on the Prisma User cuid, but `userId` here is the
+    // OAuth provider id (NextAuth JWT strategy, no PrismaAdapter) and is also used for
+    // collab-server repo paths — so resolve the cuid separately and never reassign it.
+    let mcpUserId = null;
+    try {
+        mcpUserId = (await resolveActor())?.userId || null;
+    } catch {
+        mcpUserId = null;
+    }
+    const extTurnState = { count: 0 };
     const { declarations: extDecls, aliasMap: extAliasMap } =
-        await buildExternalTools({ userId, workspaceSlug: workspacePath || null });
+        await buildExternalTools({ userId: mcpUserId, workspaceSlug: workspacePath || null });
     const tools = [{ functionDeclarations: [...TOOL_DECLARATIONS, ...extDecls] }];
 
     // Build contents array
@@ -1103,7 +1115,7 @@ const streamGeminiWithTools = async ({
                         const extEntry = extAliasMap[name];
                         const label = extEntry ? `${extEntry.connName}:${extEntry.toolName}` : name;
                         await writeEvent({ toolCall: { tool: label, args, status: 'running' } });
-                        const result = await callExternalTool(name, args, extAliasMap, { userId, workspaceSlug: workspacePath || null });
+                        const result = await callExternalTool(name, args, extAliasMap, { userId: mcpUserId, workspaceSlug: workspacePath || null }, extTurnState);
                         await writeEvent({ toolCall: { tool: label, args, status: result?.error ? 'error' : 'done' } });
                         fnResponses.push({ functionResponse: { name, response: result } });
                     } else {
