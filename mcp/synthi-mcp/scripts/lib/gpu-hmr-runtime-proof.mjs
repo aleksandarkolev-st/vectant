@@ -828,7 +828,7 @@ function gpuHmrPostPublicationDecision(stages, fullRuntimeProven) {
       epochPublished,
       quarantineRequired: false,
       rollbackRequired: false,
-      aiBlessingAllowed: true,
+      aiBlessingAllowed: false,
       reason: null,
       blockedStageIds: [],
     };

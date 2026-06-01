@@ -3099,7 +3099,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
     expect(proof.fullRuntimeProven).toBe(true);
     expect(proof.postPublicationDecision.disposition).toBe("accepted");
-    expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(true);
+    expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(false);
   });
 
   it("blocks full runtime proof when required fission verifier evidence is missing", () => {
