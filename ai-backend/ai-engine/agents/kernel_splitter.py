@@ -1165,7 +1165,7 @@ def _compact_source_launch_record(
         "requiredHostArgumentOwners": item.get("args"),
         "form": item.get("form"),
     }
-    snippet = _source_launch_site_snippet(source_files, item.get("site"))
+    snippet = _source_launch_site_snippet(source_files, item.get("site"), context_lines=0)
     if snippet:
         record["sourceSnippet"] = snippet
     return record

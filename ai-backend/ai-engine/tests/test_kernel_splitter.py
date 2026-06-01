@@ -849,7 +849,7 @@ def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
         {
             "render_pass.cpp": (
                 'void setup(){ kernel.set_kernel_function_name("shade_pixels"); }\n'
-                'void draw(){ kernel.launch_asynchronous(BlockW, BlockH, w, h, args, stream); }'
+                'void draw(){ kernel.launch_asynchronous(BlockW, BlockH, w, h, launch_args, stream); }'
             )
         }
     )
