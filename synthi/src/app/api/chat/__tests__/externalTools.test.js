@@ -162,4 +162,29 @@ describe('callExternalTool', () => {
     await callExternalTool('ext_0', {}, aliasMap, { userId: 'u1' }, turnState);
     expect(turnState.count).toBe(1);
   });
+
+  it('returns a structured error and audits when the hub returns an error', async () => {
+    callToolMock.mockResolvedValue({ ok: false, error: { code: 'tool_error', message: 'boom' } });
+    const res = await callExternalTool('ext_0', {}, aliasMap, { userId: 'u1' });
+    expect(res.error).toContain('create_issue');
+    expect(callToolMock).toHaveBeenCalled();
+    expect(auditCreateMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ outcome: 'error', errorCode: 'tool_error' }),
+    }));
+  });
+
+  it('catches a hub exception and returns a structured error (never throws)', async () => {
+    callToolMock.mockRejectedValue(new Error('network blew up'));
+    const res = await callExternalTool('ext_0', {}, aliasMap, { userId: 'u1' });
+    expect(res.error).toBeTruthy();
+    expect(auditCreateMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ outcome: 'error', errorCode: 'protocol_error' }),
+    }));
+  });
+
+  it('returns an empty object (not undefined) when a tool yields no data', async () => {
+    callToolMock.mockResolvedValue({ ok: true, data: undefined });
+    const res = await callExternalTool('ext_0', {}, aliasMap, { userId: 'u1' });
+    expect(res).toEqual({});
+  });
 });

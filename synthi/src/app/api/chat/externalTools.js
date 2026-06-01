@@ -29,7 +29,8 @@ async function mapWithConcurrency(items, limit, fn) {
       results[idx] = await fn(items[idx], idx);
     }
   }
-  const n = Math.max(1, Math.min(limit, items.length));
+  const n = Math.min(limit, items.length);
+  if (n <= 0) return results;
   await Promise.all(Array.from({ length: n }, worker));
   return results;
 }
@@ -201,5 +202,7 @@ export async function callExternalTool(alias, args, aliasMap, scope, turnState) 
   let resultBytes = null;
   try { resultBytes = Buffer.byteLength(JSON.stringify(res.data ?? null)); } catch { /* non-serializable; leave null */ }
   await writeAudit({ ...auditBase, outcome: 'ok', durationMs, resultBytes });
-  return res.data;
+  // Always return a JSON-serializable object for the Gemini functionResponse
+  // (a tool may legitimately return no data).
+  return res.data ?? {};
 }
