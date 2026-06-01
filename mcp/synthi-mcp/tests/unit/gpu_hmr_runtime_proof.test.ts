@@ -2016,6 +2016,89 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selected_island_compile_contract_unverified");
   });
 
+  it("does not prove fission from an unverified inline oracle proposal", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.candidates[0].candidate.requiredOracleId;
+    metadata.candidates[0].candidate.outputOracleProposal = {
+      kind: "dispatch_counter",
+      producer: "deterministic_probe",
+      expectedIncrement: 1,
+      outputTargetId: "dispatch-counter:main",
+      readbackPlan: { syncPoint: "after-dispatch" },
+      sessionIdSource: "runtime-session",
+      artifactIdSource: "selected-artifact",
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:oracle-contract",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:oracle-contract"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContractObserved).toBe(true);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_island_output_oracle_contract_unverified");
+  });
+
+  it("proves fission from a verifier-backed inline oracle proposal", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.candidates[0].candidate.requiredOracleId;
+    metadata.candidates[0].candidate.outputOracleProposal = {
+      kind: "dispatch_counter",
+      producer: "deterministic_probe",
+      expectedIncrement: 1,
+      outputTargetId: "dispatch-counter:main",
+      readbackPlan: { syncPoint: "after-dispatch" },
+      sessionIdSource: "runtime-session",
+      artifactIdSource: "selected-artifact",
+    };
+    metadata.candidates[0].outputOracleContract = {
+      proposalValid: true,
+      proposalKind: "dispatch_counter",
+      proposalExpectedValuePresent: true,
+      proposalProducerPresent: true,
+      proposalOutputTargetPresent: true,
+      proposalReadbackContractPresent: true,
+      proposalRuntimeSessionBindingPresent: true,
+      proposalArtifactBindingPresent: true,
+      proposalVisualEvidenceRequired: false,
+      proposalVisualEvidenceContractPresent: false,
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:oracle-contract-backed",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:oracle-contract-backed"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(true);
+    expect(proof.selectedIslandContracts[0].oracleProposal?.kind).toBe("dispatch_counter");
+    expect(proof.selectedIslandContracts[0].outputOracleContract?.proposalValid).toBe(true);
+  });
+
   it("accepts an explicitly empty include closure for a narrow selected island", () => {
     const metadata = acceptedFissionVerifierMetadata();
     metadata.candidates[0].candidate.artifactKind = "function_body";

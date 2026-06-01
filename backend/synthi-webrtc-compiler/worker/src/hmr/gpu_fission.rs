@@ -887,6 +887,14 @@ fn output_oracle_contract_summary(candidate: &Value) -> Value {
         "proposalPresent": output_oracle_proposal_present(candidate),
         "proposalValid": output_oracle_proposal_valid(candidate),
         "proposalKind": output_oracle_kind(candidate),
+        "proposalExpectedValuePresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_expected_value_present),
+        "proposalProducerPresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_producer_present),
         "proposalOutputTargetPresent": candidate
             .get("outputOracleProposal")
             .and_then(Value::as_object)
@@ -903,6 +911,8 @@ fn output_oracle_contract_summary(candidate: &Value) -> Value {
             .get("outputOracleProposal")
             .and_then(Value::as_object)
             .is_some_and(output_oracle_artifact_binding_present),
+        "proposalVisualEvidenceRequired": output_oracle_kind(candidate)
+            .is_some_and(|kind| RENDER_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())),
         "proposalVisualEvidenceContractPresent": candidate
             .get("outputOracleProposal")
             .and_then(Value::as_object)
@@ -2069,6 +2079,18 @@ mod tests {
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
         assert_eq!(report["outputOracleContract"]["proposalKind"], "selected_pixels");
         assert_eq!(
+            report["outputOracleContract"]["proposalExpectedValuePresent"],
+            true
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalProducerPresent"],
+            true
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceRequired"],
+            true
+        );
+        assert_eq!(
             report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
             true
         );
@@ -2096,6 +2118,18 @@ mod tests {
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
         assert_eq!(report["outputOracleContract"]["proposalKind"], "buffer_checksum");
+        assert_eq!(
+            report["outputOracleContract"]["proposalExpectedValuePresent"],
+            true
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalProducerPresent"],
+            true
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceRequired"],
+            false
+        );
         assert_eq!(
             report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
             false
@@ -2278,6 +2312,10 @@ mod tests {
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["outputOracleContract"]["proposalExpectedValuePresent"],
+            false
+        );
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()

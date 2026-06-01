@@ -263,7 +263,9 @@ function fissionSelectedIslandContract(selectedCandidate) {
   const outputOracleContract = objectValue(selectedCandidate.outputOracleContract)
     ?? objectValue(island.outputOracleContract);
   const oracleProposal = objectValue(island.oracleProposal)
-    ?? objectValue(selectedCandidate.oracleProposal);
+    ?? objectValue(selectedCandidate.oracleProposal)
+    ?? objectValue(island.outputOracleProposal)
+    ?? objectValue(selectedCandidate.outputOracleProposal);
   const loaderCapabilityRequirement = objectValue(island.loaderCapabilityRequirement)
     ?? objectValue(selectedCandidate.loaderCapabilityRequirement);
   const includeClosureField = candidateField(island, selectedCandidate, 'includeClosure');
@@ -312,6 +314,32 @@ function fissionSelectedIslandContract(selectedCandidate) {
   };
 }
 
+function fissionOutputOracleContractIntegrity(contract) {
+  if (contract.requiredOracleId) return { proven: true, reason: null };
+  if (!contract.oracleProposal) {
+    return { proven: false, reason: 'fission_selected_island_output_oracle_contract_missing' };
+  }
+  const summary = objectValue(contract.outputOracleContract);
+  if (!summary || summary.proposalValid !== true || !nonEmptyString(summary.proposalKind)) {
+    return { proven: false, reason: 'fission_selected_island_output_oracle_contract_unverified' };
+  }
+  const requiredProofFields = [
+    'proposalExpectedValuePresent',
+    'proposalProducerPresent',
+    'proposalOutputTargetPresent',
+    'proposalReadbackContractPresent',
+    'proposalRuntimeSessionBindingPresent',
+    'proposalArtifactBindingPresent',
+  ];
+  if (!requiredProofFields.every((field) => summary[field] === true)) {
+    return { proven: false, reason: 'fission_selected_island_output_oracle_contract_unverified' };
+  }
+  if (summary.proposalVisualEvidenceRequired === true && summary.proposalVisualEvidenceContractPresent !== true) {
+    return { proven: false, reason: 'fission_selected_island_output_oracle_visual_contract_missing' };
+  }
+  return { proven: true, reason: null };
+}
+
 function fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslandId) {
   const contract = fissionSelectedIslandContract(selectedCandidate);
   if (!contract) return { proven: false, reason: 'fission_selected_island_contract_missing', contract: null };
@@ -354,8 +382,9 @@ function fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslan
   ) {
     return { proven: false, reason: 'fission_selected_island_loader_capability_missing', contract };
   }
-  if (!contract.requiredOracleId && !contract.oracleProposal) {
-    return { proven: false, reason: 'fission_selected_island_output_oracle_contract_missing', contract };
+  const oracleIntegrity = fissionOutputOracleContractIntegrity(contract);
+  if (!oracleIntegrity.proven) {
+    return { proven: false, reason: oracleIntegrity.reason, contract };
   }
   if (contract.originalHostLaunchMappingRequired && !contract.originalHostLaunchMappingId) {
     return { proven: false, reason: 'fission_selected_island_original_host_mapping_unverified', contract };
