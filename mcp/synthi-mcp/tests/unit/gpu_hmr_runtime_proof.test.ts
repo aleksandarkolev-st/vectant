@@ -125,6 +125,10 @@ function epochGenerationGraph({
   previousGeneration = 2,
   activeGeneration = 3,
   publishTimestampMs = 1779979998000,
+  dispatchTableHashBefore = "0xaaa",
+  dispatchTableHashAfter = "0xabc",
+  dispatchTableHash = dispatchTableHashAfter,
+  changedEntries = 1,
   runtimeSession = "runtime-session:test",
   retirementState = "retired",
   capsuleMetadata = true,
@@ -134,11 +138,17 @@ function epochGenerationGraph({
   const runtimeSessionFields = runtimeSession ? { runtimeSession } : {};
   const capsuleFields = capsuleMetadata ? epochCapsuleMetadata() : {};
   const publicationFields = { publishTimestampMs };
+  const dispatchTableFields = {
+    dispatchTableHashBefore,
+    dispatchTableHashAfter,
+    dispatchTableHash,
+    changedEntries,
+  };
   const retirementFields = { retirementFenceIds, delayedUnloadResult };
   return {
     schemaVersion: "synthi.gpu.epoch_graph.v1",
     runtimeSessionIds: runtimeSession ? [runtimeSession] : [],
-    latestPublication: { previousGeneration, activeGeneration, ...publicationFields, ...capsuleFields, ...retirementFields },
+    latestPublication: { previousGeneration, activeGeneration, ...publicationFields, ...capsuleFields, ...dispatchTableFields, ...retirementFields },
     retirementState,
     retirementRequired: retirementState !== "not-required",
     matchingRetirementObserved: retirementState === "retired",
@@ -163,6 +173,7 @@ function epochGenerationGraph({
         activeGeneration,
         ...publicationFields,
         ...capsuleFields,
+        ...dispatchTableFields,
         ...retirementFields,
         ...runtimeSessionFields,
       },
@@ -2429,6 +2440,41 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.publishTimestampObserved).toBe(false);
   });
 
+  it("does not accept side-channel dispatch table hashes without graph mutation provenance", () => {
+    const graph = epochGenerationGraph();
+    delete graph.latestPublication.dispatchTableHashBefore;
+    delete graph.latestPublication.dispatchTableHashAfter;
+    delete graph.latestPublication.dispatchTableHash;
+    delete graph.latestPublication.changedEntries;
+    delete graph.edges[0].dispatchTableHashBefore;
+    delete graph.edges[0].dispatchTableHashAfter;
+    delete graph.edges[0].dispatchTableHash;
+    delete graph.edges[0].changedEntries;
+
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:side-channel-dispatch-table"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_dispatch_table_hash_missing");
+    expect(proof.dispatchTableHashObserved).toBe(false);
+    expect(proof.changedEntriesObserved).toBe(false);
+  });
+
   it("does not prove epoch swap without runtime session evidence", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
@@ -2560,6 +2606,9 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.runtime_session_ids).toEqual(["pid1"]);
     expect(evidence.epoch_generation_graph?.schemaVersion).toBe("synthi.gpu.epoch_graph.v1");
     expect(evidence.epoch_generation_graph?.latestPublication.publishTimestampMs).toBe(1779979998000);
+    expect(evidence.epoch_generation_graph?.latestPublication.dispatchTableHashBefore).toBe("0xaaa");
+    expect(evidence.epoch_generation_graph?.latestPublication.dispatchTableHashAfter).toBe("0xabc");
+    expect(evidence.epoch_generation_graph?.latestPublication.changedEntries).toBe(1);
     expect(evidence.epoch_generation_graph?.nodes.map((node) => node.id)).toEqual([
       "generation:2",
       "generation:3",
@@ -2707,7 +2756,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.dispatch_table_hash_after_observed).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
-    expect(proof.degradedReason).toBe("epoch_dispatch_table_hash_not_collected");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_dispatch_table_hash_missing");
   });
 
   it("does not prove runtime epoch swap when before and after dispatch table hashes are identical", () => {
@@ -2721,7 +2770,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.dispatch_table_hash_observed).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
-    expect(proof.degradedReason).toBe("epoch_dispatch_table_hash_unchanged");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_dispatch_table_hash_unchanged");
   });
 
   it("does not prove runtime epoch swap when no dispatch entries changed", () => {
@@ -2733,7 +2782,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.changed_entries_observed).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
-    expect(proof.degradedReason).toBe("epoch_changed_entries_not_collected");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_changed_entries_missing");
   });
 
   it("keeps publication-only retirement pending without explicit zero retired modules", () => {

@@ -322,6 +322,16 @@ function finiteNonNegativeNumberList(values) {
     .filter((value) => value !== null);
 }
 
+function dispatchTableHashValue(...values) {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (/^0x[0-9a-f]+$/i.test(trimmed)) return trimmed.toLowerCase();
+    if (/^sha256:[0-9a-f]{64}$/i.test(trimmed)) return trimmed.toLowerCase();
+  }
+  return null;
+}
+
 function epochGraphGenerationId(generation) {
   return Number.isInteger(generation) && generation >= 0 ? `generation:${generation}` : null;
 }
@@ -460,6 +470,45 @@ function epochGenerationGraphStatus(graph) {
   const streamEpochCounters = latest.streamEpochCounters ?? latest.stream_epoch_counters ?? publicationEdge?.streamEpochCounters ?? publicationEdge?.stream_epoch_counters;
   const streamEpochCounterIds = streamEpochCounterEntries(streamEpochCounters).map(([streamId]) => streamId);
   const streamEpochCountersValid = streamEpochCounterIds.length > 0;
+  const dispatchTableHashBefore = dispatchTableHashValue(
+    latest.dispatchTableHashBefore,
+    latest.dispatch_table_hash_before,
+    publicationEdge?.dispatchTableHashBefore,
+    publicationEdge?.dispatch_table_hash_before,
+  );
+  const dispatchTableHashAfter = dispatchTableHashValue(
+    latest.dispatchTableHashAfter,
+    latest.dispatch_table_hash_after,
+    publicationEdge?.dispatchTableHashAfter,
+    publicationEdge?.dispatch_table_hash_after,
+  );
+  const dispatchTableHash = dispatchTableHashValue(
+    latest.dispatchTableHash,
+    latest.dispatch_table_hash,
+    publicationEdge?.dispatchTableHash,
+    publicationEdge?.dispatch_table_hash,
+  );
+  const changedEntries = integerValue(
+    latest.changedEntries
+    ?? latest.changed_entries
+    ?? publicationEdge?.changedEntries
+    ?? publicationEdge?.changed_entries,
+  );
+  const dispatchTableHashBeforeObserved = dispatchTableHashBefore !== null;
+  const dispatchTableHashAfterObserved = dispatchTableHashAfter !== null;
+  const dispatchTableHashChanged =
+    dispatchTableHashBeforeObserved
+    && dispatchTableHashAfterObserved
+    && dispatchTableHashBefore !== dispatchTableHashAfter;
+  const dispatchTableHashMatchesAfter =
+    dispatchTableHash === null || dispatchTableHash === dispatchTableHashAfter;
+  const changedEntriesObserved = changedEntries !== null && changedEntries > 0;
+  const dispatchTableMutationObserved =
+    dispatchTableHashBeforeObserved
+    && dispatchTableHashAfterObserved
+    && dispatchTableHashChanged
+    && dispatchTableHashMatchesAfter
+    && changedEntriesObserved;
   const retirementFenceIds = compactStringList([
     ...(Array.isArray(latest.retirementFenceIds) ? latest.retirementFenceIds : []),
     ...(Array.isArray(latest.retirement_fence_ids) ? latest.retirement_fence_ids : []),
@@ -510,6 +559,7 @@ function epochGenerationGraphStatus(graph) {
     && schemaVersionValid
     && lineageValid
     && publishTimestampObserved
+    && dispatchTableMutationObserved
     && previousGenerationId !== null
     && activeGenerationId !== null
     && nodeIdentitiesValid
@@ -533,21 +583,29 @@ function epochGenerationGraphStatus(graph) {
             ? 'epoch_generation_graph_lineage_invalid'
             : !publishTimestampObserved
               ? 'epoch_generation_graph_publish_timestamp_missing'
-              : !nodeIdentitiesValid
-                ? 'epoch_generation_graph_node_invalid'
-                : !nodeGenerations.has(previousGeneration) || !nodeGenerations.has(activeGeneration)
-                  ? 'epoch_generation_graph_node_missing'
-                  : !edgeClosureValid
-                    ? 'epoch_generation_graph_edge_invalid'
-                    : !graphAcyclic
-                      ? 'epoch_generation_graph_cycle_detected'
-                      : !publicationEdgeObserved
-                        ? 'epoch_generation_graph_publication_edge_missing'
-                        : !retirementStateObserved
-                          ? 'epoch_generation_graph_retirement_state_missing'
-                          : !retirementEdgeObserved
-                            ? 'epoch_generation_graph_retirement_edge_missing'
-                            : 'epoch_generation_graph_invalid';
+              : !dispatchTableHashBeforeObserved || !dispatchTableHashAfterObserved
+                ? 'epoch_generation_graph_dispatch_table_hash_missing'
+                : !dispatchTableHashChanged
+                  ? 'epoch_generation_graph_dispatch_table_hash_unchanged'
+                  : !dispatchTableHashMatchesAfter
+                    ? 'epoch_generation_graph_dispatch_table_hash_mismatch'
+                    : !changedEntriesObserved
+                      ? 'epoch_generation_graph_changed_entries_missing'
+                      : !nodeIdentitiesValid
+                        ? 'epoch_generation_graph_node_invalid'
+                        : !nodeGenerations.has(previousGeneration) || !nodeGenerations.has(activeGeneration)
+                          ? 'epoch_generation_graph_node_missing'
+                          : !edgeClosureValid
+                            ? 'epoch_generation_graph_edge_invalid'
+                            : !graphAcyclic
+                              ? 'epoch_generation_graph_cycle_detected'
+                              : !publicationEdgeObserved
+                                ? 'epoch_generation_graph_publication_edge_missing'
+                                : !retirementStateObserved
+                                  ? 'epoch_generation_graph_retirement_state_missing'
+                                  : !retirementEdgeObserved
+                                    ? 'epoch_generation_graph_retirement_edge_missing'
+                                    : 'epoch_generation_graph_invalid';
 
   return {
     observed,
@@ -574,6 +632,16 @@ function epochGenerationGraphStatus(graph) {
     streamEpochCounters,
     streamEpochCounterIds,
     streamEpochCountersValid,
+    dispatchTableHashBefore,
+    dispatchTableHashAfter,
+    dispatchTableHash,
+    changedEntries,
+    dispatchTableHashBeforeObserved,
+    dispatchTableHashAfterObserved,
+    dispatchTableHashChanged,
+    dispatchTableHashMatchesAfter,
+    changedEntriesObserved,
+    dispatchTableMutationObserved,
     retirementFenceIds,
     delayedUnloadResult,
     runtimeSessionIds: graphRuntimeSessionIds,
@@ -2216,15 +2284,18 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const edgeClosureValid = epochGraph.edgeClosureValid === true;
   const graphAcyclic = epochGraph.graphAcyclic === true;
   const generationLineageObserved = generationGraphValid;
-  const dispatchTableHashBeforeObserved = observation.dispatchTableHashBeforeObserved === true;
-  const dispatchTableHashAfterObserved = observation.dispatchTableHashAfterObserved === true;
-  const dispatchTableHashChanged = observation.dispatchTableHashChanged === true;
+  const dispatchTableHashBeforeObserved = epochGraph.dispatchTableHashBefore !== null;
+  const dispatchTableHashAfterObserved = epochGraph.dispatchTableHashAfter !== null;
+  const dispatchTableHashChanged =
+    dispatchTableHashBeforeObserved
+    && dispatchTableHashAfterObserved
+    && epochGraph.dispatchTableHashBefore !== epochGraph.dispatchTableHashAfter;
   const dispatchTableHashObserved =
-    observation.dispatchTableHashObserved === true
+    epochGraph.dispatchTableMutationObserved === true
     && dispatchTableHashBeforeObserved
     && dispatchTableHashAfterObserved
     && dispatchTableHashChanged;
-  const changedEntriesObserved = observation.changedEntriesObserved === true;
+  const changedEntriesObserved = epochGraph.changedEntries !== null && epochGraph.changedEntries > 0;
   const capsuleMetadataObserved =
     observation.capsuleMetadataObserved === true || epochGraph.capsuleMetadataObserved === true;
   const streamScope = typeof observation.streamScope === 'string' && observation.streamScope.trim()
