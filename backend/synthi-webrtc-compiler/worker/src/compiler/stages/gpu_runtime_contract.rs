@@ -22,6 +22,7 @@ pub const SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS: &[&str] = &[
     "synthi_gpu_launch_raw_arg_info",
     "synthi_gpu_launch_raw_arg_info_checked",
     "synthi_gpu_launch_original_host_path_raw_arg_info_checked",
+    "synthi_gpu_launch_source_location_raw_arg_info_checked",
     "synthi_gpu_pack_buffer",
     "synthi_gpu_record_host_identity",
     "synthi_gpu_record_output_buffer_checksum",
@@ -230,6 +231,21 @@ bool synthi_gpu_launch_original_host_path_raw_arg_info_checked(
     const char* dispatch_table_entry_id,
     const char* attachment_provenance);
 
+bool synthi_gpu_launch_source_location_raw_arg_info_checked(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const void* grid,
+    std::size_t grid_size,
+    const void* block,
+    std::size_t block_size,
+    std::size_t shared_bytes,
+    std::uintptr_t stream_token,
+    const SynthiGpuLaunchArg* args,
+    std::size_t arg_count,
+    std::uint64_t expected_generation,
+    const char* host_path_id,
+    const char* attachment_provenance);
+
 bool synthi_gpu_launch_raw_arg_info(
     SynthiGpuRuntime* gpu,
     const char* kernel_name,
@@ -425,6 +441,34 @@ inline bool synthi_gpu_launch_original_host_path(
         args);
 }}
 
+template <typename Grid, typename Block, typename Stream>
+inline bool synthi_gpu_launch_source_location(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    std::initializer_list<SynthiGpuLaunchArg> args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    return synthi_gpu_launch_source_location_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        args.begin(),
+        args.size(),
+        table.generation,
+        host_path_id,
+        attachment_provenance);
+}}
+
 inline void synthi_register(
     SynthiGpuRuntime* gpu,
     void* ptr,
@@ -532,6 +576,29 @@ inline void synthi_original_host_path_with_provenance(
         dispatch_boundary_observed);
 }}
 
+#ifndef SYNTHI_GPU_STRINGIFY_DETAIL
+#define SYNTHI_GPU_STRINGIFY_DETAIL(value) #value
+#endif
+#ifndef SYNTHI_GPU_STRINGIFY
+#define SYNTHI_GPU_STRINGIFY(value) SYNTHI_GPU_STRINGIFY_DETAIL(value)
+#endif
+#ifndef SYNTHI_GPU_HOST_PATH_ID
+#define SYNTHI_GPU_HOST_PATH_ID __FILE__ ":" SYNTHI_GPU_STRINGIFY(__LINE__)
+#endif
+#ifndef SYNTHI_GPU_DISABLE_LAUNCH_AUTO_HOST_PATH
+#define synthi_gpu_launch(gpu, kernel_name, grid, block, shared_bytes, stream, ...) \
+    synthi_gpu_launch_source_location( \
+        (gpu), \
+        SYNTHI_GPU_HOST_PATH_ID, \
+        "source_instrumented", \
+        (kernel_name), \
+        (grid), \
+        (block), \
+        (shared_bytes), \
+        (stream), \
+        __VA_ARGS__)
+#endif
+
 #endif // SYNTHI_GPU_RUNTIME_H
 "#
     )
@@ -595,12 +662,16 @@ mod tests {
         assert!(h.contains("synthi_gpu_launch_raw_checked"));
         assert!(h.contains("synthi_gpu_launch_raw_arg_info_checked"));
         assert!(h.contains("synthi_gpu_launch_original_host_path_raw_arg_info_checked"));
+        assert!(h.contains("synthi_gpu_launch_source_location_raw_arg_info_checked"));
         assert!(h.contains("struct SynthiGpuLaunchArg"));
         assert!(h.contains("value_kind"));
         assert!(h.contains("SYNTHI_GPU_ARG_KIND_POINTER"));
         assert!(h.contains("SynthiGpuLaunchTable"));
         assert!(h.contains("inline bool synthi_gpu_launch"));
         assert!(h.contains("inline bool synthi_gpu_launch_original_host_path"));
+        assert!(h.contains("inline bool synthi_gpu_launch_source_location"));
+        assert!(h.contains("#define SYNTHI_GPU_HOST_PATH_ID"));
+        assert!(h.contains("#define synthi_gpu_launch(gpu, kernel_name"));
         assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
         assert!(h.contains("const DeviceDescriptor* device_descriptor()"));
         assert!(h.contains("void device_on_load"));

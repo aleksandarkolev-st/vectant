@@ -1208,7 +1208,7 @@ pub extern "C" fn synthi_gpu_launch_original_host_path_raw_arg_info_checked(
                 && !dispatch_table_entry_id.trim().is_empty() => {
             Some(OriginalHostPathLaunchAttachment {
                 host_path_id,
-                dispatch_table_entry_id,
+                dispatch_table_entry_id: Some(dispatch_table_entry_id),
                 attachment_provenance: cstr(attachment_provenance)
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| "source_instrumented".to_string()),
@@ -1216,6 +1216,48 @@ pub extern "C" fn synthi_gpu_launch_original_host_path_raw_arg_info_checked(
         }
         _ => None,
     };
+    synthi_gpu_launch_raw_impl(
+        _gpu,
+        kernel_name,
+        _grid,
+        grid_size,
+        _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        std::ptr::null(),
+        args,
+        arg_count,
+        expected_generation,
+        original_host_path,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn synthi_gpu_launch_source_location_raw_arg_info_checked(
+    _gpu: *mut c_void,
+    kernel_name: *const c_char,
+    _grid: *const c_void,
+    grid_size: usize,
+    _block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+    expected_generation: u64,
+    host_path_id: *const c_char,
+    attachment_provenance: *const c_char,
+) -> bool {
+    let original_host_path = cstr(host_path_id)
+        .filter(|host_path_id| !host_path_id.trim().is_empty())
+        .map(|host_path_id| OriginalHostPathLaunchAttachment {
+            host_path_id,
+            dispatch_table_entry_id: None,
+            attachment_provenance: cstr(attachment_provenance)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "source_instrumented".to_string()),
+        });
     synthi_gpu_launch_raw_impl(
         _gpu,
         kernel_name,
@@ -1295,7 +1337,7 @@ pub extern "C" fn synthi_gpu_launch_raw_arg_info(
 
 struct OriginalHostPathLaunchAttachment {
     host_path_id: String,
-    dispatch_table_entry_id: String,
+    dispatch_table_entry_id: Option<String>,
     attachment_provenance: String,
 }
 
@@ -1329,9 +1371,13 @@ fn synthi_gpu_launch_raw_impl(
         .and_then(|metadata| dispatch_table_entry_id_for_kernel(metadata, &kernel_name));
     record_launch_host_identities(&kernel_name, kernel_name_ptr, _gpu.cast_const(), stream_token);
     if let Some(attachment) = original_host_path {
+        let dispatch_table_entry_id = attachment
+            .dispatch_table_entry_id
+            .or_else(|| active_dispatch_table_entry_id.clone())
+            .unwrap_or_else(|| format!("symbol:{kernel_name}"));
         record_original_host_path_event_at(
             attachment.host_path_id,
-            attachment.dispatch_table_entry_id,
+            dispatch_table_entry_id,
             active_dispatch_table_entry_id.clone(),
             true,
             attachment.attachment_provenance,
@@ -2207,6 +2253,69 @@ mod tests {
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
         assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
         assert_eq!(launches[0].kernel_name, "trace_primary");
+    }
+
+    #[test]
+    fn source_location_launch_wrapper_binds_runtime_dispatch_entry() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let kernel = CString::new("trace_primary").unwrap();
+        let host_path_id = CString::new("src/render_loop.cpp:42").unwrap();
+        let provenance = CString::new("source_instrumented").unwrap();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:source-location".to_string()),
+                dispatch_table_hash: Some("0xbeef".to_string()),
+                changed_symbols: vec!["trace_primary".to_string()],
+                function_handle_ids: vec!["trace_primary:0x99".to_string()],
+            },
+        );
+        let grid = [1_u32, 1, 1];
+        let block = [64_u32, 1, 1];
+        let value = 42_u32;
+        let arg = SynthiGpuLaunchArg {
+            value_ptr: (&value as *const u32).cast(),
+            value_size: std::mem::size_of_val(&value),
+            value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
+        };
+
+        let ok = synthi_gpu_launch_source_location_raw_arg_info_checked(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            &arg,
+            1,
+            current_launch_generation(),
+            host_path_id.as_ptr(),
+            provenance.as_ptr(),
+        );
+
+        assert!(ok);
+        let host_paths = original_host_path_records_snapshot();
+        let launches = launch_records_snapshot();
+        assert_eq!(host_paths.len(), 1);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(host_paths[0].host_path_id, "src/render_loop.cpp:42");
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "trace_primary:0x99");
+        assert_eq!(
+            host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
+            Some("trace_primary:0x99")
+        );
+        assert!(host_paths[0].dispatch_entry_runtime_verified);
+        assert_eq!(host_paths[0].attachment_provenance, "source_instrumented");
+        assert_eq!(host_paths[0].generation, launches[0].active_generation);
+        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
     }
 
     #[test]
