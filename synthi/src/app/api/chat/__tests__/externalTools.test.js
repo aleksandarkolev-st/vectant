@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // All mock handles via vi.hoisted so the hoisted vi.mock factories don't hit a TDZ.
-const { resolveToolConfigsMock, listToolsMock, callToolMock, auditCreateMock, checkLimitMock } = vi.hoisted(() => ({
+const { resolveToolConfigsMock, listToolsMock, callToolMock, auditCreateMock, checkLimitMock, canReadScopeMock } = vi.hoisted(() => ({
   resolveToolConfigsMock: vi.fn(),
   listToolsMock: vi.fn(),
   callToolMock: vi.fn(),
   auditCreateMock: vi.fn(),
   checkLimitMock: vi.fn(),
+  canReadScopeMock: vi.fn(),
 }));
 vi.mock('@/lib/integrations/connectionStore', () => ({ resolveToolConfigs: resolveToolConfigsMock }));
+vi.mock('@/lib/integrations/scope', () => ({ canReadScope: canReadScopeMock }));
 vi.mock('@/lib/mcp-hub', () => ({ listTools: listToolsMock, callTool: callToolMock }));
 vi.mock('@/lib/prisma', () => ({ default: { mcpCallAudit: { create: auditCreateMock } } }));
 vi.mock('@/lib/integrations/rateLimit', () => ({
@@ -26,6 +28,7 @@ beforeEach(() => {
   callToolMock.mockReset();
   auditCreateMock.mockReset().mockResolvedValue({});
   checkLimitMock.mockReset().mockReturnValue({ ok: true });
+  canReadScopeMock.mockReset().mockResolvedValue(true);
 });
 
 describe('isExternalToolName', () => {
@@ -64,6 +67,20 @@ describe('buildExternalTools', () => {
     resolveToolConfigsMock.mockResolvedValue([]);
     const { declarations } = await buildExternalTools({ userId: 'u1', workspaceSlug: null });
     expect(declarations).toEqual([]);
+  });
+
+  it('gates workspace tools behind membership: a non-member resolves personal-only (R1-9)', async () => {
+    canReadScopeMock.mockResolvedValue(false);
+    resolveToolConfigsMock.mockResolvedValue([]);
+    await buildExternalTools({ userId: 'u1', workspaceSlug: 'team' });
+    expect(resolveToolConfigsMock).toHaveBeenCalledWith({ userId: 'u1', workspaceSlug: null });
+  });
+
+  it('passes the workspace slug through for a member', async () => {
+    canReadScopeMock.mockResolvedValue(true);
+    resolveToolConfigsMock.mockResolvedValue([]);
+    await buildExternalTools({ userId: 'u1', workspaceSlug: 'team' });
+    expect(resolveToolConfigsMock).toHaveBeenCalledWith({ userId: 'u1', workspaceSlug: 'team' });
   });
 
   it('skips a tool whose converted schema exceeds the size cap (R1-7)', async () => {

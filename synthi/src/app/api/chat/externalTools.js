@@ -4,6 +4,7 @@ import { resolveToolConfigs } from '@/lib/integrations/connectionStore';
 import { listTools, callTool } from '@/lib/mcp-hub';
 import { jsonSchemaToGemini } from '@/lib/mcp-hub/helpers.js';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
+import { canReadScope } from '@/lib/integrations/scope';
 
 const ALIAS_RE = /^ext_\d+$/;
 // R1-7 aggregate guards: skip a tool whose converted schema is too large, and cap
@@ -49,9 +50,24 @@ function sha256Hex(s) {
  * @returns {Promise<{declarations:Array, aliasMap:Record<string,object>}>}
  */
 export async function buildExternalTools(scope) {
+  // R1-9 defense-in-depth: only expose a workspace's tools to a member of that
+  // workspace. The chat route does not itself authorize `workspacePath`, so a
+  // forged/non-member slug must never enumerate or invoke another workspace's
+  // connections (which hold secrets). Non-members fall back to personal-only.
+  let effectiveScope = scope;
+  if (scope?.workspaceSlug) {
+    let isMember = false;
+    try {
+      isMember = await canReadScope({ userId: scope.userId }, { scope: 'workspace', workspaceSlug: scope.workspaceSlug });
+    } catch {
+      isMember = false;
+    }
+    if (!isMember) effectiveScope = { userId: scope.userId, workspaceSlug: null };
+  }
+
   let configs = [];
   try {
-    configs = await resolveToolConfigs(scope);
+    configs = await resolveToolConfigs(effectiveScope);
   } catch (e) {
     console.warn('[externalTools] resolveToolConfigs failed:', e?.message);
     return { declarations: [], aliasMap: {} };
