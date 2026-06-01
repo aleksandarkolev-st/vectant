@@ -1432,6 +1432,65 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("epoch_generation_graph_retirement_edge_missing");
   });
 
+  it("does not accept an epoch graph with a contradictory extra edge", () => {
+    const graph = epochGenerationGraph();
+    graph.edges.push({
+      kind: "publish",
+      from: "generation:3",
+      to: "generation:2",
+      runtimeSession: "runtime-session:test",
+    });
+
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:contradictory-edge"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_edge_invalid");
+    expect(proof.edgeClosureValid).toBe(false);
+  });
+
+  it("does not accept an epoch graph when node ids disagree with node generations", () => {
+    const graph = epochGenerationGraph();
+    graph.nodes[0].id = "generation:999";
+
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:node-id-mismatch"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_node_invalid");
+    expect(proof.nodeIdentitiesValid).toBe(false);
+  });
+
   it("does not prove epoch swap without runtime session evidence", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,

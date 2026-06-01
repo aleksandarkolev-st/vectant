@@ -186,6 +186,28 @@ function epochGraphEdgeKind(edge) {
   return raw || null;
 }
 
+function epochGraphEdgesAcyclic(edgeStatuses) {
+  const adjacency = new Map();
+  for (const edge of edgeStatuses) {
+    if (!adjacency.has(edge.from)) adjacency.set(edge.from, []);
+    adjacency.get(edge.from).push(edge.to);
+  }
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (generation) => {
+    if (visiting.has(generation)) return false;
+    if (visited.has(generation)) return true;
+    visiting.add(generation);
+    for (const next of adjacency.get(generation) ?? []) {
+      if (!visit(next)) return false;
+    }
+    visiting.delete(generation);
+    visited.add(generation);
+    return true;
+  };
+  return [...adjacency.keys()].every(visit);
+}
+
 function epochGenerationGraphStatus(graph) {
   if (!graph || typeof graph !== 'object') {
     return {
@@ -202,6 +224,25 @@ function epochGenerationGraphStatus(graph) {
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter((node) => node && typeof node === 'object') : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter((edge) => edge && typeof edge === 'object') : [];
   const nodeGenerations = new Set(nodes.map(epochGraphNodeGeneration).filter((generation) => generation !== null));
+  const nodeIdentitiesValid = nodes.every((node) => {
+    const generation = epochGraphNodeGeneration(node);
+    const idGeneration = typeof node.id === 'undefined' ? generation : epochGraphEndpointGeneration(node.id);
+    return generation !== null && idGeneration === generation;
+  });
+  const edgeStatuses = edges.map((edge) => ({
+    kind: epochGraphEdgeKind(edge),
+    from: epochGraphEdgeGeneration(edge, 'from'),
+    to: epochGraphEdgeGeneration(edge, 'to'),
+  }));
+  const edgeClosureValid = edgeStatuses.every((edge) =>
+    (edge.kind === 'publish' || edge.kind === 'retire')
+    && edge.from !== null
+    && edge.to !== null
+    && edge.to > edge.from
+    && nodeGenerations.has(edge.from)
+    && nodeGenerations.has(edge.to)
+  );
+  const graphAcyclic = edgeClosureValid && epochGraphEdgesAcyclic(edgeStatuses);
   const latest = graph.latestPublication && typeof graph.latestPublication === 'object'
     ? graph.latestPublication
     : graph.publication && typeof graph.publication === 'object'
@@ -280,8 +321,11 @@ function epochGenerationGraphStatus(graph) {
     && lineageValid
     && previousGenerationId !== null
     && activeGenerationId !== null
+    && nodeIdentitiesValid
     && nodeGenerations.has(previousGeneration)
     && nodeGenerations.has(activeGeneration)
+    && edgeClosureValid
+    && graphAcyclic
     && publicationEdgeObserved
     && retirementStateObserved
     && retirementEdgeObserved
@@ -292,17 +336,23 @@ function epochGenerationGraphStatus(graph) {
       ? 'epoch_generation_graph_not_collected'
       : !runtimeSessionConsistent
         ? 'epoch_generation_graph_session_unscoped'
-        : !lineageValid
-          ? 'epoch_generation_graph_lineage_invalid'
-          : !nodeGenerations.has(previousGeneration) || !nodeGenerations.has(activeGeneration)
-            ? 'epoch_generation_graph_node_missing'
-            : !publicationEdgeObserved
-              ? 'epoch_generation_graph_publication_edge_missing'
-              : !retirementStateObserved
-                ? 'epoch_generation_graph_retirement_state_missing'
-                : !retirementEdgeObserved
-                  ? 'epoch_generation_graph_retirement_edge_missing'
-                  : 'epoch_generation_graph_invalid';
+      : !lineageValid
+        ? 'epoch_generation_graph_lineage_invalid'
+        : !nodeIdentitiesValid
+          ? 'epoch_generation_graph_node_invalid'
+        : !nodeGenerations.has(previousGeneration) || !nodeGenerations.has(activeGeneration)
+          ? 'epoch_generation_graph_node_missing'
+          : !edgeClosureValid
+            ? 'epoch_generation_graph_edge_invalid'
+            : !graphAcyclic
+              ? 'epoch_generation_graph_cycle_detected'
+              : !publicationEdgeObserved
+                ? 'epoch_generation_graph_publication_edge_missing'
+                : !retirementStateObserved
+                  ? 'epoch_generation_graph_retirement_state_missing'
+                  : !retirementEdgeObserved
+                    ? 'epoch_generation_graph_retirement_edge_missing'
+                    : 'epoch_generation_graph_invalid';
 
   return {
     observed,
@@ -312,6 +362,9 @@ function epochGenerationGraphStatus(graph) {
     previousGeneration,
     activeGeneration,
     capsuleMetadataObserved,
+    nodeIdentitiesValid,
+    edgeClosureValid,
+    graphAcyclic,
     oldArtifactId,
     newArtifactId,
     newArtifactHash,
@@ -1326,6 +1379,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && epochGraph.runtimeSessionConsistent !== false;
   const generationGraphObserved = epochGraph.observed;
   const generationGraphValid = epochGraph.valid;
+  const nodeIdentitiesValid = epochGraph.nodeIdentitiesValid === true;
+  const edgeClosureValid = epochGraph.edgeClosureValid === true;
+  const graphAcyclic = epochGraph.graphAcyclic === true;
   const generationLineageObserved = generationGraphValid;
   const dispatchTableHashBeforeObserved = observation.dispatchTableHashBeforeObserved === true;
   const dispatchTableHashAfterObserved = observation.dispatchTableHashAfterObserved === true;
@@ -1375,6 +1431,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationGraphObserved: true,
       generationGraphValid: true,
+      nodeIdentitiesValid,
+      edgeClosureValid,
+      graphAcyclic,
       epochGenerationGraph: epochGraph.graph,
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
@@ -1415,6 +1474,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationGraphObserved: true,
       generationGraphValid: true,
+      nodeIdentitiesValid,
+      edgeClosureValid,
+      graphAcyclic,
       epochGenerationGraph: epochGraph.graph,
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
@@ -1467,6 +1529,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     runtimeSessionConsistent,
     generationGraphObserved,
     generationGraphValid,
+    nodeIdentitiesValid,
+    edgeClosureValid,
+    graphAcyclic,
     epochGenerationGraph: epochGraph.graph,
     generationLineageObserved,
     dispatchTableHashObserved,
