@@ -730,6 +730,32 @@ def _normalize_synthi_launch_parts(
     )
 
 
+def _launch_metadata_arg_present(arg: str) -> bool:
+    value = arg.strip()
+    if not value or value in {"0", "NULL", "nullptr"}:
+        return False
+    if value in {'""', "''"}:
+        return False
+    return True
+
+
+def _has_explicit_source_launch_provenance(launch: _SynthiLaunchCall) -> bool:
+    if launch.function == "synthi_gpu_launch_source_location":
+        return (
+            len(launch.parts) >= 3
+            and _launch_metadata_arg_present(launch.parts[1])
+            and _launch_metadata_arg_present(launch.parts[2])
+        )
+    if launch.function == "synthi_gpu_launch_original_host_path":
+        return (
+            len(launch.parts) >= 4
+            and _launch_metadata_arg_present(launch.parts[1])
+            and _launch_metadata_arg_present(launch.parts[2])
+            and _launch_metadata_arg_present(launch.parts[3])
+        )
+    return False
+
+
 def _split_top_level_args(body: str) -> List[str]:
     args: List[str] = []
     start = 0
@@ -2481,6 +2507,23 @@ def verify_split_output(
                     )
                 source_launch_args = source_launch_args_by_kernel.get(kernel_name, [])
                 if source_launch_args:
+                    if not _has_explicit_source_launch_provenance(launch):
+                        violations.append(
+                            Violation(
+                                rule="source_launch_host_path_not_attached",
+                                message=(
+                                    "Generated core launches a source-reachable "
+                                    f"kernel {kernel_name!r} without an explicit "
+                                    "source-location or original-host-path Synthi "
+                                    "launch wrapper. Full runtime proof requires "
+                                    "dispatch evidence that can be bound to the "
+                                    "preserved source host launch boundary; do not "
+                                    "reconstruct that boundary from static metadata."
+                                ),
+                                offending_module=core_path,
+                                offending_symbol=kernel_name,
+                            )
+                        )
                     generated_arg_identities = [
                         _normalize_launch_arg_identity(entry)
                         for entry in entries
