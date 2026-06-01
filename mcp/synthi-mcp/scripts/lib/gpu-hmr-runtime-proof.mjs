@@ -166,6 +166,13 @@ function contentAddressedArtifactIds(values) {
   return compactStringList(values).filter((id) => /^artifact:sha256:[0-9a-f]{64}$/i.test(id));
 }
 
+function firstArrayField(object, keys) {
+  for (const key of keys) {
+    if (Array.isArray(object?.[key])) return object[key];
+  }
+  return [];
+}
+
 function streamScopeObserved(streamScope, streamIds) {
   if (streamScope === 'none') {
     return streamIds.length === 1 && streamIds[0] === 'none';
@@ -1128,6 +1135,31 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const dispatcherRegistrationIds = compactStringList(observation.dispatcherRegistrationIds);
   const dispatchTableEntryIds = compactStringList(observation.dispatchTableEntryIds);
   const dispatchTableHashes = compactStringList(observation.dispatchTableHashes);
+  const dispatchStreamIds = compactStringList(firstArrayField(observation, [
+    'dispatchStreamIds',
+    'dispatch_stream_ids',
+    'streamIds',
+    'stream_ids',
+  ]));
+  const gridDimensions = compactStringList(firstArrayField(observation, [
+    'gridDimensions',
+    'grid_dimensions',
+    'dispatchGridDimensions',
+    'dispatch_grid_dimensions',
+  ]));
+  const blockDimensions = compactStringList(firstArrayField(observation, [
+    'blockDimensions',
+    'block_dimensions',
+    'dispatchBlockDimensions',
+    'dispatch_block_dimensions',
+  ]));
+  const sharedMemoryBytes = finiteNonNegativeNumberList(
+    observation.sharedMemoryBytes
+    ?? observation.shared_memory_bytes
+    ?? observation.dispatchSharedMemoryBytes
+    ?? observation.dispatch_shared_memory_bytes
+    ?? [],
+  );
   const dispatchTimestamps = finiteNonNegativeNumberList(
     observation.dispatchTimestamps
     ?? observation.dispatch_timestamps
@@ -1232,6 +1264,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       dispatcherRegistrationIds,
       dispatchTableEntryIds,
       dispatchTableHashes,
+      dispatchStreamIds,
+      gridDimensions,
+      blockDimensions,
+      sharedMemoryBytes,
     };
   }
 
@@ -1266,6 +1302,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       dispatcherRegistrationIds,
       dispatchTableEntryIds,
       dispatchTableHashes,
+      dispatchStreamIds,
+      gridDimensions,
+      blockDimensions,
+      sharedMemoryBytes,
     };
   }
 
@@ -1298,6 +1338,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       dispatcherRegistrationIds,
       dispatchTableEntryIds,
       dispatchTableHashes,
+      dispatchStreamIds,
+      gridDimensions,
+      blockDimensions,
+      sharedMemoryBytes,
       dispatchTimestamps,
     };
   }
@@ -1309,6 +1353,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     if (!dispatchTableEntryIds.length) return 'dispatch_table_entry_identity_not_observed';
     if (!dispatchTableHashes.length) return 'dispatch_table_hash_not_observed';
     if (!dispatchTimestamps.length) return 'dispatch_timestamp_not_observed';
+    if (!dispatchStreamIds.length) return 'dispatch_stream_identity_not_observed';
+    if (!gridDimensions.length) return 'dispatch_grid_dimensions_not_observed';
+    if (!blockDimensions.length) return 'dispatch_block_dimensions_not_observed';
+    if (!sharedMemoryBytes.length) return 'dispatch_shared_memory_bytes_not_observed';
     return null;
   })();
 
@@ -1339,6 +1387,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       dispatcherRegistrationIds,
       dispatchTableEntryIds,
       dispatchTableHashes,
+      dispatchStreamIds,
+      gridDimensions,
+      blockDimensions,
+      sharedMemoryBytes,
       dispatchTimestamps,
     };
   }
@@ -1369,6 +1421,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     dispatcherRegistrationIds,
     dispatchTableEntryIds,
     dispatchTableHashes,
+    dispatchStreamIds,
+    gridDimensions,
+    blockDimensions,
+    sharedMemoryBytes,
     dispatchTimestamps,
   };
 }

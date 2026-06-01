@@ -200,6 +200,10 @@ function safeDispatchProof({
     dispatcherRegistrationIds: [TEST_DISPATCHER_ID],
     dispatchTableEntryIds: ["shade:0x10"],
     dispatchTableHashes: ["0xabc"],
+    dispatchStreamIds: ["stream:default"],
+    gridDimensions: ["1x1x1"],
+    blockDimensions: ["64x1x1"],
+    sharedMemoryBytes: [0],
     dispatchTimestamps: [dispatchTimestamp],
     runtimeArtifactMatchesSelected: true,
   });
@@ -2537,6 +2541,17 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
     expect(proof.degradedReason).toBe("selected_artifact_identity_not_observed");
     expect(proof.selectedArtifactIds).toEqual([]);
+  });
+
+  it("does not prove dispatch safety without runtime launch shape evidence", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      gridDimensions: [],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("dispatch_grid_dimensions_not_observed");
   });
 
   it("blocks output proof when dispatch argument provenance is incomplete", () => {

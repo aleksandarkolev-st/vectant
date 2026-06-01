@@ -1442,6 +1442,13 @@ function logField(line, key) {
   return String(line ?? '').match(new RegExp(String.raw`\b${key}=([^\s]+)`, 'i'))?.[1] ?? '';
 }
 
+function logDim3Field(line, key) {
+  const match = String(line ?? '').match(
+    new RegExp(String.raw`\b${key}=\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)`, 'i'),
+  );
+  return match ? `${Number(match[1])}x${Number(match[2])}x${Number(match[3])}` : null;
+}
+
 function evidenceRefPart(value, fallback) {
   const cleaned = String(value ?? '').trim().replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 96);
   return cleaned || fallback;
@@ -1546,6 +1553,10 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const streamId = logField(line, 'stream');
+    const gridDimensions = logDim3Field(line, 'grid');
+    const blockDimensions = logDim3Field(line, 'block');
+    const sharedMemoryBytes = Number(logField(line, 'shared_bytes'));
     const dispatchTimestamp = Number(logField(line, 'dispatch_timestamp'));
     return {
       line,
@@ -1556,6 +1567,12 @@ function runtimeDispatchEvidence(workerEvidence) {
       dispatchTableHash: dispatchTableHash && dispatchTableHash !== 'none' ? dispatchTableHash : null,
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
+        : null,
+      streamId: streamId && streamId !== 'none' ? streamId : null,
+      gridDimensions,
+      blockDimensions,
+      sharedMemoryBytes: Number.isFinite(sharedMemoryBytes) && sharedMemoryBytes >= 0
+        ? sharedMemoryBytes
         : null,
       dispatchTimestamp: Number.isFinite(dispatchTimestamp) && dispatchTimestamp >= 0
         ? dispatchTimestamp
@@ -1573,6 +1590,12 @@ function runtimeDispatchEvidence(workerEvidence) {
     dispatch_table_hashes: [...new Set(successRecords.map((record) => record.dispatchTableHash).filter(Boolean))],
     dispatch_table_entry_ids: [
       ...new Set(successRecords.map((record) => record.dispatchTableEntryId).filter(Boolean)),
+    ],
+    dispatch_stream_ids: [...new Set(successRecords.map((record) => record.streamId).filter(Boolean))],
+    grid_dimensions: [...new Set(successRecords.map((record) => record.gridDimensions).filter(Boolean))],
+    block_dimensions: [...new Set(successRecords.map((record) => record.blockDimensions).filter(Boolean))],
+    shared_memory_bytes: [
+      ...new Set(successRecords.map((record) => record.sharedMemoryBytes).filter((value) => value !== null)),
     ],
     dispatch_timestamps: successRecords
       .map((record) => record.dispatchTimestamp)
@@ -1890,6 +1913,10 @@ function selfCheckRuntimeDispatchEvidence() {
     dispatcherRegistrationIds: upstreamOnlyDispatch.dispatcher_registration_ids,
     dispatchTableEntryIds: upstreamOnlyDispatch.dispatch_table_entry_ids,
     dispatchTableHashes: upstreamOnlyDispatch.dispatch_table_hashes,
+    dispatchStreamIds: upstreamOnlyDispatch.dispatch_stream_ids,
+    gridDimensions: upstreamOnlyDispatch.grid_dimensions,
+    blockDimensions: upstreamOnlyDispatch.block_dimensions,
+    sharedMemoryBytes: upstreamOnlyDispatch.shared_memory_bytes,
     dispatchTimestamps: upstreamOnlyDispatch.dispatch_timestamps,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected({
       runtimeDispatch: upstreamOnlyDispatch,
@@ -2310,6 +2337,10 @@ async function collectRuntimeEvidence() {
     dispatcherRegistrationIds: runtimeDispatch.dispatcher_registration_ids,
     dispatchTableEntryIds: runtimeDispatch.dispatch_table_entry_ids,
     dispatchTableHashes: runtimeDispatch.dispatch_table_hashes,
+    dispatchStreamIds: runtimeDispatch.dispatch_stream_ids,
+    gridDimensions: runtimeDispatch.grid_dimensions,
+    blockDimensions: runtimeDispatch.block_dimensions,
+    sharedMemoryBytes: runtimeDispatch.shared_memory_bytes,
     dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
