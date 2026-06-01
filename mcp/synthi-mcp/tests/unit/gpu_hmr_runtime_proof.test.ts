@@ -2670,6 +2670,22 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.epochProofEvidenceObserved).toBe(false);
   });
 
+  it("does not prove dispatch safety when provenance records do not cover known launch args", () => {
+    const [record] = safeDispatchProof().argProvenanceRecords;
+    const { launchKey: _launchKey, expectedArgCount: _expectedArgCount, ...recordWithoutLaunchCount } = record;
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      argProvenanceRecords: [recordWithoutLaunchCount],
+      argProvenanceComplete: true,
+      argProvenanceKnownArgCount: 2,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_record_coverage_incomplete");
+    expect(proof.argProvenanceComplete).toBe(false);
+  });
+
   it("does not prove dispatch safety without runtime selected artifact binding", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,

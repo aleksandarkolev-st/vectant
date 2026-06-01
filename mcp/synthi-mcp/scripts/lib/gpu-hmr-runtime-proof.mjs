@@ -260,6 +260,10 @@ function argProvenanceRecordsComplete(observation, records) {
   return true;
 }
 
+function argProvenanceRecordsHaveLaunchGroupCounts(records) {
+  return records.some((record) => record.launchKey && record.expectedArgCount !== null);
+}
+
 function streamScopeObserved(streamScope, streamIds) {
   if (streamScope === 'none') {
     return streamIds.length === 1 && streamIds[0] === 'none';
@@ -1306,11 +1310,32 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     'arg_provenance_records',
     'argument_provenance_records',
   ]));
+  const argProvenanceKnownArgCount = integerValue(
+    observation.knownArgCount
+    ?? observation.known_arg_count
+    ?? observation.argProvenanceKnownArgCount
+    ?? observation.arg_provenance_known_arg_count,
+  );
+  const argProvenanceRecordIntegrityComplete =
+    argProvenanceRecords.length > 0 && argProvenanceRecords.every(argRecordRuntimeProven);
   const argProvenanceRecordComplete = argProvenanceRecordsComplete(observation, argProvenanceRecords);
+  const argProvenanceRecordCoverageRequired =
+    argProvenanceKnownArgCount !== null
+    && argProvenanceKnownArgCount > 0
+    && !argProvenanceRecordsHaveLaunchGroupCounts(argProvenanceRecords);
+  const argProvenanceKnownArgCoverageComplete =
+    !argProvenanceRecordCoverageRequired
+    || argProvenanceRecords.length >= argProvenanceKnownArgCount;
+  const argProvenanceRecordCoverageComplete =
+    !argProvenanceRecordCoverageRequired
+    || (argProvenanceRecordIntegrityComplete && argProvenanceKnownArgCoverageComplete);
   const argProvenanceComplete =
-    observation.argProvenanceComplete === true
-    || observation.argumentProvenanceComplete === true
-    || argProvenanceRecordComplete;
+    (
+      observation.argProvenanceComplete === true
+      || observation.argumentProvenanceComplete === true
+      || argProvenanceRecordComplete
+    )
+    && argProvenanceRecordCoverageComplete;
   const abiProof = observation.abiProof && typeof observation.abiProof === 'object'
     ? observation.abiProof
     : null;
@@ -1409,7 +1434,11 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       resultState: 'gpu-hmr-dispatch-observed',
       degradedState: 'gpu-hmr-unknown-arg-provenance',
       degradedReason: argProvenanceObserved
-        ? 'launch_argument_provenance_incomplete'
+        ? argProvenanceRecordCoverageRequired && !argProvenanceRecordIntegrityComplete
+          ? 'launch_argument_provenance_records_incomplete'
+          : argProvenanceRecordCoverageRequired && !argProvenanceKnownArgCoverageComplete
+          ? 'launch_argument_provenance_record_coverage_incomplete'
+          : 'launch_argument_provenance_incomplete'
         : 'launch_argument_provenance_not_collected',
       dispatchObserved: true,
       sessionScoped,
