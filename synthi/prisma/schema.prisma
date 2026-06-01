@@ -44,6 +44,9 @@ model WorkspaceMembership {
   id          String    @id @default(cuid())
   userId      String
   workspaceId String
+  // Workspace authorization role: 'owner' | 'admin' | 'member'. Backfill sets the
+  // earliest membership per workspace to 'owner' (Workspace has no creatorId). (Plan 1a R1-9)
+  role        String    @default("member")
   createdAt   DateTime  @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -52,4 +55,65 @@ model WorkspaceMembership {
   @@unique([userId, workspaceId])
   @@index([userId])
   @@index([workspaceId])
+}
+
+model EncryptedSecret {
+  id        String   @id @default(cuid())
+  // AES-256-GCM blob from src/lib/tokenCrypto.js, format "iv:tag:ct".
+  cipher    String
+  // Non-sensitive last-4 chars of the plaintext, for display only.
+  last4     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connection McpConnection?
+}
+
+model McpConnection {
+  id            String   @id @default(cuid())
+  name          String
+  url           String
+  transport     String   @default("http") // 'http' | 'sse'
+  scope         String                     // 'personal' | 'workspace'
+  ownerUserId   String?
+  workspaceSlug String?
+  authType      String   @default("none")  // 'none' | 'bearer' | 'header'
+  headerName    String?
+  secretId      String?  @unique
+  secret        EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  // Tool names the AI may call. Empty array = none enabled (fail-closed). (R1-1)
+  toolAllowlist String[] @default([])
+  enabled       Boolean  @default(true)
+  lastHealthState String?
+  lastHealthAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  audits McpCallAudit[]
+
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
+}
+
+model McpCallAudit {
+  id            String   @id @default(cuid())
+  connectionId  String
+  connection    McpConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  serverName    String
+  toolName      String                     // original MCP tool name
+  userId        String?
+  workspaceSlug String?
+  outcome       String                     // 'ok' | 'error' | 'blocked'
+  errorCode     String?
+  // Richer audit columns (R1-8) — never store raw secrets or full payloads.
+  alias         String?                    // the ext_<i> alias presented to the model
+  callerType    String?                    // 'chat' | 'cli'
+  durationMs    Int?
+  argsHash      String?                    // sha256 hex of the JSON args (NOT raw args)
+  argsBytes     Int?
+  resultBytes   Int?
+  createdAt     DateTime @default(now())
+
+  @@index([connectionId])
+  @@index([createdAt])
 }
