@@ -1015,6 +1015,7 @@ pub async fn perform_ai_diff_patch(
 pub struct GpuDiffPatchResult {
     pub reload_plan: String,
     pub edits: Vec<crate::hmr::edit_applier::Edit>,
+    pub fission_candidate: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1023,6 +1024,8 @@ struct GpuDiffPatchResponse {
     reload_plan: Option<String>,
     #[serde(default)]
     edits: Vec<crate::hmr::edit_applier::Edit>,
+    #[serde(rename = "fissionCandidate", default)]
+    fission_candidate: Option<serde_json::Value>,
     #[serde(default)]
     elapsed_seconds: Option<f64>,
 }
@@ -1096,6 +1099,7 @@ pub async fn perform_gpu_ai_diff_patch(
     Ok(GpuDiffPatchResult {
         reload_plan,
         edits: parsed.edits,
+        fission_candidate: parsed.fission_candidate,
     })
 }
 
@@ -1557,6 +1561,25 @@ mod tests {
             "oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, 0);"
         ));
         assert!(!text_has_gpu_markers("int main() { return 0; }"));
+    }
+
+    #[test]
+    fn gpu_diff_patch_response_preserves_fission_candidate_proposal() {
+        let parsed: GpuDiffPatchResponse = serde_json::from_value(json!({
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "islandId": "island:proposal",
+                "targetSymbols": ["step"],
+                "proposalSource": "ai_delta"
+            }
+        }))
+        .unwrap();
+
+        let candidate = parsed.fission_candidate.expect("fission candidate");
+        assert_eq!(candidate["islandId"], "island:proposal");
+        assert_eq!(candidate["targetSymbols"], json!(["step"]));
+        assert_eq!(candidate["proposalSource"], "ai_delta");
     }
 
     #[test]

@@ -5429,6 +5429,80 @@ fn gpu_ai_delta_policy_rejection_reports(
     (plan_report, verifier_report, reason_codes)
 }
 
+fn gpu_ai_delta_fission_proposal(candidate: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let candidate = candidate?;
+    let mut proposal = candidate.as_object()?.clone();
+    let proposal_id = proposal
+        .get("aiProposalId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "ai:fission:proposal:sha256:{}",
+                sha256_hex_str(&serde_json::Value::Object(proposal.clone()).to_string())
+            )
+        });
+    proposal.insert(
+        "aiProposalId".to_string(),
+        serde_json::Value::String(proposal_id),
+    );
+    proposal
+        .entry("proposalSource".to_string())
+        .or_insert_with(|| {
+            serde_json::json!({
+                "producer": "ai_delta",
+                "kind": "fission_candidate_proposal",
+                "authority": "non_authoritative"
+            })
+        });
+    proposal.insert(
+        "aiProposalIdRequired".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    proposal.insert(
+        "deterministicPromotionRequired".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    Some(serde_json::Value::Object(proposal))
+}
+
+fn gpu_ai_delta_acceptance_report(
+    requested_plan: &str,
+    user_path: &str,
+    generated_path: &str,
+    reason_codes: &[String],
+    touched_roles: &[String],
+    fission_candidate: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let fission_proposal = gpu_ai_delta_fission_proposal(fission_candidate);
+    let mut report = serde_json::json!({
+        "schemaVersion": "synthi.gpu.ai_delta_verifier.v1",
+        "status": "pass",
+        "requestedReloadPlan": requested_plan,
+        "selectedFallback": serde_json::Value::Null,
+        "reasonCodes": reason_codes,
+        "userFile": user_path,
+        "generatedRole": generated_path,
+        "evidence": {
+            "touchedGeneratedRoles": touched_roles,
+            "fissionCandidateProposal": {
+                "present": fission_proposal.is_some(),
+                "authority": "non_authoritative",
+                "deterministicPromotionRequired": fission_proposal.is_some()
+            }
+        }
+    });
+    if let Some(fission_proposal) = fission_proposal {
+        if let Some(object) = report.as_object_mut() {
+            object.insert("fissionCandidate".to_string(), fission_proposal.clone());
+            object.insert("fissionCandidateProposal".to_string(), fission_proposal);
+        }
+    }
+    report
+}
+
 fn gpu_ai_delta_touched_roles(edits: &[crate::hmr::edit_applier::Edit]) -> Vec<String> {
     let mut roles = std::collections::BTreeSet::new();
     for edit in edits {
@@ -8071,9 +8145,21 @@ pub async fn handle_compile_request(
                                 &ai_delta.reload_plan,
                                 &request_device_name,
                                 Some(&generated_device_path),
-                                reason_codes,
+                                reason_codes.clone(),
+                            );
+                            let ai_delta_verifier_report = gpu_ai_delta_acceptance_report(
+                                &ai_delta.reload_plan,
+                                &request_device_name,
+                                &generated_device_path,
+                                &reason_codes,
+                                &touched_roles,
+                                ai_delta.fission_candidate.as_ref(),
                             );
                             meta.insert("lastReloadPlanReport".to_string(), plan_report.clone());
+                            meta.insert(
+                                "lastGpuAiDeltaVerifierReport".to_string(),
+                                ai_delta_verifier_report,
+                            );
                             meta.insert(
                                 "patchTier".to_string(),
                                 serde_json::Value::String("ai_delta".to_string()),
@@ -14897,6 +14983,76 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             gpu_ai_delta_touched_roles(&edits),
             vec!["device".to_string(), "shared".to_string()]
         );
+    }
+
+    #[test]
+    fn gpu_ai_delta_acceptance_report_records_fission_candidate_as_proposal_only() {
+        let reasons = vec![
+            "ai_delta.generated_role_patch".to_string(),
+            "verifier.ai_delta_edits_applied".to_string(),
+        ];
+        let touched_roles = vec!["device".to_string()];
+        let ai_candidate = serde_json::json!({
+            "islandId": "island:proposal",
+            "sourceEditId": "edit:proposal",
+            "sourcePaths": ["src/device.kernel"],
+            "sourceSpans": [{"path": "src/device.kernel", "startLine": 1, "endLine": 3}],
+            "generatedRolePath": ".synthi/generated/gpu/device.kernel",
+            "targetSymbols": ["step"],
+            "exportedSymbolsExpected": ["step"],
+            "artifactKind": "source_include_bridge",
+            "includeClosure": [{"path": "src/device.kernel"}],
+            "dependencyClosureHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "abiMembraneId": "abi:membrane",
+            "compileRecipeHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
+            "requiredOracleId": "oracle:step",
+            "sourceMappingEvidenceIds": ["evidence:source-map"],
+            "includeClosureEvidenceIds": ["evidence:include-closure"],
+            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
+            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
+            "outputOracleEvidenceIds": ["evidence:output-oracle"],
+            "verifierEvidenceIds": ["evidence:source-map"],
+            "narrowerCandidateRejections": [
+                {
+                    "scopeRank": 0,
+                    "reasonCode": "fission.edit_crosses_body_boundary",
+                    "verifierEvidenceIds": ["evidence:source-map"]
+                }
+            ]
+        });
+
+        let report = gpu_ai_delta_acceptance_report(
+            "device_only",
+            "src/device.kernel",
+            ".synthi/generated/gpu/device.kernel",
+            &reasons,
+            &touched_roles,
+            Some(&ai_candidate),
+        );
+
+        let candidate = report
+            .get("fissionCandidate")
+            .expect("fission proposal candidate");
+        assert_eq!(candidate["proposalSource"]["producer"], "ai_delta");
+        assert_eq!(candidate["deterministicPromotionRequired"], true);
+        assert!(candidate["aiProposalId"]
+            .as_str()
+            .unwrap()
+            .starts_with("ai:fission:proposal:sha256:"));
+
+        let verifier_report =
+            verify_fission_candidates(&serde_json::Value::Array(vec![candidate.clone()]));
+        assert_eq!(verifier_report["status"], "reject");
+        assert!(verifier_report["candidates"][0]["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.ai_proposal_deterministic_promotion_missing"));
     }
 
     #[test]

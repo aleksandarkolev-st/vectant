@@ -72,6 +72,12 @@ const ORIGINAL_HOST_LAUNCH_MAPPING_EVIDENCE_FIELDS: &[&str] = &[
     "launchAttachmentEvidenceIds",
 ];
 
+const AI_PROPOSAL_DETERMINISTIC_PROMOTION_EVIDENCE_FIELDS: &[&str] = &[
+    "deterministicPromotionEvidenceIds",
+    "fissionPromotionEvidenceIds",
+    "proposalPromotionEvidenceIds",
+];
+
 #[derive(Clone, Copy)]
 struct VerificationEvidenceCategory {
     name: &'static str,
@@ -301,6 +307,11 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     if ai_proposal_id_required(candidate) && !non_empty_string(candidate.get("aiProposalId")) {
         reason_codes.push("fission.ai_proposal_id_missing".to_string());
     }
+    if ai_proposal_id_required(candidate)
+        && ai_proposal_deterministic_promotion_evidence_ids(candidate).is_empty()
+    {
+        reason_codes.push("fission.ai_proposal_deterministic_promotion_missing".to_string());
+    }
 
     let status = if reason_codes.is_empty() {
         reason_codes.push("fission.candidate_verified".to_string());
@@ -316,6 +327,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "sourceEditId": candidate.get("sourceEditId").cloned().unwrap_or(Value::Null),
         "aiProposalId": candidate.get("aiProposalId").cloned().unwrap_or(Value::Null),
         "aiProposalIdRequired": ai_proposal_id_required(candidate),
+        "aiProposalDeterministicPromotionEvidenceIds": ai_proposal_deterministic_promotion_evidence_ids(candidate),
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
@@ -1127,6 +1139,18 @@ fn ai_proposal_id_required(candidate: &Value) -> bool {
         || non_authoritative_evidence_ids(candidate)
             .iter()
             .any(|id| text_indicates_ai_source(id))
+}
+
+fn ai_proposal_deterministic_promotion_evidence_ids(candidate: &Value) -> Vec<String> {
+    deterministic_evidence_ids_for_category(
+        candidate,
+        AI_PROPOSAL_DETERMINISTIC_PROMOTION_EVIDENCE_FIELDS,
+        &[
+            "fission_promotion",
+            "proposal_promotion",
+            "deterministic_promotion",
+        ],
+    )
 }
 
 fn ai_source_marker_present(candidate: &Value) -> bool {
@@ -2372,6 +2396,7 @@ mod tests {
         let mut candidate = valid_candidate();
         candidate["proposalSource"] = json!({"planner": "llm_fission_planner"});
         candidate["aiProposalId"] = json!("ai:fission:proposal:123");
+        candidate["deterministicPromotionEvidenceIds"] = json!(["evidence:fission-promotion"]);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -2379,9 +2404,34 @@ mod tests {
         assert_eq!(report["aiProposalIdRequired"], true);
         assert_eq!(report["aiProposalId"], "ai:fission:proposal:123");
         assert_eq!(
+            report["aiProposalDeterministicPromotionEvidenceIds"],
+            json!(["evidence:fission-promotion"])
+        );
+        assert_eq!(
             report["deterministicVerifierEvidenceIds"],
             json!(["evidence:source-map"])
         );
+    }
+
+    #[test]
+    fn rejects_ai_marked_candidate_without_deterministic_promotion_evidence() {
+        let mut candidate = valid_candidate();
+        candidate["proposalSource"] = json!("ai_delta");
+        candidate["aiProposalId"] = json!("ai:fission:proposal:456");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["aiProposalIdRequired"], true);
+        assert_eq!(
+            report["aiProposalDeterministicPromotionEvidenceIds"],
+            json!([])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.ai_proposal_deterministic_promotion_missing"));
     }
 
     #[test]
