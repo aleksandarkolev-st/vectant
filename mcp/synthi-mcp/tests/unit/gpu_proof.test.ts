@@ -97,6 +97,27 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.effectiveResultRank).toBe(gpuHmrProofStateRank("gpu-hmr-epoch-swap-proven"));
   });
 
+  it("caps render proof when required visual evidence is missing", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      degradedState: "gpu-hmr-visual-evidence-missing",
+    });
+
+    const dispatchValidation = validateGpuHmrProofState(proof, "gpu-hmr-dispatch-safe-proven");
+    expect(dispatchValidation.satisfied).toBe(true);
+    expect(dispatchValidation.effectiveResultRank).toBe(
+      gpuHmrProofStateRank("gpu-hmr-dispatch-safe-proven")
+    );
+
+    const outputValidation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+    expect(outputValidation.satisfied).toBe(false);
+    expect(outputValidation.reason).toBe("degraded_state_blocks_required_proof");
+    expect(outputValidation.degradedStateRankCap).toBe(
+      gpuHmrProofStateRank("gpu-hmr-dispatch-safe-proven")
+    );
+  });
+
   it("treats unknown degraded states as proof blockers", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
