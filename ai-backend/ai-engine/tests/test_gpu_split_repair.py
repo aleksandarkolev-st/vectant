@@ -36,6 +36,52 @@ def test_heal_sanitizer_removes_missing_project_toolkit_include_and_calls():
     assert "glBegin(GL_TRIANGLES);" in repaired
 
 
+def test_repair_aligns_gui_render_state_cast_with_core_state_abi():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; int pixels[4]; };',
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            "struct GuiState { int frame; int pixels[4]; };\n"
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "GuiState* state = reinterpret_cast<GuiState*>(state_ptr); "
+            "(void)state->frame; }"
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+    )
+    assert any(v.rule == "generated.core_gui_state_abi_mismatch" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert "repair.core_gui_state_abi" in report["repairRules"]
+    assert "reinterpret_cast<AppState*>(state_ptr)" in repaired["gui.cpp"]
+    assert "AppState* state =" in repaired["gui.cpp"]
+    repaired_verification = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+    )
+    assert not any(
+        v.rule == "generated.core_gui_state_abi_mismatch"
+        for v in repaired_verification.violations
+    )
+
+
 def test_canonicalize_source_backed_device_role_removes_ai_prelude():
     source_files = {
         "src/device_defs.h": (

@@ -25,9 +25,12 @@ from verifier_gpu import (
     _GPU_SDK_VECTOR_MAKE_FUNCTION_RE,
     _GPU_SDK_VECTOR_TYPE_NAMES,
     SplitVerificationResult,
+    _core_returned_state_types,
+    _cpp_type_compatible,
     _device_role_included_source_files as _verifier_device_role_included_source_files,
     _device_kernel_launch_bound,
     _eval_static_int_expr,
+    _gui_render_state_cast_types,
     _host_runner_routes_gui_module,
     _launch_block_thread_count,
     _launch_dim_values,
@@ -278,6 +281,22 @@ def repair_split_artifacts(
             repaired[gui_path] = gui_after
             changed_files.add(gui_path)
             repair_rules.append("repair.gui_render_effect")
+
+    if (
+        core_path
+        and gui_path
+        and core_path in repaired
+        and gui_path in repaired
+        and "generated.core_gui_state_abi_mismatch" in input_reason_codes
+    ):
+        gui_after, changed = _repair_core_gui_state_abi(
+            core_source=repaired[core_path],
+            gui_source=repaired[gui_path],
+        )
+        if changed:
+            repaired[gui_path] = gui_after
+            changed_files.add(gui_path)
+            repair_rules.append("repair.core_gui_state_abi")
 
     if (
         host_runner_path
@@ -964,6 +983,91 @@ def _repair_gui_render_effect(
     replacement = _opengl_visible_render_body()
     out = out[: span_after_include[0]] + replacement + out[span_after_include[1] :]
     return out, out != gui_source
+
+
+def _type_token_pattern(type_name: str) -> str:
+    parts = [re.escape(part) for part in str(type_name).split("::") if part]
+    if not parts:
+        return r"(?!x)x"
+    return r"\s*::\s*".join(parts)
+
+
+def _replace_gui_render_state_type(body: str, old_type: str, new_type: str) -> str:
+    old_pattern = _type_token_pattern(old_type)
+    if not old_pattern or old_pattern == r"(?!x)x":
+        return body
+
+    def replace_cpp_cast(match: re.Match[str]) -> str:
+        pointer = match.group("pointer") or "*"
+        return f"{match.group('cast')}<{new_type}{pointer}>"
+
+    body = re.sub(
+        rf"(?P<cast>\b(?:reinterpret_cast|static_cast|const_cast)\s*)"
+        rf"<\s*{old_pattern}\s*(?P<pointer>[*&]?)\s*>",
+        replace_cpp_cast,
+        body,
+        flags=re.DOTALL,
+    )
+
+    def replace_c_style_cast(match: re.Match[str]) -> str:
+        qualifier = match.group("qualifier") or ""
+        pointer = match.group("pointer") or "*"
+        return f"({qualifier}{new_type}{pointer})"
+
+    body = re.sub(
+        rf"\(\s*(?P<qualifier>(?:const\s+)?)"
+        rf"{old_pattern}\s*(?P<pointer>[*&]?)\s*\)",
+        replace_c_style_cast,
+        body,
+        flags=re.DOTALL,
+    )
+
+    def replace_pointer_declaration(match: re.Match[str]) -> str:
+        qualifier = match.group("qualifier") or ""
+        pointer = match.group("pointer")
+        return f"{qualifier}{new_type}{pointer} {match.group('name')} ="
+
+    return re.sub(
+        rf"\b(?P<qualifier>(?:const\s+)?)"
+        rf"{old_pattern}\s*(?P<pointer>[*&])\s*"
+        rf"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=",
+        replace_pointer_declaration,
+        body,
+        flags=re.DOTALL,
+    )
+
+
+def _repair_core_gui_state_abi(
+    *,
+    core_source: str,
+    gui_source: str,
+) -> tuple[str, bool]:
+    core_state_types = sorted(_core_returned_state_types(core_source))
+    gui_state_cast_types = sorted(_gui_render_state_cast_types(gui_source))
+    if len(core_state_types) != 1 or not gui_state_cast_types:
+        return gui_source, False
+    target_type = core_state_types[0]
+    mismatched_types = [
+        state_type
+        for state_type in gui_state_cast_types
+        if not _cpp_type_compatible(target_type, state_type)
+    ]
+    if not mismatched_types:
+        return gui_source, False
+    span = _function_body_span(gui_source, "gui_on_render")
+    if span is None:
+        return gui_source, False
+    body = gui_source[span[0] : span[1]]
+    repaired_body = body
+    for state_type in mismatched_types:
+        repaired_body = _replace_gui_render_state_type(
+            repaired_body,
+            state_type,
+            target_type,
+        )
+    if repaired_body == body:
+        return gui_source, False
+    return gui_source[: span[0]] + repaired_body + gui_source[span[1] :], True
 
 
 def _strip_single_namespace_wrapper(source: str) -> str:
