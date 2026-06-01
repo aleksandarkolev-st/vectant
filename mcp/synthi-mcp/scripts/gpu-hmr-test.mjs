@@ -3996,8 +3996,14 @@ async function selfCheck() {
     argProvenanceRecords: argProvenanceEvidence.records,
     argProvenanceRecordComplete: argProvenanceEvidence.recordComplete,
     argProvenanceKnownArgCount: argProvenanceEvidence.knownArgCount,
-    abiProven: true,
-    epochSwapProven: true,
+    abiProof: {
+      resultState: 'gpu-hmr-abi-proven',
+      evidenceRefs: ['evidence:device-abi-metadata:self-check'],
+    },
+    epochProof: {
+      resultState: 'gpu-hmr-epoch-swap-proven',
+      evidenceRefs: ['evidence:epoch:self-check'],
+    },
     streamOrderingProven: true,
     replacementScopeProven: true,
     selectedArtifactIds: [selfArtifactId],

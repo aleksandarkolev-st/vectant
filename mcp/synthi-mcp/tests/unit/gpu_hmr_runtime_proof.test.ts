@@ -56,6 +56,7 @@ function acceptedAbiProof() {
     layoutSizeAlignmentVerified: true,
     kernelAbiFingerprintHash: "d".repeat(64),
     constantGlobalLayoutHash: "e".repeat(64),
+    evidenceRefs: ["evidence:device-abi-metadata:test"],
     extractorProvenance: [{
       kind: "clang_ast",
       evidenceId: "evidence:clang-ast:abc",
@@ -2565,6 +2566,34 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+  });
+
+  it("does not prove dispatch safety from an ABI boolean without proof evidence refs", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      abiProof: null,
+      abiProven: true,
+      abiProofEvidenceRefs: [],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("dispatch_abi_proof_evidence_refs_not_collected");
+    expect(proof.abiProofEvidenceObserved).toBe(false);
+  });
+
+  it("does not prove dispatch safety from an epoch boolean without proof evidence refs", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      epochProof: null,
+      epochSwapProven: true,
+      epochProofEvidenceRefs: [],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("dispatch_epoch_proof_evidence_refs_not_collected");
+    expect(proof.epochProofEvidenceObserved).toBe(false);
   });
 
   it("does not prove dispatch safety without runtime selected artifact binding", () => {
