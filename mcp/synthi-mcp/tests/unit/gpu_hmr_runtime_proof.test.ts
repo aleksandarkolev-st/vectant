@@ -1238,6 +1238,12 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
     expect(proof.runtimeIdentityEvidenceRefs).toEqual(preservedHostIdentityRefs());
     expect(proof.runtimeIdentitySnapshotEvidenceRefs).toEqual(preservedHostSnapshotRefs());
+    expect(proof.identityRoleCategories).toEqual([
+      "host_state",
+      "runner_process",
+      "runtime_resource",
+    ]);
+    expect(proof.requiredIdentityRoleEvidenceRefsComplete).toBe(true);
   });
 
   it("does not prove host preservation from role refs without runtime snapshot evidence refs", () => {
@@ -1252,6 +1258,26 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBeNull();
     expect(proof.degradedReason).toBe("host_identity_snapshot_evidence_refs_not_collected");
     expect(proof.runtimeIdentitySnapshotEvidenceRefs).toEqual([]);
+  });
+
+  it("does not prove host preservation when required runtime role categories are not evidenced", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+      identitySnapshotObserved: true,
+      identitySnapshotLineageObserved: true,
+      requiredIdentityRolesObserved: true,
+      identityEvidenceRefs: ["worker-log:host_identity:runner_process"],
+      identitySnapshotEvidenceRefs: [
+        "worker-log:host_identity_snapshot:runtime-session:test:runner_process:2->3",
+      ],
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_required_role_evidence_refs_incomplete");
+    expect(proof.missingRequiredIdentityRoleCategories).toEqual([
+      "host_state",
+      "runtime_resource",
+    ]);
   });
 
   it("does not prove host preservation from identity booleans without evidence refs", () => {

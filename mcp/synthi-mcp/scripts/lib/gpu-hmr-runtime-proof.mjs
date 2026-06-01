@@ -549,6 +549,66 @@ function runtimeHostIdentitySnapshotEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:host_identity_snapshot:/i.test(ref));
 }
 
+function hostIdentityRoleCategory(role) {
+  const normalized = String(role ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized.includes('runner')
+    || normalized.includes('process')
+    || normalized.includes('runtime_session')
+  ) {
+    return 'runner_process';
+  }
+  if (
+    normalized.includes('core')
+    || normalized.includes('gui')
+    || normalized.includes('renderer')
+    || normalized.includes('module')
+    || normalized.includes('host')
+    || normalized.includes('state')
+  ) {
+    return 'host_state';
+  }
+  if (
+    normalized.includes('allocation')
+    || normalized.includes('buffer')
+    || normalized.includes('stream')
+    || normalized.includes('context')
+    || normalized.includes('event')
+  ) {
+    return 'runtime_resource';
+  }
+  return null;
+}
+
+function hostIdentityRoleFromEvidenceRef(ref) {
+  const value = String(ref ?? '');
+  const direct = value.match(/^worker-log:host_identity:([^:]+)$/i);
+  if (direct) return direct[1];
+  const snapshotPrefix = 'worker-log:host_identity_snapshot:';
+  if (!value.toLowerCase().startsWith(snapshotPrefix)) return null;
+  const parts = value.slice(snapshotPrefix.length).split(':');
+  return parts.length >= 2 ? parts.at(-2) : null;
+}
+
+function hostIdentityRoleCategoriesFromRefs(refs) {
+  return [...new Set(
+    compactStringList(refs)
+      .map(hostIdentityRoleFromEvidenceRef)
+      .map(hostIdentityRoleCategory)
+      .filter(Boolean),
+  )].sort();
+}
+
+function hostIdentityMissingRequiredCategories(identityRefs, snapshotRefs) {
+  const required = ['host_state', 'runner_process', 'runtime_resource'];
+  const identityCategories = hostIdentityRoleCategoriesFromRefs(identityRefs);
+  const snapshotCategories = hostIdentityRoleCategoriesFromRefs(snapshotRefs);
+  return required.filter(
+    (category) => !identityCategories.includes(category) || !snapshotCategories.includes(category),
+  );
+}
+
 function runtimeLaunchArgProvenanceEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:launch_arg_provenance:/i.test(ref));
 }
@@ -567,7 +627,11 @@ function hostPreservationProofUsable(proof) {
     && proof.identitySnapshotLineageObserved === true
     && proof.requiredIdentityRolesObserved === true
     && runtimeHostIdentityEvidenceRefs(proof.identityEvidenceRefs).length > 0
-    && runtimeHostIdentitySnapshotEvidenceRefs(proof.identitySnapshotEvidenceRefs).length > 0;
+    && runtimeHostIdentitySnapshotEvidenceRefs(proof.identitySnapshotEvidenceRefs).length > 0
+    && hostIdentityMissingRequiredCategories(
+      proof.runtimeIdentityEvidenceRefs ?? proof.identityEvidenceRefs,
+      proof.runtimeIdentitySnapshotEvidenceRefs ?? proof.identitySnapshotEvidenceRefs,
+    ).length === 0;
 }
 
 function originalHostPathProofUsable(proof) {
@@ -2263,6 +2327,13 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const runtimeIdentitySnapshotEvidenceRefs =
     runtimeHostIdentitySnapshotEvidenceRefs(identitySnapshotEvidenceRefs);
   const runtimeIdentitySnapshotEvidenceObserved = runtimeIdentitySnapshotEvidenceRefs.length > 0;
+  const identityRoleCategories = hostIdentityRoleCategoriesFromRefs(runtimeIdentityEvidenceRefs);
+  const identitySnapshotRoleCategories =
+    hostIdentityRoleCategoriesFromRefs(runtimeIdentitySnapshotEvidenceRefs);
+  const missingRequiredIdentityRoleCategories =
+    hostIdentityMissingRequiredCategories(runtimeIdentityEvidenceRefs, runtimeIdentitySnapshotEvidenceRefs);
+  const requiredIdentityRoleEvidenceRefsComplete =
+    missingRequiredIdentityRoleCategories.length === 0;
 
   if (hostReplacementObserved) {
     return {
@@ -2281,6 +2352,10 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       identitySnapshotEvidenceRefs,
       runtimeIdentitySnapshotEvidenceRefs,
       runtimeIdentitySnapshotEvidenceObserved,
+      identityRoleCategories,
+      identitySnapshotRoleCategories,
+      missingRequiredIdentityRoleCategories,
+      requiredIdentityRoleEvidenceRefsComplete,
     };
   }
 
@@ -2291,6 +2366,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     && requiredIdentityRolesObserved
     && runtimeIdentityEvidenceObserved
     && runtimeIdentitySnapshotEvidenceObserved
+    && requiredIdentityRoleEvidenceRefsComplete
   ) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -2308,6 +2384,10 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       identitySnapshotEvidenceRefs,
       runtimeIdentitySnapshotEvidenceRefs,
       runtimeIdentitySnapshotEvidenceObserved: true,
+      identityRoleCategories,
+      identitySnapshotRoleCategories,
+      missingRequiredIdentityRoleCategories,
+      requiredIdentityRoleEvidenceRefsComplete: true,
     };
   }
 
@@ -2326,7 +2406,9 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
               ? 'host_identity_snapshot_evidence_refs_not_collected'
               : !requiredIdentityRolesObserved
                 ? 'host_identity_required_roles_not_collected'
-                : 'host_identity_checks_not_collected'
+                : !requiredIdentityRoleEvidenceRefsComplete
+                  ? 'host_identity_required_role_evidence_refs_incomplete'
+                  : 'host_identity_checks_not_collected'
       : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
     identitySnapshotObserved,
@@ -2339,6 +2421,10 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     identitySnapshotEvidenceRefs,
     runtimeIdentitySnapshotEvidenceRefs,
     runtimeIdentitySnapshotEvidenceObserved,
+    identityRoleCategories,
+    identitySnapshotRoleCategories,
+    missingRequiredIdentityRoleCategories,
+    requiredIdentityRoleEvidenceRefsComplete,
   };
 }
 
