@@ -821,6 +821,8 @@ function launchBoundaryRecord(line) {
     line,
     runtimeSession: fields.runtime_session ?? null,
     generation: integerValue(fields.generation),
+    dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
+    dispatchTimestamp: integerValue(fields.dispatch_timestamp ?? fields.dispatchTimestamp),
     complete: boolValue(fields.complete),
   };
 }
@@ -844,6 +846,9 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       typeof record.runtimeSession === 'string'
       && record.runtimeSession.trim()
       && Number.isFinite(record.generation)
+      && typeof record.dispatchTableEntryId === 'string'
+      && record.dispatchTableEntryId.trim()
+      && record.dispatchTableEntryId !== 'none'
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
   const dispatchBoundaryRecords = (Array.isArray(lines) ? lines : [])
@@ -878,6 +883,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     && launchBoundaryRecords.some((launchRecord) =>
       launchRecord.runtimeSession === record.runtimeSession
       && launchRecord.generation === record.generation
+      && launchRecord.dispatchTableEntryId === record.runtimeDispatchTableEntryId
     )
     && dispatchBoundaryRecords.some((dispatchRecord) =>
       dispatchRecord.runtimeSession === record.runtimeSession
@@ -891,6 +897,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     ? launchBoundaryRecords.find((record) =>
         record.runtimeSession === latest.runtimeSession
         && record.generation === latest.generation
+        && record.dispatchTableEntryId === latest.runtimeDispatchTableEntryId
       ) ?? null
     : null;
   const matchingDispatchBoundary = latest
@@ -902,7 +909,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const evidenceRefs = latest
     ? [
         `worker-log:original_host_path:${latest.hostPathId}:${latest.generation}`,
-        `worker-log:launch_arg_provenance:${latest.runtimeSession}:${latest.generation}`,
+        `worker-log:launch_arg_provenance:${latest.runtimeSession}:${latest.generation}:${latest.runtimeDispatchTableEntryId}`,
         `worker-log:synthi_gpu_launch:${latest.runtimeSession}:${latest.runtimeDispatchTableEntryId}`,
       ]
     : [];

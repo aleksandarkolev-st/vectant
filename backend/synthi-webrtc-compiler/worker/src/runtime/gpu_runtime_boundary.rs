@@ -1727,10 +1727,12 @@ fn synthi_gpu_launch_raw_impl(
         "gpu-hmr-unknown-arg-provenance"
     };
     eprintln!(
-        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} complete={} known_args={} unknown_args={} degradedState={} details={}",
+        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} complete={} known_args={} unknown_args={} degradedState={} details={}",
         kernel_name,
         active_generation,
         runtime_session_id,
+        log_token(&dispatch_table_entry_id),
+        dispatch_timestamp_ms,
         arg_provenance_complete,
         known_arg_count,
         unknown_arg_count,
