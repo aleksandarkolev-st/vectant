@@ -3980,6 +3980,39 @@ fn partial_fission_line_count(
     u64::try_from(count).unwrap_or(u64::MAX)
 }
 
+fn partial_fission_symbol_identity_mappings(
+    target_symbols: &[String],
+    exported_symbols: &[String],
+    symbol_evidence_id: &str,
+) -> Vec<serde_json::Value> {
+    let targets = normalized_symbol_set(target_symbols);
+    let exports = normalized_symbol_set(exported_symbols);
+    targets
+        .iter()
+        .filter_map(|target| {
+            let matches = exports
+                .iter()
+                .filter(|exported| {
+                    *exported == target
+                        || exported_symbol_source_identity_candidates(exported)
+                            .iter()
+                            .any(|candidate| candidate == target)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if matches.len() != 1 || matches[0] == *target {
+                return None;
+            }
+            Some(serde_json::json!({
+                "targetSymbol": target,
+                "exportedSymbol": matches[0],
+                "identitySource": "compiled_artifact_symbol_table",
+                "evidenceIds": [symbol_evidence_id],
+            }))
+        })
+        .collect()
+}
+
 fn normalized_fission_scope_text(value: &str) -> String {
     value
         .trim()
@@ -4087,6 +4120,11 @@ fn partial_fission_candidate_and_evidence(
     } else {
         outcome.artifact_exported_symbols.clone()
     };
+    let symbol_identity_mappings = partial_fission_symbol_identity_mappings(
+        &outcome.target_symbols,
+        &exported_symbols,
+        symbol_evidence_id,
+    );
     let source_line_count = partial_fission_line_count(outcome, sources);
     let source_spans = source_paths
         .iter()
@@ -4150,6 +4188,7 @@ fn partial_fission_candidate_and_evidence(
         "sourceSpans": &source_spans,
         "targetSymbols": &outcome.target_symbols,
         "exportedSymbolsExpected": &exported_symbols,
+        "symbolIdentityMappings": &symbol_identity_mappings,
         "artifactKind": artifact_kind,
         "replacementScope": replacement_scope,
         "dependencyClosureHash": &dependency_hash,
@@ -4172,6 +4211,7 @@ fn partial_fission_candidate_and_evidence(
             .or(outcome.proof_metadata.source_filename.as_deref()),
         "targetSymbols": &outcome.target_symbols,
         "exportedSymbolsExpected": exported_symbols,
+        "symbolIdentityMappings": symbol_identity_mappings,
         "artifactKind": artifact_kind,
         "replacementScope": replacement_scope,
         "includeClosure": include_closure,
@@ -11476,7 +11516,8 @@ __constant__ int scale;
   pixels[0] = 1.0f;
 }
 "#;
-        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        let mut outcome =
+            fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_Z5shadePf"]));
         outcome.artifact_path = artifact_path;
         outcome.compiled_source = partial_source.to_string();
         outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
@@ -11537,6 +11578,11 @@ __constant__ int scale;
             .iter()
             .find(|evidence| evidence.kind == "fission-verifier-report")
             .expect("partial artifact fission verifier should be recorded");
+        let symbol_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "device-symbol-set")
+            .expect("partial artifact symbol evidence should be recorded");
         let fission_stage = artifact
             .stage_results
             .iter()
@@ -11546,7 +11592,6 @@ __constant__ int scale;
             .metadata
             .as_ref()
             .expect("fission report metadata should be present");
-
         assert_eq!(fission_stage.status, "passed");
         assert_eq!(
             report.get("status").and_then(serde_json::Value::as_str),
@@ -11563,6 +11608,24 @@ __constant__ int scale;
                 .pointer("/candidates/0/candidate/artifactKind")
                 .and_then(serde_json::Value::as_str),
             Some("source_include_bridge")
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/symbolIdentityMappings/0/targetSymbol")
+                .and_then(serde_json::Value::as_str),
+            Some("shade")
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/symbolIdentityMappings/0/exportedSymbol")
+                .and_then(serde_json::Value::as_str),
+            Some("_Z5shadePf")
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/symbolIdentityMappings/0/evidenceIds/0")
+                .and_then(serde_json::Value::as_str),
+            Some(symbol_evidence.evidence_id.as_str())
         );
         assert!(report
             .pointer("/candidates/0/candidate/requiredOracleId")

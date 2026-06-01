@@ -767,7 +767,13 @@ fn output_oracle_contract_summary(candidate: &Value) -> Value {
 fn target_symbols_exported(candidate: &Value) -> bool {
     let targets = string_set(candidate.get("targetSymbols"));
     let exports = string_set(candidate.get("exportedSymbolsExpected"));
-    !targets.is_empty() && targets.is_subset(&exports)
+    if targets.is_empty() || exports.is_empty() {
+        return false;
+    }
+    let mapped_targets = symbol_identity_mapped_targets(candidate, &exports);
+    targets
+        .iter()
+        .all(|target| exports.contains(target) || mapped_targets.contains(target))
 }
 
 fn safe_export_superset_justified(candidate: &Value) -> bool {
@@ -779,9 +785,103 @@ fn safe_export_superset_justified(candidate: &Value) -> bool {
 
 fn safe_export_superset_symbols(candidate: &Value) -> Vec<String> {
     let targets = string_set(candidate.get("targetSymbols"));
-    string_set(candidate.get("exportedSymbolsExpected"))
+    let exports = string_set(candidate.get("exportedSymbolsExpected"));
+    let mapped_exports = symbol_identity_mapped_exports(candidate, &exports);
+    exports
         .difference(&targets)
+        .filter(|symbol| !mapped_exports.contains(*symbol))
         .cloned()
+        .collect()
+}
+
+fn symbol_identity_mapped_targets(
+    candidate: &Value,
+    exports: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    symbol_identity_mappings(candidate, exports)
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect()
+}
+
+fn symbol_identity_mapped_exports(
+    candidate: &Value,
+    exports: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    symbol_identity_mappings(candidate, exports)
+        .into_iter()
+        .map(|(_, exported)| exported)
+        .collect()
+}
+
+fn symbol_identity_mappings(
+    candidate: &Value,
+    exports: &BTreeSet<String>,
+) -> Vec<(String, String)> {
+    candidate
+        .get("symbolIdentityMappings")
+        .or_else(|| candidate.get("symbolIdentityMap"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_object)
+                .filter_map(|mapping| {
+                    let target = first_mapping_string(
+                        mapping,
+                        &["targetSymbol", "sourceSymbol", "logicalSymbol", "symbol"],
+                    )?;
+                    let exported = first_mapping_string(
+                        mapping,
+                        &["exportedSymbol", "runtimeSymbol", "artifactSymbol", "mangledSymbol"],
+                    )?;
+                    let evidence_ids = first_mapping_evidence_ids(
+                        mapping,
+                        &[
+                            "evidenceIds",
+                            "verifierEvidenceIds",
+                            "symbolOwnershipEvidenceIds",
+                            "identityEvidenceIds",
+                        ],
+                    );
+                    (!target.is_empty()
+                        && !exported.is_empty()
+                        && exports.contains(&exported)
+                        && !evidence_ids.is_empty())
+                    .then_some((target, exported))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn first_mapping_string(
+    mapping: &serde_json::Map<String, Value>,
+    fields: &[&str],
+) -> Option<String> {
+    fields.iter().find_map(|field| {
+        mapping
+            .get(*field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn first_mapping_evidence_ids(
+    mapping: &serde_json::Map<String, Value>,
+    fields: &[&str],
+) -> Vec<String> {
+    fields
+        .iter()
+        .find_map(|field| {
+            let ids = string_list(mapping.get(*field));
+            (!ids.is_empty()).then_some(ids)
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| is_deterministic_verifier_evidence_id(id))
         .collect()
 }
 
@@ -1486,6 +1586,54 @@ mod tests {
             report["candidates"][0]["reasonCodes"][0],
             "fission.candidate_verified"
         );
+    }
+
+    #[test]
+    fn accepts_target_symbol_exported_through_evidenced_identity_mapping() {
+        let mut candidate = valid_candidate();
+        candidate["targetSymbols"] = json!(["step"]);
+        candidate["exportedSymbolsExpected"] = json!(["_Z4stepPf"]);
+        candidate["symbolIdentityMappings"] = json!([
+            {
+                "targetSymbol": "step",
+                "exportedSymbol": "_Z4stepPf",
+                "evidenceIds": ["evidence:symbol-ownership"]
+            }
+        ]);
+        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["safeExportSupersetSymbols"], json!([]));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|code| code != "fission.target_symbol_not_exported"));
+    }
+
+    #[test]
+    fn rejects_symbol_identity_mapping_without_deterministic_evidence() {
+        let mut candidate = valid_candidate();
+        candidate["targetSymbols"] = json!(["step"]);
+        candidate["exportedSymbolsExpected"] = json!(["_Z4stepPf"]);
+        candidate["symbolIdentityMappings"] = json!([
+            {
+                "targetSymbol": "step",
+                "exportedSymbol": "_Z4stepPf",
+                "evidenceIds": ["ai:symbol-guess"]
+            }
+        ]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.target_symbol_not_exported"));
     }
 
     #[test]
