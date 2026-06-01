@@ -191,6 +191,17 @@ function safeDispatchProof({
     argProvenanceEvidenceRefs: [
       `worker-log:launch_arg_provenance:test:${runtimeSession}:2`,
     ],
+    argProvenanceRecords: [{
+      argIndex: 0,
+      category: "device_allocation",
+      provenance: "runtime_observed",
+      confidence: "verified",
+      allocationId: "allocation:test",
+      allocationSize: 8,
+      valueSize: 8,
+    }],
+    argProvenanceRecordComplete: true,
+    argProvenanceKnownArgCount: 1,
     abiProof: acceptedAbiProof(),
     epochProof: retiredEpochProof(),
     streamOrderingProven: true,
@@ -2552,6 +2563,20 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
     expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
     expect(proof.degradedReason).toBe("dispatch_grid_dimensions_not_observed");
+  });
+
+  it("does not prove dispatch safety from provenance booleans without argument records", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      argProvenanceRecords: [],
+      argProvenanceRecordComplete: false,
+      argProvenanceKnownArgCount: 1,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_records_incomplete");
+    expect(proof.argProvenanceRecordComplete).toBe(false);
   });
 
   it("blocks output proof when dispatch argument provenance is incomplete", () => {

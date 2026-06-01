@@ -173,6 +173,66 @@ function firstArrayField(object, keys) {
   return [];
 }
 
+const RUNTIME_PROVEN_ARG_CATEGORIES = new Set([
+  'device_allocation',
+  'literal',
+  'scalar_value',
+]);
+
+function normalizeArgProvenanceRecords(values) {
+  const records = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    if (!value || typeof value !== 'object') continue;
+    const index = Number.isInteger(value.argIndex)
+      ? value.argIndex
+      : Number.isInteger(value.index)
+        ? value.index
+        : null;
+    const rawCategory = stringField(value.category, value.sourceCategory, value.kind);
+    const category = rawCategory ? rawCategory.replace(/-/g, '_').toLowerCase() : null;
+    if (index === null || index < 0 || !category) continue;
+    const record = {
+      argIndex: index,
+      category,
+      provenance: stringField(value.provenance) ?? null,
+      confidence: stringField(value.confidence) ?? null,
+      allocationId: stringField(value.allocationId, value.allocationName) ?? null,
+      allocationSize: finiteNonNegativeNumber(value.allocationSize ?? value.allocationBytes),
+      valueSize: finiteNonNegativeNumber(value.valueSize),
+    };
+    const key = [
+      record.argIndex,
+      record.category,
+      record.provenance,
+      record.confidence,
+      record.allocationId,
+      record.allocationSize,
+      record.valueSize,
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    records.push(record);
+  }
+  return records;
+}
+
+function argProvenanceRecordsComplete(observation, records) {
+  if (observation.argProvenanceRecordComplete === true
+    || observation.argumentProvenanceRecordComplete === true) {
+    return true;
+  }
+  const knownArgCount = integerValue(
+    observation.knownArgCount
+    ?? observation.known_arg_count
+    ?? observation.argProvenanceKnownArgCount
+    ?? observation.arg_provenance_known_arg_count,
+  );
+  if (knownArgCount === 0) return true;
+  if (!records.length || (knownArgCount !== null && records.length < knownArgCount)) return false;
+  return records.every((record) => RUNTIME_PROVEN_ARG_CATEGORIES.has(record.category));
+}
+
 function streamScopeObserved(streamScope, streamIds) {
   if (streamScope === 'none') {
     return streamIds.length === 1 && streamIds[0] === 'none';
@@ -1117,6 +1177,13 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     ...(Array.isArray(observation.argumentProvenanceEvidenceRefs) ? observation.argumentProvenanceEvidenceRefs : []),
   ]);
   const argProvenanceEvidenceObserved = argProvenanceEvidenceRefs.length > 0;
+  const argProvenanceRecords = normalizeArgProvenanceRecords(firstArrayField(observation, [
+    'argProvenanceRecords',
+    'argumentProvenanceRecords',
+    'arg_provenance_records',
+    'argument_provenance_records',
+  ]));
+  const argProvenanceRecordComplete = argProvenanceRecordsComplete(observation, argProvenanceRecords);
   const abiProof = observation.abiProof && typeof observation.abiProof === 'object'
     ? observation.abiProof
     : null;
@@ -1193,6 +1260,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: false,
       argProvenanceEvidenceObserved,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete: false,
+      argProvenanceRecords,
       unknownArgCount,
     };
   }
@@ -1214,6 +1283,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: false,
       argProvenanceEvidenceObserved,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete: false,
+      argProvenanceRecords,
       unknownArgCount,
     };
   }
@@ -1233,6 +1304,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: false,
       argProvenanceEvidenceObserved: false,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete: false,
+      argProvenanceRecords,
       unknownArgCount: 0,
     };
   }
@@ -1252,6 +1325,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: true,
       argProvenanceEvidenceObserved: true,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete,
+      argProvenanceRecords,
       unknownArgCount: 0,
       abiProven: false,
       epochSwapProven,
@@ -1290,6 +1365,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: true,
       argProvenanceEvidenceObserved: true,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete,
+      argProvenanceRecords,
       unknownArgCount: 0,
       abiProven: true,
       epochSwapProven,
@@ -1326,6 +1403,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: true,
       argProvenanceEvidenceObserved: true,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete,
+      argProvenanceRecords,
       unknownArgCount: 0,
       abiProven: true,
       epochSwapProven: true,
@@ -1333,6 +1412,43 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       replacementScopeProven: true,
       runtimeTouchedSymbolsMatch,
       runtimeArtifactMatchesSelected,
+      selectedArtifactIds,
+      runtimeArtifactIds,
+      dispatcherRegistrationIds,
+      dispatchTableEntryIds,
+      dispatchTableHashes,
+      dispatchStreamIds,
+      gridDimensions,
+      blockDimensions,
+      sharedMemoryBytes,
+      dispatchTimestamps,
+    };
+  }
+
+  if (!argProvenanceRecordComplete) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: 'gpu-hmr-dispatch-observed',
+      degradedState: 'gpu-hmr-unknown-arg-provenance',
+      degradedReason: 'launch_argument_provenance_records_incomplete',
+      dispatchObserved: true,
+      sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
+      runtimeSessionConsistent,
+      argProvenanceObserved: true,
+      argProvenanceComplete: false,
+      argProvenanceEvidenceObserved: true,
+      argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete: false,
+      argProvenanceRecords,
+      unknownArgCount: 0,
+      abiProven: true,
+      epochSwapProven: true,
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+      runtimeTouchedSymbolsMatch: true,
+      runtimeArtifactMatchesSelected: true,
       selectedArtifactIds,
       runtimeArtifactIds,
       dispatcherRegistrationIds,
@@ -1375,6 +1491,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceComplete: true,
       argProvenanceEvidenceObserved: true,
       argProvenanceEvidenceRefs,
+      argProvenanceRecordComplete: true,
+      argProvenanceRecords,
       unknownArgCount: 0,
       abiProven: true,
       epochSwapProven: true,
@@ -1409,6 +1527,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     argProvenanceComplete: true,
     argProvenanceEvidenceObserved: true,
     argProvenanceEvidenceRefs,
+    argProvenanceRecordComplete: true,
+    argProvenanceRecords,
     unknownArgCount: 0,
     abiProven: true,
     epochSwapProven: true,

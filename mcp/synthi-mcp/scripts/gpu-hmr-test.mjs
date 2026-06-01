@@ -1778,10 +1778,16 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
   );
   let incompleteCount = 0;
   let unknownArgCount = 0;
+  let knownArgCount = 0;
+  let detailRecordCount = 0;
+  let rejectedDetailCount = 0;
   const evidenceRefs = [];
+  const records = [];
   for (const line of lines) {
     const complete = /\bcomplete=true\b/.test(line);
+    const known = Number(line.match(/\bknown_args=(\d+)/)?.[1] ?? 0);
     const unknown = Number(line.match(/\bunknown_args=(\d+)/)?.[1] ?? 0);
+    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'));
     const runtimeSession = logField(line, 'runtime_session');
     if (runtimeSession) {
       evidenceRefs.push([
@@ -1792,17 +1798,77 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
         evidenceRefPart(logField(line, 'generation'), 'generation'),
       ].join(':'));
     }
+    knownArgCount += Number.isFinite(known) ? known : 0;
     unknownArgCount += Number.isFinite(unknown) ? unknown : 0;
-    if (!complete || unknown > 0) incompleteCount += 1;
+    const detailRejected = detailRecords.filter((record) => !record.runtimeProven).length;
+    detailRecordCount += detailRecords.length;
+    rejectedDetailCount += detailRejected;
+    records.push(...detailRecords);
+    if (!complete || unknown > 0 || detailRecords.length < known || detailRejected > 0) {
+      incompleteCount += 1;
+    }
   }
+  const recordComplete = lines.length > 0
+    && incompleteCount === 0
+    && unknownArgCount === 0
+    && detailRecordCount >= knownArgCount
+    && rejectedDetailCount === 0;
   return {
     totalCount: lines.length,
     incompleteCount,
+    knownArgCount,
     unknownArgCount,
-    complete: lines.length > 0 && incompleteCount === 0 && unknownArgCount === 0,
+    detailRecordCount,
+    rejectedDetailCount,
+    recordComplete,
+    complete: recordComplete,
     evidenceRefs: [...new Set(evidenceRefs)],
+    records,
     lines,
   };
+}
+
+function parseLaunchArgProvenanceDetails(details) {
+  const raw = String(details ?? '').trim();
+  if (!raw || raw === '-') return [];
+  return raw.split(',').map((part) => {
+    const sizeMatch = part.match(/:size=(\d+)$/i);
+    if (!sizeMatch) return null;
+    const prefix = part.slice(0, sizeMatch.index);
+    const pieces = prefix.split(':');
+    const index = Number(pieces.shift());
+    const kind = pieces.shift() ?? '';
+    const observedValue = pieces.find((piece) => /^0x[0-9a-f]+$/i.test(piece)) ?? null;
+    const allocationName = pieces.filter((piece) => !/^0x[0-9a-f]+$/i.test(piece)).join(':') || null;
+    const category = launchArgCategory(kind);
+    return Number.isInteger(index) && index >= 0 && category
+      ? {
+        argIndex: index,
+        kind,
+        category,
+        provenance: 'runtime_observed',
+        confidence: category === 'unknown' ? 'unknown' : 'verified',
+        allocationName,
+        allocationId: allocationName ? `allocation:${allocationName}` : null,
+        observedValue,
+        valueSize: Number(sizeMatch[1]),
+        runtimeProven: category === 'device_allocation' || category === 'literal',
+      }
+      : null;
+  }).filter(Boolean);
+}
+
+function launchArgCategory(kind) {
+  const normalized = String(kind ?? '').trim().replace(/_/g, '-').toLowerCase();
+  if (normalized === 'device-allocation') return 'device_allocation';
+  if (normalized === 'scalar-value') return 'literal';
+  if (normalized === 'null-value') return 'unknown';
+  if (normalized === 'aggregate-value') return 'generated_temporary';
+  if (normalized === 'unknown-pointer') return 'unknown';
+  if (normalized === 'unknown-pointer-or-scalar') return 'unknown';
+  if (normalized === 'missing-arg-storage') return 'unknown';
+  if (normalized === 'legacy-unknown-size') return 'unknown';
+  return null;
 }
 
 function logEvidenceLines(logText, regex) {
@@ -2538,6 +2604,9 @@ async function awaitRuntimeDispatchProof(
     argProvenanceObserved: provenance.totalCount > 0,
     argProvenanceComplete: provenance.complete,
     argProvenanceEvidenceRefs: provenance.evidenceRefs,
+    argProvenanceRecords: provenance.records,
+    argProvenanceRecordComplete: provenance.recordComplete,
+    argProvenanceKnownArgCount: provenance.knownArgCount,
     unknownArgCount: provenance.unknownArgCount,
     abiProof: proofContext.abiProof,
     epochProof: epochSwap.proof,
@@ -3816,7 +3885,7 @@ async function selfCheck() {
   );
   const sessionEvidence = runtimeSessionEvidence(
     `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
-    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0\n',
+    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:size=8\n',
   );
   const dispatchArtifacts = runtimeDispatchArtifactEvidence(
     `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
@@ -3841,7 +3910,7 @@ async function selfCheck() {
   const selectedScopeSessionEvidence = runtimeSessionEvidence(selectedDispatchScope);
   const selectedScopeArtifacts = runtimeDispatchArtifactEvidence(selectedDispatchScope, ['kernel_a']);
   const argProvenanceEvidence = launchArgProvenanceEvidence(
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0\n',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:size=8\n',
     ['kernel_a'],
   );
   if (
@@ -3864,6 +3933,8 @@ async function selfCheck() {
     || selectedScopeSessionEvidence.uniqueIds.join(',') !== 'session-2'
     || selectedScopeArtifacts.runtimeArtifactIds.join(',') !== selectedArtifactId
     || argProvenanceEvidence.evidenceRefs[0] !== 'worker-log:launch_arg_provenance:kernel_a:session-1:2'
+    || !argProvenanceEvidence.recordComplete
+    || argProvenanceEvidence.records[0]?.category !== 'device_allocation'
   ) {
     console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');
     process.exitCode = 1;
@@ -3880,6 +3951,9 @@ async function selfCheck() {
     argProvenanceObserved: true,
     argProvenanceComplete: true,
     argProvenanceEvidenceRefs: ['worker-log:launch_arg_provenance:kernel_a:session-1:2'],
+    argProvenanceRecords: argProvenanceEvidence.records,
+    argProvenanceRecordComplete: argProvenanceEvidence.recordComplete,
+    argProvenanceKnownArgCount: argProvenanceEvidence.knownArgCount,
     abiProven: true,
     epochSwapProven: true,
     streamOrderingProven: true,

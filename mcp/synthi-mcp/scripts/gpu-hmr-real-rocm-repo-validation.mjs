@@ -1635,9 +1635,35 @@ function runtimeArgProvenanceEvidence(workerEvidence) {
   );
   const completeLines = lines.filter((line) => /\bcomplete=true\b/i.test(line));
   const incompleteLines = lines.filter((line) => /\bcomplete=false\b/i.test(line));
+  let knownArgCount = 0;
+  let detailRecordCount = 0;
+  let rejectedDetailCount = 0;
+  const records = [];
   const unknownCount = lines.reduce((total, line) => {
+    const knownMatch = line.match(/\bknown_args=(\d+)/i);
+    const known = knownMatch ? Number.parseInt(knownMatch[1], 10) || 0 : 0;
+    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'));
+    const detailRejected = detailRecords.filter((record) => !record.runtimeProven).length;
+    knownArgCount += known;
+    detailRecordCount += detailRecords.length;
+    rejectedDetailCount += detailRejected;
+    records.push(...detailRecords);
     const match = line.match(/\bunknown_args=(\d+)/i);
     return total + (match ? Number.parseInt(match[1], 10) || 0 : 0);
+  }, 0);
+  const incompleteRecordCount = lines.reduce((total, line) => {
+    const known = Number(line.match(/\bknown_args=(\d+)/i)?.[1] ?? 0);
+    const unknown = Number(line.match(/\bunknown_args=(\d+)/i)?.[1] ?? 0);
+    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'));
+    const detailRejected = detailRecords.filter((record) => !record.runtimeProven).length;
+    return total + (
+      !/\bcomplete=true\b/i.test(line)
+      || unknown > 0
+      || detailRecords.length < known
+      || detailRejected > 0
+        ? 1
+        : 0
+    );
   }, 0);
   const evidenceRefs = lines
     .map((line) => {
@@ -1655,12 +1681,64 @@ function runtimeArgProvenanceEvidence(workerEvidence) {
   return {
     total_count: lines.length,
     complete_count: completeLines.length,
-    incomplete_count: incompleteLines.length,
+    incomplete_count: Math.max(incompleteLines.length, incompleteRecordCount),
+    known_arg_count: knownArgCount,
     unknown_arg_count: unknownCount,
+    detail_record_count: detailRecordCount,
+    rejected_detail_count: rejectedDetailCount,
+    record_complete: lines.length > 0
+      && incompleteRecordCount === 0
+      && unknownCount === 0
+      && detailRecordCount >= knownArgCount
+      && rejectedDetailCount === 0,
+    records,
     evidence_refs: [...new Set(evidenceRefs)],
     complete_lines: completeLines.slice(-20),
     incomplete_lines: incompleteLines.slice(-20),
   };
+}
+
+function parseLaunchArgProvenanceDetails(details) {
+  const raw = String(details ?? '').trim();
+  if (!raw || raw === '-') return [];
+  return raw.split(',').map((part) => {
+    const sizeMatch = part.match(/:size=(\d+)$/i);
+    if (!sizeMatch) return null;
+    const prefix = part.slice(0, sizeMatch.index);
+    const pieces = prefix.split(':');
+    const index = Number(pieces.shift());
+    const kind = pieces.shift() ?? '';
+    const observedValue = pieces.find((piece) => /^0x[0-9a-f]+$/i.test(piece)) ?? null;
+    const allocationName = pieces.filter((piece) => !/^0x[0-9a-f]+$/i.test(piece)).join(':') || null;
+    const category = launchArgCategory(kind);
+    return Number.isInteger(index) && index >= 0 && category
+      ? {
+        argIndex: index,
+        kind,
+        category,
+        provenance: 'runtime_observed',
+        confidence: category === 'unknown' ? 'unknown' : 'verified',
+        allocationName,
+        allocationId: allocationName ? `allocation:${allocationName}` : null,
+        observedValue,
+        valueSize: Number(sizeMatch[1]),
+        runtimeProven: category === 'device_allocation' || category === 'literal',
+      }
+      : null;
+  }).filter(Boolean);
+}
+
+function launchArgCategory(kind) {
+  const normalized = String(kind ?? '').trim().replace(/_/g, '-').toLowerCase();
+  if (normalized === 'device-allocation') return 'device_allocation';
+  if (normalized === 'scalar-value') return 'literal';
+  if (normalized === 'null-value') return 'unknown';
+  if (normalized === 'aggregate-value') return 'generated_temporary';
+  if (normalized === 'unknown-pointer') return 'unknown';
+  if (normalized === 'unknown-pointer-or-scalar') return 'unknown';
+  if (normalized === 'missing-arg-storage') return 'unknown';
+  if (normalized === 'legacy-unknown-size') return 'unknown';
+  return null;
 }
 
 function runtimeSessionEvidence(workerEvidence) {
@@ -1766,12 +1844,16 @@ function selfCheckRuntimeDispatchEvidence() {
   }
   const provenance = runtimeArgProvenanceEvidence([
     '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 complete=false known_args=1 unknown_args=2 degradedState=gpu-hmr-unknown-arg-provenance details=0:device-allocation:x:size=8',
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8,1:scalar-value:size=4',
   ]);
   if (
     provenance.total_count !== 2
     || provenance.incomplete_count !== 1
     || provenance.unknown_arg_count !== 2
+    || provenance.known_arg_count !== 3
+    || provenance.detail_record_count !== 3
+    || provenance.records[1]?.category !== 'device_allocation'
+    || provenance.records[2]?.category !== 'literal'
     || provenance.evidence_refs[0] !== 'worker-log:launch_arg_provenance:known:pid1:2'
   ) {
     throw new Error('runtime arg provenance evidence parser failed');
@@ -1903,6 +1985,9 @@ function selfCheckRuntimeDispatchEvidence() {
       && upstreamOnlyArgProvenance.incomplete_count === 0
       && upstreamOnlyArgProvenance.unknown_arg_count === 0,
     argProvenanceEvidenceRefs: upstreamOnlyArgProvenance.evidence_refs,
+    argProvenanceRecords: upstreamOnlyArgProvenance.records,
+    argProvenanceRecordComplete: upstreamOnlyArgProvenance.record_complete,
+    argProvenanceKnownArgCount: upstreamOnlyArgProvenance.known_arg_count,
     unknownArgCount: upstreamOnlyArgProvenance.unknown_arg_count,
     abiProven: true,
     epochSwapProven: true,
@@ -2327,6 +2412,9 @@ async function collectRuntimeEvidence() {
       && runtimeArgProvenance.incomplete_count === 0
       && runtimeArgProvenance.unknown_arg_count === 0,
     argProvenanceEvidenceRefs: runtimeArgProvenance.evidence_refs,
+    argProvenanceRecords: runtimeArgProvenance.records,
+    argProvenanceRecordComplete: runtimeArgProvenance.record_complete,
+    argProvenanceKnownArgCount: runtimeArgProvenance.known_arg_count,
     unknownArgCount: runtimeArgProvenance.unknown_arg_count,
     abiProof: report.abi_proof,
     epochProof: report.epoch_swap_proof,
