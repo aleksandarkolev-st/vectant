@@ -27,10 +27,12 @@ pub const SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS: &[&str] = &[
     "synthi_gpu_record_host_identity",
     "synthi_gpu_record_output_buffer_checksum",
     "synthi_gpu_record_output_buffer_checksum_with_provenance",
+    "synthi_gpu_record_output_buffer_checksum_with_probe",
     "synthi_gpu_record_original_host_path",
     "synthi_gpu_record_original_host_path_with_provenance",
     "synthi_gpu_record_output_oracle",
     "synthi_gpu_record_output_oracle_with_provenance",
+    "synthi_gpu_record_output_oracle_with_probe",
     "synthi_gpu_register_buffer",
     "synthi_gpu_restore_buffer",
 ];
@@ -289,6 +291,21 @@ void synthi_gpu_record_output_oracle_with_provenance(
     const char* visual_evidence_ref,
     bool passed);
 
+void synthi_gpu_record_output_oracle_with_probe(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    const char* tolerance,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref,
+    bool passed);
+
 bool synthi_gpu_record_output_buffer_checksum(
     const char* oracle_id,
     const void* data,
@@ -304,6 +321,19 @@ bool synthi_gpu_record_output_buffer_checksum_with_provenance(
     const char* output_target_id,
     const char* artifact_id,
     const char* visual_evidence_ref);
+
+bool synthi_gpu_record_output_buffer_checksum_with_probe(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref);
 
 void synthi_gpu_record_original_host_path(
     const char* host_path_id,
@@ -522,6 +552,36 @@ inline void synthi_output_oracle_with_provenance(
         passed);
 }}
 
+inline void synthi_output_oracle_with_probe(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    const char* tolerance,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref,
+    bool passed) {{
+    synthi_gpu_record_output_oracle_with_probe(
+        oracle_id,
+        kind,
+        expected_value,
+        actual_value,
+        tolerance,
+        producer,
+        output_target_id,
+        artifact_id,
+        visual_evidence_ref,
+        probe_mode,
+        probe_config_hash,
+        probe_evidence_ref,
+        passed);
+}}
+
 inline bool synthi_output_buffer_checksum(
     const char* oracle_id,
     const void* data,
@@ -552,6 +612,32 @@ inline bool synthi_output_buffer_checksum_with_provenance(
         output_target_id,
         artifact_id,
         visual_evidence_ref);
+}}
+
+inline bool synthi_output_buffer_checksum_with_probe(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref) {{
+    return synthi_gpu_record_output_buffer_checksum_with_probe(
+        oracle_id,
+        data,
+        bytes,
+        expected_sha256,
+        producer,
+        output_target_id,
+        artifact_id,
+        visual_evidence_ref,
+        probe_mode,
+        probe_config_hash,
+        probe_evidence_ref);
 }}
 
 inline void synthi_original_host_path(
@@ -684,10 +770,14 @@ mod tests {
         assert!(h.contains("inline void synthi_output_oracle"));
         assert!(h.contains("synthi_gpu_record_output_oracle_with_provenance"));
         assert!(h.contains("inline void synthi_output_oracle_with_provenance"));
+        assert!(h.contains("synthi_gpu_record_output_oracle_with_probe"));
+        assert!(h.contains("inline void synthi_output_oracle_with_probe"));
         assert!(h.contains("synthi_gpu_record_output_buffer_checksum"));
         assert!(h.contains("inline bool synthi_output_buffer_checksum"));
         assert!(h.contains("synthi_gpu_record_output_buffer_checksum_with_provenance"));
         assert!(h.contains("inline bool synthi_output_buffer_checksum_with_provenance"));
+        assert!(h.contains("synthi_gpu_record_output_buffer_checksum_with_probe"));
+        assert!(h.contains("inline bool synthi_output_buffer_checksum_with_probe"));
         assert!(h.contains("synthi_gpu_record_original_host_path"));
         assert!(h.contains("inline void synthi_original_host_path"));
         assert!(h.contains("synthi_gpu_record_original_host_path_with_provenance"));
@@ -746,8 +836,10 @@ void smoke(SynthiGpuRuntime* gpu) {
     synthi_host_identity("smoke", gpu, 0);
     synthi_output_oracle("smoke", "sentinel", "1", "1", true);
     synthi_output_oracle_with_provenance("smoke", "sentinel", "1", "1", "0", "probe", "target", "artifact", nullptr, true);
+    synthi_output_oracle_with_probe("smoke", "sentinel", "1", "1", "0", "probe", "target", "artifact", nullptr, "mode", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "evidence:output-oracle:probe:smoke", true);
     (void)synthi_output_buffer_checksum("buffer", &value, sizeof(value), "sha256:missing");
     (void)synthi_output_buffer_checksum_with_provenance("buffer", &value, sizeof(value), "sha256:missing", "probe", "target", "artifact", nullptr);
+    (void)synthi_output_buffer_checksum_with_probe("buffer", &value, sizeof(value), "sha256:missing", "probe", "target", "artifact", nullptr, "mode", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "evidence:output-oracle:probe:buffer");
     synthi_original_host_path("host-loop", "entry-noop", true);
     synthi_original_host_path_with_provenance("host-loop", "entry-noop", "source_instrumented", true);
 }
