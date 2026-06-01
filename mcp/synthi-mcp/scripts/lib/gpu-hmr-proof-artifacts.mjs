@@ -388,6 +388,8 @@ export function abiProofFromProofArtifacts(records) {
   const acceptedExtractorEvidenceRefs = [];
   const acceptedExtractorSources = [];
   const extractorProvenance = [];
+  const kernelAbiFingerprintHashes = [];
+  const constantGlobalLayoutHashes = [];
   let extractorProvenanceComplete = true;
   let layoutSizeAlignmentVerified = false;
   let degradedReason = null;
@@ -408,6 +410,18 @@ export function abiProofFromProofArtifacts(records) {
       }
       acceptedExtractorEvidenceRefs.push(...uniqueStrings(metadata.acceptedExtractorEvidenceRefs ?? []));
       acceptedExtractorSources.push(...uniqueStrings(metadata.acceptedExtractorSources ?? []));
+      kernelAbiFingerprintHashes.push(...uniqueStrings([
+        metadata.kernelAbiFingerprintHash,
+        ...(Array.isArray(metadata.kernelAbiFingerprintHashes)
+          ? metadata.kernelAbiFingerprintHashes
+          : []),
+      ]));
+      constantGlobalLayoutHashes.push(...uniqueStrings([
+        metadata.constantGlobalLayoutHash,
+        ...(Array.isArray(metadata.constantGlobalLayoutHashes)
+          ? metadata.constantGlobalLayoutHashes
+          : []),
+      ]));
       if (Array.isArray(metadata.extractorProvenance)) {
         extractorProvenance.push(...metadata.extractorProvenance.filter((item) => item && typeof item === 'object'));
       }
@@ -435,6 +449,8 @@ export function abiProofFromProofArtifacts(records) {
     evidenceRefs: uniqueStrings(evidenceRefs),
     acceptedExtractorEvidenceRefs: uniqueStrings(acceptedExtractorEvidenceRefs),
     acceptedExtractorSources: uniqueStrings(acceptedExtractorSources),
+    kernelAbiFingerprintHashes: uniqueStrings(kernelAbiFingerprintHashes),
+    constantGlobalLayoutHashes: uniqueStrings(constantGlobalLayoutHashes),
     extractorProvenance,
     extractorProvenanceComplete,
   });

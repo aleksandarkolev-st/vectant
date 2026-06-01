@@ -54,6 +54,8 @@ function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
     metadataObserved: true,
     layoutSizeAlignmentVerified: true,
+    kernelAbiFingerprintHash: "d".repeat(64),
+    constantGlobalLayoutHash: "e".repeat(64),
     extractorProvenance: [{
       kind: "clang_ast",
       evidenceId: "evidence:clang-ast:abc",
@@ -1204,6 +1206,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
     expect(proof.layoutSizeAlignmentVerified).toBe(true);
     expect(proof.acceptedExtractorProvenanceObserved).toBe(true);
+    expect(proof.abiFingerprintHashesObserved).toBe(true);
   });
 
   it("does not prove ABI when accepted extractor provenance is missing", () => {
@@ -1231,6 +1234,47 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
     expect(proof.degradedReason).toBe("abi_extractor_provenance_unverified");
     expect(proof.acceptedExtractorProvenanceObserved).toBe(false);
+  });
+
+  it("does not prove ABI without kernel and constant/global ABI fingerprints", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      extractorProvenance: [{
+        extractorKind: "clang_record_layout",
+        evidenceId: "evidence:clang-record-layout:abc",
+        extractorName: "test_clang_record_layout",
+        extractorVersion: "v1",
+        inputHash: "sha256:abc",
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_fingerprint_hashes_unverified");
+    expect(proof.abiFingerprintHashesObserved).toBe(false);
+  });
+
+  it("does not prove ABI from placeholder fingerprint values", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      kernelAbiFingerprintHash: "unknown",
+      constantGlobalLayoutHash: "0",
+      extractorProvenance: [{
+        extractorKind: "clang_record_layout",
+        evidenceId: "evidence:clang-record-layout:abc",
+        extractorName: "test_clang_record_layout",
+        extractorVersion: "v1",
+        inputHash: "sha256:abc",
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_fingerprint_hashes_unverified");
+    expect(proof.kernelAbiFingerprintHashes).toEqual([]);
+    expect(proof.constantGlobalLayoutHashes).toEqual([]);
   });
 
   it("rejects extractor provenance explicitly rejected by the runtime correctness plan", () => {
@@ -1335,6 +1379,8 @@ describe("GPU HMR runtime output proof classification", () => {
           metadata: {
             schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
             layoutSizeAlignmentVerified: true,
+            kernelAbiFingerprintHash: "d".repeat(64),
+            constantGlobalLayoutHash: "3476900567878811119",
             acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
             acceptedExtractorSources: ["clang_record_layout"],
             extractorProvenance: [{
@@ -1356,6 +1402,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.acceptedExtractorEvidenceRefs).toEqual(["evidence:clang-record-layout:def"]);
+    expect(proof.kernelAbiFingerprintHashes).toEqual(["d".repeat(64)]);
+    expect(proof.constantGlobalLayoutHashes).toEqual(["3476900567878811119"]);
   });
 
   it("proves fission only from verifier stages with evidence", () => {

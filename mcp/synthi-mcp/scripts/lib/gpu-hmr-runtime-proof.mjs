@@ -1182,6 +1182,38 @@ function sha256DigestString(value) {
   return /^[0-9a-f]{64}$/i.test(digest);
 }
 
+function abiHashTokenString(value) {
+  if (typeof value !== 'string') return null;
+  const token = value.trim();
+  if (!token) return null;
+  const lower = token.toLowerCase();
+  if (
+    ['unknown', 'unavailable', 'missing', 'none', 'null', 'undefined', 'n/a'].includes(lower)
+    || /^0+$/.test(token)
+  ) {
+    return null;
+  }
+  if (sha256DigestString(token)) return token;
+  if (/^[0-9]{16,20}$/.test(token)) return token;
+  if (/^[0-9a-f]{16,63}$/i.test(token) && /[a-f]/i.test(token)) return token;
+  if (/^[a-z0-9][a-z0-9:+._-]{15,}$/i.test(token) && /[0-9]/.test(token)) return token;
+  return null;
+}
+
+function abiHashList(...values) {
+  const hashes = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const token = abiHashTokenString(value);
+    if (token) hashes.push(token);
+  };
+  values.forEach(visit);
+  return [...new Set(hashes)];
+}
+
 export function classifyGpuHmrDispatchProof(observation = {}) {
   const dispatchObserved = observation.dispatchObserved === true;
   const dispatchFailureObserved = observation.dispatchFailureObserved === true;
@@ -1605,14 +1637,36 @@ export function classifyGpuHmrAbiProof(observation = {}) {
   const acceptedExtractor = acceptedAbiExtractorEvidence(observation);
   const acceptedExtractorProvenanceObserved = acceptedExtractor.accepted;
   const extractorProvenanceComplete = observation.extractorProvenanceComplete !== false;
+  const kernelAbiFingerprintHashes = abiHashList(
+    observation.kernelAbiFingerprintHash,
+    observation.kernelAbiFingerprintHashes,
+    observation.kernelAbiHash,
+    observation.kernelAbiHashes,
+  );
+  const constantGlobalLayoutHashes = abiHashList(
+    observation.constantGlobalLayoutHash,
+    observation.constantGlobalLayoutHashes,
+    observation.constantGlobalAbiHash,
+    observation.constantGlobalAbiHashes,
+  );
+  const abiFingerprintHashesObserved =
+    kernelAbiFingerprintHashes.length > 0 && constantGlobalLayoutHashes.length > 0;
 
-  if (layoutSizeAlignmentVerified && acceptedExtractorProvenanceObserved && extractorProvenanceComplete) {
+  if (
+    layoutSizeAlignmentVerified
+    && acceptedExtractorProvenanceObserved
+    && extractorProvenanceComplete
+    && abiFingerprintHashesObserved
+  ) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
       resultState: 'gpu-hmr-abi-proven',
       degradedState: null,
       degradedReason: null,
       layoutSizeAlignmentVerified: true,
+      abiFingerprintHashesObserved: true,
+      kernelAbiFingerprintHashes,
+      constantGlobalLayoutHashes,
       metadataObserved,
       acceptedExtractorProvenanceObserved: true,
       acceptedExtractorEvidenceRefs: acceptedExtractor.refs,
@@ -1632,9 +1686,14 @@ export function classifyGpuHmrAbiProof(observation = {}) {
           ? 'abi_layout_size_alignment_unverified'
           : !acceptedExtractorProvenanceObserved
             ? 'abi_extractor_provenance_unverified'
-            : 'abi_extractor_provenance_incomplete')
+            : !extractorProvenanceComplete
+              ? 'abi_extractor_provenance_incomplete'
+              : 'abi_fingerprint_hashes_unverified')
       : 'abi_evidence_not_collected',
     layoutSizeAlignmentVerified,
+    abiFingerprintHashesObserved,
+    kernelAbiFingerprintHashes,
+    constantGlobalLayoutHashes,
     metadataObserved,
     acceptedExtractorProvenanceObserved,
     acceptedExtractorEvidenceRefs: acceptedExtractor.refs,
@@ -1651,7 +1710,8 @@ export function summarizeGpuHmrAbiProof(proof) {
   const metadata = proof.metadataObserved ? ' metadata=observed' : ' metadata=missing';
   const layout = proof.layoutSizeAlignmentVerified ? ' layout=verified' : ' layout=unverified';
   const extractor = proof.acceptedExtractorProvenanceObserved ? ' extractor=accepted' : ' extractor=unverified';
-  return `gpu_abi_proof=${result}${degraded}${reason}${metadata}${layout}${extractor}`;
+  const hashes = proof.abiFingerprintHashesObserved ? ' hashes=observed' : ' hashes=unverified';
+  return `gpu_abi_proof=${result}${degraded}${reason}${metadata}${layout}${extractor}${hashes}`;
 }
 
 export function classifyGpuHmrEpochSwapProof(observation = {}) {
