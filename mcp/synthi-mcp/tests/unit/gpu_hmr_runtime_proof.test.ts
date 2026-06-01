@@ -1428,8 +1428,82 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fissionProven).toBe(true);
     expect(proof.required).toBe(true);
     expect(proof.degradedState).toBeNull();
-    expect(proof.evidenceRefs).toEqual(["evidence:fission-verifier-report:abc"]);
+    expect(proof.evidenceRefs).toEqual([
+      "evidence:fission-verifier-report:abc",
+      `fission-verifier:sha256:${"a".repeat(64)}`,
+    ]);
+    expect(proof.verifierEvidenceRefs).toEqual([`fission-verifier:sha256:${"a".repeat(64)}`]);
+    expect(proof.deterministicVerifierEvidenceRefs).toEqual(["evidence:source-map"]);
     expect(summarizeGpuHmrFissionProof(proof)).toContain("gpu_fission_proof=proven");
+  });
+
+  it("records AI fission proposal ids separately from deterministic verifier evidence", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].aiProposalIdRequired = true;
+    metadata.candidates[0].aiProposalId = `ai:fission:proposal:sha256:${"b".repeat(64)}`;
+    metadata.candidates[0].aiProposalDeterministicPromotionEvidenceIds = [
+      "evidence:fission-promotion:abc",
+    ];
+    metadata.candidates[0].nonAuthoritativeEvidenceIds = [
+      metadata.candidates[0].aiProposalId,
+    ];
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:abc",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:abc"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(true);
+    expect(proof.selectedIslandIds).toEqual(["island:sha256:abc"]);
+    expect(proof.verifierEvidenceRefs).toEqual([`fission-verifier:sha256:${"a".repeat(64)}`]);
+    expect(proof.deterministicVerifierEvidenceRefs).toEqual(["evidence:source-map"]);
+    expect(proof.aiProposalIds).toEqual([metadata.candidates[0].aiProposalId]);
+    expect(proof.aiProposalPromotionRequired).toBe(true);
+    expect(proof.aiProposalDeterministicPromotionEvidenceRefs).toEqual([
+      "evidence:fission-promotion:abc",
+    ]);
+    expect(proof.nonAuthoritativeEvidenceRefs).toEqual([metadata.candidates[0].aiProposalId]);
+  });
+
+  it("does not prove AI fission proposals without deterministic promotion evidence", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].aiProposalIdRequired = true;
+    metadata.candidates[0].aiProposalId = `ai:fission:proposal:sha256:${"c".repeat(64)}`;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:abc",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:abc"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_ai_proposal_deterministic_promotion_missing");
+    expect(proof.aiProposalIds).toEqual([metadata.candidates[0].aiProposalId]);
+    expect(proof.aiProposalDeterministicPromotionEvidenceRefs).toEqual([]);
   });
 
   it("does not prove fission from a shallow pass report without selected candidate coverage", () => {

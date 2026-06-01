@@ -100,6 +100,16 @@ function nonEmptyStringArray(value) {
     : [];
 }
 
+function fissionSelectedCandidate(metadata) {
+  const candidates = Array.isArray(metadata?.candidates) ? metadata.candidates : [];
+  const selectedIndex = Number.isInteger(metadata?.selectedCandidateIndex)
+    ? metadata.selectedCandidateIndex
+    : null;
+  if (selectedIndex === null || selectedIndex < 0) return null;
+  const candidate = candidates[selectedIndex];
+  return candidate && typeof candidate === 'object' ? candidate : null;
+}
+
 function artifactSha256Digest(value) {
   return typeof value === 'string'
     ? value.trim().match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
@@ -341,8 +351,7 @@ function fissionReportPassIntegrity(metadata) {
   if (!Number.isInteger(metadata.selectedCandidateIndex) || metadata.selectedCandidateIndex < 0) {
     return { proven: false, reason: 'fission_selected_candidate_index_unverified' };
   }
-  const candidates = Array.isArray(metadata.candidates) ? metadata.candidates : [];
-  const selectedCandidate = candidates[metadata.selectedCandidateIndex];
+  const selectedCandidate = fissionSelectedCandidate(metadata);
   if (!selectedCandidate || typeof selectedCandidate !== 'object') {
     return { proven: false, reason: 'fission_selected_candidate_missing' };
   }
@@ -361,6 +370,14 @@ function fissionReportPassIntegrity(metadata) {
   }
   if (nonEmptyStringArray(selectedCandidate.deterministicVerifierEvidenceIds).length === 0) {
     return { proven: false, reason: 'fission_selected_candidate_deterministic_evidence_missing' };
+  }
+  if (selectedCandidate.aiProposalIdRequired === true) {
+    if (!nonEmptyString(selectedCandidate.aiProposalId)) {
+      return { proven: false, reason: 'fission_ai_proposal_id_missing' };
+    }
+    if (nonEmptyStringArray(selectedCandidate.aiProposalDeterministicPromotionEvidenceIds).length === 0) {
+      return { proven: false, reason: 'fission_ai_proposal_deterministic_promotion_missing' };
+    }
   }
   const coverage = selectedCandidate.verificationEvidenceCoverage;
   const missingCategories = Array.isArray(coverage?.missingCategories)
@@ -458,6 +475,12 @@ export function abiProofFromProofArtifacts(records) {
 
 export function fissionProofFromProofArtifacts(records) {
   const evidenceRefs = [];
+  const verifierEvidenceRefs = [];
+  const deterministicVerifierEvidenceRefs = [];
+  const nonAuthoritativeEvidenceRefs = [];
+  const aiProposalIds = [];
+  const aiProposalDeterministicPromotionEvidenceRefs = [];
+  const selectedIslandIds = [];
   const stageStatuses = [];
   let observed = false;
   let passed = false;
@@ -476,6 +499,22 @@ export function fissionProofFromProofArtifacts(records) {
       observed = true;
       evidenceRefs.push(fissionVerifierEvidenceId(evidence, artifact, record));
       const metadata = evidence?.metadata && typeof evidence.metadata === 'object' ? evidence.metadata : {};
+      selectedIslandIds.push(...uniqueStrings([metadata.selectedIslandId]));
+      const selectedCandidate = fissionSelectedCandidate(metadata);
+      if (selectedCandidate) {
+        selectedIslandIds.push(...uniqueStrings([selectedCandidate.islandId]));
+        verifierEvidenceRefs.push(...uniqueStrings([selectedCandidate.verifierEvidenceId]));
+        deterministicVerifierEvidenceRefs.push(
+          ...nonEmptyStringArray(selectedCandidate.deterministicVerifierEvidenceIds),
+        );
+        nonAuthoritativeEvidenceRefs.push(
+          ...nonEmptyStringArray(selectedCandidate.nonAuthoritativeEvidenceIds),
+        );
+        aiProposalIds.push(...uniqueStrings([selectedCandidate.aiProposalId]));
+        aiProposalDeterministicPromotionEvidenceRefs.push(
+          ...nonEmptyStringArray(selectedCandidate.aiProposalDeterministicPromotionEvidenceIds),
+        );
+      }
       const status = String(metadata.status ?? '').trim().toLowerCase();
       if (status === 'pass' || status === 'passed' || status === 'accepted') {
         const integrity = fissionReportPassIntegrity(metadata);
@@ -523,6 +562,13 @@ export function fissionProofFromProofArtifacts(records) {
     rejected,
     degradedReason,
     evidenceRefs: uniqueStrings(evidenceRefs),
+    verifierEvidenceRefs: uniqueStrings(verifierEvidenceRefs),
+    deterministicVerifierEvidenceRefs: uniqueStrings(deterministicVerifierEvidenceRefs),
+    nonAuthoritativeEvidenceRefs: uniqueStrings(nonAuthoritativeEvidenceRefs),
+    aiProposalIds: uniqueStrings(aiProposalIds),
+    aiProposalDeterministicPromotionEvidenceRefs:
+      uniqueStrings(aiProposalDeterministicPromotionEvidenceRefs),
+    selectedIslandIds: uniqueStrings(selectedIslandIds),
     stageStatuses: uniqueStrings(stageStatuses),
   });
 }

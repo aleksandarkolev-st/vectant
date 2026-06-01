@@ -662,6 +662,38 @@ function artifactTransportProofUsable(proof) {
 }
 
 export function classifyGpuHmrFissionProof(observation = {}) {
+  const verifierEvidenceRefs = compactStringList([
+    ...(Array.isArray(observation.verifierEvidenceRefs) ? observation.verifierEvidenceRefs : []),
+  ]);
+  const deterministicVerifierEvidenceRefs = compactStringList([
+    ...(Array.isArray(observation.deterministicVerifierEvidenceRefs)
+      ? observation.deterministicVerifierEvidenceRefs
+      : []),
+    ...(Array.isArray(observation.deterministicEvidenceRefs)
+      ? observation.deterministicEvidenceRefs
+      : []),
+  ]);
+  const aiProposalIds = compactStringList([
+    observation.aiProposalId,
+    ...(Array.isArray(observation.aiProposalIds) ? observation.aiProposalIds : []),
+  ]);
+  const aiProposalDeterministicPromotionEvidenceRefs = compactStringList([
+    ...(Array.isArray(observation.aiProposalDeterministicPromotionEvidenceRefs)
+      ? observation.aiProposalDeterministicPromotionEvidenceRefs
+      : []),
+    ...(Array.isArray(observation.aiProposalPromotionEvidenceRefs)
+      ? observation.aiProposalPromotionEvidenceRefs
+      : []),
+  ]);
+  const nonAuthoritativeEvidenceRefs = compactStringList([
+    ...(Array.isArray(observation.nonAuthoritativeEvidenceRefs)
+      ? observation.nonAuthoritativeEvidenceRefs
+      : []),
+  ]);
+  const selectedIslandIds = compactStringList([
+    observation.selectedIslandId,
+    ...(Array.isArray(observation.selectedIslandIds) ? observation.selectedIslandIds : []),
+  ]);
   const stageStatuses = compactStringList([
     observation.status,
     observation.stageStatus,
@@ -675,11 +707,16 @@ export function classifyGpuHmrFissionProof(observation = {}) {
   );
   const evidenceRefs = compactStringList([
     ...(Array.isArray(observation.evidenceRefs) ? observation.evidenceRefs : []),
-    ...(Array.isArray(observation.verifierEvidenceRefs) ? observation.verifierEvidenceRefs : []),
+    ...verifierEvidenceRefs,
   ]);
   const evidenceObserved = observation.evidenceObserved === true || evidenceRefs.length > 0;
+  const aiProposalPromotionRequired =
+    observation.aiProposalIdRequired === true || aiProposalIds.length > 0;
+  const aiProposalPromotionObserved =
+    !aiProposalPromotionRequired || aiProposalDeterministicPromotionEvidenceRefs.length > 0;
   const observed = observation.observed === true
     || evidenceObserved
+    || selectedIslandIds.length > 0
     || stageStatuses.length > 0
     || observation.passed === true
     || observation.verified === true
@@ -689,6 +726,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
   const fissionProven = observed
     && evidenceObserved
     && !rejectedStatusObserved
+    && aiProposalPromotionObserved
     && (
       observation.passed === true
       || observation.verified === true
@@ -705,7 +743,9 @@ export function classifyGpuHmrFissionProof(observation = {}) {
           ? 'fission_verifier_evidence_not_collected'
           : rejectedStatusObserved
             ? 'fission_candidate_verifier_rejected'
-            : 'fission_candidate_verification_not_proven';
+            : !aiProposalPromotionObserved
+              ? 'fission_ai_proposal_deterministic_promotion_missing'
+              : 'fission_candidate_verification_not_proven';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -717,6 +757,13 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     degradedState: fissionProven || !required ? null : 'gpu-hmr-fission-unverified',
     degradedReason,
     evidenceRefs,
+    verifierEvidenceRefs,
+    deterministicVerifierEvidenceRefs,
+    nonAuthoritativeEvidenceRefs,
+    aiProposalIds,
+    aiProposalPromotionRequired,
+    aiProposalDeterministicPromotionEvidenceRefs,
+    selectedIslandIds,
     stageStatuses,
   };
 }
