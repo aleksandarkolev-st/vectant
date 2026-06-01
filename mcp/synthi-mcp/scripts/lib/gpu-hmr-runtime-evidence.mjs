@@ -110,6 +110,10 @@ function epochRecord(line) {
     streamScope: fields.stream_scope ?? null,
     streamIds: commaList(fields.stream_ids),
     streamOrderingProven: boolValue(fields.stream_ordering_proven),
+    retirementFenceIds: observedEvidenceList(
+      fields.retirement_fence_ids ?? fields.retirementFenceIds,
+    ),
+    delayedUnloadResult: fields.delayed_unload_result ?? fields.delayedUnloadResult ?? null,
     drainResult: fields.drain_result ?? null,
   };
 }
@@ -127,6 +131,12 @@ function epochEvidenceRefs(publication, retirement) {
   const lineage = `${publication.previousGeneration}->${publication.activeGeneration}`;
   const refs = [`worker-log:dispatcher_epoch:published:${lineage}`];
   if (retirement) refs.push(`worker-log:dispatcher_epoch:retired:${lineage}`);
+  for (const fenceId of compactStringList([
+    ...(Array.isArray(publication.retirementFenceIds) ? publication.retirementFenceIds : []),
+    ...(Array.isArray(retirement?.retirementFenceIds) ? retirement.retirementFenceIds : []),
+  ]).filter((id) => id.toLowerCase() !== 'none')) {
+    refs.push(`worker-log:dispatcher_epoch:retirement_fence:${lineage}:${evidenceRefToken(fenceId)}`);
+  }
   return refs;
 }
 
@@ -153,6 +163,14 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
   if (!latestPublication) return null;
   const nodes = new Map();
   const edges = [];
+  const finalRetirementFenceIds = compactStringList([
+    ...(Array.isArray(latestPublication.retirementFenceIds) ? latestPublication.retirementFenceIds : []),
+    ...(Array.isArray(retirement?.retirementFenceIds) ? retirement.retirementFenceIds : []),
+  ]).filter((id) => id.toLowerCase() !== 'none');
+  const finalDelayedUnloadResult =
+    retirement?.delayedUnloadResult
+    ?? latestPublication.delayedUnloadResult
+    ?? null;
   for (const record of records) {
     if (!Number.isFinite(record.previousGeneration) || !Number.isFinite(record.activeGeneration)) {
       continue;
@@ -181,6 +199,8 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         changedSymbols: record.changedSymbols,
         functionHandleIds: record.functionHandleIds,
         streamEpochCounters: record.streamEpochCounters,
+        retirementFenceIds: record.retirementFenceIds,
+        delayedUnloadResult: record.delayedUnloadResult,
         evidenceRef: `worker-log:dispatcher_epoch:published:${record.previousGeneration}->${record.activeGeneration}`,
       });
     } else if (record.event === 'retired') {
@@ -193,6 +213,8 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         previousGeneration: record.previousGeneration,
         activeGeneration: record.activeGeneration,
         runtimeSession: record.runtimeSession,
+        retirementFenceIds: record.retirementFenceIds,
+        delayedUnloadResult: record.delayedUnloadResult,
         evidenceRef: `worker-log:dispatcher_epoch:retired:${record.previousGeneration}->${record.activeGeneration}`,
       });
     }
@@ -224,6 +246,8 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
       changedSymbols: latestPublication.changedSymbols,
       functionHandleIds: latestPublication.functionHandleIds,
       streamEpochCounters: latestPublication.streamEpochCounters,
+      retirementFenceIds: finalRetirementFenceIds,
+      delayedUnloadResult: finalDelayedUnloadResult,
     },
     retirementState: publicationRetirementComplete
       ? 'not-required'
@@ -279,6 +303,17 @@ export function runtimeEpochSwapEvidence(lines) {
   const streamScope = latestPublication?.streamScope ?? null;
   const streamIds = latestPublication?.streamIds ?? [];
   const streamScopeEvidenceSupported = streamScopeSupported(streamScope, streamIds);
+  const retirementFenceIds = compactStringList([
+    ...(Array.isArray(latestPublication?.retirementFenceIds) ? latestPublication.retirementFenceIds : []),
+    ...(Array.isArray(retirement?.retirementFenceIds) ? retirement.retirementFenceIds : []),
+  ]).filter((id) => id.toLowerCase() !== 'none');
+  const retirementFenceEvidenceRequired = streamScope !== 'none';
+  const retirementFenceEvidenceObserved =
+    !retirementFenceEvidenceRequired || retirementFenceIds.length > 0;
+  const delayedUnloadResult =
+    retirement?.delayedUnloadResult
+    ?? latestPublication?.delayedUnloadResult
+    ?? null;
   const streamOrderingRequested =
     latestPublication?.streamOrderingProven === true
     && latestPublication?.drainResult === 'synced';
@@ -335,6 +370,10 @@ export function runtimeEpochSwapEvidence(lines) {
     stream_scope: streamScope,
     stream_scope_supported: streamScopeEvidenceSupported,
     stream_ids: streamIds,
+    retirement_fence_ids: retirementFenceIds,
+    retirement_fence_evidence_required: retirementFenceEvidenceRequired,
+    retirement_fence_evidence_observed: retirementFenceEvidenceObserved,
+    delayed_unload_result: delayedUnloadResult,
     capsule_metadata_observed: capsuleMetadataObserved,
     drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
@@ -363,6 +402,8 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     streamOrderingProven: evidence.stream_ordering_proven,
     streamScope: evidence.stream_scope,
     streamIds: evidence.stream_ids,
+    retirementFenceIds: evidence.retirement_fence_ids,
+    delayedUnloadResult: evidence.delayed_unload_result,
     retirementTracked: evidence.retirement_tracked,
     oldGenerationRetired: evidence.old_generation_retired,
     evidenceRefs: evidence.evidence_refs,

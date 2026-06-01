@@ -448,6 +448,18 @@ function epochGenerationGraphStatus(graph) {
   const streamEpochCounters = latest.streamEpochCounters ?? latest.stream_epoch_counters ?? publicationEdge?.streamEpochCounters ?? publicationEdge?.stream_epoch_counters;
   const streamEpochCounterIds = streamEpochCounterEntries(streamEpochCounters).map(([streamId]) => streamId);
   const streamEpochCountersValid = streamEpochCounterIds.length > 0;
+  const retirementFenceIds = compactStringList([
+    ...(Array.isArray(latest.retirementFenceIds) ? latest.retirementFenceIds : []),
+    ...(Array.isArray(latest.retirement_fence_ids) ? latest.retirement_fence_ids : []),
+    ...(Array.isArray(publicationEdge?.retirementFenceIds) ? publicationEdge.retirementFenceIds : []),
+    ...(Array.isArray(publicationEdge?.retirement_fence_ids) ? publicationEdge.retirement_fence_ids : []),
+  ]).filter((id) => id.toLowerCase() !== 'none');
+  const delayedUnloadResult = stringField(
+    latest.delayedUnloadResult,
+    latest.delayed_unload_result,
+    publicationEdge?.delayedUnloadResult,
+    publicationEdge?.delayed_unload_result,
+  );
   const capsuleMetadataObserved =
     /^artifact:sha256:[0-9a-f]{64}$/i.test(oldArtifactId)
     && /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
@@ -541,6 +553,8 @@ function epochGenerationGraphStatus(graph) {
     streamEpochCounters,
     streamEpochCounterIds,
     streamEpochCountersValid,
+    retirementFenceIds,
+    delayedUnloadResult,
     runtimeSessionIds: graphRuntimeSessionIds,
     runtimeSessionConsistent,
     retirementState,
@@ -2204,6 +2218,26 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   );
   const streamOrderingProven =
     streamOrderingRequested && streamScopeEvidenceObserved && streamEpochCountersMatchScope;
+  const retirementFenceIds = compactStringList([
+    ...(Array.isArray(observation.retirementFenceIds) ? observation.retirementFenceIds : []),
+    ...(Array.isArray(observation.retirement_fence_ids) ? observation.retirement_fence_ids : []),
+    ...(Array.isArray(epochGraph.retirementFenceIds) ? epochGraph.retirementFenceIds : []),
+  ]).filter((id) => id.toLowerCase() !== 'none');
+  const retirementFenceEvidenceRequired = streamScope !== 'none';
+  const retirementFenceEvidenceObserved =
+    !retirementFenceEvidenceRequired || retirementFenceIds.length > 0;
+  const delayedUnloadResult = stringField(
+    observation.delayedUnloadResult,
+    observation.delayed_unload_result,
+    epochGraph.delayedUnloadResult,
+  );
+  const delayedUnloadResultObserved = delayedUnloadResult !== null;
+  const delayedUnloadResultTerminal = [
+    'not_required',
+    'no_old_generation',
+    'unloaded',
+    'retired',
+  ].includes(String(delayedUnloadResult ?? '').trim().toLowerCase());
   const retirementTracked = observation.retirementTracked === true;
   const oldGenerationRetired = observation.oldGenerationRetired === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
@@ -2218,8 +2252,10 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && changedEntriesObserved
     && capsuleMetadataObserved
     && streamOrderingProven
+    && retirementFenceEvidenceObserved
     && retirementTracked
     && oldGenerationRetired
+    && delayedUnloadResultTerminal
     && evidenceObserved
   ) {
     return {
@@ -2249,6 +2285,12 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       streamIds,
       streamEpochCounterIds: epochGraph.streamEpochCounterIds,
       streamEpochCountersCoverScope: true,
+      retirementFenceIds,
+      retirementFenceEvidenceObserved,
+      retirementFenceEvidenceRequired,
+      delayedUnloadResult,
+      delayedUnloadResultObserved,
+      delayedUnloadResultTerminal: true,
       retirementTracked: true,
       oldGenerationRetired: true,
       evidenceRefs,
@@ -2264,7 +2306,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && changedEntriesObserved
     && capsuleMetadataObserved
     && streamOrderingProven
+    && retirementFenceEvidenceObserved
     && retirementTracked
+    && delayedUnloadResultObserved
     && evidenceObserved;
   if (partialEpochObserved && !oldGenerationRetired) {
     return {
@@ -2294,6 +2338,12 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       streamIds,
       streamEpochCounterIds: epochGraph.streamEpochCounterIds,
       streamEpochCountersCoverScope: true,
+      retirementFenceIds,
+      retirementFenceEvidenceObserved,
+      retirementFenceEvidenceRequired,
+      delayedUnloadResult,
+      delayedUnloadResultObserved,
+      delayedUnloadResultTerminal: false,
       retirementTracked: true,
       oldGenerationRetired: false,
       evidenceRefs,
@@ -2330,7 +2380,13 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
                       ? 'epoch_capsule_metadata_not_collected'
                       : !streamEpochCountersMatchScope
                         ? 'epoch_stream_epoch_counter_unverified'
-                        : 'epoch_retirement_tracking_not_collected',
+                        : !retirementFenceEvidenceObserved
+                          ? 'epoch_retirement_fence_ids_not_collected'
+                          : !delayedUnloadResultObserved
+                            ? 'epoch_delayed_unload_result_not_collected'
+                            : oldGenerationRetired && !delayedUnloadResultTerminal
+                              ? 'epoch_delayed_unload_result_unverified'
+                              : 'epoch_retirement_tracking_not_collected',
     published,
     runtimeSessionObserved,
     runtimeSessionIds,
@@ -2353,6 +2409,12 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     streamIds,
     streamEpochCounterIds: epochGraph.streamEpochCounterIds,
     streamEpochCountersCoverScope: streamEpochCountersMatchScope,
+    retirementFenceIds,
+    retirementFenceEvidenceObserved,
+    retirementFenceEvidenceRequired,
+    delayedUnloadResult,
+    delayedUnloadResultObserved,
+    delayedUnloadResultTerminal,
     retirementTracked,
     oldGenerationRetired,
     evidenceRefs,
