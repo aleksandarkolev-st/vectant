@@ -1787,15 +1787,22 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
     const complete = /\bcomplete=true\b/.test(line);
     const known = Number(line.match(/\bknown_args=(\d+)/)?.[1] ?? 0);
     const unknown = Number(line.match(/\bunknown_args=(\d+)/)?.[1] ?? 0);
-    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'));
     const runtimeSession = logField(line, 'runtime_session');
+    const kernel = logField(line, 'kernel');
+    const generation = logField(line, 'generation');
+    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'), {
+      kernel,
+      runtimeSession,
+      generation,
+      expectedArgCount: known,
+    });
     if (runtimeSession) {
       evidenceRefs.push([
         'worker-log',
         'launch_arg_provenance',
-        evidenceRefPart(logField(line, 'kernel'), 'kernel'),
+        evidenceRefPart(kernel, 'kernel'),
         evidenceRefPart(runtimeSession, 'runtime-session'),
-        evidenceRefPart(logField(line, 'generation'), 'generation'),
+        evidenceRefPart(generation, 'generation'),
       ].join(':'));
     }
     knownArgCount += Number.isFinite(known) ? known : 0;
@@ -1828,9 +1835,20 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
   };
 }
 
-function parseLaunchArgProvenanceDetails(details) {
+function parseLaunchArgProvenanceDetails(details, context = {}) {
   const raw = String(details ?? '').trim();
   if (!raw || raw === '-') return [];
+  const kernelName = String(context.kernel ?? '').trim() || null;
+  const runtimeSessionId = String(context.runtimeSession ?? '').trim() || null;
+  const generation = String(context.generation ?? '').trim() || null;
+  const expectedArgCount = Number.isInteger(context.expectedArgCount) && context.expectedArgCount >= 0
+    ? context.expectedArgCount
+    : null;
+  const launchKey = [
+    kernelName ?? 'kernel',
+    runtimeSessionId ?? 'runtime-session',
+    generation ?? 'generation',
+  ].join(':');
   return raw.split(',').map((part) => {
     const sizeMatch = part.match(/:size=(\d+)$/i);
     if (!sizeMatch) return null;
@@ -1839,7 +1857,15 @@ function parseLaunchArgProvenanceDetails(details) {
     const index = Number(pieces.shift());
     const kind = pieces.shift() ?? '';
     const observedValue = pieces.find((piece) => /^0x[0-9a-f]+$/i.test(piece)) ?? null;
-    const allocationName = pieces.filter((piece) => !/^0x[0-9a-f]+$/i.test(piece)).join(':') || null;
+    const allocationBytes = numberFromToken(pieces.find((piece) => /^alloc_bytes=\d+$/i.test(piece)));
+    const allocationOffset = numberFromToken(pieces.find((piece) => /^alloc_offset=\d+$/i.test(piece)));
+    const allocationName = pieces
+      .filter((piece) =>
+        !/^0x[0-9a-f]+$/i.test(piece)
+        && !/^alloc_bytes=\d+$/i.test(piece)
+        && !/^alloc_offset=\d+$/i.test(piece)
+      )
+      .join(':') || null;
     const category = launchArgCategory(kind);
     return Number.isInteger(index) && index >= 0 && category
       ? {
@@ -1848,14 +1874,29 @@ function parseLaunchArgProvenanceDetails(details) {
         category,
         provenance: 'runtime_observed',
         confidence: category === 'unknown' ? 'unknown' : 'verified',
+        kernelName,
+        runtimeSessionId,
+        generation,
+        launchKey,
+        expectedArgCount,
         allocationName,
         allocationId: allocationName ? `allocation:${allocationName}` : null,
+        allocationBytes,
+        allocationSize: allocationBytes,
+        allocationOffset,
         observedValue,
         valueSize: Number(sizeMatch[1]),
-        runtimeProven: category === 'device_allocation' || category === 'literal',
+        runtimeProven: category === 'literal'
+          || (category === 'device_allocation' && allocationBytes !== null),
       }
       : null;
   }).filter(Boolean);
+}
+
+function numberFromToken(token) {
+  const value = String(token ?? '').split('=')[1];
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function launchArgCategory(kind) {
@@ -3885,7 +3926,7 @@ async function selfCheck() {
   );
   const sessionEvidence = runtimeSessionEvidence(
     `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
-    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:size=8\n',
+    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:alloc_bytes=8:alloc_offset=0:size=8\n',
   );
   const dispatchArtifacts = runtimeDispatchArtifactEvidence(
     `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
@@ -3910,7 +3951,7 @@ async function selfCheck() {
   const selectedScopeSessionEvidence = runtimeSessionEvidence(selectedDispatchScope);
   const selectedScopeArtifacts = runtimeDispatchArtifactEvidence(selectedDispatchScope, ['kernel_a']);
   const argProvenanceEvidence = launchArgProvenanceEvidence(
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:size=8\n',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:alloc_bytes=8:alloc_offset=0:size=8\n',
     ['kernel_a'],
   );
   if (
@@ -3935,6 +3976,7 @@ async function selfCheck() {
     || argProvenanceEvidence.evidenceRefs[0] !== 'worker-log:launch_arg_provenance:kernel_a:session-1:2'
     || !argProvenanceEvidence.recordComplete
     || argProvenanceEvidence.records[0]?.category !== 'device_allocation'
+    || argProvenanceEvidence.records[0]?.allocationSize !== 8
   ) {
     console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');
     process.exitCode = 1;

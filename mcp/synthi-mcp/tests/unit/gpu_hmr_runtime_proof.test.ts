@@ -2579,6 +2579,82 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.argProvenanceRecordComplete).toBe(false);
   });
 
+  it("does not prove dispatch safety for device allocations without allocation size", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      argProvenanceRecords: [{
+        argIndex: 0,
+        category: "device_allocation",
+        provenance: "runtime_observed",
+        confidence: "verified",
+        allocationId: "allocation:test",
+        valueSize: 8,
+      }],
+      argProvenanceKnownArgCount: 1,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_records_incomplete");
+    expect(proof.argProvenanceRecords[0].allocationSize).toBeNull();
+  });
+
+  it("uses complete record-level argument provenance when aggregate completeness is stale", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      argProvenanceComplete: false,
+      argProvenanceRecordComplete: false,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.argProvenanceComplete).toBe(true);
+    expect(proof.argProvenanceRecordComplete).toBe(true);
+  });
+
+  it("keeps argument provenance records distinct by launch identity", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      argProvenanceComplete: false,
+      argProvenanceRecordComplete: false,
+      argProvenanceKnownArgCount: 2,
+      argProvenanceRecords: [
+        {
+          argIndex: 0,
+          category: "device_allocation",
+          provenance: "runtime_observed",
+          confidence: "verified",
+          kernelName: "kernel",
+          runtimeSessionId: "runtime-session:test",
+          generation: "2",
+          launchKey: "kernel:runtime-session:test:2",
+          expectedArgCount: 1,
+          allocationId: "allocation:test",
+          allocationSize: 8,
+          valueSize: 8,
+        },
+        {
+          argIndex: 0,
+          category: "device_allocation",
+          provenance: "runtime_observed",
+          confidence: "verified",
+          kernelName: "kernel",
+          runtimeSessionId: "runtime-session:test",
+          generation: "3",
+          launchKey: "kernel:runtime-session:test:3",
+          expectedArgCount: 1,
+          allocationId: "allocation:test",
+          allocationSize: 8,
+          valueSize: 8,
+        },
+      ],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.argProvenanceRecords).toHaveLength(2);
+    expect(proof.argProvenanceRecordComplete).toBe(true);
+  });
+
   it("blocks output proof when dispatch argument provenance is incomplete", () => {
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: classifyGpuHmrDispatchProof({

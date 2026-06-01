@@ -1642,7 +1642,15 @@ function runtimeArgProvenanceEvidence(workerEvidence) {
   const unknownCount = lines.reduce((total, line) => {
     const knownMatch = line.match(/\bknown_args=(\d+)/i);
     const known = knownMatch ? Number.parseInt(knownMatch[1], 10) || 0 : 0;
-    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'));
+    const runtimeSession = runtimeSessionIdFromLine(line);
+    const kernel = logField(line, 'kernel');
+    const generation = logField(line, 'generation');
+    const detailRecords = parseLaunchArgProvenanceDetails(logField(line, 'details'), {
+      kernel,
+      runtimeSession,
+      generation,
+      expectedArgCount: known,
+    });
     const detailRejected = detailRecords.filter((record) => !record.runtimeProven).length;
     knownArgCount += known;
     detailRecordCount += detailRecords.length;
@@ -1698,9 +1706,20 @@ function runtimeArgProvenanceEvidence(workerEvidence) {
   };
 }
 
-function parseLaunchArgProvenanceDetails(details) {
+function parseLaunchArgProvenanceDetails(details, context = {}) {
   const raw = String(details ?? '').trim();
   if (!raw || raw === '-') return [];
+  const kernelName = String(context.kernel ?? '').trim() || null;
+  const runtimeSessionId = String(context.runtimeSession ?? '').trim() || null;
+  const generation = String(context.generation ?? '').trim() || null;
+  const expectedArgCount = Number.isInteger(context.expectedArgCount) && context.expectedArgCount >= 0
+    ? context.expectedArgCount
+    : null;
+  const launchKey = [
+    kernelName ?? 'kernel',
+    runtimeSessionId ?? 'runtime-session',
+    generation ?? 'generation',
+  ].join(':');
   return raw.split(',').map((part) => {
     const sizeMatch = part.match(/:size=(\d+)$/i);
     if (!sizeMatch) return null;
@@ -1709,7 +1728,15 @@ function parseLaunchArgProvenanceDetails(details) {
     const index = Number(pieces.shift());
     const kind = pieces.shift() ?? '';
     const observedValue = pieces.find((piece) => /^0x[0-9a-f]+$/i.test(piece)) ?? null;
-    const allocationName = pieces.filter((piece) => !/^0x[0-9a-f]+$/i.test(piece)).join(':') || null;
+    const allocationBytes = numberFromToken(pieces.find((piece) => /^alloc_bytes=\d+$/i.test(piece)));
+    const allocationOffset = numberFromToken(pieces.find((piece) => /^alloc_offset=\d+$/i.test(piece)));
+    const allocationName = pieces
+      .filter((piece) =>
+        !/^0x[0-9a-f]+$/i.test(piece)
+        && !/^alloc_bytes=\d+$/i.test(piece)
+        && !/^alloc_offset=\d+$/i.test(piece)
+      )
+      .join(':') || null;
     const category = launchArgCategory(kind);
     return Number.isInteger(index) && index >= 0 && category
       ? {
@@ -1718,14 +1745,29 @@ function parseLaunchArgProvenanceDetails(details) {
         category,
         provenance: 'runtime_observed',
         confidence: category === 'unknown' ? 'unknown' : 'verified',
+        kernelName,
+        runtimeSessionId,
+        generation,
+        launchKey,
+        expectedArgCount,
         allocationName,
         allocationId: allocationName ? `allocation:${allocationName}` : null,
+        allocationBytes,
+        allocationSize: allocationBytes,
+        allocationOffset,
         observedValue,
         valueSize: Number(sizeMatch[1]),
-        runtimeProven: category === 'device_allocation' || category === 'literal',
+        runtimeProven: category === 'literal'
+          || (category === 'device_allocation' && allocationBytes !== null),
       }
       : null;
   }).filter(Boolean);
+}
+
+function numberFromToken(token) {
+  const value = String(token ?? '').split('=')[1];
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function launchArgCategory(kind) {
@@ -1843,8 +1885,8 @@ function selfCheckRuntimeDispatchEvidence() {
     throw new Error('session-scoped dispatch evidence included stale dispatch lines');
   }
   const provenance = runtimeArgProvenanceEvidence([
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 complete=false known_args=1 unknown_args=2 degradedState=gpu-hmr-unknown-arg-provenance details=0:device-allocation:x:size=8',
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8,1:scalar-value:size=4',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 complete=false known_args=1 unknown_args=2 degradedState=gpu-hmr-unknown-arg-provenance details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8,1:scalar-value:size=4',
   ]);
   if (
     provenance.total_count !== 2
@@ -1853,6 +1895,7 @@ function selfCheckRuntimeDispatchEvidence() {
     || provenance.known_arg_count !== 3
     || provenance.detail_record_count !== 3
     || provenance.records[1]?.category !== 'device_allocation'
+    || provenance.records[1]?.allocationSize !== 8
     || provenance.records[2]?.category !== 'literal'
     || provenance.evidence_refs[0] !== 'worker-log:launch_arg_provenance:known:pid1:2'
   ) {
@@ -1943,7 +1986,7 @@ function selfCheckRuntimeDispatchEvidence() {
     ].join('\n'),
     upstreamRunLog: [
       '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original',
-      '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+      '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
       '[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=host_runtime_explicit host_path_id=host-loop dispatch_table_entry_id=declared-entry runtime_dispatch_table_entry_id=entry-kernel dispatch_entry_runtime_verified=true generation=3 runtime_session=pid-original',
     ].join('\n'),
   });
@@ -1964,7 +2007,7 @@ function selfCheckRuntimeDispatchEvidence() {
     workerLogs: '',
     upstreamRunLog: [
       `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original artifact_id=${syntheticArtifactId} dispatcher_registration_id=${syntheticDispatcherId} dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1 dispatch_timestamp=1779979999000`,
-      '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+      '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
     ].join('\n'),
   });
   const upstreamOnlyScope = runtimeEvidenceScope(

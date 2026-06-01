@@ -628,9 +628,23 @@ fn arg_provenance_details(args: &[LaunchArgProvenance]) -> String {
                 .observed_value
                 .map(|value| format!(":0x{value:x}"))
                 .unwrap_or_default();
+            let allocation_bytes = arg
+                .allocation_bytes
+                .map(|bytes| format!(":alloc_bytes={bytes}"))
+                .unwrap_or_default();
+            let allocation_offset = arg
+                .allocation_offset
+                .map(|offset| format!(":alloc_offset={offset}"))
+                .unwrap_or_default();
             format!(
-                "{}:{}{}{}:size={}",
-                arg.index, arg.kind, allocation, observed, arg.value_size
+                "{}:{}{}{}{}{}:size={}",
+                arg.index,
+                arg.kind,
+                allocation,
+                observed,
+                allocation_bytes,
+                allocation_offset,
+                arg.value_size
             )
         })
         .collect::<Vec<_>>()
@@ -2769,7 +2783,17 @@ mod tests {
             launches[0].arg_provenance[0].allocation_name.as_deref(),
             Some("registered")
         );
+        assert_eq!(
+            launches[0].arg_provenance[0].allocation_bytes,
+            Some(std::mem::size_of_val(&device_value))
+        );
+        assert_eq!(launches[0].arg_provenance[0].allocation_offset, Some(0));
         assert_eq!(launches[0].arg_provenance[1].kind, "scalar-value");
+        let details = arg_provenance_details(&launches[0].arg_provenance);
+        assert!(details.contains("0:device-allocation:registered"));
+        assert!(details.contains("alloc_bytes=4"));
+        assert!(details.contains("alloc_offset=0"));
+        assert!(details.contains("1:scalar-value:size=4"));
     }
 
     #[test]

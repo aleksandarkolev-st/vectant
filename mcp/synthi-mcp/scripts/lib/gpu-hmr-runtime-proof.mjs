@@ -173,12 +173,6 @@ function firstArrayField(object, keys) {
   return [];
 }
 
-const RUNTIME_PROVEN_ARG_CATEGORIES = new Set([
-  'device_allocation',
-  'literal',
-  'scalar_value',
-]);
-
 function normalizeArgProvenanceRecords(values) {
   const records = [];
   const seen = new Set();
@@ -197,6 +191,16 @@ function normalizeArgProvenanceRecords(values) {
       category,
       provenance: stringField(value.provenance) ?? null,
       confidence: stringField(value.confidence) ?? null,
+      kernelName: stringField(value.kernelName, value.kernel) ?? null,
+      runtimeSessionId: stringField(value.runtimeSessionId, value.runtimeSession) ?? null,
+      generation: stringField(value.generation) ?? null,
+      launchKey: stringField(value.launchKey, value.launch_key) ?? null,
+      expectedArgCount: integerValue(
+        value.expectedArgCount
+        ?? value.expected_arg_count
+        ?? value.knownArgCount
+        ?? value.known_arg_count,
+      ),
       allocationId: stringField(value.allocationId, value.allocationName) ?? null,
       allocationSize: finiteNonNegativeNumber(value.allocationSize ?? value.allocationBytes),
       valueSize: finiteNonNegativeNumber(value.valueSize),
@@ -206,6 +210,11 @@ function normalizeArgProvenanceRecords(values) {
       record.category,
       record.provenance,
       record.confidence,
+      record.kernelName,
+      record.runtimeSessionId,
+      record.generation,
+      record.launchKey,
+      record.expectedArgCount,
       record.allocationId,
       record.allocationSize,
       record.valueSize,
@@ -217,11 +226,14 @@ function normalizeArgProvenanceRecords(values) {
   return records;
 }
 
+function argRecordRuntimeProven(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (record.category === 'literal' || record.category === 'scalar_value') return true;
+  if (record.category !== 'device_allocation') return false;
+  return Boolean(record.allocationId) && record.allocationSize !== null;
+}
+
 function argProvenanceRecordsComplete(observation, records) {
-  if (observation.argProvenanceRecordComplete === true
-    || observation.argumentProvenanceRecordComplete === true) {
-    return true;
-  }
   const knownArgCount = integerValue(
     observation.knownArgCount
     ?? observation.known_arg_count
@@ -229,8 +241,23 @@ function argProvenanceRecordsComplete(observation, records) {
     ?? observation.arg_provenance_known_arg_count,
   );
   if (knownArgCount === 0) return true;
-  if (!records.length || (knownArgCount !== null && records.length < knownArgCount)) return false;
-  return records.every((record) => RUNTIME_PROVEN_ARG_CATEGORIES.has(record.category));
+  if (!records.length || !records.every(argRecordRuntimeProven)) return false;
+  const launchGroups = new Map();
+  for (const record of records) {
+    if (!record.launchKey || record.expectedArgCount === null) continue;
+    const existing = launchGroups.get(record.launchKey) ?? { expected: 0, records: 0 };
+    existing.expected = Math.max(existing.expected, record.expectedArgCount);
+    existing.records += 1;
+    launchGroups.set(record.launchKey, existing);
+  }
+  if (launchGroups.size > 0) {
+    for (const group of launchGroups.values()) {
+      if (group.expected > 0 && group.records < group.expected) return false;
+    }
+    return true;
+  }
+  if (knownArgCount !== null && records.length < knownArgCount) return false;
+  return true;
 }
 
 function streamScopeObserved(streamScope, streamIds) {
@@ -1168,7 +1195,6 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
   const argProvenanceObserved = observation.argProvenanceObserved === true;
-  const argProvenanceComplete = observation.argProvenanceComplete === true;
   const unknownArgCount = Number.isFinite(observation.unknownArgCount)
     ? Math.max(0, Number(observation.unknownArgCount))
     : 0;
@@ -1184,6 +1210,10 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     'argument_provenance_records',
   ]));
   const argProvenanceRecordComplete = argProvenanceRecordsComplete(observation, argProvenanceRecords);
+  const argProvenanceComplete =
+    observation.argProvenanceComplete === true
+    || observation.argumentProvenanceComplete === true
+    || argProvenanceRecordComplete;
   const abiProof = observation.abiProof && typeof observation.abiProof === 'object'
     ? observation.abiProof
     : null;
