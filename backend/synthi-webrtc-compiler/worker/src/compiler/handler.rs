@@ -3789,6 +3789,14 @@ fn abi_metadata_accepted_extractor_provenance(
                 .and_then(serde_json::Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty());
+            let command = record
+                .get("command")
+                .or_else(|| record.get("extractorCommand"))
+                .or_else(|| record.get("extractor_command"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let input_hash_accepted = input_hash.is_some_and(|value| sha256_digest_string(value));
             let explicitly_rejected = record
                 .get("acceptedByRuntimeCorrectnessPlan")
                 .and_then(serde_json::Value::as_bool)
@@ -3798,7 +3806,8 @@ fn abi_metadata_accepted_extractor_provenance(
                 && evidence_id.is_some()
                 && extractor_name.is_some()
                 && extractor_version.is_some()
-                && input_hash.is_some()
+                && command.is_some()
+                && input_hash_accepted
                 && !explicitly_rejected
             {
                 refs.insert(evidence_id.unwrap().to_string());
@@ -3818,6 +3827,86 @@ fn abi_metadata_accepted_extractor_provenance(
     (!refs.is_empty() && refs_match && sources_match, refs, sources)
 }
 
+fn abi_hash_token_string(value: &str) -> Option<String> {
+    let token = value.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let lower = token.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "unknown" | "unavailable" | "missing" | "none" | "null" | "undefined" | "n/a"
+    ) || token.chars().all(|ch| ch == '0')
+    {
+        return None;
+    }
+    if sha256_digest_string(token) {
+        return Some(token.to_string());
+    }
+    if token.len() >= 16
+        && token.len() <= 20
+        && token.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Some(token.to_string());
+    }
+    if token.len() >= 16
+        && token.len() <= 63
+        && token.chars().all(|ch| ch.is_ascii_hexdigit())
+        && token.chars().any(|ch| ch.is_ascii_hexdigit() && ch.is_ascii_alphabetic())
+    {
+        return Some(token.to_string());
+    }
+    if token.len() >= 16
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '+' | '.' | '_' | '-'))
+        && token.chars().any(|ch| ch.is_ascii_digit())
+    {
+        return Some(token.to_string());
+    }
+    None
+}
+
+fn abi_hash_tokens(value: Option<&serde_json::Value>) -> Vec<String> {
+    let mut tokens = BTreeSet::new();
+    match value {
+        Some(serde_json::Value::String(value)) => {
+            if let Some(token) = abi_hash_token_string(value) {
+                tokens.insert(token);
+            }
+        }
+        Some(serde_json::Value::Array(values)) => {
+            for value in values {
+                if let Some(text) = value.as_str() {
+                    if let Some(token) = abi_hash_token_string(text) {
+                        tokens.insert(token);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    tokens.into_iter().collect()
+}
+
+fn abi_metadata_fingerprint_hashes_observed(abi_material: &serde_json::Value) -> bool {
+    let kernel_hashes = abi_hash_tokens(abi_material.get("kernelAbiFingerprintHash"))
+        .into_iter()
+        .chain(abi_hash_tokens(
+            abi_material.get("kernelAbiFingerprintHashes"),
+        ))
+        .collect::<BTreeSet<_>>();
+    let constant_global_hashes = abi_hash_tokens(abi_material.get("constantGlobalLayoutHash"))
+        .into_iter()
+        .chain(abi_hash_tokens(
+            abi_material.get("constantGlobalLayoutHashes"),
+        ))
+        .chain(abi_hash_tokens(abi_material.get("constantGlobalAbiHash")))
+        .chain(abi_hash_tokens(abi_material.get("constantGlobalAbiHashes")))
+        .collect::<BTreeSet<_>>();
+    !kernel_hashes.is_empty() && !constant_global_hashes.is_empty()
+}
+
 fn abi_stage_verdict_from_metadata(abi_material: &serde_json::Value) -> (bool, Option<String>) {
     let layout_size_alignment_verified = abi_material
         .get("layoutSizeAlignmentVerified")
@@ -3829,10 +3918,12 @@ fn abi_stage_verdict_from_metadata(abi_material: &serde_json::Value) -> (bool, O
         != Some(false);
     let (accepted_extractor_provenance_observed, _, _) =
         abi_metadata_accepted_extractor_provenance(abi_material);
+    let abi_fingerprint_hashes_observed = abi_metadata_fingerprint_hashes_observed(abi_material);
 
     if layout_size_alignment_verified
         && accepted_extractor_provenance_observed
         && extractor_provenance_complete
+        && abi_fingerprint_hashes_observed
     {
         return (true, None);
     }
@@ -3842,11 +3933,26 @@ fn abi_stage_verdict_from_metadata(abi_material: &serde_json::Value) -> (bool, O
             Some("abi_layout_size_alignment_unverified".to_string())
         } else if !accepted_extractor_provenance_observed {
             Some("abi_extractor_provenance_unverified".to_string())
-        } else {
+        } else if !extractor_provenance_complete {
             Some("abi_extractor_provenance_incomplete".to_string())
+        } else {
+            Some("abi_fingerprint_hashes_unverified".to_string())
         }
     });
     (false, degraded_reason)
+}
+
+fn sha256_digest_string(value: &str) -> bool {
+    let value = value.trim();
+    let digest = if value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("sha256:"))
+    {
+        &value[7..]
+    } else {
+        value
+    };
+    digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn device_abi_evidence_summary(
@@ -11275,12 +11381,15 @@ mod gpu_host_contract_tests {
     fn abi_stage_verdict_requires_accepted_extractor_provenance() {
         let abi_material = serde_json::json!({
             "layoutSizeAlignmentVerified": true,
+            "kernelAbiFingerprintHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "constantGlobalLayoutHash": "1234567890123456",
             "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:abc"],
             "acceptedExtractorSources": ["clang_ast"],
             "extractorProvenance": [{
                 "extractorName": "clang++",
                 "extractorKind": "clang_ast",
                 "extractorVersion": "17.0.0",
+                "command": "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
                 "evidenceId": "evidence:clang-ast:abc",
                 "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "acceptedByRuntimeCorrectnessPlan": true
@@ -11294,15 +11403,44 @@ mod gpu_host_contract_tests {
     }
 
     #[test]
+    fn abi_stage_verdict_accepts_case_insensitive_sha256_prefix() {
+        let abi_material = serde_json::json!({
+            "layoutSizeAlignmentVerified": true,
+            "kernelAbiFingerprintHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "constantGlobalLayoutHash": "1234567890123456",
+            "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:abc"],
+            "acceptedExtractorSources": ["clang_ast"],
+            "extractorProvenance": [{
+                "extractorName": "clang++",
+                "extractorKind": "clang_ast",
+                "extractorVersion": "17.0.0",
+                "command": "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
+                "evidenceId": "evidence:clang-ast:abc",
+                "inputHash": "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "acceptedByRuntimeCorrectnessPlan": true
+            }],
+            "extractorProvenanceComplete": true
+        });
+
+        let (proven, reason) = abi_stage_verdict_from_metadata(&abi_material);
+
+        assert!(proven);
+        assert_eq!(reason, None);
+    }
+
+    #[test]
     fn abi_stage_verdict_blocks_unmatched_extractor_refs() {
         let abi_material = serde_json::json!({
             "layoutSizeAlignmentVerified": true,
+            "kernelAbiFingerprintHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "constantGlobalLayoutHash": "1234567890123456",
             "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:other"],
             "acceptedExtractorSources": ["clang_ast"],
             "extractorProvenance": [{
                 "extractorName": "clang++",
                 "extractorKind": "clang_ast",
                 "extractorVersion": "17.0.0",
+                "command": "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
                 "evidenceId": "evidence:clang-ast:abc",
                 "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "acceptedByRuntimeCorrectnessPlan": true
@@ -11314,6 +11452,83 @@ mod gpu_host_contract_tests {
         assert!(!proven);
         assert_eq!(
             reason.as_deref(),
+            Some("abi_extractor_provenance_unverified")
+        );
+    }
+
+    #[test]
+    fn abi_stage_verdict_blocks_missing_fingerprint_hashes() {
+        let abi_material = serde_json::json!({
+            "layoutSizeAlignmentVerified": true,
+            "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:abc"],
+            "acceptedExtractorSources": ["clang_ast"],
+            "extractorProvenance": [{
+                "extractorName": "clang++",
+                "extractorKind": "clang_ast",
+                "extractorVersion": "17.0.0",
+                "command": "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
+                "evidenceId": "evidence:clang-ast:abc",
+                "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "acceptedByRuntimeCorrectnessPlan": true
+            }]
+        });
+
+        let (proven, reason) = abi_stage_verdict_from_metadata(&abi_material);
+
+        assert!(!proven);
+        assert_eq!(
+            reason.as_deref(),
+            Some("abi_fingerprint_hashes_unverified")
+        );
+    }
+
+    #[test]
+    fn abi_stage_verdict_blocks_incomplete_extractor_provenance() {
+        let missing_command = serde_json::json!({
+            "layoutSizeAlignmentVerified": true,
+            "kernelAbiFingerprintHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "constantGlobalLayoutHash": "1234567890123456",
+            "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:abc"],
+            "acceptedExtractorSources": ["clang_ast"],
+            "extractorProvenance": [{
+                "extractorName": "clang++",
+                "extractorKind": "clang_ast",
+                "extractorVersion": "17.0.0",
+                "evidenceId": "evidence:clang-ast:abc",
+                "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "acceptedByRuntimeCorrectnessPlan": true
+            }]
+        });
+        let invalid_input_hash = serde_json::json!({
+            "layoutSizeAlignmentVerified": true,
+            "kernelAbiFingerprintHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "constantGlobalLayoutHash": "1234567890123456",
+            "acceptedExtractorEvidenceRefs": ["evidence:clang-ast:abc"],
+            "acceptedExtractorSources": ["clang_ast"],
+            "extractorProvenance": [{
+                "extractorName": "clang++",
+                "extractorKind": "clang_ast",
+                "extractorVersion": "17.0.0",
+                "command": "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
+                "evidenceId": "evidence:clang-ast:abc",
+                "inputHash": "sha256:abc",
+                "acceptedByRuntimeCorrectnessPlan": true
+            }]
+        });
+
+        let (missing_command_proven, missing_command_reason) =
+            abi_stage_verdict_from_metadata(&missing_command);
+        let (invalid_hash_proven, invalid_hash_reason) =
+            abi_stage_verdict_from_metadata(&invalid_input_hash);
+
+        assert!(!missing_command_proven);
+        assert_eq!(
+            missing_command_reason.as_deref(),
+            Some("abi_extractor_provenance_unverified")
+        );
+        assert!(!invalid_hash_proven);
+        assert_eq!(
+            invalid_hash_reason.as_deref(),
             Some("abi_extractor_provenance_unverified")
         );
     }
