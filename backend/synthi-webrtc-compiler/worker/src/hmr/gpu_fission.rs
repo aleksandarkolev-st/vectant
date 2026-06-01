@@ -217,6 +217,17 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
             reason_codes.push(format!("fission.{field}_invalid"));
         }
     }
+    if non_empty_string(candidate.get("artifactKind"))
+        && artifact_kind_scope_rank(candidate).is_none()
+    {
+        reason_codes.push("fission.artifactKind_invalid".to_string());
+    }
+    for field in invalid_replacement_scope_fields(candidate) {
+        reason_codes.push(format!("fission.{field}_invalid"));
+    }
+    if replacement_scope_narrows_artifact_kind(candidate) {
+        reason_codes.push("fission.replacement_scope_narrows_artifact_kind".to_string());
+    }
 
     for field in REQUIRED_NON_EMPTY_ARRAY_FIELDS {
         if !non_empty_array(candidate.get(*field)) {
@@ -343,6 +354,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "outputOracleContract": output_oracle_contract_summary(candidate),
         "generatedRolePathRequired": generated_role_path_required(candidate),
         "generatedRolePath": generated_role_path(candidate),
+        "artifactKindScopeRank": artifact_kind_scope_rank(candidate),
+        "replacementScopeRank": replacement_scope_rank(candidate),
         "originalHostLaunchMappingRequired": original_host_launch_mapping_required(candidate),
         "originalHostLaunchMappingId": candidate
             .get("originalHostLaunchMappingId")
@@ -1431,37 +1444,86 @@ fn fission_selection_score(candidate: &Value) -> Value {
 }
 
 fn replacement_scope_rank(candidate: &Value) -> u64 {
-    let mut scope_text = Vec::new();
-    for field in ["replacementScope", "artifactScope", "scope", "artifactKind"] {
-        if let Some(value) = candidate.get(field).and_then(Value::as_str) {
-            scope_text.push(normalized_scope_text(value));
-        }
+    let artifact_rank = artifact_kind_scope_rank(candidate);
+    let explicit_scope_rank = explicit_replacement_scope_rank(candidate);
+
+    match (artifact_rank, explicit_scope_rank) {
+        (Some(artifact_rank), Some(scope_rank)) => artifact_rank.max(scope_rank),
+        (Some(artifact_rank), None) => artifact_rank,
+        (None, Some(scope_rank)) => scope_rank,
+        (None, None) => 2,
     }
-    let scope_text = scope_text.join(" ");
+}
+
+fn artifact_kind_scope_rank(candidate: &Value) -> Option<u64> {
+    candidate
+        .get("artifactKind")
+        .and_then(Value::as_str)
+        .and_then(scope_rank_from_text)
+}
+
+fn explicit_replacement_scope_rank(candidate: &Value) -> Option<u64> {
+    ["replacementScope", "artifactScope", "scope"]
+        .iter()
+        .filter_map(|field| candidate.get(*field).and_then(Value::as_str))
+        .filter_map(scope_rank_from_text)
+        .min()
+}
+
+fn invalid_replacement_scope_fields(candidate: &Value) -> Vec<&'static str> {
+    ["replacementScope", "artifactScope", "scope"]
+        .into_iter()
+        .filter(|field| {
+            candidate
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(|value| scope_rank_from_text(value).is_none())
+        })
+        .collect()
+}
+
+fn replacement_scope_narrows_artifact_kind(candidate: &Value) -> bool {
+    artifact_kind_scope_rank(candidate)
+        .zip(explicit_replacement_scope_rank(candidate))
+        .is_some_and(|(artifact_rank, scope_rank)| scope_rank < artifact_rank)
+}
+
+fn scope_rank_from_text(value: &str) -> Option<u64> {
+    let scope_text = normalized_scope_text(value);
     if scope_text.is_empty() {
-        return 2;
+        return None;
     }
     if scope_text.contains("body") || scope_text.contains("function") {
-        0
+        Some(0)
     } else if scope_text.contains("source_include")
-        || (scope_text.contains("partial") && scope_text.contains("device"))
+        || scope_text.contains("include_bridge")
+        || (scope_text.contains("partial")
+            && (scope_text.contains("device") || scope_text.contains("module")))
     {
-        1
-    } else if scope_text.contains("multi") {
-        2
-    } else if scope_text.contains("full")
-        && (scope_text.contains("device") || scope_text.contains("module"))
+        Some(1)
+    } else if scope_text.contains("multi")
+        || scope_text.contains("translation_unit")
+        || scope_text.contains("kernel_region")
+        || scope_text.contains("artifact_region")
+        || scope_text == "region"
     {
-        3
+        Some(2)
+    } else if (scope_text.contains("full")
+        && (scope_text.contains("device") || scope_text.contains("module")))
+        || scope_text.contains("device_module")
+        || scope_text.contains("sidecar")
+        || scope_text.contains("code_object")
+    {
+        Some(3)
     } else if scope_text.contains("host") {
-        4
+        Some(4)
     } else if scope_text.contains("runner")
         || scope_text.contains("process")
         || scope_text.contains("restart")
     {
-        5
+        Some(5)
     } else {
-        2
+        None
     }
 }
 
@@ -2319,6 +2381,63 @@ mod tests {
             report["narrowerRejectionCoverage"]["missingRanks"],
             json!([2])
         );
+    }
+
+    #[test]
+    fn rejects_unclassified_artifact_kind() {
+        let mut candidate = valid_candidate();
+        candidate["artifactKind"] = json!("opaque_ad_hoc_blob");
+        candidate["replacementScope"] = json!("opaque_ad_hoc_blob");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["artifactKindScopeRank"], json!(null));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.artifactKind_invalid"));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.replacementScope_invalid"));
+    }
+
+    #[test]
+    fn rejects_replacement_scope_that_is_narrower_than_artifact_kind() {
+        let mut candidate = valid_candidate();
+        candidate["artifactKind"] = json!("full_device_module");
+        candidate["replacementScope"] = json!("function_body");
+        candidate["narrowerCandidateRejections"] = json!([
+            {
+                "scopeRank": 0,
+                "reasonCode": "fission.edit_crosses_body_boundary",
+                "verifierEvidenceIds": ["evidence:source-map"]
+            },
+            {
+                "scopeRank": 1,
+                "reasonCode": "fission.include_closure_unknown",
+                "verifierEvidenceIds": ["evidence:include-closure"]
+            },
+            {
+                "scopeRank": 2,
+                "reasonCode": "fission.symbol_ownership_ambiguous",
+                "verifierEvidenceIds": ["evidence:symbol-ownership"]
+            }
+        ]);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["artifactKindScopeRank"], json!(3));
+        assert_eq!(report["replacementScopeRank"], json!(3));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.replacement_scope_narrows_artifact_kind"));
     }
 
     #[test]
