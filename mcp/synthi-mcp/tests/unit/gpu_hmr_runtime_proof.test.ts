@@ -370,6 +370,30 @@ function acceptedFissionVerifierMetadata() {
       reasonCodes: ["fission.candidate_verified"],
       verifierEvidenceId: `fission-verifier:sha256:${"a".repeat(64)}`,
       deterministicVerifierEvidenceIds: ["evidence:source-map"],
+      selectionScore: {
+        policy: "narrowest_viable_generic_v1",
+        comparisonOrder: [
+          "scopeRank",
+          "missingVerificationCategoryCount",
+          "targetSymbolCount",
+          "exportedSymbolOverage",
+          "sourcePathCount",
+          "includeClosureCount",
+          "sourceSpanExtent",
+          "compileCostPenaltyMs",
+          "historicalTimingPenaltyMs",
+        ],
+        total: 1,
+        scopeRank: 1,
+        missingVerificationCategoryCount: 0,
+        targetSymbolCount: 1,
+        exportedSymbolOverage: 0,
+        sourcePathCount: 1,
+        includeClosureCount: 1,
+        sourceSpanExtent: 15,
+        compileCostPenaltyMs: 10,
+        historicalTimingPenaltyMs: 20,
+      },
       verificationEvidenceCoverage: {
         requiredCategories: ["source_mapping"],
         missingCategories: [],
@@ -1858,6 +1882,58 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.required).toBe(true);
     expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
     expect(proof.degradedReason).toBe("fission_verifier_schema_unverified");
+  });
+
+  it("does not prove fission without accepted selection policy provenance", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.selectionPolicy;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:selection-policy",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:selection-policy"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selection_policy_unverified");
+  });
+
+  it("does not prove fission without selected candidate ranking score provenance", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.candidates[0].selectionScore;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:selection-score",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:selection-score"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_candidate_selection_score_missing");
   });
 
   it("does not prove fission when the selected island contract is incomplete", () => {

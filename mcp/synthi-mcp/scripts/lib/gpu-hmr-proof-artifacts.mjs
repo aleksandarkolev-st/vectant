@@ -90,6 +90,46 @@ function fissionVerifierDegradedReason(metadata) {
     ?? null;
 }
 
+const ACCEPTED_FISSION_SELECTION_POLICY = 'narrowest_viable_generic_v1';
+const REQUIRED_FISSION_SELECTION_ORDER = [
+  'scopeRank',
+  'missingVerificationCategoryCount',
+  'targetSymbolCount',
+  'exportedSymbolOverage',
+  'sourcePathCount',
+  'includeClosureCount',
+  'sourceSpanExtent',
+  'compileCostPenaltyMs',
+  'historicalTimingPenaltyMs',
+];
+
+function fissionSelectionPolicyAccepted(value) {
+  return nonEmptyString(value) === ACCEPTED_FISSION_SELECTION_POLICY;
+}
+
+function nonNegativeIntegerField(object, field) {
+  return Number.isInteger(object?.[field]) && object[field] >= 0;
+}
+
+function fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy) {
+  const score = objectValue(selectedCandidate?.selectionScore);
+  if (!score) {
+    return { proven: false, reason: 'fission_selected_candidate_selection_score_missing' };
+  }
+  if (!fissionSelectionPolicyAccepted(score.policy) || score.policy !== selectionPolicy) {
+    return { proven: false, reason: 'fission_selected_candidate_selection_policy_mismatch' };
+  }
+  const comparisonOrder = nonEmptyStringArray(score.comparisonOrder);
+  if (!REQUIRED_FISSION_SELECTION_ORDER.every((field) => comparisonOrder.includes(field))) {
+    return { proven: false, reason: 'fission_selected_candidate_selection_order_unverified' };
+  }
+  const numericFields = ['total', ...REQUIRED_FISSION_SELECTION_ORDER];
+  if (!numericFields.every((field) => nonNegativeIntegerField(score, field))) {
+    return { proven: false, reason: 'fission_selected_candidate_selection_score_unverified' };
+  }
+  return { proven: true, reason: null };
+}
+
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -493,6 +533,10 @@ function fissionReportPassIntegrity(metadata) {
   if (metadata.schemaVersion !== 'synthi.gpu.fission_verifier.v1') {
     return { proven: false, reason: 'fission_verifier_schema_unverified' };
   }
+  const selectionPolicy = nonEmptyString(metadata.selectionPolicy);
+  if (!fissionSelectionPolicyAccepted(selectionPolicy)) {
+    return { proven: false, reason: 'fission_selection_policy_unverified' };
+  }
   const status = String(metadata.status ?? '').trim().toLowerCase();
   if (status !== 'pass' && status !== 'passed' && status !== 'accepted') {
     return { proven: false, reason: 'fission_candidate_verifier_rejected' };
@@ -522,6 +566,10 @@ function fissionReportPassIntegrity(metadata) {
   }
   if (nonEmptyString(selectedCandidate.islandId) !== selectedIslandId) {
     return { proven: false, reason: 'fission_selected_candidate_identity_mismatch' };
+  }
+  const scoreIntegrity = fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy);
+  if (!scoreIntegrity.proven) {
+    return { proven: false, reason: scoreIntegrity.reason };
   }
   const contractIntegrity = fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslandId);
   if (!contractIntegrity.proven) {
