@@ -499,6 +499,91 @@ inline bool synthi_gpu_launch_source_location(
         attachment_provenance);
 }}
 
+template <typename Grid, typename Block, typename Stream, typename... Args>
+inline bool synthi_gpu_launch_args(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    const Args&... args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    return table.launch_raw(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        packed_args.begin(),
+        packed_args.size(),
+        table.generation);
+}}
+
+template <typename Grid, typename Block, typename Stream, typename... Args>
+inline bool synthi_gpu_launch_original_host_path_args(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    const Args&... args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    return synthi_gpu_launch_original_host_path_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        packed_args.begin(),
+        packed_args.size(),
+        table.generation,
+        host_path_id,
+        dispatch_table_entry_id,
+        attachment_provenance);
+}}
+
+template <typename Grid, typename Block, typename Stream, typename... Args>
+inline bool synthi_gpu_launch_source_location_args(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    const Args&... args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    return synthi_gpu_launch_source_location_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        packed_args.begin(),
+        packed_args.size(),
+        table.generation,
+        host_path_id,
+        attachment_provenance);
+}}
+
 inline void synthi_register(
     SynthiGpuRuntime* gpu,
     void* ptr,
@@ -756,6 +841,9 @@ mod tests {
         assert!(h.contains("inline bool synthi_gpu_launch"));
         assert!(h.contains("inline bool synthi_gpu_launch_original_host_path"));
         assert!(h.contains("inline bool synthi_gpu_launch_source_location"));
+        assert!(h.contains("inline bool synthi_gpu_launch_args"));
+        assert!(h.contains("inline bool synthi_gpu_launch_original_host_path_args"));
+        assert!(h.contains("inline bool synthi_gpu_launch_source_location_args"));
         assert!(h.contains("#define SYNTHI_GPU_HOST_PATH_ID"));
         assert!(h.contains("#define synthi_gpu_launch(gpu, kernel_name"));
         assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
@@ -833,6 +921,9 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
     (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "noop", grid, block, 0, nullptr, {sized_arg});
     (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
+    (void)synthi_gpu_launch_args(gpu, "noop", grid, block, 0, nullptr, value, arg);
+    (void)synthi_gpu_launch_original_host_path_args(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
+    (void)synthi_gpu_launch_source_location_args(gpu, "source.cpp:42", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
     synthi_host_identity("smoke", gpu, 0);
     synthi_output_oracle("smoke", "sentinel", "1", "1", true);
     synthi_output_oracle_with_provenance("smoke", "sentinel", "1", "1", "0", "probe", "target", "artifact", nullptr, true);
