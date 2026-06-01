@@ -139,6 +139,13 @@ function finiteNonNegativeNumber(value) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function finiteNonNegativeNumberList(values) {
+  const raw = Array.isArray(values) ? values : [values];
+  return raw
+    .map((value) => finiteNonNegativeNumber(value))
+    .filter((value) => value !== null);
+}
+
 function epochGraphGenerationId(generation) {
   return Number.isInteger(generation) && generation >= 0 ? `generation:${generation}` : null;
 }
@@ -602,6 +609,17 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     ? proofMeets(dispatchProof, 'gpu-hmr-dispatch-safe-proven')
     : observation.dispatchSafeProven === true;
   const dispatchRuntimeSessionIds = compactStringList(dispatchProof?.runtimeSessionIds);
+  const dispatchTimestamps = finiteNonNegativeNumberList(
+    dispatchProof?.dispatchTimestamps
+    ?? dispatchProof?.dispatch_timestamps
+    ?? dispatchProof?.dispatchTimestamp
+    ?? dispatchProof?.dispatch_timestamp
+    ?? dispatchProof?.dispatchTimestampMs
+    ?? dispatchProof?.dispatch_timestamp_ms
+    ?? [],
+  );
+  const latestDispatchTimestamp = dispatchTimestamps.length ? Math.max(...dispatchTimestamps) : null;
+  const dispatchTimestampObserved = latestDispatchTimestamp !== null;
   const rawOracle = observation.outputOracle && typeof observation.outputOracle === 'object'
     ? observation.outputOracle
     : {};
@@ -658,6 +676,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const oracleRuntimeSessionMatchesDispatch =
     oracleRuntimeSessionId !== null
     && (dispatchRuntimeSessionIds.length === 0 || dispatchRuntimeSessionIds.includes(oracleRuntimeSessionId));
+  const oracleReadbackAfterDispatch =
+    dispatchTimestampObserved
+    && oracleReadbackTimestampObserved
+    && oracleReadbackTimestamp >= latestDispatchTimestamp;
   const hasTolerance = Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance')
     && rawOracle.tolerance !== null
     && rawOracle.tolerance !== undefined;
@@ -690,6 +712,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleProvenanceComplete
     && oracleRuntimeSessionMatchesDispatch
     && oracleArtifactMatchesDispatch
+    && oracleReadbackAfterDispatch
     && oracleValuesCompatible
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
@@ -699,6 +722,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     evidenceObserved: oracleEvidenceObserved,
     provenanceComplete: oracleProvenanceComplete,
     runtimeSessionMatchesDispatch: oracleRuntimeSessionMatchesDispatch,
+    dispatchTimestampObserved,
+    dispatchTimestamps,
+    latestDispatchTimestamp,
+    readbackAfterDispatch: oracleReadbackAfterDispatch,
     producer: oracleProducer,
     outputTargetId: oracleOutputTargetId,
     readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
@@ -801,9 +828,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
         ? 'output_oracle_session_mismatch'
         : oracleOtherwisePassed && !oracleArtifactMatchesDispatch
           ? 'output_oracle_artifact_mismatch'
-          : visualFrameObserved
-            ? 'visual_frame_without_deterministic_output_oracle'
-            : 'output_oracle_not_collected';
+          : oracleOtherwisePassed && !dispatchTimestampObserved
+            ? 'output_oracle_dispatch_timestamp_missing'
+            : oracleOtherwisePassed && !oracleReadbackAfterDispatch
+              ? 'output_oracle_precedes_dispatch'
+              : visualFrameObserved
+                ? 'visual_frame_without_deterministic_output_oracle'
+                : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -872,6 +903,15 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const dispatcherRegistrationIds = compactStringList(observation.dispatcherRegistrationIds);
   const dispatchTableEntryIds = compactStringList(observation.dispatchTableEntryIds);
   const dispatchTableHashes = compactStringList(observation.dispatchTableHashes);
+  const dispatchTimestamps = finiteNonNegativeNumberList(
+    observation.dispatchTimestamps
+    ?? observation.dispatch_timestamps
+    ?? observation.dispatchTimestamp
+    ?? observation.dispatch_timestamp
+    ?? observation.dispatchTimestampMs
+    ?? observation.dispatch_timestamp_ms
+    ?? [],
+  );
 
   if (!dispatchObserved || dispatchFailureObserved || !sessionScoped || !runtimeSessionConsistent) {
     return {
@@ -1033,6 +1073,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       dispatcherRegistrationIds,
       dispatchTableEntryIds,
       dispatchTableHashes,
+      dispatchTimestamps,
     };
   }
 
@@ -1062,6 +1103,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     dispatcherRegistrationIds,
     dispatchTableEntryIds,
     dispatchTableHashes,
+    dispatchTimestamps,
   };
 }
 

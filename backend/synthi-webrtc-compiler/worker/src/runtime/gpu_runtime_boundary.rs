@@ -82,6 +82,7 @@ pub struct LaunchRecord {
     pub arg_provenance: Vec<LaunchArgProvenance>,
     pub arg_provenance_complete: bool,
     pub dispatched: bool,
+    pub dispatch_timestamp_ms: Option<u128>,
     pub dispatch_error: Option<String>,
 }
 
@@ -1391,6 +1392,7 @@ fn synthi_gpu_launch_raw_impl(
             arg_provenance: arg_provenance.clone(),
             arg_provenance_complete,
             dispatched: false,
+            dispatch_timestamp_ms: None,
             dispatch_error: None,
         });
         let dispatcher = if stale_generation {
@@ -1424,8 +1426,10 @@ fn synthi_gpu_launch_raw_impl(
             .map(|d| d.dispatch(&request, dispatch_args))
     };
 
+    let dispatch_timestamp_ms = epoch_millis_now();
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     if let Some(record) = guard.launches.get_mut(launch_index) {
+        record.dispatch_timestamp_ms = Some(dispatch_timestamp_ms);
         match dispatch_result {
             Some(Ok(())) => {
                 record.dispatched = true;
@@ -1476,7 +1480,7 @@ fn synthi_gpu_launch_raw_impl(
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} error={}",
             kernel_name,
             grid,
             block,
@@ -1489,12 +1493,13 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatcher_registration_id),
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
+            dispatch_timestamp_ms,
             log_safe(error)
         );
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={}",
             kernel_name,
             grid,
             block,
@@ -1506,7 +1511,8 @@ fn synthi_gpu_launch_raw_impl(
             log_token(active_artifact_id),
             log_token(dispatcher_registration_id),
             log_token(dispatch_table_hash),
-            log_token(&dispatch_table_entry_id)
+            log_token(&dispatch_table_entry_id),
+            dispatch_timestamp_ms
         );
     }
     let known_arg_count = arg_provenance
@@ -2594,6 +2600,7 @@ mod tests {
         let launches = launch_records_snapshot();
         assert!(launches[0].dispatched);
         assert!(launches[0].dispatch_error.is_none());
+        assert!(launches[0].dispatch_timestamp_ms.is_some());
         assert_eq!(
             launches[0].expected_generation,
             launches[0].active_generation

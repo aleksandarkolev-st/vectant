@@ -1544,6 +1544,7 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const dispatchTimestamp = Number(logField(line, 'dispatch_timestamp'));
     return {
       line,
       artifactId: artifactId && artifactId !== 'none' ? artifactId : null,
@@ -1553,6 +1554,9 @@ function runtimeDispatchEvidence(workerEvidence) {
       dispatchTableHash: dispatchTableHash && dispatchTableHash !== 'none' ? dispatchTableHash : null,
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
+        : null,
+      dispatchTimestamp: Number.isFinite(dispatchTimestamp) && dispatchTimestamp >= 0
+        ? dispatchTimestamp
         : null,
     };
   });
@@ -1568,6 +1572,9 @@ function runtimeDispatchEvidence(workerEvidence) {
     dispatch_table_entry_ids: [
       ...new Set(successRecords.map((record) => record.dispatchTableEntryId).filter(Boolean)),
     ],
+    dispatch_timestamps: successRecords
+      .map((record) => record.dispatchTimestamp)
+      .filter((value) => value !== null),
     failure_count: dispatchFailureLines.length,
     failure_lines: dispatchFailureLines.slice(0, 20),
   };
@@ -1679,7 +1686,7 @@ function summarizeGpuProof(proof) {
 
 function selfCheckRuntimeDispatchEvidence() {
   const evidence = runtimeDispatchEvidence([
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok dispatch_timestamp=1779979999000',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=second grid=(1, 1, 1) dispatch=failed',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=third grid=(1, 1, 1) dispatch=stale-pointer',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=fourth grid=(1, 1, 1) dispatch=missing-dispatcher',
@@ -1693,6 +1700,9 @@ function selfCheckRuntimeDispatchEvidence() {
   }
   if (evidence.failure_lines.some((line) => !/\bsynthi_gpu_launch\b/.test(line))) {
     throw new Error('dispatch failure evidence included a non-launch line');
+  }
+  if (evidence.dispatch_timestamps[0] !== 1779979999000) {
+    throw new Error('dispatch timestamp evidence parser failed');
   }
   const scoped = scopeLogTextToSession(
     [
@@ -2270,6 +2280,7 @@ async function collectRuntimeEvidence() {
     dispatcherRegistrationIds: runtimeDispatch.dispatcher_registration_ids,
     dispatchTableEntryIds: runtimeDispatch.dispatch_table_entry_ids,
     dispatchTableHashes: runtimeDispatch.dispatch_table_hashes,
+    dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
   report.output_proof = classifyGpuHmrOutputProof({

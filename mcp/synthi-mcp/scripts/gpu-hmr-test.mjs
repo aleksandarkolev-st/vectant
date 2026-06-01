@@ -1859,6 +1859,7 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const dispatchTimestamp = Number(logField(line, 'dispatch_timestamp'));
     return {
       line,
       artifactId: artifactId && artifactId !== 'none' ? artifactId : null,
@@ -1868,6 +1869,9 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
       dispatchTableHash: dispatchTableHash && dispatchTableHash !== 'none' ? dispatchTableHash : null,
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
+        : null,
+      dispatchTimestamp: Number.isFinite(dispatchTimestamp) && dispatchTimestamp >= 0
+        ? dispatchTimestamp
         : null,
     };
   });
@@ -1881,6 +1885,7 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     dispatchTableEntryIds: [
       ...new Set(records.map((record) => record.dispatchTableEntryId).filter(Boolean)),
     ],
+    dispatchTimestamps: records.map((record) => record.dispatchTimestamp).filter((value) => value !== null),
   };
 }
 
@@ -2428,6 +2433,7 @@ async function awaitRuntimeDispatchProof(
     dispatcherRegistrationIds: runtimeDispatchArtifacts.dispatcherRegistrationIds,
     dispatchTableEntryIds: runtimeDispatchArtifacts.dispatchTableEntryIds,
     dispatchTableHashes: runtimeDispatchArtifacts.dispatchTableHashes,
+    dispatchTimestamps: runtimeDispatchArtifacts.dispatchTimestamps,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
       runtimeDispatchArtifacts,
       selectedArtifactIds,
@@ -3616,7 +3622,7 @@ async function selfCheck() {
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0\n',
   );
   const dispatchArtifacts = runtimeDispatchArtifactEvidence(
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:self dispatcher_registration_id=dispatcher:sha256:self dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1 artifact_id=artifact:sha256:self dispatcher_registration_id=dispatcher:sha256:self dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n',
     ['kernel_a'],
   );
   const selectedDispatchRegex = selectedArtifactDispatchLineRegex(
@@ -3651,6 +3657,7 @@ async function selfCheck() {
     || !sessionEvidence.consistent
     || sessionEvidence.uniqueIds[0] !== 'session-1'
     || dispatchArtifacts.runtimeArtifactIds[0] !== 'artifact:sha256:self'
+    || dispatchArtifacts.dispatchTimestamps[0] !== 1779979999000
     || !selectedDispatchRegex?.test(`${staleDispatchLine}${selectedDispatchLine}`)
     || selectedDispatchRegex.test(staleDispatchLine)
     || selectedScopeSessionEvidence.uniqueIds.join(',') !== 'session-2'

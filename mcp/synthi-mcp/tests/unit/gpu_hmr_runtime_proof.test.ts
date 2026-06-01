@@ -154,6 +154,7 @@ function retiredEpochProof() {
 function safeDispatchProof({
   runtimeSession = "runtime-session:test",
   artifactId = "artifact:sha256:test",
+  dispatchTimestamp = 1779979999000,
 } = {}) {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
@@ -173,6 +174,7 @@ function safeDispatchProof({
     dispatcherRegistrationIds: ["dispatcher:sha256:test"],
     dispatchTableEntryIds: ["shade:0x10"],
     dispatchTableHashes: ["0xabc"],
+    dispatchTimestamps: [dispatchTimestamp],
     runtimeArtifactMatchesSelected: true,
   });
 }
@@ -472,6 +474,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.output_oracle?.outputTargetId).toBe("target:main");
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
     expect(proof.outputOracle.evidenceRefs).toEqual(["worker-log:output_oracle:probe.checksum"]);
+    expect(proof.outputOracle.readbackAfterDispatch).toBe(true);
   });
 
   it("does not prove output from a runtime oracle missing provenance fields", () => {
@@ -529,6 +532,42 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("output_oracle_provenance_incomplete");
     expect(proof.outputOracle.readbackTimestamp).toBeNull();
     expect(proof.outputOracle.provenanceComplete).toBe(false);
+  });
+
+  it("does not prove output when dispatch timestamp provenance is missing", () => {
+    const dispatchProof = {
+      ...safeDispatchProof(),
+      dispatchTimestamps: [],
+    };
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("output_oracle_dispatch_timestamp_missing");
+    expect(proof.outputOracle.dispatchTimestampObserved).toBe(false);
+    expect(proof.outputOracle.readbackAfterDispatch).toBe(false);
+  });
+
+  it("does not prove output when oracle readback precedes dispatch evidence", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof({ dispatchTimestamp: 1779980000001 }),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedReason).toBe("output_oracle_precedes_dispatch");
+    expect(proof.outputOracle.latestDispatchTimestamp).toBe(1779980000001);
+    expect(proof.outputOracle.readbackAfterDispatch).toBe(false);
   });
 
   it("does not prove output from an oracle bound to a different runtime session", () => {
