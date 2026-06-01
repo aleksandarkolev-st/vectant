@@ -1014,6 +1014,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           producer: latest.producer,
           expected: latest.expected,
           actual: latest.actual,
+          passed: latest.passed,
           tolerance: latest.tolerance,
           runtimeSession: latest.runtimeSession,
           outputTargetId: latest.outputTargetId,

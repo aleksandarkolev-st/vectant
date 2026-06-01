@@ -908,6 +908,18 @@ function absoluteToleranceValue(tolerance) {
   return finiteNumericValue(tolerance);
 }
 
+function oraclePassedValue(rawOracle = {}) {
+  const raw = rawOracle.passed ?? rawOracle.pass ?? rawOracle.ok ?? null;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  const status = typeof rawOracle.status === 'string' && rawOracle.status.trim()
+    ? rawOracle.status.trim().toLowerCase()
+    : null;
+  if (['pass', 'passed', 'accepted', 'ok'].includes(status)) return true;
+  if (['fail', 'failed', 'rejected', 'error'].includes(status)) return false;
+  return null;
+}
+
 export function gpuHmrOracleValuesCompatible(expected, actual, tolerance = null) {
   if (Object.is(expected, actual)) {
     return {
@@ -969,6 +981,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     : {};
   const hasExpected = Object.prototype.hasOwnProperty.call(rawOracle, 'expected');
   const hasActual = Object.prototype.hasOwnProperty.call(rawOracle, 'actual');
+  const oracleReportedPassed = oraclePassedValue(rawOracle);
+  const oraclePassStatusObserved = oracleReportedPassed !== null;
+  const oraclePassStatusPassed = oracleReportedPassed === true;
   const oracleKind = typeof rawOracle.kind === 'string' && rawOracle.kind.trim()
     ? rawOracle.kind.trim()
     : null;
@@ -1061,6 +1076,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleReadbackAfterDispatch
     && probeContractComplete
     && oracleValuesCompatible
+    && oraclePassStatusPassed
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
     provided: deterministicOracleProvided,
@@ -1081,6 +1097,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     artifactMatchesDispatch: oracleArtifactMatchesDispatch,
     dispatchArtifactIds,
     valuesCompatible: oracleValuesCompatible,
+    passStatusObserved: oraclePassStatusObserved,
+    reportedPassed: oracleReportedPassed,
     kind: oracleKind,
     kindAccepted: oracleKindAccepted,
     expected: hasExpected ? rawOracle.expected : null,
@@ -1187,9 +1205,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
                     ? 'output_oracle_precedes_dispatch'
                     : oraclePayloadOtherwisePassed && !probeContractComplete
                       ? 'output_oracle_probe_contract_missing'
-                      : visualFrameObserved
-                        ? 'visual_frame_without_deterministic_output_oracle'
-                        : 'output_oracle_not_collected';
+                      : oraclePayloadOtherwisePassed && !oraclePassStatusObserved
+                        ? 'output_oracle_pass_status_missing'
+                        : oraclePayloadOtherwisePassed && !oraclePassStatusPassed
+                          ? 'output_oracle_reported_failed'
+                          : visualFrameObserved
+                            ? 'visual_frame_without_deterministic_output_oracle'
+                            : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

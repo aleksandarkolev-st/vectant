@@ -233,6 +233,7 @@ function deterministicOutputOracle({
     producer: "deterministic_probe",
     expected: "expected-sentinel",
     actual: "expected-sentinel",
+    passed: true,
     outputTargetId: "output:sentinel",
     readbackTimestamp: "1779980000000",
     runtimeSessionId: runtimeSession,
@@ -677,6 +678,38 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-visual-only");
     expect(proof.degradedReason).toBe("output_oracle_probe_contract_missing");
     expect(proof.outputOracle.probeContractComplete).toBe(false);
+  });
+
+  it("does not prove output when the oracle record has no passing status", () => {
+    const { passed: _passed, ...oracleWithoutStatus } = deterministicOutputOracle();
+    const missingStatus = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: oracleWithoutStatus,
+      visualFrameObserved: true,
+    });
+
+    expect(missingStatus.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(missingStatus.degradedReason).toBe("output_oracle_pass_status_missing");
+    expect(missingStatus.outputOracle.passStatusObserved).toBe(false);
+
+    const reportedFailure = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        passed: false,
+      },
+      visualFrameObserved: true,
+    });
+
+    expect(reportedFailure.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(reportedFailure.degradedReason).toBe("output_oracle_reported_failed");
+    expect(reportedFailure.outputOracle.reportedPassed).toBe(false);
   });
 
   it("blocks render output proof when required visual evidence is missing", () => {
