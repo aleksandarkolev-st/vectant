@@ -58,6 +58,13 @@ const ACCEPTED_OUTPUT_ORACLE_KINDS: &[&str] = &[
     "buffer_checksum",
 ];
 
+const RENDER_OUTPUT_ORACLE_KINDS: &[&str] = &[
+    "render_target_hash",
+    "accumulation_buffer_hash",
+    "selected_pixels",
+    "selected_pixel_values",
+];
+
 const ORIGINAL_HOST_LAUNCH_MAPPING_EVIDENCE_FIELDS: &[&str] = &[
     "originalHostLaunchMappingEvidenceIds",
     "originalHostPathEvidenceIds",
@@ -621,7 +628,12 @@ fn output_oracle_proposal_valid(candidate: &Value) -> bool {
     ACCEPTED_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())
         && output_oracle_expected_value_present(object)
         && output_oracle_producer_present(object)
-        && output_oracle_target_or_readback_present(object)
+        && output_oracle_output_target_present(object)
+        && output_oracle_readback_contract_present(object)
+        && output_oracle_runtime_session_binding_present(object)
+        && output_oracle_artifact_binding_present(object)
+        && (!RENDER_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())
+            || output_oracle_visual_evidence_contract_present(object))
 }
 
 fn output_oracle_kind(candidate: &Value) -> Option<String> {
@@ -645,13 +657,65 @@ fn output_oracle_producer_present(object: &serde_json::Map<String, Value>) -> bo
         .any(|field| non_empty_string(object.get(*field)))
 }
 
-fn output_oracle_target_or_readback_present(object: &serde_json::Map<String, Value>) -> bool {
+fn output_oracle_output_target_present(object: &serde_json::Map<String, Value>) -> bool {
+    ["outputTargetId", "outputTarget", "target"]
+        .iter()
+        .any(|field| object.get(*field).is_some_and(value_present))
+}
+
+fn output_oracle_readback_contract_present(object: &serde_json::Map<String, Value>) -> bool {
     [
-        "outputTargetId",
-        "outputTarget",
         "readbackPlan",
+        "readbackTimestampSource",
+        "readbackAfterHmr",
+        "readbackAfterHMR",
+        "syncPoint",
+        "synchronizationPoint",
+        "knownSyncPoint",
         "probeMode",
-        "target",
+        "probeConfig",
+        "deterministicProbeMode",
+    ]
+    .iter()
+    .any(|field| object.get(*field).is_some_and(value_present))
+}
+
+fn output_oracle_runtime_session_binding_present(
+    object: &serde_json::Map<String, Value>,
+) -> bool {
+    [
+        "runtimeSessionId",
+        "sessionId",
+        "runtimeSessionBinding",
+        "sessionBinding",
+        "runtimeSessionIdSource",
+        "sessionIdSource",
+    ]
+    .iter()
+    .any(|field| object.get(*field).is_some_and(value_present))
+}
+
+fn output_oracle_artifact_binding_present(object: &serde_json::Map<String, Value>) -> bool {
+    [
+        "artifactId",
+        "artifactBinding",
+        "artifactIdSource",
+        "selectedArtifactId",
+        "runtimeArtifactBinding",
+    ]
+    .iter()
+    .any(|field| object.get(*field).is_some_and(value_present))
+}
+
+fn output_oracle_visual_evidence_contract_present(
+    object: &serde_json::Map<String, Value>,
+) -> bool {
+    [
+        "visualEvidenceRef",
+        "visualEvidenceRefs",
+        "visualEvidencePlan",
+        "visualEvidenceRequirement",
+        "requiresVisualEvidence",
     ]
     .iter()
     .any(|field| object.get(*field).is_some_and(value_present))
@@ -676,6 +740,26 @@ fn output_oracle_contract_summary(candidate: &Value) -> Value {
         "proposalPresent": output_oracle_proposal_present(candidate),
         "proposalValid": output_oracle_proposal_valid(candidate),
         "proposalKind": output_oracle_kind(candidate),
+        "proposalOutputTargetPresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_output_target_present),
+        "proposalReadbackContractPresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_readback_contract_present),
+        "proposalRuntimeSessionBindingPresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_runtime_session_binding_present),
+        "proposalArtifactBindingPresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_artifact_binding_present),
+        "proposalVisualEvidenceContractPresent": candidate
+            .get("outputOracleProposal")
+            .and_then(Value::as_object)
+            .is_some_and(output_oracle_visual_evidence_contract_present),
         "acceptedKinds": ACCEPTED_OUTPUT_ORACLE_KINDS,
     })
 }
@@ -1544,7 +1628,17 @@ mod tests {
             "producer": "deterministic_probe",
             "expected": [[0, 0, [1.0, 0.0, 0.0, 1.0]]],
             "tolerance": 0.001,
-            "outputTargetId": "render-target:primary"
+            "outputTargetId": "render-target:primary",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary"
+            },
+            "sessionIdSource": "runtime-session",
+            "artifactIdSource": "selected-artifact",
+            "visualEvidencePlan": {
+                "required": true,
+                "producer": "validation-capture"
+            }
         });
 
         let report = verify_fission_candidate(&candidate);
@@ -1552,6 +1646,10 @@ mod tests {
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
         assert_eq!(report["outputOracleContract"]["proposalKind"], "selected_pixels");
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
+            true
+        );
     }
 
     #[test]
@@ -1562,7 +1660,13 @@ mod tests {
             "kind": "buffer_checksum",
             "producer": "deterministic_probe",
             "expectedHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "outputTargetId": "buffer:primary"
+            "outputTargetId": "buffer:primary",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary"
+            },
+            "sessionIdSource": "runtime-session",
+            "artifactIdSource": "selected-artifact"
         });
 
         let report = verify_fission_candidate(&candidate);
@@ -1570,6 +1674,10 @@ mod tests {
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
         assert_eq!(report["outputOracleContract"]["proposalKind"], "buffer_checksum");
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
+            false
+        );
     }
 
     #[test]
@@ -1580,7 +1688,13 @@ mod tests {
             "kind": "screenshot_changed",
             "producer": "deterministic_probe",
             "expected": "changed",
-            "outputTargetId": "render-target:primary"
+            "outputTargetId": "render-target:primary",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary"
+            },
+            "sessionIdSource": "runtime-session",
+            "artifactIdSource": "selected-artifact"
         });
 
         let report = verify_fission_candidate(&candidate);
@@ -1600,13 +1714,85 @@ mod tests {
     }
 
     #[test]
+    fn rejects_inline_output_oracle_without_runtime_binding_contract() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "buffer_checksum",
+            "producer": "deterministic_probe",
+            "expectedHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "outputTargetId": "buffer:primary",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary"
+            }
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], false);
+        assert_eq!(
+            report["outputOracleContract"]["proposalRuntimeSessionBindingPresent"],
+            false
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalArtifactBindingPresent"],
+            false
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_invalid"));
+    }
+
+    #[test]
+    fn rejects_render_output_oracle_without_visual_evidence_contract() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "render_target_hash",
+            "producer": "deterministic_probe",
+            "expectedHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "outputTargetId": "render-target:primary",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary"
+            },
+            "sessionIdSource": "runtime-session",
+            "artifactIdSource": "selected-artifact"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], false);
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
+            false
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_invalid"));
+    }
+
+    #[test]
     fn rejects_inline_output_oracle_without_expected_value() {
         let mut candidate = valid_candidate();
         candidate.as_object_mut().unwrap().remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "dispatch_counter",
             "producer": "deterministic_probe",
-            "outputTargetId": "dispatch-counter:main"
+            "outputTargetId": "dispatch-counter:main",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary"
+            },
+            "sessionIdSource": "runtime-session",
+            "artifactIdSource": "selected-artifact"
         });
 
         let report = verify_fission_candidate(&candidate);
