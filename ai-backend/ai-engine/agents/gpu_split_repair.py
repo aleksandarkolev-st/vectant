@@ -196,6 +196,7 @@ def repair_split_artifacts(
     changed_files: Set[str] = set()
     repair_rules: List[str] = []
     repair_details: Dict[str, Any] = {}
+    removed_unresolved_launches = False
     input_reason_codes = (
         [violation.rule for violation in verification.violations]
         if verification is not None
@@ -442,13 +443,17 @@ def repair_split_artifacts(
                     changed_files.add(host_path)
             if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
                 repair_rules.append("repair.unresolved_generated_launches")
+                removed_unresolved_launches = True
 
     if (
         core_path
         and device_path
         and core_path in repaired
         and device_path in repaired
-        and "device_kernels_not_launched" in input_reason_codes
+        and (
+            "device_kernels_not_launched" in input_reason_codes
+            or removed_unresolved_launches
+        )
     ):
         device_lookup_source = _device_lookup_source_with_source_includes(
             repaired[device_path],
