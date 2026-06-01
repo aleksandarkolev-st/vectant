@@ -119,6 +119,29 @@ function parseOutputOracleContract(raw) {
   return contract;
 }
 
+function parseStringArrayEnv(raw, name) {
+  const text = String(raw ?? '').trim();
+  if (!text) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`invalid ${name}: expected JSON string array: ${err.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`invalid ${name}: expected JSON string array`);
+  }
+  return parsed.map((value, index) => {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(`invalid ${name}[${index}]: expected non-empty string`);
+    }
+    if (/[\0\r\n]/.test(value)) {
+      throw new Error(`invalid ${name}[${index}]: control characters are not supported`);
+    }
+    return value;
+  });
+}
+
 const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
 const configuredRepoName = cleanIdentifier(
   process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
@@ -148,6 +171,10 @@ const CFG = {
     process.env.SYNTHI_REAL_ROCM_SEED_COMMIT_MESSAGE ??
     `real-rocm-validation: seed ${configuredRepoName} ${process.env.SYNTHI_REAL_ROCM_TARGET ?? 'target'}`,
   cmakeConfigName: process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG ?? 'Release',
+  cmakeArgs: parseStringArrayEnv(
+    process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON,
+    'SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON',
+  ),
   cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
   cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
   buildMetadataDir: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR
@@ -224,6 +251,8 @@ const report = {
   delta_file: CFG.deltaFile,
   second_delta_file: CFG.secondDeltaBefore || CFG.secondDeltaAfter ? CFG.secondDeltaFile : null,
   target_name: CFG.targetName,
+  cmake_config: CFG.cmakeConfigName,
+  cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
   gpu_vendor: CFG.gpuMode,
   gpu_arch: CFG.gpuArch,
@@ -488,6 +517,9 @@ async function prepareUpstreamBuild() {
   await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
   await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
 
+  const cmakeExtraArgs = CFG.cmakeArgs.length
+    ? ` ${CFG.cmakeArgs.map((arg) => shQuote(arg)).join(' ')}`
+    : '';
   const command = `
 set -e
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
@@ -495,7 +527,7 @@ rm -rf build
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)}${cmakeExtraArgs} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
 configured=$(date +%s%3N)
 if [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
   cmake --build build -j2 --target ${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
@@ -518,12 +550,18 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$
   const timings = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], CFG.upstreamBuildTimeoutMs, true);
   const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, true);
   report.logs.upstream_run = runLog;
-  const phase = { name: 'upstream_gpu_build_run', timings, output: runLog.slice(0, 1000) };
+  const phase = {
+    name: 'upstream_gpu_build_run',
+    timings,
+    cmake_config: CFG.cmakeConfigName,
+    cmake_args: CFG.cmakeArgs,
+    output: runLog.slice(0, 1000),
+  };
   report.phases.push(phase);
   record(
     'upstream GPU target metadata configured',
     'pass',
-    `${timings.replace(/\s+/g, ' ')} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'}`,
+    `${timings.replace(/\s+/g, ' ')} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} cmake_args=${CFG.cmakeArgs.length}`,
   );
 
   return collectBuildMetadataFromWorker(buildPath);
@@ -1844,6 +1882,25 @@ function summarizeGpuProof(proof) {
 }
 
 function selfCheckRuntimeDispatchEvidence() {
+  const parsedCmakeArgs = parseStringArrayEnv(
+    '["-DNAME=value with spaces","-DENABLE_FEATURE=ON"]',
+    'SELF_CHECK_CMAKE_ARGS',
+  );
+  if (
+    parsedCmakeArgs.length !== 2
+    || parsedCmakeArgs[0] !== '-DNAME=value with spaces'
+    || parsedCmakeArgs[1] !== '-DENABLE_FEATURE=ON'
+  ) {
+    throw new Error('CMake args JSON parser failed');
+  }
+  try {
+    parseStringArrayEnv('{"not":"array"}', 'SELF_CHECK_CMAKE_ARGS');
+    throw new Error('CMake args parser accepted non-array JSON');
+  } catch (err) {
+    if (!/expected JSON string array/.test(err.message)) {
+      throw err;
+    }
+  }
   const evidence = runtimeDispatchEvidence([
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok dispatch_timestamp=1779979999000',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=second grid=(1, 1, 1) dispatch=failed',
