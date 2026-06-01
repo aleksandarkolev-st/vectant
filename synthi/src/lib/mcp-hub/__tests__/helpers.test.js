@@ -52,6 +52,9 @@ describe('isAllowedHeaderName', () => {
   it('rejects authorization (case-insensitive)', () => {
     expect(isAllowedHeaderName('Authorization')).toBe(false);
   });
+  it('rejects proxy-authorization (hop-by-hop auth header)', () => {
+    expect(isAllowedHeaderName('Proxy-Authorization')).toBe(false);
+  });
   it('rejects X-Forwarded-For (starts with x-forwarded-)', () => {
     expect(isAllowedHeaderName('X-Forwarded-For')).toBe(false);
   });
@@ -106,6 +109,10 @@ describe('jsonSchemaToGemini', () => {
     const longDesc = 'x'.repeat(600);
     const out = jsonSchemaToGemini({ type: 'string', description: longDesc });
     expect(out.description.length).toBe(512);
+  });
+  it('coerces a non-string description to a string', () => {
+    const out = jsonSchemaToGemini({ type: 'string', description: 42 });
+    expect(out.description).toBe('42');
   });
   it('does not throw on deeply nested schema and falls back to STRING at depth limit', () => {
     // Build 12 levels of nesting

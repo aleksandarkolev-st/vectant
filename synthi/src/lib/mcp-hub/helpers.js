@@ -3,9 +3,9 @@ const HEADER_TOKEN_RE = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
 
 /** Header names that must never be forwarded on outbound server-side requests */
 const HEADER_DENYLIST = new Set([
-  'host', 'cookie', 'set-cookie', 'authorization', 'content-length',
-  'content-type', 'connection', 'transfer-encoding', 'te', 'trailer',
-  'upgrade', 'via', 'forwarded', 'x-real-ip',
+  'host', 'cookie', 'set-cookie', 'authorization', 'proxy-authorization',
+  'content-length', 'content-type', 'connection', 'transfer-encoding', 'te',
+  'trailer', 'upgrade', 'via', 'forwarded', 'x-real-ip',
 ]);
 
 /**
@@ -59,9 +59,8 @@ export function jsonSchemaToGemini(schema, depth = 0) {
   const out = {};
   if (schema.type) out.type = String(schema.type).toUpperCase();
   if (schema.description) {
-    out.description = String(schema.description).length > 512
-      ? String(schema.description).slice(0, 512)
-      : schema.description;
+    const desc = String(schema.description);
+    out.description = desc.length > 512 ? desc.slice(0, 512) : desc;
   }
   if (schema.enum) out.enum = schema.enum;
   if (schema.properties) {

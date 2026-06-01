@@ -61,6 +61,7 @@ export function createGuardedFetch({
         continue;
       }
 
+      // (4) A blocked redirect target's ssrf_blocked error propagates uncaught (see step 1).
       // (5) Non-redirect responses are returned as-is.
       return res;
     }
