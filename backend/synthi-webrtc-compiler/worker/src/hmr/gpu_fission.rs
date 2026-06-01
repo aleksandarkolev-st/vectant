@@ -78,6 +78,25 @@ const AI_PROPOSAL_DETERMINISTIC_PROMOTION_EVIDENCE_FIELDS: &[&str] = &[
     "proposalPromotionEvidenceIds",
 ];
 
+const LOADER_CAPABILITY_TOKEN_FIELDS: &[&str] = &[
+    "loaderCapability",
+    "loaderCapabilityName",
+    "capability",
+    "transport",
+    "transportClass",
+    "requestedTransport",
+    "selectedLoaderTransport",
+    "loaderApi",
+];
+
+const LOADER_TRANSPORT_LIST_FIELDS: &[&str] = &[
+    "acceptedTransports",
+    "supportedTransports",
+    "reloadRequestTransports",
+    "compileOutputTransports",
+    "transports",
+];
+
 #[derive(Clone, Copy)]
 struct VerificationEvidenceCategory {
     name: &'static str,
@@ -273,8 +292,11 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.includeClosure_invalid".to_string());
     }
 
-    if !loader_capability_present(candidate.get("loaderCapabilityRequirement")) {
+    let loader_capability_requirement = candidate.get("loaderCapabilityRequirement");
+    if !loader_capability_present(loader_capability_requirement) {
         reason_codes.push("fission.loader_capability_requirement_missing".to_string());
+    } else if !loader_capability_requirement_valid(loader_capability_requirement) {
+        reason_codes.push("fission.loader_capability_requirement_invalid".to_string());
     }
 
     if !oracle_requirement_present(candidate) {
@@ -351,6 +373,9 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
         "hashFieldCoverage": hash_field_coverage(candidate),
+        "loaderCapabilityContract": loader_capability_contract_summary(
+            candidate.get("loaderCapabilityRequirement")
+        ),
         "outputOracleContract": output_oracle_contract_summary(candidate),
         "generatedRolePathRequired": generated_role_path_required(candidate),
         "generatedRolePath": generated_role_path(candidate),
@@ -632,6 +657,103 @@ fn loader_capability_present(value: Option<&Value>) -> bool {
         Some(Value::Object(object)) => !object.is_empty(),
         _ => false,
     }
+}
+
+fn loader_capability_requirement_valid(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(value)) => loader_capability_token_valid(value),
+        Some(Value::Object(object)) => {
+            let object_tokens = loader_capability_object_tokens(object);
+            let transport_tokens = loader_capability_transport_lists(object);
+            loader_capability_selected_artifact_id_valid(object)
+                && (!object_tokens.is_empty()
+                    && object_tokens
+                        .iter()
+                        .all(|token| loader_capability_token_valid(token))
+                    || !transport_tokens.is_empty()
+                        && transport_tokens
+                            .iter()
+                            .all(|token| loader_capability_token_valid(token)))
+        }
+        _ => false,
+    }
+}
+
+fn loader_capability_contract_summary(value: Option<&Value>) -> Value {
+    let tokens = loader_capability_tokens(value);
+    json!({
+        "present": loader_capability_present(value),
+        "valid": loader_capability_requirement_valid(value),
+        "tokens": tokens,
+        "invalidTokens": tokens
+            .iter()
+            .filter(|token| !loader_capability_token_valid(token))
+            .cloned()
+            .collect::<Vec<_>>(),
+        "selectedArtifactIdValid": value
+            .and_then(Value::as_object)
+            .is_none_or(loader_capability_selected_artifact_id_valid),
+    })
+}
+
+fn loader_capability_tokens(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) => vec![value.trim().to_string()],
+        Some(Value::Object(object)) => {
+            let mut tokens = loader_capability_object_tokens(object);
+            tokens.extend(loader_capability_transport_lists(object));
+            tokens
+        }
+        _ => Vec::new(),
+    }
+    .into_iter()
+    .filter(|token| !token.trim().is_empty())
+    .collect::<BTreeSet<_>>()
+    .into_iter()
+    .collect()
+}
+
+fn loader_capability_object_tokens(object: &serde_json::Map<String, Value>) -> Vec<String> {
+    LOADER_CAPABILITY_TOKEN_FIELDS
+        .iter()
+        .filter_map(|field| object.get(*field).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn loader_capability_transport_lists(object: &serde_json::Map<String, Value>) -> Vec<String> {
+    LOADER_TRANSPORT_LIST_FIELDS
+        .iter()
+        .flat_map(|field| string_list(object.get(*field)))
+        .collect()
+}
+
+fn loader_capability_selected_artifact_id_valid(object: &serde_json::Map<String, Value>) -> bool {
+    object
+        .get("selectedArtifactId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_none_or(|value| value.starts_with("artifact:") && value.len() > "artifact:".len())
+}
+
+fn loader_capability_token_valid(value: &str) -> bool {
+    matches!(
+        normalized_scope_text(value).as_str(),
+        "module_load_data"
+            | "module_load_file"
+            | "module_load_data_disabled_by_backend"
+            | "module_load_data_unsafe_on_target"
+            | "memfd_or_tempfile_required"
+            | "content_addressed_blob"
+            | "ram"
+            | "ram_blob"
+            | "ram_bytes"
+            | "filesystem_path"
+            | "filesystem_fallback"
+            | "module_load_path"
+    )
 }
 
 fn oracle_requirement_present(candidate: &Value) -> bool {
@@ -1836,6 +1958,72 @@ mod tests {
                 .iter()
                 .any(|code| code == reason));
         }
+    }
+
+    #[test]
+    fn rejects_loader_capability_requirement_without_capability_tokens() {
+        let mut candidate = valid_candidate();
+        candidate["loaderCapabilityRequirement"] = json!({
+            "description": "non-empty but not a loader capability"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["loaderCapabilityContract"]["present"], true);
+        assert_eq!(report["loaderCapabilityContract"]["valid"], false);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.loader_capability_requirement_invalid"));
+    }
+
+    #[test]
+    fn rejects_loader_capability_requirement_with_invalid_selected_artifact_id() {
+        let mut candidate = valid_candidate();
+        candidate["loaderCapabilityRequirement"] = json!({
+            "acceptedTransports": ["ram_blob", "filesystem_path"],
+            "selectedArtifactId": "build/device.hsaco"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["loaderCapabilityContract"]["tokens"],
+            json!(["filesystem_path", "ram_blob"])
+        );
+        assert_eq!(
+            report["loaderCapabilityContract"]["selectedArtifactIdValid"],
+            false
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.loader_capability_requirement_invalid"));
+    }
+
+    #[test]
+    fn rejects_unknown_loader_capability_as_unproven() {
+        let mut candidate = valid_candidate();
+        candidate["loaderCapabilityRequirement"] = json!({
+            "acceptedTransports": ["unknown"]
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["loaderCapabilityContract"]["invalidTokens"],
+            json!(["unknown"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.loader_capability_requirement_invalid"));
     }
 
     #[test]
