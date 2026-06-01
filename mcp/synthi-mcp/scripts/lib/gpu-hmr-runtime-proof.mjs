@@ -635,6 +635,7 @@ function fissionProofUsable(proof) {
   return proof.fissionProven === true
     && proof.observed === true
     && proof.evidenceObserved === true
+    && proof.deterministicVerifierEvidenceObserved === true
     && compactStringList(proof.evidenceRefs).length > 0;
 }
 
@@ -714,6 +715,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     ...verifierEvidenceRefs,
   ]);
   const evidenceObserved = observation.evidenceObserved === true || evidenceRefs.length > 0;
+  const deterministicVerifierEvidenceObserved = deterministicVerifierEvidenceRefs.length > 0;
   const aiProposalPromotionRequired =
     observation.aiProposalIdRequired === true || aiProposalIds.length > 0;
   const aiProposalPromotionObserved =
@@ -729,6 +731,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
   const required = observation.required === true || observed;
   const fissionProven = observed
     && evidenceObserved
+    && deterministicVerifierEvidenceObserved
     && !rejectedStatusObserved
     && aiProposalPromotionObserved
     && (
@@ -745,17 +748,20 @@ export function classifyGpuHmrFissionProof(observation = {}) {
         ? 'fission_candidate_verification_not_observed'
         : !evidenceObserved
           ? 'fission_verifier_evidence_not_collected'
-          : rejectedStatusObserved
-            ? 'fission_candidate_verifier_rejected'
-            : !aiProposalPromotionObserved
-              ? 'fission_ai_proposal_deterministic_promotion_missing'
-              : 'fission_candidate_verification_not_proven';
+          : !deterministicVerifierEvidenceObserved
+            ? 'fission_deterministic_verifier_evidence_not_collected'
+            : rejectedStatusObserved
+              ? 'fission_candidate_verifier_rejected'
+              : !aiProposalPromotionObserved
+                ? 'fission_ai_proposal_deterministic_promotion_missing'
+                : 'fission_candidate_verification_not_proven';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
     required,
     observed,
     evidenceObserved,
+    deterministicVerifierEvidenceObserved,
     fissionProven,
     resultState: fissionProven ? 'gpu-hmr-fission-candidate-proven' : null,
     degradedState: fissionProven || !required ? null : 'gpu-hmr-fission-unverified',

@@ -276,6 +276,7 @@ function acceptedFissionProof() {
     observed: true,
     passed: true,
     evidenceRefs: ["evidence:fission-verifier-report:abc"],
+    deterministicVerifierEvidenceRefs: ["evidence:fission-deterministic:abc"],
   });
 }
 
@@ -1435,6 +1436,21 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.verifierEvidenceRefs).toEqual([`fission-verifier:sha256:${"a".repeat(64)}`]);
     expect(proof.deterministicVerifierEvidenceRefs).toEqual(["evidence:source-map"]);
     expect(summarizeGpuHmrFissionProof(proof)).toContain("gpu_fission_proof=proven");
+  });
+
+  it("does not prove fission from generic verifier evidence without deterministic verifier evidence", () => {
+    const proof = classifyGpuHmrFissionProof({
+      required: true,
+      observed: true,
+      passed: true,
+      evidenceRefs: ["evidence:fission-verifier-report:abc"],
+      verifierEvidenceRefs: [`fission-verifier:sha256:${"a".repeat(64)}`],
+    });
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.deterministicVerifierEvidenceObserved).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_deterministic_verifier_evidence_not_collected");
   });
 
   it("records AI fission proposal ids separately from deterministic verifier evidence", () => {
