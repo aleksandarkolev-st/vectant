@@ -1887,6 +1887,66 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selected_island_compile_contract_unverified");
   });
 
+  it("accepts an explicitly empty include closure for a narrow selected island", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].candidate.artifactKind = "function_body";
+    metadata.candidates[0].candidate.includeClosure = [];
+    metadata.candidates[0].candidate.exportedSymbolsExpected = ["kernel_main"];
+    metadata.candidates[0].narrowerRejectionCoverage = {
+      requiredRanks: [],
+      coveredRanks: [],
+      missingRanks: [],
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:empty-include",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:empty-include"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(true);
+    expect(proof.selectedIslandContracts[0].includeClosureObserved).toBe(true);
+    expect(proof.selectedIslandContracts[0].includeClosure).toEqual([]);
+  });
+
+  it("does not prove fission when the include closure field is missing", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.candidates[0].candidate.includeClosure;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:missing-include",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:missing-include"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContractObserved).toBe(true);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_island_include_closure_missing");
+  });
+
   it("blocks fission proof when a verifier stage rejects the candidate", () => {
     const proof = fissionProofFromProofArtifacts([{
       proofArtifactPath: "/tmp/gpu-hmr-proof.json",

@@ -161,6 +161,16 @@ function includeClosureRecords(value) {
     .filter((entry) => entry?.path);
 }
 
+function ownField(object, field) {
+  return Boolean(object && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, field));
+}
+
+function candidateField(primary, fallback, field) {
+  if (ownField(primary, field)) return { observed: true, value: primary[field] };
+  if (ownField(fallback, field)) return { observed: true, value: fallback[field] };
+  return { observed: false, value: undefined };
+}
+
 function fissionSelectedIslandContract(selectedCandidate) {
   if (!selectedCandidate || typeof selectedCandidate !== 'object') return null;
   const island = objectValue(selectedCandidate.candidate) ?? selectedCandidate;
@@ -170,6 +180,7 @@ function fissionSelectedIslandContract(selectedCandidate) {
     ?? objectValue(selectedCandidate.oracleProposal);
   const loaderCapabilityRequirement = objectValue(island.loaderCapabilityRequirement)
     ?? objectValue(selectedCandidate.loaderCapabilityRequirement);
+  const includeClosureField = candidateField(island, selectedCandidate, 'includeClosure');
   return {
     schemaVersion: nonEmptyString(island.schemaVersion ?? selectedCandidate.schemaVersion),
     islandId: nonEmptyString(island.islandId ?? selectedCandidate.islandId),
@@ -183,7 +194,8 @@ function fissionSelectedIslandContract(selectedCandidate) {
     exportedSymbolsExpected:
       nonEmptyStringArray(island.exportedSymbolsExpected ?? selectedCandidate.exportedSymbolsExpected),
     artifactKind: nonEmptyString(island.artifactKind ?? selectedCandidate.artifactKind),
-    includeClosure: includeClosureRecords(island.includeClosure ?? selectedCandidate.includeClosure),
+    includeClosureObserved: includeClosureField.observed && Array.isArray(includeClosureField.value),
+    includeClosure: includeClosureRecords(includeClosureField.value),
     dependencyClosureHash:
       nonEmptyString(island.dependencyClosureHash ?? selectedCandidate.dependencyClosureHash),
     abiMembraneId: nonEmptyString(island.abiMembraneId ?? selectedCandidate.abiMembraneId),
@@ -232,8 +244,11 @@ function fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslan
   if (contract.targetSymbols.length === 0 || contract.exportedSymbolsExpected.length === 0) {
     return { proven: false, reason: 'fission_selected_island_symbol_contract_incomplete', contract };
   }
-  if (!contract.artifactKind || contract.includeClosure.length === 0) {
+  if (!contract.artifactKind) {
     return { proven: false, reason: 'fission_selected_island_artifact_contract_incomplete', contract };
+  }
+  if (!contract.includeClosureObserved) {
+    return { proven: false, reason: 'fission_selected_island_include_closure_missing', contract };
   }
   if (sha256LikeDigest(contract.dependencyClosureHash) === null) {
     return { proven: false, reason: 'fission_selected_island_dependency_closure_unverified', contract };
