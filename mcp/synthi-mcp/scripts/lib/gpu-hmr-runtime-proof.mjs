@@ -835,7 +835,36 @@ function fissionProofUsable(proof) {
     && proof.deterministicVerifierEvidenceObserved === true
     && proof.selectedIslandObserved === true
     && proof.selectedIslandContractObserved === true
+    && proof.selectedIslandContractCoverageComplete === true
     && compactStringList(proof.evidenceRefs).length > 0;
+}
+
+function selectedFissionContractCoverage(contract) {
+  if (!contract || typeof contract !== 'object') {
+    return { observed: false, complete: false };
+  }
+  const coverage = contract.verificationEvidenceCoverage;
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
+    return { observed: false, complete: false };
+  }
+  const missingCategories = Array.isArray(coverage.missingCategories)
+    ? compactStringList(coverage.missingCategories)
+    : null;
+  return {
+    observed: true,
+    complete: Array.isArray(missingCategories) && missingCategories.length === 0,
+  };
+}
+
+function selectedFissionContractsCoverage(contracts) {
+  if (!Array.isArray(contracts) || contracts.length === 0) {
+    return { observed: false, complete: false };
+  }
+  const coverage = contracts.map(selectedFissionContractCoverage);
+  return {
+    observed: coverage.every((item) => item.observed),
+    complete: coverage.every((item) => item.complete),
+  };
 }
 
 function sourceProofRequiresFission(sourceProofs) {
@@ -903,6 +932,9 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     ? observation.selectedIslandContracts.filter((contract) => contract && typeof contract === 'object')
     : [];
   const selectedIslandContractObserved = selectedIslandContracts.length > 0;
+  const selectedIslandContractCoverage = selectedFissionContractsCoverage(selectedIslandContracts);
+  const selectedIslandContractCoverageObserved = selectedIslandContractCoverage.observed;
+  const selectedIslandContractCoverageComplete = selectedIslandContractCoverage.complete;
   const stageStatuses = compactStringList([
     observation.status,
     observation.stageStatus,
@@ -940,6 +972,7 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     && deterministicVerifierEvidenceObserved
     && selectedIslandObserved
     && selectedIslandContractObserved
+    && selectedIslandContractCoverageComplete
     && !rejectedStatusObserved
     && aiProposalPromotionObserved
     && (
@@ -966,6 +999,10 @@ export function classifyGpuHmrFissionProof(observation = {}) {
                   ? 'fission_candidate_verifier_rejected'
                   : !selectedIslandContractObserved
                     ? 'fission_selected_island_contract_not_collected'
+                    : !selectedIslandContractCoverageObserved
+                      ? 'fission_selected_island_contract_coverage_not_collected'
+                      : !selectedIslandContractCoverageComplete
+                        ? 'fission_selected_island_contract_evidence_coverage_incomplete'
                     : !aiProposalPromotionObserved
                       ? 'fission_ai_proposal_deterministic_promotion_missing'
                       : 'fission_candidate_verification_not_proven';
@@ -979,6 +1016,8 @@ export function classifyGpuHmrFissionProof(observation = {}) {
     deterministicVerifierEvidenceObserved,
     selectedIslandObserved,
     selectedIslandContractObserved,
+    selectedIslandContractCoverageObserved,
+    selectedIslandContractCoverageComplete,
     fissionProven,
     resultState: fissionProven ? 'gpu-hmr-fission-candidate-proven' : null,
     degradedState: fissionProven || !required ? null : 'gpu-hmr-fission-unverified',

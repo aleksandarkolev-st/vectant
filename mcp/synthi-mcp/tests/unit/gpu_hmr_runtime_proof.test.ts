@@ -349,6 +349,21 @@ function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
     originalHostLaunchMappingId: null,
     originalHostLaunchMappingRequired: false,
     verifierEvidenceIds: ["evidence:source-map"],
+    verifierEvidenceId: `fission-verifier:sha256:${"a".repeat(64)}`,
+    deterministicVerifierEvidenceIds: ["evidence:source-map"],
+    verificationEvidenceCoverage: {
+      requiredCategories: [
+        "source_mapping",
+        "include_closure",
+        "symbol_ownership",
+        "dependency_closure",
+        "abi_membrane",
+        "compile_recipe",
+        "loader_capability",
+        "output_oracle",
+      ],
+      missingCategories: [],
+    },
   };
 }
 
@@ -1734,6 +1749,9 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(proof.verifierEvidenceRefs).toEqual([`fission-verifier:sha256:${"a".repeat(64)}`]);
     expect(proof.deterministicVerifierEvidenceRefs).toEqual(["evidence:source-map"]);
+    expect(proof.selectedIslandContractCoverageObserved).toBe(true);
+    expect(proof.selectedIslandContractCoverageComplete).toBe(true);
+    expect(proof.selectedIslandContracts[0].verificationEvidenceCoverage?.missingCategories).toEqual([]);
     expect(summarizeGpuHmrFissionProof(proof)).toContain("gpu_fission_proof=proven");
   });
 
@@ -1800,6 +1818,28 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.selectedIslandContractObserved).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
     expect(proof.degradedReason).toBe("fission_selected_island_contract_not_collected");
+  });
+
+  it("does not prove fission from a selected island contract without verifier coverage", () => {
+    const contract = acceptedSelectedIslandContract();
+    delete contract.verificationEvidenceCoverage;
+    const proof = classifyGpuHmrFissionProof({
+      required: true,
+      observed: true,
+      passed: true,
+      evidenceRefs: ["evidence:fission-verifier-report:abc"],
+      verifierEvidenceRefs: [`fission-verifier:sha256:${"a".repeat(64)}`],
+      deterministicVerifierEvidenceRefs: ["evidence:fission-deterministic:abc"],
+      selectedIslandIds: ["fission-island:abc"],
+      selectedIslandContracts: [contract],
+    });
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContractObserved).toBe(true);
+    expect(proof.selectedIslandContractCoverageObserved).toBe(false);
+    expect(proof.selectedIslandContractCoverageComplete).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_island_contract_coverage_not_collected");
   });
 
   it("records AI fission proposal ids separately from deterministic verifier evidence", () => {

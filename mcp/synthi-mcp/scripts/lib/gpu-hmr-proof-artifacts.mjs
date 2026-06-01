@@ -305,9 +305,17 @@ function fissionSelectedIslandContract(selectedCandidate) {
       || selectedCandidate.originalHostLaunchMappingRequired === true,
     verifierEvidenceIds:
       nonEmptyStringArray(island.verifierEvidenceIds ?? selectedCandidate.verifierEvidenceIds),
+    verifierEvidenceId: nonEmptyString(selectedCandidate.verifierEvidenceId),
+    deterministicVerifierEvidenceIds:
+      nonEmptyStringArray(selectedCandidate.deterministicVerifierEvidenceIds),
+    nonAuthoritativeEvidenceIds:
+      nonEmptyStringArray(selectedCandidate.nonAuthoritativeEvidenceIds),
+    verificationEvidenceCoverage: objectValue(selectedCandidate.verificationEvidenceCoverage),
+    reasonCodes: nonEmptyStringArray(selectedCandidate.reasonCodes),
     aiProposalId: nonEmptyString(selectedCandidate.aiProposalId ?? island.aiProposalId),
     replacementScope: nonEmptyString(island.replacementScope ?? selectedCandidate.replacementScope),
     selectionScore: objectValue(selectedCandidate.selectionScore),
+    narrowerRejectionCoverage: objectValue(selectedCandidate.narrowerRejectionCoverage),
     narrowerCandidateRejections: Array.isArray(island.narrowerCandidateRejections)
       ? island.narrowerCandidateRejections
       : [],
