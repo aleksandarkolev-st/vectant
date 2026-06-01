@@ -676,6 +676,19 @@ function originalHostPathAttachmentProvenanceAccepted(provenance) {
     && ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE.has(provenance.trim().toLowerCase());
 }
 
+function originalHostDispatchEntryMatchesRuntime(record) {
+  const declaredEntry = typeof record?.dispatchTableEntryId === 'string'
+    ? record.dispatchTableEntryId.trim()
+    : '';
+  const runtimeEntry = typeof record?.runtimeDispatchTableEntryId === 'string'
+    ? record.runtimeDispatchTableEntryId.trim()
+    : '';
+  return declaredEntry.length > 0
+    && runtimeEntry.length > 0
+    && runtimeEntry !== 'none'
+    && declaredEntry === runtimeEntry;
+}
+
 function launchBoundaryRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   return {
@@ -710,9 +723,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     && originalHostPathAttachmentProvenanceAccepted(record.attachmentProvenance)
     && typeof record.hostPathId === 'string'
     && record.hostPathId.trim()
-    && typeof record.runtimeDispatchTableEntryId === 'string'
-    && record.runtimeDispatchTableEntryId.trim()
-    && record.runtimeDispatchTableEntryId !== 'none'
+    && originalHostDispatchEntryMatchesRuntime(record)
     && record.dispatchEntryRuntimeVerified === true
     && Number.isFinite(record.generation)
     && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))

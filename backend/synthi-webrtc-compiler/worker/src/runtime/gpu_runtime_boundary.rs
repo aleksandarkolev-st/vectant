@@ -724,9 +724,16 @@ fn record_original_host_path_event_at(
     generation: u64,
     runtime_session: String,
 ) {
+    let declared_dispatch_table_entry_id = dispatch_table_entry_id.trim();
     let dispatch_entry_runtime_verified = runtime_dispatch_table_entry_id
         .as_deref()
-        .is_some_and(|value| !value.trim().is_empty() && value != "none");
+        .map(str::trim)
+        .is_some_and(|value| {
+            !value.is_empty()
+                && value != "none"
+                && !declared_dispatch_table_entry_id.is_empty()
+                && value == declared_dispatch_table_entry_id
+        });
     {
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         guard.original_host_paths.push(OriginalHostPathRecord {
@@ -2136,7 +2143,7 @@ mod tests {
 
         let kernel = CString::new("trace_primary").unwrap();
         let host_path_id = CString::new("host-render-loop").unwrap();
-        let dispatch_entry_id = CString::new("host-declared-entry").unwrap();
+        let dispatch_entry_id = CString::new("trace_primary:0x42").unwrap();
         let provenance = CString::new("source_instrumented").unwrap();
         let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
         install_launch_dispatcher_with_metadata(
@@ -2183,7 +2190,7 @@ mod tests {
         assert_eq!(host_paths.len(), 1);
         assert_eq!(launches.len(), 1);
         assert_eq!(host_paths[0].host_path_id, "host-render-loop");
-        assert_eq!(host_paths[0].dispatch_table_entry_id, "host-declared-entry");
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "trace_primary:0x42");
         assert_eq!(
             host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
             Some("trace_primary:0x42")
@@ -2239,7 +2246,7 @@ mod tests {
         ));
 
         let host_path_id = CString::new("host-render-loop").unwrap();
-        let dispatch_entry_id = CString::new("host-declared-entry").unwrap();
+        let dispatch_entry_id = CString::new("trace_primary:0x42").unwrap();
         let provenance = CString::new("runtime_explicit").unwrap();
         synthi_gpu_record_original_host_path_with_provenance(
             host_path_id.as_ptr(),
@@ -2253,7 +2260,7 @@ mod tests {
         assert_eq!(host_paths.len(), 1);
         assert_eq!(launches.len(), 1);
         assert_eq!(host_paths[0].host_path_id, "host-render-loop");
-        assert_eq!(host_paths[0].dispatch_table_entry_id, "host-declared-entry");
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "trace_primary:0x42");
         assert_eq!(
             host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
             Some("trace_primary:0x42")
@@ -2262,6 +2269,66 @@ mod tests {
         assert!(host_paths[0].dispatch_boundary_observed);
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
         assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
+    }
+
+    #[test]
+    fn original_host_path_record_rejects_mismatched_runtime_dispatch_entry() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let kernel = CString::new("trace_primary").unwrap();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:host-path".to_string()),
+                dispatch_table_hash: Some("0xfeed".to_string()),
+                changed_symbols: vec!["trace_primary".to_string()],
+                function_handle_ids: vec!["trace_primary:0x42".to_string()],
+            },
+        );
+
+        let grid = [1_u32, 1, 1];
+        let block = [64_u32, 1, 1];
+        let value = 42_u32;
+        let arg = SynthiGpuLaunchArg {
+            value_ptr: (&value as *const u32).cast(),
+            value_size: std::mem::size_of_val(&value),
+            value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
+        };
+
+        let host_path_id = CString::new("host-render-loop").unwrap();
+        let dispatch_entry_id = CString::new("host-declared-entry").unwrap();
+        let provenance = CString::new("source_instrumented").unwrap();
+        assert!(synthi_gpu_launch_original_host_path_raw_arg_info_checked(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            &arg,
+            1,
+            current_launch_generation(),
+            host_path_id.as_ptr(),
+            dispatch_entry_id.as_ptr(),
+            provenance.as_ptr(),
+        ));
+
+        let host_paths = original_host_path_records_snapshot();
+        assert_eq!(host_paths.len(), 1);
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "host-declared-entry");
+        assert_eq!(
+            host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
+            Some("trace_primary:0x42")
+        );
+        assert!(!host_paths[0].dispatch_entry_runtime_verified);
+        assert!(host_paths[0].dispatch_boundary_observed);
     }
 
     #[test]
