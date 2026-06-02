@@ -174,6 +174,7 @@ def test_parse_gpu_diff_response_preserves_attachment_instrumentation_proposal()
                         "requiredBoundaryApis": [
                             "synthi_gpu_launch_source_location",
                             "synthi_gpu_launch_original_host_path",
+                            "synthi_original_host_path_with_provenance",
                         ],
                         "runtimeEvidenceRequired": {
                             "runtimeSessionScoped": True,
@@ -277,6 +278,44 @@ def test_parse_gpu_diff_response_rejects_malformed_attachment_proposal():
     with pytest.raises(Exception) as excinfo:
         parse_gpu_diff_response(raw)
     assert "requiredBoundaryApis" in str(excinfo.value)
+
+
+def test_parse_gpu_diff_response_rejects_partial_attachment_boundary_contract():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "attachmentInstrumentationProposals": [
+                    {
+                        "proposalId": "launch-attachment-proposal:sha256:" + "8" * 64,
+                        "sourceLaunchSiteId": "launch-site:sha256:" + "9" * 64,
+                        "hostPathId": "host-path:sha256:" + "a" * 64,
+                        "path": "src/render_loop.cpp",
+                        "line": 42,
+                        "column": 17,
+                        "sourceProvenance": "source_baseline_contents",
+                        "sourceHash": "sha256:" + "b" * 64,
+                        "snippetHash": "sha256:" + "c" * 64,
+                        "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
+                        "requiredBoundaryApis": [
+                            "synthi_gpu_launch_source_location",
+                            "synthi_gpu_launch_original_host_path",
+                        ],
+                        "runtimeEvidenceRequired": {
+                            "runtimeSessionScoped": True,
+                            "dispatchBoundaryObserved": True,
+                            "dispatchEntryRuntimeVerified": True,
+                            "launchArgProvenanceComplete": True,
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "complete runtime boundary API contract" in str(excinfo.value)
 
 
 def test_parse_gpu_diff_response_rejects_malformed_output_oracle_proposal():

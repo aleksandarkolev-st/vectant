@@ -680,12 +680,15 @@ def _validate_fission_attachment_proposal(value: Mapping[str, object], index: in
         cleaned.get("requiredBoundaryApis"),
         f"attachmentInstrumentationProposals[{index}].requiredBoundaryApis",
     )
-    if not any(api in FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS for api in boundary_apis):
+    missing_boundary_apis = sorted(
+        FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS.difference(boundary_apis)
+    )
+    if missing_boundary_apis:
         raise HTTPException(
             status_code=400,
             detail=(
                 "`fissionCandidate.attachmentInstrumentationProposals"
-                f"[{index}].requiredBoundaryApis` must include an accepted runtime boundary API"
+                f"[{index}].requiredBoundaryApis` must include the complete runtime boundary API contract"
             ),
         )
     runtime_evidence = cleaned.get("runtimeEvidenceRequired")

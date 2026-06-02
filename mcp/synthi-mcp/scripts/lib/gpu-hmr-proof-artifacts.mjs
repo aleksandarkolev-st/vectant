@@ -468,15 +468,18 @@ const ORIGINAL_HOST_ATTACHMENT_ACTIONS = new Set([
   'instrument_host_launch_boundary',
 ]);
 
+const ORIGINAL_HOST_ATTACHMENT_REQUIRED_BOUNDARY_APIS = [
+  'synthi_gpu_launch_source_location',
+  'synthi_gpu_launch_original_host_path',
+  'synthi_original_host_path_with_provenance',
+];
+
 function originalHostAttachmentProposalValid(value) {
   const object = objectValue(value);
   if (!object) return false;
   const requiredBoundaryApis = nonEmptyStringArray(object.requiredBoundaryApis);
-  const hasRequiredBoundaryApi = requiredBoundaryApis.some((api) => [
-    'synthi_gpu_launch_source_location',
-    'synthi_gpu_launch_original_host_path',
-    'synthi_original_host_path_with_provenance',
-  ].includes(api));
+  const hasRequiredBoundaryApiContract = ORIGINAL_HOST_ATTACHMENT_REQUIRED_BOUNDARY_APIS
+    .every((api) => requiredBoundaryApis.includes(api));
   const runtimeEvidenceRequired = objectValue(object.runtimeEvidenceRequired);
   const instrumentationAction = nonEmptyString(object.instrumentationAction);
   return Boolean(
@@ -493,7 +496,7 @@ function originalHostAttachmentProposalValid(value) {
     && sha256Digest(object.snippetHash)
     && instrumentationAction
     && ORIGINAL_HOST_ATTACHMENT_ACTIONS.has(instrumentationAction)
-    && hasRequiredBoundaryApi
+    && hasRequiredBoundaryApiContract
     && runtimeEvidenceRequired
     && boolTrue(runtimeEvidenceRequired.runtimeSessionScoped)
     && boolTrue(runtimeEvidenceRequired.dispatchBoundaryObserved)

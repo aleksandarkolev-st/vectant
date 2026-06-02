@@ -385,6 +385,7 @@ function acceptedLaunchAttachmentProposal() {
     requiredBoundaryApis: [
       "synthi_gpu_launch_source_location",
       "synthi_gpu_launch_original_host_path",
+      "synthi_original_host_path_with_provenance",
     ],
     runtimeEvidenceRequired: {
       runtimeSessionScoped: true,
@@ -2190,6 +2191,48 @@ describe("GPU HMR runtime output proof classification", () => {
           stageId: "fission-candidate-verification",
           status: "passed",
           evidenceRefs: ["evidence:fission-verifier-report:original-host-incomplete-proposal"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContracts[0].originalHostAttachmentInstrumentationProposalIds)
+      .toEqual([]);
+    expect(proof.degradedReason).toBe(
+      "fission_selected_island_original_host_attachment_instrumentation_missing",
+    );
+  });
+
+  it("does not prove fission from original-host mapping with partial boundary API contract", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;
+    metadata.candidates[0].candidate.originalHostLaunchMappingId =
+      `host-launch:sha256:${"7".repeat(64)}`;
+    metadata.candidates[0].launchAttachmentScout = {
+      mapping: {
+        attachmentInstrumentationProposals: [{
+          ...acceptedLaunchAttachmentProposal(),
+          requiredBoundaryApis: [
+            "synthi_gpu_launch_source_location",
+            "synthi_gpu_launch_original_host_path",
+          ],
+        }],
+      },
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:original-host-partial-api-contract",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:original-host-partial-api-contract"],
         }],
       },
     }]);
