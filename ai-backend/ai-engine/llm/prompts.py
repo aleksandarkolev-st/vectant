@@ -4622,6 +4622,23 @@ Return a JSON object:
       "visualEvidenceRef": "..."
     },
     "originalHostLaunchMappingId": "...",
+    "attachmentInstrumentationProposals": [
+      {
+        "proposalId": "...",
+        "sourceLaunchSiteId": "...",
+        "hostPathId": "...",
+        "requiredBoundaryApis": [
+          "synthi_gpu_launch_source_location",
+          "synthi_gpu_launch_original_host_path"
+        ],
+        "runtimeEvidenceRequired": {
+          "runtimeSessionScoped": true,
+          "dispatchBoundaryObserved": true,
+          "dispatchEntryRuntimeVerified": true
+        }
+      }
+    ],
+    "originalHostAttachmentInstrumentationProposalIds": ["..."],
     "sourceMappingEvidenceIds": ["..."],
     "includeClosureEvidenceIds": ["..."],
     "symbolOwnershipEvidenceIds": ["..."],
@@ -4686,6 +4703,14 @@ Rules:
   an output target id, readback plan, or probe mode. Include artifact id,
   runtime session id, tolerance, and visual evidence ref only when they are
   present in evidence; do not use screenshots as the expected value.
+- `attachmentInstrumentationProposals` are allowed only when original-host
+  mapping evidence identifies a concrete source launch site and host path id,
+  but runtime attachment evidence is still missing. Include the full structured
+  proposal with `proposalId`, `sourceLaunchSiteId`, `hostPathId`, an accepted
+  Synthi runtime boundary API, and the runtime evidence requirements above.
+  These booleans declare evidence that must later be observed; they are not
+  proof claims. Do not emit bare attachment proposal ids without the matching
+  structured proposal object.
 - Evidence id fields are provenance for the deterministic verifier to re-check,
   not proof claims. Use ids already present in the mapping, compile, reload, or
   failure reports. Do not invent ids. If phase evidence is missing for source

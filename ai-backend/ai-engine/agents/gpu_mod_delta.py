@@ -60,6 +60,7 @@ FISSION_CANDIDATE_SHA256_FIELDS = {
 FISSION_CANDIDATE_STRING_LIST_FIELDS = {
     "abiEvidenceIds",
     "abiMembraneEvidenceIds",
+    "attachmentInstrumentationProposalIds",
     "compileCommandEvidenceIds",
     "compileEvidenceIds",
     "compileRecipeEvidenceIds",
@@ -71,6 +72,7 @@ FISSION_CANDIDATE_STRING_LIST_FIELDS = {
     "loaderCapabilityEvidenceIds",
     "loaderEvidenceIds",
     "oracleEvidenceIds",
+    "originalHostAttachmentInstrumentationProposalIds",
     "originalHostLaunchMappingEvidenceIds",
     "originalHostPathEvidenceIds",
     "outputOracleEvidenceIds",
@@ -114,8 +116,33 @@ FISSION_CANDIDATE_NON_NEGATIVE_INT_FIELDS = {
     "p50CompileMs",
 }
 FISSION_CANDIDATE_ALIASES = {
+    "hostLaunchAttachmentProposals": "attachmentInstrumentationProposals",
+    "launchAttachmentProposals": "attachmentInstrumentationProposals",
     "oracleProposal": "outputOracleProposal",
+    "originalHostAttachmentInstrumentationProposals": "attachmentInstrumentationProposals",
+    "originalHostAttachmentProposalIds": "originalHostAttachmentInstrumentationProposalIds",
     "symbols": "targetSymbols",
+}
+FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS = {
+    "synthi_gpu_launch_original_host_path",
+    "synthi_gpu_launch_source_location",
+    "synthi_original_host_path_with_provenance",
+}
+FISSION_ATTACHMENT_PROPOSAL_STRING_FIELDS = {
+    "dispatchEntryId",
+    "hostPathId",
+    "instrumentationAction",
+    "kernel",
+    "proposalId",
+    "reason",
+    "runtimeProofBoundary",
+    "sourceLaunchSiteId",
+    "sourcePath",
+}
+FISSION_ATTACHMENT_PROPOSAL_RUNTIME_EVIDENCE_BOOL_FIELDS = {
+    "dispatchBoundaryObserved",
+    "dispatchEntryRuntimeVerified",
+    "runtimeSessionScoped",
 }
 FISSION_OUTPUT_ORACLE_STRING_FIELDS = {
     "artifact",
@@ -545,6 +572,10 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
         cleaned["outputOracleProposal"] = _validate_fission_output_oracle_proposal(
             cleaned["outputOracleProposal"]
         )
+    if "attachmentInstrumentationProposals" in cleaned and cleaned["attachmentInstrumentationProposals"] is not None:
+        cleaned["attachmentInstrumentationProposals"] = _validate_fission_attachment_proposals(
+            cleaned["attachmentInstrumentationProposals"]
+        )
     for field in sorted(FISSION_CANDIDATE_BOOL_FIELDS):
         if field in cleaned and cleaned[field] is not None and type(cleaned[field]) is not bool:
             raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a boolean")
@@ -557,7 +588,104 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
         cleaned["narrowerCandidateRejections"] = _validate_fission_rejections(
             cleaned["narrowerCandidateRejections"]
         )
+    _validate_fission_attachment_proposal_id_coverage(cleaned)
     return cleaned
+
+
+def _validate_fission_attachment_proposals(value: object) -> List[dict]:
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.attachmentInstrumentationProposals` must be an array",
+        )
+    cleaned: List[dict] = []
+    for i, proposal in enumerate(value):
+        if not isinstance(proposal, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.attachmentInstrumentationProposals[{i}]` must be an object",
+            )
+        cleaned.append(_validate_fission_attachment_proposal(proposal, i))
+    return cleaned
+
+
+def _validate_fission_attachment_proposal(value: Mapping[str, object], index: int) -> dict:
+    cleaned = dict(value)
+    for field in sorted(FISSION_ATTACHMENT_PROPOSAL_STRING_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.attachmentInstrumentationProposals[{index}].{field}` must be a string",
+            )
+    for field in ("proposalId", "sourceLaunchSiteId", "hostPathId"):
+        if not isinstance(cleaned.get(field), str) or not str(cleaned[field]).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.attachmentInstrumentationProposals[{index}].{field}` must be a non-empty string",
+            )
+    boundary_apis = _validate_fission_string_list(
+        cleaned.get("requiredBoundaryApis"),
+        f"attachmentInstrumentationProposals[{index}].requiredBoundaryApis",
+    )
+    if not any(api in FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS for api in boundary_apis):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.attachmentInstrumentationProposals"
+                f"[{index}].requiredBoundaryApis` must include an accepted runtime boundary API"
+            ),
+        )
+    runtime_evidence = cleaned.get("runtimeEvidenceRequired")
+    if not isinstance(runtime_evidence, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.attachmentInstrumentationProposals"
+                f"[{index}].runtimeEvidenceRequired` must be an object"
+            ),
+        )
+    runtime_evidence_cleaned = dict(runtime_evidence)
+    for field in sorted(FISSION_ATTACHMENT_PROPOSAL_RUNTIME_EVIDENCE_BOOL_FIELDS):
+        if runtime_evidence_cleaned.get(field) is not True:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.attachmentInstrumentationProposals"
+                    f"[{index}].runtimeEvidenceRequired.{field}` must be true"
+                ),
+            )
+    cleaned["requiredBoundaryApis"] = boundary_apis
+    cleaned["runtimeEvidenceRequired"] = runtime_evidence_cleaned
+    return cleaned
+
+
+def _validate_fission_attachment_proposal_id_coverage(candidate: Mapping[str, object]) -> None:
+    proposal_ids = candidate.get("originalHostAttachmentInstrumentationProposalIds")
+    if not proposal_ids:
+        return
+    proposals = candidate.get("attachmentInstrumentationProposals")
+    if not isinstance(proposals, list):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.originalHostAttachmentInstrumentationProposalIds` "
+                "requires matching structured attachmentInstrumentationProposals"
+            ),
+        )
+    structured_ids = {
+        str(proposal.get("proposalId")).strip()
+        for proposal in proposals
+        if isinstance(proposal, dict) and isinstance(proposal.get("proposalId"), str)
+    }
+    for i, proposal_id in enumerate(proposal_ids):
+        if proposal_id not in structured_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.originalHostAttachmentInstrumentationProposalIds"
+                    f"[{i}]` must match a structured attachmentInstrumentationProposals entry"
+                ),
+            )
 
 
 def _validate_fission_output_oracle_proposal(value: object) -> dict:
