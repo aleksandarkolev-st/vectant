@@ -839,6 +839,17 @@ function fissionProofUsable(proof) {
     && compactStringList(proof.evidenceRefs).length > 0;
 }
 
+const REQUIRED_FISSION_VERIFICATION_CATEGORIES = [
+  'source_mapping',
+  'include_closure',
+  'symbol_ownership',
+  'dependency_closure',
+  'abi_membrane',
+  'compile_recipe',
+  'loader_capability',
+  'output_oracle',
+];
+
 function selectedFissionContractCoverage(contract) {
   if (!contract || typeof contract !== 'object') {
     return { observed: false, complete: false };
@@ -850,9 +861,28 @@ function selectedFissionContractCoverage(contract) {
   const missingCategories = Array.isArray(coverage.missingCategories)
     ? compactStringList(coverage.missingCategories)
     : null;
+  const requiredCategories = compactStringList(coverage.requiredCategories);
+  const categories = Array.isArray(coverage.categories) ? coverage.categories : null;
+  const evidenceByCategory = new Map();
+  if (categories) {
+    for (const item of categories) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const category = compactStringList([item.category])[0];
+      if (!category) continue;
+      evidenceByCategory.set(category, compactStringList(item.evidenceIds));
+    }
+  }
+  const requiredCategoriesComplete = REQUIRED_FISSION_VERIFICATION_CATEGORIES
+    .every((category) => requiredCategories.includes(category));
+  const categoryEvidenceComplete = REQUIRED_FISSION_VERIFICATION_CATEGORIES
+    .every((category) => (evidenceByCategory.get(category) ?? []).length > 0);
   return {
     observed: true,
-    complete: Array.isArray(missingCategories) && missingCategories.length === 0,
+    complete:
+      Array.isArray(missingCategories)
+      && missingCategories.length === 0
+      && requiredCategoriesComplete
+      && categoryEvidenceComplete,
   };
 }
 

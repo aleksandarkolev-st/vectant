@@ -323,6 +323,28 @@ function attachedOriginalHostPathProof() {
   });
 }
 
+function acceptedFissionVerificationCoverage() {
+  const evidenceByCategory: Record<string, string[]> = {
+    source_mapping: ["evidence:source-map"],
+    include_closure: ["evidence:include-closure"],
+    symbol_ownership: ["evidence:symbol-ownership"],
+    dependency_closure: ["evidence:dependency-closure"],
+    abi_membrane: ["evidence:abi-membrane"],
+    compile_recipe: ["evidence:compile-recipe"],
+    loader_capability: ["evidence:loader-capability"],
+    output_oracle: ["evidence:output-oracle"],
+  };
+  const requiredCategories = Object.keys(evidenceByCategory);
+  return {
+    requiredCategories,
+    missingCategories: [],
+    categories: requiredCategories.map((category) => ({
+      category,
+      evidenceIds: evidenceByCategory[category],
+    })),
+  };
+}
+
 function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
   return {
     schemaVersion: "synthi.gpu.fission_island.v1",
@@ -354,19 +376,7 @@ function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
     verifierEvidenceIds: ["evidence:source-map"],
     verifierEvidenceId: `fission-verifier:sha256:${"a".repeat(64)}`,
     deterministicVerifierEvidenceIds: ["evidence:source-map"],
-    verificationEvidenceCoverage: {
-      requiredCategories: [
-        "source_mapping",
-        "include_closure",
-        "symbol_ownership",
-        "dependency_closure",
-        "abi_membrane",
-        "compile_recipe",
-        "loader_capability",
-        "output_oracle",
-      ],
-      missingCategories: [],
-    },
+    verificationEvidenceCoverage: acceptedFissionVerificationCoverage(),
   };
 }
 
@@ -452,10 +462,7 @@ function acceptedFissionVerifierMetadata() {
         compileCostPenaltyMs: 10,
         historicalTimingPenaltyMs: 20,
       },
-      verificationEvidenceCoverage: {
-        requiredCategories: ["source_mapping"],
-        missingCategories: [],
-      },
+      verificationEvidenceCoverage: acceptedFissionVerificationCoverage(),
       narrowerRejectionCoverage: {
         requiredRanks: [0],
         coveredRanks: [0],
@@ -1892,6 +1899,32 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selected_island_contract_coverage_not_collected");
   });
 
+  it("does not prove fission from a selected island contract with incomplete category coverage", () => {
+    const contract = acceptedSelectedIslandContract();
+    contract.verificationEvidenceCoverage = acceptedFissionVerificationCoverage();
+    contract.verificationEvidenceCoverage.requiredCategories =
+      contract.verificationEvidenceCoverage.requiredCategories.filter((category) => category !== "include_closure");
+    contract.verificationEvidenceCoverage.categories =
+      contract.verificationEvidenceCoverage.categories.filter((entry) => entry.category !== "include_closure");
+
+    const proof = classifyGpuHmrFissionProof({
+      required: true,
+      observed: true,
+      passed: true,
+      evidenceRefs: ["evidence:fission-verifier-report:abc"],
+      verifierEvidenceRefs: [`fission-verifier:sha256:${"a".repeat(64)}`],
+      deterministicVerifierEvidenceRefs: ["evidence:fission-deterministic:abc"],
+      selectedIslandIds: ["fission-island:abc"],
+      selectedIslandContracts: [contract],
+    });
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContractCoverageObserved).toBe(true);
+    expect(proof.selectedIslandContractCoverageComplete).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_island_contract_evidence_coverage_incomplete");
+  });
+
   it("records AI fission proposal ids separately from deterministic verifier evidence", () => {
     const metadata = acceptedFissionVerifierMetadata();
     metadata.candidates[0].aiProposalIdRequired = true;
@@ -2522,6 +2555,38 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fissionProven).toBe(true);
     expect(proof.selectedIslandContracts[0].includeClosureObserved).toBe(true);
     expect(proof.selectedIslandContracts[0].includeClosure).toEqual([]);
+  });
+
+  it("does not prove fission when a pass report omits required verifier category evidence", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].verificationEvidenceCoverage = acceptedFissionVerificationCoverage();
+    metadata.candidates[0].verificationEvidenceCoverage.categories =
+      metadata.candidates[0].verificationEvidenceCoverage.categories.map((entry) =>
+        entry.category === "include_closure"
+          ? { ...entry, evidenceIds: [] }
+          : entry
+      );
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:incomplete-coverage",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:incomplete-coverage"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selected_candidate_evidence_coverage_incomplete");
   });
 
   it("does not prove fission when the include closure field is missing", () => {

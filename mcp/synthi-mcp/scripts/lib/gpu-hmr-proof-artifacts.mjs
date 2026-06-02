@@ -102,6 +102,16 @@ const REQUIRED_FISSION_SELECTION_ORDER = [
   'compileCostPenaltyMs',
   'historicalTimingPenaltyMs',
 ];
+const REQUIRED_FISSION_VERIFICATION_CATEGORIES = [
+  'source_mapping',
+  'include_closure',
+  'symbol_ownership',
+  'dependency_closure',
+  'abi_membrane',
+  'compile_recipe',
+  'loader_capability',
+  'output_oracle',
+];
 
 function fissionSelectionPolicyAccepted(value) {
   return nonEmptyString(value) === ACCEPTED_FISSION_SELECTION_POLICY;
@@ -128,6 +138,35 @@ function fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy) {
     return { proven: false, reason: 'fission_selected_candidate_selection_score_unverified' };
   }
   return { proven: true, reason: null };
+}
+
+function fissionVerificationCoverageComplete(coverage) {
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
+    return false;
+  }
+  const requiredCategories = nonEmptyStringArray(coverage.requiredCategories);
+  const missingCategories = Array.isArray(coverage.missingCategories)
+    ? nonEmptyStringArray(coverage.missingCategories)
+    : null;
+  if (
+    !Array.isArray(missingCategories)
+    || missingCategories.length > 0
+    || !REQUIRED_FISSION_VERIFICATION_CATEGORIES.every((category) => requiredCategories.includes(category))
+  ) {
+    return false;
+  }
+
+  if (!Array.isArray(coverage.categories)) return false;
+  const evidenceByCategory = new Map();
+  for (const item of coverage.categories) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const category = nonEmptyString(item.category);
+    if (!category) continue;
+    evidenceByCategory.set(category, nonEmptyStringArray(item.evidenceIds));
+  }
+  return REQUIRED_FISSION_VERIFICATION_CATEGORIES.every(
+    (category) => (evidenceByCategory.get(category) ?? []).length > 0,
+  );
 }
 
 function fissionCandidateAccepted(candidate) {
@@ -892,11 +931,7 @@ function fissionReportPassIntegrity(metadata) {
       return { proven: false, reason: 'fission_ai_proposal_deterministic_promotion_missing' };
     }
   }
-  const coverage = selectedCandidate.verificationEvidenceCoverage;
-  const missingCategories = Array.isArray(coverage?.missingCategories)
-    ? coverage.missingCategories
-    : null;
-  if (!Array.isArray(missingCategories) || missingCategories.length > 0) {
+  if (!fissionVerificationCoverageComplete(selectedCandidate.verificationEvidenceCoverage)) {
     return { proven: false, reason: 'fission_selected_candidate_evidence_coverage_incomplete' };
   }
   const narrowerCoverage = selectedCandidate.narrowerRejectionCoverage;
