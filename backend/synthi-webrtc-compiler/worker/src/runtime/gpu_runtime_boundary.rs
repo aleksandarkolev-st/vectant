@@ -1357,20 +1357,16 @@ pub extern "C" fn synthi_gpu_launch_original_host_path_raw_arg_info_checked(
     dispatch_table_entry_id: *const c_char,
     attachment_provenance: *const c_char,
 ) -> bool {
-    let original_host_path = match (cstr(host_path_id), cstr(dispatch_table_entry_id)) {
-        (Some(host_path_id), Some(dispatch_table_entry_id))
-            if !host_path_id.trim().is_empty()
-                && !dispatch_table_entry_id.trim().is_empty() => {
-            Some(OriginalHostPathLaunchAttachment {
-                host_path_id,
-                dispatch_table_entry_id: Some(dispatch_table_entry_id),
-                attachment_provenance: cstr(attachment_provenance)
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| "source_instrumented".to_string()),
-            })
-        }
-        _ => None,
-    };
+    let original_host_path = cstr(host_path_id)
+        .filter(|host_path_id| !host_path_id.trim().is_empty())
+        .map(|host_path_id| OriginalHostPathLaunchAttachment {
+            host_path_id,
+            dispatch_table_entry_id: cstr(dispatch_table_entry_id)
+                .filter(|entry_id| !entry_id.trim().is_empty()),
+            attachment_provenance: cstr(attachment_provenance)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "source_instrumented".to_string()),
+        });
     synthi_gpu_launch_raw_impl(
         _gpu,
         kernel_name,
@@ -2517,6 +2513,72 @@ mod tests {
         assert_eq!(
             host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
             Some("trace_primary:0x42")
+        );
+        assert!(host_paths[0].dispatch_entry_runtime_verified);
+        assert!(host_paths[0].dispatch_boundary_observed);
+        assert_eq!(host_paths[0].attachment_provenance, "source_instrumented");
+        assert_eq!(host_paths[0].generation, launches[0].active_generation);
+        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
+        assert_eq!(launches[0].kernel_name, "trace_primary");
+    }
+
+    #[test]
+    fn original_host_path_launch_wrapper_can_runtime_bind_dispatch_entry() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let kernel = CString::new("trace_primary").unwrap();
+        let host_path_id = CString::new("host-render-loop").unwrap();
+        let provenance = CString::new("source_instrumented").unwrap();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:host-path-auto".to_string()),
+                dispatch_table_hash: Some("0xfeed".to_string()),
+                changed_symbols: vec!["trace_primary".to_string()],
+                function_handle_ids: vec!["trace_primary:0x77".to_string()],
+            },
+        );
+        let grid = [1_u32, 1, 1];
+        let block = [64_u32, 1, 1];
+        let value = 42_u32;
+        let arg = SynthiGpuLaunchArg {
+            value_ptr: (&value as *const u32).cast(),
+            value_size: std::mem::size_of_val(&value),
+            value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
+        };
+
+        let ok = synthi_gpu_launch_original_host_path_raw_arg_info_checked(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            &arg,
+            1,
+            current_launch_generation(),
+            host_path_id.as_ptr(),
+            std::ptr::null(),
+            provenance.as_ptr(),
+        );
+
+        assert!(ok);
+        let host_paths = original_host_path_records_snapshot();
+        let launches = launch_records_snapshot();
+        assert_eq!(host_paths.len(), 1);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(host_paths[0].host_path_id, "host-render-loop");
+        assert_eq!(host_paths[0].dispatch_table_entry_id, "trace_primary:0x77");
+        assert_eq!(
+            host_paths[0].runtime_dispatch_table_entry_id.as_deref(),
+            Some("trace_primary:0x77")
         );
         assert!(host_paths[0].dispatch_entry_runtime_verified);
         assert!(host_paths[0].dispatch_boundary_observed);

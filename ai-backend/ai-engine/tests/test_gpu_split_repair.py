@@ -969,7 +969,7 @@ def test_repair_materializes_missing_source_launch_when_core_has_owned_args():
     assert report["repaired"] is True
     assert "repair.source_launch_sites" in report["repairRules"]
     assert (
-        'synthi_gpu_launch_source_location(nullptr, "src/render.cpp:1", "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
+        'synthi_gpu_launch_original_host_path(nullptr, "src/render.cpp:1", nullptr, "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
         in repaired["core.cpp"]
     )
     after = verify_split_output(
@@ -1044,7 +1044,7 @@ def test_repair_materializes_source_launch_after_unresolved_generated_launch_rem
     assert "repair.source_launch_sites" in report["repairRules"]
     assert "GeneratedProbe" not in repaired["core.cpp"]
     assert (
-        'synthi_gpu_launch_source_location(nullptr, "src/render.cpp:1", "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
+        'synthi_gpu_launch_original_host_path(nullptr, "src/render.cpp:1", nullptr, "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
         in repaired["core.cpp"]
     )
 

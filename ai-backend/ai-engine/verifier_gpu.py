@@ -750,7 +750,6 @@ def _has_explicit_source_launch_provenance(launch: _SynthiLaunchCall) -> bool:
         return (
             len(launch.parts) >= 4
             and _launch_metadata_arg_present(launch.parts[1])
-            and _launch_metadata_arg_present(launch.parts[2])
             and _launch_metadata_arg_present(launch.parts[3])
         )
     return False

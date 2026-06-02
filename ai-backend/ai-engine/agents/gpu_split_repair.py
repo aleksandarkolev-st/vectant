@@ -1935,8 +1935,9 @@ def _source_launch_site_to_synthi_call_with_evidence(
     if not launch_args:
         return None, availability
     return (
-        "synthi_gpu_launch_source_location(nullptr, "
+        "synthi_gpu_launch_original_host_path(nullptr, "
         f"{_cpp_string_literal(site.site)}, "
+        "nullptr, "
         '"source_instrumented", '
         f"{_cpp_string_literal(site.kernel)}, "
         f"{_launch_dim_expr_for_boundary(site.grid)}, "

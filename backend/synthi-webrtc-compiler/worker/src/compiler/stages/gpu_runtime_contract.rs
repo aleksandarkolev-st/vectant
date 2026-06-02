@@ -921,6 +921,7 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
     (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "noop", grid, block, 0, nullptr, {sized_arg});
     (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
+    (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", nullptr, "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
     (void)synthi_gpu_launch_args(gpu, "noop", grid, block, 0, nullptr, value, arg);
     (void)synthi_gpu_launch_original_host_path_args(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
     (void)synthi_gpu_launch_source_location_args(gpu, "source.cpp:42", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
