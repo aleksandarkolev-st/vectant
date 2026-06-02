@@ -1,7 +1,7 @@
 # Slice 2 — Git Provider Abstraction (v1 design)
 
 **Status:** approved design → ready for task plan.
-**Branch:** `tool-compatibility-2` (off `tool-compatibility-1b`; reuses the Slice-1 foundation).
+**Branch:** `tool-compatibility` (shared by all slices; reuses the Slice-1 foundation).
 **Roadmap ref:** `docs/superpowers/plans/2026-06-01-tool-compatibility-roadmap.md` §5.
 
 ## 1. Purpose & context
