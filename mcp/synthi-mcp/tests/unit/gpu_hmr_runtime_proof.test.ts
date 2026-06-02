@@ -382,6 +382,11 @@ function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
       selectedArtifactId: TEST_ARTIFACT_ID,
     },
     requiredOracleId: "oracle:required:abc",
+    narrowerCandidateRejections: [{
+      scopeRank: 0,
+      reasonCode: "fission.edit_crosses_body_boundary",
+      verifierEvidenceIds: ["evidence:fission-narrower-rejection:body-boundary"],
+    }],
     originalHostLaunchMappingId: null,
     originalHostLaunchMappingRequired: false,
     verifierEvidenceIds: ["evidence:source-map"],
@@ -2488,6 +2493,94 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fissionProven).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
     expect(proof.degradedReason).toBe("fission_selected_candidate_not_narrowest");
+  });
+
+  it("does not prove fission when narrower rejection records are missing", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.candidates[0].candidate.narrowerCandidateRejections;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:narrower-rejections-missing",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:narrower-rejections-missing"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe(
+      "fission_selection_decision_narrower_rejection_evidence_missing",
+    );
+  });
+
+  it("does not prove fission when narrower rejection records lack deterministic evidence", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].candidate.narrowerCandidateRejections = [{
+      scopeRank: 0,
+      reasonCode: "fission.edit_crosses_body_boundary",
+    }];
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:narrower-rejections-no-evidence",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:narrower-rejections-no-evidence"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe(
+      "fission_selection_decision_narrower_rejection_evidence_incomplete",
+    );
+  });
+
+  it("accepts top-level narrower rejection records when they cover selected wider scope", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].narrowerCandidateRejections =
+      metadata.candidates[0].candidate.narrowerCandidateRejections;
+    delete metadata.candidates[0].candidate.narrowerCandidateRejections;
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:narrower-rejections-top-level",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:narrower-rejections-top-level"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(true);
+    expect(proof.selectedIslandContracts[0].narrowerCandidateRejections).toEqual(
+      metadata.candidates[0].narrowerCandidateRejections,
+    );
   });
 
   it("does not prove fission when the selected island contract is incomplete", () => {

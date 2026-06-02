@@ -151,6 +151,84 @@ function fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy) {
   return { proven: true, reason: null };
 }
 
+function nonNegativeIntegerArray(value) {
+  if (!Array.isArray(value)) return null;
+  const ranks = [];
+  for (const entry of value) {
+    if (!Number.isInteger(entry) || entry < 0) return null;
+    ranks.push(entry);
+  }
+  return [...new Set(ranks)];
+}
+
+function fissionNarrowerCandidateRejections(selectedCandidate) {
+  const candidate = objectValue(selectedCandidate);
+  const island = objectValue(candidate?.candidate) ?? candidate;
+  if (Array.isArray(island?.narrowerCandidateRejections)) {
+    return island.narrowerCandidateRejections;
+  }
+  if (Array.isArray(candidate?.narrowerCandidateRejections)) {
+    return candidate.narrowerCandidateRejections;
+  }
+  return [];
+}
+
+function fissionNarrowerRejectionReasonCodes(record) {
+  return uniqueStrings([
+    nonEmptyString(record?.reasonCode),
+    ...nonEmptyStringArray(record?.reasonCodes),
+  ]).filter((code) => code.startsWith('fission.'));
+}
+
+function fissionNarrowerRejectionEvidenceIds(record) {
+  return uniqueStrings([
+    ...(Array.isArray(record?.verifierEvidenceIds) ? record.verifierEvidenceIds : []),
+    ...(Array.isArray(record?.evidenceIds) ? record.evidenceIds : []),
+    ...(Array.isArray(record?.proofEvidenceIds) ? record.proofEvidenceIds : []),
+    ...(Array.isArray(record?.rejectionEvidenceIds) ? record.rejectionEvidenceIds : []),
+  ]);
+}
+
+function fissionNarrowerRejectionRecordValid(record, rank) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
+  if (record.scopeRank !== rank) return false;
+  return fissionNarrowerRejectionReasonCodes(record).length > 0
+    && fissionNarrowerRejectionEvidenceIds(record).length > 0;
+}
+
+function fissionNarrowerRejectionCoverageIntegrity(coverage, selectedCandidate, reasonPrefix) {
+  const narrowerCoverage = objectValue(coverage);
+  if (!narrowerCoverage) {
+    return { proven: false, reason: `${reasonPrefix}_narrower_coverage_missing` };
+  }
+  const requiredRanks = nonNegativeIntegerArray(narrowerCoverage.requiredRanks);
+  const coveredRanks = nonNegativeIntegerArray(narrowerCoverage.coveredRanks);
+  const missingRanks = nonNegativeIntegerArray(narrowerCoverage.missingRanks);
+  if (!requiredRanks || !coveredRanks || !missingRanks) {
+    return { proven: false, reason: `${reasonPrefix}_narrower_coverage_unverified` };
+  }
+  if (missingRanks.length > 0) {
+    return { proven: false, reason: `${reasonPrefix}_narrower_coverage_incomplete` };
+  }
+  if (!requiredRanks.every((rank) => coveredRanks.includes(rank))) {
+    return { proven: false, reason: `${reasonPrefix}_narrower_coverage_incomplete` };
+  }
+  if (requiredRanks.length === 0) {
+    return { proven: true, reason: null };
+  }
+
+  const rejections = fissionNarrowerCandidateRejections(selectedCandidate);
+  if (!Array.isArray(rejections) || rejections.length === 0) {
+    return { proven: false, reason: `${reasonPrefix}_narrower_rejection_evidence_missing` };
+  }
+  const everyRequiredRankHasEvidence = requiredRanks.every((rank) =>
+    rejections.some((record) => fissionNarrowerRejectionRecordValid(record, rank))
+  );
+  return everyRequiredRankHasEvidence
+    ? { proven: true, reason: null }
+    : { proven: false, reason: `${reasonPrefix}_narrower_rejection_evidence_incomplete` };
+}
+
 function fissionSelectionDecisionIntegrity(metadata, selectionPolicy, selectedCandidate) {
   const decision = objectValue(metadata.selectionDecision);
   if (!decision) {
@@ -205,12 +283,13 @@ function fissionSelectionDecisionIntegrity(metadata, selectionPolicy, selectedCa
       return { proven: false, reason: 'fission_selection_decision_score_mismatch' };
     }
   }
-  const narrowerCoverage = objectValue(decision.narrowerRejectionCoverage);
-  const missingRanks = Array.isArray(narrowerCoverage?.missingRanks)
-    ? narrowerCoverage.missingRanks
-    : null;
-  if (!Array.isArray(missingRanks) || missingRanks.length > 0) {
-    return { proven: false, reason: 'fission_selection_decision_narrower_coverage_incomplete' };
+  const narrowerCoverageIntegrity = fissionNarrowerRejectionCoverageIntegrity(
+    decision.narrowerRejectionCoverage,
+    selectedCandidate,
+    'fission_selection_decision',
+  );
+  if (!narrowerCoverageIntegrity.proven) {
+    return { proven: false, reason: narrowerCoverageIntegrity.reason };
   }
   return { proven: true, reason: null };
 }
@@ -486,6 +565,8 @@ function fissionSelectedIslandContract(selectedCandidate) {
     narrowerRejectionCoverage: objectValue(selectedCandidate.narrowerRejectionCoverage),
     narrowerCandidateRejections: Array.isArray(island.narrowerCandidateRejections)
       ? island.narrowerCandidateRejections
+      : Array.isArray(selectedCandidate.narrowerCandidateRejections)
+        ? selectedCandidate.narrowerCandidateRejections
       : [],
   };
 }
@@ -1056,12 +1137,13 @@ function fissionReportPassIntegrity(metadata) {
   if (!fissionVerificationCoverageComplete(selectedCandidate.verificationEvidenceCoverage)) {
     return { proven: false, reason: 'fission_selected_candidate_evidence_coverage_incomplete' };
   }
-  const narrowerCoverage = selectedCandidate.narrowerRejectionCoverage;
-  const missingRanks = Array.isArray(narrowerCoverage?.missingRanks)
-    ? narrowerCoverage.missingRanks
-    : null;
-  if (!Array.isArray(missingRanks) || missingRanks.length > 0) {
-    return { proven: false, reason: 'fission_selected_candidate_narrower_coverage_incomplete' };
+  const narrowerCoverageIntegrity = fissionNarrowerRejectionCoverageIntegrity(
+    selectedCandidate.narrowerRejectionCoverage,
+    selectedCandidate,
+    'fission_selected_candidate',
+  );
+  if (!narrowerCoverageIntegrity.proven) {
+    return { proven: false, reason: narrowerCoverageIntegrity.reason };
   }
   const reasonCodes = nonEmptyStringArray(selectedCandidate.reasonCodes);
   if (!reasonCodes.includes('fission.candidate_verified')) {
