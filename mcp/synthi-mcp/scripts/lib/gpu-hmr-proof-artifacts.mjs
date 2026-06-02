@@ -260,6 +260,11 @@ function candidateField(primary, fallback, field) {
 function fissionSelectedIslandContract(selectedCandidate) {
   if (!selectedCandidate || typeof selectedCandidate !== 'object') return null;
   const island = objectValue(selectedCandidate.candidate) ?? selectedCandidate;
+  const launchAttachmentScout = objectValue(island.launchAttachmentScout)
+    ?? objectValue(selectedCandidate.launchAttachmentScout);
+  const originalHostLaunchMapping = objectValue(island.originalHostLaunchMapping)
+    ?? objectValue(selectedCandidate.originalHostLaunchMapping)
+    ?? objectValue(launchAttachmentScout?.mapping);
   const outputOracleContract = objectValue(selectedCandidate.outputOracleContract)
     ?? objectValue(island.outputOracleContract);
   const oracleProposal = objectValue(island.oracleProposal)
@@ -303,6 +308,13 @@ function fissionSelectedIslandContract(selectedCandidate) {
     originalHostLaunchMappingRequired:
       island.originalHostLaunchMappingRequired === true
       || selectedCandidate.originalHostLaunchMappingRequired === true,
+    originalHostRuntimeAttachmentProven:
+      runtimeAttachmentValueProven(island.runtimeAttachmentProven)
+      || runtimeAttachmentValueProven(selectedCandidate.runtimeAttachmentProven)
+      || runtimeAttachmentValueProven(launchAttachmentScout)
+      || runtimeAttachmentValueProven(originalHostLaunchMapping),
+    originalHostAttachmentInstrumentationProposalIds:
+      originalHostAttachmentProposalIdsForCandidate(island, selectedCandidate),
     verifierEvidenceIds:
       nonEmptyStringArray(island.verifierEvidenceIds ?? selectedCandidate.verifierEvidenceIds),
     verifierEvidenceId: nonEmptyString(selectedCandidate.verifierEvidenceId),
@@ -346,6 +358,74 @@ function fissionOutputOracleContractIntegrity(contract) {
     return { proven: false, reason: 'fission_selected_island_output_oracle_visual_contract_missing' };
   }
   return { proven: true, reason: null };
+}
+
+function boolTrue(value) {
+  return value === true;
+}
+
+function runtimeAttachmentValueProven(value) {
+  if (value === true) return true;
+  const object = objectValue(value);
+  if (!object) return false;
+  return boolTrue(object.runtimeAttachmentProven)
+    || runtimeAttachmentValueProven(object.mapping)
+    || runtimeAttachmentValueProven(object.runtimeAttachment);
+}
+
+function originalHostAttachmentProposalValid(value) {
+  const object = objectValue(value);
+  if (!object) return false;
+  const requiredBoundaryApis = nonEmptyStringArray(object.requiredBoundaryApis);
+  const hasRequiredBoundaryApi = requiredBoundaryApis.some((api) => [
+    'synthi_gpu_launch_source_location',
+    'synthi_gpu_launch_original_host_path',
+    'synthi_original_host_path_with_provenance',
+  ].includes(api));
+  const runtimeEvidenceRequired = objectValue(object.runtimeEvidenceRequired);
+  return Boolean(
+    nonEmptyString(object.proposalId)
+    && nonEmptyString(object.hostPathId)
+    && nonEmptyString(object.sourceLaunchSiteId)
+    && hasRequiredBoundaryApi
+    && runtimeEvidenceRequired
+    && boolTrue(runtimeEvidenceRequired.runtimeSessionScoped)
+    && boolTrue(runtimeEvidenceRequired.dispatchBoundaryObserved)
+    && boolTrue(runtimeEvidenceRequired.dispatchEntryRuntimeVerified)
+  );
+}
+
+function collectOriginalHostAttachmentProposalIds(value, ids = new Set()) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectOriginalHostAttachmentProposalIds(item, ids);
+    return ids;
+  }
+  const object = objectValue(value);
+  if (!object) return ids;
+  if (originalHostAttachmentProposalValid(object)) {
+    const proposalId = nonEmptyString(object.proposalId);
+    if (proposalId) ids.add(proposalId);
+  }
+  return ids;
+}
+
+function originalHostAttachmentProposalIdsForCandidate(island, selectedCandidate) {
+  const ids = new Set();
+  const launchAttachmentScout = objectValue(island.launchAttachmentScout)
+    ?? objectValue(selectedCandidate.launchAttachmentScout);
+  const originalHostLaunchMapping = objectValue(island.originalHostLaunchMapping)
+    ?? objectValue(selectedCandidate.originalHostLaunchMapping)
+    ?? objectValue(launchAttachmentScout?.mapping);
+  collectOriginalHostAttachmentProposalIds(island.attachmentInstrumentationProposals, ids);
+  collectOriginalHostAttachmentProposalIds(selectedCandidate.attachmentInstrumentationProposals, ids);
+  collectOriginalHostAttachmentProposalIds(island.originalHostAttachmentInstrumentationProposals, ids);
+  collectOriginalHostAttachmentProposalIds(
+    selectedCandidate.originalHostAttachmentInstrumentationProposals,
+    ids,
+  );
+  collectOriginalHostAttachmentProposalIds(launchAttachmentScout?.attachmentInstrumentationProposals, ids);
+  collectOriginalHostAttachmentProposalIds(originalHostLaunchMapping?.attachmentInstrumentationProposals, ids);
+  return [...ids];
 }
 
 function fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslandId) {
@@ -396,6 +476,17 @@ function fissionSelectedIslandContractIntegrity(selectedCandidate, selectedIslan
   }
   if (contract.originalHostLaunchMappingRequired && !contract.originalHostLaunchMappingId) {
     return { proven: false, reason: 'fission_selected_island_original_host_mapping_unverified', contract };
+  }
+  if (
+    contract.originalHostLaunchMappingRequired
+    && !contract.originalHostRuntimeAttachmentProven
+    && contract.originalHostAttachmentInstrumentationProposalIds.length === 0
+  ) {
+    return {
+      proven: false,
+      reason: 'fission_selected_island_original_host_attachment_instrumentation_missing',
+      contract,
+    };
   }
   if (contract.verifierEvidenceIds.length === 0) {
     return { proven: false, reason: 'fission_selected_island_verifier_evidence_missing', contract };
