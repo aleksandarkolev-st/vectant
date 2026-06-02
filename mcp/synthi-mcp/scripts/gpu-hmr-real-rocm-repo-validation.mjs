@@ -2589,9 +2589,18 @@ async function collectRuntimeEvidence() {
     identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
     epochProof: runtimeEpochSwap.proof,
   });
+  const upstreamGpuRunPhase = report.phases
+    .filter((phase) => phase?.name === 'upstream_gpu_build_run')
+    .at(-1) ?? null;
+  const upstreamRunExitCode = Number.isInteger(upstreamGpuRunPhase?.upstream_run_exit_code)
+    ? upstreamGpuRunPhase.upstream_run_exit_code
+    : null;
   const runtimeOriginalHostPath = originalHostPathProofFromRuntimeEvidence(workerEvidence, {
     required: CFG.requireOriginalHostPath,
     runtimeSessionIds: runtimeSession.unique_ids,
+    nativeLaunchObserverEnabled: CFG.nativeLaunchObserver,
+    upstreamRunAttempted: CFG.runUpstream,
+    upstreamRunExitCode,
   });
   report.evidence = {
     worker_log_lines: workerEvidence,

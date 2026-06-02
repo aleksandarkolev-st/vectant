@@ -4380,7 +4380,48 @@ describe("GPU HMR runtime output proof classification", () => {
     );
     expect(proof.attachmentProven).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
-    expect(proof.degradedReason).toBe("original_host_path_attachment_not_observed");
+    expect(proof.degradedReason).toBe("original_host_path_candidate_only_no_runtime_attachment");
+    expect(proof.attachmentCandidateObserved).toBe(true);
+    expect(proof.candidateEvidenceRefs).toEqual([
+      "worker-log:original_host_path_candidate:native-session:native-callsite:abc:7:2",
+    ]);
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("candidate=observed");
+  });
+
+  it("reports upstream original host path runs that fail before any native launch is observed", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_launch_intercept_error api=hipModuleLaunchKernel runtime_session=native-session error=dlsym_next_missing",
+    ], {
+      required: true,
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 133,
+    });
+
+    expect(evidence.native_launch_count).toBe(0);
+    expect(evidence.native_launch_observer_enabled).toBe(true);
+    expect(evidence.native_launch_observer_saw_no_launch).toBe(true);
+    expect(evidence.upstream_run_failed_before_observed_launch).toBe(true);
+    expect(evidence.upstream_run_exit_code).toBe(133);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
+    expect(proof.degradedReason).toBe("original_host_path_upstream_run_failed_before_launch_observed");
+    expect(proof.nativeLaunchObserved).toBe(false);
+    expect(proof.upstreamRunExitCode).toBe(133);
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("upstream_exit=133");
+  });
+
+  it("reports an enabled native observer that sees no launch in a successful upstream run", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([], {
+      required: true,
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 0,
+    });
+
+    expect(evidence.native_launch_observer_saw_no_launch).toBe(true);
+    expect(evidence.upstream_run_failed_before_observed_launch).toBe(false);
+    expect(proof.degradedReason).toBe("original_host_path_native_launch_not_observed");
   });
 
   it("does not prove original host path attachment from incomplete launch provenance", () => {

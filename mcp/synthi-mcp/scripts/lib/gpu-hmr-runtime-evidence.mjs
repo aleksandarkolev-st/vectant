@@ -902,6 +902,22 @@ function dispatchBoundaryRecord(line) {
 
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
+  const nativeLaunchRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\bnative_launch_observed\b/i))
+    .map((line) => {
+      const fields = parseRuntimeKeyValues(line);
+      return {
+        line,
+        runtimeSession: fields.runtime_session ?? null,
+        sequence: integerValue(fields.sequence),
+        api: fields.api ?? null,
+      };
+    })
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
   const candidateRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\boriginal_host_path_candidate\b/i))
     .map(originalHostPathCandidateRecord)
@@ -996,9 +1012,30 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     Number.isFinite(record.launchSequence) ? record.launchSequence : 'unknown',
     Number.isFinite(record.frameIndex) ? record.frameIndex : 'unknown',
   ].join(':'));
+  const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
+  const upstreamRunAttempted = observation.upstreamRunAttempted === true;
+  const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
+    ? observation.upstreamRunExitCode
+    : null;
+  const nativeLaunchObserved = nativeLaunchRecords.length > 0;
+  const nativeLaunchObserverSawNoLaunch =
+    nativeLaunchObserverEnabled
+    && upstreamRunAttempted
+    && !nativeLaunchObserved;
+  const upstreamRunFailedBeforeObservedLaunch =
+    nativeLaunchObserverSawNoLaunch
+    && upstreamRunExitCode !== null
+    && upstreamRunExitCode !== 0;
   return {
     raw_count: rawRecords.length,
     total_count: records.length,
+    native_launch_count: nativeLaunchRecords.length,
+    native_launch_observed: nativeLaunchObserved,
+    native_launch_observer_enabled: nativeLaunchObserverEnabled,
+    native_launch_observer_saw_no_launch: nativeLaunchObserverSawNoLaunch,
+    upstream_run_attempted: upstreamRunAttempted,
+    upstream_run_exit_code: upstreamRunExitCode,
+    upstream_run_failed_before_observed_launch: upstreamRunFailedBeforeObservedLaunch,
     candidate_count: candidateRecords.length,
     attachment_candidate_observed: candidateRecords.length > 0,
     candidate_runtime_session_ids: compactStringList(
@@ -1057,6 +1094,14 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     runtimeSessionIds: evidence.runtime_session_ids,
     runtimeSessionConsistent: evidence.runtime_session_consistent,
     evidenceRefs: evidence.evidence_refs,
+    attachmentCandidateObserved: evidence.attachment_candidate_observed,
+    candidateEvidenceRefs: evidence.candidate_evidence_refs,
+    nativeLaunchObserved: evidence.native_launch_observed,
+    nativeLaunchObserverEnabled: evidence.native_launch_observer_enabled,
+    nativeLaunchObserverSawNoLaunch: evidence.native_launch_observer_saw_no_launch,
+    upstreamRunAttempted: evidence.upstream_run_attempted,
+    upstreamRunExitCode: evidence.upstream_run_exit_code,
+    upstreamRunFailedBeforeObservedLaunch: evidence.upstream_run_failed_before_observed_launch,
   });
   return { evidence, proof };
 }

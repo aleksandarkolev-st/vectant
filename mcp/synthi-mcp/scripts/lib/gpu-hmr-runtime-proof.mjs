@@ -2952,6 +2952,23 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const dispatchEntryRuntimeVerified = observation.dispatchEntryRuntimeVerified === true;
   const attachedToOriginalHostPath = observation.attachedToOriginalHostPath === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
+  const candidateEvidenceRefs = compactStringList(observation.candidateEvidenceRefs);
+  const attachmentCandidateObserved =
+    observation.attachmentCandidateObserved === true || candidateEvidenceRefs.length > 0;
+  const nativeLaunchObserved = observation.nativeLaunchObserved === true;
+  const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
+  const nativeLaunchObserverSawNoLaunch = observation.nativeLaunchObserverSawNoLaunch === true;
+  const upstreamRunAttempted = observation.upstreamRunAttempted === true;
+  const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
+    ? observation.upstreamRunExitCode
+    : null;
+  const upstreamRunFailedBeforeObservedLaunch =
+    observation.upstreamRunFailedBeforeObservedLaunch === true
+    || (
+      nativeLaunchObserverSawNoLaunch
+      && upstreamRunExitCode !== null
+      && upstreamRunExitCode !== 0
+    );
   const runtimeEvidenceRefs = runtimeOriginalHostPathEvidenceRefs(evidenceRefs);
   const runtimeEvidenceObserved = observation.runtimeEvidenceObserved === true && runtimeEvidenceRefs.length > 0;
   const attachmentProven =
@@ -2960,28 +2977,43 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     && dispatchBoundaryObserved
     && dispatchEntryRuntimeVerified
     && sessionScoped;
+  const degradedReason = attachmentProven || !required
+    ? null
+    : upstreamRunFailedBeforeObservedLaunch
+      ? 'original_host_path_upstream_run_failed_before_launch_observed'
+      : nativeLaunchObserverSawNoLaunch
+        ? 'original_host_path_native_launch_not_observed'
+        : attachmentCandidateObserved
+          ? 'original_host_path_candidate_only_no_runtime_attachment'
+          : !attachedToOriginalHostPath
+            ? 'original_host_path_attachment_not_observed'
+            : !runtimeEvidenceObserved
+              ? 'original_host_path_runtime_evidence_not_collected'
+              : !dispatchBoundaryObserved
+                ? 'original_host_path_dispatch_boundary_not_observed'
+                : !dispatchEntryRuntimeVerified
+                  ? 'original_host_path_dispatch_entry_not_runtime_verified'
+                  : !sessionScoped
+                    ? 'original_host_path_session_scope_not_proven'
+                    : 'original_host_path_attachment_not_proven';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
     required,
     attachmentProven,
     degradedState: attachmentProven || !required ? null : 'gpu-hmr-original-host-path-unattached',
-    degradedReason: attachmentProven || !required
-      ? null
-      : !attachedToOriginalHostPath
-        ? 'original_host_path_attachment_not_observed'
-        : !runtimeEvidenceObserved
-          ? 'original_host_path_runtime_evidence_not_collected'
-          : !dispatchBoundaryObserved
-            ? 'original_host_path_dispatch_boundary_not_observed'
-            : !dispatchEntryRuntimeVerified
-              ? 'original_host_path_dispatch_entry_not_runtime_verified'
-              : !sessionScoped
-                ? 'original_host_path_session_scope_not_proven'
-                : 'original_host_path_attachment_not_proven',
+    degradedReason,
     attachedToOriginalHostPath,
     runtimeEvidenceObserved,
     runtimeEvidenceRefs,
+    attachmentCandidateObserved,
+    candidateEvidenceRefs,
+    nativeLaunchObserved,
+    nativeLaunchObserverEnabled,
+    nativeLaunchObserverSawNoLaunch,
+    upstreamRunAttempted,
+    upstreamRunExitCode,
+    upstreamRunFailedBeforeObservedLaunch,
     dispatchBoundaryObserved,
     dispatchEntryRuntimeVerified,
     sessionScoped,
@@ -3000,7 +3032,11 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const evidence = proof.runtimeEvidenceObserved ? ' evidence=runtime' : ' evidence=missing';
   const session = proof.sessionScoped ? ' session=current' : ' session=unproven';
   const entry = proof.dispatchEntryRuntimeVerified ? ' entry=runtime' : ' entry=unverified';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}`;
+  const candidate = proof.attachmentCandidateObserved ? ' candidate=observed' : ' candidate=missing';
+  const upstreamExit = Number.isInteger(proof.upstreamRunExitCode)
+    ? ` upstream_exit=${proof.upstreamRunExitCode}`
+    : '';
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${upstreamExit}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {
