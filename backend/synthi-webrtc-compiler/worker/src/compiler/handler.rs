@@ -1792,6 +1792,14 @@ struct DeviceCompileSources {
     partial_artifact_kind: Option<String>,
     partial_fallback_reason: Option<String>,
     source_baseline_contents: Vec<(String, String)>,
+    launch_mapping_sources: Vec<LaunchMappingSourceContent>,
+}
+
+#[derive(Debug, Clone)]
+struct LaunchMappingSourceContent {
+    path: String,
+    content: String,
+    provenance: String,
 }
 
 #[derive(Debug, Clone)]
@@ -4149,6 +4157,49 @@ async fn read_source_baseline_contents(sidecar_path: &Path) -> Vec<(String, Stri
     source_baseline_contents_from_sidecar(&sidecar)
 }
 
+fn build_launch_mapping_sources(
+    source_baseline_contents: &[(String, String)],
+    req: &CompileRequest,
+) -> Vec<LaunchMappingSourceContent> {
+    let mut sources: BTreeMap<String, LaunchMappingSourceContent> = BTreeMap::new();
+    for (path, content) in source_baseline_contents {
+        if content.trim().is_empty() {
+            continue;
+        }
+        sources.insert(
+            path.clone(),
+            LaunchMappingSourceContent {
+                path: path.clone(),
+                content: content.clone(),
+                provenance: "source_baseline_contents".to_string(),
+            },
+        );
+    }
+    if let Some(path) = normalized_request_filename(&req.filename) {
+        if !req.source.trim().is_empty() {
+            sources.entry(path.clone()).or_insert_with(|| LaunchMappingSourceContent {
+                path,
+                content: req.source.clone(),
+                provenance: "compile_request_primary_source".to_string(),
+            });
+        }
+    }
+    for file in &req.files {
+        let Some(path) = normalized_request_filename(&file.name) else {
+            continue;
+        };
+        if file.content.trim().is_empty() {
+            continue;
+        }
+        sources.entry(path.clone()).or_insert_with(|| LaunchMappingSourceContent {
+            path,
+            content: file.content.clone(),
+            provenance: "compile_request_projection".to_string(),
+        });
+    }
+    sources.into_values().collect()
+}
+
 fn source_offset_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1usize;
     let mut column = 1usize;
@@ -4182,6 +4233,7 @@ fn push_source_launch_mapping_site(
     sites: &mut Vec<serde_json::Value>,
     path: &str,
     source: &str,
+    provenance: &str,
     offset: usize,
     symbol: &str,
     form: &str,
@@ -4196,14 +4248,14 @@ fn push_source_launch_mapping_site(
         "column": column,
         "kernel": symbol,
         "form": form,
+        "sourceProvenance": provenance,
         "sourceHash": format!("sha256:{}", sha256_hex_str(source)),
         "snippetHash": format!("sha256:{snippet_hash}"),
     }));
 }
 
 fn source_baseline_raw_launch_sites(
-    path: &str,
-    source: &str,
+    source_file: &LaunchMappingSourceContent,
     symbol: &str,
     sites: &mut Vec<serde_json::Value>,
 ) {
@@ -4214,14 +4266,21 @@ fn source_baseline_raw_launch_sites(
     let Ok(re) = regex::Regex::new(&pattern) else {
         return;
     };
-    for m in re.find_iter(source).take(16) {
-        push_source_launch_mapping_site(sites, path, source, m.start(), symbol, "raw_triple_chevron");
+    for m in re.find_iter(&source_file.content).take(16) {
+        push_source_launch_mapping_site(
+            sites,
+            &source_file.path,
+            &source_file.content,
+            &source_file.provenance,
+            m.start(),
+            symbol,
+            "raw_triple_chevron",
+        );
     }
 }
 
 fn source_baseline_boundary_launch_sites(
-    path: &str,
-    source: &str,
+    source_file: &LaunchMappingSourceContent,
     symbol: &str,
     sites: &mut Vec<serde_json::Value>,
 ) {
@@ -4232,14 +4291,21 @@ fn source_baseline_boundary_launch_sites(
     let Ok(re) = regex::Regex::new(&pattern) else {
         return;
     };
-    for m in re.find_iter(source).take(16) {
-        push_source_launch_mapping_site(sites, path, source, m.start(), symbol, "synthi_runtime_boundary");
+    for m in re.find_iter(&source_file.content).take(16) {
+        push_source_launch_mapping_site(
+            sites,
+            &source_file.path,
+            &source_file.content,
+            &source_file.provenance,
+            m.start(),
+            symbol,
+            "synthi_runtime_boundary",
+        );
     }
 }
 
 fn source_baseline_runtime_object_launch_sites(
-    path: &str,
-    source: &str,
+    source_file: &LaunchMappingSourceContent,
     symbol: &str,
     sites: &mut Vec<serde_json::Value>,
 ) {
@@ -4250,6 +4316,7 @@ fn source_baseline_runtime_object_launch_sites(
     let Ok(setter_re) = regex::Regex::new(&setter_pattern) else {
         return;
     };
+    let source = &source_file.content;
     for setter in setter_re.captures_iter(source).take(16) {
         let Some(owner) = setter.name("owner").map(|m| m.as_str()) else {
             continue;
@@ -4268,8 +4335,9 @@ fn source_baseline_runtime_object_launch_sites(
         if let Some(launch) = launch_re.find(window) {
             push_source_launch_mapping_site(
                 sites,
-                path,
-                source,
+                &source_file.path,
+                &source_file.content,
+                &source_file.provenance,
                 search_start + launch.start(),
                 symbol,
                 "runtime_kernel_object",
@@ -4283,10 +4351,10 @@ fn source_launch_mapping_sites_for_symbol(
     symbol: &str,
 ) -> Vec<serde_json::Value> {
     let mut sites = Vec::new();
-    for (path, source) in &sources.source_baseline_contents {
-        source_baseline_raw_launch_sites(path, source, symbol, &mut sites);
-        source_baseline_boundary_launch_sites(path, source, symbol, &mut sites);
-        source_baseline_runtime_object_launch_sites(path, source, symbol, &mut sites);
+    for source_file in &sources.launch_mapping_sources {
+        source_baseline_raw_launch_sites(source_file, symbol, &mut sites);
+        source_baseline_boundary_launch_sites(source_file, symbol, &mut sites);
+        source_baseline_runtime_object_launch_sites(source_file, symbol, &mut sites);
     }
     sites
 }
@@ -4296,7 +4364,7 @@ fn partial_fission_original_host_launch_mapping(
     target_symbols: &[String],
 ) -> Option<(serde_json::Value, String, String)> {
     let sources = sources?;
-    if sources.source_baseline_contents.is_empty() || target_symbols.is_empty() {
+    if sources.launch_mapping_sources.is_empty() || target_symbols.is_empty() {
         return None;
     }
     let mut symbol_mappings = Vec::new();
@@ -4322,6 +4390,7 @@ fn partial_fission_original_host_launch_mapping(
         "runtimeAttachmentProven": false,
         "runtimeProofBoundary": "candidate_mapping_only",
         "sourceBaselineFileCount": sources.source_baseline_contents.len(),
+        "launchMappingSourceFileCount": sources.launch_mapping_sources.len(),
         "targetSymbols": target_symbols,
         "symbolMappings": symbol_mappings,
     });
@@ -4654,6 +4723,9 @@ fn partial_fission_candidate_and_evidence(
                         "sourceBaselineFileCount": sources
                             .map(|sources| sources.source_baseline_contents.len())
                             .unwrap_or(0),
+                        "launchMappingSourceFileCount": sources
+                            .map(|sources| sources.launch_mapping_sources.len())
+                            .unwrap_or(0),
                         "targetSymbols": &outcome.target_symbols,
                     }),
                 );
@@ -4760,7 +4832,7 @@ fn partial_fission_candidate_and_evidence(
                 "source baseline launch mapping target_symbols={} source_files={}",
                 outcome.target_symbols.len(),
                 sources
-                    .map(|sources| sources.source_baseline_contents.len())
+                    .map(|sources| sources.launch_mapping_sources.len())
                     .unwrap_or(0)
             ),
             metadata: Some(mapping),
@@ -9562,6 +9634,7 @@ pub async fn handle_compile_request(
     }
 
     let source_baseline_contents = read_source_baseline_contents(&sidecar_path).await;
+    let launch_mapping_sources = build_launch_mapping_sources(&source_baseline_contents, &req);
     let device_source_content: Option<DeviceCompileSources> = if !req.prefer_gpu_pipeline {
         if compile_manifest
             .as_ref()
@@ -9654,6 +9727,7 @@ pub async fn handle_compile_request(
                 partial_artifact_kind,
                 partial_fallback_reason,
                 source_baseline_contents: source_baseline_contents.clone(),
+                launch_mapping_sources: launch_mapping_sources.clone(),
             })
         } else {
             match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
@@ -9682,6 +9756,7 @@ pub async fn handle_compile_request(
                         partial_artifact_kind: None,
                         partial_fallback_reason: None,
                         source_baseline_contents: source_baseline_contents.clone(),
+                        launch_mapping_sources: launch_mapping_sources.clone(),
                     })
                 }
                 Ok(_) => {
@@ -11545,6 +11620,7 @@ mod gpu_host_contract_tests {
             partial_artifact_kind: Some("source_include_bridge".to_string()),
             partial_fallback_reason: None,
             source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
         };
 
         assert!(should_compile_partial_device_source(&sources, true));
@@ -12322,6 +12398,7 @@ __constant__ int scale;
             partial_artifact_kind: Some("source_include_bridge".to_string()),
             partial_fallback_reason: None,
             source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
         };
         let proof = device_hmr_proof_telemetry(&outcome);
 
@@ -12524,6 +12601,12 @@ __constant__ int scale;
                 "void render(float* pixels) { shade<<<1, 64, 0, stream>>>(pixels); }"
                     .to_string(),
             )],
+            launch_mapping_sources: vec![LaunchMappingSourceContent {
+                path: "src/render.cpp".to_string(),
+                content: "void render(float* pixels) { shade<<<1, 64, 0, stream>>>(pixels); }"
+                    .to_string(),
+                provenance: "source_baseline_contents".to_string(),
+            }],
         };
         let proof = device_hmr_proof_telemetry(&outcome);
 
@@ -12611,6 +12694,167 @@ __constant__ int scale;
     }
 
     #[tokio::test]
+    async fn partial_hmr_fission_maps_compile_projection_runtime_object_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let partial_source = r#"extern "C" __global__ void shade(float* pixels) {
+  pixels[0] = 1.0f;
+}
+"#;
+        let mut outcome =
+            fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_Z5shadePf"]));
+        outcome.artifact_path = artifact_path;
+        outcome.compiled_source = partial_source.to_string();
+        outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
+        outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
+        outcome.proof_metadata = DeviceCompileProofMetadata {
+            compiler_executable: Some("/opt/toolchain/bin/device-compiler".to_string()),
+            compiler_identity: Some("compiler-identity-hash".to_string()),
+            device_compiler: Some("device-compiler".to_string()),
+            gpu_vendor: Some("test-vendor".to_string()),
+            gpu_arch: vec!["test-arch".to_string()],
+            target_triple: Some("test-vendor:test-arch".to_string()),
+            sdk_version: Some("sdk:test".to_string()),
+            source_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            effective_device_flags: vec!["-O3".to_string()],
+            compile_command_hash: Some(sha256_hex_str("compile-command")),
+            dependency_hash: Some(sha256_hex_str("dependency-closure")),
+            dependency_method: Some("depfile".to_string()),
+            artifact_cache_key: Some("artifact-cache-key".to_string()),
+            cache_hit: false,
+        };
+        let host_source = r#"
+void bind_and_launch(Buffer* pixels) {
+  kernels[KernelId::Primary]->set_kernel_function_name("shade");
+  prepare_arguments(pixels);
+  kernels[KernelId::Primary]->launch_asynchronous(8, 8, width, height, launch_args, stream);
+}
+"#;
+        let sources = DeviceCompileSources {
+            full_source: partial_source.to_string(),
+            full_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: false,
+            partial_source: Some(partial_source.to_string()),
+            partial_filename: Some(".synthi/generated/gpu/device.partial.shade.hip".to_string()),
+            partial_symbols: symbols(&["shade"]),
+            partial_source_paths: vec!["src/gpu/shade.hip".to_string()],
+            partial_required: true,
+            partial_artifact_kind: Some("source_include_bridge".to_string()),
+            partial_fallback_reason: None,
+            source_baseline_contents: Vec::new(),
+            launch_mapping_sources: vec![LaunchMappingSourceContent {
+                path: "src/render_pass.cpp".to_string(),
+                content: host_source.to_string(),
+                provenance: "compile_request_projection".to_string(),
+            }],
+        };
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            "source-edit:partial",
+            &outcome,
+            Some(&sources),
+            &proof,
+            None,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let mapping_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "original-host-launch-mapping")
+            .expect("compile projection launch mapping evidence should be recorded");
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("sourceBaselineFileCount"))
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("launchMappingSourceFileCount"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/symbolMappings/0/sourceLaunchSites/0/form"))
+                .and_then(serde_json::Value::as_str),
+            Some("runtime_kernel_object")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer("/symbolMappings/0/sourceLaunchSites/0/sourceProvenance")
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("compile_request_projection")
+        );
+
+        let fission_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "fission-candidate-verification")
+            .expect("fission stage should be recorded");
+        assert_eq!(fission_stage.status, "passed");
+    }
+
+    #[test]
+    fn launch_mapping_sources_include_projection_without_overwriting_baseline() {
+        let mut req = compile_request_with_file_refs(Vec::new());
+        req.filename = "src/gpu/kernel.hip".to_string();
+        req.source = "extern \"C\" __global__ void shade(float*) { /* edited */ }".to_string();
+        req.files = vec![
+            FileEntry {
+                name: "src/gpu/kernel.hip".to_string(),
+                content: req.source.clone(),
+            },
+            FileEntry {
+                name: "src/render_pass.cpp".to_string(),
+                content: "kernels[KernelId::Primary]->set_kernel_function_name(\"shade\");\n"
+                    .to_string(),
+            },
+        ];
+        let baseline = vec![(
+            "src/gpu/kernel.hip".to_string(),
+            "extern \"C\" __global__ void shade(float*) { /* baseline */ }".to_string(),
+        )];
+
+        let sources = build_launch_mapping_sources(&baseline, &req);
+        let baseline_source = sources
+            .iter()
+            .find(|source| source.path == "src/gpu/kernel.hip")
+            .expect("baseline source should be present");
+        assert!(baseline_source.content.contains("baseline"));
+        assert_eq!(baseline_source.provenance, "source_baseline_contents");
+
+        let projection_source = sources
+            .iter()
+            .find(|source| source.path == "src/render_pass.cpp")
+            .expect("projection host source should be present");
+        assert!(projection_source.content.contains("set_kernel_function_name"));
+        assert_eq!(projection_source.provenance, "compile_request_projection");
+    }
+
+    #[tokio::test]
     async fn partial_hmr_proof_artifact_covers_direct_translation_unit_narrower_scopes() {
         let temp = tempfile::tempdir().unwrap();
         let artifact_path = temp.path().join("device.hsaco");
@@ -12655,6 +12899,7 @@ __constant__ int scale;
             partial_artifact_kind: None,
             partial_fallback_reason: None,
             source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
         };
         let proof = device_hmr_proof_telemetry(&outcome);
 
@@ -12963,6 +13208,7 @@ extern "C" __global__ void shade(RenderData render_data) {}
             partial_artifact_kind: None,
             partial_fallback_reason: None,
             source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
         };
 
         let mut outcome = fixture_device_outcome(false, Vec::new(), symbols(&["shade"]));
