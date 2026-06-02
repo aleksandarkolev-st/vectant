@@ -19,6 +19,11 @@ function parseRuntimeKeyValues(line) {
   return out;
 }
 
+function runtimeBoundaryEventLine(line, eventPattern) {
+  const text = String(line ?? '');
+  return /\[gpu-runtime-boundary\]/i.test(text) && eventPattern.test(text);
+}
+
 function boolValue(value) {
   if (value === true || value === 'true') return true;
   if (value === false || value === 'false') return false;
@@ -851,7 +856,7 @@ function dispatchBoundaryRecord(line) {
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const launchBoundaryRecords = (Array.isArray(lines) ? lines : [])
-    .filter((line) => /\blaunch_arg_provenance\b/i.test(String(line ?? '')))
+    .filter((line) => runtimeBoundaryEventLine(line, /\blaunch_arg_provenance\b/i))
     .map(launchBoundaryRecord)
     .filter((record) =>
       typeof record.runtimeSession === 'string'
@@ -864,7 +869,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
   const dispatchBoundaryRecords = (Array.isArray(lines) ? lines : [])
-    .filter((line) => /\bsynthi_gpu_launch\b/i.test(String(line ?? '')))
+    .filter((line) => runtimeBoundaryEventLine(line, /\bsynthi_gpu_launch\b/i))
     .map(dispatchBoundaryRecord)
     .filter((record) =>
       typeof record.runtimeSession === 'string'
@@ -877,7 +882,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     );
   const rawRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) =>
-      /\b(original_host_path|host_path_attachment|launch_attachment)\b/i.test(String(line ?? ''))
+      runtimeBoundaryEventLine(line, /\b(original_host_path|host_path_attachment|launch_attachment)\b/i)
     )
     .map(originalHostPathRecord);
   const records = rawRecords.filter((record) =>
@@ -1051,7 +1056,7 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
 
 export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const records = (Array.isArray(lines) ? lines : [])
-    .filter((line) => /\boutput_oracle\b/i.test(String(line ?? '')))
+    .filter((line) => runtimeBoundaryEventLine(line, /\boutput_oracle\b/i))
     .map(outputOracleRecord)
     .filter((record) =>
       typeof record.oracleId === 'string'

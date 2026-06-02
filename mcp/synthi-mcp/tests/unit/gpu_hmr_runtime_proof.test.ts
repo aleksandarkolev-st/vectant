@@ -977,6 +977,26 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.readbackAfterDispatch).toBe(true);
   });
 
+  it("rejects output oracle-shaped records without runtime boundary provenance", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      `application-log output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=${TEST_ARTIFACT_ID} probe_mode=fixed_validation_probe probe_config_hash=sha256:${"b".repeat(64)}`,
+    ]);
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof({ runtimeSession: "pid1", artifactId: TEST_ARTIFACT_ID }),
+      deterministicOutputObserved: evidence.deterministic_output_observed,
+      deterministicOracleProvided: evidence.deterministic_oracle_provided,
+      deterministicOraclePassed: evidence.deterministic_oracle_passed,
+      outputOracle: evidence.output_oracle,
+      evidenceRefs: evidence.evidence_refs,
+    });
+
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.matched_count).toBe(0);
+    expect(evidence.output_oracle).toBeNull();
+    expect(evidence.deterministic_oracle_passed).toBe(false);
+    expect(proof.degradedReason).toBe("output_oracle_not_collected");
+  });
+
   it("does not prove output from a runtime oracle missing provenance fields", () => {
     const evidence = runtimeOutputOracleEvidence([
       "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1",
@@ -3615,6 +3635,25 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.attachmentProven).toBe(true);
     expect(proof.degradedState).toBeNull();
     expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("gpu_original_host_path_proof=attached");
+  });
+
+  it("rejects original host attachment-shaped records without runtime boundary provenance", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "application-log original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=entry-1 runtime_dispatch_table_entry_id=entry-1 dispatch_entry_runtime_verified=true generation=3 runtime_session=pid1",
+      "application-log synthi_gpu_launch kernel=render grid=(1, 1, 1) block=(1, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid1 dispatch_table_entry_id=entry-1",
+      "application-log launch_arg_provenance kernel=render generation=3 runtime_session=pid1 dispatch_table_entry_id=entry-1 dispatch_timestamp=123 complete=true known_args=1 unknown_args=0",
+    ], {
+      required: true,
+      runtimeSessionIds: ["pid1"],
+    });
+
+    expect(evidence.raw_count).toBe(0);
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.launch_boundary_count).toBe(0);
+    expect(evidence.dispatch_boundary_count).toBe(0);
+    expect(evidence.attached_to_original_host_path).toBe(false);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedReason).toBe("original_host_path_attachment_not_observed");
   });
 
   it("does not prove original host path attachment when declared and runtime dispatch entries differ", () => {
