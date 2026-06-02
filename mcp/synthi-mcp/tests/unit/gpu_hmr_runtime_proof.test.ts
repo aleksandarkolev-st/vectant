@@ -421,7 +421,7 @@ function acceptedFissionProof() {
 }
 
 function acceptedFissionVerifierMetadata() {
-  return {
+  const metadata = {
     schemaVersion: "synthi.gpu.fission_verifier.v1",
     selectionPolicy: "narrowest_viable_generic_v1",
     status: "pass",
@@ -471,6 +471,32 @@ function acceptedFissionVerifierMetadata() {
       },
     }],
   };
+  metadata.selectionDecision = {
+    schemaVersion: "synthi.gpu.fission_selection_decision.v1",
+    policy: "narrowest_viable_generic_v1",
+    deterministic: true,
+    comparisonOrder: [
+      "scopeRank",
+      "missingVerificationCategoryCount",
+      "targetSymbolCount",
+      "exportedSymbolOverage",
+      "sourcePathCount",
+      "includeClosureCount",
+      "sourceSpanExtent",
+      "compileCostPenaltyMs",
+      "historicalTimingPenaltyMs",
+    ],
+    tieBreakers: ["verifierEvidenceId", "candidateIndex"],
+    candidateCount: metadata.candidateCount,
+    acceptedCount: metadata.acceptedCount,
+    rejectedCount: metadata.rejectedCount,
+    selectedCandidateIndex: metadata.selectedCandidateIndex,
+    selectedIslandId: metadata.selectedIslandId,
+    selectedVerifierEvidenceId: metadata.candidates[0].verifierEvidenceId,
+    selectedScore: metadata.candidates[0].selectionScore,
+    narrowerRejectionCoverage: metadata.candidates[0].narrowerRejectionCoverage,
+  };
+  return metadata;
 }
 
 function acceptedArtifactTransportProof() {
@@ -2104,6 +2130,31 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selection_policy_unverified");
   });
 
+  it("does not prove fission without deterministic selection decision provenance", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    delete metadata.selectionDecision;
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof.json",
+      artifact: {
+        proofId: "gpu-proof:selection-decision",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:selection-decision",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:selection-decision"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selection_decision_missing");
+  });
+
   it("does not prove fission without selected candidate ranking score provenance", () => {
     const metadata = acceptedFissionVerifierMetadata();
     delete metadata.candidates[0].selectionScore;
@@ -2127,7 +2178,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.fissionProven).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
-    expect(proof.degradedReason).toBe("fission_selected_candidate_selection_score_missing");
+    expect(proof.degradedReason).toBe("fission_selection_decision_score_missing");
   });
 
   it("does not prove fission when selected candidate is not the narrowest accepted island", () => {
@@ -2145,6 +2196,8 @@ describe("GPU HMR runtime output proof classification", () => {
     narrowerCandidate.selectionScore.includeClosureCount = 0;
     metadata.candidateCount = 2;
     metadata.acceptedCount = 2;
+    metadata.selectionDecision.candidateCount = 2;
+    metadata.selectionDecision.acceptedCount = 2;
     metadata.candidates.push(narrowerCandidate);
 
     const proof = fissionProofFromProofArtifacts([{

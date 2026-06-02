@@ -102,6 +102,10 @@ const REQUIRED_FISSION_SELECTION_ORDER = [
   'compileCostPenaltyMs',
   'historicalTimingPenaltyMs',
 ];
+const REQUIRED_FISSION_SELECTION_TIE_BREAKERS = [
+  'verifierEvidenceId',
+  'candidateIndex',
+];
 const REQUIRED_FISSION_VERIFICATION_CATEGORIES = [
   'source_mapping',
   'include_closure',
@@ -136,6 +140,70 @@ function fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy) {
   const numericFields = ['total', ...REQUIRED_FISSION_SELECTION_ORDER];
   if (!numericFields.every((field) => nonNegativeIntegerField(score, field))) {
     return { proven: false, reason: 'fission_selected_candidate_selection_score_unverified' };
+  }
+  return { proven: true, reason: null };
+}
+
+function fissionSelectionDecisionIntegrity(metadata, selectionPolicy, selectedCandidate) {
+  const decision = objectValue(metadata.selectionDecision);
+  if (!decision) {
+    return { proven: false, reason: 'fission_selection_decision_missing' };
+  }
+  if (decision.schemaVersion !== 'synthi.gpu.fission_selection_decision.v1') {
+    return { proven: false, reason: 'fission_selection_decision_schema_unverified' };
+  }
+  if (decision.policy !== selectionPolicy || !fissionSelectionPolicyAccepted(decision.policy)) {
+    return { proven: false, reason: 'fission_selection_decision_policy_mismatch' };
+  }
+  if (decision.deterministic !== true) {
+    return { proven: false, reason: 'fission_selection_decision_not_deterministic' };
+  }
+  const comparisonOrder = nonEmptyStringArray(decision.comparisonOrder);
+  if (!REQUIRED_FISSION_SELECTION_ORDER.every((field) => comparisonOrder.includes(field))) {
+    return { proven: false, reason: 'fission_selection_decision_order_unverified' };
+  }
+  const tieBreakers = nonEmptyStringArray(decision.tieBreakers);
+  if (!REQUIRED_FISSION_SELECTION_TIE_BREAKERS.every((field) => tieBreakers.includes(field))) {
+    return { proven: false, reason: 'fission_selection_decision_tie_break_unverified' };
+  }
+  if (
+    decision.candidateCount !== metadata.candidateCount
+    || decision.acceptedCount !== metadata.acceptedCount
+    || decision.rejectedCount !== metadata.rejectedCount
+  ) {
+    return { proven: false, reason: 'fission_selection_decision_count_mismatch' };
+  }
+  if (
+    decision.selectedCandidateIndex !== metadata.selectedCandidateIndex
+    || nonEmptyString(decision.selectedIslandId) !== nonEmptyString(metadata.selectedIslandId)
+    || nonEmptyString(decision.selectedIslandId) !== nonEmptyString(selectedCandidate.islandId)
+  ) {
+    return { proven: false, reason: 'fission_selection_decision_selected_candidate_mismatch' };
+  }
+  const selectedVerifierEvidenceId = nonEmptyString(selectedCandidate.verifierEvidenceId);
+  if (!selectedVerifierEvidenceId || nonEmptyString(decision.selectedVerifierEvidenceId) !== selectedVerifierEvidenceId) {
+    return { proven: false, reason: 'fission_selection_decision_verifier_evidence_mismatch' };
+  }
+  const selectedScore = objectValue(decision.selectedScore);
+  const candidateScore = objectValue(selectedCandidate.selectionScore);
+  if (!selectedScore || !candidateScore) {
+    return { proven: false, reason: 'fission_selection_decision_score_missing' };
+  }
+  const selectedScoreIntegrity = fissionSelectionScoreIntegrity({ selectionScore: selectedScore }, selectionPolicy);
+  if (!selectedScoreIntegrity.proven) {
+    return { proven: false, reason: 'fission_selection_decision_score_unverified' };
+  }
+  for (const field of ['total', ...REQUIRED_FISSION_SELECTION_ORDER]) {
+    if (selectedScore[field] !== candidateScore[field]) {
+      return { proven: false, reason: 'fission_selection_decision_score_mismatch' };
+    }
+  }
+  const narrowerCoverage = objectValue(decision.narrowerRejectionCoverage);
+  const missingRanks = Array.isArray(narrowerCoverage?.missingRanks)
+    ? narrowerCoverage.missingRanks
+    : null;
+  if (!Array.isArray(missingRanks) || missingRanks.length > 0) {
+    return { proven: false, reason: 'fission_selection_decision_narrower_coverage_incomplete' };
   }
   return { proven: true, reason: null };
 }
@@ -904,6 +972,14 @@ function fissionReportPassIntegrity(metadata) {
   }
   if (nonEmptyString(selectedCandidate.islandId) !== selectedIslandId) {
     return { proven: false, reason: 'fission_selected_candidate_identity_mismatch' };
+  }
+  const selectionDecisionIntegrity = fissionSelectionDecisionIntegrity(
+    metadata,
+    selectionPolicy,
+    selectedCandidate,
+  );
+  if (!selectionDecisionIntegrity.proven) {
+    return { proven: false, reason: selectionDecisionIntegrity.reason };
   }
   const narrownessIntegrity = fissionSelectedCandidateNarrownessIntegrity(
     metadata,

@@ -108,6 +108,20 @@ const AI_PROPOSAL_DETERMINISTIC_PROMOTION_EVIDENCE_FIELDS: &[&str] = &[
     "proposalPromotionEvidenceIds",
 ];
 
+const FISSION_SELECTION_COMPARISON_ORDER: &[&str] = &[
+    "scopeRank",
+    "missingVerificationCategoryCount",
+    "targetSymbolCount",
+    "exportedSymbolOverage",
+    "sourcePathCount",
+    "includeClosureCount",
+    "sourceSpanExtent",
+    "compileCostPenaltyMs",
+    "historicalTimingPenaltyMs",
+];
+
+const FISSION_SELECTION_TIE_BREAKERS: &[&str] = &["verifierEvidenceId", "candidateIndex"];
+
 const LOADER_CAPABILITY_TOKEN_FIELDS: &[&str] = &[
     "loaderCapability",
     "loaderCapabilityName",
@@ -238,6 +252,12 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
     json!({
         "schemaVersion": FISSION_VERIFIER_SCHEMA_VERSION,
         "selectionPolicy": "narrowest_viable_generic_v1",
+        "selectionDecision": fission_selection_decision(
+            &reports,
+            selected_candidate_index,
+            accepted_count,
+            rejected_count,
+        ),
         "status": status,
         "candidateCount": reports.len(),
         "acceptedCount": accepted_count,
@@ -1744,17 +1764,7 @@ fn fission_selection_score(candidate: &Value) -> Value {
         .saturating_add(historical_timing_penalty_ms);
     json!({
         "policy": "narrowest_viable_generic_v1",
-        "comparisonOrder": [
-            "scopeRank",
-            "missingVerificationCategoryCount",
-            "targetSymbolCount",
-            "exportedSymbolOverage",
-            "sourcePathCount",
-            "includeClosureCount",
-            "sourceSpanExtent",
-            "compileCostPenaltyMs",
-            "historicalTimingPenaltyMs"
-        ],
+        "comparisonOrder": FISSION_SELECTION_COMPARISON_ORDER,
         "total": total,
         "scopeRank": scope_rank,
         "missingVerificationCategoryCount": missing_verification_category_count,
@@ -1769,6 +1779,42 @@ fn fission_selection_score(candidate: &Value) -> Value {
         "compileCostPenaltyMs": compile_cost_penalty_ms,
         "historicalTimingMs": historical_timing_ms,
         "historicalTimingPenaltyMs": historical_timing_penalty_ms,
+    })
+}
+
+fn fission_selection_decision(
+    reports: &[Value],
+    selected_candidate_index: Option<usize>,
+    accepted_count: usize,
+    rejected_count: usize,
+) -> Value {
+    let selected = selected_candidate_index.and_then(|index| reports.get(index));
+    json!({
+        "schemaVersion": "synthi.gpu.fission_selection_decision.v1",
+        "policy": "narrowest_viable_generic_v1",
+        "deterministic": true,
+        "comparisonOrder": FISSION_SELECTION_COMPARISON_ORDER,
+        "tieBreakers": FISSION_SELECTION_TIE_BREAKERS,
+        "candidateCount": reports.len(),
+        "acceptedCount": accepted_count,
+        "rejectedCount": rejected_count,
+        "selectedCandidateIndex": selected_candidate_index,
+        "selectedIslandId": selected
+            .and_then(|report| report.get("islandId"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "selectedVerifierEvidenceId": selected
+            .and_then(|report| report.get("verifierEvidenceId"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "selectedScore": selected
+            .and_then(|report| report.get("selectionScore"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "narrowerRejectionCoverage": selected
+            .and_then(|report| report.get("narrowerRejectionCoverage"))
+            .cloned()
+            .unwrap_or(Value::Null),
     })
 }
 
@@ -1995,6 +2041,19 @@ mod tests {
         assert_eq!(report["acceptedCount"], 1);
         assert_eq!(report["selectedIslandId"], "island:sha256:1");
         assert_eq!(report["selectedCandidateIndex"], 0);
+        assert_eq!(
+            report["selectionDecision"]["schemaVersion"],
+            "synthi.gpu.fission_selection_decision.v1"
+        );
+        assert_eq!(report["selectionDecision"]["deterministic"], true);
+        assert_eq!(
+            report["selectionDecision"]["tieBreakers"],
+            json!(["verifierEvidenceId", "candidateIndex"])
+        );
+        assert_eq!(
+            report["selectionDecision"]["selectedScore"],
+            report["candidates"][0]["selectionScore"]
+        );
         assert_eq!(report["candidates"][0]["status"], "pass");
         assert_eq!(report["candidates"][0]["selected"], true);
         assert_eq!(
@@ -3279,6 +3338,18 @@ mod tests {
         assert_eq!(report["acceptedCount"], 2);
         assert_eq!(report["selectedIslandId"], "island:narrow");
         assert_eq!(report["selectedCandidateIndex"], 1);
+        assert_eq!(
+            report["selectionDecision"]["selectedIslandId"],
+            "island:narrow"
+        );
+        assert_eq!(
+            report["selectionDecision"]["selectedCandidateIndex"],
+            1
+        );
+        assert_eq!(
+            report["selectionDecision"]["selectedScore"],
+            report["candidates"][1]["selectionScore"]
+        );
         assert_eq!(report["candidates"][0]["selected"], false);
         assert_eq!(report["candidates"][1]["selected"], true);
     }
