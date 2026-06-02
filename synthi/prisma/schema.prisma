@@ -67,7 +67,9 @@ model EncryptedSecret {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  connection McpConnection?
+  connection         McpConnection?
+  gitProvider        GitProvider? @relation("GitProviderSecret")
+  gitProviderRefresh GitProvider? @relation("GitProviderRefresh")
 }
 
 model McpConnection {
@@ -131,4 +133,31 @@ model PersonalAccessToken {
   revokedAt  DateTime?
 
   @@index([userId])
+}
+
+model GitProvider {
+  id                   String    @id @default(cuid())
+  name                 String
+  providerType         String                       // 'github' | 'gitlab' | 'generic'
+  baseUrl              String?
+  scope                String                        // 'personal' | 'workspace'
+  ownerUserId          String?
+  workspaceSlug        String?
+  authType             String    @default("pat")     // 'oauth' | 'pat'
+  secretId             String?   @unique
+  secret               EncryptedSecret? @relation("GitProviderSecret", fields: [secretId], references: [id], onDelete: SetNull)
+  refreshSecretId      String?   @unique
+  refreshSecret        EncryptedSecret? @relation("GitProviderRefresh", fields: [refreshSecretId], references: [id], onDelete: SetNull)
+  accessTokenExpiresAt DateTime?
+  oauthScopes          String[]  @default([])
+  accountLogin         String?
+  enabled              Boolean   @default(true)
+  needsRelink          Boolean   @default(false)
+  lastHealthState      String?
+  lastHealthAt         DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
 }
