@@ -855,19 +855,39 @@ fn output_oracle_kind(candidate: &Value) -> Option<String> {
 }
 
 fn output_oracle_expected_value_present(object: &serde_json::Map<String, Value>) -> bool {
-    ["expected", "expectedValue", "expectedHash", "expectedIncrement"]
+    [
+        "expected",
+        "expectedValue",
+        "expectedHash",
+        "expectedIncrement",
+        "expected_value",
+        "expected_hash",
+        "expected_increment",
+    ]
         .iter()
         .any(|field| object.get(*field).is_some_and(value_present))
 }
 
 fn output_oracle_producer_present(object: &serde_json::Map<String, Value>) -> bool {
-    ["producer", "producerSubsystem", "producerId"]
+    [
+        "producer",
+        "producerSubsystem",
+        "producerId",
+        "producer_subsystem",
+        "producer_id",
+    ]
         .iter()
         .any(|field| non_empty_string(object.get(*field)))
 }
 
 fn output_oracle_output_target_present(object: &serde_json::Map<String, Value>) -> bool {
-    ["outputTargetId", "outputTarget", "target"]
+    [
+        "outputTargetId",
+        "outputTarget",
+        "target",
+        "output_target_id",
+        "output_target",
+    ]
         .iter()
         .any(|field| object.get(*field).is_some_and(value_present))
 }
@@ -878,12 +898,20 @@ fn output_oracle_readback_contract_present(object: &serde_json::Map<String, Valu
         "readbackTimestampSource",
         "readbackAfterHmr",
         "readbackAfterHMR",
+        "readback_after_hmr",
+        "readback_timestamp_source",
         "syncPoint",
         "synchronizationPoint",
         "knownSyncPoint",
         "probeMode",
         "probeConfig",
         "deterministicProbeMode",
+        "sync_point",
+        "synchronization_point",
+        "known_sync_point",
+        "probe_mode",
+        "probe_config",
+        "deterministic_probe_mode",
     ]
     .iter()
     .any(|field| object.get(*field).is_some_and(value_present))
@@ -894,11 +922,19 @@ fn output_oracle_runtime_session_binding_present(
 ) -> bool {
     [
         "runtimeSessionId",
+        "runtimeSession",
         "sessionId",
         "runtimeSessionBinding",
         "sessionBinding",
         "runtimeSessionIdSource",
         "sessionIdSource",
+        "runtime_session_id",
+        "runtime_session",
+        "session_id",
+        "runtime_session_binding",
+        "session_binding",
+        "runtime_session_id_source",
+        "session_id_source",
     ]
     .iter()
     .any(|field| object.get(*field).is_some_and(value_present))
@@ -907,10 +943,16 @@ fn output_oracle_runtime_session_binding_present(
 fn output_oracle_artifact_binding_present(object: &serde_json::Map<String, Value>) -> bool {
     [
         "artifactId",
+        "artifact",
         "artifactBinding",
         "artifactIdSource",
         "selectedArtifactId",
         "runtimeArtifactBinding",
+        "artifact_id",
+        "artifact_binding",
+        "artifact_id_source",
+        "selected_artifact_id",
+        "runtime_artifact_binding",
     ]
     .iter()
     .any(|field| object.get(*field).is_some_and(value_present))
@@ -925,6 +967,13 @@ fn output_oracle_visual_evidence_contract_present(
         "visualEvidencePlan",
         "visualEvidenceRequirement",
         "requiresVisualEvidence",
+        "visualRef",
+        "visual_evidence_ref",
+        "visual_evidence_refs",
+        "visual_evidence_plan",
+        "visual_evidence_requirement",
+        "requires_visual_evidence",
+        "visual_ref",
     ]
     .iter()
     .any(|field| object.get(*field).is_some_and(value_present))
@@ -2498,6 +2547,68 @@ mod tests {
         assert_eq!(
             report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
             false
+        );
+    }
+
+    #[test]
+    fn accepts_candidate_with_snake_case_output_oracle_contract_aliases() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "buffer_checksum",
+            "producer_subsystem": "deterministic_probe",
+            "expected_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "output_target": "buffer:primary",
+            "readback_after_hmr": true,
+            "runtime_session_binding": {
+                "source": "runtime-session"
+            },
+            "artifact_id": "artifact:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], true);
+        assert_eq!(report["outputOracleContract"]["proposalKind"], "buffer_checksum");
+        assert_eq!(
+            report["outputOracleContract"]["proposalRuntimeSessionBindingPresent"],
+            true
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalArtifactBindingPresent"],
+            true
+        );
+    }
+
+    #[test]
+    fn accepts_render_output_oracle_with_visual_ref_alias() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "selected_pixel_values",
+            "producer": "deterministic_probe",
+            "expected": [[0, 0, [1.0, 0.0, 0.0, 1.0]]],
+            "outputTargetId": "render-target:primary",
+            "readbackPlan": {
+                "syncPoint": "after-dispatch"
+            },
+            "runtimeSessionId": "runtime-session:current",
+            "artifactId": "artifact:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "visual_ref": "validation-screenshot:fresh-frame"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], true);
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceRequired"],
+            true
+        );
+        assert_eq!(
+            report["outputOracleContract"]["proposalVisualEvidenceContractPresent"],
+            true
         );
     }
 
