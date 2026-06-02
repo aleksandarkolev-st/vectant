@@ -51,6 +51,9 @@ import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
 } from "../../scripts/lib/ai-split-provenance.mjs";
+import {
+  buildUpstreamLifecyclePlan,
+} from "../../scripts/lib/real-rocm-upstream-lifecycle.mjs";
 
 const TEST_ARTIFACT_HASH = "1".repeat(64);
 const TEST_ARTIFACT_ID = `artifact:sha256:${TEST_ARTIFACT_HASH}`;
@@ -807,6 +810,46 @@ describe("AI split provenance classification", () => {
     expect(proof.resultState).toBe("fresh-ai-split-observed");
     expect(proof.degradedState).toBeNull();
     expect(proof.evidenceRefs).toHaveLength(1);
+  });
+});
+
+describe("real ROCm upstream lifecycle planning", () => {
+  it("does not execute upstream lifecycle when only cached metadata is requested", () => {
+    const plan = buildUpstreamLifecyclePlan({
+      buildMetadataDir: "/tmp/cmake-metadata",
+      buildUpstream: false,
+      runUpstream: false,
+    });
+
+    expect(plan.usesCachedMetadata).toBe(true);
+    expect(plan.executeLifecycle).toBe(false);
+    expect(plan.metadataSource).toBe("cached");
+    expect(plan.skipReason).toBe("cached_metadata_without_requested_build_or_run");
+  });
+
+  it("executes requested upstream run even when cached metadata is available", () => {
+    const plan = buildUpstreamLifecyclePlan({
+      buildMetadataDir: "/tmp/cmake-metadata",
+      buildUpstream: false,
+      runUpstream: true,
+    });
+
+    expect(plan.usesCachedMetadata).toBe(true);
+    expect(plan.executeLifecycle).toBe(true);
+    expect(plan.metadataSource).toBe("cached");
+    expect(plan.skipReason).toBeNull();
+  });
+
+  it("builds worker metadata when no cached metadata is provided", () => {
+    const plan = buildUpstreamLifecyclePlan({
+      buildMetadataDir: "",
+      buildUpstream: false,
+      runUpstream: false,
+    });
+
+    expect(plan.usesCachedMetadata).toBe(false);
+    expect(plan.executeLifecycle).toBe(true);
+    expect(plan.metadataSource).toBe("worker-build");
   });
 });
 

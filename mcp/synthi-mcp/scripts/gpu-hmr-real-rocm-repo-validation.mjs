@@ -67,6 +67,7 @@ import {
 } from './lib/ai-split-provenance.mjs';
 import { validationCommandMetadata } from './lib/docker-validation-metadata.mjs';
 import { REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS } from './lib/real-rocm-validation-command-env.mjs';
+import { buildUpstreamLifecyclePlan } from './lib/real-rocm-upstream-lifecycle.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -536,12 +537,22 @@ function parseUpstreamRunExitCode(timings) {
 }
 
 async function prepareUpstreamBuild() {
-  if (CFG.buildMetadataDir) {
-    const metadata = await collectBuildMetadataFromHost(CFG.buildMetadataDir);
+  const lifecyclePlan = buildUpstreamLifecyclePlan({
+    buildMetadataDir: CFG.buildMetadataDir,
+    buildUpstream: CFG.buildUpstream,
+    runUpstream: CFG.runUpstream,
+  });
+  const cachedMetadata = lifecyclePlan.usesCachedMetadata
+    ? await collectBuildMetadataFromHost(CFG.buildMetadataDir)
+    : null;
+  if (!lifecyclePlan.executeLifecycle) {
     report.phases.push({
       name: 'upstream_gpu_build_run',
       timings: 'configure_ms=cached\nbuild_ms=skipped\nrun_ms=skipped',
       output: `using cached CMake metadata from ${CFG.buildMetadataDir}`,
+      metadata_source: lifecyclePlan.metadataSource,
+      cached_metadata_dir: lifecyclePlan.cachedMetadataDir,
+      skip_reason: lifecyclePlan.skipReason,
     });
     report.logs.upstream_run = 'upstream configure/build/run skipped; using cached CMake metadata\n';
     record(
@@ -549,7 +560,7 @@ async function prepareUpstreamBuild() {
       'pass',
       `cached_metadata=${CFG.buildMetadataDir} build=skipped run=skipped`,
     );
-    return metadata;
+    return cachedMetadata;
   }
 
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
@@ -614,6 +625,8 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
     cmake_config: CFG.cmakeConfigName,
     cmake_args: CFG.cmakeArgs,
     output: runLog.slice(0, 1000),
+    metadata_source: lifecyclePlan.metadataSource,
+    cached_metadata_dir: lifecyclePlan.cachedMetadataDir,
     native_launch_observer: CFG.nativeLaunchObserver
       ? { enabled: true, path: CFG.nativeLaunchObserverPath }
       : { enabled: false },
@@ -622,7 +635,7 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
   record(
     'upstream GPU target metadata configured',
     'pass',
-    `${timings.replace(/\s+/g, ' ')} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} cmake_args=${CFG.cmakeArgs.length}`,
+    `${timings.replace(/\s+/g, ' ')} metadata=${lifecyclePlan.metadataSource} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} cmake_args=${CFG.cmakeArgs.length}`,
   );
   if (CFG.runUpstream) {
     const status = upstreamRunExitCode === 0 ? 'pass' : 'warn';
@@ -632,7 +645,7 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
     record('upstream GPU target run', status, detail);
   }
 
-  return collectBuildMetadataFromWorker(buildPath);
+  return cachedMetadata ?? collectBuildMetadataFromWorker(buildPath);
 }
 
 async function collectBuildMetadataFromHost(metadataDir) {
