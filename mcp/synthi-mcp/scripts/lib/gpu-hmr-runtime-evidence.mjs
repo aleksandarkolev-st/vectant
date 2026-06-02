@@ -809,7 +809,6 @@ function originalHostPathRecord(line) {
 
 const ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE = new Set([
   'runtime_explicit',
-  'source_instrumented',
   'host_runtime_explicit',
 ]);
 
