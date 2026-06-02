@@ -130,6 +130,7 @@ function epochRecord(line) {
       fields.retirement_fence_ids ?? fields.retirementFenceIds,
     ),
     delayedUnloadResult: fields.delayed_unload_result ?? fields.delayedUnloadResult ?? null,
+    retirementStrategy: fields.retirement_strategy ?? fields.retirementStrategy ?? null,
     drainResult: fields.drain_result ?? null,
   };
 }
@@ -187,6 +188,10 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
     retirement?.delayedUnloadResult
     ?? latestPublication.delayedUnloadResult
     ?? null;
+  const finalRetirementStrategy =
+    retirement?.retirementStrategy
+    ?? latestPublication.retirementStrategy
+    ?? null;
   for (const record of records) {
     if (!Number.isFinite(record.previousGeneration) || !Number.isFinite(record.activeGeneration)) {
       continue;
@@ -222,6 +227,7 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         changedEntries: record.changedEntries,
         retirementFenceIds: record.retirementFenceIds,
         delayedUnloadResult: record.delayedUnloadResult,
+        retirementStrategy: record.retirementStrategy,
         evidenceRef: `worker-log:dispatcher_epoch:published:${record.previousGeneration}->${record.activeGeneration}`,
       });
     } else if (record.event === 'retired') {
@@ -236,6 +242,7 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
         runtimeSession: record.runtimeSession,
         retirementFenceIds: record.retirementFenceIds,
         delayedUnloadResult: record.delayedUnloadResult,
+        retirementStrategy: record.retirementStrategy,
         evidenceRef: `worker-log:dispatcher_epoch:retired:${record.previousGeneration}->${record.activeGeneration}`,
       });
     }
@@ -274,6 +281,7 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
       changedEntries: latestPublication.changedEntries,
       retirementFenceIds: finalRetirementFenceIds,
       delayedUnloadResult: finalDelayedUnloadResult,
+      retirementStrategy: finalRetirementStrategy,
     },
     retirementState: publicationRetirementComplete
       ? 'not-required'
@@ -285,6 +293,39 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
     nodes: [...nodes.values()].sort((left, right) => left.generation - right.generation),
     edges,
   };
+}
+
+function normalizedRetirementStrategy(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return [
+    'epoch_fence',
+    'no_retirement_required',
+    'conservative_drain_fallback',
+  ].includes(normalized)
+    ? normalized
+    : null;
+}
+
+function inferredRetirementStrategy({
+  explicitStrategy,
+  publicationRetirementComplete,
+  retirementFenceIds,
+  delayedUnloadResult,
+}) {
+  const explicit = normalizedRetirementStrategy(explicitStrategy);
+  if (explicit) return explicit;
+  const delayed = String(delayedUnloadResult ?? '').trim().toLowerCase();
+  if (
+    publicationRetirementComplete
+    || delayed === 'not_required'
+    || delayed === 'no_old_generation'
+  ) {
+    return 'no_retirement_required';
+  }
+  if (Array.isArray(retirementFenceIds) && retirementFenceIds.length > 0) {
+    return 'epoch_fence';
+  }
+  return null;
 }
 
 export function runtimeEpochSwapEvidence(lines) {
@@ -340,6 +381,16 @@ export function runtimeEpochSwapEvidence(lines) {
     retirement?.delayedUnloadResult
     ?? latestPublication?.delayedUnloadResult
     ?? null;
+  const explicitRetirementStrategy =
+    retirement?.retirementStrategy
+    ?? latestPublication?.retirementStrategy
+    ?? null;
+  const retirementStrategy = inferredRetirementStrategy({
+    explicitStrategy: explicitRetirementStrategy,
+    publicationRetirementComplete,
+    retirementFenceIds,
+    delayedUnloadResult,
+  });
   const streamOrderingRequested =
     latestPublication?.streamOrderingProven === true
     && latestPublication?.drainResult === 'synced';
@@ -400,6 +451,8 @@ export function runtimeEpochSwapEvidence(lines) {
     retirement_fence_evidence_required: retirementFenceEvidenceRequired,
     retirement_fence_evidence_observed: retirementFenceEvidenceObserved,
     delayed_unload_result: delayedUnloadResult,
+    retirement_strategy: retirementStrategy,
+    retirement_strategy_explicit: normalizedRetirementStrategy(explicitRetirementStrategy) !== null,
     capsule_metadata_observed: capsuleMetadataObserved,
     drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
@@ -430,6 +483,7 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     streamIds: evidence.stream_ids,
     retirementFenceIds: evidence.retirement_fence_ids,
     delayedUnloadResult: evidence.delayed_unload_result,
+    retirementStrategy: evidence.retirement_strategy,
     retirementTracked: evidence.retirement_tracked,
     oldGenerationRetired: evidence.old_generation_retired,
     evidenceRefs: evidence.evidence_refs,

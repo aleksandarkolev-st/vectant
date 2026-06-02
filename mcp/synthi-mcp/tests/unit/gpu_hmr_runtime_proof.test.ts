@@ -131,8 +131,10 @@ function epochCapsuleFields(options = {}) {
 function epochRetirementFields({
   retirementFenceIds = ["stream-sync:default:2->3"],
   delayedUnloadResult = "unloaded",
+  retirementStrategy,
 } = {}) {
-  return `retirement_fence_ids=${retirementFenceIds.join(",")} delayed_unload_result=${delayedUnloadResult}`;
+  const strategy = retirementStrategy ? ` retirement_strategy=${retirementStrategy}` : "";
+  return `retirement_fence_ids=${retirementFenceIds.join(",")} delayed_unload_result=${delayedUnloadResult}${strategy}`;
 }
 
 function epochGenerationGraph({
@@ -148,6 +150,7 @@ function epochGenerationGraph({
   capsuleMetadata = true,
   retirementFenceIds = [`stream-sync:default:${previousGeneration}->${activeGeneration}`],
   delayedUnloadResult = retirementState === "retired" ? "unloaded" : "pending",
+  retirementStrategy,
 } = {}) {
   const runtimeSessionFields = runtimeSession ? { runtimeSession } : {};
   const capsuleFields = capsuleMetadata ? epochCapsuleMetadata() : {};
@@ -158,7 +161,7 @@ function epochGenerationGraph({
     dispatchTableHash,
     changedEntries,
   };
-  const retirementFields = { retirementFenceIds, delayedUnloadResult };
+  const retirementFields = { retirementFenceIds, delayedUnloadResult, retirementStrategy };
   return {
     schemaVersion: "synthi.gpu.epoch_graph.v1",
     runtimeSessionIds: runtimeSession ? [runtimeSession] : [],
@@ -3384,6 +3387,9 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.runtimeSessionObserved).toBe(true);
     expect(proof.generationGraphValid).toBe(true);
     expect(proof.streamOrderingProven).toBe(true);
+    expect(proof.retirementStrategy).toBe("epoch_fence");
+    expect(proof.conservativeDrainFallback).toBe(false);
+    expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("retirement=epoch_fence");
     expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("retired=yes");
   });
 
@@ -3972,8 +3978,10 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
 
     expect(evidence.retirement_not_required).toBe(true);
+    expect(evidence.retirement_strategy).toBe("no_retirement_required");
     expect(evidence.old_generation_retired).toBe(true);
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.retirementStrategy).toBe("no_retirement_required");
     expect(proof.degradedState).toBeNull();
   });
 
@@ -3984,8 +3992,42 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evidence.stream_scope_supported).toBe(true);
     expect(evidence.stream_ids).toEqual(["none"]);
+    expect(evidence.retirement_strategy).toBe("no_retirement_required");
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.retirementStrategy).toBe("no_retirement_required");
+    expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("retirement=no_retirement_required");
     expect(proof.degradedState).toBeNull();
+  });
+
+  it("reports explicit conservative drain fallback without pretending fence retirement", () => {
+    const graph = epochGenerationGraph({
+      retirementFenceIds: [],
+      delayedUnloadResult: "unloaded",
+      retirementStrategy: "conservative_drain_fallback",
+    });
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: graph,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementFenceIds: [],
+      delayedUnloadResult: "unloaded",
+      retirementStrategy: "conservative_drain_fallback",
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:conservative-drain"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.retirementStrategy).toBe("conservative_drain_fallback");
+    expect(proof.conservativeDrainFallback).toBe(true);
+    expect(proof.retirementFenceEvidenceRequired).toBe(false);
+    expect(proof.retirementFenceIds).toEqual([]);
+    expect(summarizeGpuHmrEpochSwapProof(proof)).toContain(
+      "retirement=conservative_drain_fallback",
+    );
   });
 
   it("does not prove no-stream epoch ordering when the no-stream assertion is omitted", () => {

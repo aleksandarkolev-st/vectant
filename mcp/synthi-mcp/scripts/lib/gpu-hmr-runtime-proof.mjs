@@ -297,6 +297,38 @@ function streamEpochCountersCoverScope(streamScope, streamIds, counters) {
     && streamIds.every((streamId) => counterIds.has(streamId));
 }
 
+function normalizedRetirementStrategy(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return [
+    'epoch_fence',
+    'no_retirement_required',
+    'conservative_drain_fallback',
+  ].includes(normalized)
+    ? normalized
+    : null;
+}
+
+function inferredRetirementStrategy({
+  explicitStrategy,
+  streamScope,
+  retirementFenceIds,
+  delayedUnloadResult,
+}) {
+  const explicit = normalizedRetirementStrategy(explicitStrategy);
+  if (explicit) return explicit;
+  const delayed = String(delayedUnloadResult ?? '').trim().toLowerCase();
+  if (
+    streamScope === 'none'
+    || delayed === 'not_required'
+    || delayed === 'no_old_generation'
+  ) {
+    return 'no_retirement_required';
+  }
+  return Array.isArray(retirementFenceIds) && retirementFenceIds.length > 0
+    ? 'epoch_fence'
+    : null;
+}
+
 function integerValue(value) {
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value !== 'string') return null;
@@ -522,6 +554,12 @@ function epochGenerationGraphStatus(graph) {
     publicationEdge?.delayedUnloadResult,
     publicationEdge?.delayed_unload_result,
   );
+  const retirementStrategy = normalizedRetirementStrategy(stringField(
+    latest.retirementStrategy,
+    latest.retirement_strategy,
+    publicationEdge?.retirementStrategy,
+    publicationEdge?.retirement_strategy,
+  ));
   const capsuleMetadataObserved =
     /^artifact:sha256:[0-9a-f]{64}$/i.test(oldArtifactId)
     && /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
@@ -649,6 +687,7 @@ function epochGenerationGraphStatus(graph) {
     dispatchTableMutationObserved,
     retirementFenceIds,
     delayedUnloadResult,
+    retirementStrategy,
     runtimeSessionIds: graphRuntimeSessionIds,
     runtimeSessionScoped,
     runtimeSessionConsistent,
@@ -2581,14 +2620,25 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     ...(Array.isArray(observation.retirement_fence_ids) ? observation.retirement_fence_ids : []),
     ...(Array.isArray(epochGraph.retirementFenceIds) ? epochGraph.retirementFenceIds : []),
   ]).filter((id) => id.toLowerCase() !== 'none');
-  const retirementFenceEvidenceRequired = streamScope !== 'none';
-  const retirementFenceEvidenceObserved =
-    !retirementFenceEvidenceRequired || retirementFenceIds.length > 0;
   const delayedUnloadResult = stringField(
     observation.delayedUnloadResult,
     observation.delayed_unload_result,
     epochGraph.delayedUnloadResult,
   );
+  const retirementStrategy = inferredRetirementStrategy({
+    explicitStrategy: stringField(
+      observation.retirementStrategy,
+      observation.retirement_strategy,
+      epochGraph.retirementStrategy,
+    ),
+    streamScope,
+    retirementFenceIds,
+    delayedUnloadResult,
+  });
+  const conservativeDrainFallback = retirementStrategy === 'conservative_drain_fallback';
+  const retirementFenceEvidenceRequired = streamScope !== 'none' && !conservativeDrainFallback;
+  const retirementFenceEvidenceObserved =
+    !retirementFenceEvidenceRequired || retirementFenceIds.length > 0;
   const delayedUnloadResultObserved = delayedUnloadResult !== null;
   const delayedUnloadResultTerminal = [
     'not_required',
@@ -2651,6 +2701,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       retirementFenceEvidenceObserved,
       retirementFenceEvidenceRequired,
       delayedUnloadResult,
+      retirementStrategy,
+      conservativeDrainFallback,
       delayedUnloadResultObserved,
       delayedUnloadResultTerminal: true,
       retirementTracked: true,
@@ -2708,6 +2760,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       retirementFenceEvidenceObserved,
       retirementFenceEvidenceRequired,
       delayedUnloadResult,
+      retirementStrategy,
+      conservativeDrainFallback,
       delayedUnloadResultObserved,
       delayedUnloadResultTerminal: false,
       retirementTracked: true,
@@ -2783,6 +2837,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     retirementFenceEvidenceObserved,
     retirementFenceEvidenceRequired,
     delayedUnloadResult,
+    retirementStrategy,
+    conservativeDrainFallback,
     delayedUnloadResultObserved,
     delayedUnloadResultTerminal,
     retirementTracked,
@@ -2804,9 +2860,10 @@ export function summarizeGpuHmrEpochSwapProof(proof) {
       ? ' graph=invalid'
       : ' graph=missing';
   const stream = proof.streamOrderingProven ? ' stream_ordering=proven' : ' stream_ordering=unproven';
+  const retirement = proof.retirementStrategy ? ` retirement=${proof.retirementStrategy}` : ' retirement=unverified';
   const retired = proof.oldGenerationRetired ? ' retired=yes' : ' retired=no';
   const capsule = proof.capsuleMetadataObserved ? ' capsule=observed' : ' capsule=missing';
-  return `gpu_epoch_swap_proof=${result}${degraded}${reason}${publication}${session}${graph}${stream}${retired}${capsule}`;
+  return `gpu_epoch_swap_proof=${result}${degraded}${reason}${publication}${session}${graph}${stream}${retirement}${retired}${capsule}`;
 }
 
 export function classifyGpuHmrHostPreservationProof(observation = {}) {
