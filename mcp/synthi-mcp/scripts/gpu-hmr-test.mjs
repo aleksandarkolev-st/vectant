@@ -83,6 +83,10 @@ import {
 import {
   buildGpuHmrValidationProofSummary,
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
+import {
+  analyzeGpuHmrImageEvidence,
+  visualEvidenceRow,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -158,6 +162,7 @@ const runtimeHostPreservationProofs = [];
 const runtimeFullProofs = [];
 const gpuProofs = [];
 const visualArtifactPaths = [];
+const screenshots = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
@@ -1622,19 +1627,41 @@ async function captureMcpScreenshot(label) {
         20000,
       );
       lastShot = shot;
-      if (shot?.data && (await screenshotLooksNonBlank(shot.data))) {
-        const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
-        await writeFile(out, Buffer.from(shot.data, 'base64'));
-        visualArtifactPaths.push(out);
-        record('FLOW', `${label} screenshot`, 'pass', attempt > 1 ? `${out} retry=${attempt}` : out);
-        return out;
+      if (shot?.data) {
+        const bytes = Buffer.from(shot.data, 'base64');
+        const stats = await analyzeGpuHmrImageEvidence(bytes);
+        const row = visualEvidenceRow({
+          label,
+          path: path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`),
+          ...stats,
+          bytes: bytes.length,
+          attempt,
+        });
+        if (row.accepted_as_visual_evidence) {
+          await writeFile(row.path, bytes);
+          screenshots.push(row);
+          visualArtifactPaths.push(row.path);
+          record('FLOW', `${label} screenshot`, 'pass', attempt > 1 ? `${row.path} retry=${attempt} quality=${row.visual_quality}` : `${row.path} quality=${row.visual_quality}`);
+          return row.path;
+        }
+        lastShot = { ...shot, evidence: row };
       }
     }
     if (lastShot?.data) {
+      const bytes = Buffer.from(lastShot.data, 'base64');
       const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
-      await writeFile(out, Buffer.from(lastShot.data, 'base64'));
+      const stats = lastShot.evidence ?? visualEvidenceRow({
+        label,
+        path: out,
+        ...(await analyzeGpuHmrImageEvidence(bytes)),
+        bytes: bytes.length,
+        attempt: 8,
+      });
+      const row = visualEvidenceRow({ ...stats, path: out });
+      await writeFile(out, bytes);
+      screenshots.push(row);
       visualArtifactPaths.push(out);
-      record('FLOW', `${label} screenshot`, 'warn', `saved final retry but frame looked blank: ${out}`);
+      record('FLOW', `${label} screenshot`, 'warn', `saved final retry but frame was diagnostic-only: ${out} quality=${row.visual_quality}`);
       return out;
     }
     record('FLOW', `${label} screenshot`, 'warn', JSON.stringify(lastShot).slice(0, 180));
@@ -1642,16 +1669,6 @@ async function captureMcpScreenshot(label) {
     record('FLOW', `${label} screenshot`, 'warn', e.message.slice(0, 180));
   }
   return null;
-}
-
-async function screenshotLooksNonBlank(base64) {
-  try {
-    const sharp = (await import('sharp')).default;
-    const stats = await sharp(Buffer.from(base64, 'base64')).stats();
-    return stats.channels.some((c) => c.max >= 40 && c.mean >= 1.0);
-  } catch {
-    return true;
-  }
 }
 
 async function postHeal({ slug, tier, error, manifest }) {
@@ -3835,6 +3852,7 @@ async function writeSummary() {
     runtimeProofArtifactRecords,
     runtimeProofArtifactPaths,
     proofArtifactPaths,
+    screenshots,
     visualArtifactPaths,
   });
 
@@ -3885,7 +3903,9 @@ async function writeSummary() {
     runtime_full_proofs: runtimeFullProofs,
     runtime_proof_artifacts: runtimeProofArtifactRecords,
     runtime_proof_artifact_paths: runtimeProofArtifactPaths,
+    screenshots,
     visual_artifact_paths: validationProofSummary.visual_artifact_paths,
+    visual_evidence_quality: validationProofSummary.visual_evidence_quality,
     docker_image_ids: validationProofSummary.docker_image_ids,
     proof_states: validationProofSummary.proof_states,
     limitations: validationProofSummary.limitations,

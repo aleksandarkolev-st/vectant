@@ -16,7 +16,6 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
   abiProofFromProofArtifacts,
@@ -57,6 +56,11 @@ import {
 import {
   buildGpuHmrValidationProofSummary,
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
+import {
+  analyzeGpuHmrImageEvidence,
+  screenshotQualifiesAsVisualEvidence,
+  visualEvidenceRow,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 import { validationCommandMetadata } from './lib/docker-validation-metadata.mjs';
 import { REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS } from './lib/real-rocm-validation-command-env.mjs';
 
@@ -1330,10 +1334,10 @@ async function captureScreenshot(label) {
       const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}${suffix}.png`);
       const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
-      const stats = await analyzeImage(bytes);
-      const row = { label, path: outPath, width: stats.width, height: stats.height, visible_pixels: stats.visible_pixels, mean_luma: stats.mean_luma, bytes: bytes.length, attempt };
+      const stats = await analyzeGpuHmrImageEvidence(bytes);
+      const row = visualEvidenceRow({ label, path: outPath, ...stats, bytes: bytes.length, attempt });
       report.screenshots.push(row);
-      const ok = row.width >= 320 && row.height >= 240 && row.visible_pixels > 500;
+      const ok = screenshotQualifiesAsVisualEvidence(row);
       if (ok) {
         record(`screenshot ${label}`, 'pass', JSON.stringify(row));
         return row;
@@ -1361,33 +1365,6 @@ async function captureScreenshot(label) {
   const detail = lastRow ? JSON.stringify(lastRow) : 'no frame was captured';
   record(`screenshot ${label}`, 'fail', detail);
   throw new Error(`screenshot ${label} was expected but was not visibly non-black`);
-}
-
-async function analyzeImage(input) {
-  const { data, info } = await sharp(input).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  let visible = 0;
-  let lumaTotal = 0;
-  for (let i = 0; i < data.length; i += info.channels) {
-    const r = data[i] ?? 0;
-    const g = data[i + 1] ?? 0;
-    const b = data[i + 2] ?? 0;
-    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    lumaTotal += luma;
-    if (luma > 24 || Math.max(r, g, b) - Math.min(r, g, b) > 30) visible += 1;
-  }
-  const pixels = Math.max(1, info.width * info.height);
-  return { width: info.width, height: info.height, visible_pixels: visible, mean_luma: lumaTotal / pixels };
-}
-
-function screenshotQualifiesAsVisualEvidence(shot) {
-  return Boolean(
-    shot
-      && Number(shot.width) >= 320
-      && Number(shot.height) >= 240
-      && Number(shot.visible_pixels) > 500
-      && typeof shot.path === 'string'
-      && shot.path.trim(),
-  );
 }
 
 function visualEvidenceFrames() {
@@ -2813,6 +2790,7 @@ async function writeResults() {
     fullRuntimeProof: report.full_runtime_proof,
   });
   report.visual_artifact_paths = report.validation_proof_summary.visual_artifact_paths;
+  report.visual_evidence_quality = report.validation_proof_summary.visual_evidence_quality;
   report.docker_image_ids = report.validation_proof_summary.docker_image_ids;
   report.proof_states = report.validation_proof_summary.proof_states;
   report.limitations = report.validation_proof_summary.limitations;
@@ -2848,7 +2826,7 @@ async function writeResults() {
     '',
     ...report.phases.map((phase) => `GPU_PROOF ${phase.name} ${summarizeGpuProof(phase.gpu_proof)}`),
     '',
-    ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
+    ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} luma_stddev=${Number(shot.luma_stddev ?? 0).toFixed(2)} rgb_span_mean=${Number(shot.rgb_span_mean ?? 0).toFixed(2)} unique_colors=${shot.unique_color_sample_count ?? 0} quality=${shot.visual_quality ?? 'gpu-hmr-visual-unmeasured'} path=${shot.path}`),
     '',
     `ABI_PROOF ${summarizeGpuHmrAbiProof(report.abi_proof)}`,
     '',

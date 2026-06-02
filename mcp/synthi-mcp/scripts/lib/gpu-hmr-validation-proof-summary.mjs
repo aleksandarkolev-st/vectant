@@ -1,3 +1,9 @@
+import {
+  classifyGpuHmrVisualEvidenceStats,
+  screenshotQualifiesAsVisualEvidence,
+  visualEvidenceRow,
+} from './gpu-hmr-visual-evidence.mjs';
+
 export const GPU_HMR_VALIDATION_PROOF_SUMMARY_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation-proof-summary.v1';
 
@@ -214,6 +220,67 @@ function visualArtifactPaths(input) {
   return compactStringList([...explicit, ...screenshots]);
 }
 
+function visualEvidenceQuality(input) {
+  const explicitPaths = compactStringList([
+    ...(Array.isArray(input.visualArtifactPaths) ? input.visualArtifactPaths : []),
+    ...(Array.isArray(input.visual_artifact_paths) ? input.visual_artifact_paths : []),
+  ]);
+  const measured = compactObjects(input.screenshots).map((shot) => {
+    const row = visualEvidenceRow(shot);
+    return {
+      label: row.label ?? null,
+      path: firstString(row.path, row.filePath, row.file_path),
+      width: row.width,
+      height: row.height,
+      visible_pixels: row.visible_pixels,
+      mean_luma: row.mean_luma,
+      luma_stddev: row.luma_stddev,
+      rgb_span_mean: row.rgb_span_mean,
+      unique_color_sample_count: row.unique_color_sample_count,
+      visual_quality: row.visual_quality,
+      accepted_as_visual_evidence: row.accepted_as_visual_evidence,
+    };
+  });
+  const measuredPaths = new Set(measured.map((row) => row.path).filter(Boolean));
+  const unmeasured = explicitPaths
+    .filter((artifactPath) => !measuredPaths.has(artifactPath))
+    .map((artifactPath) => ({
+      label: null,
+      path: artifactPath,
+      width: null,
+      height: null,
+      visible_pixels: null,
+      mean_luma: null,
+      luma_stddev: null,
+      rgb_span_mean: null,
+      unique_color_sample_count: null,
+      visual_quality: 'gpu-hmr-visual-unmeasured',
+      accepted_as_visual_evidence: true,
+    }));
+  return [...measured, ...unmeasured];
+}
+
+function visualEvidenceLimitations(qualityRows) {
+  return compactObjects(qualityRows)
+    .filter((row) => {
+      const quality = row.visual_quality ?? classifyGpuHmrVisualEvidenceStats(row);
+      return screenshotQualifiesAsVisualEvidence(row)
+        && quality !== 'gpu-hmr-visual-varied-frame'
+        && quality !== 'gpu-hmr-visual-unmeasured';
+    })
+    .map((row) => ({
+      stage_id: 'visual-evidence',
+      status: 'diagnostic',
+      required_state: 'gpu-hmr-visual-varied-frame',
+      observed_state: row.visual_quality ?? classifyGpuHmrVisualEvidenceStats(row),
+      degraded_state: row.visual_quality ?? classifyGpuHmrVisualEvidenceStats(row),
+      degraded_reason: 'visual_evidence_low_variance',
+      proof_artifact_path: null,
+      phase: row.label ?? null,
+      name: null,
+    }));
+}
+
 export function buildGpuHmrValidationProofSummary(input = {}) {
   const validationContext = isObject(input.validationContext)
     ? input.validationContext
@@ -247,8 +314,10 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     ...proofRecordPaths(runtimeArtifactRecords),
   ]);
   const fullRuntimeStates = proofArrayStates(input.runtimeFullProofs);
+  const qualityRows = visualEvidenceQuality(input);
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
+    ...visualEvidenceLimitations(qualityRows),
     ...blockedStagesFromProof(input.fullRuntimeProof).map((stage) => ({
       ...stage,
       proof_artifact_path: input.runtimeProofArtifactPath ?? input.runtime_proof_artifact_path ?? null,
@@ -287,6 +356,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     docker_container_states: dockerContainerStates(validationContext, dockerMetadata),
     screenshot_artifact_paths: screenshotPaths(input),
     visual_artifact_paths: visualArtifactPaths(input),
+    visual_evidence_quality: qualityRows,
     proof_artifact_paths: proofArtifactPaths,
     runtime_proof_artifact_paths: runtimeProofArtifactPaths,
     proof_states: {

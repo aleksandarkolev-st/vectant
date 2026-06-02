@@ -5099,17 +5099,81 @@ describe("GPU HMR runtime output proof classification", () => {
         },
       },
       screenshots: [
-        { label: "first", path: "artifacts/blank.png", visible_pixels: 0 },
-        { label: "retry", path: "artifacts/visible.png", visible_pixels: 42 },
+        {
+          label: "first",
+          path: "artifacts/blank.png",
+          width: 800,
+          height: 600,
+          visible_pixels: 0,
+          mean_luma: 0,
+          luma_stddev: 0,
+          rgb_span_mean: 0,
+          unique_color_sample_count: 1,
+        },
+        {
+          label: "flat",
+          path: "artifacts/flat.png",
+          width: 800,
+          height: 600,
+          visible_pixels: 480000,
+          mean_luma: 90,
+          luma_stddev: 0.2,
+          rgb_span_mean: 0,
+          unique_color_sample_count: 1,
+        },
+        {
+          label: "varied",
+          path: "artifacts/varied.png",
+          width: 800,
+          height: 600,
+          visible_pixels: 480000,
+          mean_luma: 90,
+          luma_stddev: 24,
+          rgb_span_mean: 128,
+          unique_color_sample_count: 128,
+        },
       ],
     });
 
     expect(summary.docker_image_ids.worker).toBe("sha256:worker-image");
     expect(summary.screenshot_artifact_paths).toEqual([
       "artifacts/blank.png",
-      "artifacts/visible.png",
+      "artifacts/flat.png",
+      "artifacts/varied.png",
     ]);
-    expect(summary.visual_artifact_paths).toEqual(["artifacts/visible.png"]);
+    expect(summary.visual_artifact_paths).toEqual([
+      "artifacts/flat.png",
+      "artifacts/varied.png",
+    ]);
+    expect(summary.visual_evidence_quality).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "artifacts/blank.png",
+          visual_quality: "gpu-hmr-visual-blank",
+          accepted_as_visual_evidence: false,
+        }),
+        expect.objectContaining({
+          path: "artifacts/flat.png",
+          visual_quality: "gpu-hmr-visual-flat-frame",
+          accepted_as_visual_evidence: true,
+        }),
+        expect.objectContaining({
+          path: "artifacts/varied.png",
+          visual_quality: "gpu-hmr-visual-varied-frame",
+          accepted_as_visual_evidence: true,
+        }),
+      ])
+    );
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          status: "diagnostic",
+          degraded_reason: "visual_evidence_low_variance",
+          degraded_state: "gpu-hmr-visual-flat-frame",
+        }),
+      ])
+    );
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {
