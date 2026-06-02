@@ -534,6 +534,20 @@ impl StreamOrderingDrain {
             .collect::<Vec<_>>()
             .join(",")
     }
+
+    fn retirement_strategy_for_log(&self) -> &'static str {
+        if self.stream_tokens.is_empty() {
+            return "no_retirement_required";
+        }
+
+        match self.outcome {
+            DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                ..
+            } => "conservative_drain_fallback",
+            _ => "epoch_fence",
+        }
+    }
 }
 
 fn affected_stream_tokens_for_symbols(expected_symbols: &[String]) -> Vec<usize> {
@@ -1428,6 +1442,7 @@ impl Adapter for GpuModuleAdapter {
             runtime_log_lines.push(artifact_transport_line);
             let retirement_fence_ids =
                 drain.retirement_fence_ids_for_log(previous_generation, active_generation);
+            let retirement_strategy = drain.retirement_strategy_for_log();
             let delayed_unload_result = if retired_module_count == 0 {
                 "not_required"
             } else {
@@ -1435,7 +1450,7 @@ impl Adapter for GpuModuleAdapter {
             };
             let publish_timestamp_ms = epoch_millis_now();
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
                 publish_timestamp_ms,
                 previous_generation,
@@ -1461,6 +1476,7 @@ impl Adapter for GpuModuleAdapter {
                 drain.stream_ids_for_log(),
                 drain.is_synced(),
                 retirement_fence_ids,
+                retirement_strategy,
                 delayed_unload_result,
                 drain.outcome.short_label(),
                 drain.outcome.elapsed_ms(),
@@ -1475,14 +1491,15 @@ impl Adapter for GpuModuleAdapter {
             }
             if retired_module_count > 0 {
                 let retired_line = format!(
-                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} delayed_unload_result=unloaded",
+                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} retirement_strategy={} delayed_unload_result=unloaded",
                     runtime_session_id(),
                     previous_generation,
                     active_generation,
                     retired_module_count,
                     drain.scope_label,
                     drain.stream_ids_for_log(),
-                    retirement_fence_ids
+                    retirement_fence_ids,
+                    retirement_strategy
                 );
                 eprintln!("{retired_line}");
                 runtime_log_lines.push(retired_line);
@@ -2246,7 +2263,42 @@ mod tests {
         ));
         assert!(publish.contains("stream_epoch_counters=none:"));
         assert!(publish.contains("retirement_fence_ids=none"));
+        assert!(publish.contains("retirement_strategy=no_retirement_required"));
         assert!(publish.contains("delayed_unload_result=not_required"));
+    }
+
+    #[test]
+    fn stream_ordering_drain_reports_retirement_strategy() {
+        let no_retirement = StreamOrderingDrain::no_old_generation(25);
+        assert_eq!(
+            no_retirement.retirement_strategy_for_log(),
+            "no_retirement_required"
+        );
+
+        let epoch_fence = StreamOrderingDrain {
+            outcome: DrainOutcome::Synced {
+                scope: DrainScope::Stream,
+                elapsed_ms: 1,
+                budget_ms: 25,
+            },
+            scope_label: "affected",
+            stream_tokens: vec![0x77],
+        };
+        assert_eq!(epoch_fence.retirement_strategy_for_log(), "epoch_fence");
+
+        let context_fallback = StreamOrderingDrain {
+            outcome: DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                elapsed_ms: 1,
+                budget_ms: 25,
+            },
+            scope_label: "context",
+            stream_tokens: vec![0x77],
+        };
+        assert_eq!(
+            context_fallback.retirement_strategy_for_log(),
+            "conservative_drain_fallback"
+        );
     }
 
     #[test]
@@ -2362,6 +2414,7 @@ mod tests {
             && publish.contains("dispatch_table_hash_after=0x")
             && publish.contains("retired_modules=1")
             && publish.contains("stream_ordering_proven=true")
+            && publish.contains("retirement_strategy=no_retirement_required")
             && publish.contains("delayed_unload_result=pending"));
         assert!(publish.contains(&format!(
             "old_artifact_id=artifact:sha256:{first_hash}"
@@ -2377,6 +2430,7 @@ mod tests {
             .iter()
             .any(|line| line.contains("dispatcher_epoch event=retired")
                 && line.contains("old_generation_retired=true")
+                && line.contains("retirement_strategy=no_retirement_required")
                 && line.contains("delayed_unload_result=unloaded")));
         reset_for_test();
     }
@@ -2525,6 +2579,7 @@ mod tests {
         assert!(publish.contains("stream_scope=affected"));
         assert!(publish.contains("stream_ids=0x77"));
         assert!(publish.contains("retirement_fence_ids=stream-sync:0x77:"));
+        assert!(publish.contains("retirement_strategy=epoch_fence"));
 
         let mut partial =
             request_with_artifact_and_abi(&partial_path, vec!["device.cu".into()], "sig-v2");
