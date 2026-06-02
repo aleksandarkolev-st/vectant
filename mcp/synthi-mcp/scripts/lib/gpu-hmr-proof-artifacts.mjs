@@ -1181,6 +1181,7 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
 
   return {
     schemaVersion: 'synthi.gpu.hmr.artifact_transport_proof.v1',
+    resultState: ramTransportProven ? 'gpu-hmr-artifact-transport-proven' : null,
     transportEvidenceObserved,
     ramTransportProven,
     ramArtifactReferenceProvided,

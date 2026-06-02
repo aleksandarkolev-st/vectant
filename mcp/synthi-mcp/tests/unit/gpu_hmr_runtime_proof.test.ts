@@ -468,6 +468,7 @@ function acceptedFissionVerifierMetadata() {
 function acceptedArtifactTransportProof() {
   return {
     schemaVersion: "synthi.gpu.hmr.artifact_transport_proof.v1",
+    resultState: "gpu-hmr-artifact-transport-proven",
     transportEvidenceObserved: true,
     ramTransportProven: true,
     ramArtifactReferenceProvided: true,
@@ -2634,6 +2635,7 @@ describe("GPU HMR runtime output proof classification", () => {
     }]);
 
     expect(proof.transportEvidenceObserved).toBe(true);
+    expect(proof.resultState).toBeNull();
     expect(proof.ramTransportProven).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-ram-io-unavailable");
     expect(proof.degradedReason).toBe("reload_request_contains_filesystem_path_only");
@@ -2671,6 +2673,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(runtimeTransport.loader_transports).toEqual(["filesystem_path"]);
     expect(runtimeTransport.reload_request_transports).toEqual(["filesystem_path", "ram_blob"]);
     expect(proof.transportEvidenceObserved).toBe(true);
+    expect(proof.resultState).toBeNull();
     expect(proof.ramArtifactReferenceProvided).toBe(true);
     expect(proof.ramTransportProven).toBe(false);
     expect(proof.loaderTransports).toEqual(["filesystem_path"]);
@@ -2714,6 +2717,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = artifactTransportProofFromProofArtifacts([], runtimeTransport);
 
     expect(runtimeTransport.ram_transport_proven).toBe(true);
+    expect(proof.resultState).toBe("gpu-hmr-artifact-transport-proven");
     expect(proof.ramArtifactReferenceProvided).toBe(true);
     expect(proof.ramTransportProven).toBe(true);
     expect(proof.degradedState).toBeNull();
@@ -2727,6 +2731,7 @@ describe("GPU HMR runtime output proof classification", () => {
     }]);
 
     expect(proof.transportEvidenceObserved).toBe(false);
+    expect(proof.resultState).toBeNull();
     expect(proof.ramTransportProven).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-ram-io-unavailable");
     expect(proof.degradedReason).toBe("artifact_transport_evidence_not_collected");
@@ -4734,6 +4739,7 @@ describe("GPU HMR runtime output proof classification", () => {
         },
       },
       runtimeFullProofs: [{ phase: "FLOW", name: "outward", proof: fullRuntimeProof }],
+      artifactTransportProof: acceptedArtifactTransportProof(),
       runtimeProofArtifactRecords: [{
         phase: "FLOW",
         name: "outward",
@@ -4778,6 +4784,9 @@ describe("GPU HMR runtime output proof classification", () => {
           degraded_reason: "runtime_dispatch_not_observed",
         }),
       ])
+    );
+    expect(summary.proof_states.artifact_transport.result_state).toBe(
+      "gpu-hmr-artifact-transport-proven",
     );
     expect(summary.limitations).toEqual(
       expect.arrayContaining([
