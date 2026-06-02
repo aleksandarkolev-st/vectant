@@ -2314,6 +2314,44 @@ describe("GPU HMR runtime output proof classification", () => {
       .toEqual([`evidence:original-host-runtime-attachment:${"8".repeat(64)}`]);
   });
 
+  it("does not prove runtime attachment from original-host mapping evidence", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;
+    metadata.candidates[0].candidate.originalHostLaunchMappingId =
+      `host-launch:sha256:${"7".repeat(64)}`;
+    metadata.candidates[0].launchAttachmentScout = {
+      runtimeAttachmentProven: true,
+      runtimeAttachmentEvidenceIds: [
+        `evidence:original-host-launch-mapping:${"8".repeat(64)}`,
+      ],
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:original-host-mapping-as-runtime",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:original-host-mapping-as-runtime"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContracts[0].originalHostRuntimeAttachmentProven).toBe(false);
+    expect(proof.selectedIslandContracts[0].originalHostRuntimeAttachmentEvidenceIds)
+      .toEqual([]);
+    expect(proof.degradedReason).toBe(
+      "fission_selected_island_original_host_attachment_instrumentation_missing",
+    );
+  });
+
   it("does not prove fission from a bare original-host runtime attachment claim", () => {
     const metadata = acceptedFissionVerifierMetadata();
     metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;

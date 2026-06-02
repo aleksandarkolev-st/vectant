@@ -194,6 +194,38 @@ const ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_FIELDS = [
   'launchAttachmentEvidenceIds',
 ];
 
+const ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_PREFIXES = [
+  'worker-log:original_host_path:',
+  'worker-log:host_path_attachment:',
+  'worker-log:launch_attachment:',
+  'evidence:original-host-path:',
+  'evidence:original_host_path:',
+  'evidence:original-host-runtime-attachment:',
+  'evidence:original_host_runtime_attachment:',
+  'evidence:original-host-path-attachment:',
+  'evidence:original_host_path_attachment:',
+  'evidence:host-path-attachment:',
+  'evidence:host_path_attachment:',
+  'evidence:launch-attachment:',
+  'evidence:launch_attachment:',
+  'proof:original-host-path:',
+  'proof:original_host_path:',
+  'proof:original-host-runtime-attachment:',
+  'proof:original_host_runtime_attachment:',
+  'verifier:original-host-path:',
+  'verifier:original_host_path:',
+  'verifier:original-host-runtime-attachment:',
+  'verifier:original_host_runtime_attachment:',
+  'fission-verifier:original-host-path:',
+  'fission-verifier:original_host_path:',
+  'fission-verifier:original-host-runtime-attachment:',
+  'fission-verifier:original_host_runtime_attachment:',
+  'validation:original-host-path:',
+  'validation:original_host_path:',
+  'validation:original-host-runtime-attachment:',
+  'validation:original_host_runtime_attachment:',
+];
+
 function fissionSelectedCandidate(metadata) {
   const candidates = Array.isArray(metadata?.candidates) ? metadata.candidates : [];
   const selectedIndex = Number.isInteger(metadata?.selectedCandidateIndex)
@@ -398,25 +430,8 @@ function originalHostRuntimeAttachmentEvidenceRefAccepted(value) {
   ) {
     return false;
   }
-  const authorityAccepted =
-    normalized.startsWith('worker-log:original_host_path:')
-    || normalized.startsWith('worker-log:host_path_attachment:')
-    || normalized.startsWith('worker-log:launch_attachment:')
-    || normalized.startsWith('evidence:')
-    || normalized.startsWith('proof:')
-    || normalized.startsWith('verifier:')
-    || normalized.startsWith('fission-verifier:')
-    || normalized.startsWith('validation:');
-  const attachmentScoped =
-    normalized.includes('original-host')
-    || normalized.includes('original_host')
-    || normalized.includes('host-path')
-    || normalized.includes('host_path')
-    || normalized.includes('runtime-attachment')
-    || normalized.includes('runtime_attachment')
-    || normalized.includes('launch-attachment')
-    || normalized.includes('launch_attachment');
-  return authorityAccepted && attachmentScoped;
+  return ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_PREFIXES
+    .some((prefix) => normalized.startsWith(prefix));
 }
 
 function evidenceIdList(value) {
