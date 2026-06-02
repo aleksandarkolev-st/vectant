@@ -942,6 +942,168 @@ function artifactTransportProofUsable(proof) {
     && evidenceRefs.length > 0;
 }
 
+function artifactIdsFromSha256Hashes(values) {
+  return compactStringList(values)
+    .map((value) => value.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null)
+    .filter(Boolean)
+    .map((digest) => `artifact:sha256:${digest}`);
+}
+
+function artifactIdsFromTransportProof(proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  return contentAddressedArtifactIds([
+    ...(Array.isArray(proof.selectedArtifactIds) ? proof.selectedArtifactIds : []),
+    ...(Array.isArray(proof.selected_artifact_ids) ? proof.selected_artifact_ids : []),
+    ...(Array.isArray(proof.ramBlobIds) ? proof.ramBlobIds : []),
+    ...(Array.isArray(proof.ram_blob_ids) ? proof.ram_blob_ids : []),
+    ...artifactIdsFromSha256Hashes([
+      ...(Array.isArray(proof.artifactContentHashes) ? proof.artifactContentHashes : []),
+      ...(Array.isArray(proof.artifact_content_hashes) ? proof.artifact_content_hashes : []),
+      ...(Array.isArray(proof.ramBytesHashes) ? proof.ramBytesHashes : []),
+      ...(Array.isArray(proof.ram_bytes_hashes) ? proof.ram_bytes_hashes : []),
+    ]),
+  ]);
+}
+
+function artifactIdsFromSourceProof(proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  return contentAddressedArtifactIds([
+    ...(Array.isArray(proof.artifactIds) ? proof.artifactIds : []),
+    ...(Array.isArray(proof.artifact_ids) ? proof.artifact_ids : []),
+    ...(Array.isArray(proof.selectedArtifactIds) ? proof.selectedArtifactIds : []),
+    ...(Array.isArray(proof.selected_artifact_ids) ? proof.selected_artifact_ids : []),
+    proof.artifactId,
+    proof.artifact_id,
+    proof.selectedArtifactId,
+    proof.selected_artifact_id,
+  ]);
+}
+
+function artifactIdsFromEpochProof(proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  const graph = proof.epochGenerationGraph && typeof proof.epochGenerationGraph === 'object'
+    ? proof.epochGenerationGraph
+    : proof.generationGraph && typeof proof.generationGraph === 'object'
+      ? proof.generationGraph
+      : {};
+  const publication = graph.latestPublication && typeof graph.latestPublication === 'object'
+    ? graph.latestPublication
+    : {};
+  const publishEdges = Array.isArray(graph.edges)
+    ? graph.edges.filter((edge) => edge && typeof edge === 'object' && String(edge.kind ?? '').toLowerCase() === 'publish')
+    : [];
+  return contentAddressedArtifactIds([
+    proof.newArtifactId,
+    proof.new_artifact_id,
+    proof.activeArtifactId,
+    proof.active_artifact_id,
+    proof.publishedArtifactId,
+    proof.published_artifact_id,
+    publication.newArtifactId,
+    publication.new_artifact_id,
+    publication.activeArtifactId,
+    publication.active_artifact_id,
+    publication.publishedArtifactId,
+    publication.published_artifact_id,
+    ...publishEdges.flatMap((edge) => [
+      edge.newArtifactId,
+      edge.new_artifact_id,
+      edge.activeArtifactId,
+      edge.active_artifact_id,
+      edge.publishedArtifactId,
+      edge.published_artifact_id,
+    ]),
+    ...artifactIdsFromSha256Hashes([
+      proof.newArtifactHash,
+      proof.new_artifact_hash,
+      proof.newHash,
+      proof.new_hash,
+      publication.newArtifactHash,
+      publication.new_artifact_hash,
+      publication.newHash,
+      publication.new_hash,
+      ...publishEdges.flatMap((edge) => [
+        edge.newArtifactHash,
+        edge.new_artifact_hash,
+        edge.newHash,
+        edge.new_hash,
+      ]),
+    ]),
+  ]);
+}
+
+function artifactIdsFromDispatchProof(proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  return contentAddressedArtifactIds([
+    ...(Array.isArray(proof.selectedArtifactIds) ? proof.selectedArtifactIds : []),
+    ...(Array.isArray(proof.selected_artifact_ids) ? proof.selected_artifact_ids : []),
+    ...(Array.isArray(proof.runtimeArtifactIds) ? proof.runtimeArtifactIds : []),
+    ...(Array.isArray(proof.runtime_artifact_ids) ? proof.runtime_artifact_ids : []),
+    proof.selectedArtifactId,
+    proof.selected_artifact_id,
+    proof.runtimeArtifactId,
+    proof.runtime_artifact_id,
+  ]);
+}
+
+function artifactIdsFromOutputProof(proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  const oracle = proof.outputOracle && typeof proof.outputOracle === 'object' ? proof.outputOracle : {};
+  return contentAddressedArtifactIds([
+    proof.artifactId,
+    proof.artifact_id,
+    oracle.artifactId,
+    oracle.artifact_id,
+  ]);
+}
+
+function fullRuntimeArtifactIdentityProof({
+  sourceProof,
+  artifactTransportProof,
+  epochProof,
+  dispatchProof,
+  outputProof,
+  required,
+}) {
+  const artifactIdsByStage = {
+    source: artifactIdsFromSourceProof(sourceProof),
+    transport: artifactIdsFromTransportProof(artifactTransportProof),
+    epoch: artifactIdsFromEpochProof(epochProof),
+    dispatch: artifactIdsFromDispatchProof(dispatchProof),
+    output: artifactIdsFromOutputProof(outputProof),
+  };
+  if (!required) {
+    return {
+      required: false,
+      proven: true,
+      degradedReason: null,
+      artifactIdsByStage,
+      commonArtifactIds: [],
+      missingStages: [],
+    };
+  }
+  const missingStages = Object.entries(artifactIdsByStage)
+    .filter(([, ids]) => ids.length === 0)
+    .map(([stage]) => stage);
+  const stageSets = Object.values(artifactIdsByStage).map((ids) => new Set(ids));
+  const [firstSet, ...remainingSets] = stageSets;
+  const commonArtifactIds = [...(firstSet ?? new Set())]
+    .filter((artifactId) => remainingSets.every((set) => set.has(artifactId)));
+  const proven = missingStages.length === 0 && commonArtifactIds.length > 0;
+  return {
+    required: true,
+    proven,
+    degradedReason: proven
+      ? null
+      : missingStages.length > 0
+        ? 'artifact_identity_evidence_not_collected'
+        : 'artifact_identity_cross_stage_mismatch',
+    artifactIdsByStage,
+    commonArtifactIds,
+    missingStages,
+  };
+}
+
 export function classifyGpuHmrFissionProof(observation = {}) {
   const verifierEvidenceRefs = compactStringList([
     ...(Array.isArray(observation.verifierEvidenceRefs) ? observation.verifierEvidenceRefs : []),
@@ -2904,6 +3066,19 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     ? observation.dispatchProof
     : embeddedDispatchProof ?? classifyGpuHmrDispatchProof({});
   const dispatchRank = effectiveProofRank(dispatchProof);
+  const artifactIdentityProof = fullRuntimeArtifactIdentityProof({
+    sourceProof: source.proof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    required:
+      source.effectiveRank >= proofStateRank('gpu-hmr-symbol-bound')
+      && artifactTransportAccepted
+      && epochRank >= proofStateRank('gpu-hmr-epoch-swap-proven')
+      && dispatchRank >= proofStateRank('gpu-hmr-dispatch-safe-proven')
+      && outputRank >= proofStateRank('gpu-hmr-output-oracle-proven'),
+  });
   const stages = [
     stageResult(
       'compile',
@@ -2978,6 +3153,17 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       outputProof?.degradedState ?? 'gpu-hmr-output-unobserved',
       outputProof?.degradedReason ?? 'output_oracle_not_collected',
     ),
+    ...(artifactIdentityProof.required
+      ? [{
+          stageId: 'artifact-identity',
+          requiredState: 'gpu-hmr-full-runtime-proven',
+          status: artifactIdentityProof.proven ? 'passed' : 'blocked',
+          observedState: artifactIdentityProof.proven ? 'gpu-hmr-artifact-identity-proven' : null,
+          effectiveRank: artifactIdentityProof.proven ? proofStateRank('gpu-hmr-full-runtime-proven') : 0,
+          degradedState: artifactIdentityProof.proven ? null : 'gpu-hmr-artifact-identity-unverified',
+          degradedReason: artifactIdentityProof.degradedReason,
+        }]
+      : []),
     stageResult(
       'host-preservation',
       'gpu-hmr-host-preservation-proven',
@@ -3062,6 +3248,11 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       artifactTransportProven: artifactTransportAccepted,
       artifactTransportObserved: artifactTransportEvidenceObserved,
       artifactTransportDegradedState: artifactTransportProof?.degradedState ?? null,
+      artifactIdentityRequired: artifactIdentityProof.required,
+      artifactIdentityProven: artifactIdentityProof.proven,
+      artifactIdentityCommonArtifactIds: artifactIdentityProof.commonArtifactIds,
+      artifactIdentityIdsByStage: artifactIdentityProof.artifactIdsByStage,
+      artifactIdentityMissingStages: artifactIdentityProof.missingStages,
     },
   };
 }

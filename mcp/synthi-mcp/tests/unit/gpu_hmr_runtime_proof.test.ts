@@ -48,7 +48,8 @@ import {
   buildGpuHmrValidationProofSummary,
 } from "../../scripts/lib/gpu-hmr-validation-proof-summary.mjs";
 
-const TEST_ARTIFACT_ID = `artifact:sha256:${"1".repeat(64)}`;
+const TEST_ARTIFACT_HASH = "1".repeat(64);
+const TEST_ARTIFACT_ID = `artifact:sha256:${TEST_ARTIFACT_HASH}`;
 const TEST_OTHER_ARTIFACT_ID = `artifact:sha256:${"2".repeat(64)}`;
 const TEST_SCALAR_ARTIFACT_ID = `artifact:sha256:${"3".repeat(64)}`;
 const TEST_DISPATCHER_ID = `dispatcher:sha256:${"4".repeat(64)}`;
@@ -84,7 +85,7 @@ const TEST_PROOF_HASH = "f".repeat(64);
 
 function epochCapsuleMetadata({
   oldHash = TEST_OLD_ARTIFACT_HASH,
-  newHash = TEST_NEW_ARTIFACT_HASH,
+  newHash = TEST_ARTIFACT_HASH,
   capsuleHash = TEST_CAPSULE_HASH,
   abiHash = TEST_ABI_HASH,
   dependencyHash = TEST_DEPENDENCY_HASH,
@@ -480,9 +481,10 @@ function acceptedArtifactTransportProof() {
     ramTransportProven: true,
     ramArtifactReferenceProvided: true,
     ramBlobIdentityProven: true,
-    artifactContentHashes: [`sha256:${"a".repeat(64)}`],
-    ramBlobIds: [`artifact:sha256:${"a".repeat(64)}`],
-    ramBytesHashes: [`sha256:${"a".repeat(64)}`],
+    selectedArtifactIds: [TEST_ARTIFACT_ID],
+    artifactContentHashes: [`sha256:${TEST_ARTIFACT_HASH}`],
+    ramBlobIds: [TEST_ARTIFACT_ID],
+    ramBytesHashes: [`sha256:${TEST_ARTIFACT_HASH}`],
     loaderTransports: ["ram_bytes"],
     reloadRequestTransports: ["ram_blob"],
     evidenceRefs: ["worker-log:artifact_transport:sha256:abc"],
@@ -508,7 +510,7 @@ function acceptedSourceProof(options: {
     symbolBindingProven: !options.compileOnly,
     sourceProofProven: !options.compileOnly,
     proofArtifactPaths: [".synthi/gpu-hmr/proofs/source-proof.json"],
-    artifactIds: [`artifact:sha256:${"9".repeat(64)}`],
+    artifactIds: [TEST_ARTIFACT_ID],
     evidenceRefs: [...compileRefs, ...symbolRefs],
     compileEvidenceRefs: compileRefs,
     symbolEvidenceRefs: symbolRefs,
@@ -4598,6 +4600,42 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(true);
     expect(proof.postPublicationDecision.disposition).toBe("accepted");
     expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(false);
+    expect(proof.componentStates.artifactIdentityProven).toBe(true);
+    expect(proof.componentStates.artifactIdentityCommonArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+  });
+
+  it("blocks full runtime proof when proof stages refer to different artifacts", () => {
+    const transportProof = {
+      ...acceptedArtifactTransportProof(),
+      selectedArtifactIds: [TEST_OTHER_ARTIFACT_ID],
+      artifactContentHashes: [`sha256:${"2".repeat(64)}`],
+      ramBlobIds: [TEST_OTHER_ARTIFACT_ID],
+      ramBytesHashes: [`sha256:${"2".repeat(64)}`],
+    };
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: transportProof,
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-artifact-identity-unverified");
+    expect(proof.degradedReason).toBe("artifact_identity_cross_stage_mismatch");
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.componentStates.artifactIdentityRequired).toBe(true);
+    expect(proof.componentStates.artifactIdentityProven).toBe(false);
+    expect(proof.componentStates.artifactIdentityCommonArtifactIds).toEqual([]);
+    expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("blocked=artifact-identity");
   });
 
   it("blocks full runtime proof when required fission verifier evidence is missing", () => {
