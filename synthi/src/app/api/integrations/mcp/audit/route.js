@@ -8,6 +8,10 @@ export const runtime = 'nodejs';
 
 const num = (v) => (Number.isFinite(v) ? v : null);
 const str = (v) => (typeof v === 'string' ? v : null);
+// Bound untrusted client strings so an authenticated CLI cannot bloat the audit table.
+const bounded = (v, max) => { const s = str(v); return s && s.length <= max ? s : null; };
+const HASH_RE = /^[0-9a-f]{64}$/i; // sha-256 hex is always exactly 64 chars
+const hex64 = (v) => { const s = str(v); return s && HASH_RE.test(s) ? s : null; };
 
 export async function POST(req) {
   const actor = await authenticatePat(req);
@@ -35,16 +39,16 @@ export async function POST(req) {
     await prisma.mcpCallAudit.create({
       data: {
         connectionId,
-        serverName: str(b.serverName) || 'unknown',
-        toolName: str(b.toolName) || 'unknown',
+        serverName: bounded(b.serverName, 255) || 'unknown',
+        toolName: bounded(b.toolName, 255) || 'unknown',
         userId: actor.userId,
         workspaceSlug,
         outcome,
-        errorCode: str(b.errorCode),
-        alias: str(b.alias),
+        errorCode: bounded(b.errorCode, 255),
+        alias: bounded(b.alias, 255),
         callerType: 'cli',
         durationMs: num(b.durationMs),
-        argsHash: str(b.argsHash),
+        argsHash: hex64(b.argsHash),
         argsBytes: num(b.argsBytes),
         resultBytes: num(b.resultBytes),
       },

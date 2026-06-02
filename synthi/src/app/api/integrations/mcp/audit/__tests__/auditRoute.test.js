@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   auth: vi.fn(),
@@ -53,4 +53,13 @@ it('echoes workspaceSlug only for a member', async () => {
   h.canRead.mockResolvedValue(false);
   await POST(req({ serverName: 'gh', toolName: 't', outcome: 'ok', workspaceSlug: 'team' }));
   expect(h.prisma.mcpCallAudit.create.mock.calls[0][0].data.workspaceSlug).toBe(null);
+});
+
+it('bounds untrusted strings: oversized / non-hex fields are rejected (storage-abuse guard)', async () => {
+  h.auth.mockResolvedValue({ userId: 'u1' });
+  await POST(req({ serverName: 'x'.repeat(300), toolName: 't', outcome: 'ok', argsHash: 'z'.repeat(64), alias: 'a'.repeat(300) }));
+  const data = h.prisma.mcpCallAudit.create.mock.calls[0][0].data;
+  expect(data.serverName).toBe('unknown'); // >255 chars rejected -> 'unknown' fallback
+  expect(data.argsHash).toBe(null);        // 64 chars but non-hex -> rejected
+  expect(data.alias).toBe(null);           // >255 chars rejected
 });
