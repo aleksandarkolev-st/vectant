@@ -34,7 +34,7 @@ import {
   runtimeHostIdentityEvidence,
   runtimeOutputOracleEvidence,
 } from './lib/gpu-hmr-runtime-evidence.mjs';
-import { positiveIntegerFromEnv } from './lib/validation-env.mjs';
+import { booleanFromEnv, positiveIntegerFromEnv } from './lib/validation-env.mjs';
 import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrDispatchProof,
@@ -169,6 +169,16 @@ const configuredWorkspaceRoot =
   process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
 const configuredWorkerTempDir =
   process.env.SYNTHI_REAL_ROCM_WORKER_TMP ?? '/tmp/synthi-real-rocm';
+const configuredExpectScreenshot = booleanFromEnv(
+  process.env,
+  'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT',
+  false,
+);
+const configuredRenderPreview = booleanFromEnv(
+  process.env,
+  'SYNTHI_REAL_ROCM_RENDER_PREVIEW',
+  configuredExpectScreenshot,
+);
 
 const CFG = {
   repoUrl: configuredRepoUrl,
@@ -246,7 +256,8 @@ const CFG = {
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
-  expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
+  expectScreenshot: configuredExpectScreenshot,
+  renderPreview: configuredRenderPreview,
   requireFreshAiSplit:
     process.env.SYNTHI_VALIDATION_REQUIRE_FRESH_AI_SPLIT === '1'
     || process.env.SYNTHI_REAL_ROCM_REQUIRE_FRESH_AI_SPLIT === '1',
@@ -315,6 +326,7 @@ const report = {
   compile_projection: {},
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
+  render_preview_enabled: CFG.renderPreview,
   fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
   started_at: new Date().toISOString(),
@@ -2847,6 +2859,7 @@ async function writeResults() {
     gpu_arch: report.gpu_arch,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
+    render_preview_enabled: report.render_preview_enabled,
     fresh_ai_split_required: report.fresh_ai_split_required,
     timings: {
       started_at: report.started_at,
@@ -3038,7 +3051,7 @@ async function run() {
     filename: CFG.entryFile,
     source: primary.content,
     ...compileProjectionRequestArgs(firstAdditionalFiles, 'first_real_repo_ai_split_compile'),
-    is_gui: CFG.expectScreenshot,
+    is_gui: CFG.renderPreview,
     use_ai_split: true,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
@@ -3069,7 +3082,7 @@ async function run() {
     filename: CFG.deltaFile,
     source: edited,
     ...compileProjectionRequestArgs(hmrAdditionalFiles, 'real_repo_user_source_delta_hmr'),
-    is_gui: CFG.expectScreenshot,
+    is_gui: CFG.renderPreview,
     use_ai_split: true,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
@@ -3110,7 +3123,7 @@ async function run() {
       filename: delta.file,
       source: editedSource,
       ...compileProjectionRequestArgs(additionalFiles, phaseName),
-      is_gui: CFG.expectScreenshot,
+      is_gui: CFG.renderPreview,
       use_ai_split: true,
       user_requested_ai: true,
       prefer_gpu_pipeline: true,

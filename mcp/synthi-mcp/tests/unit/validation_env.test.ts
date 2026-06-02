@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { positiveIntegerFromEnv } from "../../scripts/lib/validation-env.mjs";
+import { booleanFromEnv, positiveIntegerFromEnv } from "../../scripts/lib/validation-env.mjs";
 
 describe("validation env helpers", () => {
   it("returns the default for missing or blank values", () => {
@@ -19,5 +19,24 @@ describe("validation env helpers", () => {
 
   it("rejects invalid defaults", () => {
     expect(() => positiveIntegerFromEnv({}, "TIMEOUT_MS", 0)).toThrow(/invalid default/);
+  });
+
+  it("parses explicit boolean values", () => {
+    expect(booleanFromEnv({ ENABLED: "1" }, "ENABLED", false)).toBe(true);
+    expect(booleanFromEnv({ ENABLED: "true" }, "ENABLED", false)).toBe(true);
+    expect(booleanFromEnv({ ENABLED: "yes" }, "ENABLED", false)).toBe(true);
+    expect(booleanFromEnv({ ENABLED: "0" }, "ENABLED", true)).toBe(false);
+    expect(booleanFromEnv({ ENABLED: "false" }, "ENABLED", true)).toBe(false);
+    expect(booleanFromEnv({ ENABLED: "off" }, "ENABLED", true)).toBe(false);
+  });
+
+  it("returns the boolean default for missing or blank values", () => {
+    expect(booleanFromEnv({}, "ENABLED", true)).toBe(true);
+    expect(booleanFromEnv({ ENABLED: " " }, "ENABLED", false)).toBe(false);
+  });
+
+  it("rejects invalid boolean values and defaults", () => {
+    expect(() => booleanFromEnv({ ENABLED: "maybe" }, "ENABLED", false)).toThrow(/ENABLED/);
+    expect(() => booleanFromEnv({}, "ENABLED", "false" as unknown as boolean)).toThrow(/invalid default/);
   });
 });
