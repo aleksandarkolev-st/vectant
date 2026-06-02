@@ -462,7 +462,7 @@ inline bool synthi_gpu_launch_original_host_path(
         gpu,
         host_path_id,
         dispatch_table_entry_id,
-        "source_instrumented",
+        "host_runtime_explicit",
         kernel_name,
         grid,
         block,
@@ -761,7 +761,7 @@ inline void synthi_original_host_path_with_provenance(
     synthi_gpu_launch_source_location( \
         (gpu), \
         SYNTHI_GPU_HOST_PATH_ID, \
-        "source_instrumented", \
+        "host_runtime_explicit", \
         (kernel_name), \
         (grid), \
         (block), \
@@ -846,6 +846,7 @@ mod tests {
         assert!(h.contains("inline bool synthi_gpu_launch_source_location_args"));
         assert!(h.contains("#define SYNTHI_GPU_HOST_PATH_ID"));
         assert!(h.contains("#define synthi_gpu_launch(gpu, kernel_name"));
+        assert!(h.contains("\"host_runtime_explicit\""));
         assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
         assert!(h.contains("const DeviceDescriptor* device_descriptor()"));
         assert!(h.contains("void device_on_load"));
