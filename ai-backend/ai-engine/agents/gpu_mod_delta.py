@@ -199,6 +199,90 @@ FISSION_OUTPUT_ORACLE_NUMERIC_FIELDS = {
     "abs_tolerance",
     "tolerance",
 }
+FISSION_OUTPUT_ORACLE_ACCEPTED_KINDS = {
+    "edit_contract",
+    "sentinel_buffer_value",
+    "kernel_checksum",
+    "kernel_side_checksum",
+    "render_target_hash",
+    "accumulation_buffer_hash",
+    "selected_pixels",
+    "selected_pixel_values",
+    "per_pass_checksum",
+    "dispatch_counter",
+    "buffer_checksum",
+}
+FISSION_RENDER_OUTPUT_ORACLE_KINDS = {
+    "render_target_hash",
+    "accumulation_buffer_hash",
+    "selected_pixels",
+    "selected_pixel_values",
+}
+FISSION_OUTPUT_ORACLE_EXPECTED_FIELDS = {
+    "expected",
+    "expectedValue",
+    "expectedHash",
+    "expectedIncrement",
+    "expected_value",
+    "expected_hash",
+}
+FISSION_OUTPUT_ORACLE_PRODUCER_FIELDS = {
+    "producer",
+    "producerSubsystem",
+    "producerId",
+    "producer_id",
+    "producer_subsystem",
+}
+FISSION_OUTPUT_ORACLE_TARGET_FIELDS = {
+    "outputTargetId",
+    "outputTarget",
+    "target",
+    "output_target_id",
+    "output_target",
+}
+FISSION_OUTPUT_ORACLE_READBACK_FIELDS = {
+    "readbackPlan",
+    "readbackTimestampSource",
+    "readbackAfterHmr",
+    "readbackAfterHMR",
+    "syncPoint",
+    "synchronizationPoint",
+    "knownSyncPoint",
+    "probeMode",
+    "probeConfig",
+    "deterministicProbeMode",
+}
+FISSION_OUTPUT_ORACLE_SESSION_FIELDS = {
+    "runtimeSessionId",
+    "runtimeSession",
+    "sessionId",
+    "runtimeSessionBinding",
+    "sessionBinding",
+    "runtimeSessionIdSource",
+    "sessionIdSource",
+    "runtime_session_id",
+    "runtime_session",
+    "session_id",
+}
+FISSION_OUTPUT_ORACLE_ARTIFACT_FIELDS = {
+    "artifactId",
+    "artifact",
+    "artifactBinding",
+    "artifactIdSource",
+    "selectedArtifactId",
+    "runtimeArtifactBinding",
+    "artifact_id",
+}
+FISSION_OUTPUT_ORACLE_VISUAL_FIELDS = {
+    "visualEvidenceRef",
+    "visualEvidenceRefs",
+    "visualEvidencePlan",
+    "visualEvidenceRequirement",
+    "requiresVisualEvidence",
+    "visualRef",
+    "visual_evidence_ref",
+    "visual_ref",
+}
 FISSION_REJECTION_STRING_FIELDS = {
     "artifactKind",
     "artifactScope",
@@ -765,7 +849,85 @@ def _validate_fission_output_oracle_proposal(value: object) -> dict:
                     status_code=400,
                     detail=f"`fissionCandidate.outputOracleProposal.{field}` must be a non-negative number",
                 )
+    kind = cleaned.get("kind")
+    if not isinstance(kind, str) or not kind.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.outputOracleProposal.kind` must be an accepted oracle kind",
+        )
+    normalized_kind = kind.strip().lower()
+    if normalized_kind not in FISSION_OUTPUT_ORACLE_ACCEPTED_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.outputOracleProposal.kind` must be an accepted oracle kind",
+        )
+    cleaned["kind"] = normalized_kind
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_EXPECTED_FIELDS,
+        "expected",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_PRODUCER_FIELDS,
+        "producer",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_TARGET_FIELDS,
+        "outputTargetId",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_READBACK_FIELDS,
+        "readbackPlan",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_SESSION_FIELDS,
+        "runtimeSessionId",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_ARTIFACT_FIELDS,
+        "artifactId",
+    )
+    if normalized_kind in FISSION_RENDER_OUTPUT_ORACLE_KINDS:
+        _require_fission_output_oracle_field(
+            cleaned,
+            FISSION_OUTPUT_ORACLE_VISUAL_FIELDS,
+            "visualEvidenceRef",
+        )
     return cleaned
+
+
+def _fission_value_present(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set)):
+        return bool(value)
+    if isinstance(value, dict):
+        return bool(value)
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    return False
+
+
+def _require_fission_output_oracle_field(
+    proposal: Mapping[str, object],
+    aliases: Iterable[str],
+    label: str,
+) -> None:
+    if any(_fission_value_present(proposal.get(field)) for field in aliases):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=f"`fissionCandidate.outputOracleProposal.{label}` must be present",
+    )
 
 
 def _validate_fission_string_list(value: object, field: str) -> List[str]:

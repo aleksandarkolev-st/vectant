@@ -4707,10 +4707,12 @@ Rules:
   will accept or reject the proposal. Use null when any required field would be
   guessed.
 - `outputOracleProposal` must be an explicit deterministic contract when
-  present: include a known oracle kind, producer, expected value or hash, and
-  an output target id, readback plan, or probe mode. Include artifact id,
-  runtime session id, tolerance, and visual evidence ref only when they are
-  present in evidence; do not use screenshots as the expected value.
+  present: include an accepted oracle kind, producer, expected value or hash,
+  output target id, readback/probe plan, runtime session binding, and artifact
+  binding from evidence. For render-output oracle kinds, include a visual
+  evidence contract as supplemental evidence. If any of those fields would be
+  guessed, return null instead of emitting a partial oracle proposal; do not use
+  screenshots as the expected value.
 - `attachmentInstrumentationProposals` are allowed only when original-host
   mapping evidence identifies a concrete source launch site and host path id,
   but runtime attachment evidence is still missing. Include the full structured

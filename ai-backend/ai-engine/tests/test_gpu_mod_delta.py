@@ -19,6 +19,21 @@ BASE = {
 }
 
 
+def complete_output_oracle_proposal(**overrides):
+    proposal = {
+        "kind": "buffer_checksum",
+        "producer": "deterministic_probe",
+        "expectedHash": "sha256:" + "1" * 64,
+        "outputTargetId": "output-buffer:primary",
+        "readbackPlan": "after-hmr-dispatch",
+        "probeMode": "fixed_validation_probe",
+        "artifactId": "artifact:sha256:" + "2" * 64,
+        "runtimeSessionId": "runtime-session:current",
+    }
+    proposal.update(overrides)
+    return proposal
+
+
 def test_device_body_change_is_device_only():
     changed = dict(BASE)
     changed["device.cu"] = BASE["device.cu"].replace("+", "*")
@@ -83,7 +98,7 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
             "edits": [],
             "fissionCandidate": {
                 "symbols": ["step"],
-                "oracleProposal": {"kind": "checksum"},
+                "oracleProposal": complete_output_oracle_proposal(),
                 "sourceMappingEvidenceIds": ["evidence:source-map"],
                 "includeClosureEvidenceIds": ["evidence:include-closure"],
                 "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
@@ -109,7 +124,8 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
     parsed = parse_gpu_diff_response(raw)
     candidate = parsed["fissionCandidate"]
     assert candidate["targetSymbols"] == ["step"]
-    assert candidate["outputOracleProposal"] == {"kind": "checksum"}
+    assert candidate["outputOracleProposal"]["kind"] == "buffer_checksum"
+    assert candidate["outputOracleProposal"]["runtimeSessionId"] == "runtime-session:current"
     assert candidate["abiMembraneEvidenceIds"] == ["evidence:abi-membrane"]
     assert candidate["compileRecipeEvidenceIds"] == ["evidence:compile-recipe"]
     assert candidate["loaderCapabilityEvidenceIds"] == ["evidence:loader-capability"]
@@ -149,6 +165,61 @@ def test_parse_gpu_diff_response_preserves_output_oracle_provenance_fields():
     assert proposal["artifactId"] == "artifact:sha256:abc"
     assert proposal["runtimeSessionId"] == "runtime-session:abc"
     assert proposal["tolerance"] == 0.001
+
+
+def test_parse_gpu_diff_response_rejects_incomplete_output_oracle_contract():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "outputOracleProposal": {
+                    "kind": "buffer_checksum",
+                    "producer": "deterministic_probe",
+                    "expectedHash": "sha256:" + "1" * 64,
+                    "outputTargetId": "output-buffer:primary",
+                    "readbackPlan": "after-hmr-dispatch",
+                    "probeMode": "fixed_validation_probe",
+                },
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.outputOracleProposal.runtimeSessionId" in str(excinfo.value)
+
+
+def test_parse_gpu_diff_response_rejects_render_oracle_without_visual_contract():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "outputOracleProposal": complete_output_oracle_proposal(
+                    kind="selected_pixels",
+                    expected="[[0,0,[1,0,0,1]]]",
+                    tolerance=0.001,
+                ),
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.outputOracleProposal.visualEvidenceRef" in str(excinfo.value)
+
+
+def test_parse_gpu_diff_response_normalizes_output_oracle_kind():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "outputOracleProposal": complete_output_oracle_proposal(kind="BUFFER_CHECKSUM"),
+            },
+        }
+    )
+    parsed = parse_gpu_diff_response(raw)
+    assert parsed["fissionCandidate"]["outputOracleProposal"]["kind"] == "buffer_checksum"
 
 
 def test_parse_gpu_diff_response_preserves_attachment_instrumentation_proposal():
