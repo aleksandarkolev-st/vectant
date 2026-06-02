@@ -16,6 +16,7 @@
     "test:dock": "vitest run src/components/docking-wm"
   },
   "dependencies": {
+    "@synthi/mcp-hub": "*",
     "@google-cloud/storage": "^7.17.2",
     "@google/genai": "^1.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",

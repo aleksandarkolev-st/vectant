@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import prisma from '@/lib/prisma';
 import { resolveToolConfigs } from '@/lib/integrations/connectionStore';
-import { listTools, callTool } from '@/lib/mcp-hub';
-import { jsonSchemaToGemini } from '@/lib/mcp-hub/helpers.js';
+import { listTools, callTool } from '@synthi/mcp-hub';
+import { jsonSchemaToGemini } from '@synthi/mcp-hub/helpers';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 import { canReadScope } from '@/lib/integrations/scope';
 
