@@ -80,6 +80,9 @@ import {
 import {
   writeValidationRuntimeProofArtifact,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
+  buildGpuHmrValidationProofSummary,
+} from './lib/gpu-hmr-validation-proof-summary.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -154,6 +157,7 @@ const artifactTransportProofs = [];
 const runtimeHostPreservationProofs = [];
 const runtimeFullProofs = [];
 const gpuProofs = [];
+const visualArtifactPaths = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
@@ -1621,6 +1625,7 @@ async function captureMcpScreenshot(label) {
       if (shot?.data && (await screenshotLooksNonBlank(shot.data))) {
         const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
         await writeFile(out, Buffer.from(shot.data, 'base64'));
+        visualArtifactPaths.push(out);
         record('FLOW', `${label} screenshot`, 'pass', attempt > 1 ? `${out} retry=${attempt}` : out);
         return out;
       }
@@ -1628,6 +1633,7 @@ async function captureMcpScreenshot(label) {
     if (lastShot?.data) {
       const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
       await writeFile(out, Buffer.from(lastShot.data, 'base64'));
+      visualArtifactPaths.push(out);
       record('FLOW', `${label} screenshot`, 'warn', `saved final retry but frame looked blank: ${out}`);
       return out;
     }
@@ -3809,8 +3815,28 @@ async function writeSummary() {
       resultState: written.artifact.resultState,
       degradedState: written.artifact.degradedState,
       degradedReason: written.artifact.degradedReason,
+      fullRuntimeProven: written.artifact.fullRuntimeProven,
+      limitations: written.artifact.limitations,
     });
   }
+  const proofArtifactPaths = [...new Set(gpuProofs
+    .map((proof) => proof.proofArtifactPath)
+    .filter((proofPath) => typeof proofPath === 'string' && proofPath.trim()))];
+  const runtimeProofArtifactPaths = runtimeProofArtifactRecords.map((record) => record.path);
+  const validationProofSummary = buildGpuHmrValidationProofSummary({
+    workspaceSlug: CFG.slug,
+    model: CFG.geminiModel,
+    gpuVendor: CFG.vendor,
+    gpuArch: CFG.gpuArch ?? null,
+    validationContext,
+    docker: dockerMetadata,
+    timings: validationContext.timings,
+    runtimeFullProofs,
+    runtimeProofArtifactRecords,
+    runtimeProofArtifactPaths,
+    proofArtifactPaths,
+    visualArtifactPaths,
+  });
 
   const summary = {
     slug: CFG.slug,
@@ -3851,16 +3877,19 @@ async function writeSummary() {
     },
     summary: { total: results.length, passed, warned, failed, skipped },
     gpu_proofs: gpuProofs,
-    proof_artifact_paths: [...new Set(gpuProofs
-      .map((proof) => proof.proofArtifactPath)
-      .filter((proofPath) => typeof proofPath === 'string' && proofPath.trim()))],
+    proof_artifact_paths: proofArtifactPaths,
     runtime_dispatch_proofs: runtimeDispatchProofs,
     runtime_output_proofs: runtimeOutputProofs,
     artifact_transport_proofs: artifactTransportProofs,
     runtime_host_preservation_proofs: runtimeHostPreservationProofs,
     runtime_full_proofs: runtimeFullProofs,
     runtime_proof_artifacts: runtimeProofArtifactRecords,
-    runtime_proof_artifact_paths: runtimeProofArtifactRecords.map((record) => record.path),
+    runtime_proof_artifact_paths: runtimeProofArtifactPaths,
+    visual_artifact_paths: validationProofSummary.visual_artifact_paths,
+    docker_image_ids: validationProofSummary.docker_image_ids,
+    proof_states: validationProofSummary.proof_states,
+    limitations: validationProofSummary.limitations,
+    validation_proof_summary: validationProofSummary,
     results,
   };
   await writeFile(path.join(LOG_DIR, 'results.json'), JSON.stringify(summary, null, 2));

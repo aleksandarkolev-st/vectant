@@ -54,6 +54,9 @@ import {
 import {
   writeValidationRuntimeProofArtifact,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
+  buildGpuHmrValidationProofSummary,
+} from './lib/gpu-hmr-validation-proof-summary.mjs';
 import { validationCommandMetadata } from './lib/docker-validation-metadata.mjs';
 import { REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS } from './lib/real-rocm-validation-command-env.mjs';
 
@@ -2742,6 +2745,7 @@ async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
+  const visualArtifactPaths = visualEvidenceFrames().map((shot) => shot.path);
   if (report.full_runtime_proof) {
     const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
       workspaceSlug: report.slug,
@@ -2759,7 +2763,7 @@ async function writeResults() {
       runtimeEvidence: report.evidence,
       validationContext,
       label: 'real-rocm-runtime-proof',
-      visualEvidenceRefs: visualEvidenceFrames().map((shot) => shot.path),
+      visualEvidenceRefs: visualArtifactPaths,
     });
     report.runtime_proof_artifact_path = written.path;
     report.runtime_proof_artifact = {
@@ -2768,8 +2772,42 @@ async function writeResults() {
       resultState: written.artifact.resultState,
       degradedState: written.artifact.degradedState,
       degradedReason: written.artifact.degradedReason,
+      fullRuntimeProven: written.artifact.fullRuntimeProven,
+      limitations: written.artifact.limitations,
     };
   }
+  report.runtime_proof_artifact_paths = report.runtime_proof_artifact_path
+    ? [report.runtime_proof_artifact_path]
+    : [];
+  report.validation_proof_summary = buildGpuHmrValidationProofSummary({
+    workspaceSlug: report.slug,
+    model: report.model,
+    gpuVendor: report.gpu_vendor,
+    gpuArch: report.gpu_arch,
+    validationContext,
+    docker: report.docker,
+    timings: validationContext.timings,
+    screenshots: report.screenshots,
+    visualArtifactPaths,
+    proof_artifacts: report.proof_artifacts,
+    runtimeProofArtifactRecords: report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],
+    runtimeProofArtifactPaths: report.runtime_proof_artifact_paths,
+    sourceProofs: report.source_proofs,
+    sourceProof: report.source_proof,
+    fissionProof: report.fission_proof,
+    abiProof: report.abi_proof,
+    artifactTransportProof: report.artifact_transport_proof,
+    epochProof: report.epoch_swap_proof,
+    dispatchProof: report.dispatch_proof,
+    outputProof: report.output_proof,
+    hostPreservationProof: report.host_preservation_proof,
+    originalHostPathProof: report.original_host_path_proof,
+    fullRuntimeProof: report.full_runtime_proof,
+  });
+  report.visual_artifact_paths = report.validation_proof_summary.visual_artifact_paths;
+  report.docker_image_ids = report.validation_proof_summary.docker_image_ids;
+  report.proof_states = report.validation_proof_summary.proof_states;
+  report.limitations = report.validation_proof_summary.limitations;
   await writeFile(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
   const lines = [
     `slug: ${report.slug}`,
@@ -2794,6 +2832,7 @@ async function writeResults() {
     `compile_projection: ${JSON.stringify(report.compile_projection)}`,
     `output_oracle_contract: ${JSON.stringify(report.output_oracle_contract)}`,
     `runtime_proof_artifact: ${JSON.stringify(report.runtime_proof_artifact)}`,
+    `validation_proof_summary: ${JSON.stringify(report.validation_proof_summary)}`,
     '',
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
     '',

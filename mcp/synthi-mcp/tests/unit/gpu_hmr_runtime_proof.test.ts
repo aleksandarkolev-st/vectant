@@ -44,6 +44,9 @@ import {
 import {
   buildValidationRuntimeProofArtifact,
 } from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
+import {
+  buildGpuHmrValidationProofSummary,
+} from "../../scripts/lib/gpu-hmr-validation-proof-summary.mjs";
 
 const TEST_ARTIFACT_ID = `artifact:sha256:${"1".repeat(64)}`;
 const TEST_OTHER_ARTIFACT_ID = `artifact:sha256:${"2".repeat(64)}`;
@@ -4477,6 +4480,135 @@ describe("GPU HMR runtime output proof classification", () => {
         }),
       ])
     );
+  });
+
+  it("summarizes validation proof states and supplemental visual artifacts", () => {
+    const sourceProof = acceptedSourceProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      model: "validation-model",
+      gpuVendor: "rocm",
+      gpuArch: "gfx-test",
+      validationContext: {
+        docker: {
+          enabled: true,
+          containers: {
+            worker: {
+              container: "worker-container",
+              image_id: "sha256:worker-image",
+              status: "running",
+              restart_count: 0,
+              exit_code: 0,
+              available: true,
+            },
+            mcp: {
+              container: "mcp-container",
+              image_id: "sha256:mcp-image",
+              status: "running",
+              restart_count: 0,
+              exit_code: 0,
+              available: true,
+            },
+          },
+        },
+        timings: {
+          started_at: "2026-05-28T00:00:00.000Z",
+          finished_at: "2026-05-28T00:00:01.000Z",
+          duration_ms: 1000,
+        },
+      },
+      runtimeFullProofs: [{ phase: "FLOW", name: "outward", proof: fullRuntimeProof }],
+      runtimeProofArtifactRecords: [{
+        phase: "FLOW",
+        name: "outward",
+        path: "logs/runtime-proof.json",
+        proofId: "gpu-runtime-proof:sha256:abc",
+        resultState: fullRuntimeProof.resultState,
+        degradedState: fullRuntimeProof.degradedState,
+        degradedReason: fullRuntimeProof.degradedReason,
+        fullRuntimeProven: false,
+        limitations: [{
+          stageId: "dispatch-observed",
+          status: "blocked",
+          requiredState: "gpu-hmr-dispatch-proven",
+          observedState: null,
+          degradedState: "gpu-hmr-dispatch-unobserved",
+          degradedReason: "runtime_dispatch_not_observed",
+        }],
+      }],
+      proofArtifactPaths: [".synthi/gpu-hmr/proofs/source-proof.json"],
+      visualArtifactPaths: ["artifacts/frame.png"],
+    });
+
+    expect(summary.schema_version).toBe("synthi.gpu.hmr.validation-proof-summary.v1");
+    expect(summary.workspace_slug).toBe("workspace");
+    expect(summary.model).toBe("validation-model");
+    expect(summary.gpu_vendor).toBe("rocm");
+    expect(summary.gpu_arch).toBe("gfx-test");
+    expect(summary.timings?.duration_ms).toBe(1000);
+    expect(summary.docker_image_ids.worker).toBe("sha256:worker-image");
+    expect(summary.docker_container_states.mcp.status).toBe("running");
+    expect(summary.screenshot_artifact_paths).toEqual(["artifacts/frame.png"]);
+    expect(summary.runtime_proof_artifact_paths).toEqual(["logs/runtime-proof.json"]);
+    expect(summary.proof_artifact_paths).toEqual(expect.arrayContaining([
+      ".synthi/gpu-hmr/proofs/source-proof.json",
+      "logs/runtime-proof.json",
+    ]));
+    expect(summary.proof_states.runtime_full[0].full_runtime_proven).toBe(false);
+    expect(summary.proof_states.runtime_full[0].blocked_stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "dispatch-observed",
+          degraded_reason: "runtime_dispatch_not_observed",
+        }),
+      ])
+    );
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "dispatch-observed",
+          proof_artifact_path: "logs/runtime-proof.json",
+        }),
+      ])
+    );
+    expect(summary.visual_evidence_is_supplemental).toBe(true);
+    expect(summary.output_correctness_requires_deterministic_oracle).toBe(true);
+    expect(summary.full_runtime_proven).toBe(false);
+  });
+
+  it("summarizes flat Docker snapshots and separates blank screenshot attempts", () => {
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      docker: {
+        worker: {
+          container: "worker-container",
+          image_id: "sha256:worker-image",
+          status: "running",
+          restart_count: 0,
+          exit_code: 0,
+          available: true,
+        },
+      },
+      screenshots: [
+        { label: "first", path: "artifacts/blank.png", visible_pixels: 0 },
+        { label: "retry", path: "artifacts/visible.png", visible_pixels: 42 },
+      ],
+    });
+
+    expect(summary.docker_image_ids.worker).toBe("sha256:worker-image");
+    expect(summary.screenshot_artifact_paths).toEqual([
+      "artifacts/blank.png",
+      "artifacts/visible.png",
+    ]);
+    expect(summary.visual_artifact_paths).toEqual(["artifacts/visible.png"]);
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {
