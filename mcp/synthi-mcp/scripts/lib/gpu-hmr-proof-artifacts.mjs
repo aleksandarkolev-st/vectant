@@ -1042,11 +1042,18 @@ export function fissionProofFromProofArtifacts(records) {
     if (!artifact || typeof artifact !== 'object') continue;
 
     const artifactEvidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
+    const fissionStages = fissionStagesFromArtifact(artifact);
+    const passedFissionStageEvidenceRefs = new Set(
+      fissionStages
+        .filter(stagePassed)
+        .flatMap((stage) => uniqueStrings(stage?.evidenceRefs)),
+    );
     for (const evidence of artifactEvidenceRefs) {
       if (evidence?.kind !== 'fission-verifier-report') continue;
 
       observed = true;
-      evidenceRefs.push(fissionVerifierEvidenceId(evidence, artifact, record));
+      const verifierReportEvidenceId = fissionVerifierEvidenceId(evidence, artifact, record);
+      evidenceRefs.push(verifierReportEvidenceId);
       const metadata = evidence?.metadata && typeof evidence.metadata === 'object' ? evidence.metadata : {};
       selectedIslandIds.push(...uniqueStrings([metadata.selectedIslandId]));
       const selectedCandidate = fissionSelectedCandidate(metadata);
@@ -1069,12 +1076,17 @@ export function fissionProofFromProofArtifacts(records) {
       const status = String(metadata.status ?? '').trim().toLowerCase();
       if (status === 'pass' || status === 'passed' || status === 'accepted') {
         const integrity = fissionReportPassIntegrity(metadata);
-        if (integrity.proven) {
+        const stageLinked = passedFissionStageEvidenceRefs.has(verifierReportEvidenceId);
+        if (integrity.proven && stageLinked) {
           structuredPassObserved = true;
           passed = true;
         } else {
           rejected = true;
-          if (!degradedReason) degradedReason = integrity.reason;
+          if (!degradedReason) {
+            degradedReason = integrity.proven
+              ? 'fission_verifier_stage_evidence_link_missing'
+              : integrity.reason;
+          }
         }
       } else if (status === 'reject' || status === 'rejected' || status === 'fail' || status === 'failed') {
         rejected = true;
@@ -1085,7 +1097,7 @@ export function fissionProofFromProofArtifacts(records) {
       }
     }
 
-    for (const stage of fissionStagesFromArtifact(artifact)) {
+    for (const stage of fissionStages) {
       observed = true;
       const status = typeof stage?.status === 'string' ? stage.status.trim().toLowerCase() : '';
       if (status) stageStatuses.push(status);

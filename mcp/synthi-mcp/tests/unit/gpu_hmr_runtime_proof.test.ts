@@ -1838,6 +1838,31 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrFissionProof(proof)).toContain("gpu_fission_proof=proven");
   });
 
+  it("does not prove fission from a pass report unlinked from the passed stage evidence", () => {
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:abc",
+          metadata: acceptedFissionVerifierMetadata(),
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:stale"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_verifier_stage_evidence_link_missing");
+    expect(proof.selectedIslandObserved).toBe(true);
+    expect(proof.stageStatuses).toEqual(["passed"]);
+  });
+
   it("does not prove fission from generic verifier evidence without deterministic verifier evidence", () => {
     const proof = classifyGpuHmrFissionProof({
       required: true,
