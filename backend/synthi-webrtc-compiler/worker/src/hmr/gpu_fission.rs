@@ -79,6 +79,14 @@ const ORIGINAL_HOST_LAUNCH_MAPPING_EVIDENCE_FIELDS: &[&str] = &[
     "launchAttachmentEvidenceIds",
 ];
 
+const ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_FIELDS: &[&str] = &[
+    "runtimeAttachmentEvidenceIds",
+    "originalHostRuntimeAttachmentEvidenceIds",
+    "originalHostPathEvidenceIds",
+    "hostPathAttachmentEvidenceIds",
+    "launchAttachmentEvidenceIds",
+];
+
 const AI_PROPOSAL_DETERMINISTIC_PROMOTION_EVIDENCE_FIELDS: &[&str] = &[
     "deterministicPromotionEvidenceIds",
     "fissionPromotionEvidenceIds",
@@ -401,6 +409,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
             .unwrap_or(Value::Null),
         "originalHostLaunchMappingEvidenceIds": original_host_launch_mapping_evidence_ids(candidate),
         "originalHostRuntimeAttachmentProven": original_host_runtime_attachment_proven(candidate),
+        "originalHostRuntimeAttachmentEvidenceIds": original_host_runtime_attachment_evidence_ids(candidate),
         "originalHostAttachmentInstrumentationProposalIds": original_host_attachment_instrumentation_proposals(candidate),
         "streamOrderingRequired": stream_ordering_required(candidate),
         "streamOrderingEvidenceIds": stream_ordering_evidence_ids(candidate),
@@ -1416,29 +1425,74 @@ fn original_host_launch_mapping_evidence_ids(candidate: &Value) -> Vec<String> {
 }
 
 fn original_host_runtime_attachment_proven(candidate: &Value) -> bool {
-    bool_true(candidate.get("runtimeAttachmentProven"))
-        || candidate
-            .get("launchAttachmentScout")
-            .is_some_and(runtime_attachment_value_proven)
-        || candidate
-            .get("originalHostLaunchMapping")
-            .is_some_and(runtime_attachment_value_proven)
+    runtime_attachment_value_proven(candidate)
+}
+
+fn original_host_runtime_attachment_evidence_ids(candidate: &Value) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    collect_runtime_attachment_evidence_ids(Some(candidate), &mut ids);
+    ids.into_iter().collect()
 }
 
 fn runtime_attachment_value_proven(value: &Value) -> bool {
     match value {
-        Value::Bool(value) => *value,
+        Value::Bool(_) => false,
         Value::Object(object) => {
-            bool_true(object.get("runtimeAttachmentProven"))
+            let direct_claim_proven =
+                bool_true(object.get("runtimeAttachmentProven"))
+                    && !runtime_attachment_evidence_ids_for_object(object).is_empty();
+            direct_claim_proven
                 || object
                     .get("mapping")
                     .is_some_and(runtime_attachment_value_proven)
                 || object
                     .get("runtimeAttachment")
                     .is_some_and(runtime_attachment_value_proven)
+                || object
+                    .get("launchAttachmentScout")
+                    .is_some_and(runtime_attachment_value_proven)
+                || object
+                    .get("originalHostLaunchMapping")
+                    .is_some_and(runtime_attachment_value_proven)
         }
         _ => false,
     }
+}
+
+fn runtime_attachment_evidence_ids_for_object(
+    object: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_FIELDS
+        .iter()
+        .flat_map(|field| evidence_id_list(object.get(*field)))
+        .filter(|id| is_original_host_runtime_attachment_evidence_id(id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn collect_runtime_attachment_evidence_ids(value: Option<&Value>, ids: &mut BTreeSet<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(object) = value.as_object() {
+        ids.extend(runtime_attachment_evidence_ids_for_object(object));
+        collect_runtime_attachment_evidence_ids(object.get("mapping"), ids);
+        collect_runtime_attachment_evidence_ids(object.get("runtimeAttachment"), ids);
+        collect_runtime_attachment_evidence_ids(object.get("launchAttachmentScout"), ids);
+        collect_runtime_attachment_evidence_ids(object.get("originalHostLaunchMapping"), ids);
+    }
+}
+
+fn is_original_host_runtime_attachment_evidence_id(value: &str) -> bool {
+    if !is_deterministic_verifier_evidence_id(value) {
+        return false;
+    }
+    let normalized = normalized_scope_text(value);
+    normalized.contains("original_host")
+        || normalized.contains("host_path")
+        || normalized.contains("runtime_attachment")
+        || normalized.contains("launch_attachment")
 }
 
 fn original_host_attachment_instrumentation_proposals(candidate: &Value) -> Vec<String> {
@@ -2575,13 +2629,43 @@ mod tests {
         candidate["originalHostLaunchMappingEvidenceIds"] =
             json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
         candidate["launchAttachmentScout"] = json!({
-            "runtimeAttachmentProven": true
+            "runtimeAttachmentProven": true,
+            "runtimeAttachmentEvidenceIds": [
+                "evidence:original-host-runtime-attachment:runtime-boundary"
+            ]
         });
 
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "pass");
         assert_eq!(report["originalHostRuntimeAttachmentProven"], true);
+        assert_eq!(
+            report["originalHostRuntimeAttachmentEvidenceIds"],
+            json!(["evidence:original-host-runtime-attachment:runtime-boundary"])
+        );
+    }
+
+    #[test]
+    fn rejects_original_host_attachment_candidate_with_bare_runtime_attachment_claim() {
+        let mut candidate = valid_candidate();
+        candidate["requiresOriginalHostPath"] = json!(true);
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
+        candidate["launchAttachmentScout"] = json!({
+            "runtimeAttachmentProven": true
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["originalHostRuntimeAttachmentProven"], false);
+        assert_eq!(report["originalHostRuntimeAttachmentEvidenceIds"], json!([]));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_attachment_instrumentation_missing"));
     }
 
     #[test]

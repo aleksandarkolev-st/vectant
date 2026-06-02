@@ -186,6 +186,14 @@ function nonEmptyStringArray(value) {
     : [];
 }
 
+const ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_FIELDS = [
+  'runtimeAttachmentEvidenceIds',
+  'originalHostRuntimeAttachmentEvidenceIds',
+  'originalHostPathEvidenceIds',
+  'hostPathAttachmentEvidenceIds',
+  'launchAttachmentEvidenceIds',
+];
+
 function fissionSelectedCandidate(metadata) {
   const candidates = Array.isArray(metadata?.candidates) ? metadata.candidates : [];
   const selectedIndex = Number.isInteger(metadata?.selectedCandidateIndex)
@@ -309,10 +317,12 @@ function fissionSelectedIslandContract(selectedCandidate) {
       island.originalHostLaunchMappingRequired === true
       || selectedCandidate.originalHostLaunchMappingRequired === true,
     originalHostRuntimeAttachmentProven:
-      runtimeAttachmentValueProven(island.runtimeAttachmentProven)
-      || runtimeAttachmentValueProven(selectedCandidate.runtimeAttachmentProven)
+      runtimeAttachmentValueProven(island)
+      || runtimeAttachmentValueProven(selectedCandidate)
       || runtimeAttachmentValueProven(launchAttachmentScout)
       || runtimeAttachmentValueProven(originalHostLaunchMapping),
+    originalHostRuntimeAttachmentEvidenceIds:
+      runtimeAttachmentEvidenceIdsForCandidate(island, selectedCandidate),
     originalHostAttachmentInstrumentationProposalIds:
       originalHostAttachmentProposalIdsForCandidate(island, selectedCandidate),
     verifierEvidenceIds:
@@ -365,12 +375,90 @@ function boolTrue(value) {
 }
 
 function runtimeAttachmentValueProven(value) {
-  if (value === true) return true;
   const object = objectValue(value);
   if (!object) return false;
-  return boolTrue(object.runtimeAttachmentProven)
+  return (
+    boolTrue(object.runtimeAttachmentProven)
+    && runtimeAttachmentEvidenceIds(object).length > 0
+  )
     || runtimeAttachmentValueProven(object.mapping)
-    || runtimeAttachmentValueProven(object.runtimeAttachment);
+    || runtimeAttachmentValueProven(object.runtimeAttachment)
+    || runtimeAttachmentValueProven(object.launchAttachmentScout)
+    || runtimeAttachmentValueProven(object.originalHostLaunchMapping);
+}
+
+function originalHostRuntimeAttachmentEvidenceRefAccepted(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (
+    !normalized
+    || normalized.startsWith('ai:')
+    || normalized.startsWith('llm:')
+    || normalized.startsWith('model:')
+    || normalized.includes('proposal')
+  ) {
+    return false;
+  }
+  const authorityAccepted =
+    normalized.startsWith('worker-log:original_host_path:')
+    || normalized.startsWith('worker-log:host_path_attachment:')
+    || normalized.startsWith('worker-log:launch_attachment:')
+    || normalized.startsWith('evidence:')
+    || normalized.startsWith('proof:')
+    || normalized.startsWith('verifier:')
+    || normalized.startsWith('fission-verifier:')
+    || normalized.startsWith('validation:');
+  const attachmentScoped =
+    normalized.includes('original-host')
+    || normalized.includes('original_host')
+    || normalized.includes('host-path')
+    || normalized.includes('host_path')
+    || normalized.includes('runtime-attachment')
+    || normalized.includes('runtime_attachment')
+    || normalized.includes('launch-attachment')
+    || normalized.includes('launch_attachment');
+  return authorityAccepted && attachmentScoped;
+}
+
+function evidenceIdList(value) {
+  if (typeof value === 'string') return [value.trim()].filter(Boolean);
+  if (Array.isArray(value)) return value.flatMap(evidenceIdList);
+  const object = objectValue(value);
+  if (!object) return [];
+  return [
+    object.id,
+    object.evidenceId,
+    object.proofId,
+    object.ref,
+    ...evidenceIdList(object.evidenceIds),
+  ].filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim());
+}
+
+function runtimeAttachmentEvidenceIds(value) {
+  const object = objectValue(value);
+  if (!object) return [];
+  return uniqueStrings(
+    ORIGINAL_HOST_RUNTIME_ATTACHMENT_EVIDENCE_FIELDS
+      .flatMap((field) => evidenceIdList(object[field]))
+      .filter(originalHostRuntimeAttachmentEvidenceRefAccepted),
+  );
+}
+
+function collectRuntimeAttachmentEvidenceIds(value, ids = new Set()) {
+  const object = objectValue(value);
+  if (!object) return ids;
+  for (const id of runtimeAttachmentEvidenceIds(object)) ids.add(id);
+  collectRuntimeAttachmentEvidenceIds(object.mapping, ids);
+  collectRuntimeAttachmentEvidenceIds(object.runtimeAttachment, ids);
+  collectRuntimeAttachmentEvidenceIds(object.launchAttachmentScout, ids);
+  collectRuntimeAttachmentEvidenceIds(object.originalHostLaunchMapping, ids);
+  return ids;
+}
+
+function runtimeAttachmentEvidenceIdsForCandidate(island, selectedCandidate) {
+  const ids = new Set();
+  collectRuntimeAttachmentEvidenceIds(island, ids);
+  collectRuntimeAttachmentEvidenceIds(selectedCandidate, ids);
+  return [...ids];
 }
 
 const ORIGINAL_HOST_ATTACHMENT_ACTIONS = new Set([
