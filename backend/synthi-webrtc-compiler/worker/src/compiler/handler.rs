@@ -4250,6 +4250,352 @@ fn source_launch_site_snippet(source: &str, offset: usize) -> String {
     source[start..end].trim().chars().take(240).collect()
 }
 
+fn source_argument_expressions(
+    source: &str,
+    open_paren_offset: usize,
+    max_scan_bytes: usize,
+) -> Option<Vec<String>> {
+    let start = open_paren_offset.checked_add(1)?;
+    if start > source.len() || source.as_bytes().get(open_paren_offset).copied() != Some(b'(') {
+        return None;
+    }
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escape = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut previous = '\0';
+    let mut arg_start = start;
+    let mut args = Vec::new();
+    for (relative, ch) in source[start..].char_indices() {
+        if relative > max_scan_bytes {
+            break;
+        }
+        let absolute = start + relative;
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            previous = ch;
+            continue;
+        }
+        if in_block_comment {
+            if previous == '*' && ch == '/' {
+                in_block_comment = false;
+                previous = '\0';
+            } else {
+                previous = ch;
+            }
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            previous = ch;
+            continue;
+        }
+        if previous == '/' && ch == '/' {
+            in_line_comment = true;
+            previous = '\0';
+            continue;
+        }
+        if previous == '/' && ch == '*' {
+            in_block_comment = true;
+            previous = '\0';
+            continue;
+        }
+        match ch {
+            '"' | '\'' => in_string = Some(ch),
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
+                let tail = source[arg_start..absolute].trim();
+                if !tail.is_empty() {
+                    args.push(tail.to_string());
+                }
+                return Some(args);
+            }
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth = brace_depth.saturating_add(1),
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '<' => angle_depth = angle_depth.saturating_add(1),
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
+                let arg = source[arg_start..absolute].trim();
+                if !arg.is_empty() {
+                    args.push(arg.to_string());
+                }
+                arg_start = absolute + ch.len_utf8();
+            }
+            _ => {}
+        }
+        previous = ch;
+    }
+    None
+}
+
+fn launch_descriptor_argument_list(args: &[String]) -> Vec<serde_json::Value> {
+    args.iter()
+        .enumerate()
+        .map(|(index, expression)| {
+            serde_json::json!({
+                "index": index,
+                "expression": expression,
+                "expressionHash": format!("sha256:{}", sha256_hex_str(expression)),
+            })
+        })
+        .collect()
+}
+
+fn launch_descriptor_base(form: &str, symbol: &str, site_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": "synthi.gpu.original_host_launch_descriptor.v1",
+        "sourceLaunchSiteId": site_id,
+        "form": form,
+        "kernel": symbol,
+        "requiresRuntimeArgumentObservation": true,
+        "runtimeProofBoundary": "source_descriptor_only",
+    })
+}
+
+fn split_launch_config_expression(config: &str) -> Vec<String> {
+    source_argument_expressions(&format!("({config})"), 0, config.len().saturating_add(2))
+        .unwrap_or_else(|| {
+            config
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+}
+
+fn source_raw_launch_descriptor(
+    source: &str,
+    launch_offset: usize,
+    symbol: &str,
+    site_id: &str,
+) -> Option<serde_json::Value> {
+    let launch_tail = source.get(launch_offset..)?;
+    let config_start_relative = launch_tail.find("<<<")?.saturating_add(3);
+    let config_start = launch_offset + config_start_relative;
+    let config_end_relative = source.get(config_start..)?.find(">>>")?;
+    let config_end = config_start + config_end_relative;
+    let config = source.get(config_start..config_end)?;
+    let config_parts = split_launch_config_expression(config);
+    let after_config = config_end + 3;
+    let open_paren_offset = source
+        .get(after_config..)?
+        .char_indices()
+        .find_map(|(index, ch)| {
+            if ch.is_whitespace() {
+                None
+            } else if ch == '(' {
+                Some(after_config + index)
+            } else {
+                Some(usize::MAX)
+            }
+        })?;
+    if open_paren_offset == usize::MAX {
+        return None;
+    }
+    let args = source_argument_expressions(source, open_paren_offset, 16_384)?;
+    let mut descriptor = launch_descriptor_base("raw_triple_chevron", symbol, site_id);
+    if let Some(object) = descriptor.as_object_mut() {
+        object.insert(
+            "gridExpression".to_string(),
+            serde_json::Value::String(config_parts.first().cloned().unwrap_or_else(|| "1".to_string())),
+        );
+        object.insert(
+            "blockExpression".to_string(),
+            serde_json::Value::String(config_parts.get(1).cloned().unwrap_or_else(|| "1".to_string())),
+        );
+        object.insert(
+            "sharedMemoryExpression".to_string(),
+            serde_json::Value::String(config_parts.get(2).cloned().unwrap_or_else(|| "0".to_string())),
+        );
+        object.insert(
+            "streamExpression".to_string(),
+            serde_json::Value::String(config_parts.get(3).cloned().unwrap_or_else(|| "0".to_string())),
+        );
+        object.insert(
+            "argumentMode".to_string(),
+            serde_json::Value::String("call_arguments".to_string()),
+        );
+        object.insert(
+            "argumentCount".to_string(),
+            serde_json::Value::from(args.len() as u64),
+        );
+        object.insert(
+            "arguments".to_string(),
+            serde_json::Value::Array(launch_descriptor_argument_list(&args)),
+        );
+    }
+    Some(descriptor)
+}
+
+fn source_boundary_launch_descriptor(
+    source: &str,
+    launch_offset: usize,
+    symbol: &str,
+    form: &str,
+    site_id: &str,
+) -> Option<serde_json::Value> {
+    let open_paren_offset = source.get(launch_offset..)?.find('(')? + launch_offset;
+    let args = source_argument_expressions(source, open_paren_offset, 16_384)?;
+    let mut descriptor = launch_descriptor_base(form, symbol, site_id);
+    if let Some(object) = descriptor.as_object_mut() {
+        object.insert(
+            "argumentMode".to_string(),
+            serde_json::Value::String("synthi_runtime_boundary_call".to_string()),
+        );
+        object.insert(
+            "argumentCount".to_string(),
+            serde_json::Value::from(args.len() as u64),
+        );
+        object.insert(
+            "arguments".to_string(),
+            serde_json::Value::Array(launch_descriptor_argument_list(&args)),
+        );
+    }
+    Some(descriptor)
+}
+
+fn source_runtime_object_launch_descriptor(
+    source: &str,
+    launch_offset: usize,
+    symbol: &str,
+    site_id: &str,
+    owner: &str,
+) -> Option<serde_json::Value> {
+    let open_paren_offset = source.get(launch_offset..)?.find('(')? + launch_offset;
+    let args = source_argument_expressions(source, open_paren_offset, 16_384)?;
+    let mut descriptor = launch_descriptor_base("runtime_kernel_object", symbol, site_id);
+    if let Some(object) = descriptor.as_object_mut() {
+        object.insert(
+            "ownerExpression".to_string(),
+            serde_json::Value::String(owner.to_string()),
+        );
+        object.insert(
+            "launchApi".to_string(),
+            serde_json::Value::String("launch_asynchronous".to_string()),
+        );
+        object.insert(
+            "blockExpression".to_string(),
+            serde_json::Value::String(format!(
+                "{}, {}, 1",
+                args.first().map(String::as_str).unwrap_or("1"),
+                args.get(1).map(String::as_str).unwrap_or("1")
+            )),
+        );
+        object.insert(
+            "gridExpression".to_string(),
+            serde_json::Value::String(format!(
+                "{}, {}, 1",
+                args.get(2).map(String::as_str).unwrap_or("1"),
+                args.get(3).map(String::as_str).unwrap_or("1")
+            )),
+        );
+        object.insert(
+            "argumentPackExpression".to_string(),
+            serde_json::Value::String(args.get(4).cloned().unwrap_or_else(|| "none".to_string())),
+        );
+        object.insert(
+            "streamExpression".to_string(),
+            serde_json::Value::String(args.get(5).cloned().unwrap_or_else(|| "0".to_string())),
+        );
+        object.insert(
+            "sharedMemoryExpression".to_string(),
+            serde_json::Value::String(args.get(6).cloned().unwrap_or_else(|| "0".to_string())),
+        );
+        object.insert(
+            "argumentMode".to_string(),
+            serde_json::Value::String("runtime_object_argument_pack".to_string()),
+        );
+        object.insert(
+            "launchApiArgumentCount".to_string(),
+            serde_json::Value::from(args.len() as u64),
+        );
+        object.insert(
+            "launchApiArguments".to_string(),
+            serde_json::Value::Array(launch_descriptor_argument_list(&args)),
+        );
+    }
+    Some(descriptor)
+}
+
+fn source_native_launch_descriptor(
+    source: &str,
+    launch_offset: usize,
+    symbol: &str,
+    site_id: &str,
+    callee: &str,
+) -> Option<serde_json::Value> {
+    let open_paren_offset = source.get(launch_offset..)?.find('(')? + launch_offset;
+    let args = source_argument_expressions(source, open_paren_offset, 16_384)?;
+    let mut descriptor = launch_descriptor_base("native_kernel_launch_api", symbol, site_id);
+    if let Some(object) = descriptor.as_object_mut() {
+        object.insert(
+            "launchApi".to_string(),
+            serde_json::Value::String(callee.to_string()),
+        );
+        object.insert(
+            "kernelFunctionExpression".to_string(),
+            serde_json::Value::String(args.first().cloned().unwrap_or_else(|| "none".to_string())),
+        );
+        object.insert(
+            "gridExpression".to_string(),
+            serde_json::Value::String(args.get(1).cloned().unwrap_or_else(|| "1".to_string())),
+        );
+        object.insert(
+            "blockExpression".to_string(),
+            serde_json::Value::String(args.get(2).cloned().unwrap_or_else(|| "1".to_string())),
+        );
+        object.insert(
+            "argumentPackExpression".to_string(),
+            serde_json::Value::String(args.get(3).cloned().unwrap_or_else(|| "none".to_string())),
+        );
+        object.insert(
+            "sharedMemoryExpression".to_string(),
+            serde_json::Value::String(args.get(4).cloned().unwrap_or_else(|| "0".to_string())),
+        );
+        object.insert(
+            "streamExpression".to_string(),
+            serde_json::Value::String(args.get(5).cloned().unwrap_or_else(|| "0".to_string())),
+        );
+        object.insert(
+            "argumentMode".to_string(),
+            serde_json::Value::String("native_launch_api_argument_pack".to_string()),
+        );
+        object.insert(
+            "launchApiArgumentCount".to_string(),
+            serde_json::Value::from(args.len() as u64),
+        );
+        object.insert(
+            "launchApiArguments".to_string(),
+            serde_json::Value::Array(launch_descriptor_argument_list(&args)),
+        );
+    }
+    Some(descriptor)
+}
+
 fn push_source_launch_mapping_site(
     sites: &mut Vec<serde_json::Value>,
     path: &str,
@@ -4258,6 +4604,7 @@ fn push_source_launch_mapping_site(
     offset: usize,
     symbol: &str,
     form: &str,
+    host_launch_descriptor: Option<serde_json::Value>,
 ) {
     let (line, column) = source_offset_line_col(source, offset);
     let snippet = source_launch_site_snippet(source, offset);
@@ -4266,7 +4613,7 @@ fn push_source_launch_mapping_site(
         "launch-site:sha256:{}",
         sha256_hex_str(&format!("{path}:{line}:{column}:{symbol}:{form}:{snippet_hash}"))
     );
-    sites.push(serde_json::json!({
+    let mut site = serde_json::json!({
         "siteId": site_id,
         "path": path,
         "site": format!("{path}:{line}:{column}"),
@@ -4277,7 +4624,11 @@ fn push_source_launch_mapping_site(
         "sourceProvenance": provenance,
         "sourceHash": format!("sha256:{}", sha256_hex_str(source)),
         "snippetHash": format!("sha256:{snippet_hash}"),
-    }));
+    });
+    if let (Some(object), Some(descriptor)) = (site.as_object_mut(), host_launch_descriptor) {
+        object.insert("hostLaunchDescriptor".to_string(), descriptor);
+    }
+    sites.push(site);
 }
 
 fn source_baseline_raw_launch_sites(
@@ -4301,7 +4652,22 @@ fn source_baseline_raw_launch_sites(
             m.start(),
             symbol,
             "raw_triple_chevron",
+            None,
         );
+        if let Some(site) = sites.last_mut() {
+            let site_id = site
+                .get("siteId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(descriptor) =
+                source_raw_launch_descriptor(&source_file.content, m.start(), symbol, &site_id)
+            {
+                if let Some(object) = site.as_object_mut() {
+                    object.insert("hostLaunchDescriptor".to_string(), descriptor);
+                }
+            }
+        }
     }
 }
 
@@ -4326,7 +4692,26 @@ fn source_baseline_boundary_launch_sites(
             m.start(),
             symbol,
             "synthi_runtime_boundary",
+            None,
         );
+        if let Some(site) = sites.last_mut() {
+            let site_id = site
+                .get("siteId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(descriptor) = source_boundary_launch_descriptor(
+                &source_file.content,
+                m.start(),
+                symbol,
+                "synthi_runtime_boundary",
+                &site_id,
+            ) {
+                if let Some(object) = site.as_object_mut() {
+                    object.insert("hostLaunchDescriptor".to_string(), descriptor);
+                }
+            }
+        }
     }
 }
 
@@ -4367,7 +4752,26 @@ fn source_baseline_runtime_object_launch_sites(
                 search_start + launch.start(),
                 symbol,
                 "runtime_kernel_object",
+                None,
             );
+            if let Some(site) = sites.last_mut() {
+                let site_id = site
+                    .get("siteId")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if let Some(descriptor) = source_runtime_object_launch_descriptor(
+                    &source_file.content,
+                    search_start + launch.start(),
+                    symbol,
+                    &site_id,
+                    owner,
+                ) {
+                    if let Some(object) = site.as_object_mut() {
+                        object.insert("hostLaunchDescriptor".to_string(), descriptor);
+                    }
+                }
+            }
         }
     }
 }
@@ -4505,7 +4909,22 @@ fn source_baseline_native_launch_api_sites(
             full_call.start(),
             symbol,
             "native_kernel_launch_api",
+            None,
         );
+        if let Some(site) = sites.last_mut() {
+            let site_id = site
+                .get("siteId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(descriptor) =
+                source_native_launch_descriptor(source, full_call.start(), symbol, &site_id, callee)
+            {
+                if let Some(object) = site.as_object_mut() {
+                    object.insert("hostLaunchDescriptor".to_string(), descriptor);
+                }
+            }
+        }
     }
 }
 
@@ -4554,6 +4973,10 @@ fn source_launch_attachment_instrumentation_proposal(
         .get("form")
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())?;
+    let host_launch_descriptor = site.get("hostLaunchDescriptor").cloned();
+    let host_launch_descriptor_hash = host_launch_descriptor
+        .as_ref()
+        .map(|descriptor| format!("sha256:{}", sha256_hex_str(&descriptor.to_string())));
     let host_path_material = serde_json::json!({
         "path": path,
         "line": line,
@@ -4565,7 +4988,7 @@ fn source_launch_attachment_instrumentation_proposal(
         "host-path:sha256:{}",
         sha256_hex_str(&host_path_material.to_string())
     );
-    let material = serde_json::json!({
+    let mut material = serde_json::json!({
         "schemaVersion": "synthi.gpu.launch_attachment_instrumentation_proposal.v1",
         "sourceLaunchSiteId": site_id,
         "hostPathId": host_path_id,
@@ -4624,6 +5047,17 @@ fn source_launch_attachment_instrumentation_proposal(
         "runtimeAttachmentProven": false,
         "runtimeProofBoundary": "instrumentation_proposal_only",
     });
+    if let Some(object) = material.as_object_mut() {
+        if let Some(descriptor) = host_launch_descriptor {
+            object.insert("hostLaunchDescriptor".to_string(), descriptor);
+        }
+        if let Some(hash) = host_launch_descriptor_hash {
+            object.insert(
+                "hostLaunchDescriptorHash".to_string(),
+                serde_json::Value::String(hash),
+            );
+        }
+    }
     let proposal_id = format!(
         "launch-attachment-proposal:sha256:{}",
         sha256_hex_str(&material.to_string())
@@ -13230,11 +13664,81 @@ __constant__ int scale;
                 .metadata
                 .as_ref()
                 .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/gridExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/blockExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("64")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/streamExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("stream")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/arguments/0/expression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("pixels")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
                     metadata.pointer("/attachmentInstrumentationProposals/0/kernel")
                 })
                 .and_then(serde_json::Value::as_str),
             Some("shade")
         );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/hostLaunchDescriptor/arguments/0/expression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("pixels")
+        );
+        assert!(mapping_evidence
+            .metadata
+            .as_ref()
+            .and_then(|metadata| {
+                metadata.pointer(
+                    "/attachmentInstrumentationProposals/0/hostLaunchDescriptorHash",
+                )
+            })
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.starts_with("sha256:")));
         assert_eq!(
             mapping_evidence
                 .metadata
@@ -13444,6 +13948,54 @@ void bind_and_launch(Buffer* pixels) {
                 .metadata
                 .as_ref()
                 .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/ownerExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("kernels[KernelId::Primary]")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/blockExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("8, 8, 1")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/gridExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("width, height, 1")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/symbolMappings/0/sourceLaunchSites/0/hostLaunchDescriptor/argumentPackExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("launch_args")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
                     metadata.pointer("/symbolMappings/0/sourceLaunchSites/0/sourceProvenance")
                 })
                 .and_then(serde_json::Value::as_str),
@@ -13460,6 +14012,18 @@ void bind_and_launch(Buffer* pixels) {
                 })
                 .and_then(serde_json::Value::as_str),
             Some("attach_runtime_object_dispatch_boundary")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/hostLaunchDescriptor/argumentPackExpression",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("launch_args")
         );
         assert!(mapping_evidence
             .metadata
@@ -13538,6 +14102,30 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
             sites[0].get("form").and_then(serde_json::Value::as_str),
             Some("native_kernel_launch_api")
         );
+        assert_eq!(
+            sites[0]
+                .pointer("/hostLaunchDescriptor/launchApi")
+                .and_then(serde_json::Value::as_str),
+            Some("runtimeLaunchKernel")
+        );
+        assert_eq!(
+            sites[0]
+                .pointer("/hostLaunchDescriptor/kernelFunctionExpression")
+                .and_then(serde_json::Value::as_str),
+            Some("reinterpret_cast<const void*>(&shade)")
+        );
+        assert_eq!(
+            sites[0]
+                .pointer("/hostLaunchDescriptor/argumentPackExpression")
+                .and_then(serde_json::Value::as_str),
+            Some("args")
+        );
+        assert_eq!(
+            sites[0]
+                .pointer("/hostLaunchDescriptor/streamExpression")
+                .and_then(serde_json::Value::as_str),
+            Some("stream")
+        );
         let proposal = source_launch_attachment_instrumentation_proposal(&sites[0])
             .expect("native launch mapping should produce an attachment proposal");
         assert_eq!(
@@ -13575,6 +14163,18 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
                 .get("runtimeAttachmentProven")
                 .and_then(serde_json::Value::as_bool),
             Some(false)
+        );
+        assert_eq!(
+            proposal
+                .pointer("/hostLaunchDescriptor/launchApi")
+                .and_then(serde_json::Value::as_str),
+            Some("runtimeLaunchKernel")
+        );
+        assert_eq!(
+            proposal
+                .pointer("/hostLaunchDescriptor/sourceLaunchSiteId")
+                .and_then(serde_json::Value::as_str),
+            sites[0].get("siteId").and_then(serde_json::Value::as_str)
         );
     }
 
