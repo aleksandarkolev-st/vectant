@@ -2682,6 +2682,20 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
   });
 
+  it("rejects artifact transport-shaped records without runtime boundary provenance", () => {
+    const runtimeTransport = runtimeArtifactTransportEvidence([
+      "application-log artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=ram_blob selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_transport_proven=true load_result=ok",
+    ], { runtimeSessionIds: ["pid1"] });
+    const proof = artifactTransportProofFromProofArtifacts([], runtimeTransport);
+
+    expect(runtimeTransport.total_count).toBe(0);
+    expect(runtimeTransport.matched_count).toBe(0);
+    expect(runtimeTransport.transport_evidence_observed).toBe(false);
+    expect(runtimeTransport.ram_transport_proven).toBe(false);
+    expect(proof.ramTransportProven).toBe(false);
+    expect(proof.degradedReason).toBe("artifact_transport_evidence_not_collected");
+  });
+
   it("ignores artifact transport lines from unexpected runtime sessions", () => {
     const runtimeTransport = runtimeArtifactTransportEvidence([
       "[gpu-runtime-boundary] artifact_transport runtime_session=old generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=ram_blob selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_transport_proven=true load_result=ok",
@@ -3102,6 +3116,20 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
   });
 
+  it("rejects epoch publication-shaped records without runtime boundary provenance", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      `application-log dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 ${epochCapsuleFields()} dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields({ delayedUnloadResult: "pending" })} drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000`,
+      `application-log dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true ${epochRetirementFields()}`,
+    ]);
+
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.published).toBe(false);
+    expect(evidence.runtime_session_observed).toBe(false);
+    expect(evidence.epoch_generation_graph_observed).toBe(false);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("epoch_publication_not_observed");
+  });
+
   it("carries capsule lineage metadata into the runtime epoch graph", () => {
     const oldHash = "a".repeat(64);
     const newHash = "b".repeat(64);
@@ -3400,6 +3428,26 @@ describe("GPU HMR runtime output proof classification", () => {
       "worker-log:host_identity_snapshot:pid1:runner_process:2->3",
       "worker-log:host_identity_snapshot:pid1:stream:2->3",
     ]);
+  });
+
+  it("rejects host identity-shaped records without runtime boundary provenance", () => {
+    const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "application-log host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1",
+      "application-log host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1",
+      "application-log host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
+      "application-log host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1",
+      "application-log host_identity role=stream ptr=0x3000 aux=0 generation=2 runtime_session=pid1",
+      "application-log host_identity role=stream ptr=0x3000 aux=0 generation=3 runtime_session=pid1",
+    ], {
+      expectedGenerationLineage: { previousGeneration: 2, activeGeneration: 3 },
+    });
+
+    expect(evidence.raw_count).toBe(0);
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.identity_snapshot_observed).toBe(false);
+    expect(evidence.identity_checks_passed).toBe(false);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
   });
 
   it("does not prove host preservation from runtime identities without expected epoch lineage", () => {

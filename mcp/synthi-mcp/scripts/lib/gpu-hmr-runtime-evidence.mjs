@@ -279,7 +279,7 @@ function buildEpochGenerationGraph(records, latestPublication, retirement, publi
 
 export function runtimeEpochSwapEvidence(lines) {
   const records = (Array.isArray(lines) ? lines : [])
-    .filter((line) => /\bdispatcher_epoch\b/i.test(String(line ?? '')))
+    .filter((line) => runtimeBoundaryEventLine(line, /\bdispatcher_epoch\b/i))
     .map(epochRecord);
   const publications = records.filter((record) => record.event === 'published');
   const retirements = records.filter((record) => record.event === 'retired');
@@ -540,7 +540,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
   const expectedGenerationLineage = expectedHostIdentityGenerationLineage(observation);
   const lineageRequired = observation.requireGenerationLineage !== false;
   const rawRecords = (Array.isArray(lines) ? lines : [])
-    .filter((line) => /\bhost_identity\b/i.test(String(line ?? '')))
+    .filter((line) => runtimeBoundaryEventLine(line, /\bhost_identity\b/i))
     .map(hostIdentityRecord);
   const rejectedReasons = [];
   const records = [];
@@ -996,7 +996,7 @@ function artifactTransportRecord(line) {
 export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const rawRecords = (Array.isArray(lines) ? lines : [])
-    .filter((line) => /\bartifact_transport\b/i.test(String(line ?? '')))
+    .filter((line) => runtimeBoundaryEventLine(line, /\bartifact_transport\b/i))
     .map(artifactTransportRecord)
     .filter((record) =>
       typeof record.runtimeSession === 'string'
