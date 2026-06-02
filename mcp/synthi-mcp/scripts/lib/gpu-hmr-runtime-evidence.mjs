@@ -58,6 +58,16 @@ function tokenOrNull(value) {
   return trimmed && trimmed.toLowerCase() !== 'none' ? trimmed : null;
 }
 
+function sha256Digest(value) {
+  if (typeof value !== 'string') return null;
+  return value.trim().match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+}
+
+function artifactIdDigest(value) {
+  if (typeof value !== 'string') return null;
+  return value.trim().match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+}
+
 function evidenceRefToken(value) {
   const token = String(value ?? '')
     .trim()
@@ -1002,6 +1012,7 @@ function artifactTransportRecord(line) {
     selectedLoaderTransport: fields.selected_loader_transport ?? fields.selectedLoaderTransport ?? null,
     loaderApi: fields.loader_api ?? fields.loaderApi ?? null,
     ramReference: boolValue(fields.ram_reference ?? fields.ramArtifactReferenceProvided),
+    ramBlobId: fields.ram_blob_id ?? fields.ramBlobId ?? null,
     ramTransportProven: boolValue(fields.ram_transport_proven ?? fields.ramTransportProven),
     degradedState: degradedState === 'none' ? null : degradedState,
     degradedReason: degradedReason === 'none' ? null : degradedReason,
@@ -1037,18 +1048,37 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
     String(record.reloadRequestTransport ?? '').split(','),
   ));
   const ramArtifactReferenceProvided = records.some((record) => record.ramReference === true);
+  const ramBlobIds = compactStringList(records.map((record) => record.ramBlobId));
+  const artifactHashes = compactStringList(records.map((record) => record.artifactHash));
+  const ramBlobIdentityForRecord = (record) => {
+    if (record.ramReference !== true) return false;
+    const artifactDigest = sha256Digest(record.artifactHash);
+    const ramBlobDigest = artifactIdDigest(record.ramBlobId);
+    return artifactDigest !== null && ramBlobDigest !== null && artifactDigest === ramBlobDigest;
+  };
+  const ramBlobIdentityProven = records.some(ramBlobIdentityForRecord);
   const ramTransportProven = records.some((record) =>
-    record.ramTransportProven === true
-    || (
-      record.ramReference === true
-      && ['ram_bytes', 'ram_blob'].includes(String(record.selectedLoaderTransport ?? '').trim())
-      && record.loadResult === 'ok'
+    (
+      record.ramTransportProven === true
+      || (
+        record.ramReference === true
+        && ['ram_bytes', 'ram_blob'].includes(String(record.selectedLoaderTransport ?? '').trim())
+        && record.loadResult === 'ok'
+      )
     )
+    && ramBlobIdentityForRecord(record)
   );
   const effectiveRamTransportProven = ramTransportProven && runtimeSessionConsistent;
   const evidenceRefs = records.map((record) =>
     `worker-log:artifact_transport:${record.artifactHash ?? record.runtimeSession}`
   );
+  const latestRamIdentityMissing =
+    latest?.ramReference === true
+    && (
+      sha256Digest(latest.artifactHash) === null
+      || artifactIdDigest(latest.ramBlobId) === null
+      || sha256Digest(latest.artifactHash) !== artifactIdDigest(latest.ramBlobId)
+    );
 
   return {
     total_count: rawRecords.length,
@@ -1060,11 +1090,18 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
     runtime_session_consistent: runtimeSessionConsistent,
     transport_evidence_observed: records.length > 0,
     ram_artifact_reference_provided: ramArtifactReferenceProvided,
+    ram_blob_identity_proven: ramBlobIdentityProven,
+    ram_blob_ids: ramBlobIds,
+    artifact_hashes: artifactHashes,
     ram_transport_proven: effectiveRamTransportProven,
     loader_transports: loaderTransports,
     reload_request_transports: reloadRequestTransports,
     degraded_state: effectiveRamTransportProven ? null : latest?.degradedState ?? null,
-    degraded_reason: effectiveRamTransportProven ? null : latest?.degradedReason ?? null,
+    degraded_reason: effectiveRamTransportProven
+      ? null
+      : latestRamIdentityMissing
+        ? 'ram_blob_identity_not_proven'
+        : latest?.degradedReason ?? null,
     evidence_refs: compactStringList(evidenceRefs),
     lines: records.map((record) => record.line).slice(-20),
   };

@@ -479,6 +479,10 @@ function acceptedArtifactTransportProof() {
     transportEvidenceObserved: true,
     ramTransportProven: true,
     ramArtifactReferenceProvided: true,
+    ramBlobIdentityProven: true,
+    artifactContentHashes: [`sha256:${"a".repeat(64)}`],
+    ramBlobIds: [`artifact:sha256:${"a".repeat(64)}`],
+    ramBytesHashes: [`sha256:${"a".repeat(64)}`],
     loaderTransports: ["ram_bytes"],
     reloadRequestTransports: ["ram_blob"],
     evidenceRefs: ["worker-log:artifact_transport:sha256:abc"],
@@ -2788,9 +2792,11 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(runtimeTransport.ram_transport_proven).toBe(false);
     expect(runtimeTransport.loader_transports).toEqual(["filesystem_path"]);
     expect(runtimeTransport.reload_request_transports).toEqual(["filesystem_path", "ram_blob"]);
+    expect(runtimeTransport.ram_blob_identity_proven).toBe(true);
     expect(proof.transportEvidenceObserved).toBe(true);
     expect(proof.resultState).toBeNull();
     expect(proof.ramArtifactReferenceProvided).toBe(true);
+    expect(proof.ramBlobIdentityProven).toBe(true);
     expect(proof.ramTransportProven).toBe(false);
     expect(proof.loaderTransports).toEqual(["filesystem_path"]);
     expect(proof.reloadRequestTransports).toEqual(["filesystem_path", "ram_blob"]);
@@ -2833,11 +2839,36 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = artifactTransportProofFromProofArtifacts([], runtimeTransport);
 
     expect(runtimeTransport.ram_transport_proven).toBe(true);
+    expect(runtimeTransport.ram_blob_identity_proven).toBe(true);
     expect(proof.resultState).toBe("gpu-hmr-artifact-transport-proven");
     expect(proof.ramArtifactReferenceProvided).toBe(true);
+    expect(proof.ramBlobIdentityProven).toBe(true);
     expect(proof.ramTransportProven).toBe(true);
+    expect(proof.ramBlobIds).toEqual([
+      "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ]);
     expect(proof.degradedState).toBeNull();
     expect(proof.loaderTransports).toEqual(["ram_bytes"]);
+  });
+
+  it("does not prove RAM artifact transport when the RAM blob id mismatches the artifact hash", () => {
+    const runtimeTransport = runtimeArtifactTransportEvidence([
+      "[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb artifact_bytes=10 reload_request_transport=ram_blob selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_blob_id=artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok",
+    ], { runtimeSessionIds: ["pid1"] });
+    const proof = artifactTransportProofFromProofArtifacts([], runtimeTransport);
+
+    expect(runtimeTransport.transport_evidence_observed).toBe(true);
+    expect(runtimeTransport.ram_blob_identity_proven).toBe(false);
+    expect(runtimeTransport.ram_transport_proven).toBe(false);
+    expect(runtimeTransport.degraded_reason).toBe("ram_blob_identity_not_proven");
+    expect(proof.resultState).toBeNull();
+    expect(proof.ramArtifactReferenceProvided).toBe(true);
+    expect(proof.ramBlobIdentityProven).toBe(false);
+    expect(proof.ramTransportProven).toBe(false);
+    expect(proof.ramBlobIds).toEqual([
+      "artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    ]);
+    expect(proof.degradedReason).toBe("ram_blob_identity_not_proven");
   });
 
   it("does not infer RAM artifact transport without transport evidence", () => {

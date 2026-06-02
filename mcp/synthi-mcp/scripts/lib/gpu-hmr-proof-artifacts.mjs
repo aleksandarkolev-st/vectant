@@ -1142,12 +1142,31 @@ function runtimeTransportValues(runtimeEvidence, camelName, snakeName) {
   return Array.isArray(values) ? values : [];
 }
 
+function metadataRamBlobIdentityProven(metadata) {
+  const selectedArtifactDigest = artifactSha256Digest(metadata?.selectedArtifactId);
+  const artifactContentDigest = sha256Digest(metadata?.artifactContentHash);
+  const ramBlobDigest = artifactSha256Digest(metadata?.ramBlobId);
+  const ramBytesDigest = sha256Digest(metadata?.ramBytesHash);
+  return selectedArtifactDigest !== null
+    && artifactContentDigest !== null
+    && ramBlobDigest !== null
+    && ramBytesDigest !== null
+    && selectedArtifactDigest === artifactContentDigest
+    && selectedArtifactDigest === ramBlobDigest
+    && selectedArtifactDigest === ramBytesDigest;
+}
+
 export function artifactTransportProofFromProofArtifacts(records, runtimeEvidence = null) {
   const evidenceRefs = [];
   const loaderTransports = [];
   const reloadRequestTransports = [];
+  const selectedArtifactIds = [];
+  const artifactContentHashes = [];
+  const ramBlobIds = [];
+  const ramBytesHashes = [];
   let transportEvidenceObserved = false;
   let ramArtifactReferenceProvided = false;
+  let ramBlobIdentityProven = false;
   let ramTransportProven = false;
   let degradedState = null;
   let degradedReason = null;
@@ -1166,14 +1185,31 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
       evidenceRefs.push(artifactTransportEvidenceId(evidence, artifact, record));
       loaderTransports.push(...uniqueStrings([metadata.selectedLoaderTransport]));
       reloadRequestTransports.push(...uniqueStrings(metadata.reloadRequestTransports));
+      selectedArtifactIds.push(...uniqueStrings([metadata.selectedArtifactId]));
+      artifactContentHashes.push(...uniqueStrings([metadata.artifactContentHash]));
+      ramBlobIds.push(...uniqueStrings([metadata.ramBlobId]));
+      ramBytesHashes.push(...uniqueStrings([metadata.ramBytesHash]));
+      const metadataIdentityProven = metadataRamBlobIdentityProven(metadata);
+      if (metadataIdentityProven) {
+        ramBlobIdentityProven = true;
+      }
       if (metadata.ramArtifactReferenceProvided === true) {
         ramArtifactReferenceProvided = true;
       }
       if (
         metadata.ramArtifactReferenceProvided === true
         && ['ram_bytes', 'ram_blob'].includes(String(metadata.selectedLoaderTransport ?? '').trim())
+        && metadataIdentityProven
       ) {
         ramTransportProven = true;
+      }
+      if (
+        metadata.ramArtifactReferenceProvided === true
+        && ['ram_bytes', 'ram_blob'].includes(String(metadata.selectedLoaderTransport ?? '').trim())
+        && !metadataIdentityProven
+        && !degradedReason
+      ) {
+        degradedReason = 'ram_blob_identity_not_proven';
       }
       if (!degradedState && typeof metadata.degradedState === 'string' && metadata.degradedState.trim()) {
         degradedState = metadata.degradedState.trim();
@@ -1201,6 +1237,8 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
     reloadRequestTransports.push(...uniqueStrings(
       runtimeTransportValues(runtimeEvidence, 'reloadRequestTransports', 'reload_request_transports'),
     ));
+    artifactContentHashes.push(...uniqueStrings(runtimeTransportValues(runtimeEvidence, 'artifactHashes', 'artifact_hashes')));
+    ramBlobIds.push(...uniqueStrings(runtimeTransportValues(runtimeEvidence, 'ramBlobIds', 'ram_blob_ids')));
     if (
       runtimeEvidence.ram_artifact_reference_provided === true
       || runtimeEvidence.ramArtifactReferenceProvided === true
@@ -1208,9 +1246,17 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
       ramArtifactReferenceProvided = true;
     }
     if (
+      runtimeEvidence.ram_blob_identity_proven === true
+      || runtimeEvidence.ramBlobIdentityProven === true
+    ) {
+      ramBlobIdentityProven = true;
+    }
+    if (
       (runtimeEvidence.ram_transport_proven === true || runtimeEvidence.ramTransportProven === true)
       && (runtimeEvidence.ram_artifact_reference_provided === true
         || runtimeEvidence.ramArtifactReferenceProvided === true)
+      && (runtimeEvidence.ram_blob_identity_proven === true
+        || runtimeEvidence.ramBlobIdentityProven === true)
     ) {
       ramTransportProven = true;
     }
@@ -1232,6 +1278,11 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
     transportEvidenceObserved,
     ramTransportProven,
     ramArtifactReferenceProvided,
+    ramBlobIdentityProven,
+    selectedArtifactIds: uniqueStrings(selectedArtifactIds),
+    artifactContentHashes: uniqueStrings(artifactContentHashes),
+    ramBlobIds: uniqueStrings(ramBlobIds),
+    ramBytesHashes: uniqueStrings(ramBytesHashes),
     loaderTransports: uniqueStrings(loaderTransports),
     reloadRequestTransports: uniqueStrings(reloadRequestTransports),
     evidenceRefs: uniqueStrings(evidenceRefs),

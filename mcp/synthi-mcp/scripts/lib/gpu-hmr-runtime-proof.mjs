@@ -938,6 +938,7 @@ function artifactTransportProofUsable(proof) {
   return (proof.ramTransportProven === true || proof.ram_transport_proven === true)
     && (proof.transportEvidenceObserved === true || proof.transport_evidence_observed === true)
     && (proof.ramArtifactReferenceProvided === true || proof.ram_artifact_reference_provided === true)
+    && (proof.ramBlobIdentityProven === true || proof.ram_blob_identity_proven === true)
     && evidenceRefs.length > 0;
 }
 
