@@ -23,12 +23,163 @@ function compactStringList(values) {
     .filter(Boolean))];
 }
 
+function contentAddressedArtifactIds(values) {
+  return compactStringList(values).filter((id) => /^artifact:sha256:[0-9a-f]{64}$/i.test(id));
+}
+
+function artifactIdsFromSha256Hashes(values) {
+  return compactStringList(values)
+    .map((value) => value.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null)
+    .filter(Boolean)
+    .map((digest) => `artifact:sha256:${digest}`);
+}
+
 function safeToken(value) {
   const token = String(value ?? '')
     .trim()
     .replace(/[^A-Za-z0-9_.:-]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return token || 'runtime-proof';
+}
+
+const ARTIFACT_ID_FIELD_NAMES = new Set([
+  'artifactId',
+  'artifact_id',
+  'selectedArtifactId',
+  'selected_artifact_id',
+  'runtimeArtifactId',
+  'runtime_artifact_id',
+  'oldArtifactId',
+  'old_artifact_id',
+  'newArtifactId',
+  'new_artifact_id',
+  'activeArtifactId',
+  'active_artifact_id',
+  'publishedArtifactId',
+  'published_artifact_id',
+  'ramBlobId',
+  'ram_blob_id',
+]);
+
+const ARTIFACT_ID_ARRAY_FIELD_NAMES = new Set([
+  'artifactIds',
+  'artifact_ids',
+  'selectedArtifactIds',
+  'selected_artifact_ids',
+  'runtimeArtifactIds',
+  'runtime_artifact_ids',
+  'dispatchArtifactIds',
+  'dispatch_artifact_ids',
+  'ramBlobIds',
+  'ram_blob_ids',
+]);
+
+const ARTIFACT_HASH_FIELD_NAMES = new Set([
+  'artifactHash',
+  'artifact_hash',
+  'artifactContentHash',
+  'artifact_content_hash',
+  'artifactBytesHash',
+  'artifact_bytes_hash',
+  'ramBytesHash',
+  'ram_bytes_hash',
+  'oldHash',
+  'old_hash',
+  'newHash',
+  'new_hash',
+  'oldArtifactHash',
+  'old_artifact_hash',
+  'newArtifactHash',
+  'new_artifact_hash',
+]);
+
+const ARTIFACT_HASH_ARRAY_FIELD_NAMES = new Set([
+  'artifactHashes',
+  'artifact_hashes',
+  'artifactContentHashes',
+  'artifact_content_hashes',
+  'artifactBytesHashes',
+  'artifact_bytes_hashes',
+  'ramBytesHashes',
+  'ram_bytes_hashes',
+]);
+
+function artifactIdsFromValue(value, seen = new Set()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return [];
+  seen.add(value);
+  const ids = [];
+  for (const [key, child] of Object.entries(value)) {
+    if (ARTIFACT_ID_FIELD_NAMES.has(key)) {
+      ids.push(child);
+    } else if (ARTIFACT_ID_ARRAY_FIELD_NAMES.has(key) && Array.isArray(child)) {
+      ids.push(...child);
+    } else if (ARTIFACT_HASH_FIELD_NAMES.has(key)) {
+      ids.push(...artifactIdsFromSha256Hashes([child]));
+    } else if (ARTIFACT_HASH_ARRAY_FIELD_NAMES.has(key) && Array.isArray(child)) {
+      ids.push(...artifactIdsFromSha256Hashes(child));
+    }
+    if (child && typeof child === 'object') {
+      ids.push(...artifactIdsFromValue(child, seen));
+    }
+  }
+  return contentAddressedArtifactIds(ids);
+}
+
+function artifactIdentityComponentStates(input = {}) {
+  const proof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
+    ? input.fullRuntimeProof
+    : null;
+  const states = proof?.componentStates;
+  return states && typeof states === 'object' ? states : null;
+}
+
+function artifactIdentityIdsByStage(input = {}) {
+  const idsByStage = artifactIdentityComponentStates(input)?.artifactIdentityIdsByStage;
+  return idsByStage && typeof idsByStage === 'object' ? idsByStage : {};
+}
+
+function artifactIdentityCommonIds(input = {}) {
+  return contentAddressedArtifactIds(
+    artifactIdentityComponentStates(input)?.artifactIdentityCommonArtifactIds,
+  );
+}
+
+function unionArtifactIds(values) {
+  return contentAddressedArtifactIds(values.flatMap((value) => (
+    Array.isArray(value) ? value : [value]
+  )));
+}
+
+function artifactIdentityIdsForStage(stageId, input = {}) {
+  const idsByStage = artifactIdentityIdsByStage(input);
+  const stageMap = {
+    compile: 'source',
+    'symbol-binding': 'source',
+    abi: 'source',
+    'artifact-transport': 'transport',
+    'epoch-swap': 'epoch',
+    'dispatch-observed': 'dispatch',
+    'dispatch-safe': 'dispatch',
+    output: 'output',
+  };
+  if (stageId === 'artifact-identity') {
+    return unionArtifactIds(Object.values(idsByStage));
+  }
+  const proofStage = stageMap[stageId];
+  return proofStage ? contentAddressedArtifactIds(idsByStage[proofStage]) : [];
+}
+
+function artifactIdentityDetailsForStage(stageId, input = {}) {
+  if (stageId !== 'artifact-identity') return null;
+  const states = artifactIdentityComponentStates(input);
+  if (!states || states.artifactIdentityRequired !== true) return null;
+  return {
+    required: true,
+    proven: states.artifactIdentityProven === true,
+    commonArtifactIds: artifactIdentityCommonIds(input),
+    idsByStage: artifactIdentityIdsByStage(input),
+    missingStages: compactStringList(states.artifactIdentityMissingStages),
+  };
 }
 
 function runtimeSessionId(input = {}) {
@@ -124,6 +275,7 @@ function stageProofs(input = {}) {
     'dispatch-observed': [input.dispatchProof],
     'dispatch-safe': [input.dispatchProof],
     output: [input.outputProof],
+    'artifact-identity': [input.fullRuntimeProof?.componentStates],
     'host-preservation': [input.hostPreservationProof],
     'original-host-path': [input.originalHostPathProof],
   };
@@ -151,6 +303,16 @@ function sourceProofStageEvidenceRefs(stageId, proof) {
 }
 
 function stageEvidenceRefs(stageId, input = {}) {
+  if (stageId === 'artifact-identity') {
+    return compactStringList([
+      ...stageEvidenceRefs('compile', input),
+      ...stageEvidenceRefs('symbol-binding', input),
+      ...stageEvidenceRefs('artifact-transport', input),
+      ...stageEvidenceRefs('epoch-swap', input),
+      ...stageEvidenceRefs('dispatch-observed', input),
+      ...stageEvidenceRefs('output', input),
+    ]);
+  }
   const proofs = stageProofs(input)[stageId] ?? [];
   if (stageId === 'compile' || stageId === 'symbol-binding') {
     return compactStringList(proofs.flatMap((proof) => sourceProofStageEvidenceRefs(stageId, proof)));
@@ -158,21 +320,49 @@ function stageEvidenceRefs(stageId, input = {}) {
   return compactStringList(proofs.flatMap((proof) => evidenceStringsFromValue(proof)));
 }
 
+function stageArtifactIds(stageId, input = {}) {
+  const identityIds = artifactIdentityIdsForStage(stageId, input);
+  const proofIds = contentAddressedArtifactIds(
+    (stageProofs(input)[stageId] ?? []).flatMap((proof) => artifactIdsFromValue(proof)),
+  );
+  const baseIds = identityIds.length ? identityIds : proofIds;
+  if (stageId === 'artifact-identity') {
+    const commonIds = artifactIdentityCommonIds(input);
+    return {
+      inputArtifactIds: baseIds,
+      outputArtifactIds: commonIds,
+    };
+  }
+  return {
+    inputArtifactIds: baseIds,
+    outputArtifactIds: baseIds,
+  };
+}
+
 function proofStageResult(stage, input, createdAt) {
   const evidenceRefs = stageEvidenceRefs(stage.stageId, input);
+  const derivedArtifactIds = stageArtifactIds(stage.stageId, input);
+  const artifactIdentity = artifactIdentityDetailsForStage(stage.stageId, input);
   return {
     stageId: stage.stageId,
     stageName: stage.stageName ?? stage.stageId,
     status: stage.status,
     startedAt: createdAt,
     completedAt: createdAt,
-    inputArtifactIds: compactStringList(stage.inputArtifactIds),
-    outputArtifactIds: compactStringList(stage.outputArtifactIds),
+    inputArtifactIds: contentAddressedArtifactIds([
+      ...(Array.isArray(stage.inputArtifactIds) ? stage.inputArtifactIds : []),
+      ...derivedArtifactIds.inputArtifactIds,
+    ]),
+    outputArtifactIds: contentAddressedArtifactIds([
+      ...(Array.isArray(stage.outputArtifactIds) ? stage.outputArtifactIds : []),
+      ...derivedArtifactIds.outputArtifactIds,
+    ]),
     evidenceRefs,
     degradedState: stage.degradedState ?? null,
     degradedReason: stage.degradedReason ?? null,
     requiredState: stage.requiredState ?? null,
     observedState: stage.observedState ?? null,
+    ...(artifactIdentity ? { artifactIdentity } : {}),
   };
 }
 
@@ -268,6 +458,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     degradedState: fullRuntimeProof?.degradedState ?? null,
     degradedReason: fullRuntimeProof?.degradedReason ?? null,
     fullRuntimeProven: fullRuntimeProof?.fullRuntimeProven === true,
+    componentStates: fullRuntimeProof?.componentStates ?? null,
     stageResults: stages,
     limitations,
     evidenceRefs,

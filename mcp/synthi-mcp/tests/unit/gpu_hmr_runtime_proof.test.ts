@@ -4867,9 +4867,40 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.proofId).toMatch(/^gpu-runtime-proof:sha256:/);
     expect(artifact.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("artifact-transport");
+    expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("artifact-identity");
     expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("host-preservation");
     const compileStage = artifact.stageResults.find((stage) => stage.stageId === "compile");
     const symbolStage = artifact.stageResults.find((stage) => stage.stageId === "symbol-binding");
+    const outputStage = artifact.stageResults.find((stage) => stage.stageId === "output");
+    const artifactIdentityStage = artifact.stageResults.find((stage) => stage.stageId === "artifact-identity");
+    expect(compileStage?.outputArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(symbolStage?.outputArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(outputStage?.inputArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(outputStage?.outputArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(artifactIdentityStage?.inputArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(artifactIdentityStage?.outputArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(artifactIdentityStage?.artifactIdentity).toEqual({
+      required: true,
+      proven: true,
+      commonArtifactIds: [TEST_ARTIFACT_ID],
+      idsByStage: expect.objectContaining({
+        source: [TEST_ARTIFACT_ID],
+        transport: [TEST_ARTIFACT_ID],
+        epoch: [TEST_ARTIFACT_ID],
+        dispatch: [TEST_ARTIFACT_ID],
+        output: [TEST_ARTIFACT_ID],
+      }),
+      missingStages: [],
+    });
+    expect(artifactIdentityStage?.evidenceRefs).toEqual(expect.arrayContaining([
+      ".synthi/gpu-hmr/proofs/source-proof.json",
+      "worker-log:artifact_transport:sha256:abc",
+      "evidence:epoch:abc",
+      "worker-log:synthi_gpu_launch:runtime-session:test:shade",
+      "evidence:output-oracle:readback:abc",
+    ]));
+    expect(artifact.componentStates.artifactIdentityProven).toBe(true);
+    expect(artifact.componentStates.artifactIdentityCommonArtifactIds).toEqual([TEST_ARTIFACT_ID]);
     expect(compileStage?.evidenceRefs).toEqual(expect.arrayContaining([
       ".synthi/gpu-hmr/proofs/source-proof.json",
       "evidence:source:device-artifact",
