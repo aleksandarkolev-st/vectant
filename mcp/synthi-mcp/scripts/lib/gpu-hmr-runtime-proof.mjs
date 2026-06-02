@@ -733,6 +733,17 @@ function runtimeDispatchEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:synthi_gpu_launch:/i.test(ref));
 }
 
+function runtimeDispatchEvidenceRefSession(ref) {
+  const prefix = 'worker-log:synthi_gpu_launch:';
+  const value = String(ref ?? '');
+  if (!value.toLowerCase().startsWith(prefix)) return null;
+  const suffix = value.slice(prefix.length);
+  const separator = suffix.lastIndexOf(':');
+  if (separator <= 0) return null;
+  const session = suffix.slice(0, separator).trim();
+  return session || null;
+}
+
 function runtimeOriginalHostPathEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) =>
     /^worker-log:(original_host_path|host_path_attachment|launch_attachment):/i.test(ref)
@@ -1659,11 +1670,16 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const sessionScoped = requestedSessionScoped && runtimeSessionObserved;
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
-  const dispatchEvidenceRefs = runtimeDispatchEvidenceRefs([
+  const rawDispatchEvidenceRefs = runtimeDispatchEvidenceRefs([
     ...(Array.isArray(observation.dispatchEvidenceRefs) ? observation.dispatchEvidenceRefs : []),
     ...(Array.isArray(observation.runtimeDispatchEvidenceRefs) ? observation.runtimeDispatchEvidenceRefs : []),
     ...(Array.isArray(observation.evidenceRefs) ? observation.evidenceRefs : []),
   ]);
+  const dispatchEvidenceRefs = runtimeSessionIds.length > 0
+    ? rawDispatchEvidenceRefs.filter((ref) => runtimeSessionIds.includes(runtimeDispatchEvidenceRefSession(ref)))
+    : [];
+  const dispatchEvidenceSessionMismatch =
+    rawDispatchEvidenceRefs.length > 0 && dispatchEvidenceRefs.length === 0 && runtimeSessionIds.length > 0;
   const dispatchEvidenceObserved = dispatchEvidenceRefs.length > 0;
   const argProvenanceObserved = observation.argProvenanceObserved === true;
   const unknownArgCount = Number.isFinite(observation.unknownArgCount)
@@ -1796,10 +1812,13 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
             : 'current_session_dispatch_not_proven'
           : !runtimeSessionConsistent
             ? 'runtime_session_identity_inconsistent'
-            : 'runtime_dispatch_evidence_refs_not_collected',
+            : dispatchEvidenceSessionMismatch
+              ? 'runtime_dispatch_evidence_session_mismatch'
+              : 'runtime_dispatch_evidence_refs_not_collected',
       dispatchObserved: false,
       dispatchEvidenceObserved,
       dispatchEvidenceRefs,
+      rejectedDispatchEvidenceRefs: rawDispatchEvidenceRefs.filter((ref) => !dispatchEvidenceRefs.includes(ref)),
       evidenceRefs,
       sessionScoped,
       runtimeSessionObserved,

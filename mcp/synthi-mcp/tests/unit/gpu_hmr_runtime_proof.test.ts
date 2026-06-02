@@ -4054,6 +4054,32 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.dispatchEvidenceObserved).toBe(false);
   });
 
+  it("does not prove dispatch from launch refs bound to another runtime session", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["current-session"],
+      dispatchEvidenceRefs: dispatchEvidenceRefs("old-session"),
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      argProvenanceEvidenceRefs: [
+        "worker-log:launch_arg_provenance:current-session:3:entry-1",
+      ],
+      unknownArgCount: 0,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("runtime_dispatch_evidence_session_mismatch");
+    expect(proof.dispatchEvidenceObserved).toBe(false);
+    expect(proof.dispatchEvidenceRefs).toEqual([]);
+    expect(proof.rejectedDispatchEvidenceRefs).toEqual(dispatchEvidenceRefs("old-session"));
+  });
+
   it("downgrades observed dispatch without argument provenance", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
