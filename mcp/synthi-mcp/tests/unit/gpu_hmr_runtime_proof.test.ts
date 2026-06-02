@@ -888,6 +888,23 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(missingId.degradedReason).toBe("output_oracle_contract_id_missing");
     expect(missingId.outputOracle.contractIdObserved).toBe(false);
 
+    const { requiredOracleId: _missingRequiredOracleId, ...oracleWithoutRequiredId } =
+      deterministicOutputOracle();
+    const missingRequiredId = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: oracleWithoutRequiredId,
+      visualFrameObserved: true,
+    });
+
+    expect(missingRequiredId.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(missingRequiredId.degradedReason).toBe("output_oracle_required_contract_id_missing");
+    expect(missingRequiredId.outputOracle.contractIdObserved).toBe(true);
+    expect(missingRequiredId.outputOracle.requiredContractObserved).toBe(false);
+    expect(missingRequiredId.outputOracle.requiredContractMatched).toBe(false);
+
     const mismatchedRequiredId = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
       deterministicOutputObserved: true,
@@ -964,7 +981,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("can prove output from a structured runtime oracle line", () => {
     const evidence = runtimeOutputOracleEvidence([
-      `[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=${TEST_ARTIFACT_ID} probe_mode=fixed_validation_probe probe_config_hash=sha256:${"b".repeat(64)}`,
+      `[gpu-runtime-boundary] output_oracle id=probe.checksum required_oracle_id=probe.checksum kind=buffer_checksum producer=runtime_probe expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=${TEST_ARTIFACT_ID} probe_mode=fixed_validation_probe probe_config_hash=sha256:${"b".repeat(64)}`,
     ]);
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof({ runtimeSession: "pid1", artifactId: TEST_ARTIFACT_ID }),
@@ -977,6 +994,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evidence.total_count).toBe(1);
     expect(evidence.output_oracle?.actual).toBe("sha256:abc");
+    expect(evidence.output_oracle?.requiredOracleId).toBe("probe.checksum");
     expect(evidence.output_oracle?.runtimeSession).toBe("pid1");
     expect(evidence.output_oracle?.outputTargetId).toBe("target:main");
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
@@ -1161,6 +1179,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("filters runtime oracle records by contract provenance fields", () => {
     const outputOracleContract = {
       oracleId: "probe.expected",
+      requiredOracleId: "probe.expected",
       kind: "buffer_checksum",
       expected: "sha256:def",
       producer: "runtime_probe",
@@ -1169,20 +1188,27 @@ describe("GPU HMR runtime output proof classification", () => {
       runtimeSessionId: "pid1",
     };
     const evidence = runtimeOutputOracleEvidence([
-      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:other readback_timestamp=1779980000000 artifact_id=artifact:def",
-      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
-      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid2 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected required_oracle_id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:other readback_timestamp=1779980000000 artifact_id=artifact:def",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected required_oracle_id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected required_oracle_id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid2 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
     ], { outputOracleContract });
     const mismatchedArtifact = runtimeOutputOracleEvidence([
-      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:other",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected required_oracle_id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:other",
+    ], { outputOracleContract });
+    const missingRequiredContract = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum producer=runtime_probe expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1 output_target_id=target:main readback_timestamp=1779980000000 artifact_id=artifact:def",
     ], { outputOracleContract });
 
     expect(evidence.matched_count).toBe(1);
     expect(evidence.output_oracle?.outputTargetId).toBe("target:main");
     expect(evidence.output_oracle?.artifactId).toBe("artifact:def");
+    expect(evidence.output_oracle?.requiredOracleId).toBe("probe.expected");
     expect(evidence.expected_contract?.outputTargetId).toBe("target:main");
+    expect(evidence.expected_contract?.requiredOracleId).toBe("probe.expected");
     expect(mismatchedArtifact.matched_count).toBe(0);
     expect(mismatchedArtifact.deterministic_oracle_passed).toBe(false);
+    expect(missingRequiredContract.matched_count).toBe(0);
+    expect(missingRequiredContract.deterministic_oracle_passed).toBe(false);
   });
 
   it("only accepts runtime oracle records from the expected runtime session", () => {
@@ -1230,7 +1256,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("accepts tolerant numeric runtime oracle records only inside tolerance", () => {
     const evidence = runtimeOutputOracleEvidence([
-      `[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=${TEST_SCALAR_ARTIFACT_ID} probe_mode=fixed_validation_probe probe_config_hash=sha256:${"c".repeat(64)}`,
+      `[gpu-runtime-boundary] output_oracle id=probe.scalar required_oracle_id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=${TEST_SCALAR_ARTIFACT_ID} probe_mode=fixed_validation_probe probe_config_hash=sha256:${"c".repeat(64)}`,
     ]);
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof({ runtimeSession: "pid1", artifactId: TEST_SCALAR_ARTIFACT_ID }),

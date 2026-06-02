@@ -679,6 +679,12 @@ function outputOracleRecord(line) {
   return {
     line,
     oracleId: fields.id ?? fields.oracle_id ?? null,
+    requiredOracleId:
+      fields.required_oracle_id
+      ?? fields.requiredOracleId
+      ?? fields.required_oracle
+      ?? fields.required_id
+      ?? null,
     kind: fields.kind ?? null,
     producer: fields.producer ?? fields.producer_id ?? null,
     expected: Object.prototype.hasOwnProperty.call(fields, 'expected') ? fields.expected : null,
@@ -716,6 +722,14 @@ function normalizeOracleContract(contract) {
     return null;
   };
   const oracleId = stringAlias(['id', 'oracleId', 'oracle_id']);
+  const requiredOracleId = stringAlias([
+    'requiredOracleId',
+    'required_oracle_id',
+    'requiredOracle',
+    'required_oracle',
+    'requiredId',
+    'required_id',
+  ]);
   const kind = stringAlias(['kind']);
   const expected = stringAlias(['expected', 'expectedValue', 'expected_value', 'expectedHash', 'expected_hash']);
   const producer = stringAlias(['producer', 'producerId', 'producer_id', 'producerSubsystem', 'producer_subsystem']);
@@ -737,6 +751,7 @@ function normalizeOracleContract(contract) {
   ]);
   if (
     oracleId === null
+    && requiredOracleId === null
     && kind === null
     && expected === null
     && producer === null
@@ -748,6 +763,7 @@ function normalizeOracleContract(contract) {
   }
   return {
     oracleId,
+    requiredOracleId,
     kind,
     expected,
     producer,
@@ -760,6 +776,7 @@ function normalizeOracleContract(contract) {
 function oracleMatchesContract(record, contract) {
   if (!contract) return true;
   if (contract.oracleId !== null && record.oracleId !== contract.oracleId) return false;
+  if (contract.requiredOracleId !== null && record.requiredOracleId !== contract.requiredOracleId) return false;
   if (contract.kind !== null && record.kind !== contract.kind) return false;
   if (contract.expected !== null && record.expected !== contract.expected) return false;
   if (contract.producer !== null && record.producer !== contract.producer) return false;
@@ -1114,6 +1131,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     output_oracle: latest
       ? {
           oracleId: latest.oracleId,
+          requiredOracleId: latest.requiredOracleId,
           kind: latest.kind,
           producer: latest.producer,
           expected: latest.expected,
