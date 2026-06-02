@@ -1,1 +1,27 @@
-*.sh text eol=lf
+# Repository line-ending policy.
+# Normalize all text files to LF in the index; Git auto-detects binaries.
+* text=auto eol=lf
+
+# Windows script files must keep CRLF in the working tree.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts are always LF (explicit; also covered by the wildcard above).
+*.sh  text eol=lf
+
+# Known binary types — explicit so they are never line-ending filtered.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.wasm  binary
+*.npz   binary
+*.npy   binary
+*.vsix  binary
+*.pdf   binary
