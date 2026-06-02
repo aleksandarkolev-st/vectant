@@ -36,6 +36,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships WorkspaceMembership[]
+  tokens      PersonalAccessToken[]
 
   @@index([email])
 }
@@ -116,4 +117,18 @@ model McpCallAudit {
 
   @@index([connectionId])
   @@index([createdAt])
+}
+
+model PersonalAccessToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  last4      String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([userId])
 }
