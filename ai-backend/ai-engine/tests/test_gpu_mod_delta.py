@@ -101,7 +101,7 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
                         "verifierEvidenceIds": ["evidence:source-map"],
                     }
                 ],
-                "proofFailureReasonCodes": ["output_oracle_missing"],
+                "proofFailureReasonCodes": ["fission.output_oracle_missing"],
                 "sourceSpans": [{"path": "device.cu", "startLine": 7, "endLine": 9}],
             },
         }
@@ -240,7 +240,8 @@ def test_parse_gpu_diff_response_rejects_incomplete_attachment_proposal_metadata
     )
     with pytest.raises(Exception) as excinfo:
         parse_gpu_diff_response(raw)
-    assert "instrumentationAction" in str(excinfo.value)
+    assert "fissionCandidate.attachmentInstrumentationProposals[0]" in str(excinfo.value)
+    assert "non-empty string" in str(excinfo.value)
 
 
 def test_parse_gpu_diff_response_rejects_malformed_attachment_proposal():
@@ -360,6 +361,49 @@ def test_parse_gpu_diff_response_rejects_invalid_fission_rejection_evidence():
     with pytest.raises(Exception) as excinfo:
         parse_gpu_diff_response(raw)
     assert "fissionCandidate.narrowerCandidateRejections[0].scopeRank" in str(excinfo.value)
+
+
+def test_parse_gpu_diff_response_rejects_unregistered_fission_reason_codes():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "proofFailureReasonCodes": ["fission.not_registered"],
+                "narrowerCandidateRejections": [
+                    {
+                        "scopeRank": 0,
+                        "reasonCode": "fission.edit_crosses_body_boundary",
+                        "verifierEvidenceIds": ["evidence:source-map"],
+                    }
+                ],
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.proofFailureReasonCodes" in str(excinfo.value)
+    assert "fission.not_registered" in str(excinfo.value)
+
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "narrowerCandidateRejections": [
+                    {
+                        "scopeRank": 0,
+                        "reasonCode": "fission.not_registered",
+                        "verifierEvidenceIds": ["evidence:source-map"],
+                    }
+                ],
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.narrowerCandidateRejections[0].reasonCode" in str(excinfo.value)
+    assert "fission.not_registered" in str(excinfo.value)
 
 
 def test_parse_gpu_diff_response_rejects_invalid_fission_timing_hint():

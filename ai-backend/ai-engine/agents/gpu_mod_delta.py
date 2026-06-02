@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover
             self.detail = detail
 
 from agents.abi_stamper import constant_layout_hash, stamp_device_source
+from gpu_hmr.reason_codes import UnknownReasonCodeError, assert_registered_reason_codes
 from llm.prompts import GPU_DIFF_PATCH_PROMPT
 
 
@@ -576,6 +577,11 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
     for field in sorted(FISSION_CANDIDATE_STRING_LIST_FIELDS):
         if field in cleaned and cleaned[field] is not None:
             cleaned[field] = _validate_fission_string_list(cleaned[field], field)
+    if "proofFailureReasonCodes" in cleaned and cleaned["proofFailureReasonCodes"] is not None:
+        _validate_registered_reason_codes(
+            cleaned["proofFailureReasonCodes"],
+            "fissionCandidate.proofFailureReasonCodes",
+        )
     for field in sorted(FISSION_CANDIDATE_OBJECT_FIELDS):
         if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], dict):
             raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be an object")
@@ -866,8 +872,28 @@ def _validate_fission_rejections(value: object) -> List[dict]:
                     cleaned_rejection[field],
                     f"narrowerCandidateRejections[{i}].{field}",
                 )
+        if "reasonCode" in cleaned_rejection and cleaned_rejection["reasonCode"] is not None:
+            _validate_registered_reason_codes(
+                [cleaned_rejection["reasonCode"]],
+                f"fissionCandidate.narrowerCandidateRejections[{i}].reasonCode",
+            )
+        if "reasonCodes" in cleaned_rejection and cleaned_rejection["reasonCodes"] is not None:
+            _validate_registered_reason_codes(
+                cleaned_rejection["reasonCodes"],
+                f"fissionCandidate.narrowerCandidateRejections[{i}].reasonCodes",
+            )
         cleaned.append(cleaned_rejection)
     return cleaned
+
+
+def _validate_registered_reason_codes(codes: Iterable[str], label: str) -> None:
+    try:
+        assert_registered_reason_codes(codes)
+    except UnknownReasonCodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"`{label}` contains unregistered reason codes: {', '.join(exc.unknown_codes)}",
+        ) from exc
 
 
 def _validate_non_negative_int(value: object, label: str) -> int:
