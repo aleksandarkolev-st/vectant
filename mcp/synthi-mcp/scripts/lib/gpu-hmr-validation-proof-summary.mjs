@@ -282,6 +282,33 @@ function visualEvidenceLimitations(qualityRows) {
     }));
 }
 
+function visualEvidenceExpected(input) {
+  return input.visualEvidenceExpected === true
+    || input.visual_evidence_expected === true
+    || input.visualEvidenceRequired === true
+    || input.visual_evidence_required === true;
+}
+
+function missingVisualEvidenceLimitation(input, qualityRows) {
+  if (!visualEvidenceExpected(input)) return [];
+  if (compactObjects(qualityRows).some((row) => row.accepted_as_visual_evidence === true)) {
+    return [];
+  }
+  return [{
+    stage_id: 'visual-evidence',
+    status: 'blocked',
+    required_state: 'gpu-hmr-visual-varied-frame',
+    observed_state: null,
+    degraded_state: 'gpu-hmr-visual-evidence-missing',
+    degraded_reason: qualityRows.length > 0
+      ? 'visual_evidence_not_accepted'
+      : 'visual_evidence_not_collected',
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
 export function buildGpuHmrValidationProofSummary(input = {}) {
   const validationContext = isObject(input.validationContext)
     ? input.validationContext
@@ -319,6 +346,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
     ...visualEvidenceLimitations(qualityRows),
+    ...missingVisualEvidenceLimitation(input, qualityRows),
     ...blockedStagesFromProof(input.fullRuntimeProof).map((stage) => ({
       ...stage,
       proof_artifact_path: input.runtimeProofArtifactPath ?? input.runtime_proof_artifact_path ?? null,

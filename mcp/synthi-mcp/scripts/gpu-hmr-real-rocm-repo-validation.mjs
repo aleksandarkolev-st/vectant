@@ -2883,6 +2883,8 @@ async function writeResults() {
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,
+    visualEvidenceExpected: CFG.expectScreenshot
+      || (Number.isFinite(CFG.screenshotAttempts) && CFG.screenshotAttempts > 0),
     visualArtifactPaths,
     proof_artifacts: report.proof_artifacts,
     runtimeProofArtifactRecords: report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],

@@ -5409,6 +5409,88 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("reports missing accepted visual evidence only when a render run expects it", () => {
+    const optionalSummary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      screenshots: [],
+    });
+    expect(optionalSummary.visual_artifact_paths).toEqual([]);
+    expect(optionalSummary.limitations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          degraded_state: "gpu-hmr-visual-evidence-missing",
+        }),
+      ])
+    );
+
+    const missingSummary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      visualEvidenceExpected: true,
+      screenshots: [],
+    });
+
+    expect(missingSummary.visual_artifact_paths).toEqual([]);
+    expect(missingSummary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          status: "blocked",
+          required_state: "gpu-hmr-visual-varied-frame",
+          degraded_state: "gpu-hmr-visual-evidence-missing",
+          degraded_reason: "visual_evidence_not_collected",
+        }),
+      ])
+    );
+  });
+
+  it("reports rejected screenshots as missing accepted visual evidence for render runs", () => {
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      visualEvidenceExpected: true,
+      screenshots: [
+        {
+          label: "flat",
+          path: "artifacts/flat.png",
+          width: 800,
+          height: 600,
+          visible_pixels: 480000,
+          mean_luma: 90,
+          luma_stddev: 0.2,
+          rgb_span_mean: 0,
+          unique_color_sample_count: 1,
+        },
+      ],
+    });
+
+    expect(summary.visual_artifact_paths).toEqual([]);
+    expect(summary.visual_evidence_quality).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "artifacts/flat.png",
+          visual_quality: "gpu-hmr-visual-flat-frame",
+          accepted_as_visual_evidence: false,
+        }),
+      ])
+    );
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          status: "diagnostic",
+          degraded_reason: "visual_evidence_low_variance",
+          degraded_state: "gpu-hmr-visual-flat-frame",
+        }),
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          status: "blocked",
+          degraded_state: "gpu-hmr-visual-evidence-missing",
+          degraded_reason: "visual_evidence_not_accepted",
+        }),
+      ])
+    );
+  });
+
   it("does not reconstruct dispatch proof from output state alone", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [acceptedSourceProof()],
