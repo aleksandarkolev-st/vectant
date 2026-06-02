@@ -373,6 +373,13 @@ function runtimeAttachmentValueProven(value) {
     || runtimeAttachmentValueProven(object.runtimeAttachment);
 }
 
+const ORIGINAL_HOST_ATTACHMENT_ACTIONS = new Set([
+  'upgrade_runtime_boundary_to_original_host_attachment',
+  'attach_runtime_object_dispatch_boundary',
+  'wrap_source_launch_with_synthi_runtime_boundary',
+  'instrument_host_launch_boundary',
+]);
+
 function originalHostAttachmentProposalValid(value) {
   const object = objectValue(value);
   if (!object) return false;
@@ -383,15 +390,27 @@ function originalHostAttachmentProposalValid(value) {
     'synthi_original_host_path_with_provenance',
   ].includes(api));
   const runtimeEvidenceRequired = objectValue(object.runtimeEvidenceRequired);
+  const instrumentationAction = nonEmptyString(object.instrumentationAction);
   return Boolean(
     nonEmptyString(object.proposalId)
     && nonEmptyString(object.hostPathId)
     && nonEmptyString(object.sourceLaunchSiteId)
+    && nonEmptyString(object.path)
+    && Number.isInteger(object.line)
+    && object.line > 0
+    && Number.isInteger(object.column)
+    && object.column > 0
+    && nonEmptyString(object.sourceProvenance)
+    && sha256Digest(object.sourceHash)
+    && sha256Digest(object.snippetHash)
+    && instrumentationAction
+    && ORIGINAL_HOST_ATTACHMENT_ACTIONS.has(instrumentationAction)
     && hasRequiredBoundaryApi
     && runtimeEvidenceRequired
     && boolTrue(runtimeEvidenceRequired.runtimeSessionScoped)
     && boolTrue(runtimeEvidenceRequired.dispatchBoundaryObserved)
     && boolTrue(runtimeEvidenceRequired.dispatchEntryRuntimeVerified)
+    && boolTrue(runtimeEvidenceRequired.launchArgProvenanceComplete)
   );
 }
 

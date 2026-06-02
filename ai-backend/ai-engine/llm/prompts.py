@@ -4627,6 +4627,13 @@ Return a JSON object:
         "proposalId": "...",
         "sourceLaunchSiteId": "...",
         "hostPathId": "...",
+        "path": "...",
+        "line": 1,
+        "column": 1,
+        "sourceProvenance": "...",
+        "sourceHash": "sha256:...",
+        "snippetHash": "sha256:...",
+        "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
         "requiredBoundaryApis": [
           "synthi_gpu_launch_source_location",
           "synthi_gpu_launch_original_host_path"
@@ -4634,7 +4641,8 @@ Return a JSON object:
         "runtimeEvidenceRequired": {
           "runtimeSessionScoped": true,
           "dispatchBoundaryObserved": true,
-          "dispatchEntryRuntimeVerified": true
+          "dispatchEntryRuntimeVerified": true,
+          "launchArgProvenanceComplete": true
         }
       }
     ],
@@ -4706,8 +4714,11 @@ Rules:
 - `attachmentInstrumentationProposals` are allowed only when original-host
   mapping evidence identifies a concrete source launch site and host path id,
   but runtime attachment evidence is still missing. Include the full structured
-  proposal with `proposalId`, `sourceLaunchSiteId`, `hostPathId`, an accepted
-  Synthi runtime boundary API, and the runtime evidence requirements above.
+  proposal with `proposalId`, `sourceLaunchSiteId`, `hostPathId`, source
+  `path`, positive `line` and `column`, `sourceProvenance`, real `sourceHash`
+  and `snippetHash` SHA-256 digests, an accepted `instrumentationAction`, an
+  accepted Synthi runtime boundary API, and the runtime evidence requirements
+  above, including complete launch argument provenance.
   These booleans declare evidence that must later be observed; they are not
   proof claims. Do not emit bare attachment proposal ids without the matching
   structured proposal object.

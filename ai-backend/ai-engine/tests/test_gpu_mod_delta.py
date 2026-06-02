@@ -164,6 +164,13 @@ def test_parse_gpu_diff_response_preserves_attachment_instrumentation_proposal()
                         "proposalId": proposal_id,
                         "sourceLaunchSiteId": "launch-site:sha256:" + "5" * 64,
                         "hostPathId": "host-path:sha256:" + "6" * 64,
+                        "path": "src/render_loop.cpp",
+                        "line": 42,
+                        "column": 17,
+                        "sourceProvenance": "source_baseline_contents",
+                        "sourceHash": "sha256:" + "a" * 64,
+                        "snippetHash": "sha256:" + "b" * 64,
+                        "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
                         "requiredBoundaryApis": [
                             "synthi_gpu_launch_source_location",
                             "synthi_gpu_launch_original_host_path",
@@ -172,6 +179,7 @@ def test_parse_gpu_diff_response_preserves_attachment_instrumentation_proposal()
                             "runtimeSessionScoped": True,
                             "dispatchBoundaryObserved": True,
                             "dispatchEntryRuntimeVerified": True,
+                            "launchArgProvenanceComplete": True,
                         },
                     }
                 ],
@@ -205,6 +213,36 @@ def test_parse_gpu_diff_response_rejects_bare_attachment_proposal_id():
     assert "requires matching structured attachmentInstrumentationProposals" in str(excinfo.value)
 
 
+def test_parse_gpu_diff_response_rejects_incomplete_attachment_proposal_metadata():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "attachmentInstrumentationProposals": [
+                    {
+                        "proposalId": "launch-attachment-proposal:sha256:" + "8" * 64,
+                        "sourceLaunchSiteId": "launch-site:sha256:" + "9" * 64,
+                        "hostPathId": "host-path:sha256:" + "a" * 64,
+                        "requiredBoundaryApis": [
+                            "synthi_gpu_launch_source_location",
+                            "synthi_gpu_launch_original_host_path",
+                        ],
+                        "runtimeEvidenceRequired": {
+                            "runtimeSessionScoped": True,
+                            "dispatchBoundaryObserved": True,
+                            "dispatchEntryRuntimeVerified": True,
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "instrumentationAction" in str(excinfo.value)
+
+
 def test_parse_gpu_diff_response_rejects_malformed_attachment_proposal():
     raw = json.dumps(
         {
@@ -216,11 +254,19 @@ def test_parse_gpu_diff_response_rejects_malformed_attachment_proposal():
                         "proposalId": "launch-attachment-proposal:sha256:" + "8" * 64,
                         "sourceLaunchSiteId": "launch-site:sha256:" + "9" * 64,
                         "hostPathId": "host-path:sha256:" + "a" * 64,
+                        "path": "src/render_loop.cpp",
+                        "line": 42,
+                        "column": 17,
+                        "sourceProvenance": "source_baseline_contents",
+                        "sourceHash": "sha256:" + "b" * 64,
+                        "snippetHash": "sha256:" + "c" * 64,
+                        "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
                         "requiredBoundaryApis": ["unrelated_api"],
                         "runtimeEvidenceRequired": {
                             "runtimeSessionScoped": True,
                             "dispatchBoundaryObserved": True,
                             "dispatchEntryRuntimeVerified": True,
+                            "launchArgProvenanceComplete": True,
                         },
                     }
                 ],
@@ -368,6 +414,8 @@ def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
     assert "outputTargetId" in prompt
     assert "artifactId" in prompt
     assert "attachmentInstrumentationProposals" in prompt
+    assert "instrumentationAction" in prompt
+    assert "launchArgProvenanceComplete" in prompt
     assert "originalHostAttachmentInstrumentationProposalIds" in prompt
     assert "dispatchEntryRuntimeVerified" in prompt
     assert "originalHostLaunchMappingEvidenceIds" in prompt

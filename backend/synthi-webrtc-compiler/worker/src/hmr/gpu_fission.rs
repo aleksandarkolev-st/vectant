@@ -65,6 +65,13 @@ const RENDER_OUTPUT_ORACLE_KINDS: &[&str] = &[
     "selected_pixel_values",
 ];
 
+const ORIGINAL_HOST_ATTACHMENT_ACTIONS: &[&str] = &[
+    "upgrade_runtime_boundary_to_original_host_attachment",
+    "attach_runtime_object_dispatch_boundary",
+    "wrap_source_launch_with_synthi_runtime_boundary",
+    "instrument_host_launch_boundary",
+];
+
 const ORIGINAL_HOST_LAUNCH_MAPPING_EVIDENCE_FIELDS: &[&str] = &[
     "originalHostLaunchMappingEvidenceIds",
     "originalHostPathEvidenceIds",
@@ -1499,9 +1506,21 @@ fn original_host_attachment_proposal_valid(value: &Value) -> bool {
                     | "synthi_original_host_path_with_provenance"
             )
         });
+    let has_instrumentation_action = object
+        .get("instrumentationAction")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|action| ORIGINAL_HOST_ATTACHMENT_ACTIONS.contains(&action));
     non_empty_string(object.get("proposalId"))
         && non_empty_string(object.get("hostPathId"))
         && non_empty_string(object.get("sourceLaunchSiteId"))
+        && non_empty_string(object.get("path"))
+        && non_empty_string(object.get("sourceProvenance"))
+        && positive_u64(object.get("line")).is_some()
+        && positive_u64(object.get("column")).is_some()
+        && sha256_digest_string(object.get("sourceHash"))
+        && sha256_digest_string(object.get("snippetHash"))
+        && has_instrumentation_action
         && has_required_api
         && object
             .get("runtimeEvidenceRequired")
@@ -1510,6 +1529,7 @@ fn original_host_attachment_proposal_valid(value: &Value) -> bool {
                 bool_true(evidence.get("runtimeSessionScoped"))
                     && bool_true(evidence.get("dispatchBoundaryObserved"))
                     && bool_true(evidence.get("dispatchEntryRuntimeVerified"))
+                    && bool_true(evidence.get("launchArgProvenanceComplete"))
             })
 }
 
@@ -2458,6 +2478,51 @@ mod tests {
     }
 
     #[test]
+    fn rejects_original_host_attachment_candidate_with_incomplete_instrumentation_proposal() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!({
+            "required": true,
+            "reason": "attach through preserved runtime launch boundary"
+        });
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
+        candidate["launchAttachmentScout"] = json!({
+            "mapping": {
+                "attachmentInstrumentationProposals": [
+                    {
+                        "proposalId": "launch-attachment-proposal:sha256:abc",
+                        "sourceLaunchSiteId": "launch-site:sha256:def",
+                        "hostPathId": "host-path:sha256:123",
+                        "requiredBoundaryApis": [
+                            "synthi_gpu_launch_source_location",
+                            "synthi_gpu_launch_original_host_path"
+                        ],
+                        "runtimeEvidenceRequired": {
+                            "runtimeSessionScoped": true,
+                            "dispatchBoundaryObserved": true,
+                            "dispatchEntryRuntimeVerified": true
+                        }
+                    }
+                ]
+            }
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["originalHostAttachmentInstrumentationProposalIds"],
+            json!([])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_attachment_instrumentation_missing"));
+    }
+
+    #[test]
     fn accepts_original_host_attachment_candidate_with_mapping_and_instrumentation_proposal() {
         let mut candidate = valid_candidate();
         candidate["originalHostPathRequirement"] = json!({
@@ -2473,11 +2538,19 @@ mod tests {
                     "proposalId": "launch-attachment-proposal:sha256:abc",
                     "sourceLaunchSiteId": "launch-site:sha256:def",
                     "hostPathId": "host-path:sha256:abc",
+                    "path": "src/render_loop.cpp",
+                    "line": 42,
+                    "column": 17,
+                    "sourceProvenance": "source_baseline_contents",
+                    "sourceHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "snippetHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
                     "requiredBoundaryApis": ["synthi_gpu_launch_source_location"],
                     "runtimeEvidenceRequired": {
                         "runtimeSessionScoped": true,
                         "dispatchBoundaryObserved": true,
-                        "dispatchEntryRuntimeVerified": true
+                        "dispatchEntryRuntimeVerified": true,
+                        "launchArgProvenanceComplete": true
                     }
                 }]
             }

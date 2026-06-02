@@ -128,20 +128,31 @@ FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS = {
     "synthi_gpu_launch_source_location",
     "synthi_original_host_path_with_provenance",
 }
+FISSION_ATTACHMENT_PROPOSAL_ACTIONS = {
+    "upgrade_runtime_boundary_to_original_host_attachment",
+    "attach_runtime_object_dispatch_boundary",
+    "wrap_source_launch_with_synthi_runtime_boundary",
+    "instrument_host_launch_boundary",
+}
 FISSION_ATTACHMENT_PROPOSAL_STRING_FIELDS = {
     "dispatchEntryId",
     "hostPathId",
     "instrumentationAction",
     "kernel",
+    "path",
     "proposalId",
     "reason",
     "runtimeProofBoundary",
+    "snippetHash",
     "sourceLaunchSiteId",
+    "sourceHash",
     "sourcePath",
+    "sourceProvenance",
 }
 FISSION_ATTACHMENT_PROPOSAL_RUNTIME_EVIDENCE_BOOL_FIELDS = {
     "dispatchBoundaryObserved",
     "dispatchEntryRuntimeVerified",
+    "launchArgProvenanceComplete",
     "runtimeSessionScoped",
 }
 FISSION_OUTPUT_ORACLE_STRING_FIELDS = {
@@ -617,11 +628,47 @@ def _validate_fission_attachment_proposal(value: Mapping[str, object], index: in
                 status_code=400,
                 detail=f"`fissionCandidate.attachmentInstrumentationProposals[{index}].{field}` must be a string",
             )
-    for field in ("proposalId", "sourceLaunchSiteId", "hostPathId"):
+    for field in (
+        "proposalId",
+        "sourceLaunchSiteId",
+        "hostPathId",
+        "path",
+        "sourceProvenance",
+        "instrumentationAction",
+    ):
         if not isinstance(cleaned.get(field), str) or not str(cleaned[field]).strip():
             raise HTTPException(
                 status_code=400,
                 detail=f"`fissionCandidate.attachmentInstrumentationProposals[{index}].{field}` must be a non-empty string",
+            )
+    action = str(cleaned["instrumentationAction"]).strip()
+    if action not in FISSION_ATTACHMENT_PROPOSAL_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.attachmentInstrumentationProposals"
+                f"[{index}].instrumentationAction` must be an accepted attachment action"
+            ),
+        )
+    for field in ("line", "column"):
+        value = cleaned.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.attachmentInstrumentationProposals"
+                    f"[{index}].{field}` must be a positive integer"
+                ),
+            )
+    for field in ("sourceHash", "snippetHash"):
+        value = cleaned.get(field)
+        if not isinstance(value, str) or not _SHA256_DIGEST_RE.match(value.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.attachmentInstrumentationProposals"
+                    f"[{index}].{field}` must be a SHA-256 digest"
+                ),
             )
     boundary_apis = _validate_fission_string_list(
         cleaned.get("requiredBoundaryApis"),

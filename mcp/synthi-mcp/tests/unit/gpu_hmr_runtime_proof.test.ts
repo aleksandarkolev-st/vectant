@@ -372,6 +372,13 @@ function acceptedLaunchAttachmentProposal() {
     proposalId: `launch-attachment-proposal:sha256:${"4".repeat(64)}`,
     sourceLaunchSiteId: `launch-site:sha256:${"5".repeat(64)}`,
     hostPathId: `host-path:sha256:${"6".repeat(64)}`,
+    path: "src/render_loop.cpp",
+    line: 42,
+    column: 17,
+    sourceProvenance: "source_baseline_contents",
+    sourceHash: `sha256:${"a".repeat(64)}`,
+    snippetHash: `sha256:${"b".repeat(64)}`,
+    instrumentationAction: "upgrade_runtime_boundary_to_original_host_attachment",
     requiredBoundaryApis: [
       "synthi_gpu_launch_source_location",
       "synthi_gpu_launch_original_host_path",
@@ -380,6 +387,7 @@ function acceptedLaunchAttachmentProposal() {
       runtimeSessionScoped: true,
       dispatchBoundaryObserved: true,
       dispatchEntryRuntimeVerified: true,
+      launchArgProvenanceComplete: true,
     },
   };
 }
@@ -2130,6 +2138,55 @@ describe("GPU HMR runtime output proof classification", () => {
           stageId: "fission-candidate-verification",
           status: "passed",
           evidenceRefs: ["evidence:fission-verifier-report:original-host-bare-proposal"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContracts[0].originalHostAttachmentInstrumentationProposalIds)
+      .toEqual([]);
+    expect(proof.degradedReason).toBe(
+      "fission_selected_island_original_host_attachment_instrumentation_missing",
+    );
+  });
+
+  it("does not prove fission from original-host mapping with incomplete attachment proposal metadata", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;
+    metadata.candidates[0].candidate.originalHostLaunchMappingId =
+      `host-launch:sha256:${"7".repeat(64)}`;
+    metadata.candidates[0].launchAttachmentScout = {
+      mapping: {
+        attachmentInstrumentationProposals: [{
+          proposalId: `launch-attachment-proposal:sha256:${"8".repeat(64)}`,
+          sourceLaunchSiteId: `launch-site:sha256:${"9".repeat(64)}`,
+          hostPathId: `host-path:sha256:${"a".repeat(64)}`,
+          requiredBoundaryApis: [
+            "synthi_gpu_launch_source_location",
+            "synthi_gpu_launch_original_host_path",
+          ],
+          runtimeEvidenceRequired: {
+            runtimeSessionScoped: true,
+            dispatchBoundaryObserved: true,
+            dispatchEntryRuntimeVerified: true,
+          },
+        }],
+      },
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:original-host-incomplete-proposal",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:original-host-incomplete-proposal"],
         }],
       },
     }]);
