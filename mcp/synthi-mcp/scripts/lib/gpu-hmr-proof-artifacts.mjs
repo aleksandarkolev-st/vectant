@@ -594,6 +594,7 @@ const ORIGINAL_HOST_ATTACHMENT_ACTIONS = new Set([
   'upgrade_runtime_boundary_to_original_host_attachment',
   'attach_runtime_object_dispatch_boundary',
   'wrap_source_launch_with_synthi_runtime_boundary',
+  'wrap_native_launch_api_with_synthi_runtime_boundary',
   'instrument_host_launch_boundary',
 ]);
 

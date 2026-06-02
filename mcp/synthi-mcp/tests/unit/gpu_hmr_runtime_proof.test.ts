@@ -2503,6 +2503,44 @@ describe("GPU HMR runtime output proof classification", () => {
       .toEqual([acceptedLaunchAttachmentProposal().proposalId]);
   });
 
+  it("proves fission proposal coverage from native launch API attachment metadata", () => {
+    const nativeLaunchProposal = {
+      ...acceptedLaunchAttachmentProposal(),
+      instrumentationAction: "wrap_native_launch_api_with_synthi_runtime_boundary",
+    };
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;
+    metadata.candidates[0].candidate.originalHostLaunchMappingId =
+      `host-launch:sha256:${"7".repeat(64)}`;
+    metadata.candidates[0].launchAttachmentScout = {
+      mapping: {
+        attachmentInstrumentationProposals: [nativeLaunchProposal],
+      },
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:original-host-native-launch-proposal",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:original-host-native-launch-proposal"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(true);
+    expect(proof.selectedIslandContracts[0].originalHostRuntimeAttachmentProven).toBe(false);
+    expect(proof.selectedIslandContracts[0].originalHostAttachmentInstrumentationProposalIds)
+      .toEqual([nativeLaunchProposal.proposalId]);
+  });
+
   it("proves fission from original-host mapping with runtime-proven attachment", () => {
     const metadata = acceptedFissionVerifierMetadata();
     metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;

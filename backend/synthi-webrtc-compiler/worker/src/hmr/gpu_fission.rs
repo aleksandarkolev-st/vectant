@@ -69,6 +69,7 @@ const ORIGINAL_HOST_ATTACHMENT_ACTIONS: &[&str] = &[
     "upgrade_runtime_boundary_to_original_host_attachment",
     "attach_runtime_object_dispatch_boundary",
     "wrap_source_launch_with_synthi_runtime_boundary",
+    "wrap_native_launch_api_with_synthi_runtime_boundary",
     "instrument_host_launch_boundary",
 ];
 
@@ -2738,6 +2739,54 @@ mod tests {
 
         assert_eq!(report["status"], "pass");
         assert_eq!(report["originalHostLaunchMappingRequired"], true);
+        assert_eq!(
+            report["originalHostAttachmentInstrumentationProposalIds"],
+            json!(["launch-attachment-proposal:sha256:abc"])
+        );
+        assert_eq!(report["originalHostRuntimeAttachmentProven"], false);
+    }
+
+    #[test]
+    fn accepts_original_host_attachment_candidate_with_native_launch_api_proposal() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!({
+            "required": true,
+            "reason": "attach through preserved runtime launch boundary"
+        });
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-native-api");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:native-api"]);
+        candidate["launchAttachmentScout"] = json!({
+            "mapping": {
+                "attachmentInstrumentationProposals": [{
+                    "proposalId": "launch-attachment-proposal:sha256:abc",
+                    "sourceLaunchSiteId": "launch-site:sha256:def",
+                    "hostPathId": "host-path:sha256:abc",
+                    "path": "src/render_loop.cpp",
+                    "line": 42,
+                    "column": 17,
+                    "sourceProvenance": "source_baseline_contents",
+                    "sourceHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "snippetHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "instrumentationAction": "wrap_native_launch_api_with_synthi_runtime_boundary",
+                    "requiredBoundaryApis": [
+                        "synthi_gpu_launch_source_location",
+                        "synthi_gpu_launch_original_host_path",
+                        "synthi_original_host_path_with_provenance"
+                    ],
+                    "runtimeEvidenceRequired": {
+                        "runtimeSessionScoped": true,
+                        "dispatchBoundaryObserved": true,
+                        "dispatchEntryRuntimeVerified": true,
+                        "launchArgProvenanceComplete": true
+                    }
+                }]
+            }
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
         assert_eq!(
             report["originalHostAttachmentInstrumentationProposalIds"],
             json!(["launch-attachment-proposal:sha256:abc"])

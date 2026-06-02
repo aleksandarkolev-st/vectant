@@ -4372,6 +4372,143 @@ fn source_baseline_runtime_object_launch_sites(
     }
 }
 
+fn source_first_launch_argument<'a>(
+    source: &'a str,
+    open_paren_offset: usize,
+    max_scan_bytes: usize,
+) -> Option<&'a str> {
+    let start = open_paren_offset.checked_add(1)?;
+    if start > source.len() {
+        return None;
+    }
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escape = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut previous = '\0';
+    for (relative, ch) in source[start..].char_indices() {
+        if relative > max_scan_bytes {
+            break;
+        }
+        let absolute = start + relative;
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            previous = ch;
+            continue;
+        }
+        if in_block_comment {
+            if previous == '*' && ch == '/' {
+                in_block_comment = false;
+                previous = '\0';
+            } else {
+                previous = ch;
+            }
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            previous = ch;
+            continue;
+        }
+        if previous == '/' && ch == '/' {
+            in_line_comment = true;
+            previous = '\0';
+            continue;
+        }
+        if previous == '/' && ch == '*' {
+            in_block_comment = true;
+            previous = '\0';
+            continue;
+        }
+        match ch {
+            '"' | '\'' => in_string = Some(ch),
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
+                return Some(&source[start..absolute]);
+            }
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth = brace_depth.saturating_add(1),
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '<' => angle_depth = angle_depth.saturating_add(1),
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
+                return Some(&source[start..absolute]);
+            }
+            _ => {}
+        }
+        previous = ch;
+    }
+    None
+}
+
+fn source_identifier_mentions_symbol(source: &str, symbol: &str) -> bool {
+    let pattern = format!(r"\b{}\b", regex::escape(symbol));
+    regex::Regex::new(&pattern)
+        .ok()
+        .is_some_and(|re| re.is_match(source))
+}
+
+fn source_baseline_native_launch_api_sites(
+    source_file: &LaunchMappingSourceContent,
+    symbol: &str,
+    sites: &mut Vec<serde_json::Value>,
+) {
+    let Ok(call_re) = regex::Regex::new(r"\b(?P<callee>[A-Za-z_][A-Za-z0-9_:]*)\s*\(") else {
+        return;
+    };
+    let source = &source_file.content;
+    for call in call_re.captures_iter(source).take(256) {
+        let Some(callee) = call.name("callee").map(|m| m.as_str()) else {
+            continue;
+        };
+        let callee_lower = callee.to_ascii_lowercase();
+        if !callee_lower.contains("launch") || !callee_lower.contains("kernel") {
+            continue;
+        }
+        let Some(full_call) = call.get(0) else {
+            continue;
+        };
+        let open_paren_offset = full_call.end().saturating_sub(1);
+        let Some(first_arg) = source_first_launch_argument(source, open_paren_offset, 4096) else {
+            continue;
+        };
+        if !source_identifier_mentions_symbol(first_arg, symbol) {
+            continue;
+        }
+        push_source_launch_mapping_site(
+            sites,
+            &source_file.path,
+            &source_file.content,
+            &source_file.provenance,
+            full_call.start(),
+            symbol,
+            "native_kernel_launch_api",
+        );
+    }
+}
+
 fn source_launch_mapping_sites_for_symbol(
     sources: &DeviceCompileSources,
     symbol: &str,
@@ -4381,6 +4518,7 @@ fn source_launch_mapping_sites_for_symbol(
         source_baseline_raw_launch_sites(source_file, symbol, &mut sites);
         source_baseline_boundary_launch_sites(source_file, symbol, &mut sites);
         source_baseline_runtime_object_launch_sites(source_file, symbol, &mut sites);
+        source_baseline_native_launch_api_sites(source_file, symbol, &mut sites);
     }
     sites
 }
@@ -4389,6 +4527,7 @@ fn attachment_instrumentation_action(form: Option<&str>) -> &'static str {
     match form {
         Some("synthi_runtime_boundary") => "upgrade_runtime_boundary_to_original_host_attachment",
         Some("runtime_kernel_object") => "attach_runtime_object_dispatch_boundary",
+        Some("native_kernel_launch_api") => "wrap_native_launch_api_with_synthi_runtime_boundary",
         Some("raw_triple_chevron") => "wrap_source_launch_with_synthi_runtime_boundary",
         _ => "instrument_host_launch_boundary",
     }
@@ -13287,6 +13426,68 @@ void bind_and_launch(Buffer* pixels) {
             .find(|stage| stage.stage_id == "fission-candidate-verification")
             .expect("fission stage should be recorded");
         assert_eq!(fission_stage.status, "passed");
+    }
+
+    #[test]
+    fn launch_mapping_detects_symbol_first_generic_native_launch_api() {
+        let host_source = r#"
+void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
+  runtimeLaunchKernel(reinterpret_cast<const void*>(&shade), grid, block, args, 0, stream);
+}
+"#;
+        let sources = DeviceCompileSources {
+            full_source: "extern \"C\" __global__ void shade(float*) {}".to_string(),
+            full_filename: Some("src/device.cpp".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: false,
+            partial_source: None,
+            partial_filename: None,
+            partial_symbols: symbols(&["shade"]),
+            partial_source_paths: vec!["src/device.cpp".to_string()],
+            partial_required: true,
+            partial_artifact_kind: Some("source_include_bridge".to_string()),
+            partial_fallback_reason: None,
+            partial_fission_candidate: None,
+            source_baseline_contents: Vec::new(),
+            launch_mapping_sources: vec![LaunchMappingSourceContent {
+                path: "src/host_runtime.cpp".to_string(),
+                content: host_source.to_string(),
+                provenance: "compile_request_projection".to_string(),
+            }],
+        };
+
+        let sites = source_launch_mapping_sites_for_symbol(&sources, "shade");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(
+            sites[0].get("form").and_then(serde_json::Value::as_str),
+            Some("native_kernel_launch_api")
+        );
+        let proposal = source_launch_attachment_instrumentation_proposal(&sites[0])
+            .expect("native launch mapping should produce an attachment proposal");
+        assert_eq!(
+            proposal
+                .get("instrumentationAction")
+                .and_then(serde_json::Value::as_str),
+            Some("wrap_native_launch_api_with_synthi_runtime_boundary")
+        );
+        assert_eq!(
+            proposal
+                .get("runtimeProofBoundary")
+                .and_then(serde_json::Value::as_str),
+            Some("instrumentation_proposal_only")
+        );
+        assert_eq!(
+            proposal
+                .pointer("/runtimeEvidenceRequired/launchArgProvenanceComplete")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            proposal
+                .get("runtimeAttachmentProven")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]
