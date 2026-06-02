@@ -117,6 +117,13 @@ const REQUIRED_FISSION_VERIFICATION_CATEGORIES = [
   'output_oracle',
 ];
 
+function orderedStringArrayEquals(actual, expected) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) {
+    return false;
+  }
+  return expected.every((field, index) => actual[index] === field);
+}
+
 function fissionSelectionPolicyAccepted(value) {
   return nonEmptyString(value) === ACCEPTED_FISSION_SELECTION_POLICY;
 }
@@ -134,7 +141,7 @@ function fissionSelectionScoreIntegrity(selectedCandidate, selectionPolicy) {
     return { proven: false, reason: 'fission_selected_candidate_selection_policy_mismatch' };
   }
   const comparisonOrder = nonEmptyStringArray(score.comparisonOrder);
-  if (!REQUIRED_FISSION_SELECTION_ORDER.every((field) => comparisonOrder.includes(field))) {
+  if (!orderedStringArrayEquals(comparisonOrder, REQUIRED_FISSION_SELECTION_ORDER)) {
     return { proven: false, reason: 'fission_selected_candidate_selection_order_unverified' };
   }
   const numericFields = ['total', ...REQUIRED_FISSION_SELECTION_ORDER];
@@ -159,11 +166,11 @@ function fissionSelectionDecisionIntegrity(metadata, selectionPolicy, selectedCa
     return { proven: false, reason: 'fission_selection_decision_not_deterministic' };
   }
   const comparisonOrder = nonEmptyStringArray(decision.comparisonOrder);
-  if (!REQUIRED_FISSION_SELECTION_ORDER.every((field) => comparisonOrder.includes(field))) {
+  if (!orderedStringArrayEquals(comparisonOrder, REQUIRED_FISSION_SELECTION_ORDER)) {
     return { proven: false, reason: 'fission_selection_decision_order_unverified' };
   }
   const tieBreakers = nonEmptyStringArray(decision.tieBreakers);
-  if (!REQUIRED_FISSION_SELECTION_TIE_BREAKERS.every((field) => tieBreakers.includes(field))) {
+  if (!orderedStringArrayEquals(tieBreakers, REQUIRED_FISSION_SELECTION_TIE_BREAKERS)) {
     return { proven: false, reason: 'fission_selection_decision_tie_break_unverified' };
   }
   if (

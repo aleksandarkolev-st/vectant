@@ -2155,6 +2155,66 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission_selection_decision_missing");
   });
 
+  it("does not prove fission when deterministic selection order is reordered", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.selectionDecision.comparisonOrder = [
+      "historicalTimingPenaltyMs",
+      "compileCostPenaltyMs",
+      "sourceSpanExtent",
+      "includeClosureCount",
+      "sourcePathCount",
+      "exportedSymbolOverage",
+      "targetSymbolCount",
+      "missingVerificationCategoryCount",
+      "scopeRank",
+    ];
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof.json",
+      artifact: {
+        proofId: "gpu-proof:selection-decision-order",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:selection-decision-order",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:selection-decision-order"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selection_decision_order_unverified");
+  });
+
+  it("does not prove fission when deterministic selection tie breakers are reordered", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    metadata.selectionDecision.tieBreakers = ["candidateIndex", "verifierEvidenceId"];
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof.json",
+      artifact: {
+        proofId: "gpu-proof:selection-decision-tie-break",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:selection-decision-tie-break",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:selection-decision-tie-break"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_selection_decision_tie_break_unverified");
+  });
+
   it("does not prove fission without selected candidate ranking score provenance", () => {
     const metadata = acceptedFissionVerifierMetadata();
     delete metadata.candidates[0].selectionScore;
