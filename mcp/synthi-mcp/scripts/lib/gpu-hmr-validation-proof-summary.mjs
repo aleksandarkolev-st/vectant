@@ -215,7 +215,8 @@ function visualArtifactPaths(input) {
     ...(Array.isArray(input.visual_artifact_paths) ? input.visual_artifact_paths : []),
   ]);
   const screenshots = compactObjects(input.screenshots)
-    .filter((shot) => !Number.isFinite(shot.visible_pixels) || shot.visible_pixels > 0)
+    .map((shot) => visualEvidenceRow(shot))
+    .filter((shot) => shot.accepted_as_visual_evidence)
     .flatMap((shot) => [shot.path, shot.filePath, shot.file_path]);
   return compactStringList([...explicit, ...screenshots]);
 }
@@ -264,9 +265,9 @@ function visualEvidenceLimitations(qualityRows) {
   return compactObjects(qualityRows)
     .filter((row) => {
       const quality = row.visual_quality ?? classifyGpuHmrVisualEvidenceStats(row);
-      return screenshotQualifiesAsVisualEvidence(row)
-        && quality !== 'gpu-hmr-visual-varied-frame'
-        && quality !== 'gpu-hmr-visual-unmeasured';
+      return quality === 'gpu-hmr-visual-flat-frame'
+        || quality === 'gpu-hmr-visual-low-visible-pixels'
+        || quality === 'gpu-hmr-visual-too-small';
     })
     .map((row) => ({
       stage_id: 'visual-evidence',

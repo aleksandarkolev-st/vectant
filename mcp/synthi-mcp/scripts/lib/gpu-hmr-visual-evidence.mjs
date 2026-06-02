@@ -43,11 +43,13 @@ export function classifyGpuHmrVisualEvidenceStats(stats = {}) {
 }
 
 export function screenshotQualifiesAsVisualEvidence(shot) {
+  const quality = shot?.visual_quality ?? shot?.visualQuality ?? classifyGpuHmrVisualEvidenceStats(shot);
   return Boolean(
     shot
       && Number(shot.width) >= MIN_VISUAL_WIDTH
       && Number(shot.height) >= MIN_VISUAL_HEIGHT
       && Number(shot.visible_pixels ?? shot.visiblePixels) > MIN_VISIBLE_PIXELS
+      && quality === 'gpu-hmr-visual-varied-frame'
       && typeof (shot.path ?? shot.filePath ?? shot.file_path) === 'string'
       && String(shot.path ?? shot.filePath ?? shot.file_path).trim(),
   );

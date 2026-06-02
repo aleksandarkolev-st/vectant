@@ -199,6 +199,10 @@ const CFG = {
   buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
   runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
   upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND ?? '',
+  nativeLaunchObserver: process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER === '1',
+  nativeLaunchObserverPath:
+    process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH
+    ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
   width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800),
   height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600),
   deltaBefore:
@@ -506,6 +510,11 @@ async function listTrackedFiles() {
   return raw.split('\0').filter(Boolean).sort();
 }
 
+function parseUpstreamRunExitCode(timings) {
+  const match = /\brun_exit_code=(\d+)\b/.exec(String(timings ?? ''));
+  return match ? Number(match[1]) : null;
+}
+
 async function prepareUpstreamBuild() {
   if (CFG.buildMetadataDir) {
     const metadata = await collectBuildMetadataFromHost(CFG.buildMetadataDir);
@@ -535,6 +544,13 @@ async function prepareUpstreamBuild() {
   const cmakeExtraArgs = CFG.cmakeArgs.length
     ? ` ${CFG.cmakeArgs.map((arg) => shQuote(arg)).join(' ')}`
     : '';
+  const nativeLaunchObserverSetup = CFG.nativeLaunchObserver
+    ? [
+        `if [ ! -f ${shQuote(CFG.nativeLaunchObserverPath)} ]; then printf 'native launch observer missing: %s\\n' ${shQuote(CFG.nativeLaunchObserverPath)} >&2; exit 86; fi`,
+        `export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}`,
+        "export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only",
+      ].join('\n')
+    : ':';
   const command = `
 set -e
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
@@ -550,27 +566,37 @@ else
   : > ${shQuote(`${CFG.workerTempDir}/build.log`)}
 fi
 built=$(date +%s%3N)
+run_status=0
 if [ ${CFG.runUpstream ? '1' : '0'} -eq 1 ]; then
+  ${nativeLaunchObserverSetup}
+  set +e
   if [ -n ${shQuote(CFG.upstreamRunCommand)} ]; then
-    ${CFG.upstreamRunCommand} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
+    sh -lc ${shQuote(CFG.upstreamRunCommand)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
   else
     ./build/${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
   fi
+  run_status=$?
+  set -e
 else
   printf 'upstream run skipped by SYNTHI_REAL_ROCM_RUN_UPSTREAM=0\\n' > ${shQuote(`${CFG.workerTempDir}/run.log`)}
 fi
 ran=$(date +%s%3N)
-printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))"
+printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$run_status"
 `;
   const timings = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], CFG.upstreamBuildTimeoutMs, true);
   const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, true);
+  const upstreamRunExitCode = parseUpstreamRunExitCode(timings);
   report.logs.upstream_run = runLog;
   const phase = {
     name: 'upstream_gpu_build_run',
     timings,
+    upstream_run_exit_code: upstreamRunExitCode,
     cmake_config: CFG.cmakeConfigName,
     cmake_args: CFG.cmakeArgs,
     output: runLog.slice(0, 1000),
+    native_launch_observer: CFG.nativeLaunchObserver
+      ? { enabled: true, path: CFG.nativeLaunchObserverPath }
+      : { enabled: false },
   };
   report.phases.push(phase);
   record(
@@ -578,6 +604,13 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$
     'pass',
     `${timings.replace(/\s+/g, ' ')} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} cmake_args=${CFG.cmakeArgs.length}`,
   );
+  if (CFG.runUpstream) {
+    const status = upstreamRunExitCode === 0 ? 'pass' : 'warn';
+    const detail = upstreamRunExitCode === null
+      ? `exit_code=unknown log_bytes=${Buffer.byteLength(runLog)}`
+      : `exit_code=${upstreamRunExitCode} log_bytes=${Buffer.byteLength(runLog)}`;
+    record('upstream GPU target run', status, detail);
+  }
 
   return collectBuildMetadataFromWorker(buildPath);
 }
@@ -1655,6 +1688,31 @@ function runtimeDispatchEvidence(workerEvidence) {
   };
 }
 
+function runtimeNativeLaunchObservationEvidence(workerEvidence) {
+  const lines = workerEvidence.filter((line) =>
+    /\bgpu-runtime-boundary\b.*\bnative_launch_observed\b/i.test(line)
+  );
+  const records = lines.map((line) => ({
+    line,
+    api: logField(line, 'api'),
+    runtimeSession: runtimeSessionIdFromLine(line),
+    sequence: logField(line, 'sequence'),
+    result: logField(line, 'result'),
+    dispatch: logField(line, 'dispatch'),
+  }));
+  return {
+    total_count: records.length,
+    apis: [...new Set(records.map((record) => record.api).filter(Boolean))],
+    runtime_session_ids: [
+      ...new Set(records.map((record) => record.runtimeSession).filter(Boolean)),
+    ],
+    observe_only_count: records.filter((record) =>
+      String(record.dispatch ?? '').toLowerCase() === 'observed-native'
+    ).length,
+    records: records.slice(-20),
+  };
+}
+
 function selectedArtifactIdsFromProofArtifacts(records) {
   const ids = new Set();
   for (const record of Array.isArray(records) ? records : []) {
@@ -1888,7 +1946,15 @@ function selfCheckRuntimeDispatchEvidence() {
   const visualRows = [
     { path: 'blank.png', width: 800, height: 600, visible_pixels: 0 },
     { path: 'tiny.png', width: 120, height: 90, visible_pixels: 10800 },
-    { path: 'fresh.png', width: 800, height: 600, visible_pixels: 480000 },
+    {
+      path: 'fresh.png',
+      width: 800,
+      height: 600,
+      visible_pixels: 480000,
+      luma_stddev: 24,
+      rgb_span_mean: 128,
+      unique_color_sample_count: 128,
+    },
   ].filter(screenshotQualifiesAsVisualEvidence);
   if (visualRows.length !== 1 || visualRows[0]?.path !== 'fresh.png') {
     throw new Error('visual evidence frame predicate accepted a diagnostic-only screenshot');
@@ -1911,6 +1977,10 @@ function selfCheckRuntimeDispatchEvidence() {
     if (!/expected JSON string array/.test(err.message)) {
       throw err;
     }
+  }
+  const parsedExitCode = parseUpstreamRunExitCode('configure_ms=1\nbuild_ms=2\nrun_ms=3\nrun_exit_code=133\n');
+  if (parsedExitCode !== 133) {
+    throw new Error('upstream run exit code parser did not preserve the recorded status');
   }
   const evidence = runtimeDispatchEvidence([
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok dispatch_timestamp=1779979999000',
@@ -2152,6 +2222,31 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('current upstream run runtime evidence did not establish dispatch scope');
   }
+  const nativeOnlyRuntimeEvidence = runtimeEvidenceFromValidationLogs({
+    slug: 'target-session',
+    workerLogs: '',
+    upstreamRunLog: [
+      '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=native-session',
+    ].join('\n'),
+  });
+  const nativeOnlyObservation = runtimeNativeLaunchObservationEvidence(
+    nativeOnlyRuntimeEvidence.runtimeEvidence,
+  );
+  const nativeOnlyDispatch = runtimeDispatchEvidence(nativeOnlyRuntimeEvidence.runtimeEvidence);
+  const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
+    nativeOnlyRuntimeEvidence.runtimeEvidence,
+    { required: true, runtimeSessionIds: ['native-session'] },
+  );
+  if (
+    nativeOnlyObservation.total_count !== 1
+    || nativeOnlyObservation.observe_only_count !== 1
+    || nativeOnlyDispatch.success_count !== 0
+    || nativeOnlyOriginalHost.evidence.raw_count !== 1
+    || nativeOnlyOriginalHost.proof.attachmentProven
+  ) {
+    throw new Error('native launch observation self-check must remain observe-only');
+  }
   const hostIdentityEvidence = runtimeHostIdentityEvidence([
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1',
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1',
@@ -2350,6 +2445,7 @@ async function collectRuntimeEvidence() {
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
+  const runtimeNativeLaunchObservation = runtimeNativeLaunchObservationEvidence(workerEvidence);
   const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
   const runtimeArtifactTransport = runtimeArtifactTransportEvidence(workerEvidence, {
@@ -2408,6 +2504,7 @@ async function collectRuntimeEvidence() {
       primary_replacements: runtimeOwnership.primary_replacement_count,
     },
     runtime_dispatch: runtimeDispatch,
+    runtime_native_launch_observation: runtimeNativeLaunchObservation,
     runtime_arg_provenance: runtimeArgProvenance,
     runtime_session: runtimeSession,
     runtime_artifact_transport: runtimeArtifactTransport,
@@ -2438,6 +2535,19 @@ async function collectRuntimeEvidence() {
     record('runtime dispatch evidence', 'warn', `no runtime evidence scope captured for slug=${CFG.slug}`);
   } else {
     record('runtime dispatch evidence', 'warn', 'no synthi_gpu_launch dispatch lines captured');
+  }
+  if (runtimeNativeLaunchObservation.total_count > 0) {
+    record(
+      'runtime native launch observation',
+      'warn',
+      `observe_only=${runtimeNativeLaunchObservation.observe_only_count} apis=${runtimeNativeLaunchObservation.apis.join(',') || 'unknown'}`,
+    );
+  } else if (CFG.nativeLaunchObserver && CFG.runUpstream) {
+    record(
+      'runtime native launch observation',
+      'warn',
+      'native launch observer enabled but no native_launch_observed lines captured',
+    );
   }
   if (runtimeArgProvenance.total_count > 0) {
     const status = runtimeArgProvenance.incomplete_count > 0 ? 'warn' : 'pass';
