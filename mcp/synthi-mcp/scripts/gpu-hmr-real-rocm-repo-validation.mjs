@@ -1811,9 +1811,20 @@ function runtimeDispatchEvidence(workerEvidence) {
 }
 
 function runtimeNativeLaunchObservationEvidence(workerEvidence) {
+  const attemptLines = workerEvidence.filter((line) =>
+    /\bgpu-runtime-boundary\b.*\bnative_launch_attempt\b/i.test(line)
+  );
   const lines = workerEvidence.filter((line) =>
     /\bgpu-runtime-boundary\b.*\bnative_launch_observed\b/i.test(line)
   );
+  const attemptRecords = attemptLines.map((line) => ({
+    line,
+    api: logField(line, 'api'),
+    runtimeSession: runtimeSessionIdFromLine(line),
+    sequence: logField(line, 'sequence'),
+    dispatch: logField(line, 'dispatch'),
+    realLaunchResolved: logField(line, 'real_launch_resolved'),
+  }));
   const records = lines.map((line) => ({
     line,
     api: logField(line, 'api'),
@@ -1824,13 +1835,20 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
   }));
   return {
     total_count: records.length,
+    attempt_count: attemptRecords.length,
     apis: [...new Set(records.map((record) => record.api).filter(Boolean))],
+    attempted_apis: [...new Set(attemptRecords.map((record) => record.api).filter(Boolean))],
     runtime_session_ids: [
-      ...new Set(records.map((record) => record.runtimeSession).filter(Boolean)),
+      ...new Set([
+        ...attemptRecords.map((record) => record.runtimeSession).filter(Boolean),
+        ...records.map((record) => record.runtimeSession).filter(Boolean),
+      ]),
     ],
+    attempt_only_count: Math.max(0, attemptRecords.length - records.length),
     observe_only_count: records.filter((record) =>
       String(record.dispatch ?? '').toLowerCase() === 'observed-native'
     ).length,
+    attempt_records: attemptRecords.slice(-20),
     records: records.slice(-20),
   };
 }
@@ -2348,6 +2366,7 @@ function selfCheckRuntimeDispatchEvidence() {
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
+      '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=native-session',
     ].join('\n'),
@@ -2362,6 +2381,7 @@ function selfCheckRuntimeDispatchEvidence() {
   );
   if (
     nativeOnlyObservation.total_count !== 1
+    || nativeOnlyObservation.attempt_count !== 1
     || nativeOnlyObservation.observe_only_count !== 1
     || nativeOnlyDispatch.success_count !== 0
     || nativeOnlyOriginalHost.evidence.raw_count !== 1
@@ -2687,7 +2707,13 @@ async function collectRuntimeEvidence() {
     record(
       'runtime native launch observation',
       'warn',
-      `observe_only=${runtimeNativeLaunchObservation.observe_only_count} apis=${runtimeNativeLaunchObservation.apis.join(',') || 'unknown'}`,
+      `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=${runtimeNativeLaunchObservation.observe_only_count} apis=${runtimeNativeLaunchObservation.apis.join(',') || 'unknown'}`,
+    );
+  } else if (runtimeNativeLaunchObservation.attempt_count > 0) {
+    record(
+      'runtime native launch observation',
+      'warn',
+      `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=0 apis=${runtimeNativeLaunchObservation.attempted_apis.join(',') || 'unknown'}`,
     );
   } else if (CFG.nativeLaunchObserver && CFG.runUpstream) {
     record(

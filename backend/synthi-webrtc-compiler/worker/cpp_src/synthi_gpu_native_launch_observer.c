@@ -94,49 +94,16 @@ static void* synthi_next_symbol(const char* name) {
     return symbol;
 }
 
-static void synthi_log_native_launch(
-    const char* api,
-    void* function,
-    unsigned int grid_x,
-    unsigned int grid_y,
-    unsigned int grid_z,
-    unsigned int block_x,
-    unsigned int block_y,
-    unsigned int block_z,
-    unsigned int shared_bytes,
-    void* stream,
-    void** kernel_params,
-    int result) {
-    unsigned long long sequence = synthi_next_sequence();
+static void synthi_log_native_launch_candidates(
+    unsigned long long sequence,
+    void* function) {
     const char* session = synthi_runtime_session();
     const unsigned int max_candidate_frames = 6;
-    fprintf(
-        stderr,
-        "[gpu-runtime-boundary] native_launch_observed api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u result=%d dispatch=observed-native attachment_provenance=native_runtime_intercept\n",
-        api,
-        session,
-        sequence,
-        (unsigned long long)(uintptr_t)function,
-        grid_x,
-        grid_y,
-        grid_z,
-        block_x,
-        block_y,
-        block_z,
-        (unsigned long long)(uintptr_t)kernel_params,
-        (unsigned long long)(uintptr_t)stream,
-        shared_bytes,
-        result);
-    fprintf(
-        stderr,
-        "[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:%llu dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=%s\n",
-        sequence,
-        session);
     void* frames[32];
     int frame_count = backtrace(frames, (int)(sizeof(frames) / sizeof(frames[0])));
     Dl_info self_info;
     const char* self_module = NULL;
-    if (dladdr((void*)&synthi_log_native_launch, &self_info) != 0) {
+    if (dladdr((void*)&synthi_log_native_launch_candidates, &self_info) != 0) {
         self_module = self_info.dli_fname;
     }
     unsigned int emitted = 0;
@@ -176,6 +143,80 @@ static void synthi_log_native_launch(
     }
 }
 
+static void synthi_log_native_launch_attempt(
+    const char* api,
+    unsigned long long sequence,
+    void* function,
+    unsigned int grid_x,
+    unsigned int grid_y,
+    unsigned int grid_z,
+    unsigned int block_x,
+    unsigned int block_y,
+    unsigned int block_z,
+    unsigned int shared_bytes,
+    void* stream,
+    void** kernel_params,
+    int real_launch_resolved) {
+    const char* session = synthi_runtime_session();
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] native_launch_attempt api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u real_launch_resolved=%s dispatch=attempted-native attachment_provenance=native_runtime_intercept\n",
+        api,
+        session,
+        sequence,
+        (unsigned long long)(uintptr_t)function,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+        (unsigned long long)(uintptr_t)kernel_params,
+        (unsigned long long)(uintptr_t)stream,
+        shared_bytes,
+        real_launch_resolved ? "true" : "false");
+    synthi_log_native_launch_candidates(sequence, function);
+}
+
+static void synthi_log_native_launch(
+    const char* api,
+    unsigned long long sequence,
+    void* function,
+    unsigned int grid_x,
+    unsigned int grid_y,
+    unsigned int grid_z,
+    unsigned int block_x,
+    unsigned int block_y,
+    unsigned int block_z,
+    unsigned int shared_bytes,
+    void* stream,
+    void** kernel_params,
+    int result) {
+    const char* session = synthi_runtime_session();
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] native_launch_observed api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u result=%d dispatch=observed-native attachment_provenance=native_runtime_intercept\n",
+        api,
+        session,
+        sequence,
+        (unsigned long long)(uintptr_t)function,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+        (unsigned long long)(uintptr_t)kernel_params,
+        (unsigned long long)(uintptr_t)stream,
+        shared_bytes,
+        result);
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:%llu dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=%s\n",
+        sequence,
+        session);
+}
+
 static int synthi_module_launch(
     const char* api,
     SynthiGpuModuleLaunchFn real_launch,
@@ -190,6 +231,21 @@ static int synthi_module_launch(
     void* stream,
     void** kernel_params,
     void** extra) {
+    unsigned long long sequence = synthi_next_sequence();
+    synthi_log_native_launch_attempt(
+        api,
+        sequence,
+        function,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+        shared_bytes,
+        stream,
+        kernel_params,
+        real_launch != NULL);
     if (real_launch == NULL) {
         return 1;
     }
@@ -207,6 +263,7 @@ static int synthi_module_launch(
         extra);
     synthi_log_native_launch(
         api,
+        sequence,
         function,
         grid_x,
         grid_y,
@@ -230,12 +287,28 @@ static int synthi_runtime_launch(
     void** args,
     size_t shared_bytes,
     void* stream) {
+    unsigned long long sequence = synthi_next_sequence();
+    synthi_log_native_launch_attempt(
+        api,
+        sequence,
+        (void*)function,
+        grid.x,
+        grid.y,
+        grid.z,
+        block.x,
+        block.y,
+        block.z,
+        (unsigned int)shared_bytes,
+        stream,
+        args,
+        real_launch != NULL);
     if (real_launch == NULL) {
         return 1;
     }
     int result = real_launch(function, grid, block, args, shared_bytes, stream);
     synthi_log_native_launch(
         api,
+        sequence,
         (void*)function,
         grid.x,
         grid.y,

@@ -2956,6 +2956,8 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const attachmentCandidateObserved =
     observation.attachmentCandidateObserved === true || candidateEvidenceRefs.length > 0;
   const nativeLaunchObserved = observation.nativeLaunchObserved === true;
+  const nativeLaunchAttemptObserved = observation.nativeLaunchAttemptObserved === true;
+  const nativeLaunchAttemptWithoutResult = observation.nativeLaunchAttemptWithoutResult === true;
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
   const nativeLaunchObserverSawNoLaunch = observation.nativeLaunchObserverSawNoLaunch === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
@@ -2981,6 +2983,8 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     ? null
     : upstreamRunFailedBeforeObservedLaunch
       ? 'original_host_path_upstream_run_failed_before_launch_observed'
+      : nativeLaunchAttemptWithoutResult
+        ? 'original_host_path_native_launch_attempt_without_result'
       : nativeLaunchObserverSawNoLaunch
         ? 'original_host_path_native_launch_not_observed'
         : attachmentCandidateObserved
@@ -3009,6 +3013,8 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     attachmentCandidateObserved,
     candidateEvidenceRefs,
     nativeLaunchObserved,
+    nativeLaunchAttemptObserved,
+    nativeLaunchAttemptWithoutResult,
     nativeLaunchObserverEnabled,
     nativeLaunchObserverSawNoLaunch,
     upstreamRunAttempted,
@@ -3033,10 +3039,11 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const session = proof.sessionScoped ? ' session=current' : ' session=unproven';
   const entry = proof.dispatchEntryRuntimeVerified ? ' entry=runtime' : ' entry=unverified';
   const candidate = proof.attachmentCandidateObserved ? ' candidate=observed' : ' candidate=missing';
+  const nativeAttempt = proof.nativeLaunchAttemptObserved ? ' native_attempt=observed' : '';
   const upstreamExit = Number.isInteger(proof.upstreamRunExitCode)
     ? ` upstream_exit=${proof.upstreamRunExitCode}`
     : '';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${upstreamExit}`;
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${nativeAttempt}${upstreamExit}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {

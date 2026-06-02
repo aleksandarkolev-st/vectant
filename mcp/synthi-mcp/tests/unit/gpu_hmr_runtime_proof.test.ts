@@ -4411,6 +4411,31 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("upstream_exit=133");
   });
 
+  it("reports native launch attempts that do not return an observed launch result", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=7 function_ptr=0x456 grid=(1,1,1) block=(1,1,1) args_ptr=0x789 stream=0x0 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept",
+      "[gpu-runtime-boundary] original_host_path_candidate event=candidate attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-callsite:abc launch_sequence=7 frame_index=2 module=/app/bin symbol=renderLoop address=0x123 function_ptr=0x456 runtime_session=native-session",
+    ], {
+      required: true,
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 139,
+    });
+
+    expect(evidence.native_launch_attempt_count).toBe(1);
+    expect(evidence.native_launch_attempt_observed).toBe(true);
+    expect(evidence.native_launch_count).toBe(0);
+    expect(evidence.native_launch_attempt_without_result).toBe(true);
+    expect(evidence.native_launch_observer_saw_no_launch).toBe(false);
+    expect(evidence.attachment_candidate_observed).toBe(true);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
+    expect(proof.degradedReason).toBe("original_host_path_native_launch_attempt_without_result");
+    expect(proof.nativeLaunchAttemptObserved).toBe(true);
+    expect(proof.nativeLaunchAttemptWithoutResult).toBe(true);
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("native_attempt=observed");
+  });
+
   it("reports an enabled native observer that sees no launch in a successful upstream run", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([], {
       required: true,

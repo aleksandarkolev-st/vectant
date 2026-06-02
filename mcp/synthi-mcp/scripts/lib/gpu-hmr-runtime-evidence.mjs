@@ -902,6 +902,23 @@ function dispatchBoundaryRecord(line) {
 
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
+  const nativeLaunchAttemptRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\bnative_launch_attempt\b/i))
+    .map((line) => {
+      const fields = parseRuntimeKeyValues(line);
+      return {
+        line,
+        runtimeSession: fields.runtime_session ?? null,
+        sequence: integerValue(fields.sequence),
+        api: fields.api ?? null,
+        realLaunchResolved: boolValue(fields.real_launch_resolved ?? fields.realLaunchResolved),
+      };
+    })
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
   const nativeLaunchRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bnative_launch_observed\b/i))
     .map((line) => {
@@ -1018,9 +1035,14 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     ? observation.upstreamRunExitCode
     : null;
   const nativeLaunchObserved = nativeLaunchRecords.length > 0;
+  const nativeLaunchAttemptObserved = nativeLaunchAttemptRecords.length > 0;
+  const nativeLaunchAttemptWithoutResult =
+    nativeLaunchAttemptObserved
+    && !nativeLaunchObserved;
   const nativeLaunchObserverSawNoLaunch =
     nativeLaunchObserverEnabled
     && upstreamRunAttempted
+    && !nativeLaunchAttemptObserved
     && !nativeLaunchObserved;
   const upstreamRunFailedBeforeObservedLaunch =
     nativeLaunchObserverSawNoLaunch
@@ -1029,6 +1051,9 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   return {
     raw_count: rawRecords.length,
     total_count: records.length,
+    native_launch_attempt_count: nativeLaunchAttemptRecords.length,
+    native_launch_attempt_observed: nativeLaunchAttemptObserved,
+    native_launch_attempt_without_result: nativeLaunchAttemptWithoutResult,
     native_launch_count: nativeLaunchRecords.length,
     native_launch_observed: nativeLaunchObserved,
     native_launch_observer_enabled: nativeLaunchObserverEnabled,
@@ -1097,6 +1122,8 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     attachmentCandidateObserved: evidence.attachment_candidate_observed,
     candidateEvidenceRefs: evidence.candidate_evidence_refs,
     nativeLaunchObserved: evidence.native_launch_observed,
+    nativeLaunchAttemptObserved: evidence.native_launch_attempt_observed,
+    nativeLaunchAttemptWithoutResult: evidence.native_launch_attempt_without_result,
     nativeLaunchObserverEnabled: evidence.native_launch_observer_enabled,
     nativeLaunchObserverSawNoLaunch: evidence.native_launch_observer_saw_no_launch,
     upstreamRunAttempted: evidence.upstream_run_attempted,
