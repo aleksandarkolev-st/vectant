@@ -76,6 +76,15 @@ pub struct CompileRequest {
     // Checking previous read_file output: yes, `use_ai_split` is there.
     #[serde(default)]
     pub use_ai_split: bool,
+    /// Require a fresh AI split call instead of accepting a cached split result.
+    /// Validation harnesses use this when proving model/request provenance.
+    #[serde(
+        default,
+        alias = "force_ai_split",
+        alias = "force_fresh_ai_split",
+        alias = "require_fresh_ai_split"
+    )]
+    pub bypass_ai_split_cache: bool,
     /// Explicit user request for AI-assisted compilation (Loop B).
     #[serde(default)]
     pub user_requested_ai: bool,
@@ -113,4 +122,46 @@ pub struct CompileRequest {
 
 fn default_prefer_gpu_pipeline() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base_request() -> serde_json::Value {
+        json!({
+            "language": "cpp",
+            "filename": "main.cpp",
+            "source": "int main(){return 0;}"
+        })
+    }
+
+    #[test]
+    fn compile_request_defaults_to_ai_split_cache_enabled() {
+        let req: CompileRequest =
+            serde_json::from_value(base_request()).expect("compile request");
+
+        assert!(!req.bypass_ai_split_cache);
+    }
+
+    #[test]
+    fn compile_request_accepts_fresh_ai_split_cache_policy_aliases() {
+        for field in [
+            "bypass_ai_split_cache",
+            "force_ai_split",
+            "force_fresh_ai_split",
+            "require_fresh_ai_split",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(true));
+
+            let req: CompileRequest =
+                serde_json::from_value(raw).expect("compile request");
+
+            assert!(req.bypass_ai_split_cache, "alias {field}");
+        }
+    }
 }

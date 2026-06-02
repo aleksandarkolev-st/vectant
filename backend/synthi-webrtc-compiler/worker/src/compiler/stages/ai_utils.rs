@@ -550,7 +550,12 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     let cache_entries_before_lookup = {
         let cache = get_ai_split_cache().lock().await;
-        if let Some(cached) = cache.get(&source_hash) {
+        if req.bypass_ai_split_cache {
+            eprintln!(
+                "[AI Split] Level 1 BYPASS requested (cache entries: {})",
+                cache.len()
+            );
+        } else if let Some(cached) = cache.get(&source_hash) {
             eprintln!("[AI Split] Level 1 HIT (exact source_hash match)");
             return Ok(with_split_cache_report(
                 cached.result.clone(),
@@ -559,8 +564,9 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 "exact_source_hash",
                 cache.len(),
             ));
+        } else {
+            eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
         }
-        eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
         cache.len()
     };
 
@@ -776,7 +782,11 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         res,
         source_hash,
         false,
-        "exact_source_hash_miss",
+        if req.bypass_ai_split_cache {
+            "bypass_requested"
+        } else {
+            "exact_source_hash_miss"
+        },
         cache_entries_before_lookup,
     );
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
@@ -1732,6 +1742,7 @@ mod tests {
             height: None,
             supports_h265: None,
             use_ai_split: true,
+            bypass_ai_split_cache: false,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,
@@ -1771,6 +1782,7 @@ mod tests {
             height: None,
             supports_h265: None,
             use_ai_split: true,
+            bypass_ai_split_cache: false,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,

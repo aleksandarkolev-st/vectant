@@ -61,6 +61,10 @@ interface RawArgs {
   width?: unknown;
   height?: unknown;
   use_ai_split?: unknown;
+  bypass_ai_split_cache?: unknown;
+  force_ai_split?: unknown;
+  force_fresh_ai_split?: unknown;
+  require_fresh_ai_split?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
   force_gpu_ai_delta?: unknown;
@@ -165,6 +169,11 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof a.width === "number") payload["width"] = a.width;
   if (typeof a.height === "number") payload["height"] = a.height;
   if (typeof a.use_ai_split === "boolean") payload["use_ai_split"] = a.use_ai_split;
+  const bypassAiSplitCache =
+    a.bypass_ai_split_cache ?? a.force_ai_split ?? a.force_fresh_ai_split ?? a.require_fresh_ai_split;
+  if (typeof bypassAiSplitCache === "boolean") {
+    payload["bypass_ai_split_cache"] = bypassAiSplitCache;
+  }
   if (typeof a.user_requested_ai === "boolean") payload["user_requested_ai"] = a.user_requested_ai;
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
@@ -213,6 +222,8 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       filename,
       is_gui: isGui,
       use_ai_split: Boolean(payload["use_ai_split"]),
+      bypass_ai_split_cache:
+        typeof bypassAiSplitCache === "boolean" ? bypassAiSplitCache : undefined,
       file_count: files.length,
       file_ref_count: fileRefs.length,
       source_chars: (a.source as string).length,

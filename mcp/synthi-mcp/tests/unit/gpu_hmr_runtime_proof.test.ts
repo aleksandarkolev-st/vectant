@@ -53,6 +53,9 @@ import {
 } from "../../scripts/lib/ai-split-provenance.mjs";
 import {
   buildUpstreamLifecyclePlan,
+  buildUpstreamRunLaunchPlan,
+  canContinueWithCachedMetadataAfterLifecycleFailure,
+  normalizeUpstreamDisplayMode,
 } from "../../scripts/lib/real-rocm-upstream-lifecycle.mjs";
 
 const TEST_ARTIFACT_HASH = "1".repeat(64);
@@ -850,6 +853,93 @@ describe("real ROCm upstream lifecycle planning", () => {
     expect(plan.usesCachedMetadata).toBe(false);
     expect(plan.executeLifecycle).toBe(true);
     expect(plan.metadataSource).toBe("worker-build");
+  });
+
+  it("selects Xvfb for upstream runs when auto mode can provide it", () => {
+    const plan = buildUpstreamRunLaunchPlan({
+      runUpstream: true,
+      displayMode: "auto",
+      xvfbRunAvailable: true,
+      workerTempDir: "/tmp/runtime-root/",
+      width: 1024,
+      height: 768,
+    });
+
+    expect(plan.requestedDisplayMode).toBe("auto");
+    expect(plan.effectiveDisplayMode).toBe("xvfb");
+    expect(plan.useXvfbRun).toBe(true);
+    expect(plan.runnable).toBe(true);
+    expect(plan.xdgRuntimeDir).toBe("/tmp/runtime-root/xdg-runtime");
+    expect(plan.screen).toBe("1024x768x24");
+  });
+
+  it("keeps upstream runs runnable without a display wrapper when auto mode cannot provide one", () => {
+    const plan = buildUpstreamRunLaunchPlan({
+      runUpstream: true,
+      displayMode: "auto",
+      xvfbRunAvailable: false,
+      xdgRuntimeDir: "/tmp/xdg-explicit",
+    });
+
+    expect(plan.effectiveDisplayMode).toBe("none");
+    expect(plan.useXvfbRun).toBe(false);
+    expect(plan.runnable).toBe(true);
+    expect(plan.reason).toBe("xvfb_run_unavailable");
+    expect(plan.xdgRuntimeDir).toBe("/tmp/xdg-explicit");
+  });
+
+  it("does not use Xvfb when display wrapping is explicitly disabled", () => {
+    const plan = buildUpstreamRunLaunchPlan({
+      runUpstream: true,
+      displayMode: "none",
+      xvfbRunAvailable: true,
+    });
+
+    expect(plan.requestedDisplayMode).toBe("none");
+    expect(plan.effectiveDisplayMode).toBe("none");
+    expect(plan.useXvfbRun).toBe(false);
+    expect(plan.runnable).toBe(true);
+  });
+
+  it("reports explicit Xvfb requests as unrunnable when the wrapper is unavailable", () => {
+    const plan = buildUpstreamRunLaunchPlan({
+      runUpstream: true,
+      displayMode: "xvfb",
+      xvfbRunAvailable: false,
+    });
+
+    expect(plan.effectiveDisplayMode).toBe("xvfb");
+    expect(plan.runnable).toBe(false);
+    expect(plan.reason).toBe("xvfb_requested_but_unavailable");
+  });
+
+  it("normalizes upstream display mode aliases and rejects invalid modes", () => {
+    expect(normalizeUpstreamDisplayMode("xvfb-run")).toBe("xvfb");
+    expect(normalizeUpstreamDisplayMode("disabled")).toBe("none");
+    expect(() => normalizeUpstreamDisplayMode("window-server")).toThrow(
+      /invalid upstream display mode/,
+    );
+  });
+
+  it("continues after upstream lifecycle failure only with accepted cached metadata", () => {
+    expect(
+      canContinueWithCachedMetadataAfterLifecycleFailure({
+        usesCachedMetadata: true,
+        cachedMetadataAvailable: true,
+      }),
+    ).toBe(true);
+    expect(
+      canContinueWithCachedMetadataAfterLifecycleFailure({
+        usesCachedMetadata: true,
+        cachedMetadataAvailable: false,
+      }),
+    ).toBe(false);
+    expect(
+      canContinueWithCachedMetadataAfterLifecycleFailure({
+        usesCachedMetadata: false,
+        cachedMetadataAvailable: true,
+      }),
+    ).toBe(false);
   });
 });
 

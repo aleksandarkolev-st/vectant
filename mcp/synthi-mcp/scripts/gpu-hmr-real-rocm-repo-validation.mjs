@@ -67,7 +67,11 @@ import {
 } from './lib/ai-split-provenance.mjs';
 import { validationCommandMetadata } from './lib/docker-validation-metadata.mjs';
 import { REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS } from './lib/real-rocm-validation-command-env.mjs';
-import { buildUpstreamLifecyclePlan } from './lib/real-rocm-upstream-lifecycle.mjs';
+import {
+  buildUpstreamLifecyclePlan,
+  buildUpstreamRunLaunchPlan,
+  canContinueWithCachedMetadataAfterLifecycleFailure,
+} from './lib/real-rocm-upstream-lifecycle.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -214,6 +218,8 @@ const CFG = {
   buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
   runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
   upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND ?? '',
+  upstreamDisplayMode: process.env.SYNTHI_REAL_ROCM_UPSTREAM_DISPLAY_MODE ?? 'auto',
+  upstreamXdgRuntimeDir: process.env.SYNTHI_REAL_ROCM_UPSTREAM_XDG_RUNTIME_DIR ?? '',
   nativeLaunchObserver: process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER === '1',
   nativeLaunchObserverPath:
     process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH
@@ -328,6 +334,7 @@ const report = {
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
   render_preview_enabled: CFG.renderPreview,
+  upstream_run_environment: null,
   fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
   started_at: new Date().toISOString(),
@@ -571,6 +578,31 @@ async function prepareUpstreamBuild() {
   ].join('; ');
   await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
   await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
+  const xvfbRunAvailable = (await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      'command -v xvfb-run >/dev/null 2>&1 && xvfb-run -a /bin/true >/dev/null 2>&1 && printf 1 || printf 0',
+    ],
+    30000,
+    true,
+  )).trim() === '1';
+  const upstreamRunLaunch = buildUpstreamRunLaunchPlan({
+    runUpstream: CFG.runUpstream,
+    displayMode: CFG.upstreamDisplayMode,
+    xvfbRunAvailable,
+    xdgRuntimeDir: CFG.upstreamXdgRuntimeDir,
+    workerTempDir: CFG.workerTempDir,
+    width: CFG.width,
+    height: CFG.height,
+  });
+  report.upstream_run_environment = upstreamRunLaunch;
+  if (!upstreamRunLaunch.runnable) {
+    throw new Error(`upstream run display environment unavailable: ${upstreamRunLaunch.reason}`);
+  }
 
   const cmakeExtraArgs = CFG.cmakeArgs.length
     ? ` ${CFG.cmakeArgs.map((arg) => shQuote(arg)).join(' ')}`
@@ -582,6 +614,20 @@ async function prepareUpstreamBuild() {
         "export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only",
       ].join('\n')
     : ':';
+  const upstreamRunEnvironmentSetup = CFG.runUpstream
+    ? [
+        `mkdir -p ${shQuote(upstreamRunLaunch.xdgRuntimeDir)}`,
+        `chmod 700 ${shQuote(upstreamRunLaunch.xdgRuntimeDir)} || true`,
+        `export XDG_RUNTIME_DIR=${shQuote(upstreamRunLaunch.xdgRuntimeDir)}`,
+        `export SYNTHI_REAL_ROCM_UPSTREAM_DISPLAY_MODE=${shQuote(upstreamRunLaunch.effectiveDisplayMode)}`,
+      ].join('\n')
+    : ':';
+  const upstreamRunCommand = CFG.upstreamRunCommand
+    ? CFG.upstreamRunCommand
+    : `./build/${shQuote(CFG.targetName)}`;
+  const upstreamRunInvocation = upstreamRunLaunch.useXvfbRun
+    ? `xvfb-run -a sh -lc ${shQuote(upstreamRunCommand)}`
+    : `sh -lc ${shQuote(upstreamRunCommand)}`;
   const command = `
 set -e
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
@@ -600,12 +646,9 @@ built=$(date +%s%3N)
 run_status=0
 if [ ${CFG.runUpstream ? '1' : '0'} -eq 1 ]; then
   ${nativeLaunchObserverSetup}
+  ${upstreamRunEnvironmentSetup}
   set +e
-  if [ -n ${shQuote(CFG.upstreamRunCommand)} ]; then
-    sh -lc ${shQuote(CFG.upstreamRunCommand)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
-  else
-    ./build/${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
-  fi
+  ${upstreamRunInvocation} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
   run_status=$?
   set -e
 else
@@ -614,10 +657,32 @@ fi
 ran=$(date +%s%3N)
 printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$run_status"
 `;
-  const timings = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], CFG.upstreamBuildTimeoutMs, true);
-  const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, true);
+  let timings;
+  let lifecycleError = null;
+  try {
+    timings = await execText(
+      'docker',
+      ['exec', CFG.workerContainer, 'sh', '-lc', command],
+      CFG.upstreamBuildTimeoutMs,
+      true,
+    );
+  } catch (err) {
+    lifecycleError = err;
+    if (!canContinueWithCachedMetadataAfterLifecycleFailure({
+      usesCachedMetadata: lifecyclePlan.usesCachedMetadata,
+      cachedMetadataAvailable: Boolean(cachedMetadata),
+    })) {
+      throw err;
+    }
+    timings = 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nrun_exit_code=not-run';
+  }
+  const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, false) ?? '';
+  const configureLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/configure.log`)}`], 30000, false);
+  const buildLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/build.log`)}`], 30000, false);
   const upstreamRunExitCode = parseUpstreamRunExitCode(timings);
   report.logs.upstream_run = runLog;
+  report.logs.upstream_configure = configureLog ?? '';
+  report.logs.upstream_build = buildLog ?? '';
   const phase = {
     name: 'upstream_gpu_build_run',
     timings,
@@ -625,8 +690,18 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
     cmake_config: CFG.cmakeConfigName,
     cmake_args: CFG.cmakeArgs,
     output: runLog.slice(0, 1000),
+    configure_output: String(configureLog ?? '').slice(-2000),
+    build_output: String(buildLog ?? '').slice(-2000),
     metadata_source: lifecyclePlan.metadataSource,
     cached_metadata_dir: lifecyclePlan.cachedMetadataDir,
+    lifecycle_error: lifecycleError
+      ? {
+          recovered_with_cached_metadata: true,
+          message: lifecycleError.message,
+          output: String(lifecycleError.output ?? '').slice(-2000),
+        }
+      : null,
+    upstream_run_environment: upstreamRunLaunch,
     native_launch_observer: CFG.nativeLaunchObserver
       ? { enabled: true, path: CFG.nativeLaunchObserverPath }
       : { enabled: false },
@@ -634,9 +709,23 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
   report.phases.push(phase);
   record(
     'upstream GPU target metadata configured',
-    'pass',
+    lifecycleError ? 'warn' : 'pass',
     `${timings.replace(/\s+/g, ' ')} metadata=${lifecyclePlan.metadataSource} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} cmake_args=${CFG.cmakeArgs.length}`,
   );
+  if (lifecycleError) {
+    record(
+      'upstream GPU target lifecycle',
+      'warn',
+      `failed; continuing with cached_metadata=${CFG.buildMetadataDir}`,
+    );
+  }
+  if (CFG.runUpstream) {
+    record(
+      'upstream runtime environment',
+      upstreamRunLaunch.useXvfbRun || upstreamRunLaunch.requestedDisplayMode === 'none' ? 'pass' : 'warn',
+      `display=${upstreamRunLaunch.effectiveDisplayMode} reason=${upstreamRunLaunch.reason} xdg=${upstreamRunLaunch.xdgRuntimeDir}`,
+    );
+  }
   if (CFG.runUpstream) {
     const status = upstreamRunExitCode === 0 ? 'pass' : 'warn';
     const detail = upstreamRunExitCode === null
@@ -3066,6 +3155,7 @@ async function run() {
     ...compileProjectionRequestArgs(firstAdditionalFiles, 'first_real_repo_ai_split_compile'),
     is_gui: CFG.renderPreview,
     use_ai_split: true,
+    bypass_ai_split_cache: CFG.requireFreshAiSplit,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
     gpu_mode: CFG.gpuMode,
@@ -3097,6 +3187,7 @@ async function run() {
     ...compileProjectionRequestArgs(hmrAdditionalFiles, 'real_repo_user_source_delta_hmr'),
     is_gui: CFG.renderPreview,
     use_ai_split: true,
+    bypass_ai_split_cache: CFG.requireFreshAiSplit,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
     gpu_mode: CFG.gpuMode,
@@ -3138,6 +3229,7 @@ async function run() {
       ...compileProjectionRequestArgs(additionalFiles, phaseName),
       is_gui: CFG.renderPreview,
       use_ai_split: true,
+      bypass_ai_split_cache: CFG.requireFreshAiSplit,
       user_requested_ai: true,
       prefer_gpu_pipeline: true,
       gpu_mode: CFG.gpuMode,

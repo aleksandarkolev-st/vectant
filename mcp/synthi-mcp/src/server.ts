@@ -222,6 +222,23 @@ const TOOLS = [
           type: "boolean",
           description: "Let the worker decide split via AI (Tier 2/3). Default false.",
         },
+        bypass_ai_split_cache: {
+          type: "boolean",
+          description:
+            "Require a fresh AI split request instead of accepting a cached split result. Used for provenance-sensitive validation.",
+        },
+        force_ai_split: {
+          type: "boolean",
+          description: "Alias for bypass_ai_split_cache.",
+        },
+        force_fresh_ai_split: {
+          type: "boolean",
+          description: "Alias for bypass_ai_split_cache.",
+        },
+        require_fresh_ai_split: {
+          type: "boolean",
+          description: "Alias for bypass_ai_split_cache.",
+        },
         user_requested_ai: {
           type: "boolean",
           description: "Explicit opt-in to the AI-split (Loop B). Default false.",

@@ -88,6 +88,7 @@ describe("synthi_compile", () => {
       width: 800,
       height: 600,
       use_ai_split: true,
+      bypass_ai_split_cache: true,
     });
     expect(res.isError).toBeUndefined();
     expect(fake.sent).toHaveLength(1);
@@ -98,6 +99,29 @@ describe("synthi_compile", () => {
     expect(payload["session_id"]).toBe("fixture-session");
     expect(payload["is_gui"]).toBe(true);
     expect(payload["use_ai_split"]).toBe(true);
+    expect(payload["bypass_ai_split_cache"]).toBe(true);
+  });
+
+  it("forwards fresh AI split cache policy aliases", async () => {
+    for (const field of [
+      "bypass_ai_split_cache",
+      "force_ai_split",
+      "force_fresh_ai_split",
+      "require_fresh_ai_split",
+    ]) {
+      const fake = installFakeAttached();
+      session.setWireState("running");
+      const res = await compileTool({
+        language: "cpp",
+        source: "int main(){return 0;}",
+        [field]: true,
+      });
+
+      expect(res.isError).toBeUndefined();
+      expect(fake.sent.at(-1)!.parsed["bypass_ai_split_cache"]).toBe(true);
+      session._resetForTests();
+      eventLog._resetForTests();
+    }
   });
 
   it("forwards workspace file refs without requiring inline contents", async () => {

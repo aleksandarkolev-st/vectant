@@ -15854,6 +15854,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             height: None,
             supports_h265: None,
             use_ai_split: false,
+            bypass_ai_split_cache: false,
             user_requested_ai: false,
             user_requested_deterministic: true,
             force_gpu_ai_delta: false,
