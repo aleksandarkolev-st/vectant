@@ -42,6 +42,7 @@ export const RATE_LIMITS = {
   extcall: { limit: Number(process.env.SYNTHI_RL_EXTCALL) || 60, windowMs: 60_000 },
   resolve: { limit: Number(process.env.SYNTHI_RL_RESOLVE) || 30, windowMs: 60_000 },
   audit: { limit: Number(process.env.SYNTHI_RL_AUDIT) || 120, windowMs: 60_000 },
+  git: { limit: Number(process.env.SYNTHI_RL_GIT) || 60, windowMs: 60_000 },
 };
 
 /** Test-only: clear all buckets. */
