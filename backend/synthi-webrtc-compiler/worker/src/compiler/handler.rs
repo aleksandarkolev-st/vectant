@@ -1791,6 +1791,7 @@ struct DeviceCompileSources {
     partial_required: bool,
     partial_artifact_kind: Option<String>,
     partial_fallback_reason: Option<String>,
+    partial_fission_candidate: Option<serde_json::Value>,
     source_baseline_contents: Vec<(String, String)>,
     launch_mapping_sources: Vec<LaunchMappingSourceContent>,
 }
@@ -1811,6 +1812,7 @@ struct DevicePartialCompileSource {
     required: bool,
     artifact_kind: Option<String>,
     fallback_reason: Option<String>,
+    fission_candidate: Option<serde_json::Value>,
 }
 
 async fn compile_stage_or_invalidate_split_cache<T>(
@@ -2999,10 +3001,11 @@ fn ai_delta_device_partial_payload(
     previous_full_device: &str,
     final_full_device: &str,
     scoped: Option<(&AiDeltaDeviceScope, &str)>,
+    fission_candidate: Option<&serde_json::Value>,
 ) -> Option<serde_json::Value> {
     if let Some((scope, final_scoped_source)) = scoped {
         let filename = partial_device_filename(generated_path, &scope.symbols, final_scoped_source);
-        return Some(serde_json::json!({
+        let mut payload = serde_json::json!({
             "content": final_scoped_source,
             "filename": filename,
             "symbols": scope.symbols.clone(),
@@ -3016,7 +3019,13 @@ fn ai_delta_device_partial_payload(
             "compileCommandHash": scope.compile_command_hash.clone(),
             "verifierEvidenceId": scope.verifier_evidence_id.clone(),
             "requirePartial": true,
-        }));
+        });
+        if let Some(fission_candidate) = gpu_ai_delta_fission_proposal(fission_candidate) {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("fissionCandidate".to_string(), fission_candidate);
+            }
+        }
+        return Some(payload);
     }
 
     let symbols = changed_kernel_body_symbols(previous_full_device, final_full_device);
@@ -3025,7 +3034,7 @@ fn ai_delta_device_partial_payload(
     }
     build_device_partial_source(final_full_device, &symbols).map(|partial_source| {
         let filename = partial_device_filename(generated_path, &symbols, &partial_source);
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "content": partial_source,
             "filename": filename,
             "symbols": symbols,
@@ -3034,7 +3043,13 @@ fn ai_delta_device_partial_payload(
             "sourcePaths": [],
             "selectionReason": "generated_body_partial",
             "requirePartial": true,
-        })
+        });
+        if let Some(fission_candidate) = gpu_ai_delta_fission_proposal(fission_candidate) {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("fissionCandidate".to_string(), fission_candidate);
+            }
+        }
+        payload
     })
 }
 
@@ -3121,6 +3136,11 @@ fn split_partial_device_source(
         .unwrap_or(false);
     let artifact_kind = string_field("artifactKind");
     let fallback_reason = string_field("fallbackReason");
+    let fission_candidate = partial
+        .get("fissionCandidate")
+        .or_else(|| partial.get("fissionCandidateProposal"))
+        .filter(|candidate| candidate.is_object())
+        .cloned();
     if symbols.is_empty() {
         None
     } else {
@@ -3132,6 +3152,7 @@ fn split_partial_device_source(
             required,
             artifact_kind,
             fallback_reason,
+            fission_candidate,
         })
     }
 }
@@ -4809,6 +4830,17 @@ fn partial_fission_candidate_and_evidence(
             "kind": "partial_artifact_selection_metadata"
         },
     });
+    if let Some(proposal) = sources.and_then(|sources| sources.partial_fission_candidate.as_ref())
+    {
+        let promotion_evidence_ids = vec![
+            candidate_evidence_id.clone(),
+            compiler_evidence_id.to_string(),
+            symbol_evidence_id.to_string(),
+            abi_evidence_id.to_string(),
+            transport_evidence_id.to_string(),
+        ];
+        apply_ai_fission_proposal_metadata(&mut candidate, proposal, &promotion_evidence_ids);
+    }
     if requires_original_host_path {
         if let Some(object) = candidate.as_object_mut() {
             object.insert(
@@ -6129,6 +6161,112 @@ fn gpu_ai_delta_fission_proposal(candidate: Option<&serde_json::Value>) -> Optio
         serde_json::Value::Bool(true),
     );
     Some(serde_json::Value::Object(proposal))
+}
+
+fn text_mentions_non_authoritative_ai_source(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "ai" | "llm" | "model"))
+}
+
+fn value_mentions_non_authoritative_ai_source(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::String(value)) => text_mentions_non_authoritative_ai_source(value),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .any(|item| value_mentions_non_authoritative_ai_source(Some(item))),
+        Some(serde_json::Value::Object(object)) => object
+            .values()
+            .any(|item| value_mentions_non_authoritative_ai_source(Some(item))),
+        _ => false,
+    }
+}
+
+fn fission_candidate_requires_deterministic_promotion(candidate: &serde_json::Value) -> bool {
+    candidate
+        .get("aiProposalId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || candidate
+            .get("aiProposalIdRequired")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        || candidate
+            .get("deterministicPromotionRequired")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        || value_mentions_non_authoritative_ai_source(candidate.get("proposalSource"))
+        || value_mentions_non_authoritative_ai_source(candidate.get("candidateSource"))
+        || value_mentions_non_authoritative_ai_source(candidate.get("plannerSource"))
+}
+
+fn apply_ai_fission_proposal_metadata(
+    candidate: &mut serde_json::Value,
+    proposal: &serde_json::Value,
+    promotion_evidence_ids: &[String],
+) {
+    const PASSTHROUGH_FIELDS: &[&str] = &[
+        "aiProposalId",
+        "proposalSource",
+        "candidateSource",
+        "plannerSource",
+        "outputOracleProposal",
+        "attachmentInstrumentationProposals",
+        "originalHostAttachmentInstrumentationProposals",
+        "originalHostAttachmentInstrumentationProposalIds",
+        "originalHostLaunchMappingId",
+        "originalHostLaunchMappingRequired",
+        "originalHostPathRequirement",
+        "runtimeAttachmentRequirement",
+        "runtimeOwnershipRequirement",
+        "requiresOriginalHostPath",
+    ];
+
+    let Some(object) = candidate.as_object_mut() else {
+        return;
+    };
+    let Some(proposal_object) = proposal.as_object() else {
+        return;
+    };
+    for field in PASSTHROUGH_FIELDS {
+        if let Some(value) = proposal_object.get(*field) {
+            object.insert((*field).to_string(), value.clone());
+        }
+    }
+    object.insert("aiProposalCandidate".to_string(), proposal.clone());
+
+    if fission_candidate_requires_deterministic_promotion(proposal) {
+        let proposal_id = object
+            .get("aiProposalId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "ai:fission:proposal:sha256:{}",
+                    sha256_hex_str(&proposal.to_string())
+                )
+            });
+        object.insert(
+            "aiProposalId".to_string(),
+            serde_json::Value::String(proposal_id),
+        );
+        object.insert(
+            "aiProposalIdRequired".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        object.insert(
+            "deterministicPromotionRequired".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        object.insert(
+            "deterministicPromotionEvidenceIds".to_string(),
+            serde_json::json!(promotion_evidence_ids),
+        );
+    }
 }
 
 fn gpu_ai_delta_acceptance_report(
@@ -8855,6 +8993,7 @@ pub async fn handle_compile_request(
                                     &generated_device_source,
                                     &final_device,
                                     Some((&ai_delta_device_scope, final_prompt_device.as_str())),
+                                    ai_delta.fission_candidate.as_ref(),
                                 );
                                 if let Some(partial) = payload.as_ref() {
                                     eprintln!(
@@ -9807,6 +9946,7 @@ pub async fn handle_compile_request(
                 partial_required,
                 partial_artifact_kind,
                 partial_fallback_reason,
+                partial_fission_candidate,
             ) = partial_request
                 .map(|partial| {
                     (
@@ -9817,9 +9957,10 @@ pub async fn handle_compile_request(
                         partial.required,
                         partial.artifact_kind,
                         partial.fallback_reason,
+                        partial.fission_candidate,
                     )
                 })
-                .unwrap_or((None, None, Vec::new(), Vec::new(), false, None, None));
+                .unwrap_or((None, None, Vec::new(), Vec::new(), false, None, None, None));
             eprintln!(
                 "[compile-device] source resolved from split_data file={} bytes={} mapped_symbols={} partial={} partial_required={}",
                 split_device_filename,
@@ -9847,6 +9988,7 @@ pub async fn handle_compile_request(
                 partial_required,
                 partial_artifact_kind,
                 partial_fallback_reason,
+                partial_fission_candidate,
                 source_baseline_contents: source_baseline_contents.clone(),
                 launch_mapping_sources: launch_mapping_sources.clone(),
             })
@@ -9876,6 +10018,7 @@ pub async fn handle_compile_request(
                         partial_required: false,
                         partial_artifact_kind: None,
                         partial_fallback_reason: None,
+                        partial_fission_candidate: None,
                         source_baseline_contents: source_baseline_contents.clone(),
                         launch_mapping_sources: launch_mapping_sources.clone(),
                     })
@@ -11740,6 +11883,7 @@ mod gpu_host_contract_tests {
             partial_required: true,
             partial_artifact_kind: Some("source_include_bridge".to_string()),
             partial_fallback_reason: None,
+            partial_fission_candidate: None,
             source_baseline_contents: Vec::new(),
             launch_mapping_sources: Vec::new(),
         };
@@ -12518,6 +12662,7 @@ __constant__ int scale;
             partial_required: true,
             partial_artifact_kind: Some("source_include_bridge".to_string()),
             partial_fallback_reason: None,
+            partial_fission_candidate: None,
             source_baseline_contents: Vec::new(),
             launch_mapping_sources: Vec::new(),
         };
@@ -12674,6 +12819,147 @@ __constant__ int scale;
     }
 
     #[tokio::test]
+    async fn partial_hmr_proof_artifact_promotes_ai_fission_candidate_with_deterministic_evidence()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let partial_source = r#"extern "C" __global__ void shade(float* pixels) {
+  pixels[0] = 1.0f;
+}
+"#;
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        outcome.compiled_source = partial_source.to_string();
+        outcome.requested_artifact_kind = Some("kernel_region".to_string());
+        outcome.selected_artifact_kind = Some("kernel_region".to_string());
+        outcome.proof_metadata = DeviceCompileProofMetadata {
+            compiler_executable: Some("/opt/toolchain/bin/device-compiler".to_string()),
+            compiler_identity: Some("compiler-identity-hash".to_string()),
+            device_compiler: Some("device-compiler".to_string()),
+            gpu_vendor: Some("test-vendor".to_string()),
+            gpu_arch: vec!["test-arch".to_string()],
+            target_triple: Some("test-vendor:test-arch".to_string()),
+            sdk_version: Some("sdk:test".to_string()),
+            source_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            effective_device_flags: vec!["-O3".to_string()],
+            compile_command_hash: Some(sha256_hex_str("compile-command")),
+            dependency_hash: Some(sha256_hex_str("dependency-closure")),
+            dependency_method: Some("depfile".to_string()),
+            artifact_cache_key: Some("artifact-cache-key".to_string()),
+            cache_hit: false,
+        };
+        let sources = DeviceCompileSources {
+            full_source: partial_source.to_string(),
+            full_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: true,
+            partial_source: Some(partial_source.to_string()),
+            partial_filename: Some(".synthi/generated/gpu/device.partial.shade.hip".to_string()),
+            partial_symbols: symbols(&["shade"]),
+            partial_source_paths: vec![".synthi/generated/gpu/device.hip".to_string()],
+            partial_required: true,
+            partial_artifact_kind: Some("kernel_region".to_string()),
+            partial_fallback_reason: None,
+            partial_fission_candidate: Some(serde_json::json!({
+                "islandId": "ai-model-suggested-island",
+                "aiProposalId": "ai:fission:proposal:test",
+                "proposalSource": {"producer": "ai_delta"},
+                "outputOracleProposal": {
+                    "kind": "dispatch_counter",
+                    "expectedIncrement": "1",
+                    "producer": "runtime_probe",
+                    "outputTargetId": "dispatch-counter",
+                    "readbackPlan": "after_hmr_dispatch",
+                    "runtimeSessionIdSource": "runtime_boundary",
+                    "artifactIdSource": "selected_artifact"
+                }
+            })),
+            source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
+        };
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            "source-edit:partial",
+            &outcome,
+            Some(&sources),
+            &proof,
+            None,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let fission_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-verifier-report")
+            .expect("fission verifier evidence should be recorded");
+        let report = fission_evidence
+            .metadata
+            .as_ref()
+            .expect("fission report metadata should be present");
+        let candidate = report
+            .pointer("/candidates/0/candidate")
+            .expect("verified candidate metadata");
+        let promotion_ids = string_array_field(candidate, "deterministicPromotionEvidenceIds");
+        let verifier_ids = string_array_field(candidate, "verifierEvidenceIds");
+        let fission_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "fission-candidate-verification")
+            .expect("fission verifier stage should be recorded");
+
+        assert_eq!(
+            report.get("status").and_then(serde_json::Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(fission_stage.status, "passed");
+        assert_eq!(
+            candidate
+                .get("aiProposalId")
+                .and_then(serde_json::Value::as_str),
+            Some("ai:fission:proposal:test")
+        );
+        assert_eq!(
+            candidate
+                .pointer("/aiProposalCandidate/islandId")
+                .and_then(serde_json::Value::as_str),
+            Some("ai-model-suggested-island")
+        );
+        assert!(candidate
+            .get("islandId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.starts_with("fission-island:sha256:")));
+        assert!(promotion_ids
+            .iter()
+            .all(|id| id.starts_with("evidence:")));
+        assert!(promotion_ids
+            .iter()
+            .any(|id| id.starts_with("evidence:fission-island-input:")));
+        assert!(verifier_ids.iter().all(|id| !id.starts_with("ai:")));
+        assert_eq!(
+            candidate
+                .pointer("/outputOracleContract/proposalValid")
+                .and_then(serde_json::Value::as_bool),
+            None
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/outputOracleContract/proposalValid")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
     async fn partial_hmr_fission_records_original_host_launch_mapping_when_source_launch_exists() {
         let temp = tempfile::tempdir().unwrap();
         let artifact_path = temp.path().join("device.hsaco");
@@ -12718,6 +13004,7 @@ __constant__ int scale;
             partial_required: true,
             partial_artifact_kind: Some("source_include_bridge".to_string()),
             partial_fallback_reason: None,
+            partial_fission_candidate: None,
             source_baseline_contents: vec![(
                 "src/render.cpp".to_string(),
                 "void render(float* pixels) { shade<<<1, 64, 0, stream>>>(pixels); }"
@@ -12907,6 +13194,7 @@ void bind_and_launch(Buffer* pixels) {
             partial_required: true,
             partial_artifact_kind: Some("source_include_bridge".to_string()),
             partial_fallback_reason: None,
+            partial_fission_candidate: None,
             source_baseline_contents: Vec::new(),
             launch_mapping_sources: vec![LaunchMappingSourceContent {
                 path: "src/render_pass.cpp".to_string(),
@@ -13082,6 +13370,7 @@ void bind_and_launch(Buffer* pixels) {
             partial_required: false,
             partial_artifact_kind: None,
             partial_fallback_reason: None,
+            partial_fission_candidate: None,
             source_baseline_contents: Vec::new(),
             launch_mapping_sources: Vec::new(),
         };
@@ -13391,6 +13680,7 @@ extern "C" __global__ void shade(RenderData render_data) {}
             partial_required: false,
             partial_artifact_kind: None,
             partial_fallback_reason: None,
+            partial_fission_candidate: None,
             source_baseline_contents: Vec::new(),
             launch_mapping_sources: Vec::new(),
         };
@@ -15398,6 +15688,7 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             before,
             &after,
             None,
+            None,
         )
         .expect("partial payload");
 
@@ -15451,6 +15742,7 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             "",
             "",
             Some((&scope, final_scope)),
+            None,
         )
         .expect("scoped partial payload");
 
@@ -15483,6 +15775,52 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
                 .get("dependencyHash")
                 .and_then(serde_json::Value::as_str),
             Some("dep-hash")
+        );
+    }
+
+    #[test]
+    fn ai_delta_payload_carries_fission_candidate_as_non_authoritative_proposal() {
+        let before = r#"
+extern "C" __global__ void shade(float* out) { out[0] = 1.0f; }
+extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
+"#;
+        let after = before.replace("2.0f", "5.0f");
+        let ai_candidate = serde_json::json!({
+            "islandId": "ai-suggested-island",
+            "proposalSource": {"producer": "ai_delta"},
+            "outputOracleProposal": {
+                "kind": "dispatch_counter",
+                "expectedIncrement": "1",
+                "producer": "runtime_probe",
+                "outputTargetId": "dispatch-counter",
+                "readbackPlan": "after_hmr_dispatch",
+                "runtimeSessionIdSource": "runtime_boundary",
+                "artifactIdSource": "selected_artifact"
+            }
+        });
+
+        let payload = ai_delta_device_partial_payload(
+            ".synthi/generated/gpu/device.hip",
+            before,
+            &after,
+            None,
+            Some(&ai_candidate),
+        )
+        .expect("partial payload");
+        let proposal = payload
+            .get("fissionCandidate")
+            .expect("fission candidate proposal");
+
+        assert_eq!(proposal["proposalSource"]["producer"], "ai_delta");
+        assert_eq!(proposal["aiProposalIdRequired"], true);
+        assert_eq!(proposal["deterministicPromotionRequired"], true);
+        assert!(proposal["aiProposalId"]
+            .as_str()
+            .unwrap()
+            .starts_with("ai:fission:proposal:sha256:"));
+        assert_eq!(
+            proposal["outputOracleProposal"]["kind"].as_str(),
+            Some("dispatch_counter")
         );
     }
 
