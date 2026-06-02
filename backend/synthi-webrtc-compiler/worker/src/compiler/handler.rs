@@ -4241,7 +4241,12 @@ fn push_source_launch_mapping_site(
     let (line, column) = source_offset_line_col(source, offset);
     let snippet = source_launch_site_snippet(source, offset);
     let snippet_hash = sha256_hex_str(&snippet);
+    let site_id = format!(
+        "launch-site:sha256:{}",
+        sha256_hex_str(&format!("{path}:{line}:{column}:{symbol}:{form}:{snippet_hash}"))
+    );
     sites.push(serde_json::json!({
+        "siteId": site_id,
         "path": path,
         "site": format!("{path}:{line}:{column}"),
         "line": line,
@@ -4359,6 +4364,119 @@ fn source_launch_mapping_sites_for_symbol(
     sites
 }
 
+fn attachment_instrumentation_action(form: Option<&str>) -> &'static str {
+    match form {
+        Some("synthi_runtime_boundary") => "upgrade_runtime_boundary_to_original_host_attachment",
+        Some("runtime_kernel_object") => "attach_runtime_object_dispatch_boundary",
+        Some("raw_triple_chevron") => "wrap_source_launch_with_synthi_runtime_boundary",
+        _ => "instrument_host_launch_boundary",
+    }
+}
+
+fn source_launch_attachment_instrumentation_proposal(
+    site: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let site_id = site
+        .get("siteId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    let path = site
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    let line = site.get("line").and_then(serde_json::Value::as_u64)?;
+    let column = site.get("column").and_then(serde_json::Value::as_u64)?;
+    let kernel = site
+        .get("kernel")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    let form = site
+        .get("form")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    let host_path_material = serde_json::json!({
+        "path": path,
+        "line": line,
+        "column": column,
+        "kernel": kernel,
+        "siteId": site_id,
+    });
+    let host_path_id = format!(
+        "host-path:sha256:{}",
+        sha256_hex_str(&host_path_material.to_string())
+    );
+    let material = serde_json::json!({
+        "schemaVersion": "synthi.gpu.launch_attachment_instrumentation_proposal.v1",
+        "sourceLaunchSiteId": site_id,
+        "hostPathId": host_path_id,
+        "kernel": kernel,
+        "path": path,
+        "line": line,
+        "column": column,
+        "sourceProvenance": site
+            .get("sourceProvenance")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown"),
+        "sourceHash": site.get("sourceHash").cloned().unwrap_or(serde_json::Value::Null),
+        "snippetHash": site.get("snippetHash").cloned().unwrap_or(serde_json::Value::Null),
+        "observedLaunchForm": form,
+        "instrumentationAction": attachment_instrumentation_action(Some(form)),
+        "requiredBoundaryApis": [
+            "synthi_gpu_launch_source_location",
+            "synthi_gpu_launch_original_host_path",
+            "synthi_original_host_path_with_provenance"
+        ],
+        "dispatchTableEntryIdPolicy": "runtime_boundary_must_bind_active_generation_entry",
+        "runtimeEvidenceRequired": {
+            "runtimeSessionScoped": true,
+            "dispatchBoundaryObserved": true,
+            "dispatchEntryRuntimeVerified": true,
+            "launchArgProvenanceComplete": true
+        },
+        "runtimeAttachmentProven": false,
+        "runtimeProofBoundary": "instrumentation_proposal_only",
+    });
+    let proposal_id = format!(
+        "launch-attachment-proposal:sha256:{}",
+        sha256_hex_str(&material.to_string())
+    );
+    let mut proposal = material;
+    if let Some(object) = proposal.as_object_mut() {
+        object.insert(
+            "proposalId".to_string(),
+            serde_json::Value::String(proposal_id),
+        );
+    }
+    Some(proposal)
+}
+
+fn source_launch_attachment_instrumentation_proposals(
+    symbol_mappings: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut proposals = Vec::new();
+    let mut seen = BTreeSet::new();
+    for site in symbol_mappings
+        .iter()
+        .filter_map(|mapping| mapping.get("sourceLaunchSites"))
+        .filter_map(serde_json::Value::as_array)
+        .flatten()
+    {
+        let Some(proposal) = source_launch_attachment_instrumentation_proposal(site) else {
+            continue;
+        };
+        let proposal_id = proposal
+            .get("proposalId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if proposal_id.is_empty() || !seen.insert(proposal_id) {
+            continue;
+        }
+        proposals.push(proposal);
+    }
+    proposals
+}
+
 fn partial_fission_original_host_launch_mapping(
     sources: Option<&DeviceCompileSources>,
     target_symbols: &[String],
@@ -4383,6 +4501,8 @@ fn partial_fission_original_host_launch_mapping(
     if !missing_symbols.is_empty() || symbol_mappings.is_empty() {
         return None;
     }
+    let attachment_instrumentation_proposals =
+        source_launch_attachment_instrumentation_proposals(&symbol_mappings);
     let evidence_material = serde_json::json!({
         "schemaVersion": "synthi.gpu.original_host_launch_mapping.v1",
         "producer": "worker.launch_attachment_scout",
@@ -4393,6 +4513,7 @@ fn partial_fission_original_host_launch_mapping(
         "launchMappingSourceFileCount": sources.launch_mapping_sources.len(),
         "targetSymbols": target_symbols,
         "symbolMappings": symbol_mappings,
+        "attachmentInstrumentationProposals": attachment_instrumentation_proposals,
     });
     let hash = sha256_hex_str(&evidence_material.to_string());
     let mapping_id = format!("host-launch:sha256:{hash}");
@@ -12444,7 +12565,8 @@ __constant__ int scale;
         assert_eq!(fission_stage.status, "blocked");
         assert!(matches!(
             fission_stage.degraded_reason.as_deref(),
-            Some("fission.original_host_launch_mapping_missing")
+            Some("fission.original_host_attachment_instrumentation_missing")
+                | Some("fission.original_host_launch_mapping_missing")
                 | Some("fission.original_host_launch_mapping_evidence_missing")
         ));
         assert_eq!(
@@ -12649,6 +12771,40 @@ __constant__ int scale;
                 .and_then(serde_json::Value::as_str),
             Some("raw_triple_chevron")
         );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer("/attachmentInstrumentationProposals/0/kernel")
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("shade")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/instrumentationAction",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("wrap_source_launch_with_synthi_runtime_boundary")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/runtimeEvidenceRequired/dispatchEntryRuntimeVerified",
+                    )
+                })
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
 
         let fission_evidence = artifact
             .evidence_refs
@@ -12685,6 +12841,12 @@ __constant__ int scale;
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
+        assert!(report
+            .pointer("/candidates/0/originalHostAttachmentInstrumentationProposalIds/0")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| {
+                value.starts_with("launch-attachment-proposal:sha256:")
+            }));
         let fission_stage = artifact
             .stage_results
             .iter()
@@ -12808,6 +12970,28 @@ void bind_and_launch(Buffer* pixels) {
                 .and_then(serde_json::Value::as_str),
             Some("compile_request_projection")
         );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/instrumentationAction",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("attach_runtime_object_dispatch_boundary")
+        );
+        assert!(mapping_evidence
+            .metadata
+            .as_ref()
+            .and_then(|metadata| {
+                metadata.pointer("/attachmentInstrumentationProposals/0/requiredBoundaryApis")
+            })
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|apis| apis.iter().any(|api| {
+                api.as_str() == Some("synthi_gpu_launch_original_host_path")
+            })));
 
         let fission_stage = artifact
             .stage_results

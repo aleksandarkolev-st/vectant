@@ -328,6 +328,12 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     {
         reason_codes.push("fission.original_host_launch_mapping_evidence_missing".to_string());
     }
+    if original_host_launch_mapping_required(candidate)
+        && !original_host_runtime_attachment_proven(candidate)
+        && original_host_attachment_instrumentation_proposals(candidate).is_empty()
+    {
+        reason_codes.push("fission.original_host_attachment_instrumentation_missing".to_string());
+    }
 
     if stream_ordering_required(candidate) && stream_ordering_evidence_ids(candidate).is_empty() {
         reason_codes.push("fission.stream_ordering_evidence_missing".to_string());
@@ -387,6 +393,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
             .cloned()
             .unwrap_or(Value::Null),
         "originalHostLaunchMappingEvidenceIds": original_host_launch_mapping_evidence_ids(candidate),
+        "originalHostRuntimeAttachmentProven": original_host_runtime_attachment_proven(candidate),
+        "originalHostAttachmentInstrumentationProposalIds": original_host_attachment_instrumentation_proposals(candidate),
         "streamOrderingRequired": stream_ordering_required(candidate),
         "streamOrderingEvidenceIds": stream_ordering_evidence_ids(candidate),
         "epochRetirementRequired": epoch_retirement_required(candidate),
@@ -1400,6 +1408,111 @@ fn original_host_launch_mapping_evidence_ids(candidate: &Value) -> Vec<String> {
     )
 }
 
+fn original_host_runtime_attachment_proven(candidate: &Value) -> bool {
+    bool_true(candidate.get("runtimeAttachmentProven"))
+        || candidate
+            .get("launchAttachmentScout")
+            .is_some_and(runtime_attachment_value_proven)
+        || candidate
+            .get("originalHostLaunchMapping")
+            .is_some_and(runtime_attachment_value_proven)
+}
+
+fn runtime_attachment_value_proven(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::Object(object) => {
+            bool_true(object.get("runtimeAttachmentProven"))
+                || object
+                    .get("mapping")
+                    .is_some_and(runtime_attachment_value_proven)
+                || object
+                    .get("runtimeAttachment")
+                    .is_some_and(runtime_attachment_value_proven)
+        }
+        _ => false,
+    }
+}
+
+fn original_host_attachment_instrumentation_proposals(candidate: &Value) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    collect_original_host_attachment_proposal_ids(
+        candidate.get("attachmentInstrumentationProposals"),
+        &mut ids,
+    );
+    collect_original_host_attachment_proposal_ids(
+        candidate.get("originalHostAttachmentInstrumentationProposals"),
+        &mut ids,
+    );
+    collect_original_host_attachment_proposal_ids(
+        candidate.pointer("/launchAttachmentScout/attachmentInstrumentationProposals"),
+        &mut ids,
+    );
+    collect_original_host_attachment_proposal_ids(
+        candidate.pointer("/launchAttachmentScout/mapping/attachmentInstrumentationProposals"),
+        &mut ids,
+    );
+    collect_original_host_attachment_proposal_ids(
+        candidate.pointer("/originalHostLaunchMapping/attachmentInstrumentationProposals"),
+        &mut ids,
+    );
+    ids.into_iter().collect()
+}
+
+fn collect_original_host_attachment_proposal_ids(value: Option<&Value>, ids: &mut BTreeSet<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    match value {
+        Value::Object(object) => {
+            if original_host_attachment_proposal_valid(value) {
+                if let Some(proposal_id) = object
+                    .get("proposalId")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    ids.insert(proposal_id.to_string());
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_original_host_attachment_proposal_ids(Some(item), ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn original_host_attachment_proposal_valid(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let has_required_api = string_list(object.get("requiredBoundaryApis"))
+        .iter()
+        .any(|api| {
+            matches!(
+                api.as_str(),
+                "synthi_gpu_launch_source_location"
+                    | "synthi_gpu_launch_original_host_path"
+                    | "synthi_original_host_path_with_provenance"
+            )
+        });
+    non_empty_string(object.get("proposalId"))
+        && non_empty_string(object.get("hostPathId"))
+        && non_empty_string(object.get("sourceLaunchSiteId"))
+        && has_required_api
+        && object
+            .get("runtimeEvidenceRequired")
+            .and_then(Value::as_object)
+            .is_some_and(|evidence| {
+                bool_true(evidence.get("runtimeSessionScoped"))
+                    && bool_true(evidence.get("dispatchBoundaryObserved"))
+                    && bool_true(evidence.get("dispatchEntryRuntimeVerified"))
+            })
+}
+
 fn bool_true(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool) == Some(true)
 }
@@ -2279,7 +2392,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_original_host_attachment_candidate_with_mapping() {
+    fn rejects_original_host_attachment_candidate_with_mapping_but_no_instrumentation() {
         let mut candidate = valid_candidate();
         candidate["originalHostPathRequirement"] = json!({
             "required": true,
@@ -2291,7 +2404,7 @@ mod tests {
 
         let report = verify_fission_candidate(&candidate);
 
-        assert_eq!(report["status"], "pass");
+        assert_eq!(report["status"], "reject");
         assert_eq!(report["originalHostLaunchMappingRequired"], true);
         assert_eq!(
             report["originalHostLaunchMappingId"],
@@ -2301,6 +2414,101 @@ mod tests {
             report["originalHostLaunchMappingEvidenceIds"],
             json!(["evidence:original-host-launch-mapping:runtime-boundary"])
         );
+        assert_eq!(
+            report["originalHostAttachmentInstrumentationProposalIds"],
+            json!([])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_attachment_instrumentation_missing"));
+    }
+
+    #[test]
+    fn rejects_original_host_attachment_candidate_with_bare_proposal_id() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!({
+            "required": true,
+            "reason": "attach through preserved runtime launch boundary"
+        });
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
+        candidate["launchAttachmentScout"] = json!({
+            "mapping": {
+                "attachmentInstrumentationProposals": [
+                    "launch-attachment-proposal:sha256:abc"
+                ]
+            }
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["originalHostAttachmentInstrumentationProposalIds"],
+            json!([])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_attachment_instrumentation_missing"));
+    }
+
+    #[test]
+    fn accepts_original_host_attachment_candidate_with_mapping_and_instrumentation_proposal() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!({
+            "required": true,
+            "reason": "attach through preserved runtime launch boundary"
+        });
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
+        candidate["launchAttachmentScout"] = json!({
+            "mapping": {
+                "attachmentInstrumentationProposals": [{
+                    "proposalId": "launch-attachment-proposal:sha256:abc",
+                    "sourceLaunchSiteId": "launch-site:sha256:def",
+                    "hostPathId": "host-path:sha256:abc",
+                    "requiredBoundaryApis": ["synthi_gpu_launch_source_location"],
+                    "runtimeEvidenceRequired": {
+                        "runtimeSessionScoped": true,
+                        "dispatchBoundaryObserved": true,
+                        "dispatchEntryRuntimeVerified": true
+                    }
+                }]
+            }
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["originalHostLaunchMappingRequired"], true);
+        assert_eq!(
+            report["originalHostAttachmentInstrumentationProposalIds"],
+            json!(["launch-attachment-proposal:sha256:abc"])
+        );
+        assert_eq!(report["originalHostRuntimeAttachmentProven"], false);
+    }
+
+    #[test]
+    fn accepts_original_host_attachment_candidate_with_runtime_proven_attachment() {
+        let mut candidate = valid_candidate();
+        candidate["requiresOriginalHostPath"] = json!(true);
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
+        candidate["launchAttachmentScout"] = json!({
+            "runtimeAttachmentProven": true
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["originalHostRuntimeAttachmentProven"], true);
     }
 
     #[test]
