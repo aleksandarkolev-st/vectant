@@ -604,6 +604,43 @@ const ORIGINAL_HOST_ATTACHMENT_REQUIRED_BOUNDARY_APIS = [
   'synthi_original_host_path_with_provenance',
 ];
 
+const ORIGINAL_HOST_ATTACHMENT_CONTRACT_SCHEMA_VERSION =
+  'synthi.gpu.original_host_attachment_contract.v1';
+
+function originalHostAttachmentContractValid(contract) {
+  const object = objectValue(contract);
+  if (!object || object.schemaVersion !== ORIGINAL_HOST_ATTACHMENT_CONTRACT_SCHEMA_VERSION) {
+    return false;
+  }
+  const runtimeDispatchBoundary = objectValue(object.runtimeDispatchBoundary);
+  const launchArgumentProvenance = objectValue(object.launchArgumentProvenance);
+  const streamOrdering = objectValue(object.streamOrdering);
+  const hostPreservation = objectValue(object.hostPreservation);
+  const outputProof = objectValue(object.outputProof);
+  return Boolean(
+    runtimeDispatchBoundary
+    && boolTrue(runtimeDispatchBoundary.required)
+    && nonEmptyString(runtimeDispatchBoundary.dispatchTableEntryIdSource) === 'runtime_boundary_active_generation'
+    && boolTrue(runtimeDispatchBoundary.mustMatchActiveGenerationEntry)
+    && boolTrue(runtimeDispatchBoundary.mustEmitSynthiLaunchDispatch)
+    && launchArgumentProvenance
+    && boolTrue(launchArgumentProvenance.required)
+    && nonEmptyString(launchArgumentProvenance.source) === 'runtime_observed_launch_arguments'
+    && boolTrue(launchArgumentProvenance.completeRequired)
+    && boolTrue(launchArgumentProvenance.unknownArgumentsBlockFullRuntime)
+    && streamOrdering
+    && boolTrue(streamOrdering.required)
+    && nonEmptyString(streamOrdering.source) === 'runtime_boundary_stream_token'
+    && boolTrue(streamOrdering.mustSynchronizeAffectedStreamsBeforePublish)
+    && hostPreservation
+    && boolTrue(hostPreservation.runtimeIdentitySnapshotRequired)
+    && boolTrue(hostPreservation.hostReplacementBlocksFullRuntime)
+    && outputProof
+    && boolTrue(outputProof.deterministicOracleRequired)
+    && boolTrue(outputProof.visualEvidenceSupplementalOnly)
+  );
+}
+
 function originalHostAttachmentProposalValid(value) {
   const object = objectValue(value);
   if (!object) return false;
@@ -632,6 +669,7 @@ function originalHostAttachmentProposalValid(value) {
     && boolTrue(runtimeEvidenceRequired.dispatchBoundaryObserved)
     && boolTrue(runtimeEvidenceRequired.dispatchEntryRuntimeVerified)
     && boolTrue(runtimeEvidenceRequired.launchArgProvenanceComplete)
+    && originalHostAttachmentContractValid(object.attachmentContract)
   );
 }
 

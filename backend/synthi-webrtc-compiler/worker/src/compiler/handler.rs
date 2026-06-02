@@ -4593,6 +4593,34 @@ fn source_launch_attachment_instrumentation_proposal(
             "dispatchEntryRuntimeVerified": true,
             "launchArgProvenanceComplete": true
         },
+        "attachmentContract": {
+            "schemaVersion": "synthi.gpu.original_host_attachment_contract.v1",
+            "runtimeDispatchBoundary": {
+                "required": true,
+                "dispatchTableEntryIdSource": "runtime_boundary_active_generation",
+                "mustMatchActiveGenerationEntry": true,
+                "mustEmitSynthiLaunchDispatch": true
+            },
+            "launchArgumentProvenance": {
+                "required": true,
+                "source": "runtime_observed_launch_arguments",
+                "completeRequired": true,
+                "unknownArgumentsBlockFullRuntime": true
+            },
+            "streamOrdering": {
+                "required": true,
+                "source": "runtime_boundary_stream_token",
+                "mustSynchronizeAffectedStreamsBeforePublish": true
+            },
+            "hostPreservation": {
+                "runtimeIdentitySnapshotRequired": true,
+                "hostReplacementBlocksFullRuntime": true
+            },
+            "outputProof": {
+                "deterministicOracleRequired": true,
+                "visualEvidenceSupplementalOnly": true
+            }
+        },
         "runtimeAttachmentProven": false,
         "runtimeProofBoundary": "instrumentation_proposal_only",
     });
@@ -13231,6 +13259,30 @@ __constant__ int scale;
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/attachmentContract/schemaVersion",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("synthi.gpu.original_host_attachment_contract.v1")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/attachmentContract/runtimeDispatchBoundary/mustEmitSynthiLaunchDispatch",
+                    )
+                })
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
 
         let fission_evidence = artifact
             .evidence_refs
@@ -13419,6 +13471,30 @@ void bind_and_launch(Buffer* pixels) {
             .is_some_and(|apis| apis.iter().any(|api| {
                 api.as_str() == Some("synthi_gpu_launch_original_host_path")
             })));
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/attachmentContract/launchArgumentProvenance/source",
+                    )
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("runtime_observed_launch_arguments")
+        );
+        assert_eq!(
+            mapping_evidence
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.pointer(
+                        "/attachmentInstrumentationProposals/0/attachmentContract/outputProof/deterministicOracleRequired",
+                    )
+                })
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
 
         let fission_stage = artifact
             .stage_results
@@ -13479,6 +13555,18 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
         assert_eq!(
             proposal
                 .pointer("/runtimeEvidenceRequired/launchArgProvenanceComplete")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            proposal
+                .pointer("/attachmentContract/streamOrdering/source")
+                .and_then(serde_json::Value::as_str),
+            Some("runtime_boundary_stream_token")
+        );
+        assert_eq!(
+            proposal
+                .pointer("/attachmentContract/outputProof/visualEvidenceSupplementalOnly")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );

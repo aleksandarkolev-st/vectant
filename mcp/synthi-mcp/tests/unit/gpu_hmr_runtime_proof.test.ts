@@ -404,6 +404,34 @@ function acceptedLaunchAttachmentProposal() {
       dispatchEntryRuntimeVerified: true,
       launchArgProvenanceComplete: true,
     },
+    attachmentContract: {
+      schemaVersion: "synthi.gpu.original_host_attachment_contract.v1",
+      runtimeDispatchBoundary: {
+        required: true,
+        dispatchTableEntryIdSource: "runtime_boundary_active_generation",
+        mustMatchActiveGenerationEntry: true,
+        mustEmitSynthiLaunchDispatch: true,
+      },
+      launchArgumentProvenance: {
+        required: true,
+        source: "runtime_observed_launch_arguments",
+        completeRequired: true,
+        unknownArgumentsBlockFullRuntime: true,
+      },
+      streamOrdering: {
+        required: true,
+        source: "runtime_boundary_stream_token",
+        mustSynchronizeAffectedStreamsBeforePublish: true,
+      },
+      hostPreservation: {
+        runtimeIdentitySnapshotRequired: true,
+        hostReplacementBlocksFullRuntime: true,
+      },
+      outputProof: {
+        deterministicOracleRequired: true,
+        visualEvidenceSupplementalOnly: true,
+      },
+    },
   };
 }
 
@@ -2457,6 +2485,44 @@ describe("GPU HMR runtime output proof classification", () => {
           stageId: "fission-candidate-verification",
           status: "passed",
           evidenceRefs: ["evidence:fission-verifier-report:original-host-partial-api-contract"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.selectedIslandContracts[0].originalHostAttachmentInstrumentationProposalIds)
+      .toEqual([]);
+    expect(proof.degradedReason).toBe(
+      "fission_selected_island_original_host_attachment_instrumentation_missing",
+    );
+  });
+
+  it("does not prove fission from original-host mapping without an attachment contract", () => {
+    const metadata = acceptedFissionVerifierMetadata();
+    const proposal = acceptedLaunchAttachmentProposal();
+    delete proposal.attachmentContract;
+    metadata.candidates[0].candidate.originalHostLaunchMappingRequired = true;
+    metadata.candidates[0].candidate.originalHostLaunchMappingId =
+      `host-launch:sha256:${"7".repeat(64)}`;
+    metadata.candidates[0].launchAttachmentScout = {
+      mapping: {
+        attachmentInstrumentationProposals: [proposal],
+      },
+    };
+
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:original-host-missing-attachment-contract",
+          metadata,
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "passed",
+          evidenceRefs: ["evidence:fission-verifier-report:original-host-missing-attachment-contract"],
         }],
       },
     }]);

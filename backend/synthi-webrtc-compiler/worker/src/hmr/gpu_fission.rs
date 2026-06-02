@@ -4,6 +4,8 @@ use std::collections::BTreeSet;
 
 pub const FISSION_ISLAND_SCHEMA_VERSION: &str = "synthi.gpu.fission_island.v1";
 pub const FISSION_VERIFIER_SCHEMA_VERSION: &str = "synthi.gpu.fission_verifier.v1";
+const ORIGINAL_HOST_ATTACHMENT_CONTRACT_SCHEMA_VERSION: &str =
+    "synthi.gpu.original_host_attachment_contract.v1";
 
 const REQUIRED_STRING_FIELDS: &[&str] = &[
     "islandId",
@@ -1616,6 +1618,81 @@ fn original_host_attachment_proposal_valid(value: &Value) -> bool {
                     && bool_true(evidence.get("dispatchEntryRuntimeVerified"))
                     && bool_true(evidence.get("launchArgProvenanceComplete"))
             })
+        && original_host_attachment_contract_valid(object.get("attachmentContract"))
+}
+
+fn original_host_attachment_contract_valid(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    object.get("schemaVersion").and_then(Value::as_str)
+        == Some(ORIGINAL_HOST_ATTACHMENT_CONTRACT_SCHEMA_VERSION)
+        && original_host_attachment_contract_runtime_dispatch_valid(
+            object.get("runtimeDispatchBoundary"),
+        )
+        && original_host_attachment_contract_arg_provenance_valid(
+            object.get("launchArgumentProvenance"),
+        )
+        && original_host_attachment_contract_stream_ordering_valid(object.get("streamOrdering"))
+        && original_host_attachment_contract_host_preservation_valid(object.get("hostPreservation"))
+        && original_host_attachment_contract_output_proof_valid(object.get("outputProof"))
+}
+
+fn original_host_attachment_contract_runtime_dispatch_valid(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    bool_true(object.get("required"))
+        && object
+            .get("dispatchTableEntryIdSource")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == "runtime_boundary_active_generation")
+        && bool_true(object.get("mustMatchActiveGenerationEntry"))
+        && bool_true(object.get("mustEmitSynthiLaunchDispatch"))
+}
+
+fn original_host_attachment_contract_arg_provenance_valid(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    bool_true(object.get("required"))
+        && object
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == "runtime_observed_launch_arguments")
+        && bool_true(object.get("completeRequired"))
+        && bool_true(object.get("unknownArgumentsBlockFullRuntime"))
+}
+
+fn original_host_attachment_contract_stream_ordering_valid(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    bool_true(object.get("required"))
+        && object
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| value == "runtime_boundary_stream_token")
+        && bool_true(object.get("mustSynchronizeAffectedStreamsBeforePublish"))
+}
+
+fn original_host_attachment_contract_host_preservation_valid(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    bool_true(object.get("runtimeIdentitySnapshotRequired"))
+        && bool_true(object.get("hostReplacementBlocksFullRuntime"))
+}
+
+fn original_host_attachment_contract_output_proof_valid(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    bool_true(object.get("deterministicOracleRequired"))
+        && bool_true(object.get("visualEvidenceSupplementalOnly"))
 }
 
 fn bool_true(value: Option<&Value>) -> bool {
@@ -2031,6 +2108,37 @@ mod tests {
                     "verifierEvidenceIds": ["evidence:source-map"]
                 }
             ],
+        })
+    }
+
+    fn valid_attachment_contract() -> Value {
+        json!({
+            "schemaVersion": "synthi.gpu.original_host_attachment_contract.v1",
+            "runtimeDispatchBoundary": {
+                "required": true,
+                "dispatchTableEntryIdSource": "runtime_boundary_active_generation",
+                "mustMatchActiveGenerationEntry": true,
+                "mustEmitSynthiLaunchDispatch": true
+            },
+            "launchArgumentProvenance": {
+                "required": true,
+                "source": "runtime_observed_launch_arguments",
+                "completeRequired": true,
+                "unknownArgumentsBlockFullRuntime": true
+            },
+            "streamOrdering": {
+                "required": true,
+                "source": "runtime_boundary_stream_token",
+                "mustSynchronizeAffectedStreamsBeforePublish": true
+            },
+            "hostPreservation": {
+                "runtimeIdentitySnapshotRequired": true,
+                "hostReplacementBlocksFullRuntime": true
+            },
+            "outputProof": {
+                "deterministicOracleRequired": true,
+                "visualEvidenceSupplementalOnly": true
+            }
         })
     }
 
@@ -2678,7 +2786,8 @@ mod tests {
                         "dispatchBoundaryObserved": true,
                         "dispatchEntryRuntimeVerified": true,
                         "launchArgProvenanceComplete": true
-                    }
+                    },
+                    "attachmentContract": valid_attachment_contract()
                 }]
             }
         });
@@ -2730,7 +2839,8 @@ mod tests {
                         "dispatchBoundaryObserved": true,
                         "dispatchEntryRuntimeVerified": true,
                         "launchArgProvenanceComplete": true
-                    }
+                    },
+                    "attachmentContract": valid_attachment_contract()
                 }]
             }
         });
@@ -2744,6 +2854,58 @@ mod tests {
             json!(["launch-attachment-proposal:sha256:abc"])
         );
         assert_eq!(report["originalHostRuntimeAttachmentProven"], false);
+    }
+
+    #[test]
+    fn rejects_original_host_attachment_candidate_without_attachment_contract() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!({
+            "required": true,
+            "reason": "attach through preserved runtime launch boundary"
+        });
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+        candidate["originalHostLaunchMappingEvidenceIds"] =
+            json!(["evidence:original-host-launch-mapping:runtime-boundary"]);
+        candidate["launchAttachmentScout"] = json!({
+            "mapping": {
+                "attachmentInstrumentationProposals": [{
+                    "proposalId": "launch-attachment-proposal:sha256:abc",
+                    "sourceLaunchSiteId": "launch-site:sha256:def",
+                    "hostPathId": "host-path:sha256:abc",
+                    "path": "src/render_loop.cpp",
+                    "line": 42,
+                    "column": 17,
+                    "sourceProvenance": "source_baseline_contents",
+                    "sourceHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "snippetHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
+                    "requiredBoundaryApis": [
+                        "synthi_gpu_launch_source_location",
+                        "synthi_gpu_launch_original_host_path",
+                        "synthi_original_host_path_with_provenance"
+                    ],
+                    "runtimeEvidenceRequired": {
+                        "runtimeSessionScoped": true,
+                        "dispatchBoundaryObserved": true,
+                        "dispatchEntryRuntimeVerified": true,
+                        "launchArgProvenanceComplete": true
+                    }
+                }]
+            }
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["originalHostAttachmentInstrumentationProposalIds"],
+            json!([])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_attachment_instrumentation_missing"));
     }
 
     #[test]
@@ -2779,7 +2941,8 @@ mod tests {
                         "dispatchBoundaryObserved": true,
                         "dispatchEntryRuntimeVerified": true,
                         "launchArgProvenanceComplete": true
-                    }
+                    },
+                    "attachmentContract": valid_attachment_contract()
                 }]
             }
         });
