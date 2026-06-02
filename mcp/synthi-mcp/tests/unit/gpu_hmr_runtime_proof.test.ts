@@ -47,6 +47,10 @@ import {
 import {
   buildGpuHmrValidationProofSummary,
 } from "../../scripts/lib/gpu-hmr-validation-proof-summary.mjs";
+import {
+  classifyFreshAiSplitProvenance,
+  countAiSplitEvidenceLines,
+} from "../../scripts/lib/ai-split-provenance.mjs";
 
 const TEST_ARTIFACT_HASH = "1".repeat(64);
 const TEST_ARTIFACT_ID = `artifact:sha256:${TEST_ARTIFACT_HASH}`;
@@ -754,12 +758,54 @@ describe("validation runtime metadata", () => {
         "SYNTHI_REAL_ROCM_DELTA_AFTER",
         "SYNTHI_REAL_ROCM_BUILD_METADATA_DIR",
         "SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON",
+        "SYNTHI_REAL_ROCM_REQUIRE_FRESH_AI_SPLIT",
+        "SYNTHI_VALIDATION_REQUIRE_FRESH_AI_SPLIT",
         "MCP_TRANSPORT",
         "SYNTHI_VALIDATION_AUTHLESS_WORKSPACE",
       ])
     );
     expect(REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS).not.toContain("GOOGLE_API_KEY");
     expect(REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS).not.toContain("GEMINI_API_KEY");
+  });
+});
+
+describe("AI split provenance classification", () => {
+  it("counts split provenance from mode and endpoint log lines", () => {
+    const count = countAiSplitEvidenceLines([
+      "2026-06-02 Calling API mode=split provider=gemini",
+      "2026-06-02 POST /refactor/split/gpu 200",
+      "2026-06-02 POST /refactor/split/verified 200",
+      "2026-06-02 POST /refactor/diff_patch/gpu 200",
+    ]);
+
+    expect(count).toBe(3);
+  });
+
+  it("fails a required fresh split when no split evidence is observed", () => {
+    const proof = classifyFreshAiSplitProvenance({
+      required: true,
+      model: "generic-model",
+      aiCallCounts: { split: 0 },
+      evidenceLines: ["POST /refactor/diff_patch/gpu 200"],
+    });
+
+    expect(proof.observed).toBe(false);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("fresh-ai-split-unobserved");
+  });
+
+  it("proves required fresh split when endpoint evidence is observed", () => {
+    const proof = classifyFreshAiSplitProvenance({
+      required: true,
+      model: "generic-model",
+      aiCallCounts: { split: 0 },
+      evidenceLines: ["POST /refactor/split/gpu 200"],
+    });
+
+    expect(proof.observed).toBe(true);
+    expect(proof.resultState).toBe("fresh-ai-split-observed");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.evidenceRefs).toHaveLength(1);
   });
 });
 

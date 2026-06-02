@@ -61,6 +61,10 @@ import {
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  classifyFreshAiSplitProvenance,
+  countAiSplitEvidenceLines,
+} from './lib/ai-split-provenance.mjs';
 import { validationCommandMetadata } from './lib/docker-validation-metadata.mjs';
 import { REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS } from './lib/real-rocm-validation-command-env.mjs';
 
@@ -243,6 +247,9 @@ const CFG = {
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
   expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
+  requireFreshAiSplit:
+    process.env.SYNTHI_VALIDATION_REQUIRE_FRESH_AI_SPLIT === '1'
+    || process.env.SYNTHI_REAL_ROCM_REQUIRE_FRESH_AI_SPLIT === '1',
   requireOriginalHostPath: process.env.SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH !== '0',
   outputOracleContract: parseOutputOracleContract(
     process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
@@ -308,6 +315,7 @@ const report = {
   compile_projection: {},
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
+  fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
   started_at: new Date().toISOString(),
   finished_at: null,
@@ -2439,11 +2447,12 @@ async function collectRuntimeEvidence() {
   );
   const aiEvidence = evidenceLines(
     aiLogs,
-    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split\/gpu|diff_patch(?:\/gpu)?|heal)/i,
+    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split(?:\/verified|\/gpu)?|diff_patch(?:\/gpu)?|heal)/i,
   );
   const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
+  const splitCalls = countAiSplitEvidenceLines(aiEvidence);
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   const runtimeNativeLaunchObservation = runtimeNativeLaunchObservationEvidence(workerEvidence);
   const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
@@ -2490,7 +2499,7 @@ async function collectRuntimeEvidence() {
     },
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
-      split: countMatches(aiEvidence, /mode=split/i),
+      split: splitCalls,
       generic_delta: genericDeltaCalls,
       gpu_delta: gpuDeltaCalls,
       total_delta: genericDeltaCalls + gpuDeltaCalls,
@@ -2515,6 +2524,21 @@ async function collectRuntimeEvidence() {
     runtime_original_host_path: runtimeOriginalHostPath.evidence,
     runtime_identity_changes: runtimeIdentityChanges,
   };
+  report.evidence.ai_split_provenance = classifyFreshAiSplitProvenance({
+    required: CFG.requireFreshAiSplit,
+    model: CFG.geminiModel,
+    aiCallCounts: report.evidence.ai_call_counts,
+    evidenceLines: aiEvidence,
+  });
+  if (CFG.requireFreshAiSplit) {
+    const provenance = report.evidence.ai_split_provenance;
+    record(
+      'fresh AI split provenance',
+      provenance.observed ? 'pass' : 'fail',
+      `model=${provenance.model ?? 'unspecified'} split_calls=${provenance.splitCallCount}`,
+    );
+    if (!provenance.observed) process.exitCode = 1;
+  }
   if (upstreamRunEvidence.length > 0) {
     record('runtime original host run evidence', 'pass', `lines=${upstreamRunEvidence.length}`);
   }
@@ -2823,6 +2847,7 @@ async function writeResults() {
     gpu_arch: report.gpu_arch,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
+    fresh_ai_split_required: report.fresh_ai_split_required,
     timings: {
       started_at: report.started_at,
       finished_at: report.finished_at,
