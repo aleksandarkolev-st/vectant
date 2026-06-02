@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { resolveActor } from '@/lib/integrations/session';
 import { canReadScope } from '@/lib/integrations/scope';
 import { getConnectionRow, updateConnection } from '@/lib/integrations/connectionStore';
-import { testConnection, listTools } from '@/lib/mcp-hub';
+import { testConnection, listTools } from '@synthi/mcp-hub';
 import { decryptToken } from '@/lib/tokenCrypto';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 

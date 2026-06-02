@@ -6,6 +6,7 @@ import { Plug, RefreshCw, Trash2, CheckCircle2, XCircle, Circle } from 'lucide-r
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import AddConnectionDialog from './AddConnectionDialog';
+import CliAccessSection from './CliAccessSection';
 import { fetchConnections, deleteConnection, testConnection, updateConnection } from './integrationsClient';
 
 function relativeTime(iso) {
@@ -168,6 +169,7 @@ export default function ConnectedToolsPanel() {
             </div>
           );
         })}
+        <CliAccessSection />
       </div>
     </div>
   );

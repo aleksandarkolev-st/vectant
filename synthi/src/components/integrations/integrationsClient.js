@@ -41,3 +41,26 @@ export async function testConnection(id) {
   if (!res.ok) throw new Error(data?.error || 'Test failed');
   return data; // { ok, state, tools?: [{name, description}], ... }
 }
+
+const TOKENS = '/api/integrations/tokens';
+
+export async function fetchTokens() {
+  const res = await fetch(TOKENS);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Failed to load tokens');
+  return (await res.json()).tokens || [];
+}
+
+export async function createToken(name) {
+  const res = await fetch(TOKENS, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Failed to create token');
+  return data; // { id, name, last4, createdAt, token (plaintext, once) }
+}
+
+export async function revokeToken(id) {
+  const res = await fetch(`${TOKENS}/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Failed to revoke token');
+  return true;
+}

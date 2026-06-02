@@ -65,10 +65,12 @@ import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
+import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
 
 export interface SynthiServerOptions {
   defaultSessionId?: string;
   defaultSignalingUrl: string;
+  externalTools?: ExternalTools;
 }
 
 const TOOLS = [
@@ -1061,11 +1063,18 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
+    tools: [
+      ...TOOLS.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+      ...(options.externalTools?.descriptors ?? []).map((d) => ({
+        name: d.name,
+        description: d.description,
+        inputSchema: d.inputSchema as Record<string, unknown>,
+      })),
+    ],
   }));
 
   // ---------------------------------------------------------------------
@@ -1240,6 +1249,15 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
     const toolName = request.params.name;
     const args = request.params.arguments;
+    if (isExternalToolName(toolName)) {
+      const result = await callExternalTool(
+        toolName,
+        (args ?? {}) as Record<string, unknown>,
+        options.externalTools?.aliasMap ?? {},
+      );
+      recordToolCall(toolName, result.isError ? "error" : "ok");
+      return result as CallToolResult;
+    }
     const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
     // Phase-2d quota gate. `off` mode returns null immediately; `warn` logs
     // a security event but still returns null; `enforce` short-circuits

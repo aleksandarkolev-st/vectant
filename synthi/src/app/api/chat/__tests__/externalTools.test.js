@@ -11,13 +11,13 @@ const { resolveToolConfigsMock, listToolsMock, callToolMock, auditCreateMock, ch
 }));
 vi.mock('@/lib/integrations/connectionStore', () => ({ resolveToolConfigs: resolveToolConfigsMock }));
 vi.mock('@/lib/integrations/scope', () => ({ canReadScope: canReadScopeMock }));
-vi.mock('@/lib/mcp-hub', () => ({ listTools: listToolsMock, callTool: callToolMock }));
+vi.mock('@synthi/mcp-hub', () => ({ listTools: listToolsMock, callTool: callToolMock }));
 vi.mock('@/lib/prisma', () => ({ default: { mcpCallAudit: { create: auditCreateMock } } }));
 vi.mock('@/lib/integrations/rateLimit', () => ({
   checkLimit: checkLimitMock,
   RATE_LIMITS: { crud: { limit: 30, windowMs: 60000 }, test: { limit: 10, windowMs: 60000 }, extcall: { limit: 60, windowMs: 60000 } },
 }));
-// NOTE: jsonSchemaToGemini is imported from '@/lib/mcp-hub/helpers.js' (real, not mocked)
+// NOTE: jsonSchemaToGemini is imported from '@synthi/mcp-hub/helpers' (real, not mocked)
 // so the schema-size-cap branch is exercised against the genuine converter.
 
 import { buildExternalTools, isExternalToolName, callExternalTool } from '../externalTools.js';

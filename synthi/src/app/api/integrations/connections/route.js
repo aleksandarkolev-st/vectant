@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { resolveActor } from '@/lib/integrations/session';
 import { canReadScope, canWriteScope } from '@/lib/integrations/scope';
 import { listConnections, createConnection } from '@/lib/integrations/connectionStore';
-import { isAllowedHeaderName } from '@/lib/mcp-hub';
+import { isAllowedHeaderName } from '@synthi/mcp-hub';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 
 export const runtime = 'nodejs';

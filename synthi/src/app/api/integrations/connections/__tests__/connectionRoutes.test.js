@@ -44,7 +44,7 @@ vi.mock('@/lib/integrations/rateLimit', () => ({
   },
 }));
 // Keep the real isAllowedHeaderName (security-critical) but stub the network bits.
-vi.mock('@/lib/mcp-hub', async (importActual) => {
+vi.mock('@synthi/mcp-hub', async (importActual) => {
   const actual = await importActual();
   return { ...actual, testConnection: testConnMock, listTools: listToolsMock };
 });

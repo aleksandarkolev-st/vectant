@@ -40,6 +40,8 @@ export const RATE_LIMITS = {
   crud: { limit: Number(process.env.SYNTHI_RL_CRUD) || 30, windowMs: 60_000 },
   test: { limit: Number(process.env.SYNTHI_RL_TEST) || 10, windowMs: 60_000 },
   extcall: { limit: Number(process.env.SYNTHI_RL_EXTCALL) || 60, windowMs: 60_000 },
+  resolve: { limit: Number(process.env.SYNTHI_RL_RESOLVE) || 30, windowMs: 60_000 },
+  audit: { limit: Number(process.env.SYNTHI_RL_AUDIT) || 120, windowMs: 60_000 },
 };
 
 /** Test-only: clear all buckets. */
