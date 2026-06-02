@@ -834,6 +834,27 @@ function originalHostPathRecord(line) {
   };
 }
 
+function originalHostPathCandidateRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    event: fields.event ?? null,
+    runtimeSession: fields.runtime_session ?? null,
+    attachmentProvenance:
+      fields.attachment_provenance
+      ?? fields.attachmentProvenance
+      ?? fields.provenance
+      ?? null,
+    hostPathId: fields.host_path_id ?? fields.hostPathId ?? null,
+    launchSequence: integerValue(fields.launch_sequence ?? fields.sequence),
+    frameIndex: integerValue(fields.frame_index ?? fields.frame),
+    module: fields.module ?? null,
+    symbol: fields.symbol ?? null,
+    address: fields.address ?? null,
+    functionPtr: fields.function_ptr ?? fields.functionPtr ?? null,
+  };
+}
+
 const ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE = new Set([
   'runtime_explicit',
   'host_runtime_explicit',
@@ -881,6 +902,18 @@ function dispatchBoundaryRecord(line) {
 
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
+  const candidateRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\boriginal_host_path_candidate\b/i))
+    .map(originalHostPathCandidateRecord)
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && typeof record.hostPathId === 'string'
+      && record.hostPathId.trim()
+      && record.event === 'candidate'
+      && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
   const launchBoundaryRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\blaunch_arg_provenance\b/i))
     .map(launchBoundaryRecord)
@@ -956,9 +989,39 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         `worker-log:synthi_gpu_launch:${latest.runtimeSession}:${latest.runtimeDispatchTableEntryId}`,
       ]
     : [];
+  const candidateEvidenceRefs = candidateRecords.slice(-20).map((record) => [
+    'worker-log:original_host_path_candidate',
+    evidenceRefToken(record.runtimeSession),
+    evidenceRefToken(record.hostPathId),
+    Number.isFinite(record.launchSequence) ? record.launchSequence : 'unknown',
+    Number.isFinite(record.frameIndex) ? record.frameIndex : 'unknown',
+  ].join(':'));
   return {
     raw_count: rawRecords.length,
     total_count: records.length,
+    candidate_count: candidateRecords.length,
+    attachment_candidate_observed: candidateRecords.length > 0,
+    candidate_runtime_session_ids: compactStringList(
+      candidateRecords.map((record) => record.runtimeSession),
+    ),
+    candidate_evidence_refs: candidateEvidenceRefs,
+    attachment_candidates: candidateRecords.slice(-20).map((record) => ({
+      runtime_session: record.runtimeSession,
+      host_path_id: record.hostPathId,
+      launch_sequence: record.launchSequence,
+      frame_index: record.frameIndex,
+      module: record.module,
+      symbol: record.symbol,
+      address: record.address,
+      function_ptr: record.functionPtr,
+      evidence_ref: [
+        'worker-log:original_host_path_candidate',
+        evidenceRefToken(record.runtimeSession),
+        evidenceRefToken(record.hostPathId),
+        Number.isFinite(record.launchSequence) ? record.launchSequence : 'unknown',
+        Number.isFinite(record.frameIndex) ? record.frameIndex : 'unknown',
+      ].join(':'),
+    })),
     launch_boundary_count: launchBoundaryRecords.length,
     matching_launch_boundary_observed: matchingLaunchBoundary !== null,
     dispatch_boundary_count: dispatchBoundaryRecords.length,

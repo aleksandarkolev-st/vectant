@@ -4171,6 +4171,38 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
   });
 
+  it("reports native original host path candidates without accepting them as attachment proof", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=7 function_ptr=0x456 grid=(1,1,1) block=(1,1,1) args_ptr=0x789 stream=0x0 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept",
+      "[gpu-runtime-boundary] original_host_path_candidate event=candidate attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-callsite:abc launch_sequence=7 frame_index=2 module=/app/bin symbol=renderLoop address=0x123 function_ptr=0x456 runtime_session=native-session",
+    ], {
+      required: true,
+      runtimeSessionIds: ["native-session"],
+    });
+
+    expect(evidence.raw_count).toBe(0);
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.candidate_count).toBe(1);
+    expect(evidence.attachment_candidate_observed).toBe(true);
+    expect(evidence.candidate_runtime_session_ids).toEqual(["native-session"]);
+    expect(evidence.candidate_evidence_refs).toEqual([
+      "worker-log:original_host_path_candidate:native-session:native-callsite:abc:7:2",
+    ]);
+    expect(evidence.attachment_candidates[0]).toEqual(
+      expect.objectContaining({
+        runtime_session: "native-session",
+        host_path_id: "native-callsite:abc",
+        launch_sequence: 7,
+        frame_index: 2,
+        module: "/app/bin",
+        symbol: "renderLoop",
+      })
+    );
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
+    expect(proof.degradedReason).toBe("original_host_path_attachment_not_observed");
+  });
+
   it("does not prove original host path attachment from incomplete launch provenance", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=runtime_explicit host_path_id=host-main dispatch_table_entry_id=entry-1 runtime_dispatch_table_entry_id=entry-1 dispatch_entry_runtime_verified=true generation=3 runtime_session=pid1",

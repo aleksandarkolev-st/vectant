@@ -2604,11 +2604,14 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime host identity evidence', 'warn', 'no host_identity lines captured');
   }
-  if (runtimeOriginalHostPath.evidence.raw_count > 0) {
+  if (
+    runtimeOriginalHostPath.evidence.raw_count > 0
+    || runtimeOriginalHostPath.evidence.candidate_count > 0
+  ) {
     record(
       'runtime original host path evidence',
       runtimeOriginalHostPath.proof.degradedState ? 'warn' : 'pass',
-      `records=${runtimeOriginalHostPath.evidence.total_count} raw=${runtimeOriginalHostPath.evidence.raw_count} required=${CFG.requireOriginalHostPath}`,
+      `records=${runtimeOriginalHostPath.evidence.total_count} raw=${runtimeOriginalHostPath.evidence.raw_count} candidates=${runtimeOriginalHostPath.evidence.candidate_count} required=${CFG.requireOriginalHostPath}`,
     );
   } else {
     record(
