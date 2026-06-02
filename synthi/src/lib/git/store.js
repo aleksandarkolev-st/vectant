@@ -45,5 +45,12 @@ export async function createPatProvider(actor, { providerType, name, baseUrl, to
 }
 
 export async function deleteProvider(id) {
-  return prisma.gitProvider.delete({ where: { id } });
+  // Capture linked secret ids BEFORE deleting the provider, then remove the
+  // orphaned EncryptedSecret rows (the FK is onDelete:SetNull, not Cascade, so
+  // they would otherwise leak in the DB).
+  const row = await prisma.gitProvider.findUnique({ where: { id }, select: { secretId: true, refreshSecretId: true } });
+  await prisma.gitProvider.delete({ where: { id } });
+  const ids = [row?.secretId, row?.refreshSecretId].filter(Boolean);
+  if (ids.length) await prisma.encryptedSecret.deleteMany({ where: { id: { in: ids } } });
+  return true;
 }

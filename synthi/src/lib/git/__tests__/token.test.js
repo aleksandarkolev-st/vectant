@@ -52,4 +52,12 @@ describe('withFreshToken', () => {
     await expect(withFreshToken(conn)).rejects.toMatchObject({ code: 'needs_relink' });
     expect(h.prisma.gitProvider.update).toHaveBeenCalledWith(expect.objectContaining({ data: { needsRelink: true } }));
   });
+  it('marks needsRelink (no fetch) when the OAuth refresh secret is missing', async () => {
+    const conn = { id: 'g1', providerType: 'gitlab', authType: 'oauth',
+      accessTokenExpiresAt: new Date(Date.now() - 1000), secretId: 's1', refreshSecretId: null,
+      secret: { id: 's1', cipher: 'c(OLD)' }, refreshSecret: null };
+    await expect(withFreshToken(conn)).rejects.toMatchObject({ code: 'needs_relink' });
+    expect(h.prisma.gitProvider.update).toHaveBeenCalledWith(expect.objectContaining({ data: { needsRelink: true } }));
+    expect(h.fetchMock).not.toHaveBeenCalled();
+  });
 });

@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   prisma: { gitProvider: { create: vi.fn(), findMany: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
-            encryptedSecret: { create: vi.fn() } },
+            encryptedSecret: { create: vi.fn(), deleteMany: vi.fn() } },
   enc: vi.fn((t) => `cipher(${t})`),
 }));
 vi.mock('@/lib/prisma', () => ({ default: h.prisma }));
 vi.mock('@/lib/tokenCrypto', () => ({ encryptToken: h.enc, decryptToken: (c) => c }));
 
-import { createPatProvider, listProviders, scopeWhere } from '../store';
+import { createPatProvider, listProviders, scopeWhere, deleteProvider } from '../store';
 
 beforeEach(() => { vi.clearAllMocks(); h.prisma.encryptedSecret.create.mockResolvedValue({ id: 'sec1' }); });
 
@@ -39,5 +39,15 @@ describe('listProviders', () => {
     expect(arg.where).toEqual({ scope: 'personal', ownerUserId: 'u1' });
     expect(arg.select.secretId).toBeFalsy();
     expect(arg.select.secret).toBeFalsy();
+  });
+});
+
+describe('deleteProvider', () => {
+  it('deletes the provider AND its orphaned secret rows', async () => {
+    h.prisma.gitProvider.findUnique.mockResolvedValue({ secretId: 's1', refreshSecretId: 'r1' });
+    h.prisma.gitProvider.delete.mockResolvedValue({});
+    await deleteProvider('g1');
+    expect(h.prisma.gitProvider.delete).toHaveBeenCalledWith({ where: { id: 'g1' } });
+    expect(h.prisma.encryptedSecret.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['s1', 'r1'] } } });
   });
 });

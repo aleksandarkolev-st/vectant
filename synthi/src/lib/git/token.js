@@ -12,6 +12,10 @@ export async function withFreshToken(conn) {
   const expired = conn.accessTokenExpiresAt && new Date(conn.accessTokenExpiresAt).getTime() - SKEW_MS <= Date.now();
   if (!expired) return decryptToken(conn.secret.cipher);
 
+  if (!conn.refreshSecret) {
+    await prisma.gitProvider.update({ where: { id: conn.id }, data: { needsRelink: true } });
+    throw Object.assign(new Error('missing refresh token'), { code: 'needs_relink' });
+  }
   const { token: tokenUrl } = oauthEndpoints(conn.providerType, conn.baseUrl);
   const refreshToken = decryptToken(conn.refreshSecret.cipher);
   const body = new URLSearchParams({
