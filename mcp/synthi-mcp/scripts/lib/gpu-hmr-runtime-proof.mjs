@@ -396,6 +396,7 @@ function epochGenerationGraphStatus(graph) {
       schemaVersionValid: false,
       publishTimestampObserved: false,
       runtimeSessionIds: [],
+      runtimeSessionScoped: false,
       runtimeSessionConsistent: true,
     };
   }
@@ -552,11 +553,14 @@ function epochGenerationGraphStatus(graph) {
     ...(Array.isArray(graph.runtime_session_ids) ? graph.runtime_session_ids : []),
     ...edges.map((edge) => edge.runtimeSession ?? edge.runtime_session),
   ]);
+  const runtimeSessionScoped = graphRuntimeSessionIds.length > 0;
   const runtimeSessionConsistent = graphRuntimeSessionIds.length === 1;
   const observed = nodes.length > 0 || edges.length > 0;
   const valid =
     observed
     && schemaVersionValid
+    && runtimeSessionScoped
+    && runtimeSessionConsistent
     && lineageValid
     && publishTimestampObserved
     && dispatchTableMutationObserved
@@ -569,15 +573,16 @@ function epochGenerationGraphStatus(graph) {
     && graphAcyclic
     && publicationEdgeObserved
     && retirementStateObserved
-    && retirementEdgeObserved
-    && runtimeSessionConsistent;
+    && retirementEdgeObserved;
   const reason = valid
     ? null
     : !observed
       ? 'epoch_generation_graph_not_collected'
       : !schemaVersionValid
         ? 'epoch_generation_graph_schema_unverified'
-        : !runtimeSessionConsistent
+        : !runtimeSessionScoped
+          ? 'epoch_generation_graph_session_not_collected'
+          : !runtimeSessionConsistent
           ? 'epoch_generation_graph_session_unscoped'
           : !lineageValid
             ? 'epoch_generation_graph_lineage_invalid'
@@ -645,6 +650,7 @@ function epochGenerationGraphStatus(graph) {
     retirementFenceIds,
     delayedUnloadResult,
     runtimeSessionIds: graphRuntimeSessionIds,
+    runtimeSessionScoped,
     runtimeSessionConsistent,
     retirementState,
     retirementEdgeObserved,
@@ -2349,10 +2355,11 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const runtimeSessionObserved = observation.runtimeSessionObserved === true || runtimeSessionIds.length > 0;
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false
-    && runtimeSessionIds.length <= 1
-    && epochGraph.runtimeSessionConsistent !== false;
+    && runtimeSessionIds.length <= 1;
   const generationGraphObserved = epochGraph.observed;
   const generationGraphValid = epochGraph.valid;
+  const generationGraphRuntimeSessionIds = epochGraph.runtimeSessionIds;
+  const generationGraphRuntimeSessionScoped = epochGraph.runtimeSessionScoped === true;
   const schemaVersionValid = epochGraph.schemaVersionValid === true;
   const publishTimestampObserved = epochGraph.publishTimestampObserved === true;
   const nodeIdentitiesValid = epochGraph.nodeIdentitiesValid === true;
@@ -2438,6 +2445,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationGraphObserved: true,
       generationGraphValid: true,
+      generationGraphRuntimeSessionIds,
+      generationGraphRuntimeSessionScoped,
       schemaVersionValid,
       publishTimestampObserved,
       nodeIdentitiesValid,
@@ -2493,6 +2502,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationGraphObserved: true,
       generationGraphValid: true,
+      generationGraphRuntimeSessionIds,
+      generationGraphRuntimeSessionScoped,
       schemaVersionValid,
       publishTimestampObserved,
       nodeIdentitiesValid,
@@ -2566,6 +2577,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     runtimeSessionConsistent,
     generationGraphObserved,
     generationGraphValid,
+    generationGraphRuntimeSessionIds,
+    generationGraphRuntimeSessionScoped,
     schemaVersionValid: epochGraph.schemaVersionValid === true,
     publishTimestampObserved,
     nodeIdentitiesValid,

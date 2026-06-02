@@ -2863,6 +2863,30 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("epoch_generation_graph_not_collected");
   });
 
+  it("does not prove epoch swap from side-channel session ids missing from the generation graph", () => {
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      epochGenerationGraph: epochGenerationGraph({ runtimeSession: null }),
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementFenceIds: ["stream-sync:default:2->3"],
+      delayedUnloadResult: "unloaded",
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:no-graph-session"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_session_not_collected");
+    expect(proof.generationGraphObserved).toBe(true);
+    expect(proof.generationGraphValid).toBe(false);
+    expect(proof.generationGraphRuntimeSessionIds).toEqual([]);
+    expect(proof.generationGraphRuntimeSessionScoped).toBe(false);
+  });
+
   it("keeps pending epoch retirement as a blocker for higher proof", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
