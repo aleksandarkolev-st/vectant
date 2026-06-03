@@ -5657,6 +5657,12 @@ describe("GPU HMR runtime output proof classification", () => {
           finished_at: "2026-05-28T00:00:01.000Z",
           duration_ms: 1000,
         },
+        target_progression: {
+          schemaVersion: "synthi.real_rocm.target_progression.v1",
+          phase: "small-oracle",
+          targetName: "small-target",
+          finalAcceptanceTarget: "final-target",
+        },
       },
       visualEvidenceRefs: ["artifacts/frame.png"],
       createdAt: "2026-05-28T00:00:00.000Z",
@@ -5727,6 +5733,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.validationContextHash).toMatch(/^sha256:/);
     expect(artifact.validationContext.docker.containers.worker.image_id).toBe("sha256:worker-image");
     expect(artifact.validationContext.command.argv).toEqual(["node", "scripts/gpu-hmr-test.mjs"]);
+    expect(artifact.validationContext.target_progression.phase).toBe("small-oracle");
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
     expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
       "worker-log:host_identity:renderer_state",
@@ -5820,6 +5827,12 @@ describe("GPU HMR runtime output proof classification", () => {
           finished_at: "2026-05-28T00:00:01.000Z",
           duration_ms: 1000,
         },
+        target_progression: {
+          schemaVersion: "synthi.real_rocm.target_progression.v1",
+          phase: "small-oracle",
+          targetName: "small-target",
+          finalAcceptanceTarget: "final-target",
+        },
       },
       runtimeFullProofs: [{ phase: "FLOW", name: "outward", proof: fullRuntimeProof }],
       artifactTransportProof: acceptedArtifactTransportProof(),
@@ -5855,6 +5868,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summary.docker_container_states.mcp.status).toBe("running");
     expect(summary.screenshot_artifact_paths).toEqual(["artifacts/frame.png"]);
     expect(summary.runtime_proof_artifact_paths).toEqual(["logs/runtime-proof.json"]);
+    expect(summary.target_progression?.phase).toBe("small-oracle");
+    expect(summary.target_progression?.targetName).toBe("small-target");
     expect(summary.proof_artifact_paths).toEqual(expect.arrayContaining([
       ".synthi/gpu-hmr/proofs/source-proof.json",
       "logs/runtime-proof.json",

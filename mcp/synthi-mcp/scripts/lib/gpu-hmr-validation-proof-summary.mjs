@@ -289,6 +289,14 @@ function visualEvidenceExpected(input) {
     || input.visual_evidence_required === true;
 }
 
+function targetProgression(input, validationContext) {
+  if (isObject(input.targetProgression)) return input.targetProgression;
+  if (isObject(input.target_progression)) return input.target_progression;
+  if (isObject(validationContext?.target_progression)) return validationContext.target_progression;
+  if (isObject(validationContext?.targetProgression)) return validationContext.targetProgression;
+  return null;
+}
+
 function missingVisualEvidenceLimitation(input, qualityRows) {
   if (!visualEvidenceExpected(input)) return [];
   if (compactObjects(qualityRows).some((row) => row.accepted_as_visual_evidence === true)) {
@@ -388,6 +396,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     visual_evidence_quality: qualityRows,
     proof_artifact_paths: proofArtifactPaths,
     runtime_proof_artifact_paths: runtimeProofArtifactPaths,
+    target_progression: targetProgression(input, validationContext),
     proof_states: {
       source: proofArrayStates(input.sourceProofs ?? (input.sourceProof ? [input.sourceProof] : [])),
       fission: proofState(input.fissionProof),
