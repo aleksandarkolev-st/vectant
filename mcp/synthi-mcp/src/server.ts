@@ -359,7 +359,7 @@ const TOOLS = [
   {
     name: "synthi_get_event_log",
     description:
-      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
+      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/browser/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
     inputSchema: {
       type: "object",
       properties: {
@@ -373,7 +373,7 @@ const TOOLS = [
         },
         kind: {
           oneOf: [
-            { type: "string", enum: ["lifecycle", "hmr", "input", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
+            { type: "string", enum: ["lifecycle", "hmr", "input", "browser", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
             { type: "array", items: { type: "string" } },
           ],
           description: "Filter by one kind or an array of kinds.",
