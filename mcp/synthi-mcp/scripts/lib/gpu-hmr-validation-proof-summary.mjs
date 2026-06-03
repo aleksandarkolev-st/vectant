@@ -309,6 +309,31 @@ function targetProgressionLedger(input, validationContext) {
   return null;
 }
 
+function targetProgressionGates(input, validationContext) {
+  const gates = input.targetProgressionGates
+    ?? input.target_progression_gates
+    ?? validationContext?.targetProgressionGates
+    ?? validationContext?.target_progression_gates
+    ?? [];
+  return Array.isArray(gates) ? compactObjects(gates) : [];
+}
+
+function targetProgressionGateLimitations(input, validationContext) {
+  return targetProgressionGates(input, validationContext)
+    .filter((gate) => gate.status === 'fail')
+    .map((gate) => ({
+      stage_id: 'target-progression',
+      status: 'blocked',
+      required_state: 'gpu-hmr-target-progression-proven',
+      observed_state: null,
+      degraded_state: 'gpu-hmr-target-progression-unverified',
+      degraded_reason: gate.detail ?? gate.name ?? 'target progression gate failed',
+      proof_artifact_path: null,
+      phase: null,
+      name: gate.name ?? null,
+    }));
+}
+
 function missingVisualEvidenceLimitation(input, qualityRows) {
   if (!visualEvidenceExpected(input)) return [];
   if (compactObjects(qualityRows).some((row) => row.accepted_as_visual_evidence === true)) {
@@ -363,8 +388,10 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   ]);
   const fullRuntimeStates = proofArrayStates(input.runtimeFullProofs);
   const qualityRows = visualEvidenceQuality(input);
+  const progressionGates = targetProgressionGates(input, validationContext);
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
+    ...targetProgressionGateLimitations(input, validationContext),
     ...visualEvidenceLimitations(qualityRows),
     ...missingVisualEvidenceLimitation(input, qualityRows),
     ...blockedStagesFromProof(input.fullRuntimeProof).map((stage) => ({
@@ -410,6 +437,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     runtime_proof_artifact_paths: runtimeProofArtifactPaths,
     target_progression: targetProgression(input, validationContext),
     target_progression_ledger: targetProgressionLedger(input, validationContext),
+    target_progression_gates: progressionGates,
     proof_states: {
       source: proofArrayStates(input.sourceProofs ?? (input.sourceProof ? [input.sourceProof] : [])),
       fission: proofState(input.fissionProof),

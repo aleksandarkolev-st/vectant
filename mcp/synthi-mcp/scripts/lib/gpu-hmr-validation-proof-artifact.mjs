@@ -257,6 +257,16 @@ function targetProgressionLedgerSnapshot(input = {}, validationContext = null) {
   return ledger && typeof ledger === 'object' ? ledger : null;
 }
 
+function targetProgressionGatesSnapshot(input = {}, validationContext = null) {
+  const gates =
+    input.targetProgressionGates
+    ?? input.target_progression_gates
+    ?? validationContext?.targetProgressionGates
+    ?? validationContext?.target_progression_gates
+    ?? [];
+  return Array.isArray(gates) ? gates.filter((gate) => gate && typeof gate === 'object') : [];
+}
+
 function evidenceKind(ref) {
   if (/\.png$/i.test(ref) || /\.jpe?g$/i.test(ref) || /\.webp$/i.test(ref)) return 'visual-artifact';
   if (/^worker-log:/i.test(ref)) return 'worker-log';
@@ -417,6 +427,20 @@ function proofLimitations(stages, fullRuntimeProof) {
   return limitations;
 }
 
+function targetProgressionGateLimitations(gates) {
+  return (Array.isArray(gates) ? gates : [])
+    .filter((gate) => gate?.status === 'fail')
+    .map((gate) => ({
+      stageId: 'target-progression',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-target-progression-proven',
+      observedState: null,
+      degradedState: 'gpu-hmr-target-progression-unverified',
+      degradedReason: gate.detail ?? gate.name ?? 'target progression gate failed',
+      gateName: gate.name ?? null,
+    }));
+}
+
 export function buildValidationRuntimeProofArtifact(input = {}) {
   const createdAt = input.createdAt ?? new Date().toISOString();
   const fullRuntimeProof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
@@ -427,11 +451,15 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const validationContext = validationContextSnapshot(input);
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
+  const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
     : [];
-  const limitations = proofLimitations(stages, fullRuntimeProof);
+  const limitations = [
+    ...proofLimitations(stages, fullRuntimeProof),
+    ...targetProgressionGateLimitations(targetProgressionGates),
+  ];
   const evidenceStrings = compactStringList([
     ...stages.flatMap((stage) => stage.evidenceRefs),
     ...visualEvidenceRefs,
@@ -455,6 +483,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     validationContext,
     targetProgression,
     targetProgressionLedger,
+    targetProgressionGates,
   };
   const materialHash = sha256Hex(stableJson({
     workspaceSlug: input.workspaceSlug ?? null,
@@ -469,6 +498,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     validationContext,
     targetProgression,
     targetProgressionLedger,
+    targetProgressionGates,
   }));
   const validationContextHash = validationContext
     ? `sha256:${sha256Hex(stableJson(validationContext))}`
@@ -496,6 +526,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression: targetProgression,
     targetProgressionLedger,
     target_progression_ledger: targetProgressionLedger,
+    targetProgressionGates,
+    target_progression_gates: targetProgressionGates,
     validationContextHash,
     createdAt,
     proofMaterial,

@@ -792,6 +792,8 @@ const report = {
     phases: [],
   },
   proof_artifacts: [],
+  strict_proof_gates: [],
+  target_progression_gates: [],
   abi_proof: null,
   fission_proof: null,
   artifact_transport_proof: null,
@@ -3845,16 +3847,18 @@ async function collectRuntimeEvidence() {
     report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
     summarizeGpuHmrFullRuntimeProof(report.full_runtime_proof),
   );
-  for (const gate of strictProofGateRows({
+  const strictProofRows = strictProofGateRows({
     requireOriginalHostPathProof: CFG.requireOriginalHostPathProof,
     requireFullRuntimeProof: CFG.requireFullRuntimeProof,
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
-  })) {
+  });
+  report.strict_proof_gates = strictProofRows;
+  for (const gate of strictProofRows) {
     record(gate.name, gate.status, gate.detail);
     if (gate.status === 'fail') process.exitCode = 1;
   }
-  for (const gate of targetProgressionGateRows({
+  const targetProgressionRows = targetProgressionGateRows({
     targetProgression: report.target_progression,
     targetProgressionLedger: report.target_progression_ledger,
     sourceProofs: report.source_proofs,
@@ -3869,7 +3873,9 @@ async function collectRuntimeEvidence() {
       || CFG.expectScreenshot
       || report.target_progression?.phase === 'final-acceptance',
     visualEvidenceFrames: freshVisualFrames,
-  })) {
+  });
+  report.target_progression_gates = targetProgressionRows;
+  for (const gate of targetProgressionRows) {
     record(gate.name, gate.status, gate.detail);
     if (gate.status === 'fail') process.exitCode = 1;
   }
@@ -3940,6 +3946,8 @@ async function writeResults() {
     gpu_arch: report.gpu_arch,
     target_progression: report.target_progression,
     target_progression_ledger: report.target_progression_ledger,
+    strict_proof_gates: report.strict_proof_gates,
+    target_progression_gates: report.target_progression_gates,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
     render_preview_enabled: report.render_preview_enabled,
@@ -3982,6 +3990,7 @@ async function writeResults() {
       runtimeEvidence: report.evidence,
       validationContext,
       targetProgressionLedger: report.target_progression_ledger,
+      targetProgressionGates: report.target_progression_gates,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
     });
@@ -4006,6 +4015,7 @@ async function writeResults() {
     gpuArch: report.gpu_arch,
     validationContext,
     targetProgressionLedger: report.target_progression_ledger,
+    targetProgressionGates: report.target_progression_gates,
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,
