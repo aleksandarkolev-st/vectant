@@ -135,6 +135,29 @@ function epochRecord(line) {
   };
 }
 
+function epochGenerationGraphRecord(line) {
+  if (!runtimeBoundaryEventLine(line, /\bepoch_generation_graph\b/i)) return null;
+  const fields = parseRuntimeKeyValues(line);
+  const rawGraph = fields.json ?? fields.graph ?? fields.epoch_generation_graph ?? null;
+  if (typeof rawGraph !== 'string' || rawGraph.trim() === '') {
+    return { line, graph: null, reason: 'epoch_generation_graph_json_missing' };
+  }
+  try {
+    return { line, graph: JSON.parse(rawGraph), reason: null };
+  } catch {
+    return { line, graph: null, reason: 'epoch_generation_graph_json_invalid' };
+  }
+}
+
+function epochGraphLineage(graph) {
+  const latest = graph?.latestPublication ?? graph?.latest_publication ?? graph?.publication ?? graph;
+  const previousGeneration = integerValue(latest?.previousGeneration ?? latest?.previous_generation);
+  const activeGeneration = integerValue(latest?.activeGeneration ?? latest?.active_generation);
+  return Number.isFinite(previousGeneration) && Number.isFinite(activeGeneration)
+    ? `${previousGeneration}->${activeGeneration}`
+    : 'unknown';
+}
+
 function matchingRetirement(publication, retirements) {
   return retirements.find((record) =>
     record.previousGeneration === publication.previousGeneration
@@ -332,6 +355,11 @@ export function runtimeEpochSwapEvidence(lines) {
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bdispatcher_epoch\b/i))
     .map(epochRecord);
+  const graphRecords = (Array.isArray(lines) ? lines : [])
+    .map(epochGenerationGraphRecord)
+    .filter((record) => record !== null);
+  const acceptedGraphRecords = graphRecords.filter((record) => record.graph && typeof record.graph === 'object');
+  const latestExplicitGraphRecord = acceptedGraphRecords.at(-1) ?? null;
   const publications = records.filter((record) => record.event === 'published');
   const retirements = records.filter((record) => record.event === 'retired');
   const latestPublication = publications.at(-1) ?? null;
@@ -361,12 +389,13 @@ export function runtimeEpochSwapEvidence(lines) {
     latestPublication?.oldGenerationRetired === true
     && latestPublication?.retiredModules === 0;
   const oldGenerationRetired = publicationRetirementComplete || retirement !== null;
-  const epochGenerationGraph = buildEpochGenerationGraph(
+  const reconstructedEpochGenerationGraph = buildEpochGenerationGraph(
     records,
     latestPublication,
     retirement,
     publicationRetirementComplete,
   );
+  const epochGenerationGraph = latestExplicitGraphRecord?.graph ?? reconstructedEpochGenerationGraph;
   const streamScope = latestPublication?.streamScope ?? null;
   const streamIds = latestPublication?.streamIds ?? [];
   const streamScopeEvidenceSupported = streamScopeSupported(streamScope, streamIds);
@@ -425,6 +454,11 @@ export function runtimeEpochSwapEvidence(lines) {
 
   return {
     total_count: records.length,
+    epoch_generation_graph_line_count: graphRecords.length,
+    epoch_generation_graph_explicit: latestExplicitGraphRecord !== null,
+    epoch_generation_graph_parse_failures: graphRecords
+      .filter((record) => record.reason)
+      .map((record) => record.reason),
     published_count: publications.length,
     retired_count: retirements.length,
     published: latestPublication !== null,
@@ -457,7 +491,12 @@ export function runtimeEpochSwapEvidence(lines) {
     drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
     matching_retirement: retirement,
-    evidence_refs: epochEvidenceRefs(latestPublication, retirement),
+    evidence_refs: [
+      ...epochEvidenceRefs(latestPublication, retirement),
+      ...(latestExplicitGraphRecord
+        ? [`worker-log:epoch_generation_graph:${epochGraphLineage(latestExplicitGraphRecord.graph)}`]
+        : []),
+    ],
     lines: records.map((record) => record.line).slice(-20),
   };
 }

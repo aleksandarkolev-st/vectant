@@ -57,6 +57,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
@@ -452,6 +453,136 @@ fn changed_function_handle_ids(
     }
 }
 
+fn log_list_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && *item != "none")
+        .map(str::to_string)
+        .collect()
+}
+
+#[derive(Debug)]
+struct EpochGenerationGraphLineInput<'a> {
+    runtime_session: &'a str,
+    publish_timestamp_ms: u128,
+    previous_generation: u64,
+    active_generation: u64,
+    old_artifact_id: &'a str,
+    new_artifact_id: &'a str,
+    new_artifact_hash: &'a str,
+    capsule_id: &'a str,
+    fission_island_id: &'a str,
+    abi_membrane_hash: &'a str,
+    dependency_closure_hash: &'a str,
+    proof_hash: &'a str,
+    changed_symbols: &'a [String],
+    function_handle_ids: &'a str,
+    stream_epoch_counters: serde_json::Value,
+    dispatch_table_hash_before: u64,
+    dispatch_table_hash_after: u64,
+    changed_entries: usize,
+    retirement_fence_ids: &'a str,
+    retirement_strategy: &'a str,
+    delayed_unload_result: &'a str,
+    retirement_state: &'a str,
+}
+
+fn epoch_generation_graph_line(input: EpochGenerationGraphLineInput<'_>) -> String {
+    let previous_node_id = format!("generation:{}", input.previous_generation);
+    let active_node_id = format!("generation:{}", input.active_generation);
+    let retirement_fence_ids = log_list_values(input.retirement_fence_ids);
+    let publication_edge = json!({
+        "kind": "publish",
+        "from": previous_node_id,
+        "to": active_node_id,
+        "previousGeneration": input.previous_generation,
+        "activeGeneration": input.active_generation,
+        "runtimeSession": input.runtime_session,
+        "publishTimestampMs": input.publish_timestamp_ms,
+        "oldArtifactId": input.old_artifact_id,
+        "newArtifactId": input.new_artifact_id,
+        "newArtifactHash": input.new_artifact_hash,
+        "capsuleId": input.capsule_id,
+        "fissionIslandId": input.fission_island_id,
+        "abiMembraneHash": input.abi_membrane_hash,
+        "dependencyClosureHash": input.dependency_closure_hash,
+        "proofHash": input.proof_hash,
+        "changedSymbols": input.changed_symbols,
+        "functionHandleIds": log_list_values(input.function_handle_ids),
+        "streamEpochCounters": input.stream_epoch_counters.clone(),
+        "dispatchTableHashBefore": format!("0x{:016x}", input.dispatch_table_hash_before),
+        "dispatchTableHashAfter": format!("0x{:016x}", input.dispatch_table_hash_after),
+        "dispatchTableHash": format!("0x{:016x}", input.dispatch_table_hash_after),
+        "changedEntries": input.changed_entries,
+        "retirementFenceIds": retirement_fence_ids.clone(),
+        "retirementStrategy": input.retirement_strategy,
+        "delayedUnloadResult": input.delayed_unload_result,
+    });
+    let mut edges = vec![publication_edge];
+    if input.retirement_state == "retired" {
+        edges.push(json!({
+            "kind": "retire",
+            "from": format!("generation:{}", input.previous_generation),
+            "to": format!("generation:{}", input.active_generation),
+            "previousGeneration": input.previous_generation,
+            "activeGeneration": input.active_generation,
+            "runtimeSession": input.runtime_session,
+            "retirementFenceIds": retirement_fence_ids.clone(),
+            "retirementStrategy": input.retirement_strategy,
+            "delayedUnloadResult": input.delayed_unload_result,
+        }));
+    }
+    let previous_state = match input.retirement_state {
+        "retired" => "retired",
+        "not-required" => "not-required",
+        _ => "pending-retirement",
+    };
+    let graph = json!({
+        "schemaVersion": "synthi.gpu.epoch_graph.v1",
+        "runtimeSessionIds": [input.runtime_session],
+        "latestPublication": {
+            "previousGeneration": input.previous_generation,
+            "activeGeneration": input.active_generation,
+            "publishTimestampMs": input.publish_timestamp_ms,
+            "oldArtifactId": input.old_artifact_id,
+            "newArtifactId": input.new_artifact_id,
+            "newArtifactHash": input.new_artifact_hash,
+            "capsuleId": input.capsule_id,
+            "fissionIslandId": input.fission_island_id,
+            "abiMembraneHash": input.abi_membrane_hash,
+            "dependencyClosureHash": input.dependency_closure_hash,
+            "proofHash": input.proof_hash,
+            "changedSymbols": input.changed_symbols,
+            "functionHandleIds": log_list_values(input.function_handle_ids),
+            "streamEpochCounters": input.stream_epoch_counters.clone(),
+            "dispatchTableHashBefore": format!("0x{:016x}", input.dispatch_table_hash_before),
+            "dispatchTableHashAfter": format!("0x{:016x}", input.dispatch_table_hash_after),
+            "dispatchTableHash": format!("0x{:016x}", input.dispatch_table_hash_after),
+            "changedEntries": input.changed_entries,
+            "retirementFenceIds": retirement_fence_ids.clone(),
+            "retirementStrategy": input.retirement_strategy,
+            "delayedUnloadResult": input.delayed_unload_result,
+        },
+        "retirementState": input.retirement_state,
+        "retirementRequired": input.retirement_state != "not-required",
+        "nodes": [
+            {
+                "id": format!("generation:{}", input.previous_generation),
+                "generation": input.previous_generation,
+                "state": previous_state,
+            },
+            {
+                "id": format!("generation:{}", input.active_generation),
+                "generation": input.active_generation,
+                "state": "published",
+            }
+        ],
+        "edges": edges,
+    });
+    format!("[gpu-runtime-boundary] epoch_generation_graph json={graph}")
+}
+
 #[derive(Debug, Clone)]
 struct StreamOrderingDrain {
     outcome: DrainOutcome,
@@ -533,6 +664,18 @@ impl StreamOrderingDrain {
             })
             .collect::<Vec<_>>()
             .join(",")
+    }
+
+    fn stream_epoch_counters_for_graph(&self, generation: u64) -> serde_json::Value {
+        let mut counters = serde_json::Map::new();
+        if self.stream_tokens.is_empty() {
+            counters.insert("none".to_string(), json!(generation));
+        } else {
+            for token in &self.stream_tokens {
+                counters.insert(Self::stream_id_label(*token), json!(generation));
+            }
+        }
+        serde_json::Value::Object(counters)
     }
 
     fn retirement_strategy_for_log(&self) -> &'static str {
@@ -1448,10 +1591,14 @@ impl Adapter for GpuModuleAdapter {
             } else {
                 "pending"
             };
+            let new_artifact_hash = format!("sha256:{artifact_hash}");
+            let runtime_session = runtime_session_id();
+            let stream_epoch_counters_graph =
+                drain.stream_epoch_counters_for_graph(active_generation);
             let publish_timestamp_ms = epoch_millis_now();
             let publish_line = format!(
                 "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
-                runtime_session_id(),
+                runtime_session,
                 publish_timestamp_ms,
                 previous_generation,
                 active_generation,
@@ -1484,6 +1631,36 @@ impl Adapter for GpuModuleAdapter {
             );
             eprintln!("{publish_line}");
             runtime_log_lines.push(publish_line);
+            let publication_graph_line = epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                runtime_session: &runtime_session,
+                publish_timestamp_ms,
+                previous_generation,
+                active_generation,
+                old_artifact_id: &previous_artifact_id,
+                new_artifact_id: &new_artifact_id,
+                new_artifact_hash: &new_artifact_hash,
+                capsule_id: &capsule_id,
+                fission_island_id: &fission_island_id,
+                abi_membrane_hash: &abi_membrane_hash,
+                dependency_closure_hash: &dependency_closure_hash,
+                proof_hash: &proof_hash,
+                changed_symbols: &expected_symbols,
+                function_handle_ids: &function_handle_ids,
+                stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                dispatch_table_hash_before: previous_dispatch_table_hash,
+                dispatch_table_hash_after: dispatch_table_hash,
+                changed_entries: touched_symbols.len(),
+                retirement_fence_ids: &retirement_fence_ids,
+                retirement_strategy,
+                delayed_unload_result,
+                retirement_state: if retired_module_count == 0 {
+                    "not-required"
+                } else {
+                    "pending"
+                },
+            });
+            eprintln!("{publication_graph_line}");
+            runtime_log_lines.push(publication_graph_line);
             for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
@@ -1503,6 +1680,32 @@ impl Adapter for GpuModuleAdapter {
                 );
                 eprintln!("{retired_line}");
                 runtime_log_lines.push(retired_line);
+                let retired_graph_line = epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                    runtime_session: &runtime_session,
+                    publish_timestamp_ms,
+                    previous_generation,
+                    active_generation,
+                    old_artifact_id: &previous_artifact_id,
+                    new_artifact_id: &new_artifact_id,
+                    new_artifact_hash: &new_artifact_hash,
+                    capsule_id: &capsule_id,
+                    fission_island_id: &fission_island_id,
+                    abi_membrane_hash: &abi_membrane_hash,
+                    dependency_closure_hash: &dependency_closure_hash,
+                    proof_hash: &proof_hash,
+                    changed_symbols: &expected_symbols,
+                    function_handle_ids: &function_handle_ids,
+                    stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                    dispatch_table_hash_before: previous_dispatch_table_hash,
+                    dispatch_table_hash_after: dispatch_table_hash,
+                    changed_entries: touched_symbols.len(),
+                    retirement_fence_ids: &retirement_fence_ids,
+                    retirement_strategy,
+                    delayed_unload_result: "unloaded",
+                    retirement_state: "retired",
+                });
+                eprintln!("{retired_graph_line}");
+                runtime_log_lines.push(retired_graph_line);
             }
             self.active_generation_artifact_id = Some(new_artifact_id.clone());
             Ok(DeviceReloadOwnership {
@@ -1624,6 +1827,14 @@ mod tests {
             preserve_state: true,
             timeout_ms: 5_000,
         }
+    }
+
+    fn epoch_graph_json_from_line(line: &str) -> serde_json::Value {
+        let graph_json = line
+            .split_once("json=")
+            .map(|(_, json)| json)
+            .expect("epoch graph JSON payload");
+        serde_json::from_str(graph_json).expect("valid epoch graph JSON")
     }
 
     #[test]
@@ -2265,6 +2476,34 @@ mod tests {
         assert!(publish.contains("retirement_fence_ids=none"));
         assert!(publish.contains("retirement_strategy=no_retirement_required"));
         assert!(publish.contains("delayed_unload_result=not_required"));
+        let graph_line = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("epoch_generation_graph json="))
+            .expect("epoch generation graph report");
+        let graph = epoch_graph_json_from_line(graph_line);
+        assert_eq!(
+            graph.get("schemaVersion").and_then(serde_json::Value::as_str),
+            Some("synthi.gpu.epoch_graph.v1")
+        );
+        assert_eq!(
+            graph
+                .get("retirementState")
+                .and_then(serde_json::Value::as_str),
+            Some("not-required")
+        );
+        assert_eq!(
+            graph
+                .pointer("/latestPublication/fissionIslandId")
+                .and_then(serde_json::Value::as_str),
+            Some("fission-island:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            graph
+                .pointer("/latestPublication/streamEpochCounters/none")
+                .and_then(serde_json::Value::as_u64),
+            Some(current_launch_generation())
+        );
     }
 
     #[test]
@@ -2432,6 +2671,26 @@ mod tests {
                 && line.contains("old_generation_retired=true")
                 && line.contains("retirement_strategy=no_retirement_required")
                 && line.contains("delayed_unload_result=unloaded")));
+        let final_graph_line = a
+            .last_reload_log()
+            .iter()
+            .filter(|line| line.contains("epoch_generation_graph json="))
+            .last()
+            .expect("final epoch generation graph report");
+        let final_graph = epoch_graph_json_from_line(final_graph_line);
+        assert_eq!(
+            final_graph
+                .get("retirementState")
+                .and_then(serde_json::Value::as_str),
+            Some("retired")
+        );
+        assert!(final_graph
+            .get("edges")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|edges| edges.iter().any(|edge| edge
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("retire"))));
         reset_for_test();
     }
 
@@ -2580,6 +2839,25 @@ mod tests {
         assert!(publish.contains("stream_ids=0x77"));
         assert!(publish.contains("retirement_fence_ids=stream-sync:0x77:"));
         assert!(publish.contains("retirement_strategy=epoch_fence"));
+        let stream_graph_line = a
+            .last_reload_log()
+            .iter()
+            .filter(|line| line.contains("epoch_generation_graph json="))
+            .last()
+            .expect("stream epoch generation graph report");
+        let stream_graph = epoch_graph_json_from_line(stream_graph_line);
+        assert_eq!(
+            stream_graph
+                .pointer("/latestPublication/streamEpochCounters/0x77")
+                .and_then(serde_json::Value::as_u64),
+            Some(current_launch_generation())
+        );
+        assert!(stream_graph
+            .pointer("/latestPublication/retirementFenceIds")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| ids.iter().any(|id| id
+                .as_str()
+                .is_some_and(|id| id.starts_with("stream-sync:0x77:")))));
 
         let mut partial =
             request_with_artifact_and_abi(&partial_path, vec!["device.cu".into()], "sig-v2");

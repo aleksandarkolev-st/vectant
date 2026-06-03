@@ -2737,14 +2737,52 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime ownership evidence parser failed');
   }
+  const epochGraphJson = JSON.stringify({
+    schemaVersion: 'synthi.gpu.epoch_graph.v1',
+    runtimeSessionIds: ['pid1'],
+    latestPublication: {
+      previousGeneration: 2,
+      activeGeneration: 3,
+      publishTimestampMs: 1779979998000,
+      oldArtifactId: `artifact:sha256:${'1'.repeat(64)}`,
+      newArtifactId: `artifact:sha256:${'2'.repeat(64)}`,
+      newArtifactHash: `sha256:${'2'.repeat(64)}`,
+      capsuleId: `capsule:sha256:${'3'.repeat(64)}`,
+      fissionIslandId: `fission-island:sha256:${'4'.repeat(64)}`,
+      abiMembraneHash: `sha256:${'5'.repeat(64)}`,
+      dependencyClosureHash: `sha256:${'6'.repeat(64)}`,
+      proofHash: `sha256:${'7'.repeat(64)}`,
+      changedSymbols: ['kernel'],
+      functionHandleIds: ['kernel:0x1'],
+      streamEpochCounters: { default: 3 },
+      dispatchTableHashBefore: '0xaaa',
+      dispatchTableHashAfter: '0xabc',
+      dispatchTableHash: '0xabc',
+      changedEntries: 1,
+      retirementFenceIds: ['stream-sync:default:2->3'],
+      retirementStrategy: 'epoch_fence',
+      delayedUnloadResult: 'unloaded',
+    },
+    retirementState: 'retired',
+    nodes: [
+      { id: 'generation:2', generation: 2, state: 'retired' },
+      { id: 'generation:3', generation: 3, state: 'published' },
+    ],
+    edges: [
+      { kind: 'publish', from: 'generation:2', to: 'generation:3', runtimeSession: 'pid1' },
+      { kind: 'retire', from: 'generation:2', to: 'generation:3', runtimeSession: 'pid1' },
+    ],
+  });
   const epochEvidence = runtimeEpochSwapEvidence([
     '[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 publish_timestamp_ms=1779979998000 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000',
     '[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true',
+    `[gpu-runtime-boundary] epoch_generation_graph json=${epochGraphJson}`,
   ]);
   if (
     !epochEvidence.published
     || !epochEvidence.old_generation_retired
     || !epochEvidence.stream_ordering_proven
+    || !epochEvidence.epoch_generation_graph_explicit
   ) {
     throw new Error('runtime epoch evidence parser failed');
   }
