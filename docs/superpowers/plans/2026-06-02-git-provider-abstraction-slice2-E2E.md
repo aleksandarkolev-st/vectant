@@ -5,7 +5,7 @@
 - A GitLab account; a self-hosted GitLab (or GitLab-compatible host) for the generic path; GitHub already connected via login.
 - **Env (OAuth apps):** synthi has no `.env.example`; set these in synthi's environment:
   - `GITLAB_CLIENT_ID` + `GITLAB_CLIENT_SECRET` — a GitLab OAuth app with redirect URI `${NEXTAUTH_URL}/api/integrations/git/oauth/gitlab/callback` and scopes `api read_user`.
-  - GitHub reuses the existing `GITHUB_ID` / `GITHUB_SECRET` OAuth app.
+  - `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` for the GitHub git-OAuth flow. NOTE: the git routes read `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, which are DISTINCT from NextAuth login's `GITHUB_ID`/`GITHUB_SECRET` — set them to the same OAuth app's credentials (or connect GitHub via PAT instead). (A follow-up will make the git flow reuse `GITHUB_ID`/`GITHUB_SECRET` directly.)
   - `NEXTAUTH_URL` must be set (used to build OAuth redirect URIs + the post-connect redirect).
   - Optional: `SYNTHI_RL_GIT` (git API requests/min per user, default 60).
   - Self-hosted/generic providers use a PAT (no OAuth app needed).
