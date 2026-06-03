@@ -64,3 +64,22 @@ export async function revokeToken(id) {
   if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Failed to revoke token');
   return true;
 }
+
+const GIT = '/api/integrations/git/providers';
+export async function fetchGitProviders() {
+  const res = await fetch(GIT);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Failed to load providers');
+  return (await res.json()).providers || [];
+}
+export async function addGitProviderPat({ providerType, name, baseUrl, token }) {
+  const res = await fetch(GIT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerType, name, baseUrl, token }) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Failed to add provider');
+  return data;
+}
+export async function deleteGitProvider(id) {
+  const res = await fetch(`${GIT}/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Failed to disconnect');
+  return true;
+}
+export function startGitOAuth(provider) { window.location.href = `/api/integrations/git/oauth/${provider}/start`; }
