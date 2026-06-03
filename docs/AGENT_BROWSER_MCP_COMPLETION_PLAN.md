@@ -1,42 +1,97 @@
-# Agent Browser MCP Completion Plan
+# Agent Workflow Teaching Completion Plan
 
 Status: draft implementation plan
-Scope: browser MCP, teach mode, screenshots, consent, leases, replay, and normal-user onboarding
-Principle: screenshots are the primary observation channel. Runtime/DOM data is supporting evidence, not the default replacement for visual observation.
+Scope: cloud IDE workflow teaching, hosted browser screenshots, causal replay, Playwright generation, broker safety, and codebase-aware hardening
+Lead product bet: a developer teaches Synthi a browser workflow once inside the cloud IDE, and Synthi converts it into a reliable, maintainable Playwright workflow tied to the workspace codebase.
 
-## Goal
+## Product Wedge
 
-Make Synthi's browser MCP feel like a normal senior-developer workflow:
+Do not position this as generic browser automation. That space is crowded: browser MCPs, browser codegen, hosted browser services, CDP tools, and screenshot/action loops already exist.
 
-1. A developer opens a Synthi workspace.
-2. They connect an MCP-capable agent from Codex, Claude Code, Cursor, or another client.
-3. The agent attaches to the approved Synthi-hosted browser session for that workspace.
-4. The developer grants exact-origin visibility and, when needed, control.
-5. The developer can start teach mode, select regions/elements, perform actions, and let the agent observe.
-6. The agent can inspect screenshots, DOM metadata, console, network, and trace events through the broker only.
-7. The agent can generate and replay stable Playwright scripts.
-8. The developer can revoke visibility or control immediately.
+The defensible wedge is:
 
-The browser broker remains the single authority. Agents must never talk directly to raw CDP or raw extension events.
+```text
+Teach Synthi a browser workflow once.
+Synthi turns it into a reliable test, replay, or fix loop.
+```
+
+Synthi can make this stronger than generic browser tools because it owns the cloud IDE, the codebase, the preview runtime, the hosted browser, and the agent loop at the same time.
+
+Everything in this plan serves one first use case:
+
+```text
+Generate durable E2E tests and reusable browser workflows from manual teach-mode usage.
+```
+
+Secondary use cases:
+
+- debug frontend behavior with an agent that can see the live app
+- turn repetitive UI tasks into workspace scripts
+- create reproducible bug reports from taught traces
+- let frontend developers, QA, PMs, and support teach workflows without knowing Playwright
+- run taught workflows after code changes and let the agent explain failures
+
+## User Experience
+
+The average user should not see MCP internals. They should experience this as a browser-aware coding assistant inside Synthi.
+
+The intended flow:
+
+1. Open a Synthi workspace.
+2. Open the app preview.
+3. Connect the agent.
+4. Allow the agent to view screenshots of this preview.
+5. Click `Teach workflow`.
+6. Perform the workflow once.
+7. Click `Generate test` or `Generate workflow`.
+8. Run the generated replay.
+9. Let the agent fix failures or suggest source patches.
+
+Good UI language:
+
+- `Allow agent to view this preview?`
+- `Start teaching`
+- `Generate test`
+- `Run workflow`
+- `Open fix`
+
+Bad UI language for normal users:
+
+- `Acquire control lease`
+- `Grant exact-origin consent`
+- `Inspect broker state`
+- `Pair extension`
+- `Paste CDP endpoint`
+
+The Agent panel should be split into five simple views:
+
+- `Connect`: agent status and setup only
+- `Observe`: selected preview, screenshot visibility, basic diagnostics
+- `Teach`: start/stop, taught step count, compile status
+- `Run`: replay status, control permission, action log
+- `History`: generated workflows, recordings, audit events
+
+Local-dev CDP state should only appear behind a developer flag.
 
 ## Cloud IDE Boundary
 
-Synthi is a cloud IDE. The default product must not require access to the user's personal browser, personal tabs, or local PC.
+Synthi is a cloud IDE. The normal product path must not require access to the user's personal browser, personal tabs, or local PC.
 
 The browser MCP targets a Synthi-owned runtime:
 
 - a hosted browser service owned by Synthi
 - a browser/viewer attached to the workspace
-- workspace preview tabs opened inside that hosted browser
-- the Synthi workspace tab/viewer presented to the user through the cloud IDE
+- preview pages opened inside that hosted browser
+- screenshots streamed back into the workspace
+- actions routed through the broker
 
-When this plan says `browser tab`, it means a tab inside the Synthi-managed browser session unless explicitly marked as local-dev mode. It does not mean every tab the user has open on their laptop.
+When this plan says `browser tab`, it means a tab/page inside the Synthi-managed browser session unless explicitly marked as local-dev mode. It does not mean every tab the user has open on their laptop.
 
 Local CDP is only a development harness:
 
 - useful for testing the MCP package locally
-- useful for debugging from WSL or a local workstation
-- not the normal cloud product path
+- useful for debugging from WSL or a workstation
+- not the cloud product path
 
 The cloud product path is:
 
@@ -48,7 +103,7 @@ The user should not need to paste a local Chrome CDP URL in normal use.
 
 ## Current State
 
-Implemented and tested:
+Implemented and tested at the MCP/backend level:
 
 - `synthi_browser_attach`
 - `synthi_browser_list_tabs`
@@ -68,299 +123,246 @@ Implemented and tested:
 - `synthi_browser_wait`
 - `synthi_browser_get_console`
 - `synthi_browser_get_network`
-- Browser broker for origin consent, selected tab state, teach-mode state, active input lease, redaction, and event filtering.
-- Exact-origin consent filtering for tab enumeration and snapshots.
-- Screenshot plus DOM snapshot through Playwright/CDP.
-- Console and network redaction.
-- Locator ranking with confidence and fallback candidates.
-- Replay generation with fallback locators, waits, and assertions.
-- Local browser bridge server for teach-mode events.
-- Dev-only unpacked Chrome extension for explicit teach-mode overlay events.
-- Persistent workspace live harness: `npm run live:browser:workspace`.
+- browser broker for origin consent, selected tab state, teach-mode state, active input lease, redaction, and event filtering
+- exact-origin consent filtering for tab enumeration and snapshots
+- screenshot plus DOM snapshot through Playwright/CDP
+- console and network redaction
+- basic locator ranking with confidence and fallback candidates
+- replay generation with fallback locators, waits, and assertions
+- local browser bridge server for teach-mode events
+- dev-only unpacked Chrome extension for explicit teach-mode overlay events
+- persistent local workspace live harness: `npm run live:browser:workspace`
 
-Known limitation: the live harness proves backend behavior, but it still bypasses the real human-facing pairing flow. The extension and workspace UI are not yet productized.
+Known limitations:
 
-## Target User Flow
+- The current harness proves backend behavior but not the cloud user flow.
+- The hosted browser adapter is not productized.
+- The workspace Agent panel is not productized.
+- Teach mode captures actions, not workflow intent.
+- Replay generation is still too close to locator generation.
+- The current plan needs a workflow contract compiler before replay can be durable.
 
-### Workspace Flow
+## MVP Cut
 
-1. Developer opens a hosted Synthi workspace.
-2. Workspace shows an Agent panel with:
-   - MCP connection status
-   - selected Synthi-hosted browser tab or workspace preview
-   - current origin
-   - consent state
-   - screenshot visibility state
-   - teach-mode state
-   - active control lease state
-   - revoke buttons
-3. Developer clicks `Connect agent`.
-4. Workspace presents client-specific MCP setup:
-   - Codex config
-   - Claude Code command
-   - Cursor config
-   - generic stdio command
-5. Developer starts the agent client, or uses an in-workspace agent already running in Synthi.
-6. Agent calls `synthi_browser_attach` with a workspace-scoped token/session, not a local PC browser endpoint.
-7. Broker attaches to the Synthi-hosted browser/runtime for that workspace.
-8. Workspace receives attach status and prompts for exact-origin consent.
-9. Developer grants screenshot visibility for the exact origin.
-10. Agent can list authorized hosted tabs and request screenshots.
-11. Developer can start teach mode.
-12. Workspace teach overlay lets developer select regions/elements and perform actions.
-13. Agent reads teach trace and generates a Playwright script.
-14. Agent requests a control lease before actions.
-15. Developer can revoke lease, teach mode, screenshot visibility, diagnostics, or origin consent at any time.
+The MVP should prove the useful loop, not every browser edge case.
 
-### Agent Flow
+Include in MVP:
 
-The agent should be able to follow a stable instruction:
+- workspace Agent panel skeleton
+- hosted browser attach for the current workspace preview
+- screenshot observation with explicit user approval
+- workspace teach overlay for one same-origin preview
+- minimal taught trace with before/after screenshots
+- causal workflow contract compiler for the taught trace
+- one generated Playwright test/workflow
+- replay in a CI-like runner
+- failure explanation for replay failures
+- source patch suggestion when a stable locator is missing
+
+Cut from MVP:
+
+- optional local browser extension
+- console/network diagnostics UI
+- broad external MCP onboarding polish
+- popup support
+- full iframe support
+- multi-tab workflows
+- long audit timeline
+- broad client-specific setup matrix
+- advanced lease conflict policy
+
+Keep the cuts in the roadmap. Do not let them block the first useful loop.
+
+## Target User Story
+
+A developer is building a dashboard.
+
+They say:
 
 ```text
-Use the Synthi browser MCP. Attach to the current browser session, request consent for the workspace origin, inspect the screen, wait for the user's teach-mode trace, generate a replay script, and ask before taking a control lease.
+Teach this flow as a regression test.
 ```
 
-The agent should not need to know whether the browser is hosted, containerized, or local-dev CDP. Those details are runtime configuration, not hardcoded behavior.
+They click through:
 
-### Local Dev Flow
-
-The current `npm run live:browser:workspace` flow is for MCP developers. It launches or attaches to a local Chromium-family browser over CDP and opens a real Synthi workspace URL.
-
-That flow validates the backend, but it is not the intended end-user cloud flow.
-
-## Architecture
-
-### Browser Broker
-
-The broker is the only authority for:
-
-- selected tab identity
-- CDP target id
-- extension tab id
-- hosted browser session id
-- workspace id/slug
-- frame id
-- current URL
-- current origin
-- consent state
-- screenshot visibility state
-- console/network visibility state
-- teach-mode state
-- active input lease
-- queued action cancellation
-- redaction
-- event filtering
-- allowed actions
-- audit events
-
-Agents call MCP tools. MCP tools call the broker. The broker calls the Playwright/CDP adapter or accepts bridge events only after validating consent, token, tab, frame, and origin.
-
-### Hosted Browser Adapter
-
-The product adapter owns low-level cloud browser mechanics:
-
-- create or attach to a workspace-owned hosted browser
-- enumerate hosted tabs/pages
-- open/select hosted pages
-- capture screenshots
-- collect DOM sample
-- collect accessibility metadata
-- instrument console/network events
-- execute broker-approved actions
-- wait for page conditions
-- stream screenshots or viewport updates to the workspace UI
-
-It must not decide policy. Every visibility or control decision belongs to the broker.
-
-### Playwright/CDP Adapter
-
-The local-dev adapter owns low-level browser mechanics for test harnesses:
-
-- connect over CDP
-- enumerate pages
-- open/select pages
-- capture screenshot
-- collect DOM sample
-- collect accessibility metadata
-- instrument console/network events
-- execute broker-approved actions
-- wait for page conditions
-
-It must not decide policy. Every visibility or control decision belongs to the broker.
-
-### Workspace Teach Overlay
-
-The product teach overlay runs in Synthi's workspace UI and hosted browser/viewer. It owns user interaction:
-
-- visible teach-mode overlay
-- region selection
-- element picking
-- human action capture
-- frame and iframe awareness for hosted previews
-- popup awareness for hosted previews
-- visual consent indicators
-- pairing to the workspace session
-
-It must not decide policy. It can only send events to the broker/bridge. The broker accepts or rejects events.
-
-### Browser Extension
-
-The browser extension is optional and local-dev or advanced-user infrastructure. It is not the default cloud IDE path.
-
-The extension owns user interaction only when the user explicitly chooses to connect a local browser:
-
-- visible teach-mode overlay
-- region selection
-- element picking
-- human action capture
-- frame and iframe awareness
-- popup awareness
-- visual consent indicators
-- local bridge pairing
-
-It must not decide policy. It can only send events to the local bridge. The broker accepts or rejects events.
-
-### Workspace UI
-
-The workspace UI owns the user-facing flow:
-
-- connect agent panel
-- MCP client setup snippets
-- session status
-- consent prompts
-- teach-mode controls
-- screenshot permission controls
-- lease status and revoke controls
-- audit/event timeline
-- hosted browser status
-- troubleshooting for hosted browser, in-workspace agent, external MCP clients, WSL, Docker, and local-dev CDP
-
-The workspace UI should not expose raw bridge tokens after pairing.
-
-## Permission Model
-
-Use separate permission tiers. Do not collapse all observation into one boolean.
-
-### Attached
-
-Agent has spawned the MCP and attached to a browser endpoint.
-
-Allowed:
-
-- MCP health
-- broker state summary
-- no screenshots
-- no DOM text
-- no console logs
-- no network URLs
-- no tab details except redacted pending authorization state
-
-### Origin Consent
-
-Developer approves one exact origin.
-
-Rules:
-
-- Consent does not cross subdomains.
-- Consent does not cross ports.
-- Consent does not cross schemes.
-- Consent does not follow redirects automatically.
-- Revocation immediately removes selected tab if it is on that origin.
-
-Allowed:
-
-- authorized tab listing for that exact origin
-- current URL and title for authorized tabs
-- snapshot requests only if screenshot visibility is also allowed
-
-### Screenshot Visibility
-
-Developer approves visual observation.
-
-Allowed:
-
-- screenshot capture
-- screenshot-based page inspection
-- visual diffing
-- visual assertions
-
-Not allowed:
-
-- arbitrary JS evaluation
-- cookies/localStorage/sessionStorage dumping
-- hidden input dumping
-- cross-origin frame introspection without matching consent
-
-### Diagnostics Visibility
-
-Developer approves diagnostics.
-
-Allowed:
-
-- redacted console logs
-- redacted network URLs
-- request/response metadata without sensitive body capture
-
-Diagnostics can be split later into console-only and network-only if the UX needs it.
-
-### Teach Recording
-
-Developer explicitly starts teach mode.
-
-Allowed:
-
-- selected regions/elements
-- human click/type/select/check actions
-- element metadata needed for locators
-- screenshot crops for selected regions if screenshot visibility is active
-
-Rules:
-
-- Teach mode pauses or stops on origin change unless the new exact origin is approved.
-- Teach mode events outside the active tab/frame are rejected.
-- Bridge messages require a valid token.
-- Page-origin requests cannot claim another origin.
-
-### Control Lease
-
-Developer or policy grants temporary input control.
-
-Allowed:
-
-- click
-- fill/type
-- press
-- select
-- check/uncheck
-- wait
-- navigate only to approved origins unless explicitly allowed
-
-Rules:
-
-- Every action requires a valid unexpired lease.
-- Lease revocation clears queued actions.
-- Human action during an agent lease is logged and should either revoke or mark the lease conflicted according to policy.
-- Lease max duration remains short by default.
-
-## Screenshot Policy
-
-Screenshots are first-class. They are the agent's primary way to verify what a user would actually see.
-
-Requirements:
-
-- No screenshot before exact-origin consent and screenshot visibility consent.
-- Screenshot responses include tab id, URL, origin, timestamp, viewport, and redaction status.
-- Screenshots are blocked on denied origins.
-- Screenshots are blocked after redirects to unapproved origins.
-- Screenshots are blocked for unauthorized popups and iframes.
-- Region screenshots are allowed only when their owner frame origin is approved.
-- Snapshot tests must assert that denied origins produce no screenshot bytes.
-
-DOM and accessibility metadata can accompany screenshots, but they are supporting data. The product stance is visual-first.
-
-## Locator and Replay Policy
-
-Locator ranking order:
+1. Login mock.
+2. Open dashboard.
+3. Filter by date.
+4. Click export.
+5. Confirm the download button appears.
+
+Synthi generates:
+
+- a Playwright test
+- stable locators
+- intent comments
+- assertions
+- screenshots or screenshot diffs
+- warnings for weak selectors
+- a suggested source patch if the UI lacks stable automation hooks
+
+Then the user says:
+
+```text
+Now run this after the refactor.
+```
+
+The agent runs it. If it fails, Synthi shows:
+
+```text
+Step 3 failed. The date filter button is no longer visible.
+Likely cause: DateRangePicker changed in src/components/DateRangePicker.tsx.
+Suggested fix: add data-synthi-affordance="dashboard.date-filter.open"
+or update the workflow intent if the filter moved.
+```
+
+That is the product value.
+
+## Workflow Contract Compiler
+
+Do not generate Playwright directly from the raw trace. Compile the trace into a causal workflow contract, harden that contract, then emit Playwright.
+
+Raw trace:
+
+```text
+click input
+type value
+click Save
+toast appears
+```
+
+Workflow contract:
+
+```text
+Before the step, the settings form is visible and dirty.
+The user intends to persist updated settings.
+The primary submit affordance should be clicked.
+After the step, dirty state clears, a success signal appears, and the update request completes.
+Toast wording may change. The action fails hard if validation errors appear or the request fails.
+```
+
+### Data Captured During Teach Mode
+
+Each taught step should capture:
+
+- screenshot before action
+- screenshot after action
+- accessibility snapshot
+- DOM metadata
+- framework/component metadata when available
+- clicked element candidates
+- route state
+- form state
+- visible state delta
+- network completion markers
+- console/runtime events
+- timing and hydration markers
+- user input values
+- viewport and device mode
+- source component mapping where available
+
+Screenshots remain the primary user-facing truth. DOM, accessibility, console, and network data explain why something is interactable or why it failed.
+
+### Human Confirmation
+
+Only ask the human when the compiler cannot infer intent safely.
+
+Good one-click confirmations:
+
+- `Was the goal to submit the form?`
+- `Should this value be fixed or parameterized?`
+- `Is this success message required?`
+- `Should this step survive if the button text changes?`
+
+Do not turn teach mode into a questionnaire.
+
+### Contract Shape
+
+Each compiled step should resemble:
+
+```json
+{
+  "stepId": "save-settings",
+  "intent": "persist updated settings",
+  "preconditions": [
+    "settings form is visible",
+    "save button is enabled"
+  ],
+  "action": {
+    "kind": "click",
+    "preferredAffordance": "primary submit action in settings form"
+  },
+  "locatorCandidates": [
+    "getByRole('button', { name: /save/i })",
+    "data-synthi-affordance='settings.persist.primary'",
+    "component:SettingsForm.SaveButton"
+  ],
+  "expectedEffects": [
+    "dirty state clears",
+    "success feedback appears",
+    "settings update request completes"
+  ],
+  "toleratedVariants": [
+    "toast wording changes",
+    "button position changes",
+    "layout switches mobile/desktop"
+  ],
+  "hardFailures": [
+    "validation errors visible",
+    "settings request fails",
+    "route leaves settings unexpectedly"
+  ],
+  "recoveryRule": "wait-reobserve-relocate-once-then-classify",
+  "dataBindings": {
+    "displayName": "parameter",
+    "apiBaseUrl": "environment",
+    "submitCopy": "variant"
+  }
+}
+```
+
+### Required Step Fields
+
+A reliable replay needs more than locators. Each step must include:
+
+- preconditions: what must be true before the action
+- action intent: why this control is being used
+- preferred affordance: semantic target, not only raw label
+- expected state transition: what should change after the action
+- acceptable variants: what UI changes are tolerated
+- hard failures: what must fail the workflow
+- failure classifier: timing, locator drift, app bug, auth state, route change, test data issue, or environment issue
+- recovery rule: retry, wait, re-locate, ask human, or fail hard
+- data binding: constants, variables, generated test data, or environment values
+
+Without this layer, Synthi will only generate nicer brittle scripts.
+
+## Counterfactual Hardening
+
+After the human teaches the flow once, Synthi should run a local counterfactual hardening pass against the workspace preview.
+
+Counterfactual variants:
+
+- viewport changes
+- dark mode
+- reduced motion
+- delayed hydration
+- slow network
+- duplicated labels
+- reordered DOM
+- changed button copy
+- hidden optional fields
+- old cached bundle
+- feature flag variants
+- same-origin iframe boundary where relevant
+
+A locator or assertion is accepted only if it survives the configured counterfactual runs.
+
+This is materially different from normal codegen. Codegen records what happened. Synthi should compile what must remain true.
+
+## Codebase-Aware Locator Strategy
+
+The standard Playwright locator order is necessary but not differentiating:
 
 1. `getByRole`
 2. `getByLabel`
@@ -370,190 +372,144 @@ Locator ranking order:
 6. stable CSS
 7. XPath as last resort
 
-Every recorded action should include:
+Synthi should add a codebase-aware layer before falling back to weak selectors:
 
-- primary locator
-- confidence
-- fallback candidates
-- element role/name/label/test id where available
-- frame id
-- origin
-- URL
-- optional screenshot crop reference when screenshot visibility is active
+- prefer product-domain intent over raw UI label
+- prefer source-backed component identity when workspace code is available
+- map DOM nodes back to React/Vue/Svelte component files where possible
+- suggest stable affordance attributes when no reliable locator exists
+- generate source patches when the app is not automation-friendly
 
-Generated scripts must include:
+Preferred affordance attribute:
 
-- `PLAYWRIGHT_BASE_URL`
-- waits before actions
-- visibility assertions
-- value assertions after fills
-- fallback locator helper
-- warnings for low-confidence locators
-- comments for iframe/popup handling where automatic generation is uncertain
+```html
+<button data-synthi-affordance="settings.persist.primary">
+  Save
+</button>
+```
 
-## Implementation Phases
+Avoid silently falling back to brittle CSS or XPath. If no stable target exists, the compiler should either ask for confirmation or propose a source patch.
 
-### Phase 1: Broker Permission Hardening
+## Hosted Browser Runtime
 
-Deliverables:
+The hosted browser adapter must be explicit. `Create or attach to a workspace-owned browser` is not enough.
 
-- Add explicit broker permission tiers for screenshot visibility and diagnostics visibility.
-- Split `snapshot` into policy-aware fields: screenshot, DOM sample, title, URL, console, network.
-- Ensure denied origins return no screenshot, DOM text, console, network, title, or URL detail beyond a safe error.
-- Add redirect-origin checks after navigation and before snapshot.
-- Add lease revocation clearing for queued actions.
-- Add audit entries for every consent, revoke, teach, screenshot, diagnostics, lease, and denied request.
+Decisions to implement:
 
-Acceptance:
+- browser pool warmup
+- cold-start budget
+- per-workspace session lifetime
+- storage persistence policy
+- auth state strategy for previews
+- viewport defaults
+- device emulation defaults
+- file upload support
+- download capture support
+- multiple previews per workspace
+- preview rebuild detection
+- HMR/reload detection
+- WebSocket reconnect behavior
+- browser crash recovery
+- session recording retention
+- billing or quota model
+- concurrent agents attached to one workspace
+- screenshot streaming lifecycle
+- worker/container placement
 
-- Unit tests cover exact-origin boundaries.
-- Unit tests prove denied origins leak no sensitive observation data.
-- Live harness still passes with explicit screenshot permission.
+Initial recommendation:
 
-### Phase 2: Workspace Agent Panel
+- warm pool for Chromium workers
+- one default browser session per active workspace
+- default viewport `1440x900`
+- resettable storage per workflow run
+- same-origin preview support in MVP
+- one agent observer plus one active controller at a time
+- session recordings retained only for generated workflows and explicit bug reports
 
-Deliverables:
+## Broker Authority
 
-- Add workspace Agent panel.
-- Show MCP connection status.
-- Show current workspace URL and origin.
-- Show active Synthi-hosted browser session.
-- Show local-dev CDP session only when running the local harness.
-- Provide client-specific setup snippets.
-- Provide `Copy MCP config` for Codex, Claude Code, Cursor, and generic stdio.
-- Show consent state.
-- Add grant/revoke buttons for origin, screenshot visibility, diagnostics, teach mode, and control lease.
-- Show recent audit events.
+The broker remains the single policy authority.
 
-Acceptance:
+It owns:
 
-- A normal developer can open the workspace and understand how to connect an MCP client without reading source code.
-- No hardcoded Chrome path.
-- No raw token displayed after pairing.
+- workspace id/slug
+- hosted browser session id
+- selected preview/page
+- current URL
+- current origin
+- screenshot visibility state
+- diagnostics visibility state
+- teach-mode state
+- workflow recording state
+- active control lease
+- queued action cancellation
+- redaction
+- event filtering
+- allowed actions
+- audit events
 
-### Phase 3: Extension Pairing and Teach Overlay
+Agents call MCP tools. MCP tools call the broker. The broker calls the hosted browser adapter, local-dev CDP adapter, or workspace teach overlay after validating consent, token, tab/page, frame, and origin.
 
-Deliverables:
+Agents must never talk directly to raw CDP or raw overlay events.
 
-- Add workspace teach overlay for hosted browser/viewer sessions.
-- Add hosted-browser pairing flow between workspace UI, broker, and MCP.
-- Add region selection.
-- Add element selection.
-- Capture human click/type/select/check actions during teach mode.
-- Include iframe origin metadata.
-- Include popup metadata.
-- Stop/pause teach mode on unapproved origin changes.
-- Show local visual status: disconnected, paired, consented, teaching, blocked.
-- Keep the Chrome extension as optional local-dev/advanced-user mode.
-- Replace manual service-worker-console extension config only for that optional local mode.
+## Permission Model
 
-Acceptance:
+The user-facing model should be simple:
 
-- User can start teach mode in a cloud workspace without installing an extension.
-- User can start teach mode from workspace UI.
-- User can select an element and the agent receives a broker-approved trace event.
-- Bad bridge token and origin spoof tests pass.
+- `Allow agent to view this preview`
+- `Start teaching`
+- `Allow agent to run this workflow`
+- `Revoke`
 
-### Phase 4: Agent Control Flow
+Internally, keep separate permission tiers:
 
-Deliverables:
+- attached, no visibility
+- exact-origin approval
+- screenshot visibility
+- diagnostics visibility
+- teach recording
+- control lease
 
-- Add explicit control lease UI.
-- Add lease countdown.
-- Add revoke button.
-- Add human-action-during-agent-lease policy.
-- Ensure agent actions are visible in audit timeline.
-- Ensure queued actions are interrupted on revocation.
-- Add safe navigation policy.
+Rules:
 
-Acceptance:
+- Screenshot capture requires exact-origin approval and screenshot visibility.
+- Consent does not cross subdomains, ports, schemes, or redirects.
+- Denied origins produce no screenshot, DOM text, console, network, title, or current URL detail beyond a safe error.
+- Teach mode pauses or stops on unapproved origin change.
+- Control requires a short lease.
+- Lease revocation clears queued actions.
+- Human action during an agent lease is logged and handled deterministically.
 
-- Agent cannot act without lease.
-- Revoking lease interrupts pending action queue.
-- Human action during active lease is logged and handled deterministically.
+## Screenshot Policy
 
-### Phase 5: Replay Hardening
+Screenshots are first-class. They are the primary way Synthi verifies what a user would actually see.
 
-Deliverables:
+Requirements:
 
-- Add replay fixtures for React, Vue, Svelte, delayed hydration, shadow DOM, iframe, popup, duplicate labels, and flaky locators.
-- Add generated-script tests for env placeholders.
-- Add locator confidence threshold warnings.
-- Add iframe-aware generation.
-- Add popup-aware generation.
-- Add screenshot-backed replay verification where possible.
+- No screenshot before exact-origin approval and screenshot visibility.
+- Screenshot responses include page id, URL, origin, timestamp, viewport, and redaction status.
+- Screenshots are blocked on denied origins.
+- Screenshots are blocked after redirects to unapproved origins.
+- Region screenshots are allowed only when their owner frame origin is approved.
+- Snapshot tests must assert that denied origins produce no screenshot bytes.
 
-Acceptance:
-
-- Replay generated from teach mode succeeds across the fixture matrix.
-- Low-confidence replay cases emit warnings instead of pretending to be stable.
-
-### Phase 6: Live Harness and Docs
-
-Deliverables:
-
-- Keep `npm run live:browser` as isolated fixture smoke.
-- Keep `npm run live:browser:workspace` as local-dev real workspace smoke.
-- Add hosted-browser live smoke once the Synthi-hosted browser adapter exists.
-- Add `npm run live:browser:workspace:headed` convenience script if useful.
-- Update `mcp/synthi-mcp/TESTING.md` with the persistent workspace flow.
-- Add troubleshooting for hosted browser sessions, workspace-scoped tokens, in-workspace agents, external MCP clients, WSL, Docker Desktop, host networking, CDP URL reachability, Chrome executable discovery, and optional extension pairing.
-- Add screenshots of the expected Agent panel and extension states once UI exists.
-
-Acceptance:
-
-- A developer can reproduce the full flow from docs on a clean machine.
-- CI can run a headless one-shot workspace smoke with `--no-keep-browser`.
-- Manual QA can run a headed persistent workspace flow.
-- Cloud QA can run the hosted-browser flow without local CDP or a local Chrome extension.
-
-## Security Test Matrix
-
-Add tests for:
-
-- Consent does not cross subdomains.
-- Consent does not cross ports.
-- Consent does not cross schemes.
-- Consent does not follow redirects.
-- Denied origins produce no screenshot.
-- Denied origins produce no DOM text.
-- Denied origins produce no console data.
-- Denied origins produce no network data.
-- Denied origins produce no title/current URL detail beyond safe error.
-- Teach mode stops or pauses on unapproved origin change.
-- Bridge rejects bad tokens.
-- Bridge rejects missing page origin.
-- Bridge rejects page-origin spoofing.
-- CDP target enumeration hides unauthorized tabs.
-- Password redaction works.
-- Token redaction works.
-- Secret query-param redaction works.
-- Iframe consent works.
-- Popup consent works.
-- Lease revocation interrupts queued actions.
-- Human action during agent lease is logged and handled.
-
-## Replay Test Matrix
-
-Add fixtures for:
-
-- Dynamic React page.
-- Dynamic Vue page.
-- Dynamic Svelte page.
-- Shadow DOM component.
-- Same-origin iframe.
-- Cross-origin iframe.
-- Delayed hydration.
-- Duplicate button labels.
-- Generated script with `PLAYWRIGHT_BASE_URL`.
-- Generated script with environment placeholders.
-- Flaky locator fallback behavior.
-- Low-confidence XPath fallback warning.
-- Screenshot-backed visual assertion after replay.
+DOM and accessibility metadata can accompany screenshots, but they are supporting data.
 
 ## MCP Tool Surface
 
-Keep and document:
+Agents should use fewer high-level tools by default.
+
+Default high-level tools:
+
+- `synthi_browser_attach_current_workspace`
+- `synthi_browser_observe`
+- `synthi_browser_begin_teach`
+- `synthi_browser_end_teach`
+- `synthi_browser_compile_workflow`
+- `synthi_browser_run_workflow`
+- `synthi_browser_explain_failure`
+
+Keep lower-level tools for advanced/debug use:
 
 - `synthi_browser_attach`
 - `synthi_browser_list_tabs`
@@ -574,89 +530,254 @@ Keep and document:
 - `synthi_browser_get_console`
 - `synthi_browser_get_network`
 
-Clarify or add:
+Add or clarify:
 
 - `synthi_browser_attach_workspace`
 - `synthi_browser_get_broker_state`
 - `synthi_browser_set_visibility_permission`
 - `synthi_browser_set_diagnostics_permission`
 - `synthi_browser_pair_workspace_overlay`
-- `synthi_browser_pair_extension`
+- `synthi_browser_get_workflow_contract`
+- `synthi_browser_apply_affordance_patch`
 - `synthi_browser_get_audit_log`
 - `synthi_browser_revoke_all`
 
-The added tools are product hardening helpers. They should not expose raw CDP or raw extension internals.
-`synthi_browser_pair_extension` is for optional local browser mode only; the normal cloud path should use workspace/browser-session pairing.
+`synthi_browser_pair_extension` remains optional local browser infrastructure only.
 
-## Open Design Decisions
+## Implementation Phases
 
-### Extension Required vs Optional
+### Phase 0: Safety Floor
 
-Option A: extension required for teach mode.
+Deliverables:
 
-- Stronger human interaction capture.
-- Better overlay UX.
-- More setup friction.
+- exact-origin screenshot consent
+- screenshot denied-origin leak tests
+- hosted workspace token shape
+- broker state model for workspace id, preview id, origin, and screenshot permission
 
-Option B: workspace teach overlay required for cloud teach mode, extension optional for local browser mode.
+Acceptance:
 
-- No local install for normal cloud users.
-- Better fit for Synthi-owned hosted browser sessions.
-- Still allows an advanced local-browser path later.
+- denied origins produce no screenshot bytes
+- consent does not cross subdomain, port, scheme, or redirect
+- the local live harness still passes
 
-Recommendation: workspace teach overlay is required for full cloud teach mode. The extension is optional local-dev/advanced-user infrastructure, not the default path.
+### Phase 1: Agent Panel Skeleton
 
-### Screenshot Redaction
+Deliverables:
 
-Screenshots are visual-first, but they may contain secrets.
+- Agent panel next to the preview
+- `Connect`, `Observe`, `Teach`, `Run`, and `History` views
+- fake broker data or fixture-backed state
+- no local CDP fields unless dev flag is enabled
 
-Options:
+Acceptance:
 
-- No screenshot redaction in MVP, rely on explicit consent.
-- Mask form fields before screenshot where possible.
-- Support user-drawn private regions.
+- a user can understand the intended flow without knowing MCP, CDP, broker, bridge, or lease terms
+- a developer can click through the panel with fixture data
 
-Recommendation: MVP requires explicit screenshot consent and blocks denied origins. Follow with private-region masking.
+### Phase 2: Hosted Browser Attach With Real Screenshot
 
-### Hosted Browser vs Local Browser
+Deliverables:
 
-Local CDP works for development but is wrong as the normal cloud IDE path. Synthi does not control the user's PC and should not ask normal users to expose local browser debugging endpoints.
+- hosted browser session for current workspace preview
+- broker-mediated attach to that session
+- first screenshot displayed in the Agent panel
+- screenshot visibility approval UI
+- basic observe tool wired to hosted screenshot
 
-Options:
+Acceptance:
 
-- hosted browser controlled by Synthi
-- local browser CDP for MCP developers
-- extension connects the user's existing browser for advanced explicit local mode
+- hosted browser attach p95 under 5 seconds with warm pool
+- first screenshot p95 under 2 seconds after attach
+- zero manual config for in-workspace agent path
+- no local Chrome/CDP required
 
-Recommendation: make the hosted browser the product path. Keep local CDP as a developer harness and compatibility adapter only.
+### Phase 3: Minimal Teach Overlay
+
+Deliverables:
+
+- `Teach workflow` button
+- workspace overlay on hosted preview
+- capture click/type/select/check actions
+- capture screenshot before and after each action
+- capture accessible target metadata
+- stop recording and show taught step count
+
+Acceptance:
+
+- teach event delivery p95 under 250 ms
+- one same-origin workflow records a complete trace
+- trace includes before/after screenshots for each step
+
+### Phase 4: First Workflow Contract and Playwright Output
+
+Deliverables:
+
+- trace-to-contract compiler
+- intent inference per step
+- precondition inference
+- expected-effect inference
+- parameter detection
+- basic failure classifier
+- Playwright emitter from contract
+- generated test saved into the workspace
+
+Acceptance:
+
+- one taught flow compiles into a workflow contract
+- generated script includes intent comments and failure explanations
+- compiler refuses low-confidence output instead of emitting brittle XPath
+- script passes same-session replay for the taught workflow
+
+### Phase 5: CI-Like Replay Runner
+
+Deliverables:
+
+- run generated workflow in a fresh browser/session
+- capture replay screenshots
+- compare expected effects
+- classify failures
+- show failure explanation in Agent panel
+
+Acceptance:
+
+- generated script passes same-session replay at least 95 percent on MVP fixture suite
+- generated script passes cold-session replay at least 85 percent on MVP fixture suite
+- replay failure includes classified reason at least 90 percent of the time
+
+### Phase 6: Counterfactual Teach Compiler
+
+Deliverables:
+
+- before/after visual delta extraction
+- source component mapping
+- counterfactual replay runner
+- viewport and hydration variants
+- duplicate-label variant
+- text-change variant
+- affordance patch generator
+- source patch proposal UI
+
+Acceptance:
+
+- contract survives viewport, hydration, duplicate-label, and text-change variants
+- compiler suggests source patch instead of XPath fallback
+- generated script remains maintainable after accepted affordance patch
+
+### Phase 7: Hardening and Roadmap Features
+
+Deliverables:
+
+- broader security test matrix
+- console/network diagnostics UI
+- iframe support
+- popup support
+- multi-tab workflows
+- optional local browser extension pairing
+- advanced lease conflict policy
+- external MCP onboarding polish
+- longer audit timeline and recordings
+
+Acceptance:
+
+- full security matrix passes
+- replay fixture matrix passes
+- hosted-browser cloud QA passes without local CDP or local extension
+- local-dev harness remains available for MCP package development
+
+## MVP Metrics
+
+Use measurable gates:
+
+- hosted browser attach p95 under 5 seconds with warm pool
+- first screenshot p95 under 2 seconds after attach
+- teach event delivery p95 under 250 ms
+- generated script passes same-session replay at least 95 percent on MVP fixtures
+- generated script passes cold-session replay at least 85 percent on MVP fixtures
+- zero manual config for in-workspace agent path
+- external MCP setup completed by a new developer in under 3 minutes after onboarding is in scope
+- replay failure includes classified reason at least 90 percent of the time
+
+## MVP Test Matrix
+
+MVP fixtures:
+
+- React page with form submit
+- delayed hydration
+- duplicate button labels
+- changed button text
+- viewport change
+- slow network
+- weak locator requiring affordance patch
+
+MVP security tests:
+
+- consent does not cross subdomains
+- consent does not cross ports
+- consent does not cross schemes
+- consent does not follow redirects
+- denied origins produce no screenshot
+- denied origins produce no DOM text
+- teach mode stops or pauses on unapproved origin change
+- control action requires lease
+- lease revocation interrupts queued actions
+
+## Roadmap Test Matrix
+
+Add later:
+
+- Vue page
+- Svelte page
+- shadow DOM component
+- same-origin iframe
+- cross-origin iframe
+- popup
+- generated script with environment placeholders
+- flaky locator fallback behavior
+- low-confidence XPath fallback warning
+- screenshot-backed visual assertion after replay
+- denied origins produce no console data
+- denied origins produce no network data
+- denied origins produce no title/current URL detail beyond safe error
+- bridge rejects bad tokens
+- bridge rejects page-origin spoofing
+- CDP target enumeration hides unauthorized tabs in local-dev mode
+- password redaction
+- token redaction
+- secret query-param redaction
+- human action during agent lease is logged and handled
 
 ## Definition of Done
 
-The remaining work is done when:
+The product loop is done when:
 
-- A developer can open a Synthi workspace and connect an MCP client from visible UI instructions.
-- The agent can attach without manually copying hidden bridge details.
-- The agent attaches to a Synthi-hosted browser/runtime by default, not the user's personal browser.
-- The developer can grant screenshot visibility for one exact origin.
-- The agent can inspect screenshots only for approved origins.
-- The developer can start teach mode from the workspace.
-- The workspace teach overlay records real human selections and actions.
-- The agent can generate a Playwright replay from the trace.
-- The agent can request and use a short control lease.
-- The developer can revoke consent or lease immediately.
-- Security tests cover the full boundary matrix.
-- Replay tests cover modern frontend edge cases.
-- The hosted-browser harness validates the real cloud end-to-end flow.
-- The local persistent workspace harness remains available for MCP package development.
+- a developer can open a Synthi workspace and connect the in-workspace agent with no local browser setup
+- the agent attaches to a Synthi-hosted browser/runtime by default
+- the user can allow screenshot visibility for the current preview
+- the user can teach a same-origin workflow from the workspace overlay
+- Synthi compiles the taught trace into a workflow contract
+- Synthi generates a Playwright test/workflow from the contract
+- Synthi runs that workflow in a fresh session
+- failures are classified and explained
+- weak locators produce source patch suggestions instead of silent brittle fallbacks
+- the local persistent workspace harness remains available for MCP package development
+
+The roadmap is done when:
+
+- counterfactual hardening covers the full fixture matrix
+- iframe, popup, multi-tab, diagnostics, extension, and external-client onboarding are productized
+- security tests cover the full boundary matrix
 
 ## Suggested Work Order
 
-1. Broker permission tiers and tests.
-2. Hosted browser adapter and workspace-scoped attach flow.
-3. Workspace Agent panel skeleton.
-4. Workspace teach overlay productization.
-5. Lease UI and human override handling.
-6. Replay fixture matrix.
-7. Documentation and live harness updates.
+1. Safety floor for screenshot consent and denied-origin leaks.
+2. Agent panel skeleton with fixture state.
+3. Hosted browser attach with real screenshot.
+4. Minimal teach overlay recording one same-origin trace.
+5. Workflow contract compiler for that trace.
+6. Playwright emitter and same-session replay.
+7. CI-like cold-session replay and failure classifier.
+8. Counterfactual hardening and source affordance patches.
+9. Broader security, diagnostics, iframe/popup, optional extension, external onboarding, and docs.
 
-This order keeps the security boundary ahead of the UI, then turns the backend primitives into a normal developer workflow.
+This order validates the end-to-end user loop early, then hardens it into a defensible workflow compiler.
