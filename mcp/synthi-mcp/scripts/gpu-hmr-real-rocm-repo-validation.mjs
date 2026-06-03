@@ -83,6 +83,11 @@ const TARGET_PROGRESSION_PHASES = new Set([
   'original-host-path',
   'final-acceptance',
 ]);
+const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
+  'small-oracle',
+  'partial-reload',
+  'original-host-path',
+]);
 const TARGET_PROGRESSION_PHASE_ALIASES = new Map([
   ['small', 'small-oracle'],
   ['small-target', 'small-oracle'],
@@ -167,6 +172,32 @@ function parseOutputOracleContract(raw) {
     );
   }
   return contract;
+}
+
+function parseTargetProgressionLedger(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) {
+    return {
+      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      provided: false,
+      entries: [],
+    };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`invalid target progression ledger JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('invalid target progression ledger: expected object or array');
+  }
+  return {
+    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+    provided: true,
+    rawShape: Array.isArray(parsed) ? 'array' : 'object',
+    entries: targetProgressionLedgerEntries(parsed),
+  };
 }
 
 function parseStringArrayEnv(raw, name) {
@@ -271,6 +302,9 @@ function targetProgressionPhaseRequirements(phase) {
     case 'final-acceptance':
       return [
         'target_must_match_final_acceptance_target_when_declared',
+        'prior_small_oracle_proof_in_target_progression_ledger',
+        'prior_partial_reload_proof_in_target_progression_ledger',
+        'prior_original_host_path_proof_in_target_progression_ledger',
         'full_runtime_proven',
         'fresh_visual_evidence_when_rendering',
       ];
@@ -281,6 +315,116 @@ function targetProgressionPhaseRequirements(phase) {
 
 function proofHasResultState(proof, state) {
   return proof && typeof proof === 'object' && proof.resultState === state;
+}
+
+function targetProgressionLedgerEntries(ledger) {
+  if (Array.isArray(ledger)) return ledger;
+  if (!ledger || typeof ledger !== 'object') return [];
+  if (Array.isArray(ledger.entries)) return ledger.entries;
+  if (Array.isArray(ledger.phases)) return ledger.phases;
+  const phases = ledger.phaseProofs ?? ledger.phase_proofs ?? ledger.proofs ?? ledger;
+  if (!phases || typeof phases !== 'object' || Array.isArray(phases)) return [];
+  const ignoredKeys = new Set(['schemaVersion', 'schema_version', 'provided', 'rawShape', 'raw_shape']);
+  return Object.entries(phases)
+    .filter(([key]) => !ignoredKeys.has(key))
+    .map(([phase, value]) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return { phase, ...value };
+      }
+      return { phase, status: value };
+    });
+}
+
+function stringField(entry, names) {
+  if (!entry || typeof entry !== 'object') return '';
+  for (const name of names) {
+    const value = entry[name];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function booleanField(entry, names) {
+  if (!entry || typeof entry !== 'object') return false;
+  return names.some((name) => entry[name] === true);
+}
+
+function hasTargetProgressionProofIdentity(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  const scalar = stringField(entry, [
+    'proofId',
+    'proof_id',
+    'proofArtifactPath',
+    'proof_artifact_path',
+    'proofArtifact',
+    'proof_artifact',
+    'artifactPath',
+    'artifact_path',
+    'evidenceRef',
+    'evidence_ref',
+  ]);
+  if (scalar) return true;
+  const refs = entry.evidenceRefs ?? entry.evidence_refs ?? entry.proofArtifacts ?? entry.proof_artifacts;
+  return Array.isArray(refs) && refs.some((value) => typeof value === 'string' && value.trim());
+}
+
+function normalizedTargetProgressionEntryPhase(entry) {
+  const phase = stringField(entry, ['phase', 'phaseName', 'phase_name', 'targetProgressionPhase']);
+  return normalizeTargetProgressionPhase(phase).phase;
+}
+
+function targetProgressionEntryStatusPassed(entry) {
+  const status = stringField(entry, ['status', 'state', 'result', 'resultStatus', 'result_status'])
+    .toLowerCase();
+  return ['pass', 'passed', 'proven', 'success', 'succeeded', 'ok'].includes(status);
+}
+
+function targetProgressionLedgerPhaseResult(ledger, phase) {
+  const normalizedPhase = normalizeTargetProgressionPhase(phase).phase;
+  const entries = targetProgressionLedgerEntries(ledger)
+    .filter((entry) => normalizedTargetProgressionEntryPhase(entry) === normalizedPhase);
+  for (const entry of entries) {
+    const resultState = stringField(entry, ['resultState', 'result_state']);
+    const hasIdentity = hasTargetProgressionProofIdentity(entry);
+    const statusPassedWithIdentity = targetProgressionEntryStatusPassed(entry) && hasIdentity;
+    if (normalizedPhase === 'small-oracle') {
+      if (
+        resultState === 'gpu-hmr-output-oracle-proven'
+        || booleanField(entry, ['outputOracleProven', 'output_oracle_proven'])
+        || statusPassedWithIdentity
+      ) {
+        return {
+          passed: true,
+          detail: `small-oracle proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
+        };
+      }
+    } else if (normalizedPhase === 'partial-reload') {
+      const partialAndFission =
+        booleanField(entry, ['partialReloadProven', 'partial_reload_proven'])
+        && booleanField(entry, ['fissionProven', 'fission_proven']);
+      if (partialAndFission || statusPassedWithIdentity) {
+        return {
+          passed: true,
+          detail: `partial-reload proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
+        };
+      }
+    } else if (normalizedPhase === 'original-host-path') {
+      const originalHostPath =
+        booleanField(entry, ['originalHostPathProven', 'original_host_path_proven', 'attachmentProven', 'attachment_proven'])
+        && booleanField(entry, ['hostPreservationProven', 'host_preservation_proven'])
+        && booleanField(entry, ['dispatchSafeProven', 'dispatch_safe_proven']);
+      if (originalHostPath || statusPassedWithIdentity) {
+        return {
+          passed: true,
+          detail: `original-host-path proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
+        };
+      }
+    }
+  }
+  return {
+    passed: false,
+    detail: `prior phase ${normalizedPhase ?? phase} proof missing from target progression ledger`,
+  };
 }
 
 function partialArtifactReplacementProofObserved(sourceProofs = [], fissionProof = null) {
@@ -321,6 +465,7 @@ function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
 
 function targetProgressionGateRows({
   targetProgression,
+  targetProgressionLedger = null,
   sourceProofs = [],
   fissionProof = null,
   dispatchProof = null,
@@ -425,6 +570,16 @@ function targetProgressionGateRows({
     });
   }
   if (progression.phase === 'final-acceptance') {
+    if (progression.required) {
+      for (const phase of FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES) {
+        const ledgerPhase = targetProgressionLedgerPhaseResult(targetProgressionLedger, phase);
+        rows.push({
+          name: `target progression prior ${phase}`,
+          status: ledgerPhase.passed ? 'pass' : 'fail',
+          detail: ledgerPhase.detail,
+        });
+      }
+    }
     rows.push({
       name: 'target progression full runtime',
       status: fullRuntimeProof?.fullRuntimeProven === true ? 'pass' : 'fail',
@@ -488,6 +643,9 @@ const CFG = {
     process.env,
     'SYNTHI_REAL_ROCM_REQUIRE_TARGET_PROGRESSION',
     false,
+  ),
+  targetProgressionLedger: parseTargetProgressionLedger(
+    process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_LEDGER_JSON ?? '',
   ),
   buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
   workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
@@ -604,6 +762,7 @@ const report = {
     finalAcceptanceTarget: CFG.finalAcceptanceTarget,
     required: CFG.requireTargetProgression,
   }),
+  target_progression_ledger: CFG.targetProgressionLedger,
   cmake_config: CFG.cmakeConfigName,
   cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
@@ -3164,6 +3323,37 @@ function selfCheckRuntimeDispatchEvidence() {
     sourceProofs: [{ partialArtifactReplacement: true }],
     fissionProof: { fissionProven: true },
   });
+  const completeProgressionLedger = {
+    entries: [
+      {
+        phase: 'small-oracle',
+        status: 'pass',
+        proofId: 'proof:small-oracle:123',
+        resultState: 'gpu-hmr-output-oracle-proven',
+      },
+      {
+        phase: 'partial-reload',
+        status: 'pass',
+        proofId: 'proof:partial-reload:123',
+        partialReloadProven: true,
+        fissionProven: true,
+      },
+      {
+        phase: 'original-host-path',
+        status: 'pass',
+        proofId: 'proof:original-host-path:123',
+        originalHostPathProven: true,
+        hostPreservationProven: true,
+        dispatchSafeProven: true,
+      },
+    ],
+  };
+  const parsedProgressionLedger = parseTargetProgressionLedger(JSON.stringify({
+    small_oracle: {
+      status: 'pass',
+      proof_id: 'proof:small-oracle:alias',
+    },
+  }));
   const finalAcceptanceFailures = targetProgressionGateRows({
     targetProgression: buildTargetProgressionMetadata({
       targetName: 'small_target',
@@ -3194,6 +3384,7 @@ function selfCheckRuntimeDispatchEvidence() {
     fullRuntimeProof: { fullRuntimeProven: true },
     visualEvidenceExpected: true,
     visualEvidenceFrames: [{ path: 'fresh.png', accepted_as_visual_evidence: true }],
+    targetProgressionLedger: completeProgressionLedger,
   });
   if (
     optionalProgressionRows[0]?.status !== 'skip'
@@ -3202,8 +3393,9 @@ function selfCheckRuntimeDispatchEvidence() {
     || smallOracleFailures.filter((row) => row.status === 'fail').length !== 2
     || smallOraclePasses.some((row) => row.status === 'fail')
     || partialReloadPasses.some((row) => row.status === 'fail')
-    || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 2
-    || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 1
+    || !targetProgressionLedgerPhaseResult(parsedProgressionLedger, 'small-oracle').passed
+    || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 5
+    || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 4
     || finalAcceptanceVisualPasses.some((row) => row.status === 'fail')
   ) {
     throw new Error('target progression gate self-check failed');
@@ -3655,6 +3847,7 @@ async function collectRuntimeEvidence() {
   }
   for (const gate of targetProgressionGateRows({
     targetProgression: report.target_progression,
+    targetProgressionLedger: report.target_progression_ledger,
     sourceProofs: report.source_proofs,
     fissionProof: report.fission_proof,
     dispatchProof: report.dispatch_proof,
@@ -3662,7 +3855,10 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
-    visualEvidenceExpected: CFG.renderPreview || CFG.expectScreenshot,
+    visualEvidenceExpected:
+      CFG.renderPreview
+      || CFG.expectScreenshot
+      || report.target_progression?.phase === 'final-acceptance',
     visualEvidenceFrames: freshVisualFrames,
   })) {
     record(gate.name, gate.status, gate.detail);
