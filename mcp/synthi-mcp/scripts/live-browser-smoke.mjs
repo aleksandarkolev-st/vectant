@@ -447,12 +447,16 @@ async function startBrowser() {
   args.push("about:blank");
 
   const stderr = [];
-  const proc = spawn(executable, args, { stdio: ["ignore", "ignore", "pipe"] });
-  proc.stderr.on("data", (chunk) => {
+  const proc = spawn(executable, args, {
+    detached: CFG.keepBrowser,
+    stdio: CFG.keepBrowser ? ["ignore", "ignore", "ignore"] : ["ignore", "ignore", "pipe"],
+  });
+  proc.stderr?.on("data", (chunk) => {
     stderr.push(chunk.toString("utf8"));
     while (stderr.length > 20) stderr.shift();
   });
   await waitForCdp(cdpUrl, CFG.timeoutMs, () => proc.exitCode !== null, () => stderr.join(""));
+  if (CFG.keepBrowser) proc.unref();
   return { cdpUrl, proc, profileDir };
 }
 
