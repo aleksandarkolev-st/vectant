@@ -16,6 +16,7 @@ import {
   GitPullRequest,
   Plug,
   Puzzle,
+  Command,
   Settings,
   Sparkles,
   MessageSquare,
@@ -63,6 +64,7 @@ const TOP_ITEMS = [
   { id: 'search',     panelType: IDE_PANEL.SEARCH,     label: 'Search',          Icon: Search },
   { id: 'git',        panelType: IDE_PANEL.GIT,        label: 'Source Control',  Icon: GitBranch },
   { id: 'extensions', panelType: IDE_PANEL.EXTENSIONS, label: 'Extensions',      Icon: Puzzle },
+  { id: 'programs',   panelType: IDE_PANEL.PROGRAMS,   label: 'Programs',        Icon: Command },
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
   { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: Sparkles },
   { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
@@ -130,7 +132,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
     // Find a sidebar group — look for a group that already has sidebar-type tabs
     const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
-    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'pullrequests']);
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'programs', 'extension-view', 'chat', 'pullrequests', 'ai-healing', 'integrations']);
     let targetGroupId = null;
     for (const [groupId, group] of groups) {
       for (const tId of group.tabs || []) {

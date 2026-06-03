@@ -10,6 +10,7 @@ export const IDE_PANEL = Object.freeze({
   SEARCH:     'search',
   GIT:        'git',
   EXTENSIONS: 'extensions',
+  PROGRAMS:   'programs',
   EXTENSION_VIEW: 'extension-view',
   EDITOR:     'editor',
   TERMINAL:   'terminal',

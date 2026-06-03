@@ -28,6 +28,7 @@ import {
   CommitHistoryPanelWrapper,
   AIHealingPanelWrapper,
   IntegrationsPanelWrapper,
+  ProgramsPanelWrapper,
 } from './panel-wrappers';
 import { IDE_PANEL } from './panel-types';
 
@@ -80,6 +81,16 @@ export const IDE_PANEL_DEFINITIONS = [
     component: ExtensionsPanelWrapper,
     allowMultiple: false,
     defaultLocation: "left",
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.PROGRAMS,
+    displayName: 'Programs',
+    icon: 'command',
+    category: 'sidebar',
+    component: ProgramsPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
     closable: true,
   },
   {

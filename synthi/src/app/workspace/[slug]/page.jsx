@@ -94,6 +94,7 @@ import { GuestBanner } from '@/components/collaboration';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
+import ProgramsPanel from '@/components/programs/ProgramsPanel';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
@@ -2940,6 +2941,8 @@ export default function EditorPage({ params }) {
                             onDismissError={dismissExtensionError}
                             onExecuteCommand={executeExtensionCommand}
                         />
+                    ) : sidebarView === 'programs' ? (
+                        <ProgramsPanel />
                     ) : sidebarView && sidebarView.startsWith('ext:') ? (() => {
                         const containerId = sidebarView.replace('ext:', '');
                         const container = contributedContainers.find(c => c.id === containerId);

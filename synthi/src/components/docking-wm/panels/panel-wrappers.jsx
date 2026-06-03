@@ -100,6 +100,11 @@ const ConnectedToolsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const ProgramsPanel = dynamic(
+  () => import('@/components/programs/ProgramsPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -421,8 +426,6 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
 // ────────────────────────────────────────────────────────
 
 export const IntegrationsPanelWrapper = memo(function IntegrationsPanelWrapper({ data }) {
-  const ctx = useWorkspacePanelContext();
-
   return (
     <div
       data-panel-type="integrations"
@@ -430,6 +433,22 @@ export const IntegrationsPanelWrapper = memo(function IntegrationsPanelWrapper({
       style={{ background: 'var(--bg-sidebar)' }}
     >
       <ConnectedToolsPanel />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Programs Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const ProgramsPanelWrapper = memo(function ProgramsPanelWrapper({ data }) {
+  return (
+    <div
+      data-panel-type="programs"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ProgramsPanel />
     </div>
   );
 });
@@ -455,4 +474,5 @@ export const PANEL_WRAPPERS = {
   commithistory:   CommitHistoryPanelWrapper,
   'ai-healing':    AIHealingPanelWrapper,
   integrations:    IntegrationsPanelWrapper,
+  programs:        ProgramsPanelWrapper,
 };
