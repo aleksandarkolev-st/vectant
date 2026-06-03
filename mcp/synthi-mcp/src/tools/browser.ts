@@ -1,6 +1,12 @@
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
+import {
+  detectBrowserProject,
+  projectRunStatus,
+  runBrowserProject,
+  stopBrowserProject,
+} from "../browser/project_runner.js";
 import type { BrowserActionKind } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
@@ -24,6 +30,10 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_wait",
   "synthi_browser_get_console",
   "synthi_browser_get_network",
+  "synthi_browser_detect_project",
+  "synthi_browser_run_project",
+  "synthi_browser_project_status",
+  "synthi_browser_stop_project",
 ] as const;
 
 export const BROWSER_TOOLS = [
@@ -203,6 +213,45 @@ export const BROWSER_TOOLS = [
       required: [],
     },
   },
+  {
+    name: "synthi_browser_detect_project",
+    description: "Detect likely local web dev commands for a workspace. Returns candidates; the agent chooses which command to run.",
+    inputSchema: {
+      type: "object",
+      properties: { root: { type: "string", description: "Workspace/project root. Defaults to MCP process cwd." } },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_run_project",
+    description: "Run an agent-chosen local dev command in a project root. The process is logged and can be stopped by run_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        root: { type: "string" },
+        command: { type: "string", description: "Shell command chosen by the agent. If omitted, the highest-confidence detected candidate is used." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_project_status",
+    description: "Return active browser project runs and recent logs.",
+    inputSchema: {
+      type: "object",
+      properties: { run_id: { type: "string" } },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_stop_project",
+    description: "Stop a browser project run by run_id.",
+    inputSchema: {
+      type: "object",
+      properties: { run_id: { type: "string" } },
+      required: ["run_id"],
+    },
+  },
 ] as const;
 
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
@@ -244,6 +293,14 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserConsoleTool(args);
       case "synthi_browser_get_network":
         return browserNetworkTool(args);
+      case "synthi_browser_detect_project":
+        return await browserDetectProjectTool(args);
+      case "synthi_browser_run_project":
+        return await browserRunProjectTool(args);
+      case "synthi_browser_project_status":
+        return browserProjectStatusTool(args);
+      case "synthi_browser_stop_project":
+        return await browserStopProjectTool(args);
       default:
         return null;
     }
@@ -389,6 +446,26 @@ function browserConsoleTool(args: unknown): ToolResponse {
 function browserNetworkTool(args: unknown): ToolResponse {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
   return jsonResponse({ ok: true, entries: browserPlaywrightAdapter.networkFor(tab.tab_id) });
+}
+
+async function browserDetectProjectTool(args: unknown): Promise<ToolResponse> {
+  const detection = await detectBrowserProject(stringOpt(obj(args)["root"]));
+  return jsonResponse({ ok: true, detection });
+}
+
+async function browserRunProjectTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const run = await runBrowserProject(stringOpt(a["root"]), stringOpt(a["command"]));
+  return jsonResponse({ ok: true, run });
+}
+
+function browserProjectStatusTool(args: unknown): ToolResponse {
+  return jsonResponse({ ok: true, runs: projectRunStatus(stringOpt(obj(args)["run_id"])) });
+}
+
+async function browserStopProjectTool(args: unknown): Promise<ToolResponse> {
+  const result = await stopBrowserProject(requiredString(obj(args), "run_id"));
+  return jsonResponse({ ok: true, ...result });
 }
 
 function requireAuthorizedTab(tabId?: string): { tab_id: string; url: string } {

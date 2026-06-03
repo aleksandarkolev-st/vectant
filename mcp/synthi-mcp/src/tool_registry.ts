@@ -29,6 +29,10 @@ export const ADVERTISED_TOOLS = [
   "synthi_browser_wait",
   "synthi_browser_get_console",
   "synthi_browser_get_network",
+  "synthi_browser_detect_project",
+  "synthi_browser_run_project",
+  "synthi_browser_project_status",
+  "synthi_browser_stop_project",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",
