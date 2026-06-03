@@ -11,7 +11,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -3018,7 +3018,7 @@ function summarizeGpuProof(proof) {
   return `gpu_proof=${proof.resultState}${degraded}${label}${reason}${proofId}${proofPath}`;
 }
 
-function selfCheckRuntimeDispatchEvidence() {
+async function selfCheckRuntimeDispatchEvidence() {
   const visualRows = [
     { path: 'blank.png', width: 800, height: 600, visible_pixels: 0 },
     { path: 'tiny.png', width: 120, height: 90, visible_pixels: 10800 },
@@ -3777,6 +3777,45 @@ function selfCheckRuntimeDispatchEvidence() {
   })) {
     throw new Error('CMake metadata coverage self-check should reject unrelated sources');
   }
+  const visualSelfCheckRoot = path.join(REPO_ROOT, 'tmp');
+  await mkdir(visualSelfCheckRoot, { recursive: true });
+  const visualSelfCheckDir = await mkdtemp(path.join(visualSelfCheckRoot, 'visual-proof-self-check-'));
+  try {
+    const visualPath = path.join(visualSelfCheckDir, 'frame.png');
+    const visualBytes = Buffer.from('not-a-real-png-but-proof-writer-hashes-file-bytes');
+    await writeFile(visualPath, visualBytes);
+    const expectedVisualHash = `sha256:${createHash('sha256').update(visualBytes).digest('hex')}`;
+    const written = await writeValidationRuntimeProofArtifact(visualSelfCheckDir, {
+      workspaceSlug: 'visual-proof-self-check',
+      runtimeSessionIds: ['self-check-session'],
+      fullRuntimeProof: {
+        resultState: 'gpu-hmr-output-oracle-proven',
+        degradedState: null,
+        degradedReason: null,
+        fullRuntimeProven: false,
+        stages: [],
+      },
+      visualEvidenceRefs: [visualPath],
+      visualEvidenceArtifacts: [{
+        path: visualPath,
+        visualQuality: 'gpu-hmr-visual-varied-frame',
+        acceptedAsVisualEvidence: true,
+      }],
+    });
+    const visualArtifact = written.artifact.visualEvidenceArtifacts
+      .find((artifact) => artifact.path === visualPath);
+    const visualEvidence = written.artifact.evidenceRefs
+      .find((evidence) => evidence.filePath === visualPath);
+    if (
+      visualArtifact?.contentHash !== expectedVisualHash
+      || visualEvidence?.contentHash !== expectedVisualHash
+      || visualEvidence?.acceptedAsVisualEvidence !== true
+    ) {
+      throw new Error('visual proof artifact self-check did not hash visual file bytes');
+    }
+  } finally {
+    await rm(visualSelfCheckDir, { recursive: true, force: true });
+  }
   console.log('runtime dispatch evidence self-check passed');
 }
 
@@ -4322,7 +4361,8 @@ async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
-  const visualArtifactPaths = visualEvidenceFrames().map((shot) => shot.path);
+  const freshVisualFrames = visualEvidenceFrames();
+  const visualArtifactPaths = freshVisualFrames.map((shot) => shot.path);
   if (report.full_runtime_proof) {
     const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
       workspaceSlug: report.slug,
@@ -4343,6 +4383,19 @@ async function writeResults() {
       targetProgressionGates: report.target_progression_gates,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
+      visualEvidenceArtifacts: freshVisualFrames.map((shot) => ({
+        path: shot.path,
+        label: shot.label ?? null,
+        width: shot.width ?? null,
+        height: shot.height ?? null,
+        visiblePixels: shot.visible_pixels ?? null,
+        meanLuma: shot.mean_luma ?? null,
+        lumaStddev: shot.luma_stddev ?? null,
+        rgbSpanMean: shot.rgb_span_mean ?? null,
+        uniqueColorSampleCount: shot.unique_color_sample_count ?? null,
+        visualQuality: shot.visual_quality ?? null,
+        acceptedAsVisualEvidence: shot.accepted_as_visual_evidence === true,
+      })),
     });
     report.runtime_proof_artifact_path = written.path;
     report.runtime_proof_artifact = {
@@ -4614,7 +4667,7 @@ async function run() {
 
 if (process.argv.includes('--self-check')) {
   try {
-    selfCheckRuntimeDispatchEvidence();
+    await selfCheckRuntimeDispatchEvidence();
   } catch (err) {
     console.error(err.stack || err.message);
     process.exitCode = 1;

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
@@ -25,6 +25,11 @@ function compactStringList(values) {
 
 function contentAddressedArtifactIds(values) {
   return compactStringList(values).filter((id) => /^artifact:sha256:[0-9a-f]{64}$/i.test(id));
+}
+
+function compactObjects(values) {
+  return (Array.isArray(values) ? values : [])
+    .filter((value) => value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function artifactIdsFromSha256Hashes(values) {
@@ -276,21 +281,57 @@ function evidenceKind(ref) {
   return 'runtime-evidence';
 }
 
-function evidenceRefObject(ref, createdAt, sessionId) {
-  const hash = sha256Hex(ref);
+function visualArtifactMap(artifacts) {
+  const out = new Map();
+  for (const artifact of compactObjects(artifacts)) {
+    const artifactPath = typeof artifact.path === 'string'
+      ? artifact.path.trim()
+      : typeof artifact.filePath === 'string'
+        ? artifact.filePath.trim()
+        : typeof artifact.file_path === 'string'
+          ? artifact.file_path.trim()
+          : '';
+    if (artifactPath) out.set(artifactPath, artifact);
+  }
+  return out;
+}
+
+function evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath = new Map()) {
   const kind = evidenceKind(ref);
+  const visualArtifact = kind === 'visual-artifact' ? visualArtifactsByPath.get(ref) : null;
+  const visualContentHash = typeof visualArtifact?.contentHash === 'string'
+    ? visualArtifact.contentHash
+    : typeof visualArtifact?.content_hash === 'string'
+      ? visualArtifact.content_hash
+      : null;
+  const visualDigest = visualContentHash?.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+  const hash = visualDigest ?? sha256Hex(ref);
+  const evidenceId = typeof visualArtifact?.evidenceId === 'string' && visualArtifact.evidenceId.trim()
+    ? visualArtifact.evidenceId.trim()
+    : typeof visualArtifact?.evidence_id === 'string' && visualArtifact.evidence_id.trim()
+      ? visualArtifact.evidence_id.trim()
+      : null;
   return {
-    evidenceId: ref.startsWith('evidence:') || ref.startsWith('worker-log:') || ref.startsWith('validation:')
+    evidenceId: evidenceId
+      ?? (ref.startsWith('evidence:') || ref.startsWith('worker-log:') || ref.startsWith('validation:')
       ? ref
-      : `evidence:${kind}:sha256:${hash}`,
+      : `evidence:${kind}:sha256:${hash}`),
     kind,
-    contentHash: `sha256:${hash}`,
+    contentHash: kind === 'visual-artifact' && visualArtifact
+      ? (visualDigest ? `sha256:${visualDigest}` : null)
+      : `sha256:${hash}`,
     producerSubsystem: 'mcp.gpu_hmr_validation',
     timestamp: createdAt,
     sessionId,
     filePath: kind === 'visual-artifact' || kind === 'proof-artifact' ? ref : null,
     artifactUri: ref.startsWith('gpu-proof:') ? ref : null,
-    summary: ref,
+    bytes: Number.isFinite(visualArtifact?.bytes) ? visualArtifact.bytes : null,
+    visualQuality: visualArtifact?.visualQuality ?? visualArtifact?.visual_quality ?? null,
+    acceptedAsVisualEvidence: visualArtifact?.acceptedAsVisualEvidence
+      ?? visualArtifact?.accepted_as_visual_evidence
+      ?? null,
+    readError: visualArtifact?.readError ?? visualArtifact?.read_error ?? null,
+    summary: visualArtifact?.summary ?? ref,
   };
 }
 
@@ -453,6 +494,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
+  const visualEvidenceArtifacts = compactObjects(input.visualEvidenceArtifacts);
+  const visualArtifactsByPath = visualArtifactMap(visualEvidenceArtifacts);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
     : [];
@@ -467,7 +510,9 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(runtimeEvidence),
     ...evidenceStringsFromValue(targetProgressionLedger),
   ]);
-  const evidenceRefs = evidenceStrings.map((ref) => evidenceRefObject(ref, createdAt, sessionId));
+  const evidenceRefs = evidenceStrings.map((ref) =>
+    evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
+  );
   const proofMaterial = {
     fullRuntimeProof,
     sourceProofs: input.sourceProofs ?? (input.sourceProof ? [input.sourceProof] : []),
@@ -484,6 +529,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    visualEvidenceArtifacts,
   };
   const materialHash = sha256Hex(stableJson({
     workspaceSlug: input.workspaceSlug ?? null,
@@ -499,6 +545,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    visualEvidenceArtifacts,
   }));
   const validationContextHash = validationContext
     ? `sha256:${sha256Hex(stableJson(validationContext))}`
@@ -520,6 +567,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     limitations,
     evidenceRefs,
     visualEvidenceRefs,
+    visualEvidenceArtifacts,
     runtimeEvidence,
     validationContext,
     targetProgression,
@@ -534,8 +582,51 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   };
 }
 
+async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts = []) {
+  const existingByPath = visualArtifactMap(existingArtifacts);
+  const records = [];
+  for (const artifactPath of compactStringList(paths)) {
+    const existing = existingByPath.get(artifactPath) ?? {};
+    let fileRecord = null;
+    try {
+      const bytes = await readFile(artifactPath);
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      fileRecord = {
+        path: artifactPath,
+        bytes: bytes.length,
+        contentHash: `sha256:${digest}`,
+        evidenceId: `evidence:visual-artifact:sha256:${digest}`,
+        readError: null,
+      };
+    } catch (error) {
+      fileRecord = {
+        path: artifactPath,
+        bytes: null,
+        contentHash: null,
+        evidenceId: null,
+        readError: error?.message ? String(error.message) : String(error),
+      };
+    }
+    records.push({
+      ...existing,
+      ...fileRecord,
+      kind: 'visual-artifact',
+      producerSubsystem: 'mcp.gpu_hmr_validation',
+      summary: existing.summary ?? artifactPath,
+    });
+  }
+  return records;
+}
+
 export async function writeValidationRuntimeProofArtifact(outputDir, input = {}) {
-  const artifact = buildValidationRuntimeProofArtifact(input);
+  const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(
+    input.visualEvidenceRefs,
+    input.visualEvidenceArtifacts,
+  );
+  const artifact = buildValidationRuntimeProofArtifact({
+    ...input,
+    visualEvidenceArtifacts,
+  });
   await mkdir(outputDir, { recursive: true });
   const workspace = safeToken(input.workspaceSlug);
   const label = safeToken(input.label ?? input.name ?? artifact.resultState ?? 'runtime-proof');
