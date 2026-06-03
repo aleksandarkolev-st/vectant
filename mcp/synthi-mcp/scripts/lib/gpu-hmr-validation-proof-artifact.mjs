@@ -582,7 +582,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   };
 }
 
-async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts = []) {
+export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts = []) {
   const existingByPath = visualArtifactMap(existingArtifacts);
   const records = [];
   for (const artifactPath of compactStringList(paths)) {

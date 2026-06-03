@@ -4,7 +4,7 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -14,6 +14,9 @@ import {
   analyzeGpuHmrImageEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  visualEvidenceArtifactsFromFiles,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +45,13 @@ function nowSlugDate() {
 
 function hashBytes(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function compactStringList(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean))];
 }
 
 async function hashFile(filePath) {
@@ -346,10 +356,13 @@ function buildLedgerEntries({
   proofId,
   proofArtifactPath,
   visualEvidenceRefs,
+  visualEvidenceArtifacts = [],
   targetName,
   finalAcceptanceTarget,
   generatedAt,
 }) {
+  const visualArtifacts = (Array.isArray(visualEvidenceArtifacts) ? visualEvidenceArtifacts : [])
+    .filter((artifact) => artifact && typeof artifact === 'object' && !Array.isArray(artifact));
   const base = {
     schemaVersion: 'synthi.real_rocm.target_progression_ledger_entry.v1',
     targetName,
@@ -359,7 +372,22 @@ function buildLedgerEntries({
     proofId,
     proofArtifactPath,
     proofArtifactSchemaVersion: PROOF_SCHEMA_VERSION,
-    visualEvidenceRefs,
+    visualEvidenceRefs: compactStringList([
+      ...(Array.isArray(visualEvidenceRefs) ? visualEvidenceRefs : []),
+      ...visualArtifacts.map((artifact) => artifact.path ?? artifact.filePath ?? artifact.file_path),
+    ]),
+    visualEvidenceArtifacts: visualArtifacts,
+    visualEvidenceContentHashes: compactStringList(
+      visualArtifacts.map((artifact) => artifact.contentHash ?? artifact.content_hash),
+    ),
+    visualEvidenceAcceptedCount: visualArtifacts
+      .filter((artifact) => (
+        artifact.acceptedAsVisualEvidence ?? artifact.accepted_as_visual_evidence
+      ) === true)
+      .length,
+    visualEvidenceReadErrorCount: visualArtifacts
+      .filter((artifact) => artifact.readError ?? artifact.read_error)
+      .length,
     createdAt: generatedAt,
   };
   return [
@@ -414,6 +442,39 @@ async function selfCheck() {
   const png = makeOracleVisualPng();
   if (png.length < 1024 || png.subarray(1, 4).toString('ascii') !== 'PNG') {
     throw new Error('self-check PNG writer failed');
+  }
+  const tmpRoot = path.join(REPO_ROOT, 'tmp');
+  await mkdir(tmpRoot, { recursive: true });
+  const visualSelfCheckDir = await mkdtemp(path.join(tmpRoot, 'hiprt-ledger-self-check-'));
+  try {
+    const visualPath = path.join(visualSelfCheckDir, 'oracle.png');
+    await writeFile(visualPath, png);
+    const expectedVisualHash = `sha256:${hashBytes(png)}`;
+    const visualArtifacts = await visualEvidenceArtifactsFromFiles([visualPath], [{
+      path: visualPath,
+      visualQuality: 'gpu-hmr-visual-varied-frame',
+      acceptedAsVisualEvidence: true,
+    }]);
+    const entries = buildLedgerEntries({
+      proofId: `hiprt-target-progression:sha256:${'a'.repeat(64)}`,
+      proofArtifactPath: path.join(visualSelfCheckDir, 'proof.json'),
+      visualEvidenceRefs: [visualPath],
+      visualEvidenceArtifacts: visualArtifacts,
+      targetName: DEFAULT_KERNEL_SYMBOL,
+      finalAcceptanceTarget: 'HIPRTPathTracer',
+      generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const visualArtifact = entries[0].visualEvidenceArtifacts
+      ?.find((artifact) => artifact.path === visualPath);
+    if (
+      visualArtifact?.contentHash !== expectedVisualHash
+      || !entries[0].visualEvidenceContentHashes.includes(expectedVisualHash)
+      || entries[0].visualEvidenceAcceptedCount !== 1
+    ) {
+      throw new Error('self-check target progression ledger did not hash visual file bytes');
+    }
+  } finally {
+    await rm(visualSelfCheckDir, { recursive: true, force: true });
   }
   console.log('self-check passed');
 }
@@ -558,6 +619,19 @@ async function main() {
     ...(await analyzeGpuHmrImageEvidence(visualPath)),
     bytes: png.length,
   });
+  const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles([visualPath], [{
+    path: visualPath,
+    label: visualStats.label ?? null,
+    width: visualStats.width ?? null,
+    height: visualStats.height ?? null,
+    visiblePixels: visualStats.visible_pixels ?? null,
+    meanLuma: visualStats.mean_luma ?? null,
+    lumaStddev: visualStats.luma_stddev ?? null,
+    rgbSpanMean: visualStats.rgb_span_mean ?? null,
+    uniqueColorSampleCount: visualStats.unique_color_sample_count ?? null,
+    visualQuality: visualStats.visual_quality ?? null,
+    acceptedAsVisualEvidence: visualStats.accepted_as_visual_evidence === true,
+  }]);
 
   const smallOracleProven = runtimeEvidence.outputOracleProven;
   const partialReloadProven = runtimeEvidence.ramArtifactTransportProven
@@ -673,6 +747,10 @@ async function main() {
     visualEvidence: {
       path: visualPath,
       stats: visualStats,
+      artifacts: visualEvidenceArtifacts,
+      contentHashes: compactStringList(
+        visualEvidenceArtifacts.map((artifact) => artifact.contentHash ?? artifact.content_hash),
+      ),
     },
   };
   const proofSeedHash = hashBytes(Buffer.from(JSON.stringify(proofSeed)));
@@ -695,6 +773,7 @@ async function main() {
     proofId: proofArtifact.proofId,
     proofArtifactPath: proofPath,
     visualEvidenceRefs: [visualPath],
+    visualEvidenceArtifacts,
     targetName,
     finalAcceptanceTarget,
     generatedAt,

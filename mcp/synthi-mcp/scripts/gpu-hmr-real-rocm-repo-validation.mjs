@@ -51,6 +51,7 @@ import {
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
 import {
+  visualEvidenceArtifactsFromFiles,
   writeValidationRuntimeProofArtifact,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import {
@@ -621,7 +622,11 @@ function targetProgressionGateRows({
   return rows;
 }
 
-function buildTargetProgressionLedgerEntry({ report, visualArtifactPaths = [] } = {}) {
+function buildTargetProgressionLedgerEntry({
+  report,
+  visualArtifactPaths = [],
+  visualEvidenceArtifacts = [],
+} = {}) {
   const progression = report?.target_progression;
   if (!progression?.phase) return null;
   const gateRows = Array.isArray(report.target_progression_gates)
@@ -629,6 +634,19 @@ function buildTargetProgressionLedgerEntry({ report, visualArtifactPaths = [] } 
     : [];
   const failedGates = gateRows.filter((row) => row?.status === 'fail');
   const runtimeProofArtifact = report.runtime_proof_artifact ?? {};
+  const visualArtifacts = (Array.isArray(visualEvidenceArtifacts) ? visualEvidenceArtifacts : [])
+    .filter((artifact) => artifact && typeof artifact === 'object' && !Array.isArray(artifact));
+  const visualContentHashes = compactStringList(
+    visualArtifacts.map((artifact) => artifact.contentHash ?? artifact.content_hash),
+  );
+  const visualReadErrorCount = visualArtifacts
+    .filter((artifact) => artifact.readError ?? artifact.read_error)
+    .length;
+  const visualAcceptedCount = visualArtifacts
+    .filter((artifact) => (
+      artifact.acceptedAsVisualEvidence ?? artifact.accepted_as_visual_evidence
+    ) === true)
+    .length;
   return {
     schemaVersion: 'synthi.real_rocm.target_progression_ledger_entry.v1',
     phase: progression.phase,
@@ -660,7 +678,14 @@ function buildTargetProgressionLedgerEntry({ report, visualArtifactPaths = [] } 
       report.dispatch_proof,
       'gpu-hmr-dispatch-safe-proven',
     ),
-    visualEvidenceRefs: compactStringList(visualArtifactPaths),
+    visualEvidenceRefs: compactStringList([
+      ...visualArtifactPaths,
+      ...visualArtifacts.map((artifact) => artifact.path ?? artifact.filePath ?? artifact.file_path),
+    ]),
+    visualEvidenceArtifacts: visualArtifacts,
+    visualEvidenceContentHashes: visualContentHashes,
+    visualEvidenceAcceptedCount: visualAcceptedCount,
+    visualEvidenceReadErrorCount: visualReadErrorCount,
     gateRows,
     createdAt: report.finished_at ?? new Date().toISOString(),
   };
@@ -3813,6 +3838,60 @@ async function selfCheckRuntimeDispatchEvidence() {
     ) {
       throw new Error('visual proof artifact self-check did not hash visual file bytes');
     }
+    const targetProgressionVisualArtifacts = await visualEvidenceArtifactsFromFiles([visualPath], [{
+      path: visualPath,
+      visualQuality: 'gpu-hmr-visual-varied-frame',
+      acceptedAsVisualEvidence: true,
+    }]);
+    const ledgerReport = {
+      slug: 'visual-proof-self-check',
+      source_url: 'self-check',
+      repo_commit: 'self-check',
+      target_name: 'self-check-target',
+      model: 'self-check-model',
+      gpu_vendor: 'rocm',
+      gpu_arch: 'gfx-self-check',
+      target_progression: {
+        phase: 'final-acceptance',
+        phaseRaw: 'final-acceptance',
+        targetName: 'self-check-target',
+        finalAcceptanceTarget: 'self-check-target',
+      },
+      target_progression_gates: [],
+      runtime_proof_artifact: {
+        schemaVersion: written.artifact.schemaVersion,
+        proofId: written.artifact.proofId,
+        path: written.path,
+        resultState: written.artifact.resultState,
+        degradedState: written.artifact.degradedState,
+        degradedReason: written.artifact.degradedReason,
+      },
+      full_runtime_proof: written.artifact.proofMaterial.fullRuntimeProof,
+      fission_proof: { fissionProven: true },
+      output_proof: { resultState: 'gpu-hmr-output-oracle-proven' },
+      dispatch_proof: { resultState: 'gpu-hmr-dispatch-safe-proven' },
+      host_preservation_proof: { resultState: 'gpu-hmr-host-preservation-proven' },
+      original_host_path_proof: { attachmentProven: true },
+    };
+    const ledgerEntry = buildTargetProgressionLedgerEntry({
+      report: ledgerReport,
+      visualArtifactPaths: [visualPath],
+      visualEvidenceArtifacts: targetProgressionVisualArtifacts,
+    });
+    const ledgerWritten = await writeTargetProgressionLedgerArtifact(visualSelfCheckDir, {
+      report: ledgerReport,
+      entry: ledgerEntry,
+    });
+    const ledgerArtifact = JSON.parse(await readFile(ledgerWritten.path, 'utf8'));
+    const ledgerVisualArtifact = ledgerArtifact.entries?.[0]?.visualEvidenceArtifacts
+      ?.find((artifact) => artifact.path === visualPath);
+    if (
+      ledgerVisualArtifact?.contentHash !== expectedVisualHash
+      || !ledgerArtifact.entries?.[0]?.visualEvidenceContentHashes?.includes(expectedVisualHash)
+      || ledgerArtifact.entries?.[0]?.visualEvidenceAcceptedCount !== 1
+    ) {
+      throw new Error('target progression ledger self-check did not hash visual file bytes');
+    }
   } finally {
     await rm(visualSelfCheckDir, { recursive: true, force: true });
   }
@@ -4363,6 +4442,20 @@ async function writeResults() {
   const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
   const freshVisualFrames = visualEvidenceFrames();
   const visualArtifactPaths = freshVisualFrames.map((shot) => shot.path);
+  const freshVisualEvidenceArtifacts = freshVisualFrames.map((shot) => ({
+    path: shot.path,
+    label: shot.label ?? null,
+    width: shot.width ?? null,
+    height: shot.height ?? null,
+    visiblePixels: shot.visible_pixels ?? null,
+    meanLuma: shot.mean_luma ?? null,
+    lumaStddev: shot.luma_stddev ?? null,
+    rgbSpanMean: shot.rgb_span_mean ?? null,
+    uniqueColorSampleCount: shot.unique_color_sample_count ?? null,
+    visualQuality: shot.visual_quality ?? null,
+    acceptedAsVisualEvidence: shot.accepted_as_visual_evidence === true,
+  }));
+  let runtimeProofVisualEvidenceArtifacts = [];
   if (report.full_runtime_proof) {
     const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
       workspaceSlug: report.slug,
@@ -4383,20 +4476,11 @@ async function writeResults() {
       targetProgressionGates: report.target_progression_gates,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
-      visualEvidenceArtifacts: freshVisualFrames.map((shot) => ({
-        path: shot.path,
-        label: shot.label ?? null,
-        width: shot.width ?? null,
-        height: shot.height ?? null,
-        visiblePixels: shot.visible_pixels ?? null,
-        meanLuma: shot.mean_luma ?? null,
-        lumaStddev: shot.luma_stddev ?? null,
-        rgbSpanMean: shot.rgb_span_mean ?? null,
-        uniqueColorSampleCount: shot.unique_color_sample_count ?? null,
-        visualQuality: shot.visual_quality ?? null,
-        acceptedAsVisualEvidence: shot.accepted_as_visual_evidence === true,
-      })),
+      visualEvidenceArtifacts: freshVisualEvidenceArtifacts,
     });
+    runtimeProofVisualEvidenceArtifacts = Array.isArray(written.artifact.visualEvidenceArtifacts)
+      ? written.artifact.visualEvidenceArtifacts
+      : [];
     report.runtime_proof_artifact_path = written.path;
     report.runtime_proof_artifact = {
       schemaVersion: written.artifact.schemaVersion,
@@ -4415,6 +4499,9 @@ async function writeResults() {
   report.target_progression_ledger_entry = buildTargetProgressionLedgerEntry({
     report,
     visualArtifactPaths,
+    visualEvidenceArtifacts: runtimeProofVisualEvidenceArtifacts.length > 0
+      ? runtimeProofVisualEvidenceArtifacts
+      : await visualEvidenceArtifactsFromFiles(visualArtifactPaths, freshVisualEvidenceArtifacts),
   });
   const targetProgressionLedgerArtifactDir = path.join(LOG_DIR, 'target-progression-ledgers');
   report.target_progression_ledger_artifact = await writeTargetProgressionLedgerArtifact(
