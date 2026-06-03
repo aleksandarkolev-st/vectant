@@ -89,6 +89,7 @@ describe("browser broker privacy boundary", () => {
     expect(redactValue("password", "correct-horse").value).toBe("[REDACTED]");
     expect(redactText("Authorization: Bearer abcdefghijklmnop123456").text).toContain("[REDACTED]");
     expect(redactText("key=sk-12345678901234567890").text).toContain("[REDACTED]");
+    expect(redactText("token=plain-secret-token").text).toBe("token=[REDACTED]");
     const redacted = redactUrl("https://app.example.com/callback?access_token=abc12345678901234567890&ok=1");
     expect(redacted.url).toContain("access_token=[REDACTED]");
     expect(redacted.redacted).toBe(true);

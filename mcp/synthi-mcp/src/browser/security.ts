@@ -4,7 +4,7 @@ const TOKEN_PATTERNS: RegExp[] = [
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
   /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /\bAIza[0-9A-Za-z_-]{20,}\b/g,
-  /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret)=([^&\s]+)/gi,
+  /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|secret)=([^&\s]+)/gi,
   /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi,
 ];
 
