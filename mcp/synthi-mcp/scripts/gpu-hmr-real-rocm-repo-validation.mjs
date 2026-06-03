@@ -272,6 +272,7 @@ function targetProgressionPhaseRequirements(phase) {
       return [
         'target_must_match_final_acceptance_target_when_declared',
         'full_runtime_proven',
+        'fresh_visual_evidence_when_rendering',
       ];
     default:
       return [];
@@ -304,6 +305,20 @@ function partialArtifactReplacementProofObserved(sourceProofs = [], fissionProof
     );
 }
 
+function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
+  return (Array.isArray(visualEvidenceFrames) ? visualEvidenceFrames : [])
+    .filter((frame) => {
+      if (typeof frame === 'string') return frame.trim().length > 0;
+      if (!frame || typeof frame !== 'object') return false;
+      if (frame.accepted_as_visual_evidence === false) return false;
+      return frame.accepted_as_visual_evidence === true
+        || typeof frame.path === 'string'
+        || typeof frame.filePath === 'string'
+        || typeof frame.file_path === 'string';
+    })
+    .length;
+}
+
 function targetProgressionGateRows({
   targetProgression,
   sourceProofs = [],
@@ -313,6 +328,8 @@ function targetProgressionGateRows({
   hostPreservationProof = null,
   originalHostPathProof = null,
   fullRuntimeProof = null,
+  visualEvidenceExpected = false,
+  visualEvidenceFrames = [],
 } = {}) {
   const progression = targetProgression ?? buildTargetProgressionMetadata();
   const rows = [];
@@ -415,6 +432,16 @@ function targetProgressionGateRows({
         ? 'gpu-hmr-full-runtime-proven'
         : summarizeGpuHmrFullRuntimeProof(fullRuntimeProof),
     });
+    if (visualEvidenceExpected) {
+      const acceptedVisualFrames = acceptedVisualEvidenceCount(visualEvidenceFrames);
+      rows.push({
+        name: 'target progression visual evidence',
+        status: acceptedVisualFrames > 0 ? 'pass' : 'fail',
+        detail: acceptedVisualFrames > 0
+          ? `fresh visual evidence frames=${acceptedVisualFrames}`
+          : 'fresh visual evidence missing for final acceptance render workflow',
+      });
+    }
   }
   return rows;
 }
@@ -427,15 +454,21 @@ const configuredWorkspaceRoot =
   process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
 const configuredWorkerTempDir =
   process.env.SYNTHI_REAL_ROCM_WORKER_TMP ?? '/tmp/synthi-real-rocm';
-const configuredExpectScreenshot = booleanFromEnv(
-  process.env,
-  'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT',
-  false,
-);
+const configuredExpectScreenshotExplicit =
+  process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT !== undefined
+  && String(process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT).trim() !== '';
+const configuredExpectScreenshotValue = configuredExpectScreenshotExplicit
+  ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT', false)
+  : false;
 const configuredRenderPreview = booleanFromEnv(
   process.env,
   'SYNTHI_REAL_ROCM_RENDER_PREVIEW',
-  configuredExpectScreenshot,
+  configuredExpectScreenshotValue,
+);
+const configuredExpectScreenshot = booleanFromEnv(
+  process.env,
+  'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT',
+  configuredRenderPreview,
 );
 
 const CFG = {
@@ -3055,6 +3088,28 @@ function selfCheckRuntimeDispatchEvidence() {
     }),
     fullRuntimeProof: fullRuntimeBlockedProof,
   });
+  const finalAcceptanceVisualFailures = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    visualEvidenceExpected: true,
+    visualEvidenceFrames: [],
+  });
+  const finalAcceptanceVisualPasses = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    visualEvidenceExpected: true,
+    visualEvidenceFrames: [{ path: 'fresh.png', accepted_as_visual_evidence: true }],
+  });
   if (
     optionalProgressionRows[0]?.status !== 'skip'
     || requiredProgressionRows[0]?.status !== 'fail'
@@ -3063,6 +3118,8 @@ function selfCheckRuntimeDispatchEvidence() {
     || smallOraclePasses.some((row) => row.status === 'fail')
     || partialReloadPasses.some((row) => row.status === 'fail')
     || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 2
+    || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 1
+    || finalAcceptanceVisualPasses.some((row) => row.status === 'fail')
   ) {
     throw new Error('target progression gate self-check failed');
   }
@@ -3430,6 +3487,10 @@ async function collectRuntimeEvidence() {
     deterministicOraclePassed: runtimeOutputOracle.deterministic_oracle_passed,
     outputOracle: runtimeOutputOracle.output_oracle ?? undefined,
     evidenceRefs: runtimeOutputOracle.evidence_refs,
+    visualEvidenceRequired:
+      CFG.renderPreview
+      || CFG.expectScreenshot
+      || report.target_progression?.phase === 'final-acceptance',
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
@@ -3516,6 +3577,8 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
+    visualEvidenceExpected: CFG.renderPreview || CFG.expectScreenshot,
+    visualEvidenceFrames: freshVisualFrames,
   })) {
     record(gate.name, gate.status, gate.detail);
     if (gate.status === 'fail') process.exitCode = 1;
@@ -3653,8 +3716,10 @@ async function writeResults() {
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,
-    visualEvidenceExpected: CFG.expectScreenshot
-      || (Number.isFinite(CFG.screenshotAttempts) && CFG.screenshotAttempts > 0),
+    visualEvidenceExpected:
+      CFG.expectScreenshot
+      || CFG.renderPreview
+      || report.target_progression?.phase === 'final-acceptance',
     visualArtifactPaths,
     proof_artifacts: report.proof_artifacts,
     runtimeProofArtifactRecords: report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],

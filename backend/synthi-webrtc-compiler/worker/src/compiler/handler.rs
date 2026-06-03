@@ -745,7 +745,8 @@ use crate::hmr::gpu_device_fast_path::{
 use crate::hmr::gpu_fission::verify_fission_candidates;
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
-    sha256_hex_bytes, sha256_hex_str, write_proof_artifact, GpuHmrDegradedState,
+    read_proof_artifact, sha256_hex_bytes, sha256_hex_str, write_proof_artifact,
+    GpuHmrDegradedState,
     GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
     GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry,
 };
@@ -5356,6 +5357,85 @@ fn partial_fission_scope_rank(scope: &str) -> u64 {
     }
 }
 
+fn device_artifact_kind_requires_fission_publication_gate(kind: &str) -> bool {
+    let normalized = normalized_fission_scope_text(kind);
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized.contains("body")
+        || normalized.contains("function")
+        || normalized.contains("source_include")
+        || normalized.contains("kernel_region")
+        || normalized.contains("partial")
+        || normalized.contains("multi")
+}
+
+fn device_outcome_requires_fission_publication_gate(outcome: &DeviceCompileOutcome) -> bool {
+    outcome.partial_module
+        || outcome
+            .selected_artifact_kind
+            .as_deref()
+            .is_some_and(device_artifact_kind_requires_fission_publication_gate)
+        || outcome
+            .requested_artifact_kind
+            .as_deref()
+            .is_some_and(device_artifact_kind_requires_fission_publication_gate)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GpuHmrPublicationBlock {
+    reason_code: String,
+    detail: String,
+}
+
+fn device_hmr_fission_publication_blocker(
+    proof: &GpuHmrProofArtifact,
+    outcome: &DeviceCompileOutcome,
+) -> Option<GpuHmrPublicationBlock> {
+    if !device_outcome_requires_fission_publication_gate(outcome) {
+        return None;
+    }
+
+    let Some(stage) = proof
+        .stage_results
+        .iter()
+        .find(|stage| stage.stage_id == "fission-candidate-verification")
+    else {
+        return Some(GpuHmrPublicationBlock {
+            reason_code: "fission.candidate_verification_missing".to_string(),
+            detail: "partial device artifact proof is missing the fission verifier stage"
+                .to_string(),
+        });
+    };
+
+    if stage.status == "passed"
+        && stage.degraded_state.as_deref().unwrap_or_default().trim().is_empty()
+        && stage
+            .degraded_reason
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        return None;
+    }
+
+    let reason_code = stage
+        .degraded_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("fission.candidate_verification_not_passed")
+        .to_string();
+    Some(GpuHmrPublicationBlock {
+        reason_code: reason_code.clone(),
+        detail: format!(
+            "partial device artifact fission verifier did not pass: status={} reason={reason_code}",
+            stage.status
+        ),
+    })
+}
+
 fn partial_fission_rejected_scope_label(scope_rank: u64) -> &'static str {
     match scope_rank {
         0 => "single_body_or_function",
@@ -5966,6 +6046,55 @@ async fn reload_capsule_metadata_from_proof_artifact(
             .and_then(|proof| proof_dependency_closure_hash(proof, outcome)),
         proof_hash: proof_id_capsule_hash(&proof_artifact.proof_id),
     }
+}
+
+async fn enforce_device_hmr_publication_gates(
+    ctx: &CompileContext,
+    session_id: &str,
+    proof_artifact: &GpuHmrProofArtifactWrite,
+    outcome: &DeviceCompileOutcome,
+    runtime_resume_deferred: bool,
+) -> Result<()> {
+    let proof = match read_proof_artifact(&proof_artifact.path).await {
+        Ok(proof) => proof,
+        Err(error) => {
+            if runtime_resume_deferred {
+                let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+            }
+            let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                "device",
+                &format!(
+                    "GPU HMR proof artifact could not be re-read before device publication: {error}"
+                ),
+                "Keep previous GPU sidecar loaded and restart or reload the preview before applying another GPU HMR patch",
+                "proof_artifact_unreadable",
+            );
+            let _ = ctx.log_dc.send_text(status.to_json()).await;
+            return Err(error.context("GPU HMR proof artifact publication gate failed"));
+        }
+    };
+
+    if let Some(block) = device_hmr_fission_publication_blocker(&proof, outcome) {
+        if runtime_resume_deferred {
+            let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+        }
+        let status = HmrStatus::gpu_rejected_with_fallback_reason(
+            "device",
+            &format!(
+                "{}; proof_id={} proof_path={}",
+                block.detail, proof_artifact.proof_id, proof_artifact.relative_path
+            ),
+            "Keep previous GPU sidecar loaded and provide a verified fission island before publishing a partial GPU artifact",
+            &block.reason_code,
+        );
+        let _ = ctx.log_dc.send_text(status.to_json()).await;
+        anyhow::bail!(
+            "GPU HMR partial artifact publication blocked by fission verifier: {}",
+            block.reason_code
+        );
+    }
+
+    Ok(())
 }
 
 async fn write_device_hmr_proof_artifact(
@@ -11504,7 +11633,6 @@ pub async fn handle_compile_request(
     let mut device_reload_artifact_blob: Option<ReloadArtifactBlob> = None;
     let mut device_reload_capsule_metadata: Option<ReloadCapsuleMetadata> = None;
     if let Some(ref out) = device_compile_outcome {
-        device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
         let proof = device_hmr_proof_telemetry(out);
         let proof_sidecar_meta = read_normalized_split_sidecar_for_proof(&sidecar_path).await;
         let proof_artifact = write_device_hmr_proof_artifact(
@@ -11518,6 +11646,15 @@ pub async fn handle_compile_request(
             proof_sidecar_meta.as_ref(),
         )
         .await?;
+        enforce_device_hmr_publication_gates(
+            ctx,
+            &session_id,
+            &proof_artifact,
+            out,
+            device_runtime_resume_deferred,
+        )
+        .await?;
+        device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
         device_reload_capsule_metadata =
             Some(reload_capsule_metadata_from_proof_artifact(&proof_artifact, out).await);
         let proof = proof.with_artifact_ref(proof_artifact.proof_id, proof_artifact.relative_path);
@@ -12544,6 +12681,85 @@ mod gpu_host_contract_tests {
         }
     }
 
+    fn fixture_publication_proof(
+        stage_results: Vec<GpuHmrProofStageResult>,
+    ) -> GpuHmrProofArtifact {
+        GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
+            workspace_slug: "workspace".to_string(),
+            runtime_session_id: "runtime-session:test".to_string(),
+            source_edit_id: "source-edit:test".to_string(),
+            selected_artifact_id: "artifact:sha256:test".to_string(),
+            result_state: GpuHmrProofState::SymbolBound.as_str().to_string(),
+            degraded_state: None,
+            degraded_reason: None,
+            stage_results,
+            evidence_refs: Vec::new(),
+            visual_evidence_refs: Vec::new(),
+            created_at: Some("2026-05-26T00:00:00.000Z".to_string()),
+        })
+    }
+
+    fn fixture_fission_stage(status: &str, reason: Option<&str>) -> GpuHmrProofStageResult {
+        GpuHmrProofStageResult {
+            stage_id: "fission-candidate-verification".to_string(),
+            stage_name: "Grand fission candidate verification".to_string(),
+            status: status.to_string(),
+            started_at: "2026-05-26T00:00:00.000Z".to_string(),
+            completed_at: "2026-05-26T00:00:00.000Z".to_string(),
+            input_artifact_ids: vec!["source-edit:test".to_string()],
+            output_artifact_ids: if status == "passed" {
+                vec!["artifact:sha256:test".to_string()]
+            } else {
+                Vec::new()
+            },
+            evidence_refs: vec!["evidence:fission-verifier-report:test".to_string()],
+            degraded_state: None,
+            degraded_reason: reason.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn full_device_publication_does_not_require_fission_stage() {
+        let mut outcome = fixture_device_outcome(false, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.selected_artifact_kind = Some("full_device".to_string());
+        outcome.requested_artifact_kind = Some("full_device".to_string());
+        let proof = fixture_publication_proof(Vec::new());
+
+        assert!(!device_outcome_requires_fission_publication_gate(&outcome));
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&proof, &outcome),
+            None
+        );
+    }
+
+    #[test]
+    fn partial_publication_requires_passed_fission_stage() {
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
+        let missing_stage = fixture_publication_proof(Vec::new());
+        let blocked_stage = fixture_publication_proof(vec![fixture_fission_stage(
+            "blocked",
+            Some("fission.output_oracle_missing"),
+        )]);
+        let passed_stage = fixture_publication_proof(vec![fixture_fission_stage("passed", None)]);
+
+        assert!(device_outcome_requires_fission_publication_gate(&outcome));
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&missing_stage, &outcome)
+                .map(|block| block.reason_code),
+            Some("fission.candidate_verification_missing".to_string())
+        );
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&blocked_stage, &outcome)
+                .map(|block| block.reason_code),
+            Some("fission.output_oracle_missing".to_string())
+        );
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&passed_stage, &outcome),
+            None
+        );
+    }
+
     #[test]
     fn direct_workspace_partial_requires_manifest_device_hmr_context() {
         let manifest = fixture_rocm_manifest("device.hip");
@@ -13366,6 +13582,10 @@ __constant__ int scale;
         assert_eq!(fission_stage.status, "passed");
         assert_eq!(fission_stage.evidence_refs, vec![fission_evidence.evidence_id.clone()]);
         assert_eq!(artifact.stage_results[0].stage_id, "fission-candidate-verification");
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&artifact, &outcome),
+            None
+        );
     }
 
     #[tokio::test]
@@ -13566,6 +13786,11 @@ __constant__ int scale;
         assert_eq!(
             capsule_metadata.proof_hash.as_deref(),
             proof_id_capsule_hash(&written.proof_id).as_deref()
+        );
+        assert_eq!(
+            device_hmr_fission_publication_blocker(&artifact, &outcome)
+                .map(|block| block.reason_code),
+            fission_stage.degraded_reason.clone()
         );
     }
 
