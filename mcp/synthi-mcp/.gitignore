@@ -6,6 +6,7 @@ node_modules/
 .live-test-logs/
 .live-test-artifacts/
 .live-test-phase3/
+.browser-workspace-sessions/
 .soak/
 
 # .npmrc may carry a real GITHUB_TOKEN — never commit it.
