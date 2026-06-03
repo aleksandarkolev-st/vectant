@@ -10,6 +10,25 @@
  */
 
 export const ADVERTISED_TOOLS = [
+  // General browser runtime
+  "synthi_browser_attach",
+  "synthi_browser_list_tabs",
+  "synthi_browser_select_tab",
+  "synthi_browser_open",
+  "synthi_browser_request_consent",
+  "synthi_browser_get_consent",
+  "synthi_browser_revoke_consent",
+  "synthi_browser_snapshot",
+  "synthi_browser_start_teach",
+  "synthi_browser_stop_teach",
+  "synthi_browser_get_trace",
+  "synthi_browser_generate_script",
+  "synthi_browser_acquire_lease",
+  "synthi_browser_release_lease",
+  "synthi_browser_action",
+  "synthi_browser_wait",
+  "synthi_browser_get_console",
+  "synthi_browser_get_network",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",

@@ -3,6 +3,7 @@ import { eventLog } from "../events/index.js";
 import { BrowserTraceRecorder, generatePlaywrightScript } from "./trace.js";
 import { bridgeTokenMatches, normalizeOrigin, sameExactOrigin } from "./security.js";
 import type {
+  BrowserActionKind,
   BrowserConsentRecord,
   BrowserConsentStatus,
   BrowserLease,
@@ -24,7 +25,7 @@ export interface BrowserBrokerSnapshotInput {
 
 export interface BrowserActionInput {
   lease_id: string;
-  action: "click" | "fill" | "press" | "navigate" | "wait";
+  action: BrowserActionKind;
   tab_id?: string;
   url?: string;
   selector?: string;
