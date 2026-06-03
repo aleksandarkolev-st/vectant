@@ -32,6 +32,60 @@ function compactObjects(values) {
     .filter((value) => value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function compactTrailingObjects(values, limit = 20) {
+  const objects = compactObjects(values);
+  const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 20;
+  return objects.slice(Math.max(0, objects.length - boundedLimit));
+}
+
+function runtimeCapabilityPreflightFacet(preflight) {
+  if (!preflight || typeof preflight !== 'object' || Array.isArray(preflight)) return null;
+  return {
+    schemaVersion: preflight.schemaVersion ?? null,
+    backend: preflight.backend ?? null,
+    api: preflight.api ?? null,
+    probe: preflight.probe ?? null,
+    skipped: preflight.skipped === true,
+    observed: preflight.observed === true,
+    allocationAvailable: preflight.allocationAvailable ?? null,
+    allocationUnavailable: preflight.allocationUnavailable ?? null,
+    allocationResult: Number.isFinite(preflight.allocationResult)
+      ? preflight.allocationResult
+      : null,
+    allocationError: preflight.allocationError ?? null,
+    anyAllocationAvailable: preflight.anyAllocationAvailable ?? null,
+    allocationMatrixTotal: Number.isFinite(preflight.allocationMatrixTotal)
+      ? preflight.allocationMatrixTotal
+      : null,
+    allocationMatrixAvailableCount: Number.isFinite(preflight.allocationMatrixAvailableCount)
+      ? preflight.allocationMatrixAvailableCount
+      : null,
+    allocationMatrixFailureCount: Number.isFinite(preflight.allocationMatrixFailureCount)
+      ? preflight.allocationMatrixFailureCount
+      : null,
+    allocationMatrix: compactTrailingObjects(preflight.allocationMatrix),
+    textureResourceFallbackAvailable: preflight.textureResourceFallbackAvailable ?? null,
+    textureResourceMatrixTotal: Number.isFinite(preflight.textureResourceMatrixTotal)
+      ? preflight.textureResourceMatrixTotal
+      : null,
+    textureResourceMatrixAvailableCount: Number.isFinite(preflight.textureResourceMatrixAvailableCount)
+      ? preflight.textureResourceMatrixAvailableCount
+      : null,
+    textureResourceMatrixFailureCount: Number.isFinite(preflight.textureResourceMatrixFailureCount)
+      ? preflight.textureResourceMatrixFailureCount
+      : null,
+    textureResourceMatrix: compactTrailingObjects(preflight.textureResourceMatrix),
+    deviceCountResult: Number.isFinite(preflight.deviceCountResult)
+      ? preflight.deviceCountResult
+      : null,
+    deviceCountError: preflight.deviceCountError ?? null,
+    deviceCount: Number.isFinite(preflight.deviceCount) ? preflight.deviceCount : null,
+    exitCode: Number.isFinite(preflight.exitCode) ? preflight.exitCode : null,
+    degradedState: preflight.degradedState ?? null,
+    degradedReason: preflight.degradedReason ?? null,
+  };
+}
+
 function artifactIdsFromSha256Hashes(values) {
   return compactStringList(values)
     .map((value) => value.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null)
@@ -504,6 +558,19 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
   const selectedIslandNarrowerRejections = selectedIslandContracts.flatMap((contract) =>
     compactObjects(contract.narrowerCandidateRejections)
   );
+  const epochGenerationGraph =
+    epochProof?.epochGenerationGraph
+    && typeof epochProof.epochGenerationGraph === 'object'
+    && !Array.isArray(epochProof.epochGenerationGraph)
+      ? epochProof.epochGenerationGraph
+      : null;
+  const epochGenerationGraphObserved =
+    epochProof?.epochGenerationGraphObserved === true
+    || epochProof?.generationGraphObserved === true
+    || epochGenerationGraph !== null;
+  const epochGenerationGraphValid =
+    epochProof?.epochGenerationGraphValid === true
+    || epochProof?.generationGraphValid === true;
   const visualArtifacts = compactObjects(visualEvidenceArtifacts).map((artifact) => ({
     path: artifact.path ?? artifact.filePath ?? artifact.file_path ?? null,
     label: artifact.label ?? null,
@@ -581,8 +648,13 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
         epochProof.epochSwapProven === true
         || epochProof.resultState === 'gpu-hmr-epoch-swap-proven',
       generationLineageObserved: epochProof.generationLineageObserved === true,
-      epochGenerationGraphObserved: epochProof.epochGenerationGraphObserved === true,
-      epochGenerationGraph: epochProof.epochGenerationGraph ?? null,
+      generationGraphObserved: epochGenerationGraphObserved,
+      generationGraphValid: epochGenerationGraphValid,
+      generationGraphRuntimeSessionScoped:
+        epochProof.generationGraphRuntimeSessionScoped === true,
+      epochGenerationGraphObserved,
+      epochGenerationGraphValid,
+      epochGenerationGraph,
       capsuleMetadataObserved: epochProof.capsuleMetadataObserved === true,
       capsuleId: epochProof.capsuleId ?? null,
       fissionIslandId: epochProof.fissionIslandId ?? null,
@@ -632,8 +704,50 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
       nativeLaunchObserved: originalHostPathProof.nativeLaunchObserved === true,
       nativeLaunchAttemptObserved: originalHostPathProof.nativeLaunchAttemptObserved === true,
       nativeLaunchObserverSawNoLaunch: originalHostPathProof.nativeLaunchObserverSawNoLaunch === true,
+      nativeLaunchObserverEnabled: originalHostPathProof.nativeLaunchObserverEnabled === true,
+      nativeLaunchObserverReady: originalHostPathProof.nativeLaunchObserverReady === true,
+      nativeTextureObjectFailureObserved:
+        originalHostPathProof.nativeTextureObjectFailureObserved === true,
+      nativeTextureObjectFailureBeforeLaunch:
+        originalHostPathProof.nativeTextureObjectFailureBeforeLaunch === true,
+      nativeArrayAllocationFailureObserved:
+        originalHostPathProof.nativeArrayAllocationFailureObserved === true,
+      nativeArrayAllocationFailureBeforeLaunch:
+        originalHostPathProof.nativeArrayAllocationFailureBeforeLaunch === true,
+      runtimeArrayAllocationCapabilityAvailable:
+        originalHostPathProof.runtimeArrayAllocationCapabilityAvailable ?? null,
+      runtimeArrayAllocationCapabilityUnavailable:
+        originalHostPathProof.runtimeArrayAllocationCapabilityUnavailable ?? null,
       runtimeCapabilityPreflightObserved:
         originalHostPathProof.runtimeCapabilityPreflightObserved === true,
+      runtimeCapabilityPreflight: runtimeCapabilityPreflightFacet(
+        originalHostPathProof.runtimeCapabilityPreflight,
+      ),
+      nativeLaunchSymbols: compactStringList(originalHostPathProof.nativeLaunchSymbols),
+      nativeLaunchFunctionPtrs: compactStringList(originalHostPathProof.nativeLaunchFunctionPtrs),
+      nativeArrayAllocationRecords: compactTrailingObjects(
+        originalHostPathProof.nativeArrayAllocationRecords,
+      ),
+      runtimeErrorRecords: compactTrailingObjects(originalHostPathProof.runtimeErrorRecords),
+      runtimeErrorSourceLocations: compactTrailingObjects(
+        originalHostPathProof.runtimeErrorSourceLocations,
+      ),
+      nativeLaunchObserverReadyEvidenceRefs: compactStringList(
+        originalHostPathProof.nativeLaunchObserverReadyEvidenceRefs,
+      ),
+      nativeFunctionResolutionEvidenceRefs: compactStringList(
+        originalHostPathProof.nativeFunctionResolutionEvidenceRefs,
+      ),
+      nativeTextureObjectEvidenceRefs: compactStringList(
+        originalHostPathProof.nativeTextureObjectEvidenceRefs,
+      ),
+      nativeArrayAllocationEvidenceRefs: compactStringList(
+        originalHostPathProof.nativeArrayAllocationEvidenceRefs,
+      ),
+      runtimeErrorEvidenceRefs: compactStringList(originalHostPathProof.runtimeErrorEvidenceRefs),
+      runtimeCapabilityEvidenceRefs: compactStringList(
+        originalHostPathProof.runtimeCapabilityEvidenceRefs,
+      ),
       diagnosticEvidenceRefs: compactStringList(originalHostPathProof.diagnosticEvidenceRefs),
       evidenceRefs: compactStringList(originalHostPathProof.evidenceRefs),
     } : null,

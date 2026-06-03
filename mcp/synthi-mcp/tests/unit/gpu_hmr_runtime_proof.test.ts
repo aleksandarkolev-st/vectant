@@ -5715,6 +5715,10 @@ describe("GPU HMR runtime output proof classification", () => {
       "fission.edit_crosses_body_boundary",
     );
     expect(artifact.proofFacets.epoch.epochSwapProven).toBe(true);
+    expect(artifact.proofFacets.epoch.generationGraphObserved).toBe(true);
+    expect(artifact.proofFacets.epoch.generationGraphValid).toBe(true);
+    expect(artifact.proofFacets.epoch.epochGenerationGraphObserved).toBe(true);
+    expect(artifact.proofFacets.epoch.epochGenerationGraphValid).toBe(true);
     expect(artifact.proofFacets.epoch.capsuleMetadataObserved).toBe(true);
     expect(artifact.proofFacets.output.outputOracleProven).toBe(true);
     expect(artifact.proofFacets.hostPreservation.hostPreservationProven).toBe(true);
@@ -5759,6 +5763,152 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("materializes native original-host diagnostics as runtime proof facets", () => {
+    const sourceProof = acceptedSourceProof();
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const { proof: originalHostPathProof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=rocm apis=hipModuleLaunchKernel function_resolution_apis=hipModuleGetFunction texture_object_apis=hipCreateTextureObject array_allocation_apis=hipMallocArray attachment_provenance=native_runtime_intercept",
+      "[gpu-runtime-boundary] native_array_allocation api=hipMallocArray runtime_session=native-session sequence=4 array=0x0 array_out_ptr=0x7 descriptor_ptr=0x8 descriptor_kind=channel_format channel_x=32 channel_y=32 channel_z=32 channel_w=32 channel_format_kind=2 width=64 height=32 flags=0 result=1 allocation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept",
+      "[ERROR] HIPRT runtime error on line 138 in '/tmp/HIPRT-Path-Tracer/src/HIPRT-Orochi/OrochiTexture.cpp'",
+    ], {
+      required: true,
+      runtimeSessionIds: ["native-session"],
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 133,
+      runtimeCapabilityPreflight: {
+        schemaVersion: "synthi.real_rocm.array_allocation_capability.v1",
+        backend: "rocm",
+        api: "hipMallocArray",
+        probe: "hip_array_allocation_preflight",
+        skipped: false,
+        observed: true,
+        allocationAvailable: false,
+        allocationUnavailable: true,
+        allocationResult: 1,
+        allocationError: "invalid argument",
+        anyAllocationAvailable: false,
+        allocationMatrixTotal: 8,
+        allocationMatrixAvailableCount: 0,
+        allocationMatrixFailureCount: 8,
+        allocationMatrix: [{
+          api: "hipMallocArray",
+          label: "f32x4",
+          channelBits: { x: 32, y: 32, z: 32, w: 32 },
+          channelFormatKind: 2,
+          result: 1,
+          error: "invalid argument",
+          available: false,
+        }],
+        textureResourceFallbackAvailable: false,
+        textureResourceMatrixTotal: 4,
+        textureResourceMatrixAvailableCount: 0,
+        textureResourceMatrixFailureCount: 4,
+        textureResourceMatrix: [{
+          api: "hipCreateTextureObject",
+          label: "linear-point-unnormalized",
+          resourceType: "linear",
+          result: 911,
+          error: "invalid resource description of texture passed to the api",
+          available: false,
+        }],
+        deviceCountResult: 0,
+        deviceCount: 1,
+        exitCode: 0,
+        degradedState: "gpu-hmr-original-host-path-unattached",
+        degradedReason: "runtime_array_allocation_capability_unavailable",
+      },
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      originalHostPathProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      runtimeSessionIds: ["native-session"],
+      sourceProofs: [sourceProof],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      originalHostPathProof,
+      fullRuntimeProof,
+      createdAt: "2026-05-28T00:00:00.000Z",
+    });
+
+    const facet = artifact.proofFacets.originalHostPath;
+    expect(facet.originalHostPathProven).toBe(false);
+    expect(facet.nativeLaunchObserverReady).toBe(true);
+    expect(facet.nativeArrayAllocationFailureObserved).toBe(true);
+    expect(facet.nativeArrayAllocationFailureBeforeLaunch).toBe(true);
+    expect(facet.runtimeArrayAllocationCapabilityAvailable).toBe(false);
+    expect(facet.runtimeArrayAllocationCapabilityUnavailable).toBe(true);
+    expect(facet.nativeArrayAllocationRecords[0]).toEqual(
+      expect.objectContaining({
+        api: "hipMallocArray",
+        descriptor_kind: "channel_format",
+        channel_x: 32,
+        channel_y: 32,
+        channel_z: 32,
+        channel_w: 32,
+        channel_format_kind: 2,
+        result: 1,
+        allocation: "failed",
+      }),
+    );
+    expect(facet.runtimeErrorSourceLocations[0]).toEqual(
+      expect.objectContaining({
+        source_file_name: "OrochiTexture.cpp",
+        source_line: 138,
+      }),
+    );
+    expect(facet.runtimeCapabilityPreflight).toEqual(
+      expect.objectContaining({
+        backend: "rocm",
+        api: "hipMallocArray",
+        observed: true,
+        allocationAvailable: false,
+        allocationMatrixFailureCount: 8,
+        textureResourceFallbackAvailable: false,
+        textureResourceMatrixFailureCount: 4,
+      }),
+    );
+    expect(facet.runtimeCapabilityPreflight.allocationMatrix[0]).toEqual(
+      expect.objectContaining({
+        label: "f32x4",
+        channelFormatKind: 2,
+        result: 1,
+        available: false,
+      }),
+    );
+    expect(facet.diagnosticEvidenceRefs).toEqual(
+      expect.arrayContaining([
+        "runtime-capability-preflight:rocm:hip_array_allocation_preflight:hipMallocArray:result:1",
+        "worker-log:native_launch_observer_ready:native-session:42",
+        "worker-log:native_array_allocation:native-session:hipMallocArray:4",
+        "worker-log:runtime_error:OrochiTexture.cpp:138",
+      ]),
+    );
   });
 
   it("records blocked proof stages as first-class validation limitations", () => {
