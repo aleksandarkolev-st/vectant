@@ -6,7 +6,7 @@
 
 'use client';
 
-import { createContext, useContext, useCallback, useRef, useMemo } from 'react';
+import { createContext, useContext, useCallback, useMemo } from 'react';
 import {
   registerPanel,
   unregisterPanel,
@@ -14,6 +14,11 @@ import {
   getAllPanels,
   hasPanel,
 } from './panel-registry-core';
+
+// Re-export the core registry primitives so consumers that import them from this
+// wrapper (DockableWorkspace, the docking-wm barrel, the state barrel) keep working
+// after the panel-registry-core extraction (C1).
+export { registerPanel, unregisterPanel, getPanel, getAllPanels, hasPanel } from './panel-registry-core';
 
 // ─── React Context for Panel Registry ───────────────────
 
@@ -23,8 +28,6 @@ const PanelRegistryContext = createContext(null);
  * Provider that exposes the panel registry to the React tree.
  */
 export function PanelRegistryProvider({ children }) {
-  const registryRef = useRef(globalRegistry);
-
   const register = useCallback((registration) => {
     registerPanel(registration);
     // Force a re-render could be triggered if needed
