@@ -1156,11 +1156,50 @@ function parseUpstreamRunExitCode(timings) {
 function parseRocmArrayAllocationPreflightOutput(output) {
   const text = String(output ?? '');
   const device = /\bdevice_count result=(\d+)\s+error=(.*?)\s+count=(\d+)/.exec(text);
-  const allocation =
+  const allocationRecords = [...text.matchAll(
+    /\b(hipMalloc(?:3D)?Array)\s+label=([^\s]+)\s+x=(\d+)\s+y=(\d+)\s+z=(\d+)\s+w=(\d+)\s+kind=(\d+)\s+result=(\d+)\s+error=(.*?)\s+array=([^\s]+)/g,
+  )].map((match) => ({
+    api: match[1],
+    label: match[2],
+    channelBits: {
+      x: Number(match[3]),
+      y: Number(match[4]),
+      z: Number(match[5]),
+      w: Number(match[6]),
+    },
+    channelFormatKind: Number(match[7]),
+    result: Number(match[8]),
+    error: match[9],
+    pointer: match[10],
+    available: Number(match[8]) === 0,
+  }));
+  const legacyAllocation =
     /\bhipMallocArray format=([^\s]+)\s+width=(\d+)\s+height=(\d+)\s+result=(\d+)\s+error=(.*?)\s+array=([^\s]+)/.exec(text);
+  if (allocationRecords.length === 0 && legacyAllocation) {
+    allocationRecords.push({
+      api: 'hipMallocArray',
+      label: legacyAllocation[1],
+      channelBits: null,
+      channelFormatKind: null,
+      result: Number(legacyAllocation[4]),
+      error: legacyAllocation[5],
+      pointer: legacyAllocation[6],
+      available: Number(legacyAllocation[4]) === 0,
+    });
+  }
+  const allocation =
+    allocationRecords.find((record) => record.api === 'hipMallocArray' && record.label === 'f32x4')
+    ?? allocationRecords.find((record) => record.api === 'hipMallocArray')
+    ?? allocationRecords[0]
+    ?? null;
   const exitCode = /\bexit_code=(\d+)/.exec(text);
-  const allocationResult = allocation ? Number(allocation[4]) : null;
-  const allocationAvailable = allocationResult === 0;
+  const allocationResult = allocation?.result ?? null;
+  const anyAllocationAvailable = allocationRecords.some((record) => record.available);
+  const allocationAvailable = allocationRecords.length > 0
+    ? allocationRecords.every((record) => record.available)
+    : allocationResult === 0;
+  const allocationMatrixFailureCount =
+    allocationRecords.filter((record) => !record.available).length;
   return {
     schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
     backend: 'rocm',
@@ -1170,18 +1209,28 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     deviceCountResult: device ? Number(device[1]) : null,
     deviceCountError: device?.[2] ?? null,
     deviceCount: device ? Number(device[3]) : null,
-    allocationFormat: allocation?.[1] ?? null,
-    allocationWidth: allocation ? Number(allocation[2]) : null,
-    allocationHeight: allocation ? Number(allocation[3]) : null,
+    allocationFormat: allocation?.label ?? null,
+    allocationWidth: allocation ? 32 : null,
+    allocationHeight: allocation ? 32 : null,
     allocationResult,
-    allocationError: allocation?.[5] ?? null,
-    allocationPointer: allocation?.[6] ?? null,
+    allocationError: allocation?.error ?? null,
+    allocationPointer: allocation?.pointer ?? null,
     allocationAvailable,
+    anyAllocationAvailable,
+    allocationMatrix: allocationRecords,
+    allocationMatrixTotal: allocationRecords.length,
+    allocationMatrixAvailableCount:
+      allocationRecords.filter((record) => record.available).length,
+    allocationMatrixFailureCount,
     exitCode: exitCode ? Number(exitCode[1]) : null,
     degradedState: allocationAvailable ? null : 'gpu-runtime-array-allocation-unavailable',
-    degradedReason: allocation
-      ? `hipMallocArray returned ${allocationResult} ${allocation[5]}`
-      : 'hipMallocArray preflight result was not collected',
+    degradedReason: allocationAvailable
+      ? null
+      : allocationRecords.length > 1
+        ? `HIP array allocation matrix failed ${allocationMatrixFailureCount}/${allocationRecords.length} entries; primary ${allocation?.api ?? 'hipMallocArray'} ${allocation?.label ?? 'unknown'} returned ${allocationResult} ${allocation?.error ?? 'unknown'}`
+        : allocation
+          ? `${allocation.api} returned ${allocationResult} ${allocation.error}`
+          : 'hipMallocArray preflight result was not collected',
     output: text.slice(-4000),
   };
 }
@@ -1205,16 +1254,53 @@ mkdir -p ${shQuote(preflightDir)}
 cat > ${shQuote(sourcePath)} <<'CPP'
 #include <hip/hip_runtime.h>
 #include <cstdio>
+static int failures = 0;
+static void test2d(const char* label, hipChannelFormatDesc desc) {
+  hipArray_t arr = nullptr;
+  hipError_t result = hipMallocArray(&arr, &desc, 32, 32, hipArrayDefault);
+  std::printf("hipMallocArray label=%s x=%d y=%d z=%d w=%d kind=%d result=%d error=%s array=%p\\n",
+    label,
+    desc.x,
+    desc.y,
+    desc.z,
+    desc.w,
+    static_cast<int>(desc.f),
+    static_cast<int>(result),
+    hipGetErrorString(result),
+    static_cast<void*>(arr));
+  if (result != hipSuccess) failures++;
+  if (arr) (void)hipFreeArray(arr);
+}
+static void test3d(const char* label, hipChannelFormatDesc desc) {
+  hipArray_t arr = nullptr;
+  hipExtent extent = make_hipExtent(16, 16, 4);
+  hipError_t result = hipMalloc3DArray(&arr, &desc, extent, hipArrayDefault);
+  std::printf("hipMalloc3DArray label=%s x=%d y=%d z=%d w=%d kind=%d result=%d error=%s array=%p\\n",
+    label,
+    desc.x,
+    desc.y,
+    desc.z,
+    desc.w,
+    static_cast<int>(desc.f),
+    static_cast<int>(result),
+    hipGetErrorString(result),
+    static_cast<void*>(arr));
+  if (result != hipSuccess) failures++;
+  if (arr) (void)hipFreeArray(arr);
+}
 int main() {
   int count = 0;
   hipError_t count_result = hipGetDeviceCount(&count);
   std::printf("device_count result=%d error=%s count=%d\\n", (int)count_result, hipGetErrorString(count_result), count);
-  hipChannelFormatDesc desc = hipCreateChannelDesc<float4>();
-  hipArray_t arr = nullptr;
-  hipError_t result = hipMallocArray(&arr, &desc, 32, 32, hipArrayDefault);
-  std::printf("hipMallocArray format=float4 width=32 height=32 result=%d error=%s array=%p\\n", (int)result, hipGetErrorString(result), (void*)arr);
-  if (arr) hipFreeArray(arr);
-  return result == hipSuccess ? 0 : 70;
+  test2d("u8x1", hipCreateChannelDesc(8, 0, 0, 0, hipChannelFormatKindUnsigned));
+  test2d("u8x2", hipCreateChannelDesc(8, 8, 0, 0, hipChannelFormatKindUnsigned));
+  test2d("u8x4", hipCreateChannelDesc(8, 8, 8, 8, hipChannelFormatKindUnsigned));
+  test2d("f32x1", hipCreateChannelDesc(32, 0, 0, 0, hipChannelFormatKindFloat));
+  test2d("f32x2", hipCreateChannelDesc(32, 32, 0, 0, hipChannelFormatKindFloat));
+  test2d("f32x4", hipCreateChannelDesc(32, 32, 32, 32, hipChannelFormatKindFloat));
+  test3d("u8x4", hipCreateChannelDesc(8, 8, 8, 8, hipChannelFormatKindUnsigned));
+  test3d("f32x4", hipCreateChannelDesc(32, 32, 32, 32, hipChannelFormatKindFloat));
+  return failures == 0 ? 0 : 70;
 }
 CPP
 set +e
@@ -3657,12 +3743,25 @@ function selfCheckRuntimeDispatchEvidence() {
     'hipMallocArray format=float4 width=32 height=32 result=0 error=no error array=0x1234',
     'exit_code=0',
   ].join('\n'));
+  const arrayCapabilityMatrix = parseRocmArrayAllocationPreflightOutput([
+    'device_count result=0 error=no error count=1',
+    'hipMallocArray label=u8x1 x=8 y=0 z=0 w=0 kind=1 result=1 error=invalid argument array=(nil)',
+    'hipMallocArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
+    'hipMalloc3DArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
+    'exit_code=70',
+  ].join('\n'));
   if (
     arrayCapability.allocationAvailable
     || arrayCapability.allocationResult !== 1
     || arrayCapability.degradedState !== 'gpu-runtime-array-allocation-unavailable'
     || arrayCapabilityPass.allocationAvailable !== true
     || arrayCapabilityPass.degradedState !== null
+    || arrayCapabilityMatrix.allocationAvailable !== false
+    || arrayCapabilityMatrix.anyAllocationAvailable !== false
+    || arrayCapabilityMatrix.allocationMatrixTotal !== 3
+    || arrayCapabilityMatrix.allocationMatrixFailureCount !== 3
+    || arrayCapabilityMatrix.allocationFormat !== 'f32x4'
+    || !arrayCapabilityMatrix.degradedReason.includes('matrix failed 3/3')
   ) {
     throw new Error('ROCm array allocation capability parser self-check failed');
   }
