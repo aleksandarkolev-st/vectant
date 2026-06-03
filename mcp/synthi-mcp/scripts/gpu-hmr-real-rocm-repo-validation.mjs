@@ -349,23 +349,24 @@ function booleanField(entry, names) {
   return names.some((name) => entry[name] === true);
 }
 
-function hasTargetProgressionProofIdentity(entry) {
+function hasTargetProgressionStructuredProofReference(entry) {
   if (!entry || typeof entry !== 'object') return false;
-  const scalar = stringField(entry, [
-    'proofId',
-    'proof_id',
+  const artifactRef = stringField(entry, [
     'proofArtifactPath',
     'proof_artifact_path',
-    'proofArtifact',
-    'proof_artifact',
-    'artifactPath',
-    'artifact_path',
-    'evidenceRef',
-    'evidence_ref',
+    'proofArtifactUri',
+    'proof_artifact_uri',
+    'artifactUri',
+    'artifact_uri',
   ]);
-  if (scalar) return true;
-  const refs = entry.evidenceRefs ?? entry.evidence_refs ?? entry.proofArtifacts ?? entry.proof_artifacts;
-  return Array.isArray(refs) && refs.some((value) => typeof value === 'string' && value.trim());
+  if (artifactRef) return true;
+  const schemaVersion = stringField(entry, [
+    'proofArtifactSchemaVersion',
+    'proof_artifact_schema_version',
+    'schemaVersion',
+    'schema_version',
+  ]);
+  return stringField(entry, ['proofId', 'proof_id']) && schemaVersion;
 }
 
 function normalizedTargetProgressionEntryPhase(entry) {
@@ -385,13 +386,17 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
     .filter((entry) => normalizedTargetProgressionEntryPhase(entry) === normalizedPhase);
   for (const entry of entries) {
     const resultState = stringField(entry, ['resultState', 'result_state']);
-    const hasIdentity = hasTargetProgressionProofIdentity(entry);
-    const statusPassedWithIdentity = targetProgressionEntryStatusPassed(entry) && hasIdentity;
+    const hasStructuredProofReference = hasTargetProgressionStructuredProofReference(entry);
+    const statusPassedWithStructuredProof =
+      targetProgressionEntryStatusPassed(entry) && hasStructuredProofReference;
     if (normalizedPhase === 'small-oracle') {
       if (
-        resultState === 'gpu-hmr-output-oracle-proven'
-        || booleanField(entry, ['outputOracleProven', 'output_oracle_proven'])
-        || statusPassedWithIdentity
+        hasStructuredProofReference
+        && (
+          resultState === 'gpu-hmr-output-oracle-proven'
+          || booleanField(entry, ['outputOracleProven', 'output_oracle_proven'])
+          || statusPassedWithStructuredProof
+        )
       ) {
         return {
           passed: true,
@@ -402,7 +407,7 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
       const partialAndFission =
         booleanField(entry, ['partialReloadProven', 'partial_reload_proven'])
         && booleanField(entry, ['fissionProven', 'fission_proven']);
-      if (partialAndFission || statusPassedWithIdentity) {
+      if (hasStructuredProofReference && (partialAndFission || statusPassedWithStructuredProof)) {
         return {
           passed: true,
           detail: `partial-reload proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
@@ -413,7 +418,7 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
         booleanField(entry, ['originalHostPathProven', 'original_host_path_proven', 'attachmentProven', 'attachment_proven'])
         && booleanField(entry, ['hostPreservationProven', 'host_preservation_proven'])
         && booleanField(entry, ['dispatchSafeProven', 'dispatch_safe_proven']);
-      if (originalHostPath || statusPassedWithIdentity) {
+      if (hasStructuredProofReference && (originalHostPath || statusPassedWithStructuredProof)) {
         return {
           passed: true,
           detail: `original-host-path proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
@@ -3329,12 +3334,14 @@ function selfCheckRuntimeDispatchEvidence() {
         phase: 'small-oracle',
         status: 'pass',
         proofId: 'proof:small-oracle:123',
+        proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
         resultState: 'gpu-hmr-output-oracle-proven',
       },
       {
         phase: 'partial-reload',
         status: 'pass',
         proofId: 'proof:partial-reload:123',
+        proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
         partialReloadProven: true,
         fissionProven: true,
       },
@@ -3342,6 +3349,7 @@ function selfCheckRuntimeDispatchEvidence() {
         phase: 'original-host-path',
         status: 'pass',
         proofId: 'proof:original-host-path:123',
+        proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
         originalHostPathProven: true,
         hostPreservationProven: true,
         dispatchSafeProven: true,
@@ -3352,6 +3360,7 @@ function selfCheckRuntimeDispatchEvidence() {
     small_oracle: {
       status: 'pass',
       proof_id: 'proof:small-oracle:alias',
+      proof_artifact_schema_version: 'synthi.gpu.hmr.validation-proof.v1',
     },
   }));
   const finalAcceptanceFailures = targetProgressionGateRows({
