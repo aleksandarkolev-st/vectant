@@ -269,6 +269,16 @@ const CFG = {
     process.env.SYNTHI_VALIDATION_REQUIRE_FRESH_AI_SPLIT === '1'
     || process.env.SYNTHI_REAL_ROCM_REQUIRE_FRESH_AI_SPLIT === '1',
   requireOriginalHostPath: process.env.SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH !== '0',
+  requireOriginalHostPathProof: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_REQUIRE_ORIGINAL_HOST_PATH_PROOF',
+    false,
+  ),
+  requireFullRuntimeProof: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_REQUIRE_FULL_RUNTIME_PROOF',
+    false,
+  ),
   outputOracleContract: parseOutputOracleContract(
     process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
       ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
@@ -337,6 +347,8 @@ const report = {
   upstream_run_environment: null,
   fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
+  original_host_path_proof_required: CFG.requireOriginalHostPathProof,
+  full_runtime_proof_required: CFG.requireFullRuntimeProof,
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -346,6 +358,36 @@ function record(name, status, detail = '') {
   report.checks.push(row);
   const tag = status === 'pass' ? '[ok]' : status === 'fail' ? '[fail]' : status === 'warn' ? '[warn]' : '[info]';
   console.log(`${tag} ${name}${detail ? ` - ${detail}` : ''}`);
+}
+
+function strictProofGateRows({
+  requireOriginalHostPathProof = false,
+  requireFullRuntimeProof = false,
+  originalHostPathProof = null,
+  fullRuntimeProof = null,
+} = {}) {
+  const rows = [];
+  if (requireOriginalHostPathProof) {
+    const passed = originalHostPathProof?.attachmentProven === true;
+    rows.push({
+      name: 'strict original host path proof',
+      status: passed ? 'pass' : 'fail',
+      detail: passed
+        ? 'original host path attachment proven'
+        : summarizeGpuHmrOriginalHostPathProof(originalHostPathProof),
+    });
+  }
+  if (requireFullRuntimeProof) {
+    const passed = fullRuntimeProof?.fullRuntimeProven === true;
+    rows.push({
+      name: 'strict full runtime proof',
+      status: passed ? 'pass' : 'fail',
+      detail: passed
+        ? 'gpu-hmr-full-runtime-proven'
+        : summarizeGpuHmrFullRuntimeProof(fullRuntimeProof),
+    });
+  }
+  return rows;
 }
 
 function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}) {
@@ -2676,6 +2718,26 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('host preservation proof classifier failed');
   }
+  const strictGateFailures = strictProofGateRows({
+    requireOriginalHostPathProof: true,
+    requireFullRuntimeProof: true,
+    originalHostPathProof: { attachmentProven: false, degradedState: 'gpu-hmr-original-host-path-unattached' },
+    fullRuntimeProof: fullRuntimeBlockedProof,
+  });
+  const strictGatePasses = strictProofGateRows({
+    requireOriginalHostPathProof: true,
+    requireFullRuntimeProof: true,
+    originalHostPathProof: { attachmentProven: true },
+    fullRuntimeProof: { fullRuntimeProven: true },
+  });
+  if (
+    strictGateFailures.length !== 2
+    || strictGateFailures.some((row) => row.status !== 'fail')
+    || strictGatePasses.length !== 2
+    || strictGatePasses.some((row) => row.status !== 'pass')
+  ) {
+    throw new Error('strict proof gate self-check failed');
+  }
   if (shouldFetchRequestedCommit({ requestedCommit: 'abc123', localCommitAvailable: true })) {
     throw new Error('fetch decision self-check should reuse a locally available requested commit');
   }
@@ -3108,6 +3170,15 @@ async function collectRuntimeEvidence() {
     report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
     summarizeGpuHmrFullRuntimeProof(report.full_runtime_proof),
   );
+  for (const gate of strictProofGateRows({
+    requireOriginalHostPathProof: CFG.requireOriginalHostPathProof,
+    requireFullRuntimeProof: CFG.requireFullRuntimeProof,
+    originalHostPathProof: report.original_host_path_proof,
+    fullRuntimeProof: report.full_runtime_proof,
+  })) {
+    record(gate.name, gate.status, gate.detail);
+    if (gate.status === 'fail') process.exitCode = 1;
+  }
   record(
     'runtime evidence collected',
     'pass',
