@@ -3930,6 +3930,7 @@ async function writeResults() {
     gpu_vendor: report.gpu_vendor,
     gpu_arch: report.gpu_arch,
     target_progression: report.target_progression,
+    target_progression_ledger: report.target_progression_ledger,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
     render_preview_enabled: report.render_preview_enabled,
@@ -3971,6 +3972,7 @@ async function writeResults() {
       fullRuntimeProof: report.full_runtime_proof,
       runtimeEvidence: report.evidence,
       validationContext,
+      targetProgressionLedger: report.target_progression_ledger,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
     });
@@ -3994,6 +3996,7 @@ async function writeResults() {
     gpuVendor: report.gpu_vendor,
     gpuArch: report.gpu_arch,
     validationContext,
+    targetProgressionLedger: report.target_progression_ledger,
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,

@@ -247,6 +247,16 @@ function targetProgressionSnapshot(input = {}, validationContext = null) {
   return progression && typeof progression === 'object' ? progression : null;
 }
 
+function targetProgressionLedgerSnapshot(input = {}, validationContext = null) {
+  const ledger =
+    input.targetProgressionLedger
+    ?? input.target_progression_ledger
+    ?? validationContext?.targetProgressionLedger
+    ?? validationContext?.target_progression_ledger
+    ?? null;
+  return ledger && typeof ledger === 'object' ? ledger : null;
+}
+
 function evidenceKind(ref) {
   if (/\.png$/i.test(ref) || /\.jpe?g$/i.test(ref) || /\.webp$/i.test(ref)) return 'visual-artifact';
   if (/^worker-log:/i.test(ref)) return 'worker-log';
@@ -416,6 +426,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const runtimeEvidence = runtimeEvidenceSnapshot(input);
   const validationContext = validationContextSnapshot(input);
   const targetProgression = targetProgressionSnapshot(input, validationContext);
+  const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
@@ -426,6 +437,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...visualEvidenceRefs,
     ...evidenceStringsFromValue(fullRuntimeProof),
     ...evidenceStringsFromValue(runtimeEvidence),
+    ...evidenceStringsFromValue(targetProgressionLedger),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) => evidenceRefObject(ref, createdAt, sessionId));
   const proofMaterial = {
@@ -442,6 +454,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     runtimeEvidence,
     validationContext,
     targetProgression,
+    targetProgressionLedger,
   };
   const materialHash = sha256Hex(stableJson({
     workspaceSlug: input.workspaceSlug ?? null,
@@ -455,6 +468,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     proofMaterial,
     validationContext,
     targetProgression,
+    targetProgressionLedger,
   }));
   const validationContextHash = validationContext
     ? `sha256:${sha256Hex(stableJson(validationContext))}`
@@ -480,6 +494,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     validationContext,
     targetProgression,
     target_progression: targetProgression,
+    targetProgressionLedger,
+    target_progression_ledger: targetProgressionLedger,
     validationContextHash,
     createdAt,
     proofMaterial,
