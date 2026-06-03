@@ -911,6 +911,7 @@ const report = {
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
   render_preview_enabled: CFG.renderPreview,
+  runtime_capability_preflight: null,
   upstream_run_environment: null,
   fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
@@ -1152,6 +1153,96 @@ function parseUpstreamRunExitCode(timings) {
   return match ? Number(match[1]) : null;
 }
 
+function parseRocmArrayAllocationPreflightOutput(output) {
+  const text = String(output ?? '');
+  const device = /\bdevice_count result=(\d+)\s+error=(.*?)\s+count=(\d+)/.exec(text);
+  const allocation =
+    /\bhipMallocArray format=([^\s]+)\s+width=(\d+)\s+height=(\d+)\s+result=(\d+)\s+error=(.*?)\s+array=([^\s]+)/.exec(text);
+  const exitCode = /\bexit_code=(\d+)/.exec(text);
+  const allocationResult = allocation ? Number(allocation[4]) : null;
+  const allocationAvailable = allocationResult === 0;
+  return {
+    schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+    backend: 'rocm',
+    api: 'hipMallocArray',
+    probe: 'hip_array_allocation_preflight',
+    command: 'hipcc hip_array_preflight.cpp && hip_array_preflight',
+    deviceCountResult: device ? Number(device[1]) : null,
+    deviceCountError: device?.[2] ?? null,
+    deviceCount: device ? Number(device[3]) : null,
+    allocationFormat: allocation?.[1] ?? null,
+    allocationWidth: allocation ? Number(allocation[2]) : null,
+    allocationHeight: allocation ? Number(allocation[3]) : null,
+    allocationResult,
+    allocationError: allocation?.[5] ?? null,
+    allocationPointer: allocation?.[6] ?? null,
+    allocationAvailable,
+    exitCode: exitCode ? Number(exitCode[1]) : null,
+    degradedState: allocationAvailable ? null : 'gpu-runtime-array-allocation-unavailable',
+    degradedReason: allocation
+      ? `hipMallocArray returned ${allocationResult} ${allocation[5]}`
+      : 'hipMallocArray preflight result was not collected',
+    output: text.slice(-4000),
+  };
+}
+
+async function runRocmArrayAllocationPreflight() {
+  if (String(CFG.gpuMode ?? '').toLowerCase() !== 'rocm') {
+    return {
+      schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+      backend: CFG.gpuMode,
+      api: 'hipMallocArray',
+      probe: 'hip_array_allocation_preflight',
+      skipped: true,
+      reason: 'gpu_mode_not_rocm',
+    };
+  }
+  const preflightDir = '/home/runner/.cache/synthi-real-rocm';
+  const sourcePath = `${preflightDir}/hip_array_preflight.cpp`;
+  const binaryPath = `${preflightDir}/hip_array_preflight`;
+  const script = `
+mkdir -p ${shQuote(preflightDir)}
+cat > ${shQuote(sourcePath)} <<'CPP'
+#include <hip/hip_runtime.h>
+#include <cstdio>
+int main() {
+  int count = 0;
+  hipError_t count_result = hipGetDeviceCount(&count);
+  std::printf("device_count result=%d error=%s count=%d\\n", (int)count_result, hipGetErrorString(count_result), count);
+  hipChannelFormatDesc desc = hipCreateChannelDesc<float4>();
+  hipArray_t arr = nullptr;
+  hipError_t result = hipMallocArray(&arr, &desc, 32, 32, hipArrayDefault);
+  std::printf("hipMallocArray format=float4 width=32 height=32 result=%d error=%s array=%p\\n", (int)result, hipGetErrorString(result), (void*)arr);
+  if (arr) hipFreeArray(arr);
+  return result == hipSuccess ? 0 : 70;
+}
+CPP
+set +e
+if ! command -v hipcc >/dev/null 2>&1; then
+  printf 'hipcc_missing=1\\n'
+  printf 'exit_code=127\\n'
+  exit 0
+fi
+hipcc ${shQuote(sourcePath)} -o ${shQuote(binaryPath)}
+compile_status=$?
+if [ "$compile_status" -ne 0 ]; then
+  printf 'compile_exit_code=%s\\n' "$compile_status"
+  printf 'exit_code=%s\\n' "$compile_status"
+  exit 0
+fi
+${shQuote(binaryPath)}
+run_status=$?
+printf 'exit_code=%s\\n' "$run_status"
+exit 0
+`;
+  const output = await execTextAllowPartialOutput(
+    'docker',
+    ['exec', '--user', 'runner', CFG.workerContainer, 'sh', '-lc', script],
+    120000,
+  );
+  return parseRocmArrayAllocationPreflightOutput(output);
+}
+
 async function prepareUpstreamBuild() {
   const lifecyclePlan = buildUpstreamLifecyclePlan({
     buildMetadataDir: CFG.buildMetadataDir,
@@ -1186,6 +1277,20 @@ async function prepareUpstreamBuild() {
     `mkdir -p ${shQuote(CFG.workerTempDir)}`,
   ].join('; ');
   await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
+  report.runtime_capability_preflight = await runRocmArrayAllocationPreflight();
+  if (report.runtime_capability_preflight?.skipped) {
+    record(
+      'ROCm array allocation capability',
+      'skip',
+      report.runtime_capability_preflight.reason ?? 'preflight skipped',
+    );
+  } else {
+    record(
+      'ROCm array allocation capability',
+      report.runtime_capability_preflight?.allocationAvailable ? 'pass' : 'warn',
+      `api=${report.runtime_capability_preflight?.api ?? 'hipMallocArray'} result=${report.runtime_capability_preflight?.allocationResult ?? 'uncollected'} error=${report.runtime_capability_preflight?.allocationError ?? 'unknown'} device_count=${report.runtime_capability_preflight?.deviceCount ?? 'unknown'}`,
+    );
+  }
   await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
   const xvfbRunAvailable = (await execText(
     'docker',
@@ -1316,6 +1421,7 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
         }
       : null,
     upstream_run_environment: upstreamRunLaunch,
+    runtime_capability_preflight: report.runtime_capability_preflight,
     native_launch_observer: CFG.nativeLaunchObserver
       ? { enabled: true, path: CFG.nativeLaunchObserverPath }
       : { enabled: false },
@@ -3522,6 +3628,25 @@ function selfCheckRuntimeDispatchEvidence() {
   if (shouldFetchRequestedCommit({ requestedCommit: '', localCommitAvailable: false })) {
     throw new Error('fetch decision self-check should not fetch without a requested commit');
   }
+  const arrayCapability = parseRocmArrayAllocationPreflightOutput([
+    'device_count result=0 error=no error count=1',
+    'hipMallocArray format=float4 width=32 height=32 result=1 error=invalid argument array=(nil)',
+    'exit_code=70',
+  ].join('\n'));
+  const arrayCapabilityPass = parseRocmArrayAllocationPreflightOutput([
+    'device_count result=0 error=no error count=1',
+    'hipMallocArray format=float4 width=32 height=32 result=0 error=no error array=0x1234',
+    'exit_code=0',
+  ].join('\n'));
+  if (
+    arrayCapability.allocationAvailable
+    || arrayCapability.allocationResult !== 1
+    || arrayCapability.degradedState !== 'gpu-runtime-array-allocation-unavailable'
+    || arrayCapabilityPass.allocationAvailable !== true
+    || arrayCapabilityPass.degradedState !== null
+  ) {
+    throw new Error('ROCm array allocation capability parser self-check failed');
+  }
   if (!buildMetadataCoversSource('src/kernel.h', {
     compileCommandSourcePaths: ['src/main.cpp'],
     targetSourcePaths: ['src/kernel.h'],
@@ -3615,6 +3740,7 @@ async function collectRuntimeEvidence() {
     upstreamRunExitCode,
   });
   report.evidence = {
+    runtime_capability_preflight: report.runtime_capability_preflight,
     worker_log_lines: workerEvidence,
     worker_service_log_lines: scopedWorkerEvidence,
     upstream_run_log_lines: upstreamRunEvidence,
@@ -4052,6 +4178,7 @@ async function writeResults() {
     target_progression_ledger_artifact: report.target_progression_ledger_artifact,
     strict_proof_gates: report.strict_proof_gates,
     target_progression_gates: report.target_progression_gates,
+    runtime_capability_preflight: report.runtime_capability_preflight,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
     render_preview_enabled: report.render_preview_enabled,
@@ -4181,6 +4308,7 @@ async function writeResults() {
     `target_progression_ledger_entry: ${JSON.stringify(report.target_progression_ledger_entry)}`,
     `target_progression_ledger_artifact: ${JSON.stringify(report.target_progression_ledger_artifact)}`,
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
+    `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
