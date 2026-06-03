@@ -329,6 +329,13 @@ function inferredRetirementStrategy({
     : null;
 }
 
+function oldArtifactReferenceObserved(oldArtifactId, previousGeneration) {
+  const normalized = String(oldArtifactId ?? '').trim();
+  if (/^artifact:sha256:[0-9a-f]{64}$/i.test(normalized)) return true;
+  if (normalized.toLowerCase() !== 'none') return false;
+  return Number.isFinite(previousGeneration) && previousGeneration <= 1;
+}
+
 function integerValue(value) {
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value !== 'string') return null;
@@ -561,7 +568,7 @@ function epochGenerationGraphStatus(graph) {
     publicationEdge?.retirement_strategy,
   ));
   const capsuleMetadataObserved =
-    /^artifact:sha256:[0-9a-f]{64}$/i.test(oldArtifactId)
+    oldArtifactReferenceObserved(oldArtifactId, previousGeneration)
     && /^artifact:sha256:[0-9a-f]{64}$/i.test(newArtifactId)
     && /^sha256:[0-9a-f]{64}$/i.test(newArtifactHash)
     && newArtifactIdHash === newArtifactHashDigest

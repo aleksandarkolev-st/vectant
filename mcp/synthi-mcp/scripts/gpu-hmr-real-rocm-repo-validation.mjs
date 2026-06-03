@@ -2783,8 +2783,55 @@ function selfCheckRuntimeDispatchEvidence() {
     || !epochEvidence.old_generation_retired
     || !epochEvidence.stream_ordering_proven
     || !epochEvidence.epoch_generation_graph_explicit
+    || !epochEvidence.capsule_metadata_observed
   ) {
     throw new Error('runtime epoch evidence parser failed');
+  }
+  const initialEpochGraphJson = JSON.stringify({
+    schemaVersion: 'synthi.gpu.epoch_graph.v1',
+    runtimeSessionIds: ['pid-initial'],
+    latestPublication: {
+      previousGeneration: 1,
+      activeGeneration: 2,
+      publishTimestampMs: 1779979999000,
+      oldArtifactId: 'none',
+      newArtifactId: `artifact:sha256:${'8'.repeat(64)}`,
+      newArtifactHash: `sha256:${'8'.repeat(64)}`,
+      capsuleId: `capsule:sha256:${'9'.repeat(64)}`,
+      fissionIslandId: 'none',
+      abiMembraneHash: `sha256:${'a'.repeat(64)}`,
+      dependencyClosureHash: `sha256:${'b'.repeat(64)}`,
+      proofHash: `sha256:${'c'.repeat(64)}`,
+      changedSymbols: ['kernel'],
+      functionHandleIds: ['kernel:0x1'],
+      streamEpochCounters: { none: 2 },
+      dispatchTableHashBefore: '0x100',
+      dispatchTableHashAfter: '0x200',
+      dispatchTableHash: '0x200',
+      changedEntries: 1,
+      retirementFenceIds: [],
+      retirementStrategy: 'no_retirement_required',
+      delayedUnloadResult: 'not_required',
+    },
+    retirementState: 'not-required',
+    nodes: [
+      { id: 'generation:1', generation: 1, state: 'not-required' },
+      { id: 'generation:2', generation: 2, state: 'published' },
+    ],
+    edges: [
+      { kind: 'publish', from: 'generation:1', to: 'generation:2', runtimeSession: 'pid-initial' },
+    ],
+  });
+  const initialEpoch = epochSwapProofFromRuntimeEvidence([
+    '[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid-initial publish_timestamp_ms=1779979999000 previous_generation=1 active_generation=2 old_artifact_id=none new_artifact_id=artifact:sha256:8888888888888888888888888888888888888888888888888888888888888888 new_artifact_hash=sha256:8888888888888888888888888888888888888888888888888888888888888888 capsule_id=capsule:sha256:9999999999999999999999999999999999999999999999999999999999999999 abi_membrane_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dependency_closure_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb proof_hash=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc changed_symbols=kernel function_handle_ids=kernel:0x1 stream_epoch_counters=none:2 dispatch_table_hash_before=0x100 dispatch_table_hash_after=0x200 dispatch_table_hash=0x200 changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=none stream_ordering_proven=true retirement_fence_ids=none retirement_strategy=no_retirement_required delayed_unload_result=not_required drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000',
+    `[gpu-runtime-boundary] epoch_generation_graph json=${initialEpochGraphJson}`,
+  ]);
+  if (
+    !initialEpoch.evidence.capsule_metadata_observed
+    || initialEpoch.proof.degradedState
+    || initialEpoch.proof.resultState !== 'gpu-hmr-epoch-swap-proven'
+  ) {
+    throw new Error('initial epoch publish capsule metadata self-check failed');
   }
   const originalHostRuntimeEvidence = runtimeEvidenceFromValidationLogs({
     slug: 'target-session',

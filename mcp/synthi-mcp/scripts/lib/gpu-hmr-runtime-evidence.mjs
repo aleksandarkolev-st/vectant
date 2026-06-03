@@ -47,6 +47,22 @@ function observedEvidenceList(values) {
   return compactStringList(raw).filter((value) => value.toLowerCase() !== 'none');
 }
 
+function metadataString(value, ...keys) {
+  if (!value || typeof value !== 'object') return null;
+  for (const key of keys) {
+    if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim();
+  }
+  return null;
+}
+
+function metadataValue(value, ...keys) {
+  if (!value || typeof value !== 'object') return null;
+  for (const key of keys) {
+    if (value[key] !== undefined && value[key] !== null) return value[key];
+  }
+  return null;
+}
+
 function commaList(value) {
   if (typeof value !== 'string') return [];
   return compactStringList(value.split(','));
@@ -351,6 +367,16 @@ function inferredRetirementStrategy({
   return null;
 }
 
+function oldArtifactReferenceObserved(publication) {
+  const oldArtifactId = String(metadataString(publication, 'oldArtifactId', 'old_artifact_id') ?? '').trim();
+  if (/^artifact:sha256:[0-9a-f]{64}$/i.test(oldArtifactId)) return true;
+  if (oldArtifactId.toLowerCase() !== 'none') return false;
+  const previousGeneration = integerValue(
+    metadataValue(publication, 'previousGeneration', 'previous_generation'),
+  );
+  return previousGeneration !== null && previousGeneration <= 1;
+}
+
 export function runtimeEpochSwapEvidence(lines) {
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bdispatcher_epoch\b/i))
@@ -396,6 +422,11 @@ export function runtimeEpochSwapEvidence(lines) {
     publicationRetirementComplete,
   );
   const epochGenerationGraph = latestExplicitGraphRecord?.graph ?? reconstructedEpochGenerationGraph;
+  const graphLatestPublication =
+    latestExplicitGraphRecord?.graph?.latestPublication
+    ?? latestExplicitGraphRecord?.graph?.latest_publication
+    ?? null;
+  const capsuleMetadataPublication = graphLatestPublication ?? latestPublication;
   const streamScope = latestPublication?.streamScope ?? null;
   const streamIds = latestPublication?.streamIds ?? [];
   const streamScopeEvidenceSupported = streamScopeSupported(streamScope, streamIds);
@@ -426,31 +457,30 @@ export function runtimeEpochSwapEvidence(lines) {
   const streamOrderingProven =
     streamOrderingRequested
     && streamScopeEvidenceSupported;
-  const newArtifactIdHash = typeof latestPublication?.newArtifactId === 'string'
-    ? latestPublication.newArtifactId.match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+  const metadataNewArtifactId = metadataString(capsuleMetadataPublication, 'newArtifactId', 'new_artifact_id');
+  const metadataNewArtifactHash = metadataString(capsuleMetadataPublication, 'newArtifactHash', 'new_artifact_hash');
+  const metadataCapsuleId = metadataString(capsuleMetadataPublication, 'capsuleId', 'capsule_id');
+  const metadataAbiMembraneHash = metadataString(capsuleMetadataPublication, 'abiMembraneHash', 'abi_membrane_hash');
+  const metadataDependencyClosureHash = metadataString(capsuleMetadataPublication, 'dependencyClosureHash', 'dependency_closure_hash');
+  const metadataProofHash = metadataString(capsuleMetadataPublication, 'proofHash', 'proof_hash');
+  const newArtifactIdHash = typeof metadataNewArtifactId === 'string'
+    ? metadataNewArtifactId.match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
     : null;
-  const newArtifactHashDigest = typeof latestPublication?.newArtifactHash === 'string'
-    ? latestPublication.newArtifactHash.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
+  const newArtifactHashDigest = typeof metadataNewArtifactHash === 'string'
+    ? metadataNewArtifactHash.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null
     : null;
   const capsuleMetadataObserved =
-    typeof latestPublication?.oldArtifactId === 'string'
-    && /^artifact:sha256:[0-9a-f]{64}$/i.test(latestPublication.oldArtifactId.trim())
-    && typeof latestPublication?.newArtifactId === 'string'
-    && /^artifact:sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactId.trim())
-    && typeof latestPublication?.newArtifactHash === 'string'
-    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.newArtifactHash.trim())
+    oldArtifactReferenceObserved(capsuleMetadataPublication)
+    && /^artifact:sha256:[0-9a-f]{64}$/i.test(metadataNewArtifactId ?? '')
+    && /^sha256:[0-9a-f]{64}$/i.test(metadataNewArtifactHash ?? '')
     && newArtifactIdHash === newArtifactHashDigest
-    && typeof latestPublication?.capsuleId === 'string'
-    && /^capsule:sha256:[0-9a-f]{64}$/i.test(latestPublication.capsuleId.trim())
-    && typeof latestPublication?.abiMembraneHash === 'string'
-    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.abiMembraneHash.trim())
-    && typeof latestPublication?.dependencyClosureHash === 'string'
-    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.dependencyClosureHash.trim())
-    && typeof latestPublication?.proofHash === 'string'
-    && /^sha256:[0-9a-f]{64}$/i.test(latestPublication.proofHash.trim())
-    && observedEvidenceList(latestPublication.changedSymbols).length > 0
-    && observedEvidenceList(latestPublication.functionHandleIds).length > 0
-    && Object.keys(latestPublication.streamEpochCounters ?? {}).length > 0;
+    && /^capsule:sha256:[0-9a-f]{64}$/i.test(metadataCapsuleId ?? '')
+    && /^sha256:[0-9a-f]{64}$/i.test(metadataAbiMembraneHash ?? '')
+    && /^sha256:[0-9a-f]{64}$/i.test(metadataDependencyClosureHash ?? '')
+    && /^sha256:[0-9a-f]{64}$/i.test(metadataProofHash ?? '')
+    && observedEvidenceList(metadataValue(capsuleMetadataPublication, 'changedSymbols', 'changed_symbols')).length > 0
+    && observedEvidenceList(metadataValue(capsuleMetadataPublication, 'functionHandleIds', 'function_handle_ids')).length > 0
+    && Object.keys(metadataValue(capsuleMetadataPublication, 'streamEpochCounters', 'stream_epoch_counters') ?? {}).length > 0;
 
   return {
     total_count: records.length,
