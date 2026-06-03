@@ -10,7 +10,7 @@ Make Synthi's browser MCP feel like a normal senior-developer workflow:
 
 1. A developer opens a Synthi workspace.
 2. They connect an MCP-capable agent from Codex, Claude Code, Cursor, or another client.
-3. The agent attaches to the approved browser session.
+3. The agent attaches to the approved Synthi-hosted browser session for that workspace.
 4. The developer grants exact-origin visibility and, when needed, control.
 5. The developer can start teach mode, select regions/elements, perform actions, and let the agent observe.
 6. The agent can inspect screenshots, DOM metadata, console, network, and trace events through the broker only.
@@ -18,6 +18,33 @@ Make Synthi's browser MCP feel like a normal senior-developer workflow:
 8. The developer can revoke visibility or control immediately.
 
 The browser broker remains the single authority. Agents must never talk directly to raw CDP or raw extension events.
+
+## Cloud IDE Boundary
+
+Synthi is a cloud IDE. The default product must not require access to the user's personal browser, personal tabs, or local PC.
+
+The browser MCP targets a Synthi-owned runtime:
+
+- a hosted browser service owned by Synthi
+- a browser/viewer attached to the workspace
+- workspace preview tabs opened inside that hosted browser
+- the Synthi workspace tab/viewer presented to the user through the cloud IDE
+
+When this plan says `browser tab`, it means a tab inside the Synthi-managed browser session unless explicitly marked as local-dev mode. It does not mean every tab the user has open on their laptop.
+
+Local CDP is only a development harness:
+
+- useful for testing the MCP package locally
+- useful for debugging from WSL or a local workstation
+- not the normal cloud product path
+
+The cloud product path is:
+
+```text
+agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screenshots/events/actions
+```
+
+The user should not need to paste a local Chrome CDP URL in normal use.
 
 ## Current State
 
@@ -57,10 +84,10 @@ Known limitation: the live harness proves backend behavior, but it still bypasse
 
 ### Workspace Flow
 
-1. Developer starts Synthi locally or opens a hosted Synthi workspace.
+1. Developer opens a hosted Synthi workspace.
 2. Workspace shows an Agent panel with:
    - MCP connection status
-   - selected browser tab
+   - selected Synthi-hosted browser tab or workspace preview
    - current origin
    - consent state
    - screenshot visibility state
@@ -73,16 +100,17 @@ Known limitation: the live harness proves backend behavior, but it still bypasse
    - Claude Code command
    - Cursor config
    - generic stdio command
-5. Developer starts the agent client.
-6. Agent calls `synthi_browser_attach`.
-7. Workspace receives attach status and prompts for exact-origin consent.
-8. Developer grants visibility for the exact origin.
-9. Agent can list authorized tabs and request screenshots.
-10. Developer can start teach mode.
-11. Browser overlay lets developer select regions/elements and perform actions.
-12. Agent reads teach trace and generates a Playwright script.
-13. Agent requests a control lease before actions.
-14. Developer can revoke lease, teach mode, or origin consent at any time.
+5. Developer starts the agent client, or uses an in-workspace agent already running in Synthi.
+6. Agent calls `synthi_browser_attach` with a workspace-scoped token/session, not a local PC browser endpoint.
+7. Broker attaches to the Synthi-hosted browser/runtime for that workspace.
+8. Workspace receives attach status and prompts for exact-origin consent.
+9. Developer grants screenshot visibility for the exact origin.
+10. Agent can list authorized hosted tabs and request screenshots.
+11. Developer can start teach mode.
+12. Workspace teach overlay lets developer select regions/elements and perform actions.
+13. Agent reads teach trace and generates a Playwright script.
+14. Agent requests a control lease before actions.
+15. Developer can revoke lease, teach mode, screenshot visibility, diagnostics, or origin consent at any time.
 
 ### Agent Flow
 
@@ -92,7 +120,13 @@ The agent should be able to follow a stable instruction:
 Use the Synthi browser MCP. Attach to the current browser session, request consent for the workspace origin, inspect the screen, wait for the user's teach-mode trace, generate a replay script, and ask before taking a control lease.
 ```
 
-The agent should not need to know whether the browser was launched by Chrome, Playwright Chromium, Docker, WSL, or a hosted session. Those details are runtime configuration, not hardcoded behavior.
+The agent should not need to know whether the browser is hosted, containerized, or local-dev CDP. Those details are runtime configuration, not hardcoded behavior.
+
+### Local Dev Flow
+
+The current `npm run live:browser:workspace` flow is for MCP developers. It launches or attaches to a local Chromium-family browser over CDP and opens a real Synthi workspace URL.
+
+That flow validates the backend, but it is not the intended end-user cloud flow.
 
 ## Architecture
 
@@ -103,6 +137,8 @@ The broker is the only authority for:
 - selected tab identity
 - CDP target id
 - extension tab id
+- hosted browser session id
+- workspace id/slug
 - frame id
 - current URL
 - current origin
@@ -119,9 +155,26 @@ The broker is the only authority for:
 
 Agents call MCP tools. MCP tools call the broker. The broker calls the Playwright/CDP adapter or accepts bridge events only after validating consent, token, tab, frame, and origin.
 
+### Hosted Browser Adapter
+
+The product adapter owns low-level cloud browser mechanics:
+
+- create or attach to a workspace-owned hosted browser
+- enumerate hosted tabs/pages
+- open/select hosted pages
+- capture screenshots
+- collect DOM sample
+- collect accessibility metadata
+- instrument console/network events
+- execute broker-approved actions
+- wait for page conditions
+- stream screenshots or viewport updates to the workspace UI
+
+It must not decide policy. Every visibility or control decision belongs to the broker.
+
 ### Playwright/CDP Adapter
 
-The adapter owns low-level browser mechanics:
+The local-dev adapter owns low-level browser mechanics for test harnesses:
 
 - connect over CDP
 - enumerate pages
@@ -135,9 +188,26 @@ The adapter owns low-level browser mechanics:
 
 It must not decide policy. Every visibility or control decision belongs to the broker.
 
+### Workspace Teach Overlay
+
+The product teach overlay runs in Synthi's workspace UI and hosted browser/viewer. It owns user interaction:
+
+- visible teach-mode overlay
+- region selection
+- element picking
+- human action capture
+- frame and iframe awareness for hosted previews
+- popup awareness for hosted previews
+- visual consent indicators
+- pairing to the workspace session
+
+It must not decide policy. It can only send events to the broker/bridge. The broker accepts or rejects events.
+
 ### Browser Extension
 
-The extension owns user interaction:
+The browser extension is optional and local-dev or advanced-user infrastructure. It is not the default cloud IDE path.
+
+The extension owns user interaction only when the user explicitly chooses to connect a local browser:
 
 - visible teach-mode overlay
 - region selection
@@ -162,7 +232,8 @@ The workspace UI owns the user-facing flow:
 - screenshot permission controls
 - lease status and revoke controls
 - audit/event timeline
-- troubleshooting for WSL, Docker, and hosted cases
+- hosted browser status
+- troubleshooting for hosted browser, in-workspace agent, external MCP clients, WSL, Docker, and local-dev CDP
 
 The workspace UI should not expose raw bridge tokens after pairing.
 
@@ -346,7 +417,8 @@ Deliverables:
 - Add workspace Agent panel.
 - Show MCP connection status.
 - Show current workspace URL and origin.
-- Show active browser/CDP session if available.
+- Show active Synthi-hosted browser session.
+- Show local-dev CDP session only when running the local harness.
 - Provide client-specific setup snippets.
 - Provide `Copy MCP config` for Codex, Claude Code, Cursor, and generic stdio.
 - Show consent state.
@@ -363,8 +435,8 @@ Acceptance:
 
 Deliverables:
 
-- Replace manual service-worker-console config with a pairing flow.
-- Add visible extension overlay.
+- Add workspace teach overlay for hosted browser/viewer sessions.
+- Add hosted-browser pairing flow between workspace UI, broker, and MCP.
 - Add region selection.
 - Add element selection.
 - Capture human click/type/select/check actions during teach mode.
@@ -372,10 +444,12 @@ Deliverables:
 - Include popup metadata.
 - Stop/pause teach mode on unapproved origin changes.
 - Show local visual status: disconnected, paired, consented, teaching, blocked.
+- Keep the Chrome extension as optional local-dev/advanced-user mode.
+- Replace manual service-worker-console extension config only for that optional local mode.
 
 Acceptance:
 
-- User can pair extension without opening DevTools.
+- User can start teach mode in a cloud workspace without installing an extension.
 - User can start teach mode from workspace UI.
 - User can select an element and the agent receives a broker-approved trace event.
 - Bad bridge token and origin spoof tests pass.
@@ -419,10 +493,11 @@ Acceptance:
 Deliverables:
 
 - Keep `npm run live:browser` as isolated fixture smoke.
-- Keep `npm run live:browser:workspace` as real workspace smoke.
+- Keep `npm run live:browser:workspace` as local-dev real workspace smoke.
+- Add hosted-browser live smoke once the Synthi-hosted browser adapter exists.
 - Add `npm run live:browser:workspace:headed` convenience script if useful.
 - Update `mcp/synthi-mcp/TESTING.md` with the persistent workspace flow.
-- Add troubleshooting for WSL, Docker Desktop, host networking, CDP URL reachability, Chrome executable discovery, and extension pairing.
+- Add troubleshooting for hosted browser sessions, workspace-scoped tokens, in-workspace agents, external MCP clients, WSL, Docker Desktop, host networking, CDP URL reachability, Chrome executable discovery, and optional extension pairing.
 - Add screenshots of the expected Agent panel and extension states once UI exists.
 
 Acceptance:
@@ -430,6 +505,7 @@ Acceptance:
 - A developer can reproduce the full flow from docs on a clean machine.
 - CI can run a headless one-shot workspace smoke with `--no-keep-browser`.
 - Manual QA can run a headed persistent workspace flow.
+- Cloud QA can run the hosted-browser flow without local CDP or a local Chrome extension.
 
 ## Security Test Matrix
 
@@ -500,14 +576,17 @@ Keep and document:
 
 Clarify or add:
 
+- `synthi_browser_attach_workspace`
 - `synthi_browser_get_broker_state`
 - `synthi_browser_set_visibility_permission`
 - `synthi_browser_set_diagnostics_permission`
+- `synthi_browser_pair_workspace_overlay`
 - `synthi_browser_pair_extension`
 - `synthi_browser_get_audit_log`
 - `synthi_browser_revoke_all`
 
 The added tools are product hardening helpers. They should not expose raw CDP or raw extension internals.
+`synthi_browser_pair_extension` is for optional local browser mode only; the normal cloud path should use workspace/browser-session pairing.
 
 ## Open Design Decisions
 
@@ -519,13 +598,13 @@ Option A: extension required for teach mode.
 - Better overlay UX.
 - More setup friction.
 
-Option B: extension optional, CDP-only fallback.
+Option B: workspace teach overlay required for cloud teach mode, extension optional for local browser mode.
 
-- Easier setup.
-- Worse element-picking UX.
-- More fragile teach capture.
+- No local install for normal cloud users.
+- Better fit for Synthi-owned hosted browser sessions.
+- Still allows an advanced local-browser path later.
 
-Recommendation: extension required for full teach mode, CDP-only allowed for agent-driven observation/control.
+Recommendation: workspace teach overlay is required for full cloud teach mode. The extension is optional local-dev/advanced-user infrastructure, not the default path.
 
 ### Screenshot Redaction
 
@@ -541,15 +620,15 @@ Recommendation: MVP requires explicit screenshot consent and blocks denied origi
 
 ### Hosted Browser vs Local Browser
 
-Local CDP works for development but is awkward for normal users.
+Local CDP works for development but is wrong as the normal cloud IDE path. Synthi does not control the user's PC and should not ask normal users to expose local browser debugging endpoints.
 
 Options:
 
-- local browser CDP only
 - hosted browser controlled by Synthi
-- extension connects the user's existing browser
+- local browser CDP for MCP developers
+- extension connects the user's existing browser for advanced explicit local mode
 
-Recommendation: keep local CDP for developer MVP, design broker APIs so hosted browser can plug in later.
+Recommendation: make the hosted browser the product path. Keep local CDP as a developer harness and compatibility adapter only.
 
 ## Definition of Done
 
@@ -557,23 +636,25 @@ The remaining work is done when:
 
 - A developer can open a Synthi workspace and connect an MCP client from visible UI instructions.
 - The agent can attach without manually copying hidden bridge details.
+- The agent attaches to a Synthi-hosted browser/runtime by default, not the user's personal browser.
 - The developer can grant screenshot visibility for one exact origin.
 - The agent can inspect screenshots only for approved origins.
 - The developer can start teach mode from the workspace.
-- The extension overlay records real human selections and actions.
+- The workspace teach overlay records real human selections and actions.
 - The agent can generate a Playwright replay from the trace.
 - The agent can request and use a short control lease.
 - The developer can revoke consent or lease immediately.
 - Security tests cover the full boundary matrix.
 - Replay tests cover modern frontend edge cases.
-- The persistent workspace harness validates the real end-to-end flow.
+- The hosted-browser harness validates the real cloud end-to-end flow.
+- The local persistent workspace harness remains available for MCP package development.
 
 ## Suggested Work Order
 
 1. Broker permission tiers and tests.
-2. Workspace Agent panel skeleton.
-3. Extension pairing flow.
-4. Teach overlay productization.
+2. Hosted browser adapter and workspace-scoped attach flow.
+3. Workspace Agent panel skeleton.
+4. Workspace teach overlay productization.
 5. Lease UI and human override handling.
 6. Replay fixture matrix.
 7. Documentation and live harness updates.
