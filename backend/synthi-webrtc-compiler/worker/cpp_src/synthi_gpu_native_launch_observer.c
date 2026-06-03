@@ -35,6 +35,11 @@ typedef int (*SynthiGpuRuntimeLaunchFn)(
     size_t shared_bytes,
     void* stream);
 
+typedef int (*SynthiGpuModuleGetFunctionFn)(
+    void** function,
+    void* module,
+    const char* name);
+
 static unsigned long long synthi_launch_sequence = 0;
 
 static unsigned long long synthi_fnv1a_append(
@@ -79,6 +84,10 @@ static const char* synthi_observed_launch_apis(void) {
     return "oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel,oroLaunchKernel,hipLaunchKernel";
 }
 
+static const char* synthi_observed_function_resolution_apis(void) {
+    return "oroModuleGetFunction,hipModuleGetFunction,cuModuleGetFunction";
+}
+
 __attribute__((constructor))
 static void synthi_log_native_launch_observer_ready(void) {
     char mode_token[128];
@@ -88,11 +97,12 @@ static void synthi_log_native_launch_observer_ready(void) {
         sizeof(mode_token));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=%s pid=%ld mode=%s apis=%s attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=%s pid=%ld mode=%s apis=%s function_resolution_apis=%s attachment_provenance=native_runtime_intercept\n",
         synthi_runtime_session(),
         (long)getpid(),
         mode_token,
-        synthi_observed_launch_apis());
+        synthi_observed_launch_apis(),
+        synthi_observed_function_resolution_apis());
 }
 
 static unsigned long long synthi_next_sequence(void) {
@@ -112,6 +122,44 @@ static void* synthi_next_symbol(const char* name) {
         return NULL;
     }
     return symbol;
+}
+
+static void synthi_log_native_function_resolution(
+    const char* api,
+    void* module,
+    const char* name,
+    void* function,
+    int result,
+    int real_resolver_resolved) {
+    char symbol_token[256];
+    synthi_sanitize_token(name, symbol_token, sizeof(symbol_token));
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] native_function_resolution api=%s runtime_session=%s module=0x%llx symbol=%s function_ptr=0x%llx result=%d resolution=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
+        api,
+        synthi_runtime_session(),
+        (unsigned long long)(uintptr_t)module,
+        symbol_token,
+        (unsigned long long)(uintptr_t)function,
+        result,
+        (result == 0 && function != NULL) ? "ok" : "failed",
+        real_resolver_resolved ? "true" : "false");
+}
+
+static int synthi_module_get_function(
+    const char* api,
+    SynthiGpuModuleGetFunctionFn real_get_function,
+    void** function,
+    void* module,
+    const char* name) {
+    if (real_get_function == NULL) {
+        synthi_log_native_function_resolution(api, module, name, NULL, 1, 0);
+        return 1;
+    }
+    int result = real_get_function(function, module, name);
+    void* resolved_function = function != NULL ? *function : NULL;
+    synthi_log_native_function_resolution(api, module, name, resolved_function, result, 1);
+    return result;
 }
 
 static void synthi_log_native_launch_candidates(
@@ -461,4 +509,40 @@ int hipLaunchKernel(
         args,
         shared_bytes,
         stream);
+}
+
+int oroModuleGetFunction(
+    void** function,
+    void* module,
+    const char* name) {
+    return synthi_module_get_function(
+        "oroModuleGetFunction",
+        (SynthiGpuModuleGetFunctionFn)synthi_next_symbol("oroModuleGetFunction"),
+        function,
+        module,
+        name);
+}
+
+int hipModuleGetFunction(
+    void** function,
+    void* module,
+    const char* name) {
+    return synthi_module_get_function(
+        "hipModuleGetFunction",
+        (SynthiGpuModuleGetFunctionFn)synthi_next_symbol("hipModuleGetFunction"),
+        function,
+        module,
+        name);
+}
+
+int cuModuleGetFunction(
+    void** function,
+    void* module,
+    const char* name) {
+    return synthi_module_get_function(
+        "cuModuleGetFunction",
+        (SynthiGpuModuleGetFunctionFn)synthi_next_symbol("cuModuleGetFunction"),
+        function,
+        module,
+        name);
 }

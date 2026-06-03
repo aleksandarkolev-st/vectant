@@ -4548,7 +4548,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("records native observer readiness without accepting it as original host attachment", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel attachment_provenance=native_runtime_intercept",
+      "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel function_resolution_apis=oroModuleGetFunction,hipModuleGetFunction,cuModuleGetFunction attachment_provenance=native_runtime_intercept",
     ], {
       required: true,
       nativeLaunchObserverEnabled: true,
@@ -4564,6 +4564,11 @@ describe("GPU HMR runtime output proof classification", () => {
       "hipModuleLaunchKernel",
       "cuLaunchKernel",
     ]);
+    expect(evidence.native_function_resolution_api_coverage).toEqual([
+      "oroModuleGetFunction",
+      "hipModuleGetFunction",
+      "cuModuleGetFunction",
+    ]);
     expect(evidence.native_launch_observer_ready_evidence_refs).toEqual([
       "worker-log:native_launch_observer_ready:native-session:42",
     ]);
@@ -4571,6 +4576,41 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.attachmentProven).toBe(false);
     expect(proof.degradedReason).toBe("original_host_path_upstream_run_failed_before_launch_observed");
     expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("observer=ready");
+  });
+
+  it("records native function resolution without accepting it as original host attachment", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_function_resolution api=oroModuleGetFunction runtime_session=native-session module=0x9 symbol=MegaKernel function_ptr=0x456 result=0 resolution=ok real_resolver_resolved=true attachment_provenance=native_runtime_intercept",
+      "[gpu-runtime-boundary] native_launch_observed api=oroModuleLaunchKernel runtime_session=native-session sequence=7 function_ptr=0x456 grid=(1,1,1) block=(1,1,1) args_ptr=0x789 stream=0x0 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept",
+    ], {
+      required: true,
+      runtimeSessionIds: ["native-session"],
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 0,
+    });
+
+    expect(evidence.native_function_resolution_count).toBe(1);
+    expect(evidence.native_function_resolution_observed).toBe(true);
+    expect(evidence.native_function_resolution_symbols).toEqual(["MegaKernel"]);
+    expect(evidence.native_function_resolution_function_ptrs).toEqual(["0x456"]);
+    expect(evidence.native_function_resolution_evidence_refs).toEqual([
+      "worker-log:native_function_resolution:native-session:MegaKernel:0x456",
+    ]);
+    expect(evidence.native_function_resolutions[0]).toEqual(
+      expect.objectContaining({
+        runtime_session: "native-session",
+        api: "oroModuleGetFunction",
+        symbol: "MegaKernel",
+        function_ptr: "0x456",
+        resolution: "ok",
+        real_resolver_resolved: true,
+      })
+    );
+    expect(proof.nativeFunctionResolutionObserved).toBe(true);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("resolver=observed");
   });
 
   it("reports native launch attempts that do not return an observed launch result", () => {

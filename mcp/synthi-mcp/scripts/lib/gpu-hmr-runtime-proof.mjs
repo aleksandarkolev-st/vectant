@@ -3012,6 +3012,7 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const candidateEvidenceRefs = compactStringList(observation.candidateEvidenceRefs);
   const attachmentCandidateObserved =
     observation.attachmentCandidateObserved === true || candidateEvidenceRefs.length > 0;
+  const nativeFunctionResolutionObserved = observation.nativeFunctionResolutionObserved === true;
   const nativeLaunchObserved = observation.nativeLaunchObserved === true;
   const nativeLaunchAttemptObserved = observation.nativeLaunchAttemptObserved === true;
   const nativeLaunchAttemptWithoutResult = observation.nativeLaunchAttemptWithoutResult === true;
@@ -3069,6 +3070,7 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     runtimeEvidenceObserved,
     runtimeEvidenceRefs,
     attachmentCandidateObserved,
+    nativeFunctionResolutionObserved,
     candidateEvidenceRefs,
     nativeLaunchObserved,
     nativeLaunchAttemptObserved,
@@ -3099,11 +3101,12 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const entry = proof.dispatchEntryRuntimeVerified ? ' entry=runtime' : ' entry=unverified';
   const candidate = proof.attachmentCandidateObserved ? ' candidate=observed' : ' candidate=missing';
   const observer = proof.nativeLaunchObserverReady ? ' observer=ready' : '';
+  const resolver = proof.nativeFunctionResolutionObserved ? ' resolver=observed' : '';
   const nativeAttempt = proof.nativeLaunchAttemptObserved ? ' native_attempt=observed' : '';
   const upstreamExit = Number.isInteger(proof.upstreamRunExitCode)
     ? ` upstream_exit=${proof.upstreamRunExitCode}`
     : '';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${nativeAttempt}${upstreamExit}`;
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${resolver}${nativeAttempt}${upstreamExit}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {

@@ -966,6 +966,9 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         pid: integerValue(fields.pid),
         mode: fields.mode ?? null,
         apis: compactStringList(String(fields.apis ?? '').split(',')),
+        functionResolutionApis: compactStringList(
+          String(fields.function_resolution_apis ?? fields.functionResolutionApis ?? '').split(','),
+        ),
         attachmentProvenance:
           fields.attachment_provenance
           ?? fields.attachmentProvenance
@@ -976,6 +979,45 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     .filter((record) =>
       typeof record.runtimeSession === 'string'
       && record.runtimeSession.trim()
+      && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
+  const nativeFunctionResolutionRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\bnative_function_resolution\b/i))
+    .map((line) => {
+      const fields = parseRuntimeKeyValues(line);
+      return {
+        line,
+        runtimeSession: fields.runtime_session ?? null,
+        api: fields.api ?? null,
+        module: fields.module ?? null,
+        symbol: fields.symbol ?? null,
+        functionPtr: fields.function_ptr ?? fields.functionPtr ?? null,
+        result: integerValue(fields.result),
+        resolution: fields.resolution ?? null,
+        realResolverResolved: boolValue(
+          fields.real_resolver_resolved
+          ?? fields.realResolverResolved
+          ?? fields.real_function_resolver_resolved
+          ?? fields.realFunctionResolverResolved,
+        ),
+        attachmentProvenance:
+          fields.attachment_provenance
+          ?? fields.attachmentProvenance
+          ?? fields.provenance
+          ?? null,
+      };
+    })
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && typeof record.api === 'string'
+      && record.api.trim()
+      && typeof record.symbol === 'string'
+      && record.symbol.trim()
+      && typeof record.functionPtr === 'string'
+      && record.functionPtr.trim()
+      && record.functionPtr !== '0x0'
       && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
@@ -1111,6 +1153,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     evidenceRefToken(record.runtimeSession),
     Number.isFinite(record.pid) ? record.pid : 'unknown',
   ].join(':'));
+  const nativeFunctionResolutionEvidenceRefs = nativeFunctionResolutionRecords.slice(-20).map((record) => [
+    'worker-log:native_function_resolution',
+    evidenceRefToken(record.runtimeSession),
+    evidenceRefToken(record.symbol),
+    evidenceRefToken(record.functionPtr),
+  ].join(':'));
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -1141,7 +1189,35 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     native_launch_observer_api_coverage: compactStringList(
       nativeLaunchObserverReadyRecords.flatMap((record) => record.apis),
     ),
+    native_function_resolution_api_coverage: compactStringList(
+      nativeLaunchObserverReadyRecords.flatMap((record) => record.functionResolutionApis),
+    ),
     native_launch_observer_ready_evidence_refs: nativeLaunchObserverReadyEvidenceRefs,
+    native_function_resolution_count: nativeFunctionResolutionRecords.length,
+    native_function_resolution_observed: nativeFunctionResolutionRecords.length > 0,
+    native_function_resolution_symbols: compactStringList(
+      nativeFunctionResolutionRecords.map((record) => record.symbol),
+    ),
+    native_function_resolution_function_ptrs: compactStringList(
+      nativeFunctionResolutionRecords.map((record) => record.functionPtr),
+    ),
+    native_function_resolution_evidence_refs: nativeFunctionResolutionEvidenceRefs,
+    native_function_resolutions: nativeFunctionResolutionRecords.slice(-20).map((record) => ({
+      runtime_session: record.runtimeSession,
+      api: record.api,
+      module: record.module,
+      symbol: record.symbol,
+      function_ptr: record.functionPtr,
+      result: record.result,
+      resolution: record.resolution,
+      real_resolver_resolved: record.realResolverResolved,
+      evidence_ref: [
+        'worker-log:native_function_resolution',
+        evidenceRefToken(record.runtimeSession),
+        evidenceRefToken(record.symbol),
+        evidenceRefToken(record.functionPtr),
+      ].join(':'),
+    })),
     native_launch_attempt_count: nativeLaunchAttemptRecords.length,
     native_launch_attempt_observed: nativeLaunchAttemptObserved,
     native_launch_attempt_without_result: nativeLaunchAttemptWithoutResult,
@@ -1212,6 +1288,7 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     evidenceRefs: evidence.evidence_refs,
     attachmentCandidateObserved: evidence.attachment_candidate_observed,
     candidateEvidenceRefs: evidence.candidate_evidence_refs,
+    nativeFunctionResolutionObserved: evidence.native_function_resolution_observed,
     nativeLaunchObserved: evidence.native_launch_observed,
     nativeLaunchAttemptObserved: evidence.native_launch_attempt_observed,
     nativeLaunchAttemptWithoutResult: evidence.native_launch_attempt_without_result,
