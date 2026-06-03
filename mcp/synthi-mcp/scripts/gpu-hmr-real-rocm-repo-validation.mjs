@@ -77,6 +77,32 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const DEFAULT_REAL_REPO_URL = 'https://github.com/ROCm/rocm-examples.git';
+const TARGET_PROGRESSION_PHASES = new Set([
+  'small-oracle',
+  'partial-reload',
+  'original-host-path',
+  'final-acceptance',
+]);
+const TARGET_PROGRESSION_PHASE_ALIASES = new Map([
+  ['small', 'small-oracle'],
+  ['small-target', 'small-oracle'],
+  ['small-kernel', 'small-oracle'],
+  ['small-non-final', 'small-oracle'],
+  ['small-non-final-oracle', 'small-oracle'],
+  ['deterministic-oracle', 'small-oracle'],
+  ['oracle', 'small-oracle'],
+  ['partial', 'partial-reload'],
+  ['partial-artifact', 'partial-reload'],
+  ['partial-artifact-reload', 'partial-reload'],
+  ['source-include', 'partial-reload'],
+  ['source-include-reload', 'partial-reload'],
+  ['original-host', 'original-host-path'],
+  ['host-path', 'original-host-path'],
+  ['host-attachment', 'original-host-path'],
+  ['final', 'final-acceptance'],
+  ['acceptance', 'final-acceptance'],
+  ['final-target', 'final-acceptance'],
+]);
 
 function cleanIdentifier(value) {
   return String(value || 'repo').replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'repo';
@@ -166,6 +192,233 @@ function parseStringArrayEnv(raw, name) {
   });
 }
 
+function normalizeTargetProgressionPhase(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value) {
+    return {
+      raw: value,
+      phase: null,
+      recognized: true,
+      reason: 'phase_not_declared',
+    };
+  }
+  const normalized = value.toLowerCase().replace(/[\s_]+/g, '-');
+  const phase = TARGET_PROGRESSION_PHASE_ALIASES.get(normalized) ?? normalized;
+  return {
+    raw: value,
+    phase,
+    recognized: TARGET_PROGRESSION_PHASES.has(phase),
+    reason: TARGET_PROGRESSION_PHASES.has(phase) ? null : 'unknown_target_progression_phase',
+  };
+}
+
+function buildTargetProgressionMetadata({
+  targetName,
+  rawPhase,
+  finalAcceptanceTarget,
+  required = false,
+} = {}) {
+  const normalized = normalizeTargetProgressionPhase(rawPhase);
+  const finalTarget = String(finalAcceptanceTarget ?? '').trim();
+  const target = String(targetName ?? '').trim();
+  const nonFinalPhase = [
+    'small-oracle',
+    'partial-reload',
+    'original-host-path',
+  ].includes(normalized.phase);
+  const finalTargetDeclared = finalTarget.length > 0;
+  const targetMatchesFinalAcceptance =
+    finalTargetDeclared && target.length > 0 && target === finalTarget;
+  return {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: required === true,
+    phaseRaw: normalized.raw,
+    phase: normalized.phase,
+    recognized: normalized.recognized,
+    reason: normalized.reason,
+    targetName: target || null,
+    finalAcceptanceTarget: finalTarget || null,
+    finalAcceptanceTargetDeclared: finalTargetDeclared,
+    targetMatchesFinalAcceptance,
+    nonFinalPhase,
+    nonFinalTargetRequired: nonFinalPhase && finalTargetDeclared,
+    requirements: normalized.phase
+      ? targetProgressionPhaseRequirements(normalized.phase)
+      : [],
+  };
+}
+
+function targetProgressionPhaseRequirements(phase) {
+  switch (phase) {
+    case 'small-oracle':
+      return [
+        'target_must_not_be_final_acceptance_target_when_declared',
+        'output_oracle_proven',
+      ];
+    case 'partial-reload':
+      return [
+        'target_must_not_be_final_acceptance_target_when_declared',
+        'source_include_backed_partial_reload_proven',
+        'fission_verifier_proven',
+      ];
+    case 'original-host-path':
+      return [
+        'target_must_not_be_final_acceptance_target_when_declared',
+        'dispatch_safe_proven',
+        'original_host_path_attachment_proven',
+        'host_preservation_proven',
+      ];
+    case 'final-acceptance':
+      return [
+        'target_must_match_final_acceptance_target_when_declared',
+        'full_runtime_proven',
+      ];
+    default:
+      return [];
+  }
+}
+
+function proofHasResultState(proof, state) {
+  return proof && typeof proof === 'object' && proof.resultState === state;
+}
+
+function partialArtifactReplacementProofObserved(sourceProofs = [], fissionProof = null) {
+  const proofs = Array.isArray(sourceProofs) ? sourceProofs : [];
+  if (proofs.some((proof) =>
+    proof?.partialArtifactReplacement === true
+    || proof?.partialModule === true
+    || /(^|[-_])partial($|[-_])/i.test(String(proof?.label ?? proof?.resultLabel ?? ''))
+    || /partial|source[_-]?include|kernel[_-]?region/i.test(String(
+      proof?.selectedArtifactKind
+      ?? proof?.requestedArtifactKind
+      ?? proof?.artifactKind
+      ?? '',
+    ))
+  )) {
+    return true;
+  }
+  return Array.isArray(fissionProof?.selectedIslandContracts)
+    && fissionProof.selectedIslandContracts.some((contract) =>
+      /partial|source[_-]?include|kernel[_-]?region/i.test(String(contract?.artifactKind ?? ''))
+      || String(contract?.replacementScope ?? '').trim().toLowerCase() === 'partial'
+    );
+}
+
+function targetProgressionGateRows({
+  targetProgression,
+  sourceProofs = [],
+  fissionProof = null,
+  dispatchProof = null,
+  outputProof = null,
+  hostPreservationProof = null,
+  originalHostPathProof = null,
+  fullRuntimeProof = null,
+} = {}) {
+  const progression = targetProgression ?? buildTargetProgressionMetadata();
+  const rows = [];
+  if (!progression.phase) {
+    rows.push({
+      name: 'target progression phase',
+      status: progression.required ? 'fail' : 'skip',
+      detail: progression.required
+        ? 'target progression phase is required but was not declared'
+        : 'target progression phase not declared',
+    });
+    return rows;
+  }
+  if (!progression.recognized) {
+    return [{
+      name: 'target progression phase',
+      status: 'fail',
+      detail: `unknown phase=${progression.phaseRaw}`,
+    }];
+  }
+  rows.push({
+    name: 'target progression phase',
+    status: 'pass',
+    detail: `phase=${progression.phase} target=${progression.targetName ?? 'unspecified'} final_target=${progression.finalAcceptanceTarget ?? 'unspecified'}`,
+  });
+  if (progression.nonFinalTargetRequired) {
+    rows.push({
+      name: 'target progression non-final target',
+      status: progression.targetMatchesFinalAcceptance ? 'fail' : 'pass',
+      detail: progression.targetMatchesFinalAcceptance
+        ? `phase=${progression.phase} cannot use final_target=${progression.finalAcceptanceTarget}`
+        : `phase=${progression.phase} target=${progression.targetName ?? 'unspecified'} final_target=${progression.finalAcceptanceTarget}`,
+    });
+  }
+  if (progression.phase === 'final-acceptance' && progression.finalAcceptanceTargetDeclared) {
+    rows.push({
+      name: 'target progression final target',
+      status: progression.targetMatchesFinalAcceptance ? 'pass' : 'fail',
+      detail: progression.targetMatchesFinalAcceptance
+        ? `target=${progression.targetName} matches final_target=${progression.finalAcceptanceTarget}`
+        : `target=${progression.targetName ?? 'unspecified'} does not match final_target=${progression.finalAcceptanceTarget}`,
+    });
+  }
+  if (progression.phase === 'small-oracle') {
+    rows.push({
+      name: 'target progression output oracle',
+      status: proofHasResultState(outputProof, 'gpu-hmr-output-oracle-proven') ? 'pass' : 'fail',
+      detail: proofHasResultState(outputProof, 'gpu-hmr-output-oracle-proven')
+        ? 'gpu-hmr-output-oracle-proven'
+        : summarizeGpuHmrOutputProof(outputProof),
+    });
+  }
+  if (progression.phase === 'partial-reload') {
+    const partialObserved = partialArtifactReplacementProofObserved(sourceProofs, fissionProof);
+    rows.push({
+      name: 'target progression partial reload',
+      status: partialObserved ? 'pass' : 'fail',
+      detail: partialObserved
+        ? 'source/include-backed partial replacement observed'
+        : 'source/include-backed partial replacement not observed',
+    });
+    rows.push({
+      name: 'target progression fission proof',
+      status: fissionProof?.fissionProven === true ? 'pass' : 'fail',
+      detail: fissionProof?.fissionProven === true
+        ? 'fission verifier proven'
+        : summarizeGpuHmrFissionProof(fissionProof),
+    });
+  }
+  if (progression.phase === 'original-host-path') {
+    rows.push({
+      name: 'target progression dispatch proof',
+      status: proofHasResultState(dispatchProof, 'gpu-hmr-dispatch-safe-proven') ? 'pass' : 'fail',
+      detail: proofHasResultState(dispatchProof, 'gpu-hmr-dispatch-safe-proven')
+        ? 'gpu-hmr-dispatch-safe-proven'
+        : summarizeGpuHmrDispatchProof(dispatchProof),
+    });
+    rows.push({
+      name: 'target progression original host path',
+      status: originalHostPathProof?.attachmentProven === true ? 'pass' : 'fail',
+      detail: originalHostPathProof?.attachmentProven === true
+        ? 'original host path attachment proven'
+        : summarizeGpuHmrOriginalHostPathProof(originalHostPathProof),
+    });
+    rows.push({
+      name: 'target progression host preservation',
+      status: proofHasResultState(hostPreservationProof, 'gpu-hmr-host-preservation-proven')
+        ? 'pass'
+        : 'fail',
+      detail: proofHasResultState(hostPreservationProof, 'gpu-hmr-host-preservation-proven')
+        ? 'gpu-hmr-host-preservation-proven'
+        : summarizeGpuHmrHostPreservationProof(hostPreservationProof),
+    });
+  }
+  if (progression.phase === 'final-acceptance') {
+    rows.push({
+      name: 'target progression full runtime',
+      status: fullRuntimeProof?.fullRuntimeProven === true ? 'pass' : 'fail',
+      detail: fullRuntimeProof?.fullRuntimeProven === true
+        ? 'gpu-hmr-full-runtime-proven'
+        : summarizeGpuHmrFullRuntimeProof(fullRuntimeProof),
+    });
+  }
+  return rows;
+}
+
 const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
 const configuredRepoName = cleanIdentifier(
   process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
@@ -196,6 +449,13 @@ const CFG = {
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
     ?? 'HIP-Basic/saxpy/main.hip',
   targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? 'hip_saxpy',
+  targetProgressionPhase: process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_PHASE ?? '',
+  finalAcceptanceTarget: process.env.SYNTHI_REAL_ROCM_FINAL_ACCEPTANCE_TARGET ?? '',
+  requireTargetProgression: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_REQUIRE_TARGET_PROGRESSION',
+    false,
+  ),
   buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
   workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
   workerTempDir: configuredWorkerTempDir,
@@ -305,6 +565,12 @@ const report = {
   delta_file: CFG.deltaFile,
   second_delta_file: CFG.secondDeltaBefore || CFG.secondDeltaAfter ? CFG.secondDeltaFile : null,
   target_name: CFG.targetName,
+  target_progression: buildTargetProgressionMetadata({
+    targetName: CFG.targetName,
+    rawPhase: CFG.targetProgressionPhase,
+    finalAcceptanceTarget: CFG.finalAcceptanceTarget,
+    required: CFG.requireTargetProgression,
+  }),
   cmake_config: CFG.cmakeConfigName,
   cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
@@ -2738,6 +3004,68 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('strict proof gate self-check failed');
   }
+  const optionalProgressionRows = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({ required: false }),
+  });
+  const requiredProgressionRows = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({ required: true }),
+  });
+  const unknownProgressionRows = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'small_target',
+      rawPhase: 'surprise-step',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+  });
+  const smallOracleFailures = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'small-oracle',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputProof: visualOnlyProof,
+  });
+  const smallOraclePasses = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'small_target',
+      rawPhase: 'small_kernel',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputProof: { resultState: 'gpu-hmr-output-oracle-proven' },
+  });
+  const partialReloadPasses = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'small_target',
+      rawPhase: 'source-include',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    sourceProofs: [{ partialArtifactReplacement: true }],
+    fissionProof: { fissionProven: true },
+  });
+  const finalAcceptanceFailures = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'small_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: fullRuntimeBlockedProof,
+  });
+  if (
+    optionalProgressionRows[0]?.status !== 'skip'
+    || requiredProgressionRows[0]?.status !== 'fail'
+    || unknownProgressionRows[0]?.status !== 'fail'
+    || smallOracleFailures.filter((row) => row.status === 'fail').length !== 2
+    || smallOraclePasses.some((row) => row.status === 'fail')
+    || partialReloadPasses.some((row) => row.status === 'fail')
+    || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 2
+  ) {
+    throw new Error('target progression gate self-check failed');
+  }
   if (shouldFetchRequestedCommit({ requestedCommit: 'abc123', localCommitAvailable: true })) {
     throw new Error('fetch decision self-check should reuse a locally available requested commit');
   }
@@ -3179,6 +3507,19 @@ async function collectRuntimeEvidence() {
     record(gate.name, gate.status, gate.detail);
     if (gate.status === 'fail') process.exitCode = 1;
   }
+  for (const gate of targetProgressionGateRows({
+    targetProgression: report.target_progression,
+    sourceProofs: report.source_proofs,
+    fissionProof: report.fission_proof,
+    dispatchProof: report.dispatch_proof,
+    outputProof: report.output_proof,
+    hostPreservationProof: report.host_preservation_proof,
+    originalHostPathProof: report.original_host_path_proof,
+    fullRuntimeProof: report.full_runtime_proof,
+  })) {
+    record(gate.name, gate.status, gate.detail);
+    if (gate.status === 'fail') process.exitCode = 1;
+  }
   record(
     'runtime evidence collected',
     'pass',
@@ -3244,6 +3585,7 @@ async function writeResults() {
     model: report.model,
     gpu_vendor: report.gpu_vendor,
     gpu_arch: report.gpu_arch,
+    target_progression: report.target_progression,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
     render_preview_enabled: report.render_preview_enabled,
@@ -3343,6 +3685,7 @@ async function writeResults() {
     `delta_file: ${report.delta_file}`,
     `second_delta_file: ${report.second_delta_file ?? ''}`,
     `extra_deltas: ${JSON.stringify(report.extra_deltas ?? [])}`,
+    `target_progression: ${JSON.stringify(report.target_progression)}`,
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
