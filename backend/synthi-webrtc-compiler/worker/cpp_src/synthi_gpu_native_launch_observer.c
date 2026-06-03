@@ -75,6 +75,26 @@ static const char* synthi_runtime_session(void) {
     return session;
 }
 
+static const char* synthi_observed_launch_apis(void) {
+    return "oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel,oroLaunchKernel,hipLaunchKernel";
+}
+
+__attribute__((constructor))
+static void synthi_log_native_launch_observer_ready(void) {
+    char mode_token[128];
+    synthi_sanitize_token(
+        getenv("SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER"),
+        mode_token,
+        sizeof(mode_token));
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=%s pid=%ld mode=%s apis=%s attachment_provenance=native_runtime_intercept\n",
+        synthi_runtime_session(),
+        (long)getpid(),
+        mode_token,
+        synthi_observed_launch_apis());
+}
+
 static unsigned long long synthi_next_sequence(void) {
     return __sync_add_and_fetch(&synthi_launch_sequence, 1);
 }

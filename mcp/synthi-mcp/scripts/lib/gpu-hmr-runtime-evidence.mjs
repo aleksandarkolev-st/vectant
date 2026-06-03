@@ -956,6 +956,29 @@ function dispatchBoundaryRecord(line) {
 
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
+  const nativeLaunchObserverReadyRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\bnative_launch_observer_ready\b/i))
+    .map((line) => {
+      const fields = parseRuntimeKeyValues(line);
+      return {
+        line,
+        runtimeSession: fields.runtime_session ?? null,
+        pid: integerValue(fields.pid),
+        mode: fields.mode ?? null,
+        apis: compactStringList(String(fields.apis ?? '').split(',')),
+        attachmentProvenance:
+          fields.attachment_provenance
+          ?? fields.attachmentProvenance
+          ?? fields.provenance
+          ?? null,
+      };
+    })
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
   const nativeLaunchAttemptRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bnative_launch_attempt\b/i))
     .map((line) => {
@@ -1083,6 +1106,11 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     Number.isFinite(record.launchSequence) ? record.launchSequence : 'unknown',
     Number.isFinite(record.frameIndex) ? record.frameIndex : 'unknown',
   ].join(':'));
+  const nativeLaunchObserverReadyEvidenceRefs = nativeLaunchObserverReadyRecords.slice(-20).map((record) => [
+    'worker-log:native_launch_observer_ready',
+    evidenceRefToken(record.runtimeSession),
+    Number.isFinite(record.pid) ? record.pid : 'unknown',
+  ].join(':'));
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -1105,6 +1133,15 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   return {
     raw_count: rawRecords.length,
     total_count: records.length,
+    native_launch_observer_ready_count: nativeLaunchObserverReadyRecords.length,
+    native_launch_observer_ready: nativeLaunchObserverReadyRecords.length > 0,
+    native_launch_observer_ready_runtime_session_ids: compactStringList(
+      nativeLaunchObserverReadyRecords.map((record) => record.runtimeSession),
+    ),
+    native_launch_observer_api_coverage: compactStringList(
+      nativeLaunchObserverReadyRecords.flatMap((record) => record.apis),
+    ),
+    native_launch_observer_ready_evidence_refs: nativeLaunchObserverReadyEvidenceRefs,
     native_launch_attempt_count: nativeLaunchAttemptRecords.length,
     native_launch_attempt_observed: nativeLaunchAttemptObserved,
     native_launch_attempt_without_result: nativeLaunchAttemptWithoutResult,
@@ -1179,6 +1216,7 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     nativeLaunchAttemptObserved: evidence.native_launch_attempt_observed,
     nativeLaunchAttemptWithoutResult: evidence.native_launch_attempt_without_result,
     nativeLaunchObserverEnabled: evidence.native_launch_observer_enabled,
+    nativeLaunchObserverReady: evidence.native_launch_observer_ready,
     nativeLaunchObserverSawNoLaunch: evidence.native_launch_observer_saw_no_launch,
     upstreamRunAttempted: evidence.upstream_run_attempted,
     upstreamRunExitCode: evidence.upstream_run_exit_code,

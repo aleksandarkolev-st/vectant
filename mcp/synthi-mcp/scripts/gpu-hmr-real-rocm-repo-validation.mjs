@@ -610,8 +610,6 @@ async function prepareUpstreamBuild() {
   const nativeLaunchObserverSetup = CFG.nativeLaunchObserver
     ? [
         `if [ ! -f ${shQuote(CFG.nativeLaunchObserverPath)} ]; then printf 'native launch observer missing: %s\\n' ${shQuote(CFG.nativeLaunchObserverPath)} >&2; exit 86; fi`,
-        `export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}`,
-        "export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only",
       ].join('\n')
     : ':';
   const upstreamRunEnvironmentSetup = CFG.runUpstream
@@ -625,9 +623,16 @@ async function prepareUpstreamBuild() {
   const upstreamRunCommand = CFG.upstreamRunCommand
     ? CFG.upstreamRunCommand
     : `./build/${shQuote(CFG.targetName)}`;
+  const observedUpstreamRunCommand = CFG.nativeLaunchObserver
+    ? [
+        `export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}`,
+        'export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only',
+        upstreamRunCommand,
+      ].join('\n')
+    : upstreamRunCommand;
   const upstreamRunInvocation = upstreamRunLaunch.useXvfbRun
-    ? `xvfb-run -a sh -lc ${shQuote(upstreamRunCommand)}`
-    : `sh -lc ${shQuote(upstreamRunCommand)}`;
+    ? `xvfb-run -a sh -lc ${shQuote(observedUpstreamRunCommand)}`
+    : `sh -lc ${shQuote(observedUpstreamRunCommand)}`;
   const command = `
 set -e
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
@@ -1811,6 +1816,9 @@ function runtimeDispatchEvidence(workerEvidence) {
 }
 
 function runtimeNativeLaunchObservationEvidence(workerEvidence) {
+  const readyLines = workerEvidence.filter((line) =>
+    /\bgpu-runtime-boundary\b.*\bnative_launch_observer_ready\b/i.test(line)
+  );
   const attemptLines = workerEvidence.filter((line) =>
     /\bgpu-runtime-boundary\b.*\bnative_launch_attempt\b/i.test(line)
   );
@@ -1825,6 +1833,16 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     dispatch: logField(line, 'dispatch'),
     realLaunchResolved: logField(line, 'real_launch_resolved'),
   }));
+  const readyRecords = readyLines.map((line) => ({
+    line,
+    runtimeSession: runtimeSessionIdFromLine(line),
+    pid: logField(line, 'pid'),
+    mode: logField(line, 'mode'),
+    apis: String(logField(line, 'apis') ?? '')
+      .split(',')
+      .map((api) => api.trim())
+      .filter(Boolean),
+  }));
   const records = lines.map((line) => ({
     line,
     api: logField(line, 'api'),
@@ -1834,6 +1852,12 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     dispatch: logField(line, 'dispatch'),
   }));
   return {
+    ready_count: readyRecords.length,
+    ready: readyRecords.length > 0,
+    ready_runtime_session_ids: [
+      ...new Set(readyRecords.map((record) => record.runtimeSession).filter(Boolean)),
+    ],
+    api_coverage: [...new Set(readyRecords.flatMap((record) => record.apis).filter(Boolean))],
     total_count: records.length,
     attempt_count: attemptRecords.length,
     apis: [...new Set(records.map((record) => record.api).filter(Boolean))],
@@ -1842,12 +1866,14 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
       ...new Set([
         ...attemptRecords.map((record) => record.runtimeSession).filter(Boolean),
         ...records.map((record) => record.runtimeSession).filter(Boolean),
+        ...readyRecords.map((record) => record.runtimeSession).filter(Boolean),
       ]),
     ],
     attempt_only_count: Math.max(0, attemptRecords.length - records.length),
     observe_only_count: records.filter((record) =>
       String(record.dispatch ?? '').toLowerCase() === 'observed-native'
     ).length,
+    ready_records: readyRecords.slice(-20),
     attempt_records: attemptRecords.slice(-20),
     records: records.slice(-20),
   };
@@ -2366,6 +2392,7 @@ function selfCheckRuntimeDispatchEvidence() {
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
+      '[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=genericLaunch,otherLaunch attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=native-session',
@@ -2380,7 +2407,11 @@ function selfCheckRuntimeDispatchEvidence() {
     { required: true, runtimeSessionIds: ['native-session'] },
   );
   if (
-    nativeOnlyObservation.total_count !== 1
+    nativeOnlyObservation.ready_count !== 1
+    || nativeOnlyObservation.api_coverage[0] !== 'genericLaunch'
+    || nativeOnlyObservation.ready_runtime_session_ids[0] !== 'native-session'
+    || nativeOnlyObservation.runtime_session_ids[0] !== 'native-session'
+    || nativeOnlyObservation.total_count !== 1
     || nativeOnlyObservation.attempt_count !== 1
     || nativeOnlyObservation.observe_only_count !== 1
     || nativeOnlyDispatch.success_count !== 0
@@ -2715,11 +2746,17 @@ async function collectRuntimeEvidence() {
       'warn',
       `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=0 apis=${runtimeNativeLaunchObservation.attempted_apis.join(',') || 'unknown'}`,
     );
+  } else if (runtimeNativeLaunchObservation.ready) {
+    record(
+      'runtime native launch observation',
+      'warn',
+      `observer_ready=true covered_apis=${runtimeNativeLaunchObservation.api_coverage.join(',') || 'unknown'} observed=0`,
+    );
   } else if (CFG.nativeLaunchObserver && CFG.runUpstream) {
     record(
       'runtime native launch observation',
       'warn',
-      'native launch observer enabled but no native_launch_observed lines captured',
+      'native launch observer enabled but no readiness or launch lines captured',
     );
   }
   if (runtimeArgProvenance.total_count > 0) {

@@ -4546,6 +4546,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("upstream_exit=133");
   });
 
+  it("records native observer readiness without accepting it as original host attachment", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel attachment_provenance=native_runtime_intercept",
+    ], {
+      required: true,
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 133,
+    });
+
+    expect(evidence.native_launch_observer_ready).toBe(true);
+    expect(evidence.native_launch_observer_ready_count).toBe(1);
+    expect(evidence.native_launch_observer_ready_runtime_session_ids).toEqual(["native-session"]);
+    expect(evidence.native_launch_observer_api_coverage).toEqual([
+      "oroModuleLaunchKernel",
+      "hipModuleLaunchKernel",
+      "cuLaunchKernel",
+    ]);
+    expect(evidence.native_launch_observer_ready_evidence_refs).toEqual([
+      "worker-log:native_launch_observer_ready:native-session:42",
+    ]);
+    expect(proof.nativeLaunchObserverReady).toBe(true);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.degradedReason).toBe("original_host_path_upstream_run_failed_before_launch_observed");
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("observer=ready");
+  });
+
   it("reports native launch attempts that do not return an observed launch result", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=7 function_ptr=0x456 grid=(1,1,1) block=(1,1,1) args_ptr=0x789 stream=0x0 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept",

@@ -3016,6 +3016,7 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const nativeLaunchAttemptObserved = observation.nativeLaunchAttemptObserved === true;
   const nativeLaunchAttemptWithoutResult = observation.nativeLaunchAttemptWithoutResult === true;
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
+  const nativeLaunchObserverReady = observation.nativeLaunchObserverReady === true;
   const nativeLaunchObserverSawNoLaunch = observation.nativeLaunchObserverSawNoLaunch === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -3073,6 +3074,7 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     nativeLaunchAttemptObserved,
     nativeLaunchAttemptWithoutResult,
     nativeLaunchObserverEnabled,
+    nativeLaunchObserverReady,
     nativeLaunchObserverSawNoLaunch,
     upstreamRunAttempted,
     upstreamRunExitCode,
@@ -3096,11 +3098,12 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const session = proof.sessionScoped ? ' session=current' : ' session=unproven';
   const entry = proof.dispatchEntryRuntimeVerified ? ' entry=runtime' : ' entry=unverified';
   const candidate = proof.attachmentCandidateObserved ? ' candidate=observed' : ' candidate=missing';
+  const observer = proof.nativeLaunchObserverReady ? ' observer=ready' : '';
   const nativeAttempt = proof.nativeLaunchAttemptObserved ? ' native_attempt=observed' : '';
   const upstreamExit = Number.isInteger(proof.upstreamRunExitCode)
     ? ` upstream_exit=${proof.upstreamRunExitCode}`
     : '';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${nativeAttempt}${upstreamExit}`;
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${nativeAttempt}${upstreamExit}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {
