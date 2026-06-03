@@ -1,4 +1,5 @@
 import { browserBroker } from "../browser/broker.js";
+import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import type { BrowserActionKind } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
@@ -254,12 +255,14 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
 async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const cdpUrl = stringOpt(a["cdp_url"]);
-  browserBroker.setBridgeToken(stringOpt(a["bridge_token"]) ?? process.env["SYNTHI_BROWSER_BRIDGE_TOKEN"]);
+  const bridge = await browserBridgeServer.start({ token: stringOpt(a["bridge_token"]) });
+  browserBroker.setBridgeToken(bridge.token);
   const allTabs = await browserPlaywrightAdapter.attach(cdpUrl);
   const tabs = browserBroker.registerTabs(allTabs);
   return jsonResponse({
     ok: true,
     cdp_url: cdpUrl ?? process.env["SYNTHI_BROWSER_CDP_URL"] ?? "http://127.0.0.1:9222",
+    bridge,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,
     permission_tiers: ["attached", "origin_consent", "snapshot", "teach", "control"],
