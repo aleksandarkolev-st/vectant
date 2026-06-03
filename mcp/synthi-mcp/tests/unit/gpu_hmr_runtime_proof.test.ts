@@ -5734,6 +5734,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.validationContext.docker.containers.worker.image_id).toBe("sha256:worker-image");
     expect(artifact.validationContext.command.argv).toEqual(["node", "scripts/gpu-hmr-test.mjs"]);
     expect(artifact.validationContext.target_progression.phase).toBe("small-oracle");
+    expect(artifact.targetProgression.phase).toBe("small-oracle");
+    expect(artifact.target_progression.targetName).toBe("small-target");
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
     expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
       "worker-log:host_identity:renderer_state",
@@ -5742,6 +5744,7 @@ describe("GPU HMR runtime output proof classification", () => {
       "worker-log:host_identity_snapshot:test:renderer_state:2->3",
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
+    expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
   });
 
   it("records blocked proof stages as first-class validation limitations", () => {

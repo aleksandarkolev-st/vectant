@@ -237,6 +237,16 @@ function validationContextSnapshot(input = {}) {
   return context && typeof context === 'object' ? context : null;
 }
 
+function targetProgressionSnapshot(input = {}, validationContext = null) {
+  const progression =
+    input.targetProgression
+    ?? input.target_progression
+    ?? validationContext?.targetProgression
+    ?? validationContext?.target_progression
+    ?? null;
+  return progression && typeof progression === 'object' ? progression : null;
+}
+
 function evidenceKind(ref) {
   if (/\.png$/i.test(ref) || /\.jpe?g$/i.test(ref) || /\.webp$/i.test(ref)) return 'visual-artifact';
   if (/^worker-log:/i.test(ref)) return 'worker-log';
@@ -405,6 +415,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const sessionId = runtimeSessionId(input);
   const runtimeEvidence = runtimeEvidenceSnapshot(input);
   const validationContext = validationContextSnapshot(input);
+  const targetProgression = targetProgressionSnapshot(input, validationContext);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
@@ -430,6 +441,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     originalHostPathProof: input.originalHostPathProof ?? null,
     runtimeEvidence,
     validationContext,
+    targetProgression,
   };
   const materialHash = sha256Hex(stableJson({
     workspaceSlug: input.workspaceSlug ?? null,
@@ -442,6 +454,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     evidenceStrings,
     proofMaterial,
     validationContext,
+    targetProgression,
   }));
   const validationContextHash = validationContext
     ? `sha256:${sha256Hex(stableJson(validationContext))}`
@@ -465,6 +478,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     visualEvidenceRefs,
     runtimeEvidence,
     validationContext,
+    targetProgression,
+    target_progression: targetProgression,
     validationContextHash,
     createdAt,
     proofMaterial,
