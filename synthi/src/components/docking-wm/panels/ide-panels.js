@@ -29,6 +29,7 @@ import {
   AIHealingPanelWrapper,
   IntegrationsPanelWrapper,
   ProgramsPanelWrapper,
+  ProgramSessionPanelWrapper,
 } from './panel-wrappers';
 import { IDE_PANEL } from './panel-types';
 
@@ -91,6 +92,16 @@ export const IDE_PANEL_DEFINITIONS = [
     component: ProgramsPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'left',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.PROGRAM_SESSION,
+    displayName: 'Program Session',
+    icon: 'command',
+    category: 'editor',
+    component: ProgramSessionPanelWrapper,
+    allowMultiple: true,
+    defaultLocation: 'center',
     closable: true,
   },
   {

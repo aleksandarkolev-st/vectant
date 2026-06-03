@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { fetchProgramSessions, launchProgramSession, restartProgramSession, stopProgramSession } from './programsClient';
@@ -12,6 +12,8 @@ import {
   formatProgramSessionPorts,
   isActiveProgramSession,
 } from './programSessionSections';
+import { activateTabAction, openTab, selectNodes, selectTabs, setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
+import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 
 function sessionLabel(session) {
   if (!session?.id) {
@@ -34,7 +36,31 @@ function stateTone(state) {
   }
 }
 
-function SessionCard({ session, acting, onStop, onRestart }) {
+function findProgramSessionTab(nodes, tabs, programSessionId) {
+  for (const [groupId, node] of Object.entries(nodes || {})) {
+    if (node?.type !== 'tabgroup') continue;
+    for (const tabId of node.tabs || []) {
+      const tab = tabs?.[tabId];
+      if (tab?.panelType === IDE_PANEL.PROGRAM_SESSION && tab?.data?.programSessionId === programSessionId) {
+        return { groupId, tabId, tab };
+      }
+    }
+  }
+  return null;
+}
+
+function findEditorGroupId(nodes, tabs) {
+  for (const [groupId, node] of Object.entries(nodes || {})) {
+    if (node?.type !== 'tabgroup') continue;
+    if ((node.tabs || []).some((tabId) => tabs?.[tabId]?.panelType === IDE_PANEL.EDITOR)) {
+      return groupId;
+    }
+  }
+
+  return Object.entries(nodes || {}).find(([, node]) => node?.type === 'tabgroup')?.[0] || null;
+}
+
+function SessionCard({ session, acting, onOpen, onStop, onRestart }) {
   const isActive = isActiveProgramSession(session);
   const ports = formatProgramSessionPorts(session);
   const age = formatProgramSessionAge(session);
@@ -72,6 +98,14 @@ function SessionCard({ session, acting, onStop, onRestart }) {
         </div>
 
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onOpen(session)}
+            className="text-[11px] px-2 py-1 rounded border transition-colors"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+          >
+            Open
+          </button>
           {isActive ? (
             <button
               type="button"
@@ -104,7 +138,10 @@ function SessionCard({ session, acting, onStop, onRestart }) {
 }
 
 export default function ProgramsPanel() {
+  const dispatch = useDispatch();
   const workspaceSlug = useSelector((state) => state.workspace?.slug || null);
+  const nodes = useSelector(selectNodes);
+  const tabs = useSelector(selectTabs);
   const [command, setCommand] = useState('npm run dev');
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +171,32 @@ export default function ProgramsPanel() {
 
   const sections = useMemo(() => buildProgramSessionSections(sessions), [sessions]);
 
+  const openProgramSession = useCallback((session) => {
+    if (!session?.id) return;
+
+    const existing = findProgramSessionTab(nodes, tabs, session.id);
+    if (existing) {
+      dispatch(setFocusedTabGroup(existing.groupId));
+      dispatch(activateTabAction({ tabId: existing.tabId }));
+      return;
+    }
+
+    const targetTabGroupId = findEditorGroupId(nodes, tabs);
+    if (!targetTabGroupId) return;
+
+    dispatch(openTab({
+      panelType: IDE_PANEL.PROGRAM_SESSION,
+      title: sessionLabel(session),
+      targetTabGroupId,
+      data: {
+        programSessionId: session.id,
+        workspaceSlug,
+        title: sessionLabel(session),
+      },
+    }));
+    dispatch(setFocusedTabGroup(targetTabGroupId));
+  }, [dispatch, nodes, tabs, workspaceSlug]);
+
   const handleLaunch = useCallback(async (event) => {
     event.preventDefault();
     const trimmed = command.trim();
@@ -143,12 +206,15 @@ export default function ProgramsPanel() {
 
     setLaunching(true);
     try {
-      await launchProgramSession(workspaceSlug, {
+      const launched = await launchProgramSession(workspaceSlug, {
         command: trimmed,
         runtimeType: 'cli',
         grantScopes: ['program.launch'],
       });
       toast.success('Program launched');
+      if (launched?.session) {
+        openProgramSession(launched.session);
+      }
       await load();
     } catch (error) {
       if (error?.status === 409) {
@@ -159,7 +225,7 @@ export default function ProgramsPanel() {
     } finally {
       setLaunching(false);
     }
-  }, [command, load, workspaceSlug]);
+  }, [command, load, openProgramSession, workspaceSlug]);
 
   const handleStop = useCallback(async (session) => {
     if (!workspaceSlug || !session?.id) return;
@@ -275,6 +341,7 @@ export default function ProgramsPanel() {
                 key={session.id}
                 session={session}
                 acting={actingSessionId === session.id}
+                onOpen={openProgramSession}
                 onStop={handleStop}
                 onRestart={handleRestart}
               />
@@ -299,6 +366,7 @@ export default function ProgramsPanel() {
                 key={session.id}
                 session={session}
                 acting={actingSessionId === session.id}
+                onOpen={openProgramSession}
                 onStop={handleStop}
                 onRestart={handleRestart}
               />

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import reducer, { openTab, floatTabAction } from '../layout-slice';
 import { registerPanel, unregisterPanel } from '../panel-registry-core';
 
-const PROGRAM_SESSION_PANEL = 'program-session-test';
+const PROGRAM_SESSION_PANEL = 'program-session';
 const INTEGRATIONS_PANEL = 'integrations-test';
 
 function registerTestPanel(panelType, allowMultiple) {
@@ -40,6 +40,28 @@ afterEach(() => {
 });
 
 describe('layout-slice panel multiplicity', () => {
+  it('reuses an existing program-session tab for the same session id', () => {
+    registerTestPanel(PROGRAM_SESSION_PANEL, true);
+
+    const state = singleGroupLayout({
+      id: 't1',
+      panelType: PROGRAM_SESSION_PANEL,
+      title: 'Session 1',
+      closable: true,
+      data: { programSessionId: 'ps-1' },
+    });
+
+    const next = reducer(state, openTab({
+      panelType: PROGRAM_SESSION_PANEL,
+      title: 'Session 1',
+      data: { programSessionId: 'ps-1' },
+      targetTabGroupId: 'g1',
+    }));
+
+    expect(next.nodes.g1.tabs).toEqual(['t1']);
+    expect(next.focusedTabGroupId).toBe('g1');
+  });
+
   it('opens multiple docked tabs for allowMultiple panels', () => {
     registerTestPanel(PROGRAM_SESSION_PANEL, true);
 

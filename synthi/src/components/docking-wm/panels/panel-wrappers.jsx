@@ -105,6 +105,11 @@ const ProgramsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const ProgramSessionPanel = dynamic(
+  () => import('@/components/programs/ProgramSessionPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -453,6 +458,24 @@ export const ProgramsPanelWrapper = memo(function ProgramsPanelWrapper({ data })
   );
 });
 
+export const ProgramSessionPanelWrapper = memo(function ProgramSessionPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="program-session"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-editor)' }}
+    >
+      <ProgramSessionPanel
+        workspaceSlug={data?.workspaceSlug || ctx?.workspaceSlug}
+        sessionId={data?.programSessionId}
+        title={data?.title || 'Program Session'}
+      />
+    </div>
+  );
+});
+
 // ────────────────────────────────────────────────────────
 //  Wrapper registry (type → component)
 // ────────────────────────────────────────────────────────
@@ -475,4 +498,5 @@ export const PANEL_WRAPPERS = {
   'ai-healing':    AIHealingPanelWrapper,
   integrations:    IntegrationsPanelWrapper,
   programs:        ProgramsPanelWrapper,
+  'program-session': ProgramSessionPanelWrapper,
 };
