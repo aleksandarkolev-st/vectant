@@ -349,6 +349,19 @@ function booleanField(entry, names) {
   return names.some((name) => entry[name] === true);
 }
 
+function compactStringList(values = []) {
+  const seen = new Set();
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const text = value.trim();
+    if (seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
 function hasTargetProgressionStructuredProofReference(entry) {
   if (!entry || typeof entry !== 'object') return false;
   const artifactRef = stringField(entry, [
@@ -606,6 +619,51 @@ function targetProgressionGateRows({
   return rows;
 }
 
+function buildTargetProgressionLedgerEntry({ report, visualArtifactPaths = [] } = {}) {
+  const progression = report?.target_progression;
+  if (!progression?.phase) return null;
+  const gateRows = Array.isArray(report.target_progression_gates)
+    ? report.target_progression_gates
+    : [];
+  const failedGates = gateRows.filter((row) => row?.status === 'fail');
+  const runtimeProofArtifact = report.runtime_proof_artifact ?? {};
+  return {
+    schemaVersion: 'synthi.real_rocm.target_progression_ledger_entry.v1',
+    phase: progression.phase,
+    phaseRaw: progression.phaseRaw ?? null,
+    targetName: progression.targetName ?? null,
+    finalAcceptanceTarget: progression.finalAcceptanceTarget ?? null,
+    status: failedGates.length === 0 ? 'pass' : 'fail',
+    failureCount: failedGates.length,
+    proofId: runtimeProofArtifact.proofId ?? null,
+    proofArtifactPath: runtimeProofArtifact.path ?? report.runtime_proof_artifact_path ?? null,
+    proofArtifactSchemaVersion:
+      runtimeProofArtifact.schemaVersion ?? 'synthi.gpu.hmr.validation-proof.v1',
+    resultState: report.full_runtime_proof?.resultState ?? runtimeProofArtifact.resultState ?? null,
+    degradedState: report.full_runtime_proof?.degradedState ?? runtimeProofArtifact.degradedState ?? null,
+    degradedReason: report.full_runtime_proof?.degradedReason ?? runtimeProofArtifact.degradedReason ?? null,
+    fullRuntimeProven: report.full_runtime_proof?.fullRuntimeProven === true,
+    outputOracleProven: proofHasResultState(report.output_proof, 'gpu-hmr-output-oracle-proven'),
+    partialReloadProven: partialArtifactReplacementProofObserved(
+      report.source_proofs,
+      report.fission_proof,
+    ),
+    fissionProven: report.fission_proof?.fissionProven === true,
+    originalHostPathProven: report.original_host_path_proof?.attachmentProven === true,
+    hostPreservationProven: proofHasResultState(
+      report.host_preservation_proof,
+      'gpu-hmr-host-preservation-proven',
+    ),
+    dispatchSafeProven: proofHasResultState(
+      report.dispatch_proof,
+      'gpu-hmr-dispatch-safe-proven',
+    ),
+    visualEvidenceRefs: compactStringList(visualArtifactPaths),
+    gateRows,
+    createdAt: report.finished_at ?? new Date().toISOString(),
+  };
+}
+
 const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
 const configuredRepoName = cleanIdentifier(
   process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
@@ -768,6 +826,7 @@ const report = {
     required: CFG.requireTargetProgression,
   }),
   target_progression_ledger: CFG.targetProgressionLedger,
+  target_progression_ledger_entry: null,
   cmake_config: CFG.cmakeConfigName,
   cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
@@ -3996,6 +4055,7 @@ async function writeResults() {
     });
     report.runtime_proof_artifact_path = written.path;
     report.runtime_proof_artifact = {
+      schemaVersion: written.artifact.schemaVersion,
       proofId: written.artifact.proofId,
       path: written.path,
       resultState: written.artifact.resultState,
@@ -4008,6 +4068,11 @@ async function writeResults() {
   report.runtime_proof_artifact_paths = report.runtime_proof_artifact_path
     ? [report.runtime_proof_artifact_path]
     : [];
+  report.target_progression_ledger_entry = buildTargetProgressionLedgerEntry({
+    report,
+    visualArtifactPaths,
+  });
+  validationContext.target_progression_ledger_entry = report.target_progression_ledger_entry;
   report.validation_proof_summary = buildGpuHmrValidationProofSummary({
     workspaceSlug: report.slug,
     model: report.model,
@@ -4015,6 +4080,7 @@ async function writeResults() {
     gpuArch: report.gpu_arch,
     validationContext,
     targetProgressionLedger: report.target_progression_ledger,
+    targetProgressionLedgerEntry: report.target_progression_ledger_entry,
     targetProgressionGates: report.target_progression_gates,
     docker: report.docker,
     timings: validationContext.timings,
@@ -4054,6 +4120,9 @@ async function writeResults() {
     `second_delta_file: ${report.second_delta_file ?? ''}`,
     `extra_deltas: ${JSON.stringify(report.extra_deltas ?? [])}`,
     `target_progression: ${JSON.stringify(report.target_progression)}`,
+    `target_progression_ledger: ${JSON.stringify(report.target_progression_ledger)}`,
+    `target_progression_ledger_entry: ${JSON.stringify(report.target_progression_ledger_entry)}`,
+    `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
