@@ -969,6 +969,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         functionResolutionApis: compactStringList(
           String(fields.function_resolution_apis ?? fields.functionResolutionApis ?? '').split(','),
         ),
+        textureObjectApis: compactStringList(
+          String(fields.texture_object_apis ?? fields.textureObjectApis ?? '').split(','),
+        ),
+        arrayAllocationApis: compactStringList(
+          String(fields.array_allocation_apis ?? fields.arrayAllocationApis ?? '').split(','),
+        ),
         attachmentProvenance:
           fields.attachment_provenance
           ?? fields.attachmentProvenance
@@ -1018,6 +1024,83 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       && typeof record.functionPtr === 'string'
       && record.functionPtr.trim()
       && record.functionPtr !== '0x0'
+      && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
+  const nativeTextureObjectRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\bnative_texture_object_create\b/i))
+    .map((line) => {
+      const fields = parseRuntimeKeyValues(line);
+      return {
+        line,
+        runtimeSession: fields.runtime_session ?? null,
+        api: fields.api ?? null,
+        sequence: integerValue(fields.sequence),
+        texture: fields.texture ?? null,
+        textureOutPtr: fields.texture_out_ptr ?? fields.textureOutPtr ?? null,
+        resourceDescPtr: fields.resource_desc_ptr ?? fields.resourceDescPtr ?? null,
+        textureDescPtr: fields.texture_desc_ptr ?? fields.textureDescPtr ?? null,
+        resourceViewDescPtr: fields.resource_view_desc_ptr ?? fields.resourceViewDescPtr ?? null,
+        result: integerValue(fields.result),
+        creation: fields.creation ?? null,
+        realResolverResolved: boolValue(
+          fields.real_resolver_resolved
+          ?? fields.realResolverResolved
+          ?? fields.real_function_resolver_resolved
+          ?? fields.realFunctionResolverResolved,
+        ),
+        attachmentProvenance:
+          fields.attachment_provenance
+          ?? fields.attachmentProvenance
+          ?? fields.provenance
+          ?? null,
+      };
+    })
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && typeof record.api === 'string'
+      && record.api.trim()
+      && Number.isFinite(record.sequence)
+      && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+    );
+  const nativeArrayAllocationRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryEventLine(line, /\bnative_array_allocation\b/i))
+    .map((line) => {
+      const fields = parseRuntimeKeyValues(line);
+      return {
+        line,
+        runtimeSession: fields.runtime_session ?? null,
+        api: fields.api ?? null,
+        sequence: integerValue(fields.sequence),
+        array: fields.array ?? null,
+        arrayOutPtr: fields.array_out_ptr ?? fields.arrayOutPtr ?? null,
+        descriptorPtr: fields.descriptor_ptr ?? fields.descriptorPtr ?? null,
+        width: integerValue(fields.width),
+        height: integerValue(fields.height),
+        flags: integerValue(fields.flags),
+        result: integerValue(fields.result),
+        allocation: fields.allocation ?? null,
+        realResolverResolved: boolValue(
+          fields.real_resolver_resolved
+          ?? fields.realResolverResolved
+          ?? fields.real_function_resolver_resolved
+          ?? fields.realFunctionResolverResolved,
+        ),
+        attachmentProvenance:
+          fields.attachment_provenance
+          ?? fields.attachmentProvenance
+          ?? fields.provenance
+          ?? null,
+      };
+    })
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && typeof record.api === 'string'
+      && record.api.trim()
+      && Number.isFinite(record.sequence)
       && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
@@ -1159,6 +1242,18 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     evidenceRefToken(record.symbol),
     evidenceRefToken(record.functionPtr),
   ].join(':'));
+  const nativeTextureObjectEvidenceRefs = nativeTextureObjectRecords.slice(-20).map((record) => [
+    'worker-log:native_texture_object_create',
+    evidenceRefToken(record.runtimeSession),
+    evidenceRefToken(record.api),
+    Number.isFinite(record.sequence) ? record.sequence : 'unknown',
+  ].join(':'));
+  const nativeArrayAllocationEvidenceRefs = nativeArrayAllocationRecords.slice(-20).map((record) => [
+    'worker-log:native_array_allocation',
+    evidenceRefToken(record.runtimeSession),
+    evidenceRefToken(record.api),
+    Number.isFinite(record.sequence) ? record.sequence : 'unknown',
+  ].join(':'));
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -1166,6 +1261,22 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     : null;
   const nativeLaunchObserved = nativeLaunchRecords.length > 0;
   const nativeLaunchAttemptObserved = nativeLaunchAttemptRecords.length > 0;
+  const nativeTextureObjectFailureObserved = nativeTextureObjectRecords.some((record) =>
+    String(record.creation ?? '').trim().toLowerCase() === 'failed'
+    || (Number.isFinite(record.result) && record.result !== 0)
+  );
+  const nativeTextureObjectFailureBeforeLaunch =
+    nativeTextureObjectFailureObserved
+    && !nativeLaunchAttemptObserved
+    && !nativeLaunchObserved;
+  const nativeArrayAllocationFailureObserved = nativeArrayAllocationRecords.some((record) =>
+    String(record.allocation ?? '').trim().toLowerCase() === 'failed'
+    || (Number.isFinite(record.result) && record.result !== 0)
+  );
+  const nativeArrayAllocationFailureBeforeLaunch =
+    nativeArrayAllocationFailureObserved
+    && !nativeLaunchAttemptObserved
+    && !nativeLaunchObserved;
   const nativeLaunchAttemptWithoutResult =
     nativeLaunchAttemptObserved
     && !nativeLaunchObserved;
@@ -1192,6 +1303,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     native_function_resolution_api_coverage: compactStringList(
       nativeLaunchObserverReadyRecords.flatMap((record) => record.functionResolutionApis),
     ),
+    native_texture_object_api_coverage: compactStringList(
+      nativeLaunchObserverReadyRecords.flatMap((record) => record.textureObjectApis),
+    ),
+    native_array_allocation_api_coverage: compactStringList(
+      nativeLaunchObserverReadyRecords.flatMap((record) => record.arrayAllocationApis),
+    ),
     native_launch_observer_ready_evidence_refs: nativeLaunchObserverReadyEvidenceRefs,
     native_function_resolution_count: nativeFunctionResolutionRecords.length,
     native_function_resolution_observed: nativeFunctionResolutionRecords.length > 0,
@@ -1216,6 +1333,67 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         evidenceRefToken(record.runtimeSession),
         evidenceRefToken(record.symbol),
         evidenceRefToken(record.functionPtr),
+      ].join(':'),
+    })),
+    native_texture_object_create_count: nativeTextureObjectRecords.length,
+    native_texture_object_failure_count: nativeTextureObjectRecords.filter((record) =>
+      String(record.creation ?? '').trim().toLowerCase() === 'failed'
+      || (Number.isFinite(record.result) && record.result !== 0)
+    ).length,
+    native_texture_object_failure_observed: nativeTextureObjectFailureObserved,
+    native_texture_object_failure_before_launch: nativeTextureObjectFailureBeforeLaunch,
+    native_texture_object_apis: compactStringList(
+      nativeTextureObjectRecords.map((record) => record.api),
+    ),
+    native_texture_object_evidence_refs: nativeTextureObjectEvidenceRefs,
+    native_texture_object_records: nativeTextureObjectRecords.slice(-20).map((record) => ({
+      runtime_session: record.runtimeSession,
+      api: record.api,
+      sequence: record.sequence,
+      texture: record.texture,
+      texture_out_ptr: record.textureOutPtr,
+      resource_desc_ptr: record.resourceDescPtr,
+      texture_desc_ptr: record.textureDescPtr,
+      resource_view_desc_ptr: record.resourceViewDescPtr,
+      result: record.result,
+      creation: record.creation,
+      real_resolver_resolved: record.realResolverResolved,
+      evidence_ref: [
+        'worker-log:native_texture_object_create',
+        evidenceRefToken(record.runtimeSession),
+        evidenceRefToken(record.api),
+        Number.isFinite(record.sequence) ? record.sequence : 'unknown',
+      ].join(':'),
+    })),
+    native_array_allocation_count: nativeArrayAllocationRecords.length,
+    native_array_allocation_failure_count: nativeArrayAllocationRecords.filter((record) =>
+      String(record.allocation ?? '').trim().toLowerCase() === 'failed'
+      || (Number.isFinite(record.result) && record.result !== 0)
+    ).length,
+    native_array_allocation_failure_observed: nativeArrayAllocationFailureObserved,
+    native_array_allocation_failure_before_launch: nativeArrayAllocationFailureBeforeLaunch,
+    native_array_allocation_apis: compactStringList(
+      nativeArrayAllocationRecords.map((record) => record.api),
+    ),
+    native_array_allocation_evidence_refs: nativeArrayAllocationEvidenceRefs,
+    native_array_allocation_records: nativeArrayAllocationRecords.slice(-20).map((record) => ({
+      runtime_session: record.runtimeSession,
+      api: record.api,
+      sequence: record.sequence,
+      array: record.array,
+      array_out_ptr: record.arrayOutPtr,
+      descriptor_ptr: record.descriptorPtr,
+      width: record.width,
+      height: record.height,
+      flags: record.flags,
+      result: record.result,
+      allocation: record.allocation,
+      real_resolver_resolved: record.realResolverResolved,
+      evidence_ref: [
+        'worker-log:native_array_allocation',
+        evidenceRefToken(record.runtimeSession),
+        evidenceRefToken(record.api),
+        Number.isFinite(record.sequence) ? record.sequence : 'unknown',
       ].join(':'),
     })),
     native_launch_attempt_count: nativeLaunchAttemptRecords.length,
@@ -1294,6 +1472,10 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     nativeLaunchAttemptWithoutResult: evidence.native_launch_attempt_without_result,
     nativeLaunchObserverEnabled: evidence.native_launch_observer_enabled,
     nativeLaunchObserverReady: evidence.native_launch_observer_ready,
+    nativeTextureObjectFailureObserved: evidence.native_texture_object_failure_observed,
+    nativeTextureObjectFailureBeforeLaunch: evidence.native_texture_object_failure_before_launch,
+    nativeArrayAllocationFailureObserved: evidence.native_array_allocation_failure_observed,
+    nativeArrayAllocationFailureBeforeLaunch: evidence.native_array_allocation_failure_before_launch,
     nativeLaunchObserverSawNoLaunch: evidence.native_launch_observer_saw_no_launch,
     upstreamRunAttempted: evidence.upstream_run_attempted,
     upstreamRunExitCode: evidence.upstream_run_exit_code,

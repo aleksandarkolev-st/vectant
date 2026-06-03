@@ -3018,6 +3018,10 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const nativeLaunchAttemptWithoutResult = observation.nativeLaunchAttemptWithoutResult === true;
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
   const nativeLaunchObserverReady = observation.nativeLaunchObserverReady === true;
+  const nativeTextureObjectFailureObserved = observation.nativeTextureObjectFailureObserved === true;
+  const nativeTextureObjectFailureBeforeLaunch = observation.nativeTextureObjectFailureBeforeLaunch === true;
+  const nativeArrayAllocationFailureObserved = observation.nativeArrayAllocationFailureObserved === true;
+  const nativeArrayAllocationFailureBeforeLaunch = observation.nativeArrayAllocationFailureBeforeLaunch === true;
   const nativeLaunchObserverSawNoLaunch = observation.nativeLaunchObserverSawNoLaunch === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -3040,7 +3044,11 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     && sessionScoped;
   const degradedReason = attachmentProven || !required
     ? null
-    : upstreamRunFailedBeforeObservedLaunch
+    : nativeArrayAllocationFailureBeforeLaunch
+      ? 'original_host_path_array_allocation_failed_before_launch'
+      : nativeTextureObjectFailureBeforeLaunch
+      ? 'original_host_path_texture_object_creation_failed_before_launch'
+      : upstreamRunFailedBeforeObservedLaunch
       ? 'original_host_path_upstream_run_failed_before_launch_observed'
       : nativeLaunchAttemptWithoutResult
         ? 'original_host_path_native_launch_attempt_without_result'
@@ -3077,6 +3085,10 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     nativeLaunchAttemptWithoutResult,
     nativeLaunchObserverEnabled,
     nativeLaunchObserverReady,
+    nativeTextureObjectFailureObserved,
+    nativeTextureObjectFailureBeforeLaunch,
+    nativeArrayAllocationFailureObserved,
+    nativeArrayAllocationFailureBeforeLaunch,
     nativeLaunchObserverSawNoLaunch,
     upstreamRunAttempted,
     upstreamRunExitCode,
@@ -3102,11 +3114,13 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const candidate = proof.attachmentCandidateObserved ? ' candidate=observed' : ' candidate=missing';
   const observer = proof.nativeLaunchObserverReady ? ' observer=ready' : '';
   const resolver = proof.nativeFunctionResolutionObserved ? ' resolver=observed' : '';
+  const texture = proof.nativeTextureObjectFailureObserved ? ' texture=failure' : '';
+  const arrayAllocation = proof.nativeArrayAllocationFailureObserved ? ' array_alloc=failure' : '';
   const nativeAttempt = proof.nativeLaunchAttemptObserved ? ' native_attempt=observed' : '';
   const upstreamExit = Number.isInteger(proof.upstreamRunExitCode)
     ? ` upstream_exit=${proof.upstreamRunExitCode}`
     : '';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${resolver}${nativeAttempt}${upstreamExit}`;
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${resolver}${texture}${arrayAllocation}${nativeAttempt}${upstreamExit}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {

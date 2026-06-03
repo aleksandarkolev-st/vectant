@@ -4548,7 +4548,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("records native observer readiness without accepting it as original host attachment", () => {
     const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
-      "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel function_resolution_apis=oroModuleGetFunction,hipModuleGetFunction,cuModuleGetFunction attachment_provenance=native_runtime_intercept",
+      "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=oroModuleLaunchKernel,hipModuleLaunchKernel,cuLaunchKernel function_resolution_apis=oroModuleGetFunction,hipModuleGetFunction,cuModuleGetFunction texture_object_apis=oroCreateTextureObject,hipCreateTextureObject,cuTexObjectCreate array_allocation_apis=oroMallocArray,hipMallocArray,cuArrayCreate attachment_provenance=native_runtime_intercept",
     ], {
       required: true,
       nativeLaunchObserverEnabled: true,
@@ -4568,6 +4568,16 @@ describe("GPU HMR runtime output proof classification", () => {
       "oroModuleGetFunction",
       "hipModuleGetFunction",
       "cuModuleGetFunction",
+    ]);
+    expect(evidence.native_texture_object_api_coverage).toEqual([
+      "oroCreateTextureObject",
+      "hipCreateTextureObject",
+      "cuTexObjectCreate",
+    ]);
+    expect(evidence.native_array_allocation_api_coverage).toEqual([
+      "oroMallocArray",
+      "hipMallocArray",
+      "cuArrayCreate",
     ]);
     expect(evidence.native_launch_observer_ready_evidence_refs).toEqual([
       "worker-log:native_launch_observer_ready:native-session:42",
@@ -4611,6 +4621,81 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.attachmentProven).toBe(false);
     expect(proof.degradedState).toBe("gpu-hmr-original-host-path-unattached");
     expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("resolver=observed");
+  });
+
+  it("reports native texture object creation failure before launch", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_texture_object_create api=hipCreateTextureObject runtime_session=native-session sequence=3 texture=0x0 texture_out_ptr=0x4 resource_desc_ptr=0x5 texture_desc_ptr=0x6 resource_view_desc_ptr=0x0 result=1 creation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept",
+    ], {
+      required: true,
+      runtimeSessionIds: ["native-session"],
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 133,
+    });
+
+    expect(evidence.native_texture_object_create_count).toBe(1);
+    expect(evidence.native_texture_object_failure_count).toBe(1);
+    expect(evidence.native_texture_object_failure_observed).toBe(true);
+    expect(evidence.native_texture_object_failure_before_launch).toBe(true);
+    expect(evidence.native_texture_object_apis).toEqual(["hipCreateTextureObject"]);
+    expect(evidence.native_texture_object_evidence_refs).toEqual([
+      "worker-log:native_texture_object_create:native-session:hipCreateTextureObject:3",
+    ]);
+    expect(evidence.native_texture_object_records[0]).toEqual(
+      expect.objectContaining({
+        runtime_session: "native-session",
+        api: "hipCreateTextureObject",
+        sequence: 3,
+        result: 1,
+        creation: "failed",
+        resource_desc_ptr: "0x5",
+        texture_desc_ptr: "0x6",
+      })
+    );
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.nativeTextureObjectFailureObserved).toBe(true);
+    expect(proof.nativeTextureObjectFailureBeforeLaunch).toBe(true);
+    expect(proof.degradedReason).toBe("original_host_path_texture_object_creation_failed_before_launch");
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("texture=failure");
+  });
+
+  it("reports native array allocation failure before launch", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] native_array_allocation api=hipMallocArray runtime_session=native-session sequence=4 array=0x0 array_out_ptr=0x7 descriptor_ptr=0x8 width=64 height=32 flags=0 result=1 allocation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept",
+    ], {
+      required: true,
+      runtimeSessionIds: ["native-session"],
+      nativeLaunchObserverEnabled: true,
+      upstreamRunAttempted: true,
+      upstreamRunExitCode: 133,
+    });
+
+    expect(evidence.native_array_allocation_count).toBe(1);
+    expect(evidence.native_array_allocation_failure_count).toBe(1);
+    expect(evidence.native_array_allocation_failure_observed).toBe(true);
+    expect(evidence.native_array_allocation_failure_before_launch).toBe(true);
+    expect(evidence.native_array_allocation_apis).toEqual(["hipMallocArray"]);
+    expect(evidence.native_array_allocation_evidence_refs).toEqual([
+      "worker-log:native_array_allocation:native-session:hipMallocArray:4",
+    ]);
+    expect(evidence.native_array_allocation_records[0]).toEqual(
+      expect.objectContaining({
+        runtime_session: "native-session",
+        api: "hipMallocArray",
+        sequence: 4,
+        width: 64,
+        height: 32,
+        result: 1,
+        allocation: "failed",
+        descriptor_ptr: "0x8",
+      })
+    );
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.nativeArrayAllocationFailureObserved).toBe(true);
+    expect(proof.nativeArrayAllocationFailureBeforeLaunch).toBe(true);
+    expect(proof.degradedReason).toBe("original_host_path_array_allocation_failed_before_launch");
+    expect(summarizeGpuHmrOriginalHostPathProof(proof)).toContain("array_alloc=failure");
   });
 
   it("reports native launch attempts that do not return an observed launch result", () => {

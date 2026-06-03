@@ -1825,6 +1825,12 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
   const functionResolutionLines = workerEvidence.filter((line) =>
     /\bgpu-runtime-boundary\b.*\bnative_function_resolution\b/i.test(line)
   );
+  const textureObjectLines = workerEvidence.filter((line) =>
+    /\bgpu-runtime-boundary\b.*\bnative_texture_object_create\b/i.test(line)
+  );
+  const arrayAllocationLines = workerEvidence.filter((line) =>
+    /\bgpu-runtime-boundary\b.*\bnative_array_allocation\b/i.test(line)
+  );
   const lines = workerEvidence.filter((line) =>
     /\bgpu-runtime-boundary\b.*\bnative_launch_observed\b/i.test(line)
   );
@@ -1849,6 +1855,14 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
       .split(',')
       .map((api) => api.trim())
       .filter(Boolean),
+    textureObjectApis: String(logField(line, 'texture_object_apis') ?? '')
+      .split(',')
+      .map((api) => api.trim())
+      .filter(Boolean),
+    arrayAllocationApis: String(logField(line, 'array_allocation_apis') ?? '')
+      .split(',')
+      .map((api) => api.trim())
+      .filter(Boolean),
   }));
   const functionResolutionRecords = functionResolutionLines.map((line) => ({
     line,
@@ -1861,6 +1875,51 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     resolution: logField(line, 'resolution'),
     realResolverResolved: logField(line, 'real_resolver_resolved'),
   }));
+  const textureObjectRecords = textureObjectLines.map((line) => ({
+    line,
+    api: logField(line, 'api'),
+    runtimeSession: runtimeSessionIdFromLine(line),
+    sequence: logField(line, 'sequence'),
+    texture: logField(line, 'texture'),
+    textureOutPtr: logField(line, 'texture_out_ptr'),
+    resourceDescPtr: logField(line, 'resource_desc_ptr'),
+    textureDescPtr: logField(line, 'texture_desc_ptr'),
+    resourceViewDescPtr: logField(line, 'resource_view_desc_ptr'),
+    result: logField(line, 'result'),
+    creation: logField(line, 'creation'),
+    realResolverResolved: logField(line, 'real_resolver_resolved'),
+  }));
+  const arrayAllocationRecords = arrayAllocationLines.map((line) => ({
+    line,
+    api: logField(line, 'api'),
+    runtimeSession: runtimeSessionIdFromLine(line),
+    sequence: logField(line, 'sequence'),
+    array: logField(line, 'array'),
+    arrayOutPtr: logField(line, 'array_out_ptr'),
+    descriptorPtr: logField(line, 'descriptor_ptr'),
+    width: logField(line, 'width'),
+    height: logField(line, 'height'),
+    flags: logField(line, 'flags'),
+    result: logField(line, 'result'),
+    allocation: logField(line, 'allocation'),
+    realResolverResolved: logField(line, 'real_resolver_resolved'),
+  }));
+  const textureObjectFailures = textureObjectRecords.filter((record) =>
+    String(record.creation ?? '').toLowerCase() === 'failed'
+    || (
+      record.result !== null
+      && record.result !== undefined
+      && String(record.result) !== '0'
+    )
+  );
+  const arrayAllocationFailures = arrayAllocationRecords.filter((record) =>
+    String(record.allocation ?? '').toLowerCase() === 'failed'
+    || (
+      record.result !== null
+      && record.result !== undefined
+      && String(record.result) !== '0'
+    )
+  );
   const records = lines.map((line) => ({
     line,
     api: logField(line, 'api'),
@@ -1879,12 +1938,28 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     function_resolution_api_coverage: [
       ...new Set(readyRecords.flatMap((record) => record.functionResolutionApis).filter(Boolean)),
     ],
+    texture_object_api_coverage: [
+      ...new Set(readyRecords.flatMap((record) => record.textureObjectApis).filter(Boolean)),
+    ],
+    array_allocation_api_coverage: [
+      ...new Set(readyRecords.flatMap((record) => record.arrayAllocationApis).filter(Boolean)),
+    ],
     function_resolution_count: functionResolutionRecords.length,
     function_resolution_symbols: [
       ...new Set(functionResolutionRecords.map((record) => record.symbol).filter(Boolean)),
     ],
     function_resolution_function_ptrs: [
       ...new Set(functionResolutionRecords.map((record) => record.functionPtr).filter(Boolean)),
+    ],
+    texture_object_create_count: textureObjectRecords.length,
+    texture_object_failure_count: textureObjectFailures.length,
+    texture_object_apis: [
+      ...new Set(textureObjectRecords.map((record) => record.api).filter(Boolean)),
+    ],
+    array_allocation_count: arrayAllocationRecords.length,
+    array_allocation_failure_count: arrayAllocationFailures.length,
+    array_allocation_apis: [
+      ...new Set(arrayAllocationRecords.map((record) => record.api).filter(Boolean)),
     ],
     total_count: records.length,
     attempt_count: attemptRecords.length,
@@ -1896,6 +1971,8 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
         ...records.map((record) => record.runtimeSession).filter(Boolean),
         ...readyRecords.map((record) => record.runtimeSession).filter(Boolean),
         ...functionResolutionRecords.map((record) => record.runtimeSession).filter(Boolean),
+        ...textureObjectRecords.map((record) => record.runtimeSession).filter(Boolean),
+        ...arrayAllocationRecords.map((record) => record.runtimeSession).filter(Boolean),
       ]),
     ],
     attempt_only_count: Math.max(0, attemptRecords.length - records.length),
@@ -1904,6 +1981,8 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     ).length,
     ready_records: readyRecords.slice(-20),
     function_resolution_records: functionResolutionRecords.slice(-20),
+    texture_object_records: textureObjectRecords.slice(-20),
+    array_allocation_records: arrayAllocationRecords.slice(-20),
     attempt_records: attemptRecords.slice(-20),
     records: records.slice(-20),
   };
@@ -2422,8 +2501,10 @@ function selfCheckRuntimeDispatchEvidence() {
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
-      '[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=genericLaunch,otherLaunch function_resolution_apis=genericGetFunction attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=genericLaunch,otherLaunch function_resolution_apis=genericGetFunction texture_object_apis=genericTextureCreate array_allocation_apis=genericArrayAlloc attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_function_resolution api=genericGetFunction runtime_session=native-session module=0x9 symbol=kernel function_ptr=0x1 result=0 resolution=ok real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] native_texture_object_create api=genericTextureCreate runtime_session=native-session sequence=1 texture=0x0 texture_out_ptr=0x4 resource_desc_ptr=0x5 texture_desc_ptr=0x6 resource_view_desc_ptr=0x0 result=1 creation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] native_array_allocation api=genericArrayAlloc runtime_session=native-session sequence=2 array=0x0 array_out_ptr=0x7 descriptor_ptr=0x8 width=64 height=32 flags=0 result=1 allocation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=native-session',
@@ -2441,11 +2522,19 @@ function selfCheckRuntimeDispatchEvidence() {
     nativeOnlyObservation.ready_count !== 1
     || nativeOnlyObservation.api_coverage[0] !== 'genericLaunch'
     || nativeOnlyObservation.function_resolution_api_coverage[0] !== 'genericGetFunction'
+    || nativeOnlyObservation.texture_object_api_coverage[0] !== 'genericTextureCreate'
+    || nativeOnlyObservation.array_allocation_api_coverage[0] !== 'genericArrayAlloc'
     || nativeOnlyObservation.ready_runtime_session_ids[0] !== 'native-session'
     || nativeOnlyObservation.runtime_session_ids[0] !== 'native-session'
     || nativeOnlyObservation.function_resolution_count !== 1
     || nativeOnlyObservation.function_resolution_symbols[0] !== 'kernel'
     || nativeOnlyObservation.function_resolution_function_ptrs[0] !== '0x1'
+    || nativeOnlyObservation.texture_object_create_count !== 1
+    || nativeOnlyObservation.texture_object_failure_count !== 1
+    || nativeOnlyObservation.texture_object_apis[0] !== 'genericTextureCreate'
+    || nativeOnlyObservation.array_allocation_count !== 1
+    || nativeOnlyObservation.array_allocation_failure_count !== 1
+    || nativeOnlyObservation.array_allocation_apis[0] !== 'genericArrayAlloc'
     || nativeOnlyObservation.total_count !== 1
     || nativeOnlyObservation.attempt_count !== 1
     || nativeOnlyObservation.observe_only_count !== 1
@@ -2773,13 +2862,25 @@ async function collectRuntimeEvidence() {
     record(
       'runtime native launch observation',
       'warn',
-      `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=${runtimeNativeLaunchObservation.observe_only_count} resolved=${runtimeNativeLaunchObservation.function_resolution_count} apis=${runtimeNativeLaunchObservation.apis.join(',') || 'unknown'}`,
+      `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=${runtimeNativeLaunchObservation.observe_only_count} resolved=${runtimeNativeLaunchObservation.function_resolution_count} array_alloc=${runtimeNativeLaunchObservation.array_allocation_count} array_failed=${runtimeNativeLaunchObservation.array_allocation_failure_count} texture_create=${runtimeNativeLaunchObservation.texture_object_create_count} texture_failed=${runtimeNativeLaunchObservation.texture_object_failure_count} apis=${runtimeNativeLaunchObservation.apis.join(',') || 'unknown'}`,
     );
   } else if (runtimeNativeLaunchObservation.attempt_count > 0) {
     record(
       'runtime native launch observation',
       'warn',
-      `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=0 resolved=${runtimeNativeLaunchObservation.function_resolution_count} apis=${runtimeNativeLaunchObservation.attempted_apis.join(',') || 'unknown'}`,
+      `attempts=${runtimeNativeLaunchObservation.attempt_count} observed=0 resolved=${runtimeNativeLaunchObservation.function_resolution_count} array_alloc=${runtimeNativeLaunchObservation.array_allocation_count} array_failed=${runtimeNativeLaunchObservation.array_allocation_failure_count} texture_create=${runtimeNativeLaunchObservation.texture_object_create_count} texture_failed=${runtimeNativeLaunchObservation.texture_object_failure_count} apis=${runtimeNativeLaunchObservation.attempted_apis.join(',') || 'unknown'}`,
+    );
+  } else if (runtimeNativeLaunchObservation.array_allocation_count > 0) {
+    record(
+      'runtime native launch observation',
+      'warn',
+      `array_alloc=${runtimeNativeLaunchObservation.array_allocation_count} array_failed=${runtimeNativeLaunchObservation.array_allocation_failure_count} apis=${runtimeNativeLaunchObservation.array_allocation_apis.join(',') || 'unknown'} observed=0`,
+    );
+  } else if (runtimeNativeLaunchObservation.texture_object_create_count > 0) {
+    record(
+      'runtime native launch observation',
+      'warn',
+      `texture_create=${runtimeNativeLaunchObservation.texture_object_create_count} texture_failed=${runtimeNativeLaunchObservation.texture_object_failure_count} apis=${runtimeNativeLaunchObservation.texture_object_apis.join(',') || 'unknown'} observed=0`,
     );
   } else if (runtimeNativeLaunchObservation.function_resolution_count > 0) {
     record(
@@ -2791,7 +2892,7 @@ async function collectRuntimeEvidence() {
     record(
       'runtime native launch observation',
       'warn',
-      `observer_ready=true covered_apis=${runtimeNativeLaunchObservation.api_coverage.join(',') || 'unknown'} function_resolution_apis=${runtimeNativeLaunchObservation.function_resolution_api_coverage.join(',') || 'unknown'} observed=0`,
+      `observer_ready=true covered_apis=${runtimeNativeLaunchObservation.api_coverage.join(',') || 'unknown'} function_resolution_apis=${runtimeNativeLaunchObservation.function_resolution_api_coverage.join(',') || 'unknown'} texture_object_apis=${runtimeNativeLaunchObservation.texture_object_api_coverage.join(',') || 'unknown'} array_allocation_apis=${runtimeNativeLaunchObservation.array_allocation_api_coverage.join(',') || 'unknown'} observed=0`,
     );
   } else if (CFG.nativeLaunchObserver && CFG.runUpstream) {
     record(
