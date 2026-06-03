@@ -244,7 +244,28 @@ function pngChunk(type, data = Buffer.alloc(0)) {
   return out;
 }
 
-function makeOracleVisualPng({ width = 640, height = 320 } = {}) {
+function numericOracleValue(value) {
+  if (typeof value !== 'string') return null;
+  const direct = Number(value);
+  if (Number.isFinite(direct)) return direct;
+  const match = /(?:^|:)(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)$/i.exec(value.trim());
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function runtimeOracleBandValues(runtimeEvidence = {}) {
+  const values = (Array.isArray(runtimeEvidence.outputOracles) ? runtimeEvidence.outputOracles : [])
+    .map((record) => numericOracleValue(record.actual))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return {
+    before: values[0] ?? null,
+    after: values[1] ?? null,
+  };
+}
+
+function makeOracleVisualPng({ width = 640, height = 320, beforeValue = 18432, afterValue = 24576 } = {}) {
+  const maxValue = Math.max(1, beforeValue, afterValue);
   const raw = Buffer.alloc((width * 4 + 1) * height);
   for (let y = 0; y < height; y += 1) {
     const row = y * (width * 4 + 1);
@@ -253,9 +274,9 @@ function makeOracleVisualPng({ width = 640, height = 320 } = {}) {
     const normalizedY = band === 0 ? y / (height / 2) : (y - height / 2) / (height / 2);
     for (let x = 0; x < width; x += 1) {
       const gradient = x / Math.max(1, width - 1);
-      const value = band === 0 ? 18432 : 24576;
+      const value = band === 0 ? beforeValue : afterValue;
       const stripe = ((x >> 4) + (y >> 4)) % 2;
-      const base = (value / 24576) * 255;
+      const base = (value / maxValue) * 255;
       const i = row + 1 + x * 4;
       raw[i] = Math.round((base * 0.55) + (gradient * 95) + (stripe * 22)) & 255;
       raw[i + 1] = Math.round((band ? 118 : 42) + (normalizedY * 82) + (gradient * 35)) & 255;
@@ -611,7 +632,16 @@ async function main() {
   const runtimeEvidence = runtimeEvidenceFromLines(runtimeLines);
   const v1Hash = await hashFile(localV1Hsaco);
   const v2Hash = await hashFile(localV2Hsaco);
-  const png = makeOracleVisualPng();
+  const oracleBandValues = runtimeOracleBandValues(runtimeEvidence);
+  if (!Number.isFinite(oracleBandValues.before) || !Number.isFinite(oracleBandValues.after)) {
+    throw new Error(
+      `HIPRT visual proof requires two runtime output oracle values: ${JSON.stringify(oracleBandValues)}`,
+    );
+  }
+  const png = makeOracleVisualPng({
+    beforeValue: oracleBandValues.before,
+    afterValue: oracleBandValues.after,
+  });
   await writeFile(visualPath, png);
   const visualStats = visualEvidenceRow({
     label: 'hiprt-small-oracle-output',
@@ -748,6 +778,11 @@ async function main() {
       path: visualPath,
       stats: visualStats,
       artifacts: visualEvidenceArtifacts,
+      derivedFromRuntimeOutput: {
+        beforeActual: oracleBandValues.before,
+        afterActual: oracleBandValues.after,
+        oracleIds: runtimeEvidence.outputOracles.map((record) => record.id).filter(Boolean),
+      },
       contentHashes: compactStringList(
         visualEvidenceArtifacts.map((artifact) => artifact.contentHash ?? artifact.content_hash),
       ),
