@@ -4218,13 +4218,14 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] host_identity role=runtime_context ptr=0x3000 aux=0 generation=2 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=runtime_context ptr=0x3000 aux=0 generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=launch_kernel_abc123 ptr=0x4000 aux=99 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=launch_stream ptr=0x5000 aux=0 generation=2 runtime_session=pid1",
     ], {
       expectedGenerationLineage: { previousGeneration: 2, activeGeneration: 3 },
     });
 
     expect(evidence.identity_checks_passed).toBe(true);
     expect(evidence.lineage_identity_roles_missing).toEqual([]);
-    expect(evidence.optional_lineage_identity_roles_missing).toEqual(["launch_kernel_abc123"]);
+    expect(evidence.optional_lineage_identity_roles_missing).toEqual(["launch_kernel_abc123", "launch_stream"]);
     expect(evidence.snapshot_evidence_refs).toEqual([
       "worker-log:host_identity_snapshot:pid1:hmr_boundary_state:2->3",
       "worker-log:host_identity_snapshot:pid1:runner_process:2->3",

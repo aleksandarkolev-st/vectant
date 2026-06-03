@@ -707,6 +707,7 @@ function runtimeHostIdentitySnapshotEvidenceRefs(refs) {
 function hostIdentityRoleCategory(role) {
   const normalized = String(role ?? '').trim().toLowerCase();
   if (!normalized) return null;
+  if (normalized.startsWith('launch_')) return null;
   if (
     normalized.includes('runner')
     || normalized.includes('process')

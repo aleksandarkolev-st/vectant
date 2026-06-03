@@ -535,22 +535,30 @@ async function awaitWorkerLogRegex(regex, timeoutMs, opts = {}) {
 
 // ───────────────────────── MCP JSON-RPC over stdio ─────────────────────────
 
-async function runtimeArtifactTransportEvidenceSince(checkpoint, timeoutMs = 5000) {
+async function runtimeArtifactTransportEvidenceSince(
+  checkpoint,
+  timeoutMs = 5000,
+  maxBytes = 8 * 1024 * 1024,
+) {
   const match = await awaitWorkerLogRegex(
     /\[gpu-runtime-boundary\]\s+artifact_transport\b/i,
     timeoutMs,
-    { after: checkpoint, maxBytes: 8 * 1024 * 1024 },
+    { after: checkpoint, maxBytes },
   );
   return runtimeArtifactTransportEvidence(
     logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+artifact_transport\b/i),
   );
 }
 
-async function runtimeEpochSwapProofSince(checkpoint, timeoutMs = 5000) {
+async function runtimeEpochSwapProofSince(
+  checkpoint,
+  timeoutMs = 5000,
+  maxBytes = 8 * 1024 * 1024,
+) {
   const match = await awaitWorkerLogRegex(
     /\[gpu-runtime-boundary\]\s+dispatcher_epoch\b/i,
     timeoutMs,
-    { after: checkpoint, maxBytes: 8 * 1024 * 1024 },
+    { after: checkpoint, maxBytes },
   );
   return epochSwapProofFromRuntimeEvidence(
     logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+dispatcher_epoch\b/i),
@@ -562,11 +570,12 @@ async function runtimeHostPreservationProofSince(
   dispatchProof = null,
   epochProof = null,
   timeoutMs = 5000,
+  maxBytes = 8 * 1024 * 1024,
 ) {
   const match = await awaitWorkerLogRegex(
     /\[gpu-runtime-boundary\]\s+host_identity\b/i,
     timeoutMs,
-    { after: checkpoint, maxBytes: 8 * 1024 * 1024 },
+    { after: checkpoint, maxBytes },
   );
   return hostPreservationProofFromRuntimeEvidence(
     logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+host_identity\b/i),
@@ -2214,6 +2223,7 @@ async function writeRuntimeOutputOracleEvidenceArtifact(input) {
     producer: input.producer ?? null,
     expected: input.expected ?? null,
     actual: input.actual ?? null,
+    tolerance: input.tolerance ?? null,
     passed: input.passed === true ? true : input.passed === false ? false : null,
     outputTargetId: input.outputTargetId ?? null,
     readbackTimestamp: input.readbackTimestamp ?? null,
@@ -2573,6 +2583,31 @@ function summarizeProofArtifactRecords(records) {
   return `found=${found}/${records.length} ${details.join(' ')}`.slice(0, 900);
 }
 
+function sourceProofSelectedFullDeviceFallback(sourceProof, gpuProof) {
+  const selectedKind = String(
+    sourceProof?.selectedArtifactKind
+      ?? gpuProof?.selectedArtifactKind
+      ?? gpuProof?.artifactKind
+      ?? '',
+  ).trim().toLowerCase();
+  const labels = [
+    sourceProof?.label,
+    gpuProof?.label,
+    gpuProof?.resultLabel,
+  ].map((label) => String(label ?? '').trim().toLowerCase()).filter(Boolean);
+  return selectedKind === 'full_device'
+    || labels.some((label) => /\bgpu-hmr-(?:degraded-)?full-device\b/.test(label));
+}
+
+function summarizeFullDeviceRuntimeProofBlock(sourceProof, gpuProof) {
+  const selectedKind = sourceProof?.selectedArtifactKind
+    ?? gpuProof?.selectedArtifactKind
+    ?? gpuProof?.artifactKind
+    ?? 'unknown';
+  const label = sourceProof?.label ?? gpuProof?.label ?? gpuProof?.resultLabel ?? 'unknown';
+  return `gpu_full_runtime_proof=blocked reason=selected_artifact_kind_full_device selectedArtifactKind=${selectedKind} label=${label}`;
+}
+
 async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 1024 * 1024) {
   const logOpts = checkpoint?.fileSize != null
     ? { fromOffset: checkpoint.fileSize }
@@ -2607,8 +2642,14 @@ async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 10
   return telemetry;
 }
 
-async function awaitGpuDispatchOk(phase, name, checkpoint, expectedKernels = [], timeoutMs = 12000) {
-  const maxBytes = 8 * 1024 * 1024;
+async function awaitGpuDispatchOk(
+  phase,
+  name,
+  checkpoint,
+  expectedKernels = [],
+  timeoutMs = 12000,
+  maxBytes = 8 * 1024 * 1024,
+) {
   const kernelPattern = expectedKernels.length
     ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
     : String.raw`\S+`;
@@ -2650,7 +2691,7 @@ async function awaitRuntimeDispatchProof(
   timeoutMs = 12000,
   proofContext = {},
 ) {
-  const maxBytes = 8 * 1024 * 1024;
+  const maxBytes = proofContext.maxBytes ?? 8 * 1024 * 1024;
   if (dispatchObserved) {
     const kernelPattern = expectedKernels.length
       ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
@@ -2752,9 +2793,15 @@ function formatReadback(values) {
   return `[${(values ?? []).map((v) => Number.isFinite(v) ? Number(v).toFixed(3) : String(v)).join(', ')}]`;
 }
 
-async function awaitGuiReadback(phase, name, expected, checkpoint, timeoutMs = 12000) {
+async function awaitGuiReadback(
+  phase,
+  name,
+  expected,
+  checkpoint,
+  timeoutMs = 12000,
+  maxBytes = 8 * 1024 * 1024,
+) {
   const deadline = Date.now() + timeoutMs;
-  const maxBytes = 8 * 1024 * 1024;
   const logOpts = checkpoint?.fileSize != null
     ? { fromOffset: checkpoint.fileSize }
     : checkpoint?.at
@@ -2787,6 +2834,245 @@ async function awaitGuiReadback(phase, name, expected, checkpoint, timeoutMs = 1
 }
 
 // ───────────────────────── phases ─────────────────────────
+
+async function recordVectorReadbackOutputProof({
+  phase,
+  name,
+  dispatchProof,
+  fissionProof,
+  sourceContent,
+  expectedReadback,
+  sample,
+}) {
+  const actual = Array.isArray(sample?.values) ? sample.values.slice(0, expectedReadback.length) : null;
+  const passed = readbackMatches(actual, expectedReadback);
+  const tolerance = 0.001;
+  const readbackTimestamp = Date.now();
+  const outputTargetId = `${CFG.slug}:${phase}:${safeArtifactToken(name)}:vector-readback:c0..7`;
+  const runtimeSessionId = dispatchProof?.runtimeSessionIds?.[0] ?? null;
+  const artifactId = runtimeArtifactIdForOutputOracle(dispatchProof);
+  const requiredOracleId = requiredOracleIdFromFissionProof(fissionProof);
+  const deterministicInputHash = `sha256:${createHash('sha256')
+    .update(stableJson({
+      fixture: 'vector',
+      sourceHash: createHash('sha256').update(String(sourceContent ?? '')).digest('hex'),
+      expectedReadback,
+    }))
+    .digest('hex')}`;
+  const probeContract = deterministicOutputProbeContract({
+    requiredOracleId,
+    outputTargetId,
+    expected: expectedReadback,
+    readbackSource: 'worker-log-gui-readback',
+    deterministicInputHash,
+  });
+  const outputEvidence = await writeRuntimeOutputOracleEvidenceArtifact({
+    phase,
+    name,
+    oracleId: probeContract.oracleId,
+    requiredOracleId: requiredOracleId ?? probeContract.oracleId,
+    kind: 'edit_contract',
+    producer: 'runtime_readback',
+    expected: expectedReadback,
+    actual,
+    tolerance,
+    passed,
+    outputTargetId,
+    readbackTimestamp,
+    runtimeSessionId,
+    artifactId,
+    probeMode: probeContract.mode,
+    probeConfig: probeContract.config,
+    probeConfigHash: probeContract.configHash,
+    rawEvidence: sample?.raw,
+  });
+  return recordRuntimeOutputProof(phase, `${name} output proof`, {
+    dispatchProof,
+    deterministicOutputObserved: Boolean(sample),
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: passed,
+    outputOracle: {
+      oracleId: probeContract.oracleId,
+      requiredOracleId: requiredOracleId ?? probeContract.oracleId,
+      kind: 'edit_contract',
+      producer: 'runtime_readback',
+      expected: expectedReadback,
+      actual,
+      tolerance,
+      passed,
+      outputTargetId,
+      readbackTimestamp,
+      runtimeSessionId,
+      artifactId,
+      probeMode: probeContract.mode,
+      probeConfigHash: probeContract.configHash,
+      probeEvidenceRefs: outputEvidence.refs,
+      evidenceRefs: outputEvidence.refs,
+    },
+    visualFrameObserved: false,
+    visualEvidenceRequired: false,
+  });
+}
+
+async function recordVectorRuntimeProofLadder({
+  phase,
+  name,
+  checkpoint,
+  hmr,
+  sourceContent,
+  expectedReadback,
+  dispatchName,
+  readbackName,
+}) {
+  const expectedKernels = kernelNamesFromSource(sourceContent);
+  const runtimeProofLogBytes = 32 * 1024 * 1024;
+  const dispatchObserved = await awaitGpuDispatchOk(
+    phase,
+    dispatchName,
+    checkpoint,
+    expectedKernels,
+    12000,
+    runtimeProofLogBytes,
+  );
+  const readbackSample = await awaitGuiReadback(
+    phase,
+    readbackName,
+    expectedReadback,
+    checkpoint,
+    12000,
+    runtimeProofLogBytes,
+  );
+  const proofState = await recordGpuProofWithArtifactFallback(
+    phase,
+    `${name} truthful proof state`,
+    hmr,
+  );
+  const gpuProof = proofState.proof;
+  const proofArtifacts = proofState.artifacts ?? await proofArtifactsFromGpuProof(gpuProof);
+  record(
+    phase,
+    `${name} proof artifact collection`,
+    proofArtifacts.some((artifact) => artifact?.found) ? 'pass' : 'warn',
+    summarizeProofArtifactRecords(proofArtifacts),
+  );
+  const sourceProof = sourceProofFromProofArtifacts(proofArtifacts, gpuProof);
+  const fissionProof = fissionProofFromProofArtifacts(proofArtifacts);
+  const abiProof = abiProofFromProofArtifacts(proofArtifacts);
+  record(
+    phase,
+    `${name} source proof from artifact`,
+    sourceProof.resultState ? 'pass' : 'warn',
+    summarizeGpuHmrSourceProof(sourceProof),
+  );
+  record(
+    phase,
+    `${name} fission proof from artifact`,
+    fissionProof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrFissionProof(fissionProof),
+  );
+  record(
+    phase,
+    `${name} ABI proof from artifact`,
+    abiProof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrAbiProof(abiProof),
+  );
+  const runtimeArtifactTransport = await runtimeArtifactTransportEvidenceSince(
+    checkpoint,
+    5000,
+    runtimeProofLogBytes,
+  );
+  const artifactTransportProof = recordArtifactTransportProof(
+    phase,
+    `${name} artifact transport proof`,
+    proofArtifacts,
+    runtimeArtifactTransport,
+  );
+  const dispatchProof = await awaitRuntimeDispatchProof(
+    phase,
+    `${name} dispatch provenance proof`,
+    checkpoint,
+    expectedKernels,
+    dispatchObserved,
+    12000,
+    {
+      abiProof,
+      selectedArtifactIds: selectedArtifactIdsFromProofArtifacts(proofArtifacts),
+      maxBytes: runtimeProofLogBytes,
+    },
+  );
+  const outputProof = await recordVectorReadbackOutputProof({
+    phase,
+    name,
+    dispatchProof,
+    fissionProof,
+    sourceContent,
+    expectedReadback,
+    sample: readbackSample,
+  });
+  const epochProof = await runtimeEpochSwapProofSince(checkpoint, 5000, runtimeProofLogBytes);
+  const hostProofWithEvidence = await runtimeHostPreservationProofSince(
+    checkpoint,
+    dispatchProof,
+    epochProof.proof,
+    5000,
+    runtimeProofLogBytes,
+  );
+  const hostPreservationProof = recordRuntimeHostPreservationProof(
+    phase,
+    `${name} host preservation proof`,
+    hostProofWithEvidence,
+  );
+  if (sourceProofSelectedFullDeviceFallback(sourceProof, gpuProof)) {
+    record(
+      phase,
+      `${name} runtime proof ladder`,
+      'fail',
+      summarizeFullDeviceRuntimeProofBlock(sourceProof, gpuProof),
+    );
+    return {
+      gpuProof,
+      proofArtifacts,
+      sourceProof,
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      dispatchProof,
+      outputProof,
+      epochProof: epochProof.proof,
+      hostPreservationProof,
+      fullRuntimeProof: null,
+      fullRuntimeProofBlocked: true,
+    };
+  }
+  const fullRuntimeProof = recordRuntimeFullProof(phase, `${name} runtime proof ladder`, {
+    sourceProof,
+    abiProof,
+    fissionProof,
+    artifactTransportProof,
+    epochProof: epochProof.proof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+    runtimeEvidence: {
+      artifactTransport: runtimeArtifactTransport,
+      epochSwap: epochProof.evidence,
+      hostPreservation: hostProofWithEvidence.evidence,
+    },
+  });
+  return {
+    gpuProof,
+    proofArtifacts,
+    sourceProof,
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    dispatchProof,
+    outputProof,
+    epochProof: epochProof.proof,
+    hostPreservationProof,
+    fullRuntimeProof,
+  };
+}
 
 async function preflight() {
   log('info', '── Preflight ──');
@@ -3337,22 +3623,20 @@ async function phaseP1(ctx) {
     'edit HMR has no full-device fallback',
     preTail,
   );
-  await awaitGpuDispatchOk(
-    'P1',
-    'post-edit GPU dispatch ok',
-    preTail,
-    kernelNamesFromSource(DEVICE_CU_PHASE1_EDIT),
-  );
   record('P1', 'reload plan emitted', reload.matched ? 'pass' : 'warn',
     reload.snippet || 'no plan marker — orchestrator not wired yet');
 
   if (ctx.fixture === 'vector') {
-    await awaitGuiReadback(
-      'P1',
-      'post-edit numeric GPU readback',
-      VECTOR_MUL_READBACK,
-      preTail,
-    );
+    await recordVectorRuntimeProofLadder({
+      phase: 'P1',
+      name: 'post-edit',
+      checkpoint: preTail,
+      hmr: compile.hmr,
+      sourceContent: DEVICE_CU_PHASE1_EDIT,
+      expectedReadback: VECTOR_MUL_READBACK,
+      dispatchName: 'post-edit GPU dispatch ok',
+      readbackName: 'post-edit numeric GPU readback',
+    });
   }
 
   const reused = await awaitWorkerLogRegex(
@@ -3483,19 +3767,17 @@ async function phaseP2(ctx) {
       'fast-swap HMR has no full-device fallback',
       fastLogStart,
     );
-    await awaitGpuDispatchOk(
-      'P2',
-      'fast-swap GPU dispatch ok',
-      fastLogStart,
-      kernelNamesFromSource(DEVICE_CU_PHASE2_FAST),
-    );
     if (ctx.fixture === 'vector') {
-      await awaitGuiReadback(
-        'P2',
-        'fast-swap numeric GPU readback',
-        VECTOR_MUL_READBACK,
-        fastLogStart,
-      );
+      await recordVectorRuntimeProofLadder({
+        phase: 'P2',
+        name: 'fast-swap',
+        checkpoint: fastLogStart,
+        hmr: fast.hmr,
+        sourceContent: DEVICE_CU_PHASE2_FAST,
+        expectedReadback: VECTOR_MUL_READBACK,
+        dispatchName: 'fast-swap GPU dispatch ok',
+        readbackName: 'fast-swap numeric GPU readback',
+      });
     }
   }
 
@@ -4138,6 +4420,7 @@ async function selfCheck() {
     ramTransportProven: true,
     transportEvidenceObserved: true,
     ramArtifactReferenceProvided: true,
+    ramBlobIdentityProven: true,
     evidenceRefs: ['evidence:ram-transport:self-check'],
   };
   const hostPreservationProof = {
