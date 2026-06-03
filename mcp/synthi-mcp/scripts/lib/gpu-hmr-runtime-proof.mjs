@@ -3006,6 +3006,52 @@ export function summarizeGpuHmrHostPreservationProof(proof) {
   return `gpu_host_preservation_proof=${result}${degraded}${reason}${identity}`;
 }
 
+function normalizeRuntimeCapabilityPreflight(value) {
+  const raw = objectField(value);
+  if (!raw) return null;
+  const allocationAvailable = raw.allocationAvailable === true || raw.allocation_available === true
+    ? true
+    : raw.allocationAvailable === false || raw.allocation_available === false
+      ? false
+      : null;
+  const skipped = raw.skipped === true || raw.skipped === 'true';
+  const degradedState = stringField(raw.degradedState, raw.degraded_state);
+  const degradedReason = stringField(raw.degradedReason, raw.degraded_reason, raw.reason);
+  const allocationResult = integerValue(raw.allocationResult ?? raw.allocation_result);
+  const deviceCountResult = integerValue(raw.deviceCountResult ?? raw.device_count_result);
+  const deviceCount = integerValue(raw.deviceCount ?? raw.device_count);
+  const exitCode = integerValue(raw.exitCode ?? raw.exit_code);
+  const observed = !skipped && (
+    allocationAvailable !== null
+    || allocationResult !== null
+    || degradedState !== null
+    || stringField(raw.allocationError, raw.allocation_error) !== null
+  );
+  return {
+    schemaVersion: stringField(raw.schemaVersion, raw.schema_version) ?? null,
+    backend: stringField(raw.backend) ?? null,
+    api: stringField(raw.api) ?? null,
+    probe: stringField(raw.probe) ?? null,
+    skipped,
+    observed,
+    allocationAvailable,
+    allocationUnavailable:
+      observed
+      && (
+        allocationAvailable === false
+        || degradedState === 'gpu-runtime-array-allocation-unavailable'
+      ),
+    allocationResult,
+    allocationError: stringField(raw.allocationError, raw.allocation_error) ?? null,
+    deviceCountResult,
+    deviceCountError: stringField(raw.deviceCountError, raw.device_count_error) ?? null,
+    deviceCount,
+    exitCode,
+    degradedState,
+    degradedReason,
+  };
+}
+
 export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const required = observation.required === true;
   const runtimeSessionIds = runtimeSessionIdsFromObservation(observation);
@@ -3030,6 +3076,27 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
   const nativeTextureObjectFailureBeforeLaunch = observation.nativeTextureObjectFailureBeforeLaunch === true;
   const nativeArrayAllocationFailureObserved = observation.nativeArrayAllocationFailureObserved === true;
   const nativeArrayAllocationFailureBeforeLaunch = observation.nativeArrayAllocationFailureBeforeLaunch === true;
+  const runtimeCapabilityPreflight = normalizeRuntimeCapabilityPreflight(
+    observation.runtimeCapabilityPreflight ?? observation.runtime_capability_preflight,
+  );
+  const runtimeCapabilityPreflightObserved = runtimeCapabilityPreflight?.observed === true;
+  const runtimeArrayAllocationCapabilityAvailable =
+    runtimeCapabilityPreflightObserved ? runtimeCapabilityPreflight.allocationAvailable === true : null;
+  const runtimeArrayAllocationCapabilityUnavailable =
+    runtimeCapabilityPreflightObserved && runtimeCapabilityPreflight.allocationUnavailable === true;
+  const runtimeCapabilityEvidenceRefs = runtimeCapabilityPreflightObserved
+    ? compactStringList([
+      [
+        'runtime-capability-preflight',
+        runtimeCapabilityPreflight.backend ?? 'unknown-backend',
+        runtimeCapabilityPreflight.probe ?? 'unknown-probe',
+        runtimeCapabilityPreflight.api ?? 'unknown-api',
+        runtimeCapabilityPreflight.allocationResult === null
+          ? 'result:unknown'
+          : `result:${runtimeCapabilityPreflight.allocationResult}`,
+      ].join(':'),
+    ])
+    : [];
   const nativeLaunchObserverSawNoLaunch = observation.nativeLaunchObserverSawNoLaunch === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -3052,6 +3119,8 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     && sessionScoped;
   const degradedReason = attachmentProven || !required
     ? null
+    : runtimeArrayAllocationCapabilityUnavailable
+      ? 'original_host_path_runtime_array_allocation_capability_unavailable'
     : nativeArrayAllocationFailureBeforeLaunch
       ? 'original_host_path_array_allocation_failed_before_launch'
       : nativeTextureObjectFailureBeforeLaunch
@@ -3097,6 +3166,11 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     nativeTextureObjectFailureBeforeLaunch,
     nativeArrayAllocationFailureObserved,
     nativeArrayAllocationFailureBeforeLaunch,
+    runtimeCapabilityPreflightObserved,
+    runtimeCapabilityPreflight,
+    runtimeCapabilityEvidenceRefs,
+    runtimeArrayAllocationCapabilityAvailable,
+    runtimeArrayAllocationCapabilityUnavailable,
     nativeLaunchObserverSawNoLaunch,
     upstreamRunAttempted,
     upstreamRunExitCode,
@@ -3124,11 +3198,18 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   const resolver = proof.nativeFunctionResolutionObserved ? ' resolver=observed' : '';
   const texture = proof.nativeTextureObjectFailureObserved ? ' texture=failure' : '';
   const arrayAllocation = proof.nativeArrayAllocationFailureObserved ? ' array_alloc=failure' : '';
+  const runtimeArrayCapability = proof.runtimeCapabilityPreflightObserved
+    ? proof.runtimeArrayAllocationCapabilityAvailable
+      ? ' array_capability=available'
+      : proof.runtimeArrayAllocationCapabilityUnavailable
+        ? ' array_capability=unavailable'
+        : ' array_capability=unknown'
+    : '';
   const nativeAttempt = proof.nativeLaunchAttemptObserved ? ' native_attempt=observed' : '';
   const upstreamExit = Number.isInteger(proof.upstreamRunExitCode)
     ? ` upstream_exit=${proof.upstreamRunExitCode}`
     : '';
-  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${resolver}${texture}${arrayAllocation}${nativeAttempt}${upstreamExit}`;
+  return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${resolver}${texture}${arrayAllocation}${runtimeArrayCapability}${nativeAttempt}${upstreamExit}`;
 }
 
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {

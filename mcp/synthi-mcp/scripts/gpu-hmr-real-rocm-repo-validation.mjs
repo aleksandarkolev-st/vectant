@@ -3316,7 +3316,21 @@ function selfCheckRuntimeDispatchEvidence() {
   const nativeOnlyDispatch = runtimeDispatchEvidence(nativeOnlyRuntimeEvidence.runtimeEvidence);
   const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
-    { required: true, runtimeSessionIds: ['native-session'] },
+    {
+      required: true,
+      runtimeSessionIds: ['native-session'],
+      runtimeCapabilityPreflight: {
+        schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+        backend: 'rocm',
+        api: 'genericArrayAlloc',
+        probe: 'generic_array_allocation_preflight',
+        allocationAvailable: false,
+        allocationResult: 1,
+        allocationError: 'invalid argument',
+        degradedState: 'gpu-runtime-array-allocation-unavailable',
+        degradedReason: 'genericArrayAlloc returned 1 invalid argument',
+      },
+    },
   );
   if (
     nativeOnlyObservation.ready_count !== 1
@@ -3341,6 +3355,11 @@ function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyDispatch.success_count !== 0
     || nativeOnlyOriginalHost.evidence.raw_count !== 1
     || nativeOnlyOriginalHost.proof.attachmentProven
+    || !nativeOnlyOriginalHost.proof.runtimeCapabilityPreflightObserved
+    || nativeOnlyOriginalHost.proof.runtimeArrayAllocationCapabilityAvailable !== false
+    || !nativeOnlyOriginalHost.proof.runtimeArrayAllocationCapabilityUnavailable
+    || nativeOnlyOriginalHost.proof.degradedReason !== 'original_host_path_runtime_array_allocation_capability_unavailable'
+    || !summarizeGpuHmrOriginalHostPathProof(nativeOnlyOriginalHost.proof).includes('array_capability=unavailable')
   ) {
     throw new Error('native launch observation self-check must remain observe-only');
   }
@@ -3738,6 +3757,7 @@ async function collectRuntimeEvidence() {
     nativeLaunchObserverEnabled: CFG.nativeLaunchObserver,
     upstreamRunAttempted: CFG.runUpstream,
     upstreamRunExitCode,
+    runtimeCapabilityPreflight: report.runtime_capability_preflight,
   });
   report.evidence = {
     runtime_capability_preflight: report.runtime_capability_preflight,

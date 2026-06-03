@@ -1546,6 +1546,8 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     nativeTextureObjectFailureBeforeLaunch: evidence.native_texture_object_failure_before_launch,
     nativeArrayAllocationFailureObserved: evidence.native_array_allocation_failure_observed,
     nativeArrayAllocationFailureBeforeLaunch: evidence.native_array_allocation_failure_before_launch,
+    runtimeCapabilityPreflight:
+      observation.runtimeCapabilityPreflight ?? observation.runtime_capability_preflight,
     nativeLaunchObserverSawNoLaunch: evidence.native_launch_observer_saw_no_launch,
     upstreamRunAttempted: evidence.upstream_run_attempted,
     upstreamRunExitCode: evidence.upstream_run_exit_code,
