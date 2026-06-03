@@ -868,7 +868,7 @@ const CFG = {
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
   gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.5-flash',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS === '1',
 };
 
