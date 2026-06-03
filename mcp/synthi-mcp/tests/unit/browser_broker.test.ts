@@ -201,9 +201,10 @@ describe("browser locator and script policy", () => {
     });
 
     const generated = browserBroker.generatedScript();
-    expect(generated.code).toContain("await expect(page.getByLabel(\"Name\")).toBeVisible();");
-    expect(generated.code).toContain("await page.getByLabel(\"Name\").fill(\"Ada\");");
-    expect(generated.code).toContain("await expect(page.getByLabel(\"Name\")).toHaveValue(\"Ada\");");
+    expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? \"https://app.example.com\";");
+    expect(generated.code).toContain("const target1 = await firstVisible(page.getByLabel(\"Name\")");
+    expect(generated.code).toContain("await target1.fill(\"Ada\");");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(\"Ada\");");
     expect(generated.used_locators[0]?.confidence).toBeGreaterThan(0.9);
     expect(generated.used_locators[0]?.fallbacks.map((candidate) => candidate.kind)).toContain("placeholder");
   });

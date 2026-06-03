@@ -146,20 +146,37 @@ export interface GeneratedScript {
 }
 
 export function generatePlaywrightScript(events: BrowserTraceEvent[]): GeneratedScript {
+  const baseOrigin = firstHttpOrigin(events);
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
     "",
     "test('replayed browser workflow', async ({ page }) => {",
   ];
+  if (baseOrigin) {
+    lines.push(`  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? ${JSON.stringify(baseOrigin)};`);
+  }
+  lines.push("  async function firstVisible(...locators) {");
+  lines.push("    let fallback = null;");
+  lines.push("    for (const locator of locators) {");
+  lines.push("      try {");
+  lines.push("        const count = await locator.count();");
+  lines.push("        if (count === 1) return locator;");
+  lines.push("        if (count > 1 && !fallback) fallback = locator.first();");
+  lines.push("      } catch {}");
+  lines.push("    }");
+  lines.push("    if (fallback) return fallback;");
+  lines.push("    throw new Error('No locator candidate matched');");
+  lines.push("  }");
   const used_locators: GeneratedScript["used_locators"] = [];
   const warnings: string[] = [];
   let currentUrl: string | null = null;
+  let targetSeq = 0;
 
   for (const event of events) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
     if (event.kind === "navigation" || event.action === "navigate") {
       if (event.url !== currentUrl) {
-        lines.push(`  await page.goto(${JSON.stringify(event.url)});`);
+        lines.push(gotoLine(event.url, baseOrigin));
         lines.push("  await expect(page).toHaveURL(/.*/);");
         currentUrl = event.url;
       }
@@ -171,37 +188,45 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[]): Generated
       warnings.push(`event ${event.event_id} has no locator candidates`);
       continue;
     }
+    if (!currentUrl) {
+      lines.push(gotoLine(event.url, baseOrigin));
+      currentUrl = event.url;
+    }
     used_locators.push({
       event_id: event.event_id,
       locator: locator.locator,
       confidence: locator.confidence,
       fallbacks: event.locator_candidates?.slice(1) ?? [],
     });
-    lines.push(`  await expect(${locator.locator}).toBeVisible();`);
+    const locatorExpressions = (event.locator_candidates ?? [locator]).map((candidate) => locatorExpressionForEvent(event, candidate.locator));
+    targetSeq += 1;
+    const target = `target${targetSeq}`;
+    lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
+    lines.push(`  await expect(${target}).toBeVisible();`);
     switch (event.action) {
       case "click":
-        lines.push(`  await ${locator.locator}.click();`);
+        lines.push(`  await ${target}.click();`);
         break;
       case "fill":
-        lines.push(`  await ${locator.locator}.fill(${JSON.stringify(event.value ?? "")});`);
-        lines.push(`  await expect(${locator.locator}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
+        lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
         break;
       case "press":
-        lines.push(`  await ${locator.locator}.press(${JSON.stringify(event.value ?? "Enter")});`);
+        lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
         break;
       case "select":
-        lines.push(`  await ${locator.locator}.selectOption(${JSON.stringify(event.value ?? "")});`);
+        lines.push(`  await ${target}.selectOption(${JSON.stringify(event.value ?? "")});`);
         break;
       case "check":
-        lines.push(`  await ${locator.locator}.check();`);
-        lines.push(`  await expect(${locator.locator}).toBeChecked();`);
+        lines.push(`  await ${target}.check();`);
+        lines.push(`  await expect(${target}).toBeChecked();`);
         break;
       case "uncheck":
-        lines.push(`  await ${locator.locator}.uncheck();`);
-        lines.push(`  await expect(${locator.locator}).not.toBeChecked();`);
+        lines.push(`  await ${target}.uncheck();`);
+        lines.push(`  await expect(${target}).not.toBeChecked();`);
         break;
       case "wait":
-        lines.push(`  await ${locator.locator}.waitFor();`);
+        lines.push(`  await ${target}.waitFor();`);
         break;
       default:
         warnings.push(`event ${event.event_id} has unsupported action ${event.action ?? "unknown"}`);
@@ -211,4 +236,35 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[]): Generated
 
   lines.push("});");
   return { code: lines.join("\n"), used_locators, warnings };
+}
+
+function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
+  for (const event of events) {
+    try {
+      const url = new URL(event.url);
+      if (url.protocol === "http:" || url.protocol === "https:") return url.origin;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function gotoLine(url: string, baseOrigin: string | null): string {
+  if (!baseOrigin) return `  await page.goto(${JSON.stringify(url)});`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin === baseOrigin) {
+      return `  await page.goto(\`\${baseUrl}${parsed.pathname}${parsed.search}${parsed.hash}\`);`;
+    }
+  } catch {
+    // Fall through to literal URL.
+  }
+  return `  await page.goto(${JSON.stringify(url)});`;
+}
+
+function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string): string {
+  const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : null;
+  if (!frameLocator) return locator;
+  return locator.replace(/^page\./, `page.frameLocator(${JSON.stringify(frameLocator)}).`);
 }
