@@ -567,7 +567,9 @@ fn arg_provenance_is_runtime_proven(arg: &LaunchArgProvenance) -> bool {
     match arg.kind.as_str() {
         "scalar-value" => true,
         "device-allocation" => {
-            arg.allocation_id.as_deref().is_some_and(|id| !id.is_empty())
+            arg.allocation_id
+                .as_deref()
+                .is_some_and(|id| !id.is_empty())
                 && arg.allocation_bytes.is_some()
         }
         _ => false,
@@ -613,13 +615,7 @@ fn classify_launch_args(
     (0..arg_count)
         .map(|index| {
             let value_ptr = unsafe { std::ptr::read_unaligned(args.add(index)) };
-            classify_arg_value(
-                guard,
-                index,
-                value_ptr,
-                0,
-                SYNTHI_GPU_ARG_KIND_UNKNOWN,
-            )
+            classify_arg_value(guard, index, value_ptr, 0, SYNTHI_GPU_ARG_KIND_UNKNOWN)
         })
         .collect()
 }
@@ -714,6 +710,39 @@ fn record_host_identity_event(role: String, identity_ptr: *const c_void, aux_ide
     );
 }
 
+fn runtime_owned_host_identity_role(role: &str) -> bool {
+    matches!(
+        role,
+        "runner_process" | "hmr_boundary_state" | "runtime_context"
+    ) || role.starts_with("launch_")
+}
+
+fn latest_replayable_host_identities(
+    generation: u64,
+    runtime_session: &str,
+) -> Vec<HostIdentityRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    let mut by_role = HashMap::<String, HostIdentityRecord>::new();
+    for record in &guard.host_identities {
+        if record.generation >= generation
+            || record.runtime_session_id != runtime_session
+            || runtime_owned_host_identity_role(&record.role)
+        {
+            continue;
+        }
+        let should_replace = by_role
+            .get(&record.role)
+            .map(|current| record.generation > current.generation)
+            .unwrap_or(true);
+        if should_replace {
+            by_role.insert(record.role.clone(), record.clone());
+        }
+    }
+    let mut records = by_role.into_values().collect::<Vec<_>>();
+    records.sort_by(|left, right| left.role.cmp(&right.role));
+    records
+}
+
 fn record_launch_host_identities(
     kernel_name: &str,
     kernel_name_ptr: *const c_void,
@@ -722,7 +751,11 @@ fn record_launch_host_identities(
 ) {
     let pid = std::process::id() as usize;
     let session_hash = stable_hash64(runtime_session_id());
-    record_host_identity_event("runner_process".to_string(), pid as *const c_void, session_hash);
+    record_host_identity_event(
+        "runner_process".to_string(),
+        pid as *const c_void,
+        session_hash,
+    );
     if !kernel_name_ptr.is_null() {
         let kernel_hash = stable_hash64(kernel_name);
         record_host_identity_event(
@@ -744,8 +777,11 @@ fn record_launch_host_identities(
 }
 
 pub fn record_hmr_runtime_identity_snapshot() {
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    let retained_host_identities = latest_replayable_host_identities(generation, &runtime_session);
     let pid = std::process::id() as usize;
-    let session_hash = stable_hash64(runtime_session_id());
+    let session_hash = stable_hash64(&runtime_session);
     record_host_identity_event(
         "runner_process".to_string(),
         pid as *const c_void,
@@ -761,6 +797,9 @@ pub fn record_hmr_runtime_identity_snapshot() {
         (dispatcher_slot() as *const Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>).cast::<c_void>(),
         stable_hash64("runtime_context"),
     );
+    for record in retained_host_identities {
+        record_host_identity_event(record.role, record.ptr as *const c_void, record.aux);
+    }
 }
 
 fn record_original_host_path_event_at(
@@ -830,7 +869,10 @@ fn record_original_host_path_event(
     );
 }
 
-fn latest_runtime_dispatch_table_entry_id(generation: u64, runtime_session: &str) -> Option<String> {
+fn latest_runtime_dispatch_table_entry_id(
+    generation: u64,
+    runtime_session: &str,
+) -> Option<String> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard
         .launches
@@ -1515,12 +1557,17 @@ fn synthi_gpu_launch_raw_impl(
     let block = block_decoded.dims;
     let active_generation = current_launch_generation();
     let runtime_session_id = runtime_session_id().to_string();
-    let active_dispatcher_metadata = dispatcher_metadata_snapshot()
-        .filter(|metadata| metadata.generation == active_generation);
+    let active_dispatcher_metadata =
+        dispatcher_metadata_snapshot().filter(|metadata| metadata.generation == active_generation);
     let active_dispatch_table_entry_id = active_dispatcher_metadata
         .as_ref()
         .and_then(|metadata| dispatch_table_entry_id_for_kernel(metadata, &kernel_name));
-    record_launch_host_identities(&kernel_name, kernel_name_ptr, _gpu.cast_const(), stream_token);
+    record_launch_host_identities(
+        &kernel_name,
+        kernel_name_ptr,
+        _gpu.cast_const(),
+        stream_token,
+    );
     if let Some(attachment) = original_host_path {
         let dispatch_table_entry_id = attachment
             .dispatch_table_entry_id
@@ -1560,9 +1607,7 @@ fn synthi_gpu_launch_raw_impl(
             record.dirty = true;
         }
         let arg_provenance = classify_launch_args(&guard, args, arg_info, arg_count);
-        let arg_provenance_complete = arg_provenance
-            .iter()
-            .all(arg_provenance_is_runtime_proven);
+        let arg_provenance_complete = arg_provenance.iter().all(arg_provenance_is_runtime_proven);
         let launch_index = guard.launches.len();
         guard.launches.push(LaunchRecord {
             runtime_session_id: runtime_session_id.clone(),
@@ -1644,7 +1689,10 @@ fn synthi_gpu_launch_raw_impl(
     let (ok, dispatch_error) = {
         let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         match guard.launches.get(launch_index) {
-            Some(record) => (record.dispatch_error.is_none(), record.dispatch_error.clone()),
+            Some(record) => (
+                record.dispatch_error.is_none(),
+                record.dispatch_error.clone(),
+            ),
             None => (false, Some("launch record disappeared".to_string())),
         }
     };
@@ -1844,9 +1892,7 @@ fn log_token(value: &str) -> String {
     let token = value
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric()
-                || matches!(ch, '_' | '-' | '.' | ':' | '/' | '+' | '@')
-            {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '+' | '@') {
                 ch
             } else {
                 '_'
@@ -1966,11 +2012,7 @@ mod tests {
         let role = CString::new("core_state").unwrap();
         let value = 42_u64;
 
-        synthi_gpu_record_host_identity(
-            role.as_ptr(),
-            (&value as *const u64).cast(),
-            value,
-        );
+        synthi_gpu_record_host_identity(role.as_ptr(), (&value as *const u64).cast(), value);
 
         let identities = host_identity_records_snapshot();
         assert_eq!(identities.len(), 1);
@@ -2020,10 +2062,7 @@ mod tests {
             .filter(|record| record.role == "runner_process")
             .collect::<Vec<_>>();
         assert_eq!(runner_identities.len(), 2);
-        assert_eq!(
-            runner_identities[0].ptr,
-            std::process::id() as usize
-        );
+        assert_eq!(runner_identities[0].ptr, std::process::id() as usize);
         assert_eq!(runner_identities[0].ptr, runner_identities[1].ptr);
         assert_eq!(runner_identities[0].aux, runner_identities[1].aux);
         assert_ne!(
@@ -2072,6 +2111,38 @@ mod tests {
                 role_records[0].runtime_session_id,
                 role_records[1].runtime_session_id
             );
+        }
+    }
+
+    #[test]
+    fn hmr_runtime_identity_snapshot_replays_latest_app_identity_across_code_only_generation() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let role = CString::new("core_state").unwrap();
+        let value = 42_u64;
+
+        synthi_gpu_record_host_identity(role.as_ptr(), (&value as *const u64).cast(), value);
+        clear_launch_dispatcher();
+        record_hmr_runtime_identity_snapshot();
+        clear_launch_dispatcher();
+        record_hmr_runtime_identity_snapshot();
+
+        let identities = host_identity_records_snapshot();
+        let core_records = identities
+            .iter()
+            .filter(|record| record.role == "core_state")
+            .collect::<Vec<_>>();
+        assert_eq!(core_records.len(), 3);
+        assert_eq!(
+            core_records
+                .iter()
+                .map(|record| record.generation)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        for record in core_records {
+            assert_eq!(record.ptr, (&value as *const u64) as usize);
+            assert_eq!(record.aux, value);
         }
     }
 
@@ -2141,7 +2212,10 @@ mod tests {
         assert_eq!(records[0].output_target_id.as_deref(), Some("target:color"));
         assert!(records[0].readback_timestamp_ms.is_some());
         assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:abc"));
-        assert_eq!(records[0].visual_evidence_ref.as_deref(), Some("screenshot:frame"));
+        assert_eq!(
+            records[0].visual_evidence_ref.as_deref(),
+            Some("screenshot:frame")
+        );
         assert!(records[0].passed);
     }
 
@@ -2190,8 +2264,14 @@ mod tests {
         assert_eq!(records[0].output_target_id.as_deref(), Some("target:color"));
         assert!(records[0].readback_timestamp_ms.is_some());
         assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:abc"));
-        assert_eq!(records[0].visual_evidence_ref.as_deref(), Some("screenshot:frame"));
-        assert_eq!(records[0].probe_mode.as_deref(), Some("fixed_validation_probe"));
+        assert_eq!(
+            records[0].visual_evidence_ref.as_deref(),
+            Some("screenshot:frame")
+        );
+        assert_eq!(
+            records[0].probe_mode.as_deref(),
+            Some("fixed_validation_probe")
+        );
         assert_eq!(
             records[0].probe_config_hash.as_deref(),
             Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -2310,7 +2390,10 @@ mod tests {
         assert!(records[0].readback_timestamp_ms.is_some());
         assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:def"));
         assert_eq!(records[0].visual_evidence_ref, None);
-        assert_eq!(records[0].probe_mode.as_deref(), Some("fixed_validation_probe"));
+        assert_eq!(
+            records[0].probe_mode.as_deref(),
+            Some("fixed_validation_probe")
+        );
         assert_eq!(
             records[0].probe_config_hash.as_deref(),
             Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -2518,7 +2601,10 @@ mod tests {
         assert!(host_paths[0].dispatch_boundary_observed);
         assert_eq!(host_paths[0].attachment_provenance, "source_instrumented");
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
-        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
+        assert_eq!(
+            host_paths[0].runtime_session_id,
+            launches[0].runtime_session_id
+        );
         assert_eq!(launches[0].kernel_name, "trace_primary");
     }
 
@@ -2584,7 +2670,10 @@ mod tests {
         assert!(host_paths[0].dispatch_boundary_observed);
         assert_eq!(host_paths[0].attachment_provenance, "source_instrumented");
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
-        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
+        assert_eq!(
+            host_paths[0].runtime_session_id,
+            launches[0].runtime_session_id
+        );
         assert_eq!(launches[0].kernel_name, "trace_primary");
     }
 
@@ -2639,10 +2728,7 @@ mod tests {
         assert_eq!(host_paths.len(), 1);
         assert_eq!(host_paths[0].dispatch_table_entry_id, "trace_primary:0x88");
         assert!(host_paths[0].dispatch_entry_runtime_verified);
-        assert_eq!(
-            host_paths[0].attachment_provenance,
-            "host_runtime_explicit"
-        );
+        assert_eq!(host_paths[0].attachment_provenance, "host_runtime_explicit");
     }
 
     #[test]
@@ -2705,7 +2791,10 @@ mod tests {
         assert!(host_paths[0].dispatch_entry_runtime_verified);
         assert_eq!(host_paths[0].attachment_provenance, "source_instrumented");
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
-        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
+        assert_eq!(
+            host_paths[0].runtime_session_id,
+            launches[0].runtime_session_id
+        );
     }
 
     #[test]
@@ -2773,7 +2862,10 @@ mod tests {
         assert!(host_paths[0].dispatch_entry_runtime_verified);
         assert!(host_paths[0].dispatch_boundary_observed);
         assert_eq!(host_paths[0].generation, launches[0].active_generation);
-        assert_eq!(host_paths[0].runtime_session_id, launches[0].runtime_session_id);
+        assert_eq!(
+            host_paths[0].runtime_session_id,
+            launches[0].runtime_session_id
+        );
     }
 
     #[test]
@@ -2935,12 +3027,10 @@ mod tests {
         assert_eq!(launches.len(), 1);
         assert!(launches[0].arg_provenance_complete);
         assert_eq!(launches[0].arg_provenance[0].kind, "device-allocation");
-        assert!(
-            launches[0].arg_provenance[0]
-                .allocation_id
-                .as_deref()
-                .is_some_and(|id| id.starts_with("runtime-allocation-"))
-        );
+        assert!(launches[0].arg_provenance[0]
+            .allocation_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("runtime-allocation-")));
         assert_eq!(
             launches[0].arg_provenance[0].allocation_name.as_deref(),
             Some("registered")
@@ -3039,10 +3129,7 @@ mod tests {
         assert!(!ok);
         let launches = launch_records_snapshot();
         assert!(!launches[0].arg_provenance_complete);
-        assert_eq!(
-            launches[0].arg_provenance[0].kind,
-            "unknown-pointer"
-        );
+        assert_eq!(launches[0].arg_provenance[0].kind, "unknown-pointer");
     }
 
     #[test]
@@ -3215,20 +3302,15 @@ mod tests {
             launches[0].active_artifact_id.as_deref(),
             Some("artifact:sha256:test")
         );
-        assert_eq!(
-            launches[0].dispatch_table_hash.as_deref(),
-            Some("0xabc")
-        );
+        assert_eq!(launches[0].dispatch_table_hash.as_deref(), Some("0xabc"));
         assert_eq!(
             launches[0].dispatch_table_entry_id.as_deref(),
             Some("bound_kernel:0x10")
         );
-        assert!(
-            launches[0]
-                .dispatcher_registration_id
-                .as_deref()
-                .is_some_and(|value| value.starts_with("dispatcher:sha256:"))
-        );
+        assert!(launches[0]
+            .dispatcher_registration_id
+            .as_deref()
+            .is_some_and(|value| value.starts_with("dispatcher:sha256:")));
     }
 
     #[test]

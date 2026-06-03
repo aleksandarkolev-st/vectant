@@ -218,6 +218,30 @@ fn next_full_device_abi(modules_to_load: &[(String, String)]) -> Option<String> 
         .last()
 }
 
+#[derive(Debug, Clone)]
+struct LoadedRunnerModuleState {
+    module_hashes: ModuleHashes,
+    loaded_core_path: Option<String>,
+    loaded_gui_path: Option<String>,
+    loaded_device_abi: Option<String>,
+}
+
+fn loaded_runner_module_state(
+    new_hashes: &ModuleHashes,
+    core_lib_path: &str,
+    gui_lib_path: &str,
+    next_device_abi: Option<&str>,
+) -> LoadedRunnerModuleState {
+    LoadedRunnerModuleState {
+        module_hashes: new_hashes.clone(),
+        loaded_core_path: (!core_lib_path.is_empty()).then(|| core_lib_path.to_string()),
+        loaded_gui_path: (!gui_lib_path.is_empty()).then(|| gui_lib_path.to_string()),
+        loaded_device_abi: next_device_abi
+            .filter(|abi| !abi.is_empty())
+            .map(str::to_string),
+    }
+}
+
 fn same_session_full_device_abi_changed(
     current_session: Option<&str>,
     requested_session: Option<&str>,
@@ -1222,6 +1246,12 @@ pub async fn handle_runner_execution(
             }
         });
 
+        let loaded_module_state = loaded_runner_module_state(
+            &new_hashes,
+            &core_lib_path,
+            &gui_lib_path,
+            next_device_abi.as_deref(),
+        );
         *guard = Some(RunnerState {
             process: Some(child),
             stdin: Some(stdin.clone()),
@@ -1239,10 +1269,10 @@ pub async fn handle_runner_execution(
             height: req_height,
             wsl_display_str: wsl_display_str.clone(),
             gst_display_str,
-            module_hashes: ModuleHashes::new(),
-            loaded_core_path: None,
-            loaded_gui_path: None,
-            loaded_device_abi: None,
+            module_hashes: loaded_module_state.module_hashes,
+            loaded_core_path: loaded_module_state.loaded_core_path,
+            loaded_gui_path: loaded_module_state.loaded_gui_path,
+            loaded_device_abi: loaded_module_state.loaded_device_abi,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
@@ -1449,16 +1479,16 @@ pub async fn handle_runner_execution(
         }
 
         // Update RunnerState
-        state.module_hashes = new_hashes;
-        if !core_lib_path.is_empty() {
-            state.loaded_core_path = Some(core_lib_path.clone());
-        }
-        if !gui_lib_path.is_empty() {
-            state.loaded_gui_path = Some(gui_lib_path.clone());
-        }
-        if let Some(device_abi) = next_device_abi {
-            state.loaded_device_abi = Some(device_abi);
-        }
+        let loaded_module_state = loaded_runner_module_state(
+            &new_hashes,
+            &core_lib_path,
+            &gui_lib_path,
+            next_device_abi.as_deref(),
+        );
+        state.module_hashes = loaded_module_state.module_hashes;
+        state.loaded_core_path = loaded_module_state.loaded_core_path;
+        state.loaded_gui_path = loaded_module_state.loaded_gui_path;
+        state.loaded_device_abi = loaded_module_state.loaded_device_abi;
     }
 
     // Send build-status "done" so the frontend's compile() promise resolves.
@@ -1484,10 +1514,11 @@ pub async fn handle_runner_execution(
 mod tests {
     use super::{
         full_device_abi_from_marker, full_device_abi_restart_marker, next_full_device_abi,
-        runner_load_command, runner_reuse_allowed, runner_session_matches,
-        same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
-        RunnerReloadPolicy,
+        loaded_runner_module_state, runner_load_command, runner_reuse_allowed,
+        runner_session_matches, same_session_full_device_abi_changed,
+        should_forward_runner_stderr_line_to_log_dc, RunnerReloadPolicy,
     };
+    use crate::compiler::builder::ModuleHashes;
 
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
@@ -1563,6 +1594,27 @@ mod tests {
             ),
         ];
         assert_eq!(next_full_device_abi(&modules).as_deref(), Some("abi-v2"));
+    }
+
+    #[test]
+    fn loaded_runner_module_state_records_fresh_spawn_host_paths_and_device_abi() {
+        let hashes = ModuleHashes {
+            shared_hash: 11,
+            core_hash: 22,
+            gui_hash: 33,
+            main_hash: 44,
+        };
+
+        let state =
+            loaded_runner_module_state(&hashes, "/tmp/libcore.so", "/tmp/libgui.so", Some("abi-v1"));
+
+        assert_eq!(state.module_hashes.shared_hash, 11);
+        assert_eq!(state.module_hashes.core_hash, 22);
+        assert_eq!(state.module_hashes.gui_hash, 33);
+        assert_eq!(state.module_hashes.main_hash, 44);
+        assert_eq!(state.loaded_core_path.as_deref(), Some("/tmp/libcore.so"));
+        assert_eq!(state.loaded_gui_path.as_deref(), Some("/tmp/libgui.so"));
+        assert_eq!(state.loaded_device_abi.as_deref(), Some("abi-v1"));
     }
 
     #[test]
