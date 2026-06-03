@@ -5707,6 +5707,19 @@ describe("GPU HMR runtime output proof classification", () => {
     ]));
     expect(artifact.componentStates.artifactIdentityProven).toBe(true);
     expect(artifact.componentStates.artifactIdentityCommonArtifactIds).toEqual([TEST_ARTIFACT_ID]);
+    expect(artifact.proofFacets.fission.proven).toBe(true);
+    expect(artifact.proofFacets.fission.selectedIslandIds).toEqual(["fission-island:abc"]);
+    expect(artifact.proofFacets.fission.selectedIslandContractCount).toBe(1);
+    expect(artifact.proofFacets.fission.selectedIslandNarrowerRejectionCount).toBe(1);
+    expect(artifact.proofFacets.fission.selectedIslandNarrowerRejections[0].reasonCode).toBe(
+      "fission.edit_crosses_body_boundary",
+    );
+    expect(artifact.proofFacets.epoch.epochSwapProven).toBe(true);
+    expect(artifact.proofFacets.epoch.capsuleMetadataObserved).toBe(true);
+    expect(artifact.proofFacets.output.outputOracleProven).toBe(true);
+    expect(artifact.proofFacets.hostPreservation.hostPreservationProven).toBe(true);
+    expect(artifact.proofFacets.originalHostPath.originalHostPathProven).toBe(true);
+    expect(artifact.proofFacets.visual.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
     expect(compileStage?.evidenceRefs).toEqual(expect.arrayContaining([
       ".synthi/gpu-hmr/proofs/source-proof.json",
       "evidence:source:device-artifact",

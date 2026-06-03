@@ -482,6 +482,139 @@ function proofLimitations(stages, fullRuntimeProof) {
   return limitations;
 }
 
+function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
+  const fissionProof = input.fissionProof && typeof input.fissionProof === 'object'
+    ? input.fissionProof
+    : null;
+  const epochProof = input.epochProof && typeof input.epochProof === 'object'
+    ? input.epochProof
+    : null;
+  const outputProof = input.outputProof && typeof input.outputProof === 'object'
+    ? input.outputProof
+    : null;
+  const hostPreservationProof =
+    input.hostPreservationProof && typeof input.hostPreservationProof === 'object'
+      ? input.hostPreservationProof
+      : null;
+  const originalHostPathProof =
+    input.originalHostPathProof && typeof input.originalHostPathProof === 'object'
+      ? input.originalHostPathProof
+      : null;
+  const selectedIslandContracts = compactObjects(fissionProof?.selectedIslandContracts);
+  const selectedIslandNarrowerRejections = selectedIslandContracts.flatMap((contract) =>
+    compactObjects(contract.narrowerCandidateRejections)
+  );
+  const visualArtifacts = compactObjects(visualEvidenceArtifacts).map((artifact) => ({
+    path: artifact.path ?? artifact.filePath ?? artifact.file_path ?? null,
+    contentHash: artifact.contentHash ?? artifact.content_hash ?? null,
+    evidenceId: artifact.evidenceId ?? artifact.evidence_id ?? null,
+    acceptedAsVisualEvidence:
+      artifact.acceptedAsVisualEvidence
+      ?? artifact.accepted_as_visual_evidence
+      ?? null,
+    visualQuality: artifact.visualQuality ?? artifact.visual_quality ?? null,
+    bytes: Number.isFinite(artifact.bytes) ? artifact.bytes : null,
+    readError: artifact.readError ?? artifact.read_error ?? null,
+    summary: artifact.summary ?? null,
+  }));
+  return {
+    fission: fissionProof ? {
+      schemaVersion: fissionProof.schemaVersion ?? null,
+      resultState: fissionProof.resultState ?? null,
+      degradedState: fissionProof.degradedState ?? null,
+      degradedReason: fissionProof.degradedReason ?? null,
+      required: fissionProof.required === true,
+      observed: fissionProof.observed === true,
+      proven: fissionProof.fissionProven === true,
+      selectedIslandIds: compactStringList(fissionProof.selectedIslandIds),
+      selectedIslandContracts,
+      selectedIslandContractCount: selectedIslandContracts.length,
+      selectedIslandNarrowerRejectionCount: selectedIslandNarrowerRejections.length,
+      selectedIslandNarrowerRejections,
+      evidenceRefs: compactStringList(fissionProof.evidenceRefs),
+      verifierEvidenceRefs: compactStringList(fissionProof.verifierEvidenceRefs),
+      deterministicVerifierEvidenceRefs: compactStringList(
+        fissionProof.deterministicVerifierEvidenceRefs,
+      ),
+      aiProposalIds: compactStringList(fissionProof.aiProposalIds),
+      nonAuthoritativeEvidenceRefs: compactStringList(fissionProof.nonAuthoritativeEvidenceRefs),
+    } : null,
+    epoch: epochProof ? {
+      schemaVersion: epochProof.schemaVersion ?? null,
+      resultState: epochProof.resultState ?? null,
+      degradedState: epochProof.degradedState ?? null,
+      degradedReason: epochProof.degradedReason ?? null,
+      epochSwapProven:
+        epochProof.epochSwapProven === true
+        || epochProof.resultState === 'gpu-hmr-epoch-swap-proven',
+      generationLineageObserved: epochProof.generationLineageObserved === true,
+      epochGenerationGraphObserved: epochProof.epochGenerationGraphObserved === true,
+      epochGenerationGraph: epochProof.epochGenerationGraph ?? null,
+      capsuleMetadataObserved: epochProof.capsuleMetadataObserved === true,
+      capsuleId: epochProof.capsuleId ?? null,
+      fissionIslandId: epochProof.fissionIslandId ?? null,
+      retirementStrategy: epochProof.retirementStrategy ?? null,
+      oldGenerationRetired: epochProof.oldGenerationRetired === true,
+      retirementFenceIds: compactStringList(epochProof.retirementFenceIds),
+      evidenceRefs: compactStringList(epochProof.evidenceRefs),
+    } : null,
+    output: outputProof ? {
+      schemaVersion: outputProof.schemaVersion ?? null,
+      resultState: outputProof.resultState ?? null,
+      degradedState: outputProof.degradedState ?? null,
+      degradedReason: outputProof.degradedReason ?? null,
+      outputOracleProven:
+        outputProof.outputOracleProven === true
+        || outputProof.resultState === 'gpu-hmr-output-oracle-proven',
+      outputOracle: outputProof.outputOracle ?? null,
+      visualFrameObserved: outputProof.visualFrameObserved === true,
+      visualEvidenceRefs: compactStringList(outputProof.visualEvidenceRefs),
+      evidenceRefs: compactStringList(outputProof.evidenceRefs),
+    } : null,
+    hostPreservation: hostPreservationProof ? {
+      schemaVersion: hostPreservationProof.schemaVersion ?? null,
+      resultState: hostPreservationProof.resultState ?? null,
+      degradedState: hostPreservationProof.degradedState ?? null,
+      degradedReason: hostPreservationProof.degradedReason ?? null,
+      hostPreservationProven:
+        hostPreservationProof.hostPreservationProven === true
+        || hostPreservationProof.resultState === 'gpu-hmr-host-preservation-proven',
+      preservedRoles: compactStringList(hostPreservationProof.preservedRoles),
+      requiredRoles: compactStringList(hostPreservationProof.requiredRoles),
+      evidenceRefs: compactStringList(hostPreservationProof.evidenceRefs),
+      identitySnapshotEvidenceRefs: compactStringList(
+        hostPreservationProof.identitySnapshotEvidenceRefs,
+      ),
+    } : null,
+    originalHostPath: originalHostPathProof ? {
+      schemaVersion: originalHostPathProof.schemaVersion ?? null,
+      resultState: originalHostPathProof.resultState ?? null,
+      degradedState: originalHostPathProof.degradedState ?? null,
+      degradedReason: originalHostPathProof.degradedReason ?? null,
+      originalHostPathProven:
+        originalHostPathProof.originalHostPathProven === true
+        || originalHostPathProof.attachmentProven === true
+        || originalHostPathProof.resultState === 'gpu-hmr-original-host-path-proven',
+      attachmentProven: originalHostPathProof.attachmentProven === true,
+      nativeLaunchObserved: originalHostPathProof.nativeLaunchObserved === true,
+      nativeLaunchAttemptObserved: originalHostPathProof.nativeLaunchAttemptObserved === true,
+      nativeLaunchObserverSawNoLaunch: originalHostPathProof.nativeLaunchObserverSawNoLaunch === true,
+      runtimeCapabilityPreflightObserved:
+        originalHostPathProof.runtimeCapabilityPreflightObserved === true,
+      diagnosticEvidenceRefs: compactStringList(originalHostPathProof.diagnosticEvidenceRefs),
+      evidenceRefs: compactStringList(originalHostPathProof.evidenceRefs),
+    } : null,
+    visual: {
+      visualEvidenceRefs: compactStringList(input.visualEvidenceRefs),
+      artifactCount: visualArtifacts.length,
+      acceptedArtifactCount: visualArtifacts.filter((artifact) =>
+        artifact.acceptedAsVisualEvidence === true
+      ).length,
+      artifacts: visualArtifacts,
+    },
+  };
+}
+
 function targetProgressionGateLimitations(gates) {
   return (Array.isArray(gates) ? gates : [])
     .filter((gate) => gate?.status === 'fail')
@@ -517,6 +650,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...proofLimitations(stages, fullRuntimeProof),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
+  const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
   const evidenceStrings = compactStringList([
     ...stages.flatMap((stage) => stage.evidenceRefs),
     ...visualEvidenceRefs,
@@ -555,6 +689,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     limitations,
     evidenceStrings,
     proofMaterial,
+    proofFacets,
     validationContext,
     targetProgression,
     targetProgressionLedger,
@@ -582,6 +717,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     evidenceRefs,
     visualEvidenceRefs,
     visualEvidenceArtifacts,
+    proofFacets,
     runtimeEvidence,
     validationContext,
     targetProgression,
