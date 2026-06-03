@@ -11,6 +11,7 @@ export async function POST(req, { params }) {
   const actor = await resolveActor();
   if (!actor) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
   const { provider } = await params;
+  if (!['github', 'gitlab'].includes(provider)) return NextResponse.json({ error: 'unsupported_provider' }, { status: 400 });
   const b = await req.json().catch(() => ({}));
   if (!b.device_code) return NextResponse.json({ error: 'device_code required' }, { status: 400 });
   const { token } = oauthEndpoints(provider, null);

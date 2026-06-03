@@ -10,6 +10,7 @@ export async function GET(req, { params }) {
   const actor = await resolveActor();
   if (!actor) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
   const { provider } = await params;
+  if (!['github', 'gitlab'].includes(provider)) return NextResponse.json({ error: 'unsupported_provider' }, { status: 400 });
   const u = new URL(req.url);
   const code = u.searchParams.get('code'); const state = u.searchParams.get('state');
   const cookieState = req.headers.get('cookie')?.match(/git_oauth_state=([^;]+)/)?.[1];
