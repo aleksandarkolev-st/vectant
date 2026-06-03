@@ -161,3 +161,103 @@ model GitProvider {
   @@index([ownerUserId])
   @@index([workspaceSlug])
 }
+
+model MarketplaceProgram {
+  id            String   @id @default(cuid())
+  packageId     String   @unique
+  publisher     String
+  verified      Boolean  @default(false)
+  latestVersion String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  versions ProgramVersion[]
+  installs ProgramInstall[]
+}
+
+model ProgramVersion {
+  id            String   @id @default(cuid())
+  programId     String
+  version       String
+  manifestJson  String
+  requiredTools String[] @default([])
+  ports         String[] @default([])
+  createdAt     DateTime @default(now())
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@unique([programId, version])
+  @@index([programId])
+}
+
+model ProgramInstall {
+  id                String   @id @default(cuid())
+  programId         String
+  workspaceSlug     String
+  version           String
+  status            String   @default("pending")
+  installedByUserId String
+  grantId           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  program  MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  grant    PermissionGrant?   @relation(fields: [grantId], references: [id], onDelete: SetNull)
+  sessions ProgramSession[]
+
+  @@index([programId])
+  @@index([workspaceSlug])
+  @@index([installedByUserId])
+  @@index([grantId])
+}
+
+model ProgramSession {
+  id              String   @id @default(cuid())
+  installId       String?
+  workspaceSlug   String
+  runtimeType     String
+  state           String   @default("starting")
+  startedByUserId String
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+  lastHealthState String?
+  lastHealthAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  install ProgramInstall? @relation(fields: [installId], references: [id], onDelete: SetNull)
+  events  ProgramRuntimeEvent[]
+
+  @@index([installId])
+  @@index([workspaceSlug])
+  @@index([startedByUserId])
+  @@index([state])
+  @@index([startedAt])
+}
+
+model PermissionGrant {
+  id              String   @id @default(cuid())
+  workspaceSlug   String
+  scopesJson      String
+  grantedByUserId String
+  grantedAt       DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  installs ProgramInstall[]
+
+  @@index([workspaceSlug])
+  @@index([grantedByUserId])
+}
+
+model ProgramRuntimeEvent {
+  id        String   @id @default(cuid())
+  sessionId String
+  type      String
+  dataJson  String?
+  createdAt DateTime @default(now())
+
+  session ProgramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([createdAt])
+}
