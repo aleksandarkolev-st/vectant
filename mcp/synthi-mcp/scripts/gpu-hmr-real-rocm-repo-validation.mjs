@@ -4012,6 +4012,8 @@ async function selfCheckRuntimeDispatchEvidence() {
       visualArtifact?.contentHash !== expectedVisualHash
       || visualEvidence?.contentHash !== expectedVisualHash
       || visualEvidence?.acceptedAsVisualEvidence !== true
+      || written.artifact.proofFacets?.visual?.acceptedArtifactCount !== 1
+      || written.artifact.proofFacets?.visual?.artifacts?.[0]?.contentHash !== expectedVisualHash
     ) {
       throw new Error('visual proof artifact self-check did not hash visual file bytes');
     }

@@ -506,8 +506,41 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
   );
   const visualArtifacts = compactObjects(visualEvidenceArtifacts).map((artifact) => ({
     path: artifact.path ?? artifact.filePath ?? artifact.file_path ?? null,
+    label: artifact.label ?? null,
     contentHash: artifact.contentHash ?? artifact.content_hash ?? null,
     evidenceId: artifact.evidenceId ?? artifact.evidence_id ?? null,
+    width: Number.isFinite(artifact.width) ? artifact.width : null,
+    height: Number.isFinite(artifact.height) ? artifact.height : null,
+    visiblePixels:
+      Number.isFinite(artifact.visiblePixels)
+        ? artifact.visiblePixels
+        : Number.isFinite(artifact.visible_pixels)
+          ? artifact.visible_pixels
+          : null,
+    meanLuma:
+      Number.isFinite(artifact.meanLuma)
+        ? artifact.meanLuma
+        : Number.isFinite(artifact.mean_luma)
+          ? artifact.mean_luma
+          : null,
+    lumaStddev:
+      Number.isFinite(artifact.lumaStddev)
+        ? artifact.lumaStddev
+        : Number.isFinite(artifact.luma_stddev)
+          ? artifact.luma_stddev
+          : null,
+    rgbSpanMean:
+      Number.isFinite(artifact.rgbSpanMean)
+        ? artifact.rgbSpanMean
+        : Number.isFinite(artifact.rgb_span_mean)
+          ? artifact.rgb_span_mean
+          : null,
+    uniqueColorSampleCount:
+      Number.isFinite(artifact.uniqueColorSampleCount)
+        ? artifact.uniqueColorSampleCount
+        : Number.isFinite(artifact.unique_color_sample_count)
+          ? artifact.unique_color_sample_count
+          : null,
     acceptedAsVisualEvidence:
       artifact.acceptedAsVisualEvidence
       ?? artifact.accepted_as_visual_evidence
