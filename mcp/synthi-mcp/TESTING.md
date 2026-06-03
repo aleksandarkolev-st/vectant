@@ -67,6 +67,42 @@ current MCP lease registry is process-local; cross-process lease
 arbitration requires the worker-side lease gate to be integrated into the
 input dispatch path.
 
+General browser MCP live smoke:
+
+```bash
+cd mcp/synthi-mcp
+npm install
+npm run build
+npm run live:browser:install   # one-time if no local Chromium is available
+npm run live:browser
+```
+
+This starts a local HTML fixture, launches or reuses a Chromium-family
+browser with CDP, spawns `dist/index.js` over stdio, then calls the
+`synthi_browser_*` tools through the same JSON-RPC path a real agent host
+uses. It verifies attach, exact-origin consent, authorized tab listing,
+screenshot+DOM capture, control lease actions, redacted console/network
+events, teach-mode bridge events, and replay script generation.
+
+To reuse a browser a developer already started:
+
+```bash
+SYNTHI_BROWSER_CDP_URL=http://127.0.0.1:9222 npm run live:browser
+```
+
+To launch a specific browser executable:
+
+```bash
+SYNTHI_BROWSER_EXECUTABLE=/path/to/chrome npm run live:browser
+```
+
+The CDP endpoint must be reachable from the same environment that runs the
+MCP process. For WSL users, Windows Chrome bound to Windows
+`127.0.0.1` is often not reachable from WSL; either run the MCP on the
+Windows side, install Playwright Chromium inside WSL with
+`npm run live:browser:install`, or provide a reachable CDP proxy URL via
+`SYNTHI_BROWSER_CDP_URL`.
+
 ---
 
 ## The 15 steps
