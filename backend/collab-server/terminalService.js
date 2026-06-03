@@ -37,6 +37,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
+const { createProgramRuntimeManager } = require('./programRuntimeManager');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -61,6 +62,7 @@ try {
 
 /** @type {Map<string, { pty: IPty, ws: WebSocket, cwd: string, shell: string }>} */
 const activeSessions = new Map();
+const programRuntimeManager = createProgramRuntimeManager({ activeSessions });
 
 // ─── Shell Detection ────────────────────────────────────────────────────────
 
@@ -1067,10 +1069,15 @@ function sanitizeResize(cols, rows) {
  * @param {number} rows      - Terminal rows (default 30)
  * @returns {{ ptyProcess, shell, cwd, sessionId }}
  */
-async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null) {
+async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null, options = {}) {
+  const { env = {}, shellType = null } = options;
   const cwd = await resolveWorkspaceCwd(slug, userId);
   const { ptyProcess, shell } = createPtyProcess({
-    cwd, cols, rows,
+    cwd,
+    cols,
+    rows,
+    env,
+    shellType,
     workspaceName: name,
     workspaceSlug: slug,
   });
@@ -1098,22 +1105,10 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   // path can dispose it explicitly instead of leaving a no-op listener
   // firing for every PTY chunk for the rest of the session's life.
   const bufferDisposable = ptyProcess.onData(onData);
-
-  // Orphan reaper — if no WebSocket ever attaches (e.g. an AI tool call
-  // created the headless session and then crashed, or the frontend tab was
-  // closed before reconnect), the PTY and its 100k buffer would live until
-  // process exit. Kill it after HEADLESS_TTL_MS.
-  const HEADLESS_TTL_MS = 5 * 60 * 1000;
-  const orphanTimer = setTimeout(() => {
-    const session = activeSessions.get(sessionId);
-    if (!session || !session.headless) return; // WS attached in the meantime
-    console.warn(`[Terminal] Headless session ${sessionId} orphaned for ${HEADLESS_TTL_MS}ms — killing PTY`);
-    try { bufferDisposable.dispose?.(); } catch (_) {}
-    try { ptyProcess.kill(); } catch (_) {}
-    activeSessions.delete(sessionId);
-  }, HEADLESS_TTL_MS);
-  // Don't hold the event loop open on this timer alone.
-  if (orphanTimer.unref) orphanTimer.unref();
+  const { stopBuffering, orphanTimer } = programRuntimeManager.createHeadlessSessionLifecycle(sessionId, {
+    ptyProcess,
+    bufferDisposable,
+  });
 
   activeSessions.set(sessionId, {
     pty: ptyProcess,
@@ -1125,9 +1120,22 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     outputBuffer,       // Buffered output for replay
     stopBuffering: () => {
       bufferingActive = false;
-      try { bufferDisposable.dispose?.(); } catch (_) {}
+      stopBuffering();
     },
     orphanTimer,        // Cleared by the reattach handler
+  });
+
+  ptyProcess.onExit(() => {
+    const session = activeSessions.get(sessionId);
+    if (!session || session.pty !== ptyProcess) {
+      return;
+    }
+
+    if (session.orphanTimer) {
+      clearTimeout(session.orphanTimer);
+    }
+    try { session.stopBuffering?.(); } catch (_) {}
+    activeSessions.delete(sessionId);
   });
 
   console.log(`[Terminal] Headless session ${sessionId} created | cwd=${cwd} | shell=${shell}`);
@@ -1175,12 +1183,8 @@ function createTerminalWSS() {
 
       console.log(`[Terminal] Reattaching WS to headless session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer.length} chunks`);
 
-      // Clear the orphan reaper — we have a WS now.
-      if (existingSession.orphanTimer) clearTimeout(existingSession.orphanTimer);
-
-      // Stop the headless buffer from growing AND dispose its PTY listener
-      // (stopBuffering does both — see createHeadlessSession).
-      if (stopBuffering) stopBuffering();
+      // Clear the orphan reaper and stop the headless buffer from growing.
+      programRuntimeManager.promoteHeadlessSession(existingSession);
 
       // Start filesystem watcher now that we have a WebSocket
       let unwatchFs = () => {};

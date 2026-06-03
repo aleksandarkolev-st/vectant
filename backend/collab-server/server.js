@@ -8,7 +8,8 @@ const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
-const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
+const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
+const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const proxyService = require('./proxyService');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -24,6 +25,96 @@ const sseService = require('./sseService');
 const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
+
+function queueHeadlessCommandStart(ptyProcess, command) {
+  const isWin = require('os').platform() === 'win32';
+  const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+  let promptBuffer = '';
+  let commandSent = false;
+  let promptCheckInterval = null;
+  let promptWaitTimeout = null;
+  let resolveCommandStarted;
+
+  const commandStartedPromise = new Promise((resolve) => {
+    resolveCommandStarted = resolve;
+  });
+
+  const promptDisposable = ptyProcess.onData((data) => {
+    if (commandSent) {
+      return;
+    }
+
+    promptBuffer = `${promptBuffer}${data}`.slice(-16_384);
+    if (promptPattern.test(promptBuffer)) {
+      sendCommand();
+    }
+  });
+
+  function cleanup() {
+    if (promptCheckInterval) {
+      clearInterval(promptCheckInterval);
+      promptCheckInterval = null;
+    }
+    if (promptWaitTimeout) {
+      clearTimeout(promptWaitTimeout);
+      promptWaitTimeout = null;
+    }
+    try { promptDisposable.dispose?.(); } catch (_) {}
+  }
+
+  function sendCommand() {
+    if (commandSent) {
+      return;
+    }
+
+    commandSent = true;
+    cleanup();
+    ptyProcess.write(`${command}\r`);
+    resolveCommandStarted();
+  }
+
+  promptCheckInterval = setInterval(() => {
+    if (!commandSent && promptPattern.test(promptBuffer)) {
+      sendCommand();
+    }
+  }, 100);
+  if (typeof promptCheckInterval.unref === 'function') {
+    promptCheckInterval.unref();
+  }
+
+  promptWaitTimeout = setTimeout(() => {
+    if (!commandSent) {
+      logger.info({ commandPreview: command.slice(0, 120) }, 'Prompt not detected, sending command anyway');
+      sendCommand();
+    }
+  }, 1000);
+  if (typeof promptWaitTimeout.unref === 'function') {
+    promptWaitTimeout.unref();
+  }
+
+  ptyProcess.onExit(() => {
+    if (!commandSent) {
+      cleanup();
+      resolveCommandStarted();
+    }
+  });
+
+  return { commandStartedPromise };
+}
+
+const managedProgramRuntime = createProgramRuntimeManager({
+  activeSessions: terminalSessions,
+  logger,
+  getActivePorts: () => proxyService.getActivePorts(),
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command }) => {
+    const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
+    const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
+    return {
+      ...runtime,
+      commandStartedPromise,
+    };
+  },
+});
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -1447,6 +1538,61 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const programRuntimeUrl = new URL(req.url, `http://${req.headers.host}`);
+  const programRuntimeMatch = /^\/program-runtime\/([^/]+)\/sessions(?:\/([^/]+)(?:\/(stop|restart|events))?)?$/.exec(programRuntimeUrl.pathname);
+  if (programRuntimeMatch) {
+    const runtimeSlug = decodeURIComponent(programRuntimeMatch[1]);
+    const runtimeSessionId = programRuntimeMatch[2] ? decodeURIComponent(programRuntimeMatch[2]) : null;
+    const runtimeAction = programRuntimeMatch[3] || null;
+    const runtimeSession = runtimeSessionId ? managedProgramRuntime.getManagedSession(runtimeSessionId) : null;
+
+    if (runtimeSessionId && (!runtimeSession || runtimeSession.workspaceSlug !== runtimeSlug)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Managed program session not found' }));
+      return;
+    }
+
+    if (!runtimeSessionId && req.method === 'GET') {
+      const sessions = managedProgramRuntime
+        .listManagedSessions()
+        .filter((session) => session.workspaceSlug === runtimeSlug);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions }));
+      return;
+    }
+
+    if (runtimeSessionId && !runtimeAction && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session: runtimeSession }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'events' && req.method === 'GET') {
+      const events = managedProgramRuntime.listManagedSessionEvents(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'stop' && req.method === 'POST') {
+      const session = await managedProgramRuntime.stopManagedSession(runtimeSessionId, { reason: 'user_stop' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'restart' && req.method === 'POST') {
+      const session = await managedProgramRuntime.restartManagedSession(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+      return;
+    }
+
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
   // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
   // ========================================================================
   // POST /exec-terminal/:slug  { command: string, timeout?: number }
@@ -1481,70 +1627,60 @@ const server = http.createServer(async (req, res) => {
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
 
     try {
-      const { createHeadlessSession } = require('./terminalService');
-      const crypto = require('crypto');
-      const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
+      const requestedSessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+      const sessionId = requestedSessionId || `ai-${crypto.randomUUID().slice(0, 8)}`;
+      const launchEnv = parsed.env && typeof parsed.env === 'object' ? parsed.env : {};
+
+      await managedProgramRuntime.launchManagedSession({
+        sessionId,
+        workspaceSlug: slug,
+        userId: parsed.userId || '',
+        command,
+        env: launchEnv,
+        title: parsed.name || null,
+      });
+
+      const terminalSession = terminalSessions.get(sessionId);
+      if (!terminalSession?.pty || !terminalSession.cwd) {
+        throw new Error(`Managed runtime ${sessionId} failed to initialize`);
+      }
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = await createHeadlessSession(sessionId, slug, parsed.userId || '');
+      const { pty: ptyProcess, cwd } = terminalSession;
+      const runtimeHandle = managedProgramRuntime.getManagedRuntime(sessionId);
+      const commandStartedPromise = runtimeHandle?.commandStartedPromise || Promise.resolve();
 
       console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
-      // Collect output from the PTY
-      let output = '';
-      const MAX_OUT = 50000;
       let commandDone = false;
       let commandSent = false;
+      let timedOut = false;
 
-      const outputCollector = (data) => {
-        if (output.length < MAX_OUT) output += data;
-      };
-      ptyProcess.onData(outputCollector);
-
-      // Write the command after the shell finishes its banner output.
-      // We detect the shell is ready by waiting for the first prompt.
-      // PowerShell prompt: "PS C:\...>" | Bash prompt: "$" or "#"
-      const isWin = require('os').platform() === 'win32';
-      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
-      let promptCheckInterval;
-      let promptWaitTimeout;
-
-      function sendCommand() {
-        if (commandSent) return;
-        commandSent = true;
-        if (promptCheckInterval) clearInterval(promptCheckInterval);
-        if (promptWaitTimeout) clearTimeout(promptWaitTimeout);
-        ptyProcess.write(command + '\r');
-        // Start stability checking AFTER the command is sent + a grace period
-        // for the command to start producing output
-        setTimeout(startStabilityCheck, 1500);
+      function getManagedOutput() {
+        return managedProgramRuntime.getManagedSession(sessionId)?.output || '';
       }
 
-      // Check every 100ms if prompt appeared
-      promptCheckInterval = setInterval(() => {
-        if (promptPattern.test(output)) {
-          sendCommand();
-        }
-      }, 100);
-
-      // Fallback: if prompt never detected, send command anyway after 1s
-      promptWaitTimeout = setTimeout(() => {
-        if (!commandSent) {
-          console.log(`[ExecTerminal] Prompt not detected, sending command anyway`);
-          sendCommand();
-        }
-      }, 1000);
+      const isWin = require('os').platform() === 'win32';
+      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+      commandStartedPromise.then(() => {
+        commandSent = true;
+        // Start stability checking AFTER the command is sent + a grace period
+        // for the command to start producing output.
+        setTimeout(startStabilityCheck, 1500);
+      });
 
       // Wait for the command to finish by detecting the shell prompt returning
       // AFTER the command output. Also use a stability fallback.
       function startStabilityCheck() {
-        let lastOutputLen = output.length;
+        let lastOutputLen = getManagedOutput().length;
         let stableCount = 0;
         const STABLE_THRESHOLD = 4; // 4 consecutive checks × 500ms = 2s of silence
         const CHECK_INTERVAL = 500;
         let promptSeenAfterCmd = false;
 
         const checkDone = setInterval(() => {
+          const output = getManagedOutput();
+
           // Primary: detect the shell prompt reappearing after command output
           // This means the command finished and the shell is ready for input
           if (commandSent && output.length > lastOutputLen) {
@@ -1573,6 +1709,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const hardTimeout = setTimeout(() => {
+        timedOut = true;
         respond();
       }, timeoutMs);
 
@@ -1580,6 +1717,8 @@ const server = http.createServer(async (req, res) => {
       function respond() {
         if (responded) return;
         responded = true;
+
+        const output = getManagedOutput();
 
         // Extract the command output: find the echoed command and take everything after it
         // up to (but not including) the next shell prompt
@@ -1603,6 +1742,10 @@ const server = http.createServer(async (req, res) => {
           && !/\b(0 error|no error|fixed|resolved|warning)\b/i.test(cleanOutput);
         const inferredExitCode = looksLikeError ? 1 : 0;
 
+        managedProgramRuntime.refreshManagedSessionPorts(sessionId).catch((portErr) => {
+          logger.warn({ err: portErr, sessionId }, 'Failed to refresh managed session ports');
+        });
+
         console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -1610,7 +1753,7 @@ const server = http.createServer(async (req, res) => {
           command,
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
-          timedOut: false,
+          timedOut,
         }));
       }
 

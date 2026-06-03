@@ -52,6 +52,10 @@ export async function createProgramSession({ installId = null, workspaceSlug, ru
   });
 }
 
+export async function getProgramSession(id) {
+  return prisma.programSession.findUnique({ where: { id } });
+}
+
 export async function updateProgramSession(id, patch) {
   return prisma.programSession.update({ where: { id }, data: patch });
 }
