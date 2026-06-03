@@ -2750,6 +2750,8 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     api: logField(line, 'api'),
     runtimeSession: runtimeSessionIdFromLine(line),
     sequence: logField(line, 'sequence'),
+    functionPtr: logField(line, 'function_ptr'),
+    kernelSymbol: logField(line, 'kernel_symbol') ?? logField(line, 'kernel') ?? logField(line, 'symbol'),
     dispatch: logField(line, 'dispatch'),
     realLaunchResolved: logField(line, 'real_launch_resolved'),
   }));
@@ -2842,6 +2844,8 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     api: logField(line, 'api'),
     runtimeSession: runtimeSessionIdFromLine(line),
     sequence: logField(line, 'sequence'),
+    functionPtr: logField(line, 'function_ptr'),
+    kernelSymbol: logField(line, 'kernel_symbol') ?? logField(line, 'kernel') ?? logField(line, 'symbol'),
     result: logField(line, 'result'),
     dispatch: logField(line, 'dispatch'),
   }));
@@ -2882,6 +2886,18 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     attempt_count: attemptRecords.length,
     apis: [...new Set(records.map((record) => record.api).filter(Boolean))],
     attempted_apis: [...new Set(attemptRecords.map((record) => record.api).filter(Boolean))],
+    function_ptrs: [
+      ...new Set([
+        ...attemptRecords.map((record) => record.functionPtr).filter(Boolean),
+        ...records.map((record) => record.functionPtr).filter(Boolean),
+      ]),
+    ],
+    kernel_symbols: [
+      ...new Set([
+        ...attemptRecords.map((record) => record.kernelSymbol).filter(Boolean),
+        ...records.map((record) => record.kernelSymbol).filter(Boolean),
+      ]),
+    ],
     runtime_session_ids: [
       ...new Set([
         ...attemptRecords.map((record) => record.runtimeSession).filter(Boolean),
@@ -3508,9 +3524,9 @@ async function selfCheckRuntimeDispatchEvidence() {
       '[gpu-runtime-boundary] native_texture_object_create api=genericTextureCreate runtime_session=native-session sequence=1 texture=0x0 texture_out_ptr=0x4 resource_desc_ptr=0x5 texture_desc_ptr=0x6 resource_view_desc_ptr=0x0 result=1 creation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_array_allocation api=genericArrayAlloc runtime_session=native-session sequence=2 array=0x0 array_out_ptr=0x7 descriptor_ptr=0x8 descriptor_kind=channel_format channel_x=32 channel_y=32 channel_z=0 channel_w=0 channel_format_kind=2 width=64 height=32 flags=0 result=1 allocation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
       "[ERR ] Generic runtime error: 'invalid argument' on line 12 in '/tmp/generic.cpp'.",
-      '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
-      '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
-      '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=native-session',
+      '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 kernel_symbol=kernel grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 kernel_symbol=kernel grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 function_ptr=0x1 kernel_symbol=kernel runtime_session=native-session',
     ].join('\n'),
   });
   const nativeOnlyObservation = runtimeNativeLaunchObservationEvidence(
@@ -3596,6 +3612,16 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !summarizeGpuHmrOriginalHostPathProof(nativeOnlyOriginalHost.proof).includes('runtime_error=generic.cpp:12')
     || nativeOnlyObservation.total_count !== 1
     || nativeOnlyObservation.attempt_count !== 1
+    || nativeOnlyObservation.function_ptrs[0] !== '0x1'
+    || nativeOnlyObservation.kernel_symbols[0] !== 'kernel'
+    || nativeOnlyObservation.attempt_records[0]?.functionPtr !== '0x1'
+    || nativeOnlyObservation.attempt_records[0]?.kernelSymbol !== 'kernel'
+    || nativeOnlyObservation.records[0]?.functionPtr !== '0x1'
+    || nativeOnlyObservation.records[0]?.kernelSymbol !== 'kernel'
+    || nativeOnlyOriginalHost.evidence.native_launch_symbols[0] !== 'kernel'
+    || nativeOnlyOriginalHost.evidence.native_launch_function_ptrs[0] !== '0x1'
+    || nativeOnlyOriginalHost.evidence.native_launch_attempt_records[0]?.kernel_symbol !== 'kernel'
+    || nativeOnlyOriginalHost.evidence.native_launch_records[0]?.kernel_symbol !== 'kernel'
     || nativeOnlyObservation.observe_only_count !== 1
     || nativeOnlyDispatch.success_count !== 0
     || nativeOnlyOriginalHost.evidence.raw_count !== 1

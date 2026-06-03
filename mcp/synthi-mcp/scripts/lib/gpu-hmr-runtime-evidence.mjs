@@ -955,6 +955,12 @@ function originalHostPathRecord(line) {
       ?? fields.dispatchEntryMatchesRuntime,
     ),
     generation: integerValue(fields.generation),
+    functionPtr: fields.function_ptr ?? fields.functionPtr ?? null,
+    kernelSymbol:
+      fields.kernel_symbol
+      ?? fields.kernelSymbol
+      ?? fields.kernel
+      ?? null,
   };
 }
 
@@ -976,6 +982,11 @@ function originalHostPathCandidateRecord(line) {
     symbol: fields.symbol ?? null,
     address: fields.address ?? null,
     functionPtr: fields.function_ptr ?? fields.functionPtr ?? null,
+    kernelSymbol:
+      fields.kernel_symbol
+      ?? fields.kernelSymbol
+      ?? fields.kernel
+      ?? null,
   };
 }
 
@@ -1226,6 +1237,13 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         runtimeSession: fields.runtime_session ?? null,
         sequence: integerValue(fields.sequence),
         api: fields.api ?? null,
+        functionPtr: fields.function_ptr ?? fields.functionPtr ?? null,
+        kernelSymbol:
+          fields.kernel_symbol
+          ?? fields.kernelSymbol
+          ?? fields.kernel
+          ?? fields.symbol
+          ?? null,
         realLaunchResolved: boolValue(fields.real_launch_resolved ?? fields.realLaunchResolved),
       };
     })
@@ -1243,6 +1261,13 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         runtimeSession: fields.runtime_session ?? null,
         sequence: integerValue(fields.sequence),
         api: fields.api ?? null,
+        functionPtr: fields.function_ptr ?? fields.functionPtr ?? null,
+        kernelSymbol:
+          fields.kernel_symbol
+          ?? fields.kernelSymbol
+          ?? fields.kernel
+          ?? fields.symbol
+          ?? null,
       };
     })
     .filter((record) =>
@@ -1534,6 +1559,27 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     native_launch_attempt_without_result: nativeLaunchAttemptWithoutResult,
     native_launch_count: nativeLaunchRecords.length,
     native_launch_observed: nativeLaunchObserved,
+    native_launch_symbols: compactStringList(
+      [...nativeLaunchAttemptRecords, ...nativeLaunchRecords].map((record) => record.kernelSymbol),
+    ),
+    native_launch_function_ptrs: compactStringList(
+      [...nativeLaunchAttemptRecords, ...nativeLaunchRecords].map((record) => record.functionPtr),
+    ),
+    native_launch_attempt_records: nativeLaunchAttemptRecords.slice(-20).map((record) => ({
+      runtime_session: record.runtimeSession,
+      sequence: record.sequence,
+      api: record.api,
+      function_ptr: record.functionPtr,
+      kernel_symbol: record.kernelSymbol,
+      real_launch_resolved: record.realLaunchResolved,
+    })),
+    native_launch_records: nativeLaunchRecords.slice(-20).map((record) => ({
+      runtime_session: record.runtimeSession,
+      sequence: record.sequence,
+      api: record.api,
+      function_ptr: record.functionPtr,
+      kernel_symbol: record.kernelSymbol,
+    })),
     native_launch_observer_enabled: nativeLaunchObserverEnabled,
     native_launch_observer_saw_no_launch: nativeLaunchObserverSawNoLaunch,
     upstream_run_attempted: upstreamRunAttempted,
@@ -1554,6 +1600,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       symbol: record.symbol,
       address: record.address,
       function_ptr: record.functionPtr,
+      kernel_symbol: record.kernelSymbol,
       evidence_ref: [
         'worker-log:original_host_path_candidate',
         evidenceRefToken(record.runtimeSession),

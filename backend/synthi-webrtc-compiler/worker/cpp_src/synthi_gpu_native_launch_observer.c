@@ -187,6 +187,19 @@ static void* synthi_real_cuda_malloc_array = NULL;
 static void* synthi_real_cu_array_create = NULL;
 static void* synthi_real_cu_array_create_v2 = NULL;
 
+#define SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY 256
+
+typedef struct SynthiGpuResolvedFunctionSymbol {
+    void* function;
+    void* module;
+    char symbol[256];
+    char api[64];
+} SynthiGpuResolvedFunctionSymbol;
+
+static SynthiGpuResolvedFunctionSymbol
+    synthi_resolved_function_symbols[SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY];
+static unsigned int synthi_resolved_function_symbol_count = 0;
+
 static unsigned long long synthi_fnv1a_append(
     unsigned long long hash,
     const char* value) {
@@ -215,6 +228,96 @@ static void synthi_sanitize_token(
         out[written++] = (ch > 32 && ch < 127) ? (char)ch : '_';
     }
     out[written] = '\0';
+}
+
+static unsigned int synthi_resolved_function_symbol_slot(void* function) {
+    unsigned long long hash = (unsigned long long)(uintptr_t)function;
+    hash ^= hash >> 33;
+    hash *= 0xff51afd7ed558ccdULL;
+    hash ^= hash >> 33;
+    return (unsigned int)(hash % SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY);
+}
+
+static void synthi_record_function_symbol(
+    const char* api,
+    void* module,
+    void* function,
+    const char* name) {
+    if (function == NULL || name == NULL || name[0] == '\0') {
+        return;
+    }
+    char symbol_token[256];
+    char api_token[64];
+    synthi_sanitize_token(name, symbol_token, sizeof(symbol_token));
+    synthi_sanitize_token(api, api_token, sizeof(api_token));
+    unsigned int limit = synthi_resolved_function_symbol_count;
+    if (limit > SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY) {
+        limit = SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY;
+    }
+    for (unsigned int index = 0; index < limit; index++) {
+        if (synthi_resolved_function_symbols[index].function == function) {
+            synthi_resolved_function_symbols[index].module = module;
+            snprintf(
+                synthi_resolved_function_symbols[index].symbol,
+                sizeof(synthi_resolved_function_symbols[index].symbol),
+                "%s",
+                symbol_token);
+            snprintf(
+                synthi_resolved_function_symbols[index].api,
+                sizeof(synthi_resolved_function_symbols[index].api),
+                "%s",
+                api_token);
+            return;
+        }
+    }
+    unsigned int slot = __sync_fetch_and_add(&synthi_resolved_function_symbol_count, 1);
+    if (slot >= SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY) {
+        slot = synthi_resolved_function_symbol_slot(function);
+    }
+    synthi_resolved_function_symbols[slot].module = module;
+    snprintf(
+        synthi_resolved_function_symbols[slot].symbol,
+        sizeof(synthi_resolved_function_symbols[slot].symbol),
+        "%s",
+        symbol_token);
+    snprintf(
+        synthi_resolved_function_symbols[slot].api,
+        sizeof(synthi_resolved_function_symbols[slot].api),
+        "%s",
+        api_token);
+    __sync_synchronize();
+    synthi_resolved_function_symbols[slot].function = function;
+}
+
+static void synthi_function_symbol_token(
+    void* function,
+    char* out,
+    size_t out_size) {
+    if (out_size == 0) {
+        return;
+    }
+    if (function != NULL) {
+        unsigned int limit = synthi_resolved_function_symbol_count;
+        if (limit > SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY) {
+            limit = SYNTHI_RESOLVED_FUNCTION_SYMBOL_CAPACITY;
+        }
+        for (unsigned int index = 0; index < limit; index++) {
+            if (synthi_resolved_function_symbols[index].function == function) {
+                synthi_sanitize_token(
+                    synthi_resolved_function_symbols[index].symbol,
+                    out,
+                    out_size);
+                return;
+            }
+        }
+        Dl_info function_info;
+        memset(&function_info, 0, sizeof(function_info));
+        if (dladdr(function, &function_info) != 0 && function_info.dli_sname != NULL) {
+            synthi_sanitize_token(function_info.dli_sname, out, out_size);
+            return;
+        }
+    }
+    synthi_sanitize_token(NULL, out, out_size);
 }
 
 static const char* synthi_runtime_session(void) {
@@ -487,6 +590,9 @@ static int synthi_module_get_function(
     }
     int result = real_get_function(function, module, name);
     void* resolved_function = function != NULL ? *function : NULL;
+    if (result == 0 && resolved_function != NULL) {
+        synthi_record_function_symbol(api, module, resolved_function, name);
+    }
     synthi_log_native_function_resolution(api, module, name, resolved_function, result, 1);
     return result;
 }
@@ -653,7 +759,8 @@ static int synthi_array_create(
 
 static void synthi_log_native_launch_candidates(
     unsigned long long sequence,
-    void* function) {
+    void* function,
+    const char* kernel_symbol) {
     const char* session = synthi_runtime_session();
     const unsigned int max_candidate_frames = 6;
     void* frames[32];
@@ -687,7 +794,7 @@ static void synthi_log_native_launch_candidates(
         candidate_hash *= 1099511628211ULL;
         fprintf(
             stderr,
-            "[gpu-runtime-boundary] original_host_path_candidate event=candidate attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-callsite:%016llx launch_sequence=%llu frame_index=%d module=%s symbol=%s address=0x%llx function_ptr=0x%llx runtime_session=%s\n",
+            "[gpu-runtime-boundary] original_host_path_candidate event=candidate attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-callsite:%016llx launch_sequence=%llu frame_index=%d module=%s symbol=%s address=0x%llx function_ptr=0x%llx kernel_symbol=%s runtime_session=%s\n",
             candidate_hash,
             sequence,
             frame_index,
@@ -695,6 +802,7 @@ static void synthi_log_native_launch_candidates(
             symbol_token,
             (unsigned long long)(uintptr_t)frames[frame_index],
             (unsigned long long)(uintptr_t)function,
+            kernel_symbol,
             session);
         emitted++;
     }
@@ -715,13 +823,16 @@ static void synthi_log_native_launch_attempt(
     void** kernel_params,
     int real_launch_resolved) {
     const char* session = synthi_runtime_session();
+    char kernel_symbol[256];
+    synthi_function_symbol_token(function, kernel_symbol, sizeof(kernel_symbol));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_launch_attempt api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u real_launch_resolved=%s dispatch=attempted-native attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_launch_attempt api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx kernel_symbol=%s grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u real_launch_resolved=%s dispatch=attempted-native attachment_provenance=native_runtime_intercept\n",
         api,
         session,
         sequence,
         (unsigned long long)(uintptr_t)function,
+        kernel_symbol,
         grid_x,
         grid_y,
         grid_z,
@@ -732,7 +843,7 @@ static void synthi_log_native_launch_attempt(
         (unsigned long long)(uintptr_t)stream,
         shared_bytes,
         real_launch_resolved ? "true" : "false");
-    synthi_log_native_launch_candidates(sequence, function);
+    synthi_log_native_launch_candidates(sequence, function, kernel_symbol);
 }
 
 static void synthi_log_native_launch(
@@ -750,13 +861,16 @@ static void synthi_log_native_launch(
     void** kernel_params,
     int result) {
     const char* session = synthi_runtime_session();
+    char kernel_symbol[256];
+    synthi_function_symbol_token(function, kernel_symbol, sizeof(kernel_symbol));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_launch_observed api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u result=%d dispatch=observed-native attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_launch_observed api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx kernel_symbol=%s grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u result=%d dispatch=observed-native attachment_provenance=native_runtime_intercept\n",
         api,
         session,
         sequence,
         (unsigned long long)(uintptr_t)function,
+        kernel_symbol,
         grid_x,
         grid_y,
         grid_z,
@@ -769,8 +883,10 @@ static void synthi_log_native_launch(
         result);
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:%llu dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=%s\n",
+        "[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:%llu dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 function_ptr=0x%llx kernel_symbol=%s runtime_session=%s\n",
         sequence,
+        (unsigned long long)(uintptr_t)function,
+        kernel_symbol,
         session);
 }
 
