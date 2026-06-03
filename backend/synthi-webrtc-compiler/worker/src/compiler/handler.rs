@@ -3390,13 +3390,20 @@ fn finalize_full_device_outcome(
     fallback_reason: Option<String>,
     allow_direct_translation_unit_partial: bool,
 ) -> Result<()> {
-    let fallback_used = fallback_reason.is_some();
-    let direct_translation_unit_partial = allow_direct_translation_unit_partial
+    let direct_translation_unit_partial_candidate = allow_direct_translation_unit_partial
         && sources.direct_workspace_source
         && sources.partial_source.is_none()
         && sources.partial_filename.is_none()
-        && !fallback_used
         && !sources.full_symbols.is_empty();
+    let direct_translation_unit_rejection = direct_translation_unit_partial_candidate
+        .then(|| direct_translation_unit_partial_rejection_reason(sources))
+        .flatten();
+    let fallback_reason = fallback_reason.or_else(|| {
+        direct_translation_unit_rejection.map(str::to_string)
+    });
+    let fallback_used = fallback_reason.is_some();
+    let direct_translation_unit_partial =
+        direct_translation_unit_partial_candidate && direct_translation_unit_rejection.is_none();
 
     outcome.partial_module = direct_translation_unit_partial;
     outcome.target_symbols = sources.full_symbols.clone();
@@ -3422,6 +3429,65 @@ fn finalize_full_device_outcome(
         validate_partial_device_artifact_exports(outcome)?;
     }
     Ok(())
+}
+
+fn direct_translation_unit_partial_rejection_reason(
+    sources: &DeviceCompileSources,
+) -> Option<&'static str> {
+    let Some(baseline) = matching_source_baseline_for_full_source(sources) else {
+        return Some("direct_translation_unit_abi_baseline_missing");
+    };
+    let old_kernel_abi = kernel_abi_fingerprint_source(baseline);
+    let new_kernel_abi = kernel_abi_fingerprint_source(&sources.full_source);
+    if old_kernel_abi != new_kernel_abi {
+        return Some("direct_translation_unit_kernel_signature_changed");
+    }
+
+    let old_layout = device_constant_global_layout_fingerprint(baseline);
+    let new_layout = device_constant_global_layout_fingerprint(&sources.full_source);
+    if old_layout != new_layout {
+        return Some("direct_translation_unit_constant_global_layout_changed");
+    }
+
+    None
+}
+
+fn matching_source_baseline_for_full_source<'a>(
+    sources: &'a DeviceCompileSources,
+) -> Option<&'a str> {
+    let full_filename = sources
+        .full_filename
+        .as_deref()
+        .and_then(normalized_request_filename)?;
+    let matches = sources
+        .source_baseline_contents
+        .iter()
+        .filter_map(|(path, content)| {
+            normalized_request_filename(path)
+                .filter(|normalized| normalized == &full_filename)
+                .map(|_| content.as_str())
+        })
+        .collect::<BTreeSet<_>>();
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn device_outcome_requires_runner_abi_restart(outcome: &DeviceCompileOutcome) -> Option<String> {
+    match outcome.fallback_reason.as_deref() {
+        Some("direct_translation_unit_kernel_signature_changed") => {
+            Some("abi.kernel_signature_changed".to_string())
+        }
+        Some("direct_translation_unit_constant_global_layout_changed") => {
+            Some("abi.constant_global_layout_changed".to_string())
+        }
+        Some("direct_translation_unit_abi_baseline_missing") => {
+            Some("abi.kernel_signature_unverified".to_string())
+        }
+        _ => None,
+    }
 }
 
 fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> Result<()> {
@@ -4176,6 +4242,74 @@ async fn read_source_baseline_contents(sidecar_path: &Path) -> Vec<(String, Stri
         return Vec::new();
     };
     source_baseline_contents_from_sidecar(&sidecar)
+}
+
+fn upsert_source_baseline_content(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    filename: &str,
+    source: &str,
+) -> Option<String> {
+    if source.trim().is_empty() {
+        return None;
+    }
+    let filename = normalized_request_filename(filename)?;
+    let baseline_hash = device_source_hash(source);
+    upsert_object_field(
+        root,
+        "sourceBaselineContents",
+        &filename,
+        serde_json::Value::String(source.to_string()),
+    );
+    upsert_object_field(
+        root,
+        "sourceBaselineHashes",
+        &filename,
+        serde_json::Value::String(baseline_hash.clone()),
+    );
+    upsert_device_mapping_report_field(
+        root,
+        "sourceBaselineContents",
+        &filename,
+        serde_json::Value::String(source.to_string()),
+    );
+    upsert_device_mapping_report_field(
+        root,
+        "sourceBaselineHashes",
+        &filename,
+        serde_json::Value::String(baseline_hash.clone()),
+    );
+    Some(baseline_hash)
+}
+
+async fn persist_direct_workspace_source_baseline(
+    sidecar_path: &Path,
+    filename: &str,
+    source: &str,
+    session_id: &str,
+) -> Result<bool> {
+    let raw_meta = match tokio::fs::read_to_string(sidecar_path).await {
+        Ok(raw) => {
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap_or(serde_json::Value::Null)
+        }
+        Err(_) => serde_json::Value::Null,
+    };
+    let normalized_meta = normalize_split_sidecar(&raw_meta);
+    let mut root = normalized_meta.as_object().cloned().unwrap_or_default();
+    let Some(baseline_hash) = upsert_source_baseline_content(&mut root, filename, source) else {
+        return Ok(false);
+    };
+    write_sidecar_logged(
+        sidecar_path,
+        &serde_json::Value::Object(root),
+        session_id,
+    )
+    .await;
+    eprintln!(
+        "[compile-device] persisted direct source baseline file={} hash={}",
+        normalized_request_filename(filename).unwrap_or_else(|| filename.replace('\\', "/")),
+        baseline_hash
+    );
+    Ok(true)
 }
 
 fn build_launch_mapping_sources(
@@ -6488,6 +6622,17 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
             }
         }
         if let Some(outcome) = device.as_ref() {
+            if sources.direct_workspace_source {
+                if let Some(full_filename) = sources.full_filename.as_deref() {
+                    persist_direct_workspace_source_baseline(
+                        sidecar_path,
+                        full_filename,
+                        &outcome.compiled_source,
+                        session_id,
+                    )
+                    .await?;
+                }
+            }
             if !outcome.partial_module {
                 if let Some(full_filename) = sources.full_filename.as_deref() {
                     if outcome.compiled_source != sources.full_source {
@@ -11995,7 +12140,12 @@ pub async fn handle_compile_request(
 
     let device_sidecar_only_reload = is_device_sidecar_only_reload(&modules_to_load);
 
-    let runner_reload_policy = if planner_output.decision.is_in_process() {
+    let device_abi_restart_reason = device_compile_outcome
+        .as_ref()
+        .and_then(device_outcome_requires_runner_abi_restart);
+    let runner_reload_policy = if let Some(reason) = device_abi_restart_reason {
+        RunnerReloadPolicy::require_runner_restart(vec![reason])
+    } else if planner_output.decision.is_in_process() {
         RunnerReloadPolicy::default()
     } else {
         RunnerReloadPolicy::require_runner_restart(vec![planner_output
@@ -14570,7 +14720,7 @@ extern "C" __global__ void shade(RenderData render_data) {}
             partial_artifact_kind: None,
             partial_fallback_reason: None,
             partial_fission_candidate: None,
-            source_baseline_contents: Vec::new(),
+            source_baseline_contents: vec![("device.hip".to_string(), source.clone())],
             launch_mapping_sources: Vec::new(),
         };
 
@@ -14581,6 +14731,7 @@ extern "C" __global__ void shade(RenderData render_data) {}
             outcome.selected_artifact_kind.as_deref(),
             Some("direct_device_translation_unit")
         );
+        assert!(!outcome.fallback_used);
         assert_eq!(outcome.target_symbols, symbols(&["shade"]));
         assert_eq!(device_hmr_result_label(&outcome), "gpu-hmr-partial");
 
@@ -14594,6 +14745,116 @@ extern "C" __global__ void shade(RenderData render_data) {}
         assert_eq!(
             initial_compile.selected_artifact_kind.as_deref(),
             Some("full_device")
+        );
+    }
+
+    #[test]
+    fn source_baseline_upsert_normalizes_path_and_mirrors_mapping_report() {
+        let source = r#"extern "C" __global__ void shade(float* pixels) { pixels[0] = 1.0f; }"#;
+        let mut root = serde_json::Map::new();
+        let hash = upsert_source_baseline_content(&mut root, r".\src\gpu\device.hip", source)
+            .expect("baseline should be accepted");
+        let sidecar = serde_json::Value::Object(root);
+
+        assert_eq!(
+            sidecar
+                .pointer("/sourceBaselineContents/src~1gpu~1device.hip")
+                .and_then(serde_json::Value::as_str),
+            Some(source)
+        );
+        assert_eq!(
+            sidecar
+                .pointer("/sourceBaselineHashes/src~1gpu~1device.hip")
+                .and_then(serde_json::Value::as_str),
+            Some(hash.as_str())
+        );
+        assert_eq!(
+            sidecar
+                .pointer("/deviceMappingReport/sourceBaselineContents/src~1gpu~1device.hip")
+                .and_then(serde_json::Value::as_str),
+            Some(source)
+        );
+        assert_eq!(
+            sidecar
+                .pointer("/deviceMappingReport/sourceBaselineHashes/src~1gpu~1device.hip")
+                .and_then(serde_json::Value::as_str),
+            Some(hash.as_str())
+        );
+    }
+
+    #[test]
+    fn direct_workspace_translation_unit_rejects_signature_drift() {
+        let baseline = r#"extern "C" __global__ void shade(float* pixels) { pixels[0] = 1.0f; }"#;
+        let edited = r#"extern "C" __global__ void shade(float* pixels, float scale) { pixels[0] = scale; }"#;
+        let sources = DeviceCompileSources {
+            full_source: edited.to_string(),
+            full_filename: Some("device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: true,
+            partial_source: None,
+            partial_filename: None,
+            partial_symbols: Vec::new(),
+            partial_source_paths: Vec::new(),
+            partial_required: false,
+            partial_artifact_kind: None,
+            partial_fallback_reason: None,
+            partial_fission_candidate: None,
+            source_baseline_contents: vec![("device.hip".to_string(), baseline.to_string())],
+            launch_mapping_sources: Vec::new(),
+        };
+
+        let mut outcome = fixture_device_outcome(false, Vec::new(), symbols(&["shade"]));
+        outcome.compiled_source = edited.to_string();
+        finalize_full_device_outcome(&mut outcome, &sources, None, true).unwrap();
+
+        assert!(!outcome.partial_module);
+        assert!(outcome.fallback_used);
+        assert_eq!(
+            outcome.fallback_reason.as_deref(),
+            Some("direct_translation_unit_kernel_signature_changed")
+        );
+        assert_eq!(
+            outcome.selected_artifact_kind.as_deref(),
+            Some("full_device")
+        );
+        assert_eq!(
+            device_outcome_requires_runner_abi_restart(&outcome).as_deref(),
+            Some("abi.kernel_signature_changed")
+        );
+    }
+
+    #[test]
+    fn direct_workspace_translation_unit_requires_baseline_before_partial() {
+        let source = fixture_kernel_source("shade");
+        let sources = DeviceCompileSources {
+            full_source: source.clone(),
+            full_filename: Some("device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: true,
+            partial_source: None,
+            partial_filename: None,
+            partial_symbols: Vec::new(),
+            partial_source_paths: Vec::new(),
+            partial_required: false,
+            partial_artifact_kind: None,
+            partial_fallback_reason: None,
+            partial_fission_candidate: None,
+            source_baseline_contents: Vec::new(),
+            launch_mapping_sources: Vec::new(),
+        };
+
+        let mut outcome = fixture_device_outcome(false, Vec::new(), symbols(&["shade"]));
+        outcome.compiled_source = source;
+        finalize_full_device_outcome(&mut outcome, &sources, None, true).unwrap();
+
+        assert!(!outcome.partial_module);
+        assert_eq!(
+            outcome.fallback_reason.as_deref(),
+            Some("direct_translation_unit_abi_baseline_missing")
+        );
+        assert_eq!(
+            device_outcome_requires_runner_abi_restart(&outcome).as_deref(),
+            Some("abi.kernel_signature_unverified")
         );
     }
 
