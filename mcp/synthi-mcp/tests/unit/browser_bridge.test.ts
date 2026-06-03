@@ -73,6 +73,20 @@ describe("browser extension bridge", () => {
     expect(await response.json()).toEqual({ ok: true });
     expect(browserBroker.traceSnapshot()).toHaveLength(1);
   });
+
+  it("returns a caller-provided public bridge URL without assuming the bind address is extension-reachable", async () => {
+    const bridge = await browserBridgeServer.start({
+      token: "secret",
+      port: 0,
+      publicUrl: "http://browser-host.example:49152/",
+    });
+
+    expect(bridge).toEqual({
+      url: "http://browser-host.example:49152",
+      token: "secret",
+    });
+    expect(browserBridgeServer.current()).toEqual(bridge);
+  });
 });
 
 function postBridge(url: string, body: Record<string, unknown>, headers: Record<string, string> = {}): Promise<Response> {

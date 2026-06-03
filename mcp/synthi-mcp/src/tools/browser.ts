@@ -44,7 +44,10 @@ export const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        cdp_url: { type: "string", description: "Chrome DevTools endpoint. Defaults to SYNTHI_BROWSER_CDP_URL or http://127.0.0.1:9222." },
+        cdp_url: { type: "string", description: "Chrome DevTools endpoint. Required unless SYNTHI_BROWSER_CDP_URL is set." },
+        bridge_host: { type: "string", description: "Host/interface for the local extension bridge to bind. Defaults to SYNTHI_BROWSER_BRIDGE_HOST or loopback." },
+        bridge_port: { type: "number", description: "Port for the local extension bridge. Defaults to SYNTHI_BROWSER_BRIDGE_PORT or an ephemeral port." },
+        bridge_public_url: { type: "string", description: "URL returned to the extension when bind host/port are not directly reachable, for example across WSL/Windows boundaries." },
         bridge_token: { type: "string", description: "Shared token the extension bridge must present when sending page-origin events." },
       },
       required: [],
@@ -311,14 +314,20 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
 
 async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const cdpUrl = stringOpt(a["cdp_url"]);
-  const bridge = await browserBridgeServer.start({ token: stringOpt(a["bridge_token"]) });
+  const cdpUrl = stringOpt(a["cdp_url"]) ?? process.env["SYNTHI_BROWSER_CDP_URL"];
+  if (!cdpUrl) return errorResponse("browser_cdp_url_required", { env: "SYNTHI_BROWSER_CDP_URL", arg: "cdp_url" });
+  const bridge = await browserBridgeServer.start({
+    token: stringOpt(a["bridge_token"]),
+    host: stringOpt(a["bridge_host"]),
+    port: numberOpt(a["bridge_port"]),
+    publicUrl: stringOpt(a["bridge_public_url"]),
+  });
   browserBroker.setBridgeToken(bridge.token);
   const allTabs = await browserPlaywrightAdapter.attach(cdpUrl);
   const tabs = browserBroker.registerTabs(allTabs);
   return jsonResponse({
     ok: true,
-    cdp_url: cdpUrl ?? process.env["SYNTHI_BROWSER_CDP_URL"] ?? "http://127.0.0.1:9222",
+    cdp_url: cdpUrl,
     bridge,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,

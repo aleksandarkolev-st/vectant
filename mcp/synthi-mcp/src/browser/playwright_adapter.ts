@@ -32,7 +32,7 @@ export class BrowserPlaywrightAdapter {
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
 
-  async attach(cdpUrl: string = defaultCdpUrl()): Promise<BrowserTab[]> {
+  async attach(cdpUrl: string): Promise<BrowserTab[]> {
     if (!this.browser || this.cdpUrl !== cdpUrl) {
       if (this.browser) await this.browser.close().catch(() => undefined);
       this.browser = await chromium.connectOverCDP(cdpUrl);
@@ -288,10 +288,6 @@ export class BrowserPlaywrightAdapter {
     if (!page || page.isClosed()) throw new Error("tab_not_found");
     return page;
   }
-}
-
-function defaultCdpUrl(): string {
-  return process.env["SYNTHI_BROWSER_CDP_URL"] || "http://127.0.0.1:9222";
 }
 
 function parseRoleLocator(input: string): { role: string; name: string } | null {

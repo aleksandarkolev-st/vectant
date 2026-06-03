@@ -1,12 +1,25 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
+import { browserBridgeServer } from "../../src/browser/bridge_server.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, dispatchBrowserTool } from "../../src/tools/browser.js";
 
+const originalBrowserCdpUrl = process.env["SYNTHI_BROWSER_CDP_URL"];
+
 beforeEach(() => {
   browserBroker.resetForTests();
   eventLog._resetForTests();
+  delete process.env["SYNTHI_BROWSER_CDP_URL"];
+});
+
+afterEach(async () => {
+  await browserBridgeServer.stop();
+  if (originalBrowserCdpUrl === undefined) {
+    delete process.env["SYNTHI_BROWSER_CDP_URL"];
+  } else {
+    process.env["SYNTHI_BROWSER_CDP_URL"] = originalBrowserCdpUrl;
+  }
 });
 
 describe("browser MCP tool surface", () => {
@@ -65,5 +78,17 @@ describe("browser MCP tool surface", () => {
     expect(response?.isError).toBe(true);
     expect((response?.structuredContent as { error: string }).error).toBe("browser_tool_failed");
     expect((response?.structuredContent as { message: string }).message).toBe("tab_not_authorized");
+  });
+
+  it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
+    const response = await dispatchBrowserTool("synthi_browser_attach", {});
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual({
+      error: "browser_cdp_url_required",
+      env: "SYNTHI_BROWSER_CDP_URL",
+      arg: "cdp_url",
+    });
+    expect(browserBridgeServer.isRunning()).toBe(false);
   });
 });

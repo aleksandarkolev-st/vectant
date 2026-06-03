@@ -6,6 +6,7 @@ export interface BrowserBridgeStartOptions {
   token?: string;
   host?: string;
   port?: number;
+  publicUrl?: string;
 }
 
 export class BrowserBridgeServer {
@@ -17,8 +18,8 @@ export class BrowserBridgeServer {
     if (this.server && this.url && this.token) {
       return { url: this.url, token: this.token };
     }
-    const host = options.host ?? "127.0.0.1";
-    const port = options.port ?? Number.parseInt(process.env["SYNTHI_BROWSER_BRIDGE_PORT"] ?? "9475", 10);
+    const host = options.host ?? process.env["SYNTHI_BROWSER_BRIDGE_HOST"] ?? "127.0.0.1";
+    const port = options.port ?? parsePort(process.env["SYNTHI_BROWSER_BRIDGE_PORT"]) ?? 0;
     this.token = options.token ?? process.env["SYNTHI_BROWSER_BRIDGE_TOKEN"] ?? `bridge_${randomUUID()}`;
     browserBroker.setBridgeToken(this.token);
     this.server = http.createServer((req, res) => {
@@ -30,7 +31,7 @@ export class BrowserBridgeServer {
     });
     const address = this.server.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
-    this.url = `http://${host}:${actualPort}`;
+    this.url = normalizePublicUrl(options.publicUrl ?? process.env["SYNTHI_BROWSER_BRIDGE_PUBLIC_URL"]) ?? `http://${host}:${actualPort}`;
     return { url: this.url, token: this.token };
   }
 
@@ -154,3 +155,20 @@ async function readBody(req: http.IncomingMessage, maxBytes: number): Promise<st
 }
 
 export const browserBridgeServer = new BrowserBridgeServer();
+
+function parsePort(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) throw new Error("invalid_bridge_port");
+  return parsed;
+}
+
+function normalizePublicUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid_bridge_public_url");
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
+}

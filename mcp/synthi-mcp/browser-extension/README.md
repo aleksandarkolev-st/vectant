@@ -13,7 +13,7 @@ Local development extension for the general browser MCP adapter.
 ```js
 chrome.runtime.sendMessage({
   type: "synthi:set-config",
-  bridgeUrl: "http://127.0.0.1:9475",
+  bridgeUrl: "<bridge.url returned by synthi_browser_attach>",
   bridgeToken: "<token returned by synthi_browser_attach>"
 });
 ```
