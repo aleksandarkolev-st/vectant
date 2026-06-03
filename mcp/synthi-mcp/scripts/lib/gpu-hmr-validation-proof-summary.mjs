@@ -321,6 +321,20 @@ function targetProgressionLedgerEntry(input, validationContext) {
   return null;
 }
 
+function targetProgressionLedgerArtifact(input, validationContext) {
+  if (isObject(input.targetProgressionLedgerArtifact)) return input.targetProgressionLedgerArtifact;
+  if (isObject(input.target_progression_ledger_artifact)) {
+    return input.target_progression_ledger_artifact;
+  }
+  if (isObject(validationContext?.target_progression_ledger_artifact)) {
+    return validationContext.target_progression_ledger_artifact;
+  }
+  if (isObject(validationContext?.targetProgressionLedgerArtifact)) {
+    return validationContext.targetProgressionLedgerArtifact;
+  }
+  return null;
+}
+
 function targetProgressionGates(input, validationContext) {
   const gates = input.targetProgressionGates
     ?? input.target_progression_gates
@@ -450,6 +464,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     target_progression: targetProgression(input, validationContext),
     target_progression_ledger: targetProgressionLedger(input, validationContext),
     target_progression_ledger_entry: targetProgressionLedgerEntry(input, validationContext),
+    target_progression_ledger_artifact: targetProgressionLedgerArtifact(input, validationContext),
     target_progression_gates: progressionGates,
     proof_states: {
       source: proofArrayStates(input.sourceProofs ?? (input.sourceProof ? [input.sourceProof] : [])),

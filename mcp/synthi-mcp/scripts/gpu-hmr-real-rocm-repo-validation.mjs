@@ -83,6 +83,8 @@ const TARGET_PROGRESSION_PHASES = new Set([
   'original-host-path',
   'final-acceptance',
 ]);
+const TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION =
+  'synthi.real_rocm.target_progression_ledger.v1';
 const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
   'small-oracle',
   'partial-reload',
@@ -178,7 +180,7 @@ function parseTargetProgressionLedger(raw) {
   const text = String(raw ?? '').trim();
   if (!text) {
     return {
-      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      schemaVersion: TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION,
       provided: false,
       entries: [],
     };
@@ -193,7 +195,7 @@ function parseTargetProgressionLedger(raw) {
     throw new Error('invalid target progression ledger: expected object or array');
   }
   return {
-    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+    schemaVersion: TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION,
     provided: true,
     rawShape: Array.isArray(parsed) ? 'array' : 'object',
     entries: targetProgressionLedgerEntries(parsed),
@@ -664,6 +666,45 @@ function buildTargetProgressionLedgerEntry({ report, visualArtifactPaths = [] } 
   };
 }
 
+async function writeTargetProgressionLedgerArtifact(outputDir, { report, entry } = {}) {
+  if (!entry) return null;
+  const artifactSeed = {
+    schemaVersion: TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION,
+    sourceRun: {
+      slug: report.slug,
+      sourceUrl: report.source_url,
+      repoCommit: report.repo_commit,
+      targetName: report.target_name,
+      model: report.model,
+      gpuVendor: report.gpu_vendor,
+      gpuArch: report.gpu_arch,
+    },
+    entries: [entry],
+    createdAt: report.finished_at ?? new Date().toISOString(),
+  };
+  const seedJson = JSON.stringify(artifactSeed);
+  const hash = createHash('sha256').update(seedJson).digest('hex');
+  const artifact = {
+    ledgerId: `target-progression-ledger:sha256:${hash}`,
+    contentHash: `sha256:${hash}`,
+    ...artifactSeed,
+  };
+  await mkdir(outputDir, { recursive: true });
+  const filePath = path.join(
+    outputDir,
+    `${cleanIdentifier(report.slug)}-${cleanIdentifier(entry.phase)}-${hash}.json`,
+  );
+  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    ledgerId: artifact.ledgerId,
+    path: filePath,
+    schemaVersion: artifact.schemaVersion,
+    contentHash: artifact.contentHash,
+    entryPhase: entry.phase,
+    entryStatus: entry.status,
+  };
+}
+
 const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
 const configuredRepoName = cleanIdentifier(
   process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
@@ -827,6 +868,8 @@ const report = {
   }),
   target_progression_ledger: CFG.targetProgressionLedger,
   target_progression_ledger_entry: null,
+  target_progression_ledger_artifact: null,
+  target_progression_ledger_artifact_path: null,
   cmake_config: CFG.cmakeConfigName,
   cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
@@ -4005,6 +4048,8 @@ async function writeResults() {
     gpu_arch: report.gpu_arch,
     target_progression: report.target_progression,
     target_progression_ledger: report.target_progression_ledger,
+    target_progression_ledger_entry: report.target_progression_ledger_entry,
+    target_progression_ledger_artifact: report.target_progression_ledger_artifact,
     strict_proof_gates: report.strict_proof_gates,
     target_progression_gates: report.target_progression_gates,
     compile_transport: report.compile_transport,
@@ -4072,7 +4117,18 @@ async function writeResults() {
     report,
     visualArtifactPaths,
   });
+  const targetProgressionLedgerArtifactDir = path.join(LOG_DIR, 'target-progression-ledgers');
+  report.target_progression_ledger_artifact = await writeTargetProgressionLedgerArtifact(
+    targetProgressionLedgerArtifactDir,
+    {
+      report,
+      entry: report.target_progression_ledger_entry,
+    },
+  );
+  report.target_progression_ledger_artifact_path =
+    report.target_progression_ledger_artifact?.path ?? null;
   validationContext.target_progression_ledger_entry = report.target_progression_ledger_entry;
+  validationContext.target_progression_ledger_artifact = report.target_progression_ledger_artifact;
   report.validation_proof_summary = buildGpuHmrValidationProofSummary({
     workspaceSlug: report.slug,
     model: report.model,
@@ -4081,6 +4137,7 @@ async function writeResults() {
     validationContext,
     targetProgressionLedger: report.target_progression_ledger,
     targetProgressionLedgerEntry: report.target_progression_ledger_entry,
+    targetProgressionLedgerArtifact: report.target_progression_ledger_artifact,
     targetProgressionGates: report.target_progression_gates,
     docker: report.docker,
     timings: validationContext.timings,
@@ -4122,6 +4179,7 @@ async function writeResults() {
     `target_progression: ${JSON.stringify(report.target_progression)}`,
     `target_progression_ledger: ${JSON.stringify(report.target_progression_ledger)}`,
     `target_progression_ledger_entry: ${JSON.stringify(report.target_progression_ledger_entry)}`,
+    `target_progression_ledger_artifact: ${JSON.stringify(report.target_progression_ledger_artifact)}`,
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
