@@ -1024,6 +1024,39 @@ function dispatchBoundaryRecord(line) {
   };
 }
 
+function runtimeErrorRecord(line) {
+  const text = String(line ?? '').trim();
+  if (!text) return null;
+  if (
+    !/\[(?:ERR|ERROR)\s*\]/i.test(text)
+    && !/\bgpu_runtime_error\b/i.test(text)
+    && !/\bruntime error\b/i.test(text)
+    && !/\bfatal\b/i.test(text)
+  ) {
+    return null;
+  }
+  const sourceMatch = /\bon line\s+(\d+)\s+in\s+['"]([^'"]+)['"]/i.exec(text);
+  const bracketMatch = /\[(?:ERR|ERROR)\s*\]\s*(.+)$/i.exec(text);
+  const sourceFile = sourceMatch?.[2] ?? null;
+  const sourceFileName = sourceFile
+    ? sourceFile.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? null
+    : null;
+  const sourceLine = sourceMatch ? integerValue(sourceMatch[1]) : null;
+  const evidenceRef = [
+    'worker-log:runtime_error',
+    evidenceRefToken(sourceFileName ?? 'unknown-source'),
+    Number.isFinite(sourceLine) ? sourceLine : 'unknown-line',
+  ].join(':');
+  return {
+    line: text,
+    message: bracketMatch?.[1] ?? text,
+    source_file: sourceFile,
+    source_file_name: sourceFileName,
+    source_line: sourceLine,
+    evidence_ref: evidenceRef,
+  };
+}
+
 export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const nativeLaunchObserverReadyRecords = (Array.isArray(lines) ? lines : [])
@@ -1147,6 +1180,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
         array: fields.array ?? null,
         arrayOutPtr: fields.array_out_ptr ?? fields.arrayOutPtr ?? null,
         descriptorPtr: fields.descriptor_ptr ?? fields.descriptorPtr ?? null,
+        descriptorKind: fields.descriptor_kind ?? fields.descriptorKind ?? null,
+        channelX: integerValue(fields.channel_x ?? fields.channelX),
+        channelY: integerValue(fields.channel_y ?? fields.channelY),
+        channelZ: integerValue(fields.channel_z ?? fields.channelZ),
+        channelW: integerValue(fields.channel_w ?? fields.channelW),
+        channelFormatKind: integerValue(fields.channel_format_kind ?? fields.channelFormatKind),
         width: integerValue(fields.width),
         height: integerValue(fields.height),
         flags: integerValue(fields.flags),
@@ -1174,6 +1213,10 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_intercept'
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
+  const runtimeErrorRecords = (Array.isArray(lines) ? lines : [])
+    .map(runtimeErrorRecord)
+    .filter(Boolean)
+    .slice(-20);
   const nativeLaunchAttemptRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bnative_launch_attempt\b/i))
     .map((line) => {
@@ -1324,6 +1367,9 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     evidenceRefToken(record.api),
     Number.isFinite(record.sequence) ? record.sequence : 'unknown',
   ].join(':'));
+  const runtimeErrorEvidenceRefs = compactStringList(
+    runtimeErrorRecords.map((record) => record.evidence_ref),
+  );
   const nativeLaunchObserverEnabled = observation.nativeLaunchObserverEnabled === true;
   const upstreamRunAttempted = observation.upstreamRunAttempted === true;
   const upstreamRunExitCode = Number.isInteger(observation.upstreamRunExitCode)
@@ -1446,6 +1492,17 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       nativeArrayAllocationRecords.map((record) => record.api),
     ),
     native_array_allocation_evidence_refs: nativeArrayAllocationEvidenceRefs,
+    runtime_error_count: runtimeErrorRecords.length,
+    runtime_error_evidence_refs: runtimeErrorEvidenceRefs,
+    runtime_error_records: runtimeErrorRecords,
+    runtime_error_source_locations: runtimeErrorRecords
+      .filter((record) => record.source_file || Number.isFinite(record.source_line))
+      .map((record) => ({
+        source_file: record.source_file,
+        source_file_name: record.source_file_name,
+        source_line: record.source_line,
+        evidence_ref: record.evidence_ref,
+      })),
     native_array_allocation_records: nativeArrayAllocationRecords.slice(-20).map((record) => ({
       runtime_session: record.runtimeSession,
       api: record.api,
@@ -1453,6 +1510,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       array: record.array,
       array_out_ptr: record.arrayOutPtr,
       descriptor_ptr: record.descriptorPtr,
+      descriptor_kind: record.descriptorKind,
+      channel_x: record.channelX,
+      channel_y: record.channelY,
+      channel_z: record.channelZ,
+      channel_w: record.channelW,
+      channel_format_kind: record.channelFormatKind,
       width: record.width,
       height: record.height,
       flags: record.flags,
@@ -1546,6 +1609,14 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     nativeTextureObjectFailureBeforeLaunch: evidence.native_texture_object_failure_before_launch,
     nativeArrayAllocationFailureObserved: evidence.native_array_allocation_failure_observed,
     nativeArrayAllocationFailureBeforeLaunch: evidence.native_array_allocation_failure_before_launch,
+    nativeLaunchObserverReadyEvidenceRefs: evidence.native_launch_observer_ready_evidence_refs,
+    nativeFunctionResolutionEvidenceRefs: evidence.native_function_resolution_evidence_refs,
+    nativeTextureObjectEvidenceRefs: evidence.native_texture_object_evidence_refs,
+    nativeArrayAllocationEvidenceRefs: evidence.native_array_allocation_evidence_refs,
+    nativeArrayAllocationRecords: evidence.native_array_allocation_records,
+    runtimeErrorEvidenceRefs: evidence.runtime_error_evidence_refs,
+    runtimeErrorRecords: evidence.runtime_error_records,
+    runtimeErrorSourceLocations: evidence.runtime_error_source_locations,
     runtimeCapabilityPreflight:
       observation.runtimeCapabilityPreflight ?? observation.runtime_capability_preflight,
     nativeLaunchObserverSawNoLaunch: evidence.native_launch_observer_saw_no_launch,

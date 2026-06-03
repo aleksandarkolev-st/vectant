@@ -839,7 +839,8 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
-  upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 240000),
+  upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
+  cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
@@ -1198,6 +1199,19 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     pointer: match[10],
     available: Number(match[8]) === 0,
   }));
+  const textureResourceRecords = [...text.matchAll(
+    /\bhipCreateTextureObject\s+label=([^\s]+)\s+resource=([^\s]+)\s+filter=([^\s]+)\s+normalized=(\d+)\s+result=(\d+)\s+error=(.*?)\s+texture=([^\s]+)/g,
+  )].map((match) => ({
+    api: 'hipCreateTextureObject',
+    label: match[1],
+    resourceType: match[2],
+    filterMode: match[3],
+    normalizedCoords: Number(match[4]) === 1,
+    result: Number(match[5]),
+    error: match[6],
+    texture: match[7],
+    available: Number(match[5]) === 0 && match[7] !== '0',
+  }));
   const legacyAllocation =
     /\bhipMallocArray format=([^\s]+)\s+width=(\d+)\s+height=(\d+)\s+result=(\d+)\s+error=(.*?)\s+array=([^\s]+)/.exec(text);
   if (allocationRecords.length === 0 && legacyAllocation) {
@@ -1225,6 +1239,10 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     : allocationResult === 0;
   const allocationMatrixFailureCount =
     allocationRecords.filter((record) => !record.available).length;
+  const textureResourceMatrixFailureCount =
+    textureResourceRecords.filter((record) => !record.available).length;
+  const textureResourceFallbackAvailable =
+    textureResourceRecords.some((record) => record.available);
   return {
     schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
     backend: 'rocm',
@@ -1247,12 +1265,18 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     allocationMatrixAvailableCount:
       allocationRecords.filter((record) => record.available).length,
     allocationMatrixFailureCount,
+    textureResourceFallbackAvailable,
+    textureResourceMatrix: textureResourceRecords,
+    textureResourceMatrixTotal: textureResourceRecords.length,
+    textureResourceMatrixAvailableCount:
+      textureResourceRecords.filter((record) => record.available).length,
+    textureResourceMatrixFailureCount,
     exitCode: exitCode ? Number(exitCode[1]) : null,
     degradedState: allocationAvailable ? null : 'gpu-runtime-array-allocation-unavailable',
     degradedReason: allocationAvailable
       ? null
       : allocationRecords.length > 1
-        ? `HIP array allocation matrix failed ${allocationMatrixFailureCount}/${allocationRecords.length} entries; primary ${allocation?.api ?? 'hipMallocArray'} ${allocation?.label ?? 'unknown'} returned ${allocationResult} ${allocation?.error ?? 'unknown'}`
+        ? `HIP array allocation matrix failed ${allocationMatrixFailureCount}/${allocationRecords.length} entries; primary ${allocation?.api ?? 'hipMallocArray'} ${allocation?.label ?? 'unknown'} returned ${allocationResult} ${allocation?.error ?? 'unknown'}; texture fallback available=${textureResourceFallbackAvailable ? 'true' : 'false'}`
         : allocation
           ? `${allocation.api} returned ${allocationResult} ${allocation.error}`
           : 'hipMallocArray preflight result was not collected',
@@ -1278,6 +1302,7 @@ async function runRocmArrayAllocationPreflight() {
 mkdir -p ${shQuote(preflightDir)}
 cat > ${shQuote(sourcePath)} <<'CPP'
 #include <hip/hip_runtime.h>
+#include <cstdint>
 #include <cstdio>
 static int failures = 0;
 static void test2d(const char* label, hipChannelFormatDesc desc) {
@@ -1313,6 +1338,57 @@ static void test3d(const char* label, hipChannelFormatDesc desc) {
   if (result != hipSuccess) failures++;
   if (arr) (void)hipFreeArray(arr);
 }
+static void test_texture_resource(
+  const char* label,
+  hipResourceType resource_type,
+  enum hipTextureFilterMode filter_mode,
+  bool normalized_coords) {
+  float* ptr = nullptr;
+  hipError_t alloc_result = hipMalloc(&ptr, 32 * 32 * 4 * sizeof(float));
+  if (alloc_result != hipSuccess) {
+    std::printf("hipCreateTextureObject label=%s resource=%s filter=%s normalized=%d result=%d error=%s texture=0\\n",
+      label,
+      resource_type == hipResourceTypeLinear ? "linear" : "pitch2D",
+      filter_mode == hipFilterModeLinear ? "linear" : "point",
+      normalized_coords ? 1 : 0,
+      static_cast<int>(alloc_result),
+      hipGetErrorString(alloc_result));
+    failures++;
+    return;
+  }
+  hipResourceDesc resource_desc = {};
+  resource_desc.resType = resource_type;
+  if (resource_type == hipResourceTypeLinear) {
+    resource_desc.res.linear.devPtr = ptr;
+    resource_desc.res.linear.desc = hipCreateChannelDesc(32, 32, 32, 32, hipChannelFormatKindFloat);
+    resource_desc.res.linear.sizeInBytes = 32 * 32 * 4 * sizeof(float);
+  } else {
+    resource_desc.res.pitch2D.devPtr = ptr;
+    resource_desc.res.pitch2D.desc = hipCreateChannelDesc(32, 32, 32, 32, hipChannelFormatKindFloat);
+    resource_desc.res.pitch2D.width = 32;
+    resource_desc.res.pitch2D.height = 32;
+    resource_desc.res.pitch2D.pitchInBytes = 32 * 4 * sizeof(float);
+  }
+  hipTextureDesc texture_desc = {};
+  texture_desc.addressMode[0] = hipAddressModeClamp;
+  texture_desc.addressMode[1] = hipAddressModeClamp;
+  texture_desc.filterMode = filter_mode;
+  texture_desc.readMode = hipReadModeElementType;
+  texture_desc.normalizedCoords = normalized_coords ? 1 : 0;
+  hipTextureObject_t texture = 0;
+  hipError_t result = hipCreateTextureObject(&texture, &resource_desc, &texture_desc, nullptr);
+  std::printf("hipCreateTextureObject label=%s resource=%s filter=%s normalized=%d result=%d error=%s texture=%llu\\n",
+    label,
+    resource_type == hipResourceTypeLinear ? "linear" : "pitch2D",
+    filter_mode == hipFilterModeLinear ? "linear" : "point",
+    normalized_coords ? 1 : 0,
+    static_cast<int>(result),
+    hipGetErrorString(result),
+    static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(texture)));
+  if (result != hipSuccess || texture == 0) failures++;
+  if (texture) (void)hipDestroyTextureObject(texture);
+  if (ptr) (void)hipFree(ptr);
+}
 int main() {
   int count = 0;
   hipError_t count_result = hipGetDeviceCount(&count);
@@ -1325,6 +1401,10 @@ int main() {
   test2d("f32x4", hipCreateChannelDesc(32, 32, 32, 32, hipChannelFormatKindFloat));
   test3d("u8x4", hipCreateChannelDesc(8, 8, 8, 8, hipChannelFormatKindUnsigned));
   test3d("f32x4", hipCreateChannelDesc(32, 32, 32, 32, hipChannelFormatKindFloat));
+  test_texture_resource("linear-point-unnormalized", hipResourceTypeLinear, hipFilterModePoint, false);
+  test_texture_resource("linear-linear-normalized", hipResourceTypeLinear, hipFilterModeLinear, true);
+  test_texture_resource("pitch2d-point-unnormalized", hipResourceTypePitch2D, hipFilterModePoint, false);
+  test_texture_resource("pitch2d-linear-normalized", hipResourceTypePitch2D, hipFilterModeLinear, true);
   return failures == 0 ? 0 : 70;
 }
 CPP
@@ -1458,10 +1538,13 @@ async function prepareUpstreamBuild() {
   const upstreamRunInvocation = upstreamRunLaunch.useXvfbRun
     ? `xvfb-run -a sh -lc ${shQuote(observedUpstreamRunCommand)}`
     : `sh -lc ${shQuote(observedUpstreamRunCommand)}`;
+  const cleanBuildCommand = CFG.cleanUpstreamBuild
+    ? 'rm -rf build'
+    : 'printf "preserving existing upstream build directory\\n"';
   const command = `
 set -e
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
-rm -rf build
+${cleanBuildCommand}
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
@@ -1519,6 +1602,8 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
     upstream_run_exit_code: upstreamRunExitCode,
     cmake_config: CFG.cmakeConfigName,
     cmake_args: CFG.cmakeArgs,
+    clean_build: CFG.cleanUpstreamBuild,
+    upstream_timeout_ms: CFG.upstreamBuildTimeoutMs,
     output: runLog.slice(0, 1000),
     configure_output: String(configureLog ?? '').slice(-2000),
     build_output: String(buildLog ?? '').slice(-2000),
@@ -1541,7 +1626,7 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
   record(
     'upstream GPU target metadata configured',
     lifecycleError ? 'warn' : 'pass',
-    `${timings.replace(/\s+/g, ' ')} metadata=${lifecyclePlan.metadataSource} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} cmake_args=${CFG.cmakeArgs.length}`,
+    `${timings.replace(/\s+/g, ' ')} metadata=${lifecyclePlan.metadataSource} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} clean=${CFG.cleanUpstreamBuild ? 'on' : 'off'} timeout_ms=${CFG.upstreamBuildTimeoutMs} cmake_args=${CFG.cmakeArgs.length}`,
   );
   if (lifecycleError) {
     record(
@@ -2423,7 +2508,7 @@ function evidenceLines(text, pattern) {
 }
 
 const RUNTIME_EVIDENCE_PATTERN =
-  /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i;
+  /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|\[(?:ERR|ERROR)\s*\]|fatal|Rust cannot catch/i;
 
 function runtimeEvidenceFromValidationLogs({ workerLogs, upstreamRunLog, slug }) {
   const scopedWorkerLogs = scopeLogTextToSession(workerLogs, slug);
@@ -2723,6 +2808,12 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     array: logField(line, 'array'),
     arrayOutPtr: logField(line, 'array_out_ptr'),
     descriptorPtr: logField(line, 'descriptor_ptr'),
+    descriptorKind: logField(line, 'descriptor_kind'),
+    channelX: logField(line, 'channel_x'),
+    channelY: logField(line, 'channel_y'),
+    channelZ: logField(line, 'channel_z'),
+    channelW: logField(line, 'channel_w'),
+    channelFormatKind: logField(line, 'channel_format_kind'),
     width: logField(line, 'width'),
     height: logField(line, 'height'),
     flags: logField(line, 'flags'),
@@ -3415,7 +3506,8 @@ async function selfCheckRuntimeDispatchEvidence() {
       '[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session pid=42 mode=observe_only apis=genericLaunch,otherLaunch function_resolution_apis=genericGetFunction texture_object_apis=genericTextureCreate array_allocation_apis=genericArrayAlloc attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_function_resolution api=genericGetFunction runtime_session=native-session module=0x9 symbol=kernel function_ptr=0x1 result=0 resolution=ok real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_texture_object_create api=genericTextureCreate runtime_session=native-session sequence=1 texture=0x0 texture_out_ptr=0x4 resource_desc_ptr=0x5 texture_desc_ptr=0x6 resource_view_desc_ptr=0x0 result=1 creation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
-      '[gpu-runtime-boundary] native_array_allocation api=genericArrayAlloc runtime_session=native-session sequence=2 array=0x0 array_out_ptr=0x7 descriptor_ptr=0x8 width=64 height=32 flags=0 result=1 allocation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
+      '[gpu-runtime-boundary] native_array_allocation api=genericArrayAlloc runtime_session=native-session sequence=2 array=0x0 array_out_ptr=0x7 descriptor_ptr=0x8 descriptor_kind=channel_format channel_x=32 channel_y=32 channel_z=0 channel_w=0 channel_format_kind=2 width=64 height=32 flags=0 result=1 allocation=failed real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
+      "[ERR ] Generic runtime error: 'invalid argument' on line 12 in '/tmp/generic.cpp'.",
       '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session sequence=1 function_ptr=0x1 grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
       '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 runtime_session=native-session',
@@ -3438,6 +3530,34 @@ async function selfCheckRuntimeDispatchEvidence() {
         allocationAvailable: false,
         allocationResult: 1,
         allocationError: 'invalid argument',
+        anyAllocationAvailable: false,
+        allocationMatrix: [
+          {
+            api: 'genericArrayAlloc',
+            label: 'f32x4',
+            result: 1,
+            error: 'invalid argument',
+            available: false,
+          },
+        ],
+        allocationMatrixTotal: 1,
+        allocationMatrixAvailableCount: 0,
+        allocationMatrixFailureCount: 1,
+        textureResourceFallbackAvailable: false,
+        textureResourceMatrix: [
+          {
+            api: 'genericTextureCreate',
+            label: 'linear-point-unnormalized',
+            resourceType: 'linear',
+            result: 1,
+            error: 'invalid argument',
+            texture: '0',
+            available: false,
+          },
+        ],
+        textureResourceMatrixTotal: 1,
+        textureResourceMatrixAvailableCount: 0,
+        textureResourceMatrixFailureCount: 1,
         degradedState: 'gpu-runtime-array-allocation-unavailable',
         degradedReason: 'genericArrayAlloc returned 1 invalid argument',
       },
@@ -3460,6 +3580,20 @@ async function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyObservation.array_allocation_count !== 1
     || nativeOnlyObservation.array_allocation_failure_count !== 1
     || nativeOnlyObservation.array_allocation_apis[0] !== 'genericArrayAlloc'
+    || nativeOnlyObservation.array_allocation_records[0]?.descriptorKind !== 'channel_format'
+    || nativeOnlyObservation.array_allocation_records[0]?.channelX !== '32'
+    || nativeOnlyOriginalHost.evidence.native_array_allocation_records[0]?.descriptor_kind !== 'channel_format'
+    || nativeOnlyOriginalHost.evidence.native_array_allocation_records[0]?.channel_x !== 32
+    || nativeOnlyOriginalHost.proof.nativeArrayAllocationRecords[0]?.descriptor_kind !== 'channel_format'
+    || nativeOnlyOriginalHost.proof.nativeArrayAllocationRecords[0]?.channel_x !== 32
+    || nativeOnlyOriginalHost.proof.nativeArrayAllocationEvidenceRefs[0] !== 'worker-log:native_array_allocation:native-session:genericArrayAlloc:2'
+    || !nativeOnlyOriginalHost.proof.diagnosticEvidenceRefs.includes('worker-log:native_array_allocation:native-session:genericArrayAlloc:2')
+    || nativeOnlyOriginalHost.evidence.runtime_error_source_locations[0]?.source_file_name !== 'generic.cpp'
+    || nativeOnlyOriginalHost.evidence.runtime_error_source_locations[0]?.source_line !== 12
+    || nativeOnlyOriginalHost.proof.runtimeErrorSourceLocations[0]?.source_file_name !== 'generic.cpp'
+    || nativeOnlyOriginalHost.proof.runtimeErrorSourceLocations[0]?.source_line !== 12
+    || !nativeOnlyOriginalHost.proof.diagnosticEvidenceRefs.includes('worker-log:runtime_error:generic.cpp:12')
+    || !summarizeGpuHmrOriginalHostPathProof(nativeOnlyOriginalHost.proof).includes('runtime_error=generic.cpp:12')
     || nativeOnlyObservation.total_count !== 1
     || nativeOnlyObservation.attempt_count !== 1
     || nativeOnlyObservation.observe_only_count !== 1
@@ -3469,6 +3603,12 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !nativeOnlyOriginalHost.proof.runtimeCapabilityPreflightObserved
     || nativeOnlyOriginalHost.proof.runtimeArrayAllocationCapabilityAvailable !== false
     || !nativeOnlyOriginalHost.proof.runtimeArrayAllocationCapabilityUnavailable
+    || nativeOnlyOriginalHost.proof.runtimeCapabilityPreflight.allocationMatrixTotal !== 1
+    || nativeOnlyOriginalHost.proof.runtimeCapabilityPreflight.allocationMatrixFailureCount !== 1
+    || nativeOnlyOriginalHost.proof.runtimeCapabilityPreflight.textureResourceFallbackAvailable !== false
+    || nativeOnlyOriginalHost.proof.runtimeCapabilityPreflight.textureResourceMatrixTotal !== 1
+    || nativeOnlyOriginalHost.proof.runtimeCapabilityPreflight.textureResourceMatrixFailureCount !== 1
+    || nativeOnlyOriginalHost.proof.runtimeCapabilityPreflight.textureResourceMatrix[0]?.resourceType !== 'linear'
     || nativeOnlyOriginalHost.proof.degradedReason !== 'original_host_path_runtime_array_allocation_capability_unavailable'
     || !summarizeGpuHmrOriginalHostPathProof(nativeOnlyOriginalHost.proof).includes('array_capability=unavailable')
   ) {
@@ -3773,6 +3913,10 @@ async function selfCheckRuntimeDispatchEvidence() {
     'hipMallocArray label=u8x1 x=8 y=0 z=0 w=0 kind=1 result=1 error=invalid argument array=(nil)',
     'hipMallocArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
     'hipMalloc3DArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
+    'hipCreateTextureObject label=linear-point-unnormalized resource=linear filter=point normalized=0 result=911 error=invalid resource description of texture passed to the api texture=0',
+    'hipCreateTextureObject label=linear-linear-normalized resource=linear filter=linear normalized=1 result=911 error=invalid resource description of texture passed to the api texture=0',
+    'hipCreateTextureObject label=pitch2d-point-unnormalized resource=pitch2D filter=point normalized=0 result=1 error=invalid argument texture=0',
+    'hipCreateTextureObject label=pitch2d-linear-normalized resource=pitch2D filter=linear normalized=1 result=1 error=invalid argument texture=0',
     'exit_code=70',
   ].join('\n'));
   if (
@@ -3785,8 +3929,15 @@ async function selfCheckRuntimeDispatchEvidence() {
     || arrayCapabilityMatrix.anyAllocationAvailable !== false
     || arrayCapabilityMatrix.allocationMatrixTotal !== 3
     || arrayCapabilityMatrix.allocationMatrixFailureCount !== 3
+    || arrayCapabilityMatrix.textureResourceMatrixTotal !== 4
+    || arrayCapabilityMatrix.textureResourceMatrixFailureCount !== 4
+    || arrayCapabilityMatrix.textureResourceMatrixAvailableCount !== 0
+    || arrayCapabilityMatrix.textureResourceFallbackAvailable !== false
+    || arrayCapabilityMatrix.textureResourceMatrix[0]?.resourceType !== 'linear'
+    || arrayCapabilityMatrix.textureResourceMatrix[2]?.resourceType !== 'pitch2D'
     || arrayCapabilityMatrix.allocationFormat !== 'f32x4'
     || !arrayCapabilityMatrix.degradedReason.includes('matrix failed 3/3')
+    || !arrayCapabilityMatrix.degradedReason.includes('texture fallback available=false')
   ) {
     throw new Error('ROCm array allocation capability parser self-check failed');
   }

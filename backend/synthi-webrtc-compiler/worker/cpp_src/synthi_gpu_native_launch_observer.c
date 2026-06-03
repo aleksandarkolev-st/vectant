@@ -14,6 +14,14 @@ typedef struct SynthiGpuDim3 {
     unsigned int z;
 } SynthiGpuDim3;
 
+typedef struct SynthiGpuChannelFormatDesc {
+    int x;
+    int y;
+    int z;
+    int w;
+    int f;
+} SynthiGpuChannelFormatDesc;
+
 typedef int (*SynthiGpuModuleLaunchFn)(
     void* function,
     unsigned int grid_x,
@@ -553,15 +561,37 @@ static void synthi_log_native_array_allocation(
     int result,
     int real_resolver_resolved) {
     void* array_value = array != NULL ? *array : NULL;
+    const char* descriptor_kind = descriptor == NULL ? "none" : "opaque";
+    int channel_x = 0;
+    int channel_y = 0;
+    int channel_z = 0;
+    int channel_w = 0;
+    int channel_format_kind = 0;
+    if (descriptor != NULL && api != NULL && strstr(api, "MallocArray") != NULL) {
+        const SynthiGpuChannelFormatDesc* channel_desc =
+            (const SynthiGpuChannelFormatDesc*)descriptor;
+        descriptor_kind = "channel_format";
+        channel_x = channel_desc->x;
+        channel_y = channel_desc->y;
+        channel_z = channel_desc->z;
+        channel_w = channel_desc->w;
+        channel_format_kind = channel_desc->f;
+    }
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_array_allocation api=%s runtime_session=%s sequence=%llu array=0x%llx array_out_ptr=0x%llx descriptor_ptr=0x%llx width=%llu height=%llu flags=%u result=%d allocation=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_array_allocation api=%s runtime_session=%s sequence=%llu array=0x%llx array_out_ptr=0x%llx descriptor_ptr=0x%llx descriptor_kind=%s channel_x=%d channel_y=%d channel_z=%d channel_w=%d channel_format_kind=%d width=%llu height=%llu flags=%u result=%d allocation=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
         api,
         synthi_runtime_session(),
         sequence,
         (unsigned long long)(uintptr_t)array_value,
         (unsigned long long)(uintptr_t)array,
         (unsigned long long)(uintptr_t)descriptor,
+        descriptor_kind,
+        channel_x,
+        channel_y,
+        channel_z,
+        channel_w,
+        channel_format_kind,
         (unsigned long long)width,
         (unsigned long long)height,
         flags,
