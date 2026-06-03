@@ -31,6 +31,10 @@ export const gitlab = {
   },
   async getStatus(conn, { repo, ref }) {
     const r = await call(conn, `/projects/${enc(repo)}/repository/commits/${encodeURIComponent(ref)}/statuses`);
-    return r.ok ? { ok: true, checks: { state: Array.isArray(r.data) && r.data.every((s) => s.status === 'success') ? 'success' : 'pending', total: Array.isArray(r.data) ? r.data.length : 0 } } : r;
+    if (!r.ok) return r;
+    const arr = Array.isArray(r.data) ? r.data : [];
+    // An empty statuses array means "no checks reported" — report 'unknown', not a vacuous 'success'.
+    const state = arr.length === 0 ? 'unknown' : (arr.every((s) => s.status === 'success') ? 'success' : 'pending');
+    return { ok: true, checks: { state, total: arr.length } };
   },
 };

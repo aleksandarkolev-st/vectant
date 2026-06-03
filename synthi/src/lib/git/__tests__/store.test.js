@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  prisma: { gitProvider: { create: vi.fn(), findMany: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
+  prisma: { gitProvider: { create: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), delete: vi.fn() },
             encryptedSecret: { create: vi.fn(), deleteMany: vi.fn() } },
   enc: vi.fn((t) => `cipher(${t})`),
 }));
 vi.mock('@/lib/prisma', () => ({ default: h.prisma }));
 vi.mock('@/lib/tokenCrypto', () => ({ encryptToken: h.enc, decryptToken: (c) => c }));
 
-import { createPatProvider, listProviders, scopeWhere, deleteProvider } from '../store';
+import { createPatProvider, listProviders, scopeWhere, deleteProvider, upsertOAuthProvider } from '../store';
 
 beforeEach(() => { vi.clearAllMocks(); h.prisma.encryptedSecret.create.mockResolvedValue({ id: 'sec1' }); });
 
@@ -39,6 +39,44 @@ describe('listProviders', () => {
     expect(arg.where).toEqual({ scope: 'personal', ownerUserId: 'u1' });
     expect(arg.select.secretId).toBeFalsy();
     expect(arg.select.secret).toBeFalsy();
+  });
+});
+
+describe('upsertOAuthProvider', () => {
+  it('creates a new oauth provider when none exists, storing encrypted access+refresh tokens', async () => {
+    h.prisma.gitProvider.findFirst.mockResolvedValue(null);
+    h.prisma.encryptedSecret.create.mockResolvedValueOnce({ id: 'accSec' }).mockResolvedValueOnce({ id: 'refSec' });
+    h.prisma.gitProvider.create.mockResolvedValue({ id: 'g1' });
+    const row = await upsertOAuthProvider({ ownerUserId: 'u1', providerType: 'gitlab', name: 'GitLab', accessToken: 'AT', refreshToken: 'RT', expiresIn: 7200, oauthScopes: ['api'] });
+    expect(h.prisma.encryptedSecret.create).toHaveBeenCalledWith({ data: { cipher: 'cipher(AT)', last4: 'AT'.slice(-4) } });
+    const data = h.prisma.gitProvider.create.mock.calls[0][0].data;
+    expect(data).toMatchObject({ ownerUserId: 'u1', providerType: 'gitlab', authType: 'oauth', scope: 'personal', secretId: 'accSec', refreshSecretId: 'refSec', oauthScopes: ['api'], needsRelink: false });
+    expect(h.prisma.gitProvider.update).not.toHaveBeenCalled();
+    expect(h.prisma.encryptedSecret.deleteMany).not.toHaveBeenCalled();
+    expect(row).toEqual({ id: 'g1' });
+  });
+
+  it('updates the existing oauth row and deletes the old secret rows (no duplicate, no orphans)', async () => {
+    h.prisma.gitProvider.findFirst.mockResolvedValue({ id: 'old', secretId: 's0', refreshSecretId: 'r0' });
+    h.prisma.encryptedSecret.create.mockResolvedValueOnce({ id: 'accSec' }).mockResolvedValueOnce({ id: 'refSec' });
+    h.prisma.gitProvider.update.mockResolvedValue({ id: 'old' });
+    const row = await upsertOAuthProvider({ ownerUserId: 'u1', providerType: 'github', name: 'GitHub', accessToken: 'AT2', refreshToken: 'RT2', expiresIn: 3600 });
+    expect(h.prisma.gitProvider.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { ownerUserId: 'u1', providerType: 'github', authType: 'oauth' } }));
+    expect(h.prisma.gitProvider.create).not.toHaveBeenCalled();
+    const upd = h.prisma.gitProvider.update.mock.calls[0][0];
+    expect(upd.where).toEqual({ id: 'old' });
+    expect(upd.data).toMatchObject({ secretId: 'accSec', refreshSecretId: 'refSec', needsRelink: false });
+    expect(h.prisma.encryptedSecret.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['s0', 'r0'] } } });
+    expect(row).toEqual({ id: 'old' });
+  });
+
+  it('omits the refresh secret when no refresh token is returned', async () => {
+    h.prisma.gitProvider.findFirst.mockResolvedValue(null);
+    h.prisma.encryptedSecret.create.mockResolvedValue({ id: 'accSec' });
+    h.prisma.gitProvider.create.mockResolvedValue({ id: 'g1' });
+    await upsertOAuthProvider({ ownerUserId: 'u1', providerType: 'github', name: 'GitHub', accessToken: 'AT' });
+    expect(h.prisma.encryptedSecret.create).toHaveBeenCalledTimes(1);
+    expect(h.prisma.gitProvider.create.mock.calls[0][0].data.refreshSecretId).toBeNull();
   });
 });
 

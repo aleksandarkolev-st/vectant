@@ -18,6 +18,19 @@ export function resolveApiBase(conn) {
   return h.api;
 }
 
+// OAuth app credentials per provider. GitHub git-OAuth deliberately reuses NextAuth login's
+// GITHUB_ID/GITHUB_SECRET (auth.js) rather than a separate GITHUB_CLIENT_ID/SECRET pair.
+const OAUTH_CLIENT_ENV = {
+  github: { id: 'GITHUB_ID', secret: 'GITHUB_SECRET' },
+  gitlab: { id: 'GITLAB_CLIENT_ID', secret: 'GITLAB_CLIENT_SECRET' },
+};
+
+/** Resolve the OAuth app {id, secret} for a provider from the environment. */
+export function oauthClient(provider) {
+  const e = OAUTH_CLIENT_ENV[provider];
+  return { id: (e && process.env[e.id]) || '', secret: (e && process.env[e.secret]) || '' };
+}
+
 export function oauthEndpoints(providerType, baseUrl) {
   if (baseUrl) {
     const root = baseUrl.replace(/\/+$/, '');

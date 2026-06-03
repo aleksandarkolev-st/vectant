@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { resolveActor } from '@/lib/integrations/session';
-import { oauthEndpoints } from '@/lib/git/providerConfig.js';
+import { oauthEndpoints, oauthClient } from '@/lib/git/providerConfig.js';
 
 export const runtime = 'nodejs';
 const SCOPES = { github: 'repo read:user', gitlab: 'api read_user' };
@@ -15,7 +15,7 @@ export async function GET(req, { params }) {
   const redirectUri = `${process.env.NEXTAUTH_URL}/api/integrations/git/oauth/${provider}/callback`;
   const { authorize } = oauthEndpoints(provider, null);
   const url = new URL(authorize);
-  url.searchParams.set('client_id', process.env[`${provider.toUpperCase()}_CLIENT_ID`] || '');
+  url.searchParams.set('client_id', oauthClient(provider).id);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('scope', SCOPES[provider]);

@@ -19,6 +19,16 @@ describe('github adapter', () => {
     expect(url).toContain('/repos/o/r/pulls');
     expect(init.headers.authorization).toBe('Bearer TKN');
   });
+  it('createPullRequest encodes repo path segments but keeps the owner/name slash', async () => {
+    h.fetchMock.mockResolvedValue(okJson({ number: 1, html_url: 'u', state: 'open' }));
+    await getAdapter('github').createPullRequest({ providerType: 'github', authType: 'pat', secret: {} }, { repo: 'a b/c d', sourceBranch: 'f', targetBranch: 'main', title: 't', body: 'b' });
+    expect(h.fetchMock.mock.calls[0][0]).toContain('/repos/a%20b/c%20d/pulls');
+  });
+  it('getStatus encodes repo path segments per-segment', async () => {
+    h.fetchMock.mockResolvedValue(okJson({ state: 'success', total_count: 0 }));
+    await getAdapter('github').getStatus({ providerType: 'github', authType: 'pat', secret: {} }, { repo: 'a b/c d', ref: 'main' });
+    expect(h.fetchMock.mock.calls[0][0]).toContain('/repos/a%20b/c%20d/commits/');
+  });
 });
 
 describe('gitlab adapter', () => {
@@ -34,6 +44,16 @@ describe('gitlab adapter', () => {
     h.fetchMock.mockResolvedValue({ ok: false, status: 404, text: async () => 'not found' });
     const r = await getAdapter('gitlab').listRepos({ providerType: 'gitlab', authType: 'pat', secret: {} }, {});
     expect(r).toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+  it('getStatus returns state:unknown / total:0 for an empty statuses array (not vacuous success)', async () => {
+    h.fetchMock.mockResolvedValue(okJson([]));
+    const r = await getAdapter('gitlab').getStatus({ providerType: 'gitlab', authType: 'pat', secret: {} }, { repo: 'g/p', ref: 'abc' });
+    expect(r).toMatchObject({ ok: true, checks: { state: 'unknown', total: 0 } });
+  });
+  it('getStatus maps an all-success statuses array to state:success', async () => {
+    h.fetchMock.mockResolvedValue(okJson([{ status: 'success' }, { status: 'success' }]));
+    const r = await getAdapter('gitlab').getStatus({ providerType: 'gitlab', authType: 'pat', secret: {} }, { repo: 'g/p', ref: 'abc' });
+    expect(r.checks).toMatchObject({ state: 'success', total: 2 });
   });
 });
 

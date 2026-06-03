@@ -44,6 +44,46 @@ export async function createPatProvider(actor, { providerType, name, baseUrl, to
   return row;
 }
 
+/**
+ * Create or update the single OAuth GitProvider row for {ownerUserId, providerType}.
+ * Re-running OAuth (web or device flow) for the same user+provider must not create a
+ * duplicate row: we update the existing oauth row in place, repoint it at freshly
+ * encrypted secrets, and delete the previous EncryptedSecret rows so they don't orphan
+ * (the FK is onDelete:SetNull, not Cascade). Returns the persisted row (optionally `select`ed).
+ */
+export async function upsertOAuthProvider({ ownerUserId, providerType, name, accessToken, refreshToken, expiresIn, oauthScopes }, select) {
+  const sec = await prisma.encryptedSecret.create({
+    data: { cipher: encryptToken(accessToken), last4: String(accessToken).slice(-4) },
+  });
+  let refreshSecretId = null;
+  if (refreshToken) {
+    const r = await prisma.encryptedSecret.create({
+      data: { cipher: encryptToken(refreshToken), last4: String(refreshToken).slice(-4) },
+    });
+    refreshSecretId = r.id;
+  }
+  const data = {
+    name, providerType, authType: 'oauth', scope: 'personal', ownerUserId,
+    secretId: sec.id, refreshSecretId,
+    accessTokenExpiresAt: expiresIn ? new Date(Date.now() + expiresIn * 1000) : null,
+    needsRelink: false,
+    ...(oauthScopes ? { oauthScopes } : {}),
+  };
+
+  const existing = await prisma.gitProvider.findFirst({
+    where: { ownerUserId, providerType, authType: 'oauth' },
+    select: { id: true, secretId: true, refreshSecretId: true },
+  });
+  if (!existing) {
+    return prisma.gitProvider.create({ data, ...(select ? { select } : {}) });
+  }
+  // Repoint the existing row at the new secrets FIRST, then drop the now-unreferenced old ones.
+  const row = await prisma.gitProvider.update({ where: { id: existing.id }, data, ...(select ? { select } : {}) });
+  const stale = [existing.secretId, existing.refreshSecretId].filter(Boolean);
+  if (stale.length) await prisma.encryptedSecret.deleteMany({ where: { id: { in: stale } } });
+  return row;
+}
+
 export async function deleteProvider(id) {
   // Capture linked secret ids BEFORE deleting the provider, then remove the
   // orphaned EncryptedSecret rows (the FK is onDelete:SetNull, not Cascade, so

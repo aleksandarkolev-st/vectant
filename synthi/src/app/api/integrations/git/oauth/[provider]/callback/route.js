@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
-import { encryptToken } from '@/lib/tokenCrypto';
 import { resolveActor } from '@/lib/integrations/session';
-import { oauthEndpoints } from '@/lib/git/providerConfig.js';
+import { oauthEndpoints, oauthClient } from '@/lib/git/providerConfig.js';
+import { upsertOAuthProvider } from '@/lib/git/store.js';
+import { gitFetch } from '@/lib/git/safeFetch.js';
 
 export const runtime = 'nodejs';
 
@@ -18,24 +18,21 @@ export async function GET(req, { params }) {
 
   const { token: tokenUrl } = oauthEndpoints(provider, null);
   const redirectUri = `${process.env.NEXTAUTH_URL}/api/integrations/git/oauth/${provider}/callback`;
+  const { id: clientId, secret: clientSecret } = oauthClient(provider);
   const body = new URLSearchParams({
     grant_type: 'authorization_code', code, redirect_uri: redirectUri,
-    client_id: process.env[`${provider.toUpperCase()}_CLIENT_ID`] || '',
-    client_secret: process.env[`${provider.toUpperCase()}_CLIENT_SECRET`] || '',
+    client_id: clientId, client_secret: clientSecret,
   });
-  const tokenRes = await fetch(tokenUrl, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });
+  const tokenRes = await gitFetch(tokenUrl, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });
   if (!tokenRes.ok) return NextResponse.json({ error: 'token_exchange_failed' }, { status: 502 });
   const j = await tokenRes.json();
 
-  const sec = await prisma.encryptedSecret.create({ data: { cipher: encryptToken(j.access_token), last4: String(j.access_token).slice(-4) } });
-  let refreshSecretId = null;
-  if (j.refresh_token) { const r = await prisma.encryptedSecret.create({ data: { cipher: encryptToken(j.refresh_token), last4: String(j.refresh_token).slice(-4) } }); refreshSecretId = r.id; }
-  await prisma.gitProvider.create({ data: {
-    name: provider === 'gitlab' ? 'GitLab' : 'GitHub', providerType: provider, authType: 'oauth',
-    scope: 'personal', ownerUserId: actor.userId, secretId: sec.id, refreshSecretId,
-    accessTokenExpiresAt: j.expires_in ? new Date(Date.now() + j.expires_in * 1000) : null,
+  await upsertOAuthProvider({
+    ownerUserId: actor.userId, providerType: provider,
+    name: provider === 'gitlab' ? 'GitLab' : 'GitHub',
+    accessToken: j.access_token, refreshToken: j.refresh_token, expiresIn: j.expires_in,
     oauthScopes: (j.scope || '').split(/[ ,]/).filter(Boolean),
-  } });
+  });
   const res = NextResponse.redirect(`${process.env.NEXTAUTH_URL}/workspace?git_connected=${provider}`, 302);
   res.cookies.set('git_oauth_state', '', { maxAge: 0, path: '/' });
   return res;
