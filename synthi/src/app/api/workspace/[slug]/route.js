@@ -70,7 +70,7 @@ function buildFileTree(flatFiles, prefixLength) {
 
 export async function GET(request, { params }) {
     const data = await params;
-    const workspaceId = data.workspaceId;
+    const workspaceId = data.slug;
 
     if (!workspaceId) {
         return NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 });

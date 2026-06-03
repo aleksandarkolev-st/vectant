@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request, { params }) {
   const data = await params;
-  const workspaceId = data.workspaceId;
+  const workspaceId = data.slug;
   const q = request.nextUrl.searchParams.get('q') || request.nextUrl.searchParams.get('query') || '';
 
   if (!workspaceId) {
