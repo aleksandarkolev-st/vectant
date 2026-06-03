@@ -2307,7 +2307,7 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
   return null;
 }
 
-async function captureScreenshot(label) {
+async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}) {
   if (!mcpState?.client) return null;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   let lastRow = null;
@@ -2329,7 +2329,7 @@ async function captureScreenshot(label) {
         return row;
       }
       lastRow = row;
-      const status = CFG.expectScreenshot ? 'warn' : 'info';
+      const status = required ? 'warn' : 'info';
       record(`screenshot ${label} retry`, status, `attempt=${attempt}/${attempts} ${JSON.stringify(row)}`);
       if (attempt < attempts) {
         await sleep(CFG.screenshotRetryDelayMs);
@@ -2341,7 +2341,7 @@ async function captureScreenshot(label) {
     record(`screenshot ${label}`, 'warn', `attempt=${attempt} ${detail}`);
     await sleep(CFG.screenshotRetryDelayMs);
   }
-  if (!CFG.expectScreenshot) {
+  if (!required) {
     const detail = lastRow
       ? `visual_proof_unavailable not_visibly_non_black ${JSON.stringify(lastRow)}`
       : 'visual_proof_unavailable no_frame_captured screenshot_optional';
@@ -3892,6 +3892,26 @@ async function selfCheckRuntimeDispatchEvidence() {
     ) {
       throw new Error('target progression ledger self-check did not hash visual file bytes');
     }
+    const rejectedVisualArtifacts = await visualEvidenceArtifactsFromFiles([visualPath], [{
+      path: visualPath,
+      visualQuality: 'gpu-hmr-visual-flat-frame',
+      acceptedAsVisualEvidence: false,
+    }]);
+    const rejectedLedgerEntry = buildTargetProgressionLedgerEntry({
+      report: ledgerReport,
+      visualArtifactPaths: [visualPath],
+      visualEvidenceArtifacts: rejectedVisualArtifacts,
+    });
+    const rejectedVisualArtifact = rejectedLedgerEntry.visualEvidenceArtifacts
+      ?.find((artifact) => artifact.path === visualPath);
+    if (
+      rejectedVisualArtifact?.contentHash !== expectedVisualHash
+      || !rejectedLedgerEntry.visualEvidenceContentHashes?.includes(expectedVisualHash)
+      || rejectedLedgerEntry.visualEvidenceAcceptedCount !== 0
+      || rejectedLedgerEntry.visualEvidenceReadErrorCount !== 0
+    ) {
+      throw new Error('target progression ledger self-check did not retain rejected visual file bytes');
+    }
   } finally {
     await rm(visualSelfCheckDir, { recursive: true, force: true });
   }
@@ -4440,9 +4460,10 @@ async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
-  const freshVisualFrames = visualEvidenceFrames();
-  const visualArtifactPaths = freshVisualFrames.map((shot) => shot.path);
-  const freshVisualEvidenceArtifacts = freshVisualFrames.map((shot) => ({
+  const capturedVisualFrames = report.screenshots
+    .filter((shot) => typeof shot?.path === 'string' && shot.path.trim());
+  const visualArtifactPaths = capturedVisualFrames.map((shot) => shot.path);
+  const capturedVisualEvidenceArtifacts = capturedVisualFrames.map((shot) => ({
     path: shot.path,
     label: shot.label ?? null,
     width: shot.width ?? null,
@@ -4476,7 +4497,7 @@ async function writeResults() {
       targetProgressionGates: report.target_progression_gates,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
-      visualEvidenceArtifacts: freshVisualEvidenceArtifacts,
+      visualEvidenceArtifacts: capturedVisualEvidenceArtifacts,
     });
     runtimeProofVisualEvidenceArtifacts = Array.isArray(written.artifact.visualEvidenceArtifacts)
       ? written.artifact.visualEvidenceArtifacts
@@ -4501,7 +4522,7 @@ async function writeResults() {
     visualArtifactPaths,
     visualEvidenceArtifacts: runtimeProofVisualEvidenceArtifacts.length > 0
       ? runtimeProofVisualEvidenceArtifacts
-      : await visualEvidenceArtifactsFromFiles(visualArtifactPaths, freshVisualEvidenceArtifacts),
+      : await visualEvidenceArtifactsFromFiles(visualArtifactPaths, capturedVisualEvidenceArtifacts),
   });
   const targetProgressionLedgerArtifactDir = path.join(LOG_DIR, 'target-progression-ledgers');
   report.target_progression_ledger_artifact = await writeTargetProgressionLedgerArtifact(
@@ -4674,7 +4695,7 @@ async function run() {
     width: CFG.width,
     height: CFG.height,
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
-  await captureScreenshot('first-compile');
+  await captureScreenshot('first-compile', { required: false });
 
   const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
   const hmrAdditionalFiles = buildCompileProjection(
@@ -4706,7 +4727,7 @@ async function run() {
     width: CFG.width,
     height: CFG.height,
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
-  await captureScreenshot('post-hmr');
+  await captureScreenshot('post-hmr', { required: CFG.expectScreenshot });
 
   for (let index = 0; index < extraDeltas.length; index += 1) {
     const delta = extraDeltas[index];
@@ -4748,7 +4769,7 @@ async function run() {
       width: CFG.width,
       height: CFG.height,
     }, CFG.hmrTimeoutMs, phaseName);
-    await captureScreenshot(screenshotLabel);
+    await captureScreenshot(screenshotLabel, { required: CFG.expectScreenshot });
   }
 }
 
