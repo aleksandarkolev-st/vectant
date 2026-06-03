@@ -52,8 +52,10 @@ services:
 
   frontend:
     build:
-      context: ./synthi
-      dockerfile: Dockerfile
+      # npm-workspace build: root context so synthi can resolve the
+      # @synthi/mcp-hub workspace package (see synthi/Dockerfile).
+      context: .
+      dockerfile: synthi/Dockerfile
       args:
         NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:1234"
         NEXT_PUBLIC_YSWEET_URL: "http://localhost:8180"

@@ -102,7 +102,9 @@ steps:
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=synthi/Dockerfile
-      - --context=dir:///workspace/synthi
+      # Root context: synthi is an npm workspace that depends on packages/mcp-hub,
+      # so the frontend image builds from the repo root (matches docker-compose).
+      - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
       - --cache=true
       - --cache-ttl=168h

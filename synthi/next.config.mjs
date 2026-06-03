@@ -36,6 +36,9 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
   // Produce a self-contained build in .next/standalone for Docker deployment.
   // This copies only the files needed to run the app (~150 MB vs full node_modules).
   output: 'standalone',
+  // Monorepo: trace from the repo root so the standalone bundle includes the
+  // @synthi/mcp-hub workspace package + hoisted deps (not just synthi/).
+  outputFileTracingRoot: path.resolve(__dirname, '..'),
   transpilePackages: ['@synthi/mcp-hub'],
   // Turbopack-specific configuration (used by `next dev --turbopack`)
   turbopack: {

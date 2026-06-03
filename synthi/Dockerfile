@@ -1,26 +1,34 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  Synthi IDE — Frontend (Next.js 15, standalone output)
 # ─────────────────────────────────────────────────────────────────────────────
-#  Multi-stage build:
-#    Stage 1 (deps):    Install ALL dependencies (dev + prod)
-#    Stage 2 (builder): Run polyfills build, generate Prisma client, next build
-#    Stage 3 (runner):  Copy only the standalone output (~150 MB)
+#  npm-WORKSPACE build: this image builds from the MONOREPO ROOT context (not
+#  ./synthi) because synthi depends on the workspace package @synthi/mcp-hub
+#  (packages/mcp-hub) and transpiles it. docker-compose uses `context: .` and
+#  cloudbuild uses `--context=dir:///workspace`; both set dockerfile to
+#  synthi/Dockerfile. The repo-root .dockerignore keeps the context lean.
 #
-#  NEXT_PUBLIC_* env vars are baked into the client JS bundle at build time.
-#  Pass them as --build-arg when running `docker build`.
+#  Multi-stage:
+#    Stage 1 (deps):    workspace-aware `npm ci` from the repo root
+#    Stage 2 (builder): prisma generate + next build (output: 'standalone')
+#    Stage 3 (runner):  copy the monorepo-rooted standalone output (~150 MB)
 #
-#  Runtime-only env vars (DATABASE_URL, AUTH_SECRET, etc.) are injected via
-#  K8s env/secrets at pod start and read server-side by API routes.
+#  NEXT_PUBLIC_* are baked into the client bundle at build time (--build-arg).
+#  Runtime-only env (DATABASE_URL, AUTH_SECRET, …) are injected at pod start.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Stage 1: Install dependencies ───────────────────────────────────────────
+# ── Stage 1: Install dependencies (workspace-aware) ──────────────────────────
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS deps
 WORKDIR /app
 
 # libc6-compat needed for some npm packages on Alpine
 RUN apk add --no-cache libc6-compat
 
-COPY package.json package-lock.json* ./
+# Root lockfile + EVERY workspace manifest (npm needs them all to resolve the
+# workspace graph against package-lock.json before installing).
+COPY package.json package-lock.json ./
+COPY synthi/package.json ./synthi/package.json
+COPY packages/mcp-hub/package.json ./packages/mcp-hub/package.json
+COPY mcp/synthi-mcp/package.json ./mcp/synthi-mcp/package.json
 RUN npm ci
 
 # ── Stage 2: Build ──────────────────────────────────────────────────────────
@@ -28,7 +36,12 @@ FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb836
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+# Root manifests (workspace resolution) + only the sources synthi's build needs.
+COPY package.json package-lock.json ./
+COPY packages/mcp-hub ./packages/mcp-hub
+COPY synthi ./synthi
+
+WORKDIR /app/synthi
 
 # Cloud builds rely on synthi/.env.production. Local docker-compose builds pass
 # explicit build args, so write only non-empty args into .env.production.local
@@ -58,13 +71,11 @@ RUN rm -f .env.production.local && \
             if [ -n "$value" ]; then printf '%s=%s\n' "$key" "$value" >> .env.production.local; fi; \
         done
 
-# Generate the Prisma client (reads schema.prisma → node_modules/.prisma)
+# Generate the Prisma client (reads synthi/prisma/schema.prisma → hoisted node_modules/.prisma)
 RUN npx prisma generate
 
-# Polyfills → then Next.js production build (uses `output: 'standalone'`)
-# Bump the V8 heap so the workspace bundle (Monaco + Yjs + collab) doesn't
-# OOM during the static optimisation pass — the default 2GB limit lands
-# right on the edge for this build.
+# Polyfills → Next.js production build (output: 'standalone'). Bump the V8 heap so
+# the Monaco + Yjs + collab bundle doesn't OOM on the static-optimisation pass.
 RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # ── Stage 3: Production runner ──────────────────────────────────────────────
@@ -77,16 +88,16 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Static assets
-COPY --from=builder /app/public ./public
+# With outputFileTracingRoot = repo root, the standalone output is rooted at the
+# monorepo: it contains synthi/server.js, a hoisted node_modules, and the traced
+# packages/mcp-hub. Preserve that layout (server entry = synthi/server.js).
+COPY --from=builder --chown=nextjs:nodejs /app/synthi/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/synthi/.next/static ./synthi/.next/static
+COPY --from=builder /app/synthi/public ./synthi/public
 
-# Standalone server + traced node_modules
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Prisma client must be present at runtime for API routes
+# Prisma client must be present at runtime for API routes (hoisted to root node_modules).
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/synthi/prisma ./synthi/prisma
 
 USER nextjs
 
@@ -94,4 +105,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["node", "server.js"]
+CMD ["node", "synthi/server.js"]
