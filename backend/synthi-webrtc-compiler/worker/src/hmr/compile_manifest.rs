@@ -486,7 +486,20 @@ impl CompileManifest {
     /// Returns `None` on parse failure. Callers use a generic fallback or
     /// request a verified re-split; missing manifests never infer link flags.
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
-        serde_json::from_value(value.clone()).ok()
+        let mut manifest: Self = serde_json::from_value(value.clone()).ok()?;
+        manifest.normalize_argv_fields();
+        Some(manifest)
+    }
+
+    fn normalize_argv_fields(&mut self) {
+        normalize_argv_list(&mut self.common_flags);
+        normalize_argv_list(&mut self.core_link_flags);
+        normalize_argv_list(&mut self.gui_link_flags);
+        normalize_argv_list(&mut self.shared_link_flags);
+        normalize_argv_list(&mut self.runner_link_flags);
+        if let Some(gpu) = self.gpu.as_mut() {
+            normalize_argv_list(&mut gpu.device_flags);
+        }
     }
 
     /// Pick the compiler executable for a given module kind. Host
@@ -577,6 +590,72 @@ impl CompileManifest {
             m.common_flags.push("-fno-merge-constants".to_string());
         }
         m
+    }
+}
+
+fn normalize_argv_list(values: &mut Vec<String>) {
+    let mut normalized = Vec::with_capacity(values.len());
+    for value in values.drain(..) {
+        let tokens = split_manifest_argv_value(&value);
+        if tokens.is_empty() {
+            continue;
+        }
+        normalized.extend(tokens);
+    }
+    *values = normalized;
+}
+
+fn split_manifest_argv_value(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if !trimmed.chars().any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'') {
+        return vec![trimmed.to_string()];
+    }
+
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in trimmed.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            ch if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        vec![trimmed.to_string()]
+    } else {
+        tokens
     }
 }
 
@@ -704,6 +783,63 @@ mod tests {
         assert_eq!(m.compiler.executable(), "clang++");
         assert_eq!(m.std, "c++20");
         assert_eq!(m.gui_link_flags, vec!["-lglfw".to_string()]);
+    }
+
+    #[test]
+    fn from_json_value_normalizes_grouped_argv_fields() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{
+                "compiler": "clang++",
+                "std": "c++20",
+                "common_flags": ["-shared -fPIC", "-DAPP_NAME=\"Synthi App\""],
+                "core_link_flags": [],
+                "gui_link_flags": ["-L\"/opt/vendor sdk/lib\" -lgraphics"],
+                "shared_link_flags": [],
+                "runner_link_flags": ["-ldl -pthread"],
+                "system_packages": [],
+                "hot_reload_mode": "swap",
+                "confidence": {
+                    "overall": "high",
+                    "runner_synthesis": "high",
+                    "link_flags": "high",
+                    "notes": ""
+                },
+                "gpu": {
+                    "vendor": "rocm",
+                    "device_compiler": "hipcc",
+                    "arch": ["gfx1201"],
+                    "device_flags": ["-O3 --offload-arch=gfx1201"],
+                    "runtime_libs": ["amdhip64"],
+                    "snapshot_mode": "auto",
+                    "fatbin_strategy": "sidecar_module"
+                }
+            }"#,
+        )
+        .unwrap();
+        let m = CompileManifest::from_json_value(&v).unwrap();
+        assert_eq!(
+            m.common_flags,
+            vec![
+                "-shared".to_string(),
+                "-fPIC".to_string(),
+                "-DAPP_NAME=Synthi App".to_string()
+            ]
+        );
+        assert_eq!(
+            m.gui_link_flags,
+            vec![
+                "-L/opt/vendor sdk/lib".to_string(),
+                "-lgraphics".to_string()
+            ]
+        );
+        assert_eq!(
+            m.runner_link_flags,
+            vec!["-ldl".to_string(), "-pthread".to_string()]
+        );
+        assert_eq!(
+            m.gpu.unwrap().device_flags,
+            vec!["-O3".to_string(), "--offload-arch=gfx1201".to_string()]
+        );
     }
 
     #[test]
