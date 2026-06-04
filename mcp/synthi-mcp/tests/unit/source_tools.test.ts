@@ -50,6 +50,21 @@ describe("source identity MCP tool surface", () => {
         column: 11,
       })
     );
+
+    const open = await dispatchSourceTool("synthi_source_open_in_ide", {
+      workspace_id: "workspace-a",
+      token: "s_known",
+    });
+    expect(open?.isError).toBeUndefined();
+    expect((open?.structuredContent as {
+      open_request: { kind: string; file: string; line: number; column: number; status: string };
+    }).open_request).toEqual(expect.objectContaining({
+      kind: "workspaceSourceLocation",
+      file: "src/App.jsx",
+      line: 7,
+      column: 11,
+      status: "readyForIdeClient",
+    }));
   });
 
   it("classifies missing source tokens without guessing a file path", async () => {

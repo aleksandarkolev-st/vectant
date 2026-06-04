@@ -51,6 +51,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_auth_get_tool_auth_readiness",
   // Workspace source identity
   "synthi_source_lookup_token",
+  "synthi_source_open_in_ide",
   "synthi_source_get_mapping_status",
   "synthi_source_suggest_affordance_patch",
   // Replay safety and mutation isolation

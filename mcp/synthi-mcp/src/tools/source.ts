@@ -6,6 +6,7 @@ import { errorFromException, errorResponse, jsonResponse, type ToolResponse } fr
 
 export const SOURCE_TOOL_NAMES = [
   "synthi_source_lookup_token",
+  "synthi_source_open_in_ide",
   "synthi_source_get_mapping_status",
   "synthi_source_suggest_affordance_patch",
 ] as const;
@@ -19,6 +20,19 @@ export const SOURCE_TOOLS = [
       type: "object",
       properties: {
         token: { type: "string", description: "The data-synthi-source-id token observed in a taught workflow step." },
+        workspace_id: { type: "string", description: "Optional workspace scope. Defaults to the active/default workspace." },
+      },
+      required: ["token"],
+    },
+  },
+  {
+    name: "synthi_source_open_in_ide",
+    description:
+      "Resolve a source identity token into a workspace source-location open request for the Synthi IDE/client. Does not open local OS paths or ask the user for exact file paths.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: { type: "string", description: "The data-synthi-source-id token to open." },
         workspace_id: { type: "string", description: "Optional workspace scope. Defaults to the active/default workspace." },
       },
       required: ["token"],
@@ -57,6 +71,8 @@ export async function dispatchSourceTool(toolName: string, args: unknown): Promi
     switch (toolName) {
       case "synthi_source_lookup_token":
         return lookupTokenTool(args);
+      case "synthi_source_open_in_ide":
+        return openInIdeTool(args);
       case "synthi_source_get_mapping_status":
         return mappingStatusTool(args);
       case "synthi_source_suggest_affordance_patch":
@@ -84,6 +100,33 @@ function lookupTokenTool(args: unknown): ToolResponse {
   return jsonResponse({
     ok: true,
     source: mapping,
+  });
+}
+
+function openInIdeTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const token = requiredString(a, "token");
+  const workspaceId = stringOpt(a["workspace_id"]);
+  const mapping = sourceIdentityRegistry.lookup(token, workspaceId);
+  if (!mapping) {
+    return errorResponse("source_token_not_found", {
+      token,
+      mapping_status: sourceIdentityRegistry.status(workspaceId),
+      next_action: "run_with_source_identity_transform_or_add_affordance",
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    open_request: {
+      kind: "workspaceSourceLocation",
+      workspace_id: mapping.workspace_id,
+      token: mapping.token,
+      file: mapping.file,
+      line: mapping.line,
+      column: mapping.column,
+      tag: mapping.tag,
+      status: "readyForIdeClient",
+    },
   });
 }
 
