@@ -45,6 +45,8 @@ export const ADVERTISED_TOOLS = [
   "synthi_auth_finish_checkpoint_enrollment",
   "synthi_auth_list_checkpoints",
   "synthi_auth_revoke_checkpoint",
+  "synthi_auth_configure_refresh_provider",
+  "synthi_auth_test_refresh_provider",
   "synthi_auth_get_tool_auth_readiness",
   // Lifecycle
   "synthi_attach",

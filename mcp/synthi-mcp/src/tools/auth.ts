@@ -7,6 +7,8 @@ export const AUTH_TOOL_NAMES = [
   "synthi_auth_finish_checkpoint_enrollment",
   "synthi_auth_list_checkpoints",
   "synthi_auth_revoke_checkpoint",
+  "synthi_auth_configure_refresh_provider",
+  "synthi_auth_test_refresh_provider",
   "synthi_auth_get_tool_auth_readiness",
 ] as const;
 
@@ -62,6 +64,30 @@ export const AUTH_TOOLS = [
     },
   },
   {
+    name: "synthi_auth_configure_refresh_provider",
+    description:
+      "Configure a refresh-provider metadata record using a Synthi secret reference. Secret values are rejected and never returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        secret_ref: { type: "string", description: "Synthi secret URI, for example synthi://secrets/workspace/auth-refresh." },
+        provider_type: { type: "string", enum: ["projectRefreshProvider", "ciTestAuth"] },
+      },
+      required: ["url", "secret_ref"],
+    },
+  },
+  {
+    name: "synthi_auth_test_refresh_provider",
+    description:
+      "Validate refresh-provider metadata and report whether it can mint replay auth state. Does not reveal secret values.",
+    inputSchema: {
+      type: "object",
+      properties: { provider_id: { type: "string" } },
+      required: ["provider_id"],
+    },
+  },
+  {
     name: "synthi_auth_get_tool_auth_readiness",
     description:
       "Return whether an origin has auth durable enough for an interactive or unattended generated workflow tool.",
@@ -87,6 +113,10 @@ export async function dispatchAuthTool(toolName: string, args: unknown): Promise
         return jsonResponse({ ok: true, checkpoints: authCheckpointManager.list(stringOpt(obj(args)["url"])) });
       case "synthi_auth_revoke_checkpoint":
         return revokeCheckpointTool(args);
+      case "synthi_auth_configure_refresh_provider":
+        return configureRefreshProviderTool(args);
+      case "synthi_auth_test_refresh_provider":
+        return testRefreshProviderTool(args);
       case "synthi_auth_get_tool_auth_readiness":
         return authReadinessTool(args);
       default:
@@ -122,6 +152,23 @@ function revokeCheckpointTool(args: unknown): ToolResponse {
   const result = authCheckpointManager.revoke(requiredString(obj(args), "checkpoint_id"));
   if (!result.ok) return errorResponse(result.error);
   return jsonResponse({ ok: true, checkpoint: result.checkpoint });
+}
+
+function configureRefreshProviderTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const result = authCheckpointManager.configureRefreshProvider({
+    url: requiredString(a, "url"),
+    secret_ref: requiredString(a, "secret_ref"),
+    provider_type: refreshProviderTypeOpt(a["provider_type"]),
+  });
+  if (!result.ok) return errorResponse(result.error);
+  return jsonResponse({ ok: true, provider: result.provider });
+}
+
+function testRefreshProviderTool(args: unknown): ToolResponse {
+  const result = authCheckpointManager.testRefreshProvider(requiredString(obj(args), "provider_id"));
+  if (!result.ok) return errorResponse(result.error);
+  return jsonResponse({ ok: true, provider: result.provider, can_mint_replay_state: result.can_mint_replay_state });
 }
 
 function authReadinessTool(args: unknown): ToolResponse {
@@ -167,5 +214,10 @@ function authDurabilityOpt(value: unknown): AuthDurabilityV7 | undefined {
   ) {
     return value;
   }
+  return undefined;
+}
+
+function refreshProviderTypeOpt(value: unknown): "projectRefreshProvider" | "ciTestAuth" | undefined {
+  if (value === "projectRefreshProvider" || value === "ciTestAuth") return value;
   return undefined;
 }

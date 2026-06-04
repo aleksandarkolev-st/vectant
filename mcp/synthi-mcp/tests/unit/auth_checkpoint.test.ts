@@ -59,18 +59,33 @@ describe("auth checkpoint manager", () => {
   });
 
   it("allows unattended readiness for refresh-provider metadata", () => {
-    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com");
-    const result = authCheckpointManager.finishEnrollment({
-      enrollment_id: enrollment.enrollment_id,
-      durability: "refreshProvider",
+    const configured = authCheckpointManager.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
     });
-    expect(result.ok).toBe(true);
+    expect(configured.ok).toBe(true);
+    if (!configured.ok) throw new Error("unexpected refresh provider config failure");
+    const tested = authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
+    expect(tested.ok).toBe(true);
 
     expect(authCheckpointManager.readiness("https://app.example.com", true)).toEqual(expect.objectContaining({
       ready: true,
       status: "ready",
       durability: "refreshProvider",
+      refresh_provider: expect.objectContaining({
+        status: "validated",
+        secret_ref: "synthi://secrets/workspace/auth-refresh",
+      }),
     }));
+  });
+
+  it("rejects raw refresh-provider secret values", () => {
+    const result = authCheckpointManager.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "sk-live-secret-value",
+    });
+
+    expect(result).toEqual({ ok: false, error: "auth_refresh_provider_secret_ref_required" });
   });
 
   it("exposes auth checkpoint tools through structured responses", async () => {
@@ -100,6 +115,17 @@ describe("auth checkpoint manager", () => {
 
     const revoked = await dispatchAuthTool("synthi_auth_revoke_checkpoint", { checkpoint_id: checkpointId });
     expect((revoked?.structuredContent as { checkpoint: { status: string } }).checkpoint.status).toBe("revoked");
+
+    const provider = await dispatchAuthTool("synthi_auth_configure_refresh_provider", {
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+    });
+    const providerId = (provider?.structuredContent as { provider: { provider_id: string } }).provider.provider_id;
+    const tested = await dispatchAuthTool("synthi_auth_test_refresh_provider", { provider_id: providerId });
+    expect((tested?.structuredContent as { can_mint_replay_state: boolean; provider: { status: string } })).toEqual(expect.objectContaining({
+      can_mint_replay_state: true,
+      provider: expect.objectContaining({ status: "validated" }),
+    }));
 
     const listed = await dispatchAuthTool("synthi_auth_list_checkpoints", { url: "https://app.example.com" });
     expect((listed?.structuredContent as { checkpoints: unknown[] }).checkpoints).toHaveLength(1);

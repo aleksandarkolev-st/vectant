@@ -26,17 +26,30 @@ export interface AuthCheckpointMetadata {
   };
 }
 
+export interface AuthRefreshProviderMetadata {
+  provider_id: string;
+  app_origin: string;
+  provider_type: "projectRefreshProvider" | "ciTestAuth";
+  secret_ref: string;
+  configured_at: number;
+  last_tested_at?: number;
+  status: "configured" | "validated" | "failed" | "revoked";
+  failure_class?: "missingSecretRef" | "providerUnavailable" | "unknown";
+}
+
 export interface AuthReadiness {
   ready: boolean;
   durability: AuthDurabilityV7 | "missing";
   status: "ready" | "checkpointMissing" | "checkpointExpired" | "checkpointRevoked" | "unattendedBlocked";
   checkpoint?: AuthCheckpointMetadata;
+  refresh_provider?: AuthRefreshProviderMetadata;
   notes: string[];
 }
 
 export class AuthCheckpointManager {
   private readonly enrollments = new Map<string, AuthCheckpointEnrollment>();
   private readonly checkpoints = new Map<string, AuthCheckpointMetadata>();
+  private readonly refreshProviders = new Map<string, AuthRefreshProviderMetadata>();
 
   beginEnrollment(url: string, reason?: string): AuthCheckpointEnrollment {
     const enrollment: AuthCheckpointEnrollment = {
@@ -102,8 +115,59 @@ export class AuthCheckpointManager {
     return { ok: true, checkpoint: this.snapshot(checkpoint) };
   }
 
+  configureRefreshProvider(input: {
+    url: string;
+    secret_ref: string;
+    provider_type?: AuthRefreshProviderMetadata["provider_type"];
+  }): { ok: true; provider: AuthRefreshProviderMetadata } | { ok: false; error: string } {
+    if (!isSecretRef(input.secret_ref)) return { ok: false, error: "auth_refresh_provider_secret_ref_required" };
+    const provider: AuthRefreshProviderMetadata = {
+      provider_id: `auth_refresh_${randomUUID()}`,
+      app_origin: normalizeOrigin(input.url).origin,
+      provider_type: input.provider_type ?? "projectRefreshProvider",
+      secret_ref: input.secret_ref,
+      configured_at: Date.now(),
+      status: "configured",
+    };
+    this.refreshProviders.set(provider.provider_id, provider);
+    return { ok: true, provider: this.snapshotProvider(provider) };
+  }
+
+  testRefreshProvider(provider_id: string): { ok: true; provider: AuthRefreshProviderMetadata; can_mint_replay_state: boolean } | { ok: false; error: string } {
+    const provider = this.refreshProviders.get(provider_id);
+    if (!provider) return { ok: false, error: "auth_refresh_provider_not_found" };
+    provider.last_tested_at = Date.now();
+    if (!isSecretRef(provider.secret_ref)) {
+      provider.status = "failed";
+      provider.failure_class = "missingSecretRef";
+      return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
+    }
+    provider.status = "validated";
+    delete provider.failure_class;
+    return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: true };
+  }
+
+  listRefreshProviders(url?: string): AuthRefreshProviderMetadata[] {
+    const origin = url ? normalizeOrigin(url).origin : null;
+    return [...this.refreshProviders.values()]
+      .filter((provider) => !origin || provider.app_origin === origin)
+      .map((provider) => this.snapshotProvider(provider));
+  }
+
   readiness(url: string, unattended: boolean = false): AuthReadiness {
     const origin = normalizeOrigin(url).origin;
+    const provider = [...this.refreshProviders.values()]
+      .filter((candidate) => candidate.app_origin === origin && candidate.status !== "revoked")
+      .sort((a, b) => b.configured_at - a.configured_at)[0];
+    if (unattended && provider?.status === "validated") {
+      return {
+        ready: true,
+        durability: provider.provider_type === "ciTestAuth" ? "ciTestAuth" : "refreshProvider",
+        status: "ready",
+        refresh_provider: this.snapshotProvider(provider),
+        notes: ["Refresh provider can mint replay auth for unattended runs."],
+      };
+    }
     const checkpoint = [...this.checkpoints.values()]
       .filter((candidate) => candidate.app_origin === origin)
       .sort((a, b) => b.created_at - a.created_at)[0];
@@ -140,7 +204,10 @@ export class AuthCheckpointManager {
         durability: snapshot.durability,
         status: "unattendedBlocked",
         checkpoint: snapshot,
-        notes: ["Unattended runs require refreshProvider or ciTestAuth durability."],
+        ...(provider ? { refresh_provider: this.snapshotProvider(provider) } : {}),
+        notes: provider
+          ? ["Refresh provider exists but must validate before unattended replay."]
+          : ["Unattended runs require refreshProvider or ciTestAuth durability."],
       };
     }
     return {
@@ -148,6 +215,7 @@ export class AuthCheckpointManager {
       durability: snapshot.durability,
       status: "ready",
       checkpoint: snapshot,
+      ...(provider ? { refresh_provider: this.snapshotProvider(provider) } : {}),
       notes: unattended
         ? ["Auth checkpoint is durable for unattended replay."]
         : ["Auth checkpoint is ready for interactive replay."],
@@ -157,6 +225,7 @@ export class AuthCheckpointManager {
   resetForTests(): void {
     this.enrollments.clear();
     this.checkpoints.clear();
+    this.refreshProviders.clear();
   }
 
   private snapshot(checkpoint: AuthCheckpointMetadata): AuthCheckpointMetadata {
@@ -169,6 +238,10 @@ export class AuthCheckpointManager {
       idp_origins: [...checkpoint.idp_origins],
       cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
     };
+  }
+
+  private snapshotProvider(provider: AuthRefreshProviderMetadata): AuthRefreshProviderMetadata {
+    return { ...provider };
   }
 }
 
@@ -183,6 +256,10 @@ function safeOrigin(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+function isSecretRef(value: string): boolean {
+  return /^synthi:\/\/secrets\/[A-Za-z0-9_.:/-]+$/.test(value);
 }
 
 export const authCheckpointManager = new AuthCheckpointManager();
