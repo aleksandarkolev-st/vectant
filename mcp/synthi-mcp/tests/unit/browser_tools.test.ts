@@ -191,4 +191,42 @@ describe("browser MCP tool surface", () => {
       suggested_next_action: expect.stringContaining("shadow bridge"),
     }));
   });
+
+  it("supports primary begin/end teach aliases with workflow card output", async () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
+
+    const begin = await dispatchBrowserTool("synthi_browser_begin_teach", {
+      tab_id: "app",
+      goal: "Save settings",
+    });
+    expect(begin?.isError).toBeUndefined();
+    expect((begin?.structuredContent as { primary_tool: string; goal: string; teach: { active: boolean } })).toEqual(
+      expect.objectContaining({
+        primary_tool: "synthi_browser_begin_teach",
+        goal: "Save settings",
+        teach: expect.objectContaining({ active: true }),
+      })
+    );
+
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Save settings", source_id: "s_save" },
+    });
+
+    const end = await dispatchBrowserTool("synthi_browser_end_teach", { reason: "complete" });
+    expect(end?.isError).toBeUndefined();
+    expect((end?.structuredContent as {
+      primary_tool: string;
+      card: { title: string; stepCount: number };
+      replay: { first_mutation_step_id: string };
+    })).toEqual(expect.objectContaining({
+      primary_tool: "synthi_browser_end_teach",
+      card: expect.objectContaining({ title: "Save settings", stepCount: 1 }),
+      replay: expect.objectContaining({ first_mutation_step_id: "browser_evt_1" }),
+    }));
+  });
 });

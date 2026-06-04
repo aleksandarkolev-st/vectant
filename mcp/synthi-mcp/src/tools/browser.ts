@@ -15,6 +15,9 @@ import { errorFromException, errorResponse, jsonResponse, type ToolResponse } fr
 
 export const BROWSER_TOOL_NAMES = [
   "synthi_browser_attach_current_workspace",
+  "synthi_browser_observe",
+  "synthi_browser_begin_teach",
+  "synthi_browser_end_teach",
   "synthi_browser_attach",
   "synthi_browser_list_tabs",
   "synthi_browser_select_tab",
@@ -59,6 +62,39 @@ export const BROWSER_TOOLS = [
         runtime_id: { type: "string", description: "Optional hosted runtime id for diagnostics." },
         open_workspace: { type: "boolean", description: "Open the workspace URL in the hosted runtime after attach. Defaults true when a workspace URL is known." },
       },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_observe",
+    description:
+      "Primary observation tool for the selected hosted workspace tab. Returns the broker-gated screenshot and bounded DOM summary only after exact-origin screenshot consent.",
+    inputSchema: {
+      type: "object",
+      properties: { tab_id: { type: "string" } },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_begin_teach",
+    description:
+      "Primary teach-mode start tool for the selected hosted workspace tab. Uses broker origin consent and records only explicit teaching actions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tab_id: { type: "string" },
+        goal: { type: "string", description: "Optional human-readable workflow goal for client-side display." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_end_teach",
+    description:
+      "Primary teach-mode stop tool. Returns the assembled workflow card and replay/source readiness summary after stopping.",
+    inputSchema: {
+      type: "object",
+      properties: { reason: { type: "string" } },
       required: [],
     },
   },
@@ -356,6 +392,12 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
+      case "synthi_browser_observe":
+        return await browserSnapshotTool(args);
+      case "synthi_browser_begin_teach":
+        return browserBeginTeachTool(args);
+      case "synthi_browser_end_teach":
+        return browserEndTeachTool(args);
       case "synthi_browser_attach":
         return await browserAttachTool(args);
       case "synthi_browser_list_tabs":
@@ -549,9 +591,42 @@ function browserStartTeachTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, teach: browserBroker.teachState(), tab: result.tab, origin: result.origin });
 }
 
+function browserBeginTeachTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const result = browserStartTeachTool(args);
+  if (result.isError) return result;
+  return jsonResponse({
+    ...(result.structuredContent ?? {}),
+    goal: stringOpt(a["goal"]) ?? null,
+    primary_tool: "synthi_browser_begin_teach",
+  });
+}
+
 function browserStopTeachTool(args: unknown): ToolResponse {
   const reason = stringOpt(obj(args)["reason"]) ?? "stopped";
   return jsonResponse({ ok: true, teach: browserBroker.stopTeachMode(reason) });
+}
+
+function browserEndTeachTool(args: unknown): ToolResponse {
+  const reason = stringOpt(obj(args)["reason"]) ?? "stopped";
+  const teach = browserBroker.stopTeachMode(reason);
+  const workflow = browserBroker.compiledWorkflow();
+  return jsonResponse({
+    ok: true,
+    teach,
+    workflow_id: workflow.contract.workflowId,
+    card: workflow.card,
+    replay: {
+      modes: workflow.contract.replayModes,
+      default_mode: workflow.contract.mutationBoundaryPlan.defaultReplayMode,
+      first_mutation_step_id: workflow.contract.mutationBoundaryPlan.firstMutationStepId ?? null,
+    },
+    auth: workflow.contract.authPlan,
+    source_identity_coverage: workflow.contract.sourceIdentityCoverage,
+    limitations: workflow.contract.limitations,
+    generated_outputs: workflow.contract.generatedOutputs,
+    primary_tool: "synthi_browser_end_teach",
+  });
 }
 
 function browserGenerateScriptTool(args: unknown): ToolResponse {
