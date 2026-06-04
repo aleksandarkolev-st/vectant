@@ -32,6 +32,17 @@ export interface PrivateWorkflowToolManifestV7 {
     requires_ci_isolation: boolean;
   };
   source_identity: WorkflowContractV7["sourceIdentityCoverage"];
+  surface_replay: {
+    unsupported_count: number;
+    parameterized_count: number;
+    steps: Array<{
+      step_id: string;
+      action: WorkflowContractV7["steps"][number]["action"]["kind"];
+      kind: WorkflowContractV7["steps"][number]["surfacePlan"]["kind"];
+      replay: WorkflowContractV7["steps"][number]["surfacePlan"]["replay"];
+      notes: string[];
+    }>;
+  };
   safety: {
     blockers: WorkflowContractV7["publishPlan"]["blockers"];
     limitations: WorkflowContractV7["limitations"];
@@ -79,6 +90,19 @@ export function generatePrivateWorkflowToolManifest(contract: WorkflowContractV7
       requires_ci_isolation: hasMutation,
     },
     source_identity: contract.sourceIdentityCoverage,
+    surface_replay: {
+      unsupported_count: contract.steps.filter((step) =>
+        step.surfacePlan.replay === "unsupported" || step.surfacePlan.replay === "blocked"
+      ).length,
+      parameterized_count: contract.steps.filter((step) => step.surfacePlan.replay === "parameterized").length,
+      steps: contract.steps.map((step) => ({
+        step_id: step.stepId,
+        action: step.action.kind,
+        kind: step.surfacePlan.kind,
+        replay: step.surfacePlan.replay,
+        notes: [...step.surfacePlan.notes],
+      })),
+    },
     safety: {
       blockers: publish.blockers,
       limitations: contract.limitations,

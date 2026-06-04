@@ -38,6 +38,13 @@ describe("private browser workflow MCP tool manifest", () => {
     }));
     expect(manifest.auth.unattended_ready).toBe(true);
     expect(manifest.mutation.requires_confirmation).toBe(false);
+    expect(manifest.surface_replay).toEqual(expect.objectContaining({
+      unsupported_count: 0,
+      parameterized_count: 0,
+      steps: [
+        expect.objectContaining({ step_id: "open", kind: "dom", replay: "durable" }),
+      ],
+    }));
   });
 
   it("requires confirmation or CI for mutation workflows", () => {
@@ -112,6 +119,48 @@ describe("private browser workflow MCP tool manifest", () => {
 
     expect(manifest.status).toBe("blocked");
     expect(manifest.safety.blockers).toContain("iframeNeedsFrameLocator");
+  });
+
+  it("does not hide parameterized and unsupported replay surfaces in generated tools", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "file-drop",
+        event_seq: 1,
+        action: "drag",
+        detail: {
+          drag_class: "fileDrop",
+          file_parameter: "UPLOAD_FILE",
+          element: { role: "button", name: "Upload area", source_id: "s_upload" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Upload area\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+      event({
+        event_id: "canvas",
+        event_seq: 2,
+        action: "click",
+        detail: {
+          canvas: true,
+          element: { tag: "canvas", label: "Chart", source_id: "s_chart" },
+        },
+        locator_candidates: [
+          { kind: "css", locator: "page.locator(\"canvas\")", confidence: 0.8, reason: "css" },
+        ],
+      }),
+    ]);
+
+    const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+
+    expect(manifest.surface_replay).toEqual(expect.objectContaining({
+      unsupported_count: 1,
+      parameterized_count: 1,
+    }));
+    expect(manifest.surface_replay.steps).toEqual([
+      expect.objectContaining({ step_id: "file-drop", kind: "fileDrop", replay: "parameterized" }),
+      expect.objectContaining({ step_id: "canvas", kind: "canvas", replay: "unsupported" }),
+    ]);
+    expect(manifest.safety.limitations).toContain("canvasCoordinateOnly");
   });
 
   it("exposes the manifest through the browser MCP tool", async () => {
