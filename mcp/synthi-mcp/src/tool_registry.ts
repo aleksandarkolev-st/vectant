@@ -24,6 +24,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_browser_get_trace",
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
+  "synthi_browser_run_workflow",
   "synthi_browser_acquire_lease",
   "synthi_browser_release_lease",
   "synthi_browser_action",

@@ -709,6 +709,17 @@ async function runFixtureFlow(client, attach, tabId, target) {
       element: { tag: "input", role: "textbox", label: "Email", name: "Email", css: "#email" },
     },
   });
+  await postBridge(attach.bridge.url, {
+    bridge_token: attach.bridge.token,
+    page_origin: new URL(fixtureUrl).origin,
+    type: "human_action",
+    payload: {
+      url: fixtureUrl,
+      origin: new URL(fixtureUrl).origin,
+      action: "click",
+      element: { tag: "button", role: "button", name: "Save changes", test_id: "save-button", css: "#save" },
+    },
+  });
   expectToolOk(await client.tool("synthi_browser_stop_teach", { reason: "live-browser-smoke-complete" }), "synthi_browser_stop_teach");
 
   const trace = expectToolOk(await client.tool("synthi_browser_get_trace"), "synthi_browser_get_trace").trace;
@@ -719,11 +730,47 @@ async function runFixtureFlow(client, attach, tabId, target) {
     `events=${trace?.length ?? 0}`,
   );
 
+  const workflow = expectToolOk(await client.tool("synthi_browser_compile_workflow"), "synthi_browser_compile_workflow").workflow;
+  record(
+    "compile teach trace into workflow contract",
+    workflow?.contract?.steps?.length >= 2 && workflow?.contract?.mutationBoundaryPlan?.firstMutationStepId && workflow?.card?.status?.includes("Background hardening stops before mutation"),
+    `workflow=${workflow?.contract?.workflowId ?? "missing"}`,
+  );
+
   const generated = expectToolOk(await client.tool("synthi_browser_generate_script"), "synthi_browser_generate_script");
   record(
     "generate replay script with locator fallbacks",
     generated.code?.includes("firstVisible") && generated.code?.includes("PLAYWRIGHT_BASE_URL") && generated.used_locators?.length >= 1,
     `locators=${generated.used_locators?.length ?? 0}`,
+  );
+
+  const prefixGenerated = expectToolOk(await client.tool("synthi_browser_generate_script", { mode: "prefixOnly" }), "synthi_browser_generate_script prefixOnly");
+  record(
+    "generate prefix-only replay script at mutation boundary",
+    prefixGenerated.code?.includes("Mutation boundary") && !prefixGenerated.code?.includes("await target2.click();"),
+    `mode=${prefixGenerated.mode}`,
+  );
+
+  const prefixReplay = expectToolOk(await client.tool("synthi_browser_run_workflow", {
+    lease_id: lease.lease_id,
+    tab_id: tabId,
+    mode: "prefixOnly",
+  }, 45_000), "synthi_browser_run_workflow prefixOnly").replay;
+  record(
+    "run prefix-only same-session workflow replay",
+    prefixReplay?.status === "stoppedAtMutationBoundary" && prefixReplay?.steps_run >= 1,
+    `steps=${prefixReplay?.steps_run ?? 0}`,
+  );
+
+  const sameSessionReplay = expectToolOk(await client.tool("synthi_browser_run_workflow", {
+    lease_id: lease.lease_id,
+    tab_id: tabId,
+    mode: "sameSession",
+  }, 45_000), "synthi_browser_run_workflow sameSession").replay;
+  record(
+    "run same-session workflow replay",
+    sameSessionReplay?.status === "ready" && sameSessionReplay?.steps_run >= 2,
+    `steps=${sameSessionReplay?.steps_run ?? 0}`,
   );
 
   const released = expectToolOk(await client.tool("synthi_browser_release_lease", {
@@ -804,11 +851,29 @@ async function runWorkspaceFlow(client, attach, tabId, target) {
   const trace = expectToolOk(await client.tool("synthi_browser_get_trace"), "synthi_browser_get_trace").trace;
   record("record teach-mode bridge events", Array.isArray(trace) && trace.length >= 2, `events=${trace?.length ?? 0}`);
 
+  const workflow = expectToolOk(await client.tool("synthi_browser_compile_workflow"), "synthi_browser_compile_workflow").workflow;
+  record(
+    "compile workspace trace into workflow contract",
+    workflow?.contract?.steps?.length >= 1 && workflow?.contract?.mutationBoundaryPlan?.firstMutationStepId,
+    `workflow=${workflow?.contract?.workflowId ?? "missing"}`,
+  );
+
   const generated = expectToolOk(await client.tool("synthi_browser_generate_script"), "synthi_browser_generate_script");
   record(
     "generate replay script with locator fallbacks",
     generated.code?.includes("firstVisible") && generated.code?.includes("PLAYWRIGHT_BASE_URL") && generated.used_locators?.length >= 1,
     `locators=${generated.used_locators?.length ?? 0}`,
+  );
+
+  const prefixReplay = expectToolOk(await client.tool("synthi_browser_run_workflow", {
+    lease_id: lease.lease_id,
+    tab_id: tabId,
+    mode: "prefixOnly",
+  }, 45_000), "synthi_browser_run_workflow prefixOnly").replay;
+  record(
+    "run workspace prefix-only workflow replay",
+    prefixReplay?.status === "stoppedAtMutationBoundary",
+    `steps=${prefixReplay?.steps_run ?? 0}`,
   );
 
   const released = expectToolOk(await client.tool("synthi_browser_release_lease", {

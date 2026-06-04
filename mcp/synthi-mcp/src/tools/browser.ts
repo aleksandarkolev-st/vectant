@@ -1,6 +1,7 @@
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
+import { classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
 import {
   detectBrowserProject,
   projectRunStatus,
@@ -25,6 +26,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_get_trace",
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
+  "synthi_browser_run_workflow",
   "synthi_browser_acquire_lease",
   "synthi_browser_release_lease",
   "synthi_browser_action",
@@ -153,7 +155,27 @@ export const BROWSER_TOOLS = [
   {
     name: "synthi_browser_generate_script",
     description: "Generate Playwright test code from the broker trace, including locator confidence and fallback candidates.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["sameSession", "prefixOnly"], description: "Use prefixOnly to stop before the first mutation boundary." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_run_workflow",
+    description:
+      "Replay the compiled workflow in the current authorized browser session under a control lease. prefixOnly stops before the first mutation boundary.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lease_id: { type: "string" },
+        tab_id: { type: "string" },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly"], default: "prefixOnly" },
+      },
+      required: ["lease_id"],
+    },
   },
   {
     name: "synthi_browser_acquire_lease",
@@ -295,7 +317,9 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_compile_workflow":
         return jsonResponse({ ok: true, workflow: browserBroker.compiledWorkflow() });
       case "synthi_browser_generate_script":
-        return jsonResponse({ ok: true, ...browserBroker.generatedScript() });
+        return browserGenerateScriptTool(args);
+      case "synthi_browser_run_workflow":
+        return await browserRunWorkflowTool(args);
       case "synthi_browser_acquire_lease":
         return browserAcquireLeaseTool(args);
       case "synthi_browser_release_lease":
@@ -414,6 +438,11 @@ function browserStopTeachTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, teach: browserBroker.stopTeachMode(reason) });
 }
 
+function browserGenerateScriptTool(args: unknown): ToolResponse {
+  const mode = normalizeReplayMode(obj(args)["mode"]);
+  return jsonResponse({ ok: true, ...browserBroker.generatedScript(mode) });
+}
+
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
   const a = obj(args);
   const lease = browserBroker.acquireLease(
@@ -428,6 +457,72 @@ function browserReleaseLeaseTool(args: unknown): ToolResponse {
   const a = obj(args);
   const result = browserBroker.releaseLease(requiredString(a, "lease_id"), stringOpt(a["reason"]) ?? "released");
   return jsonResponse({ ok: true, ...result });
+}
+
+async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
+  const leaseId = requiredString(a, "lease_id");
+  const mode = normalizeReplayMode(a["mode"]);
+  const plan = browserBroker.workflowReplayPlan(mode);
+  if (plan.status === "blocked") {
+    return jsonResponse({ ok: false, replay: { ...plan, failure_class: "unknown" } });
+  }
+
+  let stepsRun = 0;
+  for (const event of plan.events) {
+    const action = actionForReplay(event);
+    if (!action) continue;
+    const selector = event.locator_candidates?.[0]?.locator ?? event.selector;
+    const value = action === "navigate" ? event.url : event.value;
+    const validation = browserBroker.validateAction({
+      lease_id: leaseId,
+      action,
+      tab_id: tab.tab_id,
+      selector,
+      value,
+      url: action === "navigate" ? value : event.url,
+    });
+    if (!validation.ok) {
+      return jsonResponse({
+        ok: false,
+        replay: {
+          ...plan,
+          status: "failed",
+          steps_run: stepsRun,
+          failed_step_id: event.event_id,
+          failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+          error: validation.error,
+        },
+      });
+    }
+    try {
+      await browserPlaywrightAdapter.action(tab.tab_id, action, selector, value);
+      stepsRun += 1;
+    } catch (err) {
+      return jsonResponse({
+        ok: false,
+        replay: {
+          ...plan,
+          status: "failed",
+          steps_run: stepsRun,
+          failed_step_id: event.event_id,
+          failure_class: classifyWorkflowReplayFailure(err, event),
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+
+  return jsonResponse({
+    ok: true,
+    replay: {
+      ...plan,
+      status: plan.status,
+      steps_run: stepsRun,
+      stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
+    },
+  });
 }
 
 async function browserActionTool(args: unknown): Promise<ToolResponse> {
@@ -449,6 +544,11 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   browserBroker.handleOriginChange(tab.tab_id, result.url);
   eventLog.push({ kind: "browser", action: "agent_action", payload: { tab_id: tab.tab_id, action, selector: stringOpt(a["selector"]) ?? null, url: result.url } });
   return jsonResponse({ ok: true, result, teach: browserBroker.teachState() });
+}
+
+function actionForReplay(event: { kind: string; action?: BrowserActionKind }): BrowserActionKind | null {
+  if (event.kind === "navigation") return "navigate";
+  return event.action ?? null;
 }
 
 async function browserWaitTool(args: unknown): Promise<ToolResponse> {

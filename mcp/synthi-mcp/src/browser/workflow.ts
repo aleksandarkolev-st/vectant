@@ -141,6 +141,17 @@ export interface CompiledWorkflowV7 {
   card: WorkflowCardV7;
 }
 
+export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly";
+
+export interface WorkflowReplayPlanV7 {
+  mode: WorkflowReplayModeV7;
+  status: "ready" | "stoppedAtMutationBoundary" | "blocked";
+  workflowId: string;
+  events: BrowserTraceEvent[];
+  stoppedBeforeStepId?: string;
+  warnings: string[];
+}
+
 const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
   [/\b(create|add|new|invite)\b/i, "create", "label_implies_create"],
   [/\b(save|update|edit|submit|apply|confirm)\b/i, "update", "label_implies_update"],
@@ -207,6 +218,55 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     contract,
     card: cardForContract(contract),
   };
+}
+
+export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowReplayModeV7 = "sameSession"): WorkflowReplayPlanV7 {
+  const workflow = compileWorkflowContract(events);
+  const ordered = [...events]
+    .sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0))
+    .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation");
+  const firstMutationStepId = workflow.contract.mutationBoundaryPlan.firstMutationStepId;
+  if (ordered.length === 0) {
+    return {
+      mode,
+      status: "blocked",
+      workflowId: workflow.contract.workflowId,
+      events: [],
+      warnings: ["No actionable taught steps were recorded."],
+    };
+  }
+  if (mode === "prefixOnly" && firstMutationStepId) {
+    return {
+      mode,
+      status: "stoppedAtMutationBoundary",
+      workflowId: workflow.contract.workflowId,
+      events: ordered.filter((event) => event.event_id !== firstMutationStepId && event.event_seq < (workflow.contract.steps.find((step) => step.stepId === firstMutationStepId)?.eventSeq ?? Number.MAX_SAFE_INTEGER)),
+      stoppedBeforeStepId: firstMutationStepId,
+      warnings: ["Prefix replay stops before the first mutation boundary."],
+    };
+  }
+  return {
+    mode,
+    status: "ready",
+    workflowId: workflow.contract.workflowId,
+    events: ordered,
+    warnings: workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0
+      ? ["Same-session replay includes mutation steps and must not be used for background hardening."]
+      : [],
+  };
+}
+
+export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTraceEvent): FailureClassV7 {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/auth|login|unauthorized|forbidden|checkpoint/i.test(message)) return "authMissing";
+  if (/timeout|waiting|visible|locator|selector|strict mode|No locator/i.test(message)) return "locatorDrift";
+  if (/navigation|url|net::|ERR_|network/i.test(message)) return "networkFailure";
+  if (event?.action === "navigate") return "routeChanged";
+  return "unknown";
+}
+
+export function normalizeReplayMode(value: unknown): WorkflowReplayModeV7 {
+  return value === "prefixOnly" ? "prefixOnly" : "sameSession";
 }
 
 function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepContractV7 {

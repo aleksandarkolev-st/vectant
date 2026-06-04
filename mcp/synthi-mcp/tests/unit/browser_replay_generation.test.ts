@@ -103,11 +103,50 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await firstVisible(page.getByRole(\"button\", { name: \"Continue\" }), page.getByText(\"Continue\"), page.locator(\"[data-testid=continue]\")");
     expect(generated.used_locators[0]?.fallbacks.map((candidate) => candidate.kind)).toEqual(["text", "css"]);
   });
+
+  it("emits workflow metadata and stops before mutation in prefix-only mode", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "fill",
+        event_seq: 1,
+        action: "fill",
+        value: "Ada",
+        detail: {
+          field_name: "Name",
+          element: { label: "Name" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Name\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "save",
+        event_seq: 2,
+        action: "click",
+        detail: {
+          element: { role: "button", name: "Save changes" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save changes\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ], { mode: "prefixOnly" });
+
+    expect(generated.mode).toBe("prefixOnly");
+    expect(generated.code).toContain("// Workflow: Save changes");
+    expect(generated.code).toContain("// Mutation boundary: save");
+    expect(generated.code).toContain("await expect(target2).toBeEnabled();");
+    expect(generated.code).not.toContain("await target2.click();");
+    expect(generated.warnings).toContain("prefixOnly stopped before mutation boundary save");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
   return {
     event_id: "evt",
+    trace_id: "trace",
+    trace_version: 1,
+    event_seq: 1,
     ts: 1,
     tab_id: "tab",
     origin: "http://localhost:5173",

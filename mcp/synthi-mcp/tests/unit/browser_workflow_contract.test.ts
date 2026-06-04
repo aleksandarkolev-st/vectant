@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
-import { compileWorkflowContract } from "../../src/browser/workflow.js";
+import { compileWorkflowContract, planWorkflowReplay } from "../../src/browser/workflow.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { BROWSER_TOOL_NAMES, dispatchBrowserTool } from "../../src/tools/browser.js";
@@ -95,9 +95,28 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.card.state).toContain("Limited");
   });
 
-  it("advertises and dispatches the compile workflow tool", async () => {
+  it("plans prefix-only replay up to but not including the first mutation boundary", () => {
+    const events = [
+      baseEvent({ event_id: "open", event_seq: 1, action: "click", detail: { element: { role: "button", name: "Open form" } } }),
+      baseEvent({ event_id: "save", event_seq: 2, action: "click", detail: { element: { role: "button", name: "Save changes" } } }),
+      baseEvent({ event_id: "after", event_seq: 3, action: "click", detail: { element: { role: "button", name: "Continue" } } }),
+    ];
+
+    const prefix = planWorkflowReplay(events, "prefixOnly");
+    const sameSession = planWorkflowReplay(events, "sameSession");
+
+    expect(prefix.status).toBe("stoppedAtMutationBoundary");
+    expect(prefix.stoppedBeforeStepId).toBe("save");
+    expect(prefix.events.map((event) => event.event_id)).toEqual(["open"]);
+    expect(sameSession.status).toBe("ready");
+    expect(sameSession.events.map((event) => event.event_id)).toEqual(["open", "save", "after"]);
+  });
+
+  it("advertises and dispatches workflow contract tools", async () => {
     expect(BROWSER_TOOL_NAMES).toContain("synthi_browser_compile_workflow");
+    expect(BROWSER_TOOL_NAMES).toContain("synthi_browser_run_workflow");
     expect(ADVERTISED_TOOLS).toContain("synthi_browser_compile_workflow");
+    expect(ADVERTISED_TOOLS).toContain("synthi_browser_run_workflow");
 
     const result = await dispatchBrowserTool("synthi_browser_compile_workflow", {});
     expect(result?.isError).toBeUndefined();

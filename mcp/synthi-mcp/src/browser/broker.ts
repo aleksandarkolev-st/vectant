@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
 import { BrowserTraceRecorder, generatePlaywrightScript } from "./trace.js";
-import { compileWorkflowContract } from "./workflow.js";
+import { compileWorkflowContract, planWorkflowReplay, type WorkflowReplayModeV7 } from "./workflow.js";
 import { bridgeTokenMatches, normalizeOrigin, sameExactOrigin } from "./security.js";
 import type {
   BrowserActionKind,
@@ -324,12 +324,16 @@ export class BrowserBroker {
     return this.trace.snapshot();
   }
 
-  generatedScript(): ReturnType<typeof generatePlaywrightScript> {
-    return generatePlaywrightScript(this.trace.snapshot());
+  generatedScript(mode?: WorkflowReplayModeV7): ReturnType<typeof generatePlaywrightScript> {
+    return generatePlaywrightScript(this.trace.snapshot(), { mode });
   }
 
   compiledWorkflow(): ReturnType<typeof compileWorkflowContract> {
     return compileWorkflowContract(this.trace.snapshot());
+  }
+
+  workflowReplayPlan(mode?: WorkflowReplayModeV7): ReturnType<typeof planWorkflowReplay> {
+    return planWorkflowReplay(this.trace.snapshot(), mode);
   }
 
   validateBridgeMessage(message: BrowserBridgeMessage): { ok: true } | { ok: false; error: string } {

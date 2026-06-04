@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rankedLocatorCandidates } from "./locator.js";
 import { redactUrl, redactValue } from "./security.js";
+import { compileWorkflowContract, normalizeReplayMode, type WorkflowReplayModeV7 } from "./workflow.js";
 import type {
   BrowserActionKind,
   BrowserElementMetadata,
@@ -170,6 +171,8 @@ export class BrowserTraceRecorder {
 
 export interface GeneratedScript {
   code: string;
+  mode: WorkflowReplayModeV7;
+  workflow_id: string;
   used_locators: Array<{
     event_id: string;
     locator: string;
@@ -179,10 +182,19 @@ export interface GeneratedScript {
   warnings: string[];
 }
 
-export function generatePlaywrightScript(events: BrowserTraceEvent[]): GeneratedScript {
+export function generatePlaywrightScript(events: BrowserTraceEvent[], options: { mode?: WorkflowReplayModeV7 } = {}): GeneratedScript {
+  const mode = normalizeReplayMode(options.mode);
+  const workflow = compileWorkflowContract(events);
+  const contract = workflow.contract;
   const baseOrigin = firstHttpOrigin(events);
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
+    "",
+    `// Workflow: ${contract.name}`,
+    `// Status: ${workflow.card.status}`,
+    `// Auth: ${contract.authPlan.durability}`,
+    `// Mutation mode: ${contract.mutationBoundaryPlan.defaultReplayMode}`,
+    `// Limitations: ${contract.limitations.length ? contract.limitations.join(", ") : "none"}`,
     "",
     "test('replayed browser workflow', async ({ page }) => {",
   ];
@@ -203,8 +215,10 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[]): Generated
   lines.push("  }");
   const used_locators: GeneratedScript["used_locators"] = [];
   const warnings: string[] = [];
+  warnings.push(...contract.limitations.map((limitation) => `workflow limitation: ${limitation}`));
   let currentUrl: string | null = null;
   let targetSeq = 0;
+  const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
 
   for (const event of events) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
@@ -237,6 +251,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[]): Generated
     const target = `target${targetSeq}`;
     lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
     lines.push(`  await expect(${target}).toBeVisible();`);
+    if (mode === "prefixOnly" && firstMutationStepId === event.event_id) {
+      lines.push(`  // Mutation boundary: ${event.event_id}. Prefix-only replay verifies reachability but does not commit this action.`);
+      lines.push(`  await expect(${target}).toBeEnabled();`);
+      warnings.push(`prefixOnly stopped before mutation boundary ${event.event_id}`);
+      continue;
+    }
     switch (event.action) {
       case "click":
         lines.push(`  await ${target}.click();`);
@@ -269,7 +289,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[]): Generated
   }
 
   lines.push("});");
-  return { code: lines.join("\n"), used_locators, warnings };
+  return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
 }
 
 function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
