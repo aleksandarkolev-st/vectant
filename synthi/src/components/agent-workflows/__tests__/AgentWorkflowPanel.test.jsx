@@ -40,6 +40,9 @@ describe('AgentWorkflowPanel view model', () => {
     const model = createDefaultWorkflowViewModel();
     const summary = deriveWorkflowPanelSummary(model);
 
+    expect(WORKFLOW_ACTIONS.COMPILE_CONTRACT).toBe('synthi_browser_compile_workflow');
+    expect(WORKFLOW_ACTIONS.PREFIX_VALIDATE).toBe('synthi_safety_run_prefix_validation');
+    expect(WORKFLOW_ACTIONS.GENERATE_SCRIPT).toBe('synthi_browser_generate_script');
     expect(model.workspaceLabel).toBe('Current workspace');
     expect(summary.primaryAction).toBe(WORKFLOW_ACTIONS.ATTACH_WORKSPACE);
     expect(summary.primaryEnabled).toBe(true);

@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -26,12 +26,12 @@ export const WORKFLOW_ACTIONS = Object.freeze({
   OBSERVE: 'synthi_browser_observe',
   BEGIN_TEACH: 'synthi_browser_begin_teach',
   END_TEACH: 'synthi_browser_end_teach',
-  CONFIGURE_AUTH: 'synthi_browser_configure_auth',
-  OPEN_SOURCE: 'synthi_source_identity_open',
-  COMPILE_CONTRACT: 'synthi_workflow_compile_contract',
-  PREFIX_VALIDATE: 'synthi_workflow_prefix_validate',
-  GENERATE_SCRIPT: 'synthi_workflow_generate_playwright',
-  GENERATE_MANIFEST: 'synthi_workflow_generate_tool_manifest',
+  CONFIGURE_AUTH: 'synthi_auth_get_tool_auth_readiness',
+  OPEN_SOURCE: 'synthi_source_get_mapping_status',
+  COMPILE_CONTRACT: 'synthi_browser_compile_workflow',
+  PREFIX_VALIDATE: 'synthi_safety_run_prefix_validation',
+  GENERATE_SCRIPT: 'synthi_browser_generate_script',
+  GENERATE_MANIFEST: 'synthi_browser_generate_private_tool_manifest',
   PUBLISH_TOOL: 'synthi_workflow_publish_tool',
 });
 
@@ -636,6 +636,12 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   onWorkflowAction,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
+
+  useEffect(() => {
+    const externalTeachState = workflowState?.teach?.state;
+    if (externalTeachState === 'recording') setLocalRecording(true);
+    else if (externalTeachState) setLocalRecording(false);
+  }, [workflowState?.teach?.state]);
 
   const model = useMemo(() => {
     const normalized = normalizeWorkflowPanelState(workflowState, workspaceSlug);
