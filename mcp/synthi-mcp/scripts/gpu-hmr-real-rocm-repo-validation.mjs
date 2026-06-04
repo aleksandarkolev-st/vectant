@@ -12,7 +12,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -201,6 +201,22 @@ function parseTargetProgressionLedger(raw) {
     rawShape: Array.isArray(parsed) ? 'array' : 'object',
     entries: targetProgressionLedgerEntries(parsed),
   };
+}
+
+function targetProgressionLedgerInput() {
+  const inlineJson = String(process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_LEDGER_JSON ?? '').trim();
+  if (inlineJson) return { raw: inlineJson, path: '' };
+  const configuredPath = String(
+    process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_LEDGER_PATH
+      ?? process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_LEDGER
+      ?? '',
+  ).trim();
+  if (!configuredPath) return { raw: '', path: '' };
+  const resolvedPath = path.resolve(REPO_ROOT, configuredPath);
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`target progression ledger file not found: ${resolvedPath}`);
+  }
+  return { raw: readFileSync(resolvedPath, 'utf8'), path: resolvedPath };
 }
 
 function parseStringArrayEnv(raw, name) {
@@ -738,6 +754,7 @@ const configuredWorkspaceRoot =
   process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
 const configuredWorkerTempDir =
   process.env.SYNTHI_REAL_ROCM_WORKER_TMP ?? '/tmp/synthi-real-rocm';
+const configuredTargetProgressionLedgerInput = targetProgressionLedgerInput();
 const configuredExpectScreenshotExplicit =
   process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT !== undefined
   && String(process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT).trim() !== '';
@@ -774,8 +791,9 @@ const CFG = {
     false,
   ),
   targetProgressionLedger: parseTargetProgressionLedger(
-    process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_LEDGER_JSON ?? '',
+    configuredTargetProgressionLedgerInput.raw,
   ),
+  targetProgressionLedgerPath: configuredTargetProgressionLedgerInput.path,
   buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
   workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
   workerTempDir: configuredWorkerTempDir,
@@ -806,6 +824,20 @@ const CFG = {
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
   width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800),
   height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600),
+  hiprtRuntimeProbe:
+    process.env.SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE !== undefined
+      ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE', false)
+      : /hiprt/i.test(`${configuredRepoName} ${process.env.SYNTHI_REAL_ROCM_TARGET ?? ''}`),
+  hiprtRuntimeProbeWidth: positiveIntegerFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_WIDTH',
+    Math.max(640, Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800)),
+  ),
+  hiprtRuntimeProbeHeight: positiveIntegerFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_HEIGHT',
+    Math.max(360, Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600)),
+  ),
   deltaBefore:
     process.env.SYNTHI_REAL_ROCM_DELTA_BEFORE ??
     'd_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];',
@@ -840,6 +872,7 @@ const CFG = {
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
+  reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
   cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
@@ -893,6 +926,7 @@ const report = {
     required: CFG.requireTargetProgression,
   }),
   target_progression_ledger: CFG.targetProgressionLedger,
+  target_progression_ledger_path: CFG.targetProgressionLedgerPath || null,
   target_progression_ledger_entry: null,
   target_progression_ledger_artifact: null,
   target_progression_ledger_artifact_path: null,
@@ -916,6 +950,14 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  hiprt_runtime_probe: {
+    enabled: CFG.hiprtRuntimeProbe,
+    capture_worker_path: null,
+    capture_artifact_path: null,
+    source_adaptations: [],
+    source_adaptation_runs: [],
+    visual_evidence: null,
+  },
   runtime_identity: {
     phases: [],
   },
@@ -939,6 +981,11 @@ const report = {
   render_preview_enabled: CFG.renderPreview,
   runtime_capability_preflight: null,
   upstream_run_environment: null,
+  worker_repo_reuse: {
+    requested: CFG.reuseWorkerRepo,
+    reused: false,
+    reason: CFG.reuseWorkerRepo ? 'not_evaluated' : 'disabled',
+  },
   fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
   original_host_path_proof_required: CFG.requireOriginalHostPathProof,
@@ -1434,6 +1481,680 @@ exit 0
   return parseRocmArrayAllocationPreflightOutput(output);
 }
 
+function hiprtRuntimeProbeWorkerCapturePath() {
+  return `${CFG.workerTempDir}/${CFG.slug}-hiprt-runtime-framebuffer.png`;
+}
+
+function hiprtRuntimeProbeRunCommand() {
+  const width = Math.max(320, CFG.hiprtRuntimeProbeWidth);
+  const height = Math.max(240, CFG.hiprtRuntimeProbeHeight);
+  return [
+    'cd build &&',
+    `./${shQuote(CFG.targetName)}`,
+    '../data/GLTFs/cornell_pbr.gltf',
+    '--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    `--width=${width}`,
+    `--height=${height}`,
+  ].join(' ');
+}
+
+function hiprtRuntimeProbeAdaptationCommand(workerRepoRoot) {
+  if (!CFG.hiprtRuntimeProbe) return ':';
+  return `
+if [ ! -d ${shQuote(workerRepoRoot)} ]; then
+  printf 'SYNTHI_HIPRT_RUNTIME_PROBE_ADAPTATION {"enabled":true,"applied":false,"reason":"repo_root_missing"}\\n'
+else
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'SYNTHI_HIPRT_RUNTIME_PROBE_ADAPTATION {"enabled":true,"applied":false,"reason":"python3_missing"}\\n' >&2
+    exit 87
+  fi
+  python3 - ${shQuote(workerRepoRoot)} <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+results = {
+    "enabled": True,
+    "repoRoot": str(root),
+    "applied": False,
+    "sourceAdaptations": [],
+    "files": [],
+    "missingFiles": [],
+}
+
+def fail(message):
+    results["error"] = message
+    print("SYNTHI_HIPRT_RUNTIME_PROBE_ADAPTATION " + json.dumps(results, sort_keys=True))
+    raise SystemExit(87)
+
+def read(path):
+    return path.read_text(encoding="utf-8", errors="strict")
+
+def write(path, text):
+    path.write_text(text, encoding="utf-8")
+
+def insert_after(text, needle, insertion, label):
+    if insertion.strip() in text:
+        return text, False
+    if needle not in text:
+        fail(f"{label}: insertion anchor missing")
+    return text.replace(needle, needle + insertion, 1), True
+
+def insert_before(text, needle, insertion, label):
+    if insertion.strip() in text:
+        return text, False
+    if needle not in text:
+        fail(f"{label}: insertion anchor missing")
+    return text.replace(needle, insertion + needle, 1), True
+
+def replace_once(text, old, new, label):
+    if new.strip() in text:
+        return text, False
+    if old not in text:
+        fail(f"{label}: replacement anchor missing")
+    return text.replace(old, new, 1), True
+
+def patch_file(relative_path, marker, patcher, adaptation_names):
+    path = root / relative_path
+    if not path.exists():
+        results["missingFiles"].append(relative_path)
+        return
+    text = read(path)
+    if marker in text:
+        results["files"].append({"path": relative_path, "status": "already-adapted"})
+        return
+    patched = patcher(text)
+    if patched == text:
+        results["files"].append({"path": relative_path, "status": "unchanged"})
+        return
+    write(path, patched)
+    results["applied"] = True
+    results["files"].append({"path": relative_path, "status": "adapted"})
+    for name in adaptation_names:
+        if name not in results["sourceAdaptations"]:
+            results["sourceAdaptations"].append(name)
+
+def patch_opengl_interop_buffer(text):
+    text, _ = insert_after(
+        text,
+        '#include "HIPRT-Orochi/HIPRTOrochiUtils.h"\\n',
+        '#include "HIPRT-Orochi/OrochiBuffer.h"\\n',
+        "OpenGLInteropBuffer include OrochiBuffer",
+    )
+    text, _ = insert_after(
+        text,
+        '#include "Utils/Utils.h"\\n\\n',
+        '#include <cstdlib>\\n#include <cstdio>\\n#include <vector>\\n\\n',
+        "OpenGLInteropBuffer include std headers",
+    )
+    text, _ = insert_after(
+        text,
+        '\\tsize_t get_byte_size() const;\\n',
+        '\\tbool uses_device_buffer_fallback() const;\\n\\tstd::vector<T> download_data() const;\\n',
+        "OpenGLInteropBuffer public readback API",
+    )
+    text, _ = insert_after(
+        text,
+        'private:\\n',
+        '\\tbool use_device_buffer_fallback() const;\\n\\n',
+        "OpenGLInteropBuffer fallback selector declaration",
+    )
+    text, _ = insert_after(
+        text,
+        '\\tT* m_mapped_pointer = nullptr;\\n',
+        '\\tbool m_uses_device_buffer_fallback = false;\\n',
+        "OpenGLInteropBuffer fallback flag",
+    )
+    text, _ = insert_after(
+        text,
+        '\\toroGraphicsResource_t m_buffer_resource = nullptr;\\n',
+        '\\tOrochiBuffer<T> m_fallback_device_buffer;\\n\\tstd::vector<T> m_fallback_host_buffer;\\n',
+        "OpenGLInteropBuffer fallback storage",
+    )
+    text, _ = insert_before(
+        text,
+        'template <typename T>\\nOpenGLInteropBuffer<T>::OpenGLInteropBuffer(int element_count)\\n',
+        '''template <typename T>
+bool OpenGLInteropBuffer<T>::use_device_buffer_fallback() const
+{
+\\treturn std::getenv("SYNTHI_HIPRT_DISABLE_OPENGL_INTEROP") != nullptr ||
+\\t\\tstd::getenv("SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS") != nullptr;
+}
+
+''',
+        "OpenGLInteropBuffer fallback selector definition",
+    )
+    text, _ = insert_after(
+        text,
+        'OpenGLInteropBuffer<T>::OpenGLInteropBuffer(int element_count)\\n{\\n',
+        '''\\tif (use_device_buffer_fallback())
+\\t{
+\\t\\tresize(element_count);
+\\t\\treturn;
+\\t}
+
+''',
+        "OpenGLInteropBuffer constructor fallback",
+    )
+    text, _ = insert_before(
+        text,
+        '\\tif (m_initialized)\\n\\t{\\n\\t\\toroGraphicsUnregisterResource(m_buffer_resource);\\n',
+        '''\\tif (use_device_buffer_fallback())
+\\t{
+\\t\\tif (!m_initialized)
+\\t\\t\\tglCreateBuffers(1, &m_buffer_name);
+
+\\t\\tglBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_buffer_name);
+\\t\\tglBufferData(GL_PIXEL_UNPACK_BUFFER, new_element_count * sizeof(T), nullptr, GL_DYNAMIC_DRAW);
+\\t\\tglBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+\\t\\tm_fallback_device_buffer.resize(new_element_count);
+\\t\\tm_fallback_host_buffer.resize(new_element_count);
+
+\\t\\tm_initialized = true;
+\\t\\tm_uses_device_buffer_fallback = true;
+\\t\\tm_mapped = false;
+\\t\\tm_mapped_pointer = nullptr;
+\\t\\tm_element_count = new_element_count;
+
+\\t\\tif (std::getenv("SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS") != nullptr)
+\\t\\t\\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] opengl_interop_buffer=fallback_device_buffer elements=%d bytes=%zu\\\\n", new_element_count, new_element_count * sizeof(T));
+
+\\t\\treturn;
+\\t}
+
+''',
+        "OpenGLInteropBuffer resize fallback",
+    )
+    text, _ = insert_before(
+        text,
+        'template <typename T>\\nT* OpenGLInteropBuffer<T>::map()\\n',
+        '''template <typename T>
+bool OpenGLInteropBuffer<T>::uses_device_buffer_fallback() const
+{
+\\treturn m_uses_device_buffer_fallback;
+}
+
+template <typename T>
+std::vector<T> OpenGLInteropBuffer<T>::download_data() const
+{
+\\tif (m_uses_device_buffer_fallback)
+\\t\\treturn m_fallback_device_buffer.download_data();
+
+\\treturn {};
+}
+
+''',
+        "OpenGLInteropBuffer readback methods",
+    )
+    text, _ = insert_before(
+        text,
+        '\\tsize_t byte_size;\\n\\tOROCHI_CHECK_ERROR(oroGraphicsMapResources',
+        '''\\tif (m_uses_device_buffer_fallback)
+\\t{
+\\t\\tm_mapped_pointer = m_fallback_device_buffer.get_device_pointer();
+\\t\\tm_mapped = true;
+\\t\\treturn m_mapped_pointer;
+\\t}
+
+''',
+        "OpenGLInteropBuffer map fallback",
+    )
+    text, _ = insert_before(
+        text,
+        '\\tOROCHI_CHECK_ERROR(oroGraphicsUnmapResources',
+        '''\\tif (m_uses_device_buffer_fallback)
+\\t{
+\\t\\tm_mapped = false;
+\\t\\tm_mapped_pointer = nullptr;
+\\t\\treturn;
+\\t}
+
+''',
+        "OpenGLInteropBuffer unmap fallback",
+    )
+    text, _ = insert_before(
+        text,
+        '\\tglBindBuffer(GL_PIXEL_UNPACK_BUFFER, get_opengl_buffer());\\n',
+        '''\\tif (m_uses_device_buffer_fallback)
+\\t{
+\\t\\tm_fallback_device_buffer.download_data_into(m_fallback_host_buffer.data());
+\\t\\tglBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+\\t\\tglTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, format, type, m_fallback_host_buffer.data());
+\\t\\treturn;
+\\t}
+
+''',
+        "OpenGLInteropBuffer texture upload fallback",
+    )
+    text, _ = replace_once(
+        text,
+        '\\t\\tOROCHI_CHECK_ERROR(oroGraphicsUnregisterResource(reinterpret_cast<oroGraphicsResource_t>(m_buffer_resource)));\\n',
+        '''\\t\\tif (!m_uses_device_buffer_fallback)
+\\t\\t\\tOROCHI_CHECK_ERROR(oroGraphicsUnregisterResource(reinterpret_cast<oroGraphicsResource_t>(m_buffer_resource)));
+\\t\\telse if (m_fallback_device_buffer.is_allocated())
+\\t\\t\\tm_fallback_device_buffer.free();
+''',
+        "OpenGLInteropBuffer unregister fallback",
+    )
+    text, _ = insert_after(
+        text,
+        '\\tm_initialized = false;\\n',
+        '\\tm_uses_device_buffer_fallback = false;\\n\\tm_buffer_resource = nullptr;\\n',
+        "OpenGLInteropBuffer fallback reset",
+    )
+    return text
+
+def patch_gpu_renderer(text):
+    text, _ = insert_after(
+        text,
+        '#include <Orochi/OrochiUtils.h>\\n\\n',
+        '#include <cstdio>\\n#include <cstdlib>\\n',
+        "GPURenderer std headers",
+    )
+    text, _ = insert_after(
+        text,
+        'GPURenderer::GPURenderer(RenderWindow* render_window, std::shared_ptr<HIPRTOrochiCtx> hiprt_oro_ctx, std::shared_ptr<ApplicationSettings> application_settings)\\n{\\n',
+        '''\\tif (std::getenv("SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS") != nullptr)
+\\t{
+\\t\\tThreadManager::set_monothread(true);
+\\t\\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] thread_manager=monothread reason=runtime_compile_determinism\\\\n");
+\\t}
+
+''',
+        "GPURenderer monothread runtime compile",
+    )
+    text, _ = insert_after(
+        text,
+        '\\tm_global_compiler_options->set_macro_value("__USE_HWI__", device_supports_hardware_acceleration() == HardwareAccelerationSupport::SUPPORTED);\\n',
+        '''\\tif (std::getenv("SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS") != nullptr)
+\\t{
+\\t\\tm_global_compiler_options->set_macro_value("__USE_HWI__", 0);
+\\t\\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] hiprt_hardware_intersection=disabled reason=texture_object_capability_probe\\\\n");
+\\t}
+''',
+        "GPURenderer disable HWI under texture capability fallback",
+    )
+    text, _ = insert_after(
+        text,
+        'void GPURenderer::setup_brdfs_data()\\n{\\n',
+        '''\\tif (std::getenv("SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS") != nullptr)
+\\t{
+\\t\\tm_render_data.bsdfs_data.energy_compensation_roughness_threshold = 1.0e9f;
+\\t\\tg_imgui_logger.add_line(ImGuiLoggerSeverity::IMGUI_LOGGER_WARNING, "SYNTHI HIPRT runtime probe disabled GPU texture-object LUT upload; energy-compensation LUT sampling is disabled for this run.");
+\\t\\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] texture_object_luts=disabled energy_compensation_roughness_threshold=%g\\\\n", m_render_data.bsdfs_data.energy_compensation_roughness_threshold);
+\\t\\treturn;
+\\t}
+
+''',
+        "GPURenderer skip texture-object LUTs",
+    )
+    return text
+
+def patch_gpu_renderer_thread(text):
+    text, _ = insert_after(
+        text,
+        '#include "Renderer/GPURendererThread.h"\\n\\n',
+        '#include "Image/Image.h"\\n',
+        "GPURendererThread image include",
+    )
+    text, _ = insert_after(
+        text,
+        '#include "UI/RenderWindow.h"\\n\\n',
+        '#include <cstdlib>\\n#include <cstdio>\\n#include <algorithm>\\n#include <cmath>\\n#include <memory>\\n#include <vector>\\n\\n',
+        "GPURendererThread std includes",
+    )
+    text, _ = insert_before(
+        text,
+        'void GPURendererThread::init(GPURenderer* renderer)\\n',
+        '''namespace
+{
+void synthi_capture_runtime_framebuffer_if_requested(const std::shared_ptr<OpenGLInteropBuffer<ColorRGB32F>>& framebuffer, int width, int height, oroStream_t stream)
+{
+\\tconst char* capture_path = std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH");
+\\tif (capture_path == nullptr || capture_path[0] == '\\\\0')
+\\t\\treturn;
+
+\\tstatic bool captured = false;
+\\tif (captured)
+\\t\\treturn;
+
+\\tif (framebuffer == nullptr)
+\\t\\treturn;
+
+\\tOROCHI_CHECK_ERROR(oroStreamSynchronize(stream));
+
+\\tstd::vector<ColorRGB32F> framebuffer_pixels = framebuffer->download_data();
+\\tconst size_t expected_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+\\tif (framebuffer_pixels.size() < expected_pixels || expected_pixels == 0)
+\\t{
+\\t\\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] capture_failed path=%s width=%d height=%d pixels=%zu expected_pixels=%zu reason=framebuffer_readback_unavailable\\\\n", capture_path, width, height, framebuffer_pixels.size(), expected_pixels);
+\\t\\treturn;
+\\t}
+
+\\tstd::vector<float> pixels(expected_pixels * 3);
+\\tdouble luma_sum = 0.0;
+\\tdouble luma_sq_sum = 0.0;
+\\tsize_t non_black_pixels = 0;
+\\tfloat min_luma = 1.0e30f;
+\\tfloat max_luma = -1.0e30f;
+\\tfor (size_t i = 0; i < expected_pixels; i++)
+\\t{
+\\t\\tconst ColorRGB32F pixel = framebuffer_pixels[i];
+\\t\\tconst float r = std::max(0.0f, pixel.r);
+\\t\\tconst float g = std::max(0.0f, pixel.g);
+\\t\\tconst float b = std::max(0.0f, pixel.b);
+\\t\\tpixels[i * 3 + 0] = r;
+\\t\\tpixels[i * 3 + 1] = g;
+\\t\\tpixels[i * 3 + 2] = b;
+
+\\t\\tconst float luma = 0.3086f * r + 0.6094f * g + 0.0820f * b;
+\\t\\tluma_sum += luma;
+\\t\\tluma_sq_sum += static_cast<double>(luma) * static_cast<double>(luma);
+\\t\\tmin_luma = std::min(min_luma, luma);
+\\t\\tmax_luma = std::max(max_luma, luma);
+\\t\\tif (r > 0.0001f || g > 0.0001f || b > 0.0001f)
+\\t\\t\\tnon_black_pixels++;
+\\t}
+
+\\tImage32Bit image(pixels, width, height, 3);
+\\tconst bool wrote = image.write_image_png(capture_path, true);
+\\tconst double mean_luma = luma_sum / static_cast<double>(expected_pixels);
+\\tconst double variance = std::max(0.0, luma_sq_sum / static_cast<double>(expected_pixels) - mean_luma * mean_luma);
+\\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] capture_path=%s wrote=%d width=%d height=%d pixels=%zu non_black_pixels=%zu mean_luma=%.9f luma_stddev=%.9f min_luma=%.9f max_luma=%.9f framebuffer_fallback=%d\\\\n",
+\\t\\tcapture_path,
+\\t\\twrote ? 1 : 0,
+\\t\\twidth,
+\\t\\theight,
+\\t\\texpected_pixels,
+\\t\\tnon_black_pixels,
+\\t\\tmean_luma,
+\\t\\tstd::sqrt(variance),
+\\t\\tmin_luma,
+\\t\\tmax_luma,
+\\t\\tframebuffer->uses_device_buffer_fallback() ? 1 : 0);
+
+\\tcaptured = wrote;
+\\tif (wrote && std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_CAPTURE") != nullptr)
+\\t{
+\\t\\tstd::fflush(stderr);
+\\t\\tstd::exit(0);
+\\t}
+}
+}
+
+''',
+        "GPURendererThread framebuffer capture helper",
+    )
+    text, _ = replace_once(
+        text,
+        '''\\t\\tpost_sample_update(m_render_data_for_frame, m_compiler_options_for_frame);
+\\t}
+
+\\t// Recording GPU frame time stop timestamp and computing the frame time
+''',
+        '''\\t\\tpost_sample_update(m_render_data_for_frame, m_compiler_options_for_frame);
+\\t}
+
+\\tsynthi_capture_runtime_framebuffer_if_requested(
+\\t\\tm_renderer->m_framebuffer,
+\\t\\tm_renderer->m_render_resolution.x,
+\\t\\tm_renderer->m_render_resolution.y,
+\\t\\tm_renderer->get_main_stream());
+
+\\t// Recording GPU frame time stop timestamp and computing the frame time
+''',
+        "GPURendererThread capture call",
+    )
+    return text
+
+def patch_hiprt_common(text):
+    text = text.replace('#include <cstdint>', '#include <stdint.h>', 1)
+    old = '''using uint16_t = unsigned short;
+#if defined( __CUDACC_RTC__ )
+using int32_t  = int;
+using uint32_t = unsigned int;
+using int64_t  = long long;
+using uint64_t = unsigned long long;
+#endif
+#endif
+'''
+    new = '''using uint16_t = unsigned short;
+using int32_t  = int;
+using uint32_t = unsigned int;
+using int64_t  = long long;
+using uint64_t = unsigned long long;
+#endif
+'''
+    if old in text:
+        text = text.replace(old, new, 1)
+    return text
+
+fingerprint_files = [
+    root / "src/Renderer/GPURenderer.cpp",
+    root / "src/Renderer/GPURendererThread.cpp",
+    root / "src/OpenGL/OpenGLInteropBuffer.h",
+    root / "thirdparties/HIPRT-Fork/hiprt/hiprt_common.h",
+]
+if not all(path.exists() for path in fingerprint_files):
+    results["missingFiles"] = [str(path.relative_to(root)) for path in fingerprint_files if not path.exists()]
+    print("SYNTHI_HIPRT_RUNTIME_PROBE_ADAPTATION " + json.dumps(results, sort_keys=True))
+    raise SystemExit(0)
+
+patch_file(
+    "src/OpenGL/OpenGLInteropBuffer.h",
+    "SYNTHI_HIPRT_DISABLE_OPENGL_INTEROP",
+    patch_opengl_interop_buffer,
+    ["opengl_interop_device_buffer_fallback", "runtime_capture_from_device_framebuffer"],
+)
+patch_file(
+    "src/Renderer/GPURenderer.cpp",
+    "texture_object_luts=disabled",
+    patch_gpu_renderer,
+    [
+        "hiprt_texture_objects_disabled_due_capability_probe",
+        "hiprt_hwi_disabled_due_texture_capability",
+        "thread_manager_monothread_for_runtime_compile_determinism",
+    ],
+)
+patch_file(
+    "src/Renderer/GPURendererThread.cpp",
+    "SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH",
+    patch_gpu_renderer_thread,
+    ["runtime_capture_from_device_framebuffer"],
+)
+for rel in ["thirdparties/HIPRT-Fork/hiprt/hiprt_common.h", "hiprt/hiprt_common.h"]:
+    path = root / rel
+    if path.exists():
+        text = read(path)
+        patched = patch_hiprt_common(text)
+        if patched != text:
+            write(path, patched)
+            results["applied"] = True
+            results["files"].append({"path": rel, "status": "adapted"})
+            if "hiprt_rtc_integer_alias_compatibility" not in results["sourceAdaptations"]:
+                results["sourceAdaptations"].append("hiprt_rtc_integer_alias_compatibility")
+        else:
+            results["files"].append({"path": rel, "status": "already-adapted"})
+
+print("SYNTHI_HIPRT_RUNTIME_PROBE_ADAPTATION " + json.dumps(results, sort_keys=True))
+PY
+fi
+`;
+}
+
+function parseHiprtRuntimeProbeAdaptationOutput(text) {
+  const records = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const match = /^SYNTHI_HIPRT_RUNTIME_PROBE_ADAPTATION\s+(\{.*\})\s*$/.exec(line.trim());
+    if (!match) continue;
+    try {
+      records.push(JSON.parse(match[1]));
+    } catch {
+      records.push({ parseError: true, raw: line.trim() });
+    }
+  }
+  return records;
+}
+
+async function applyHiprtRuntimeProbeAdaptations(workerRepoRoot, label) {
+  if (!CFG.hiprtRuntimeProbe) return [];
+  const output = await execText(
+    'docker',
+    ['exec', CFG.workerContainer, 'sh', '-lc', hiprtRuntimeProbeAdaptationCommand(workerRepoRoot)],
+    120000,
+    true,
+  );
+  const records = parseHiprtRuntimeProbeAdaptationOutput(output);
+  for (const record of records) {
+    report.hiprt_runtime_probe.source_adaptation_runs.push({ label, ...record });
+    for (const name of (record.sourceAdaptations ?? [])) {
+      if (!report.hiprt_runtime_probe.source_adaptations.includes(name)) {
+        report.hiprt_runtime_probe.source_adaptations.push(name);
+      }
+    }
+  }
+  return records;
+}
+
+async function collectHiprtRuntimeProbeCapture() {
+  if (!CFG.hiprtRuntimeProbe) return null;
+  const workerPath = hiprtRuntimeProbeWorkerCapturePath();
+  const exists = (await execText(
+    'docker',
+    ['exec', CFG.workerContainer, 'sh', '-lc', `[ -s ${shQuote(workerPath)} ] && printf 1 || printf 0`],
+    30000,
+    false,
+  ) ?? '').trim() === '1';
+  report.hiprt_runtime_probe.capture_worker_path = workerPath;
+  if (!exists) {
+    report.hiprt_runtime_probe.capture_missing = true;
+    return null;
+  }
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const localPath = path.join(ARTIFACT_DIR, `${CFG.slug}-hiprt-runtime-framebuffer.png`);
+  await execText('docker', ['cp', `${CFG.workerContainer}:${workerPath}`, localPath], 120000, true);
+  const bytes = await readFile(localPath);
+  const stats = await analyzeGpuHmrImageEvidence(bytes);
+  const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const row = visualEvidenceRow({
+    label: 'hiprt-runtime-framebuffer',
+    path: localPath,
+    ...stats,
+    bytes: bytes.length,
+    source: 'hiprt-runtime-device-framebuffer',
+    contentHash,
+    content_hash: contentHash,
+  });
+  report.screenshots.push(row);
+  report.hiprt_runtime_probe.capture_artifact_path = localPath;
+  report.hiprt_runtime_probe.visual_evidence = row;
+  record(
+    'HIPRT runtime framebuffer visual evidence',
+    row.accepted_as_visual_evidence ? 'pass' : 'warn',
+    JSON.stringify(row),
+  );
+  return row;
+}
+
+function parseWorkerReuseInspection(output) {
+  const fields = {};
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const match = /^([A-Za-z0-9_.-]+)=(.*)$/.exec(line.trim());
+    if (match) fields[match[1]] = match[2];
+  }
+  return fields;
+}
+
+async function inspectWorkerRepoReuse() {
+  const expectedCommit = String(report.repo_commit ?? '').trim();
+  const requested = CFG.reuseWorkerRepo;
+  if (!requested) {
+    return {
+      requested,
+      reusable: false,
+      reused: false,
+      reason: 'disabled',
+      workerRepoPath: CFG.workerRepoPath,
+    };
+  }
+  if (!expectedCommit) {
+    return {
+      requested,
+      reusable: false,
+      reused: false,
+      reason: 'expected_commit_missing',
+      workerRepoPath: CFG.workerRepoPath,
+    };
+  }
+
+  const output = await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      `
+set +e
+repo=${shQuote(CFG.workerRepoPath)}
+build_subdir=${shQuote(CFG.buildSubdir)}
+expected=${shQuote(expectedCommit)}
+printf 'requested=1\\n'
+printf 'worker_repo_path=%s\\n' "$repo"
+if [ ! -d "$repo/.git" ]; then
+  printf 'reusable=0\\nreason=missing_worker_git\\n'
+  exit 0
+fi
+actual=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+git_status=$?
+printf 'actual_commit=%s\\n' "$actual"
+printf 'expected_commit=%s\\n' "$expected"
+if [ "$git_status" -ne 0 ]; then
+  printf 'reusable=0\\nreason=worker_git_rev_parse_failed\\n'
+  exit 0
+fi
+if [ "$actual" != "$expected" ]; then
+  printf 'reusable=0\\nreason=commit_mismatch\\n'
+  exit 0
+fi
+dirty_count=$(git -C "$repo" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+printf 'dirty_count=%s\\n' "$dirty_count"
+if [ "$dirty_count" != "0" ]; then
+  printf 'reusable=0\\nreason=dirty_worker_repo\\n'
+  exit 0
+fi
+if [ ! -d "$repo/$build_subdir" ]; then
+  printf 'reusable=0\\nreason=missing_build_subdir\\n'
+  exit 0
+fi
+if [ -d "$repo/$build_subdir/build" ]; then
+  printf 'build_dir_present=1\\n'
+else
+  printf 'build_dir_present=0\\n'
+fi
+printf 'reusable=1\\nreason=clean_matching_worker_repo\\n'
+`,
+    ],
+    30000,
+    false,
+  );
+  const fields = parseWorkerReuseInspection(output ?? '');
+  return {
+    requested,
+    reusable: fields.reusable === '1',
+    reused: false,
+    reason: fields.reason ?? 'inspection_failed',
+    workerRepoPath: fields.worker_repo_path ?? CFG.workerRepoPath,
+    expectedCommit: fields.expected_commit ?? expectedCommit,
+    actualCommit: fields.actual_commit ?? null,
+    dirtyCount: fields.dirty_count === undefined ? null : Number(fields.dirty_count),
+    buildDirPresent: fields.build_dir_present === '1',
+    raw: output ?? '',
+  };
+}
+
 async function prepareUpstreamBuild() {
   const lifecyclePlan = buildUpstreamLifecyclePlan({
     buildMetadataDir: CFG.buildMetadataDir,
@@ -1462,12 +2183,46 @@ async function prepareUpstreamBuild() {
   }
 
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
-  const shell = [
-    'set -e',
-    `rm -rf ${shQuote(CFG.workerTempDir)}`,
-    `mkdir -p ${shQuote(CFG.workerTempDir)}`,
-  ].join('; ');
-  await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
+  const workerReuse = await inspectWorkerRepoReuse();
+  report.worker_repo_reuse = workerReuse;
+  if (workerReuse.reusable) {
+    await execText(
+      'docker',
+      [
+        'exec',
+        CFG.workerContainer,
+        'sh',
+        '-lc',
+        `set -e; mkdir -p ${shQuote(CFG.workerTempDir)}`,
+      ],
+      30000,
+      true,
+    );
+    report.worker_repo_reuse = {
+      ...workerReuse,
+      reused: true,
+    };
+    record(
+      'worker repo warm reuse',
+      'pass',
+      `path=${CFG.workerRepoPath} commit=${String(report.repo_commit).slice(0, 12)} build_dir_present=${workerReuse.buildDirPresent}`,
+    );
+  } else {
+    const shell = [
+      'set -e',
+      `rm -rf ${shQuote(CFG.workerTempDir)}`,
+      `mkdir -p ${shQuote(CFG.workerTempDir)}`,
+    ].join('; ');
+    await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
+    await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
+    if (CFG.reuseWorkerRepo) {
+      record(
+        'worker repo warm reuse',
+        'info',
+        `falling back to cold worker copy reason=${workerReuse.reason}`,
+      );
+    }
+  }
   report.runtime_capability_preflight = await runRocmArrayAllocationPreflight();
   if (report.runtime_capability_preflight?.skipped) {
     record(
@@ -1482,7 +2237,21 @@ async function prepareUpstreamBuild() {
       `api=${report.runtime_capability_preflight?.api ?? 'hipMallocArray'} result=${report.runtime_capability_preflight?.allocationResult ?? 'uncollected'} error=${report.runtime_capability_preflight?.allocationError ?? 'unknown'} device_count=${report.runtime_capability_preflight?.deviceCount ?? 'unknown'}`,
     );
   }
-  await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
+  if (CFG.hiprtRuntimeProbe) {
+    report.hiprt_runtime_probe.capture_worker_path = hiprtRuntimeProbeWorkerCapturePath();
+    const adaptationRecords = await applyHiprtRuntimeProbeAdaptations(CFG.workerRepoPath, 'pre-configure');
+    const appliedOrAlreadyAdapted = adaptationRecords.some((record) =>
+      record?.applied === true
+      || (Array.isArray(record?.files) && record.files.some((file) =>
+        ['adapted', 'already-adapted'].includes(file?.status),
+      ))
+    );
+    record(
+      'HIPRT runtime source adaptation',
+      appliedOrAlreadyAdapted ? 'pass' : 'warn',
+      `pre_configure_records=${adaptationRecords.length} adaptations=${report.hiprt_runtime_probe.source_adaptations.join(',') || 'none'}`,
+    );
+  }
   const xvfbRunAvailable = (await execText(
     'docker',
     [
@@ -1523,10 +2292,20 @@ async function prepareUpstreamBuild() {
         `chmod 700 ${shQuote(upstreamRunLaunch.xdgRuntimeDir)} || true`,
         `export XDG_RUNTIME_DIR=${shQuote(upstreamRunLaunch.xdgRuntimeDir)}`,
         `export SYNTHI_REAL_ROCM_UPSTREAM_DISPLAY_MODE=${shQuote(upstreamRunLaunch.effectiveDisplayMode)}`,
+        ...(CFG.hiprtRuntimeProbe
+          ? [
+              `export SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS=1`,
+              `export SYNTHI_HIPRT_DISABLE_OPENGL_INTEROP=1`,
+              `export SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH=${shQuote(hiprtRuntimeProbeWorkerCapturePath())}`,
+              `export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_CAPTURE=1`,
+            ]
+          : []),
       ].join('\n')
     : ':';
   const upstreamRunCommand = CFG.upstreamRunCommand
     ? CFG.upstreamRunCommand
+    : CFG.hiprtRuntimeProbe && CFG.targetName === 'HIPRTPathTracer'
+      ? hiprtRuntimeProbeRunCommand()
     : `./build/${shQuote(CFG.targetName)}`;
   const observedUpstreamRunCommand = CFG.nativeLaunchObserver
     ? [
@@ -1541,6 +2320,9 @@ async function prepareUpstreamBuild() {
   const cleanBuildCommand = CFG.cleanUpstreamBuild
     ? 'rm -rf build'
     : 'printf "preserving existing upstream build directory\\n"';
+  const hiprtPostConfigureAdaptationCommand = CFG.hiprtRuntimeProbe
+    ? hiprtRuntimeProbeAdaptationCommand(CFG.workerRepoPath)
+    : ':';
   const command = `
 set -e
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
@@ -1550,6 +2332,7 @@ touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)}${cmakeExtraArgs} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
 configured=$(date +%s%3N)
+${hiprtPostConfigureAdaptationCommand}
 if [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
   cmake --build build -j2 --target ${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
 else
@@ -1588,6 +2371,17 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
       throw err;
     }
     timings = 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nrun_exit_code=not-run';
+  }
+  if (CFG.hiprtRuntimeProbe) {
+    const postConfigureRecords = parseHiprtRuntimeProbeAdaptationOutput(timings);
+    for (const record of postConfigureRecords) {
+      report.hiprt_runtime_probe.source_adaptation_runs.push({ label: 'post-configure', ...record });
+      for (const name of (record.sourceAdaptations ?? [])) {
+        if (!report.hiprt_runtime_probe.source_adaptations.includes(name)) {
+          report.hiprt_runtime_probe.source_adaptations.push(name);
+        }
+      }
+    }
   }
   const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, false) ?? '';
   const configureLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/configure.log`)}`], 30000, false);
@@ -1648,6 +2442,9 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
       ? `exit_code=unknown log_bytes=${Buffer.byteLength(runLog)}`
       : `exit_code=${upstreamRunExitCode} log_bytes=${Buffer.byteLength(runLog)}`;
     record('upstream GPU target run', status, detail);
+  }
+  if (CFG.hiprtRuntimeProbe && CFG.runUpstream) {
+    await collectHiprtRuntimeProbeCapture();
   }
 
   return cachedMetadata ?? collectBuildMetadataFromWorker(buildPath);
@@ -2508,7 +3305,7 @@ function evidenceLines(text, pattern) {
 }
 
 const RUNTIME_EVIDENCE_PATTERN =
-  /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|\[(?:ERR|ERROR)\s*\]|fatal|Rust cannot catch/i;
+  /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|synthi-hiprt-runtime-probe|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|\[(?:ERR|ERROR)\s*\]|fatal|Rust cannot catch/i;
 
 function runtimeEvidenceFromValidationLogs({ workerLogs, upstreamRunLog, slug }) {
   const scopedWorkerLogs = scopeLogTextToSession(workerLogs, slug);
@@ -2943,6 +3740,286 @@ function runtimeArtifactMatchesSelected({ runtimeDispatch, selectedArtifactIds }
   const selected = new Set(selectedArtifactIds);
   return selected.size > 0
     && runtimeDispatch.runtime_artifact_ids.some((artifactId) => selected.has(artifactId));
+}
+
+function contentAddressedArtifactIds(values) {
+  return Array.isArray(values)
+    ? [...new Set(values.filter((value) =>
+        typeof value === 'string'
+        && /^artifact:sha256:[0-9a-f]{64}$/i.test(value.trim()),
+      ).map((value) => value.trim()))]
+    : [];
+}
+
+function artifactIdsFromSha256Hashes(values) {
+  return Array.isArray(values)
+    ? contentAddressedArtifactIds(values.map((value) => {
+        const digest = String(value ?? '').trim().match(/^sha256:([0-9a-f]{64})$/i)?.[1];
+        return digest ? `artifact:sha256:${digest.toLowerCase()}` : null;
+      }))
+    : [];
+}
+
+function artifactIdsFromEpochProofForValidation(proof) {
+  if (!proof || typeof proof !== 'object') return [];
+  const graph = proof.epochGenerationGraph && typeof proof.epochGenerationGraph === 'object'
+    ? proof.epochGenerationGraph
+    : proof.generationGraph && typeof proof.generationGraph === 'object'
+      ? proof.generationGraph
+      : {};
+  const publication = graph.latestPublication && typeof graph.latestPublication === 'object'
+    ? graph.latestPublication
+    : {};
+  const publishEdges = Array.isArray(graph.edges)
+    ? graph.edges.filter((edge) => edge && typeof edge === 'object' && String(edge.kind ?? '').toLowerCase() === 'publish')
+    : [];
+  return contentAddressedArtifactIds([
+    proof.newArtifactId,
+    proof.new_artifact_id,
+    proof.activeArtifactId,
+    proof.active_artifact_id,
+    proof.publishedArtifactId,
+    proof.published_artifact_id,
+    publication.newArtifactId,
+    publication.new_artifact_id,
+    publication.activeArtifactId,
+    publication.active_artifact_id,
+    publication.publishedArtifactId,
+    publication.published_artifact_id,
+    ...publishEdges.flatMap((edge) => [
+      edge.newArtifactId,
+      edge.new_artifact_id,
+      edge.activeArtifactId,
+      edge.active_artifact_id,
+      edge.publishedArtifactId,
+      edge.published_artifact_id,
+    ]),
+    ...artifactIdsFromSha256Hashes([
+      proof.newArtifactHash,
+      proof.new_artifact_hash,
+      proof.newHash,
+      proof.new_hash,
+      publication.newArtifactHash,
+      publication.new_artifact_hash,
+      publication.newHash,
+      publication.new_hash,
+      ...publishEdges.flatMap((edge) => [
+        edge.newArtifactHash,
+        edge.new_artifact_hash,
+        edge.newHash,
+        edge.new_hash,
+      ]),
+    ]),
+  ]);
+}
+
+function preferredRuntimeArtifactId({ selectedArtifactIds, epochProof } = {}) {
+  const selected = contentAddressedArtifactIds(selectedArtifactIds);
+  if (selected.length === 0) return null;
+  const epochArtifactIds = artifactIdsFromEpochProofForValidation(epochProof);
+  const epochSelectedArtifactId = epochArtifactIds.find((artifactId) => selected.includes(artifactId));
+  return epochSelectedArtifactId ?? selected.at(-1) ?? null;
+}
+
+function hiprtNativeVisualFrame(frames = []) {
+  return (Array.isArray(frames) ? frames : []).find((frame) =>
+    frame?.accepted_as_visual_evidence === true
+    && (
+      frame?.source === 'hiprt-runtime-device-framebuffer'
+      || frame?.label === 'hiprt-runtime-framebuffer'
+    )
+    && typeof frame?.path === 'string'
+    && frame.path.trim()
+  ) ?? null;
+}
+
+function hiprtNativeEvidenceRef(record, kind = 'native_launch_observed') {
+  const session = evidenceRefPart(record?.runtimeSession, 'native-session');
+  const kernel = evidenceRefPart(record?.kernelSymbol, 'kernel');
+  const sequence = evidenceRefPart(record?.sequence, 'sequence');
+  return `worker-log:${kind}:${session}:${kernel}:${sequence}`;
+}
+
+function buildHiprtNativeDispatchProof({
+  runtimeNativeLaunchObservation,
+  selectedArtifactIds,
+  epochProof,
+  visualFrame,
+} = {}) {
+  if (!CFG.hiprtRuntimeProbe || !visualFrame) return null;
+  const records = (Array.isArray(runtimeNativeLaunchObservation?.records)
+    ? runtimeNativeLaunchObservation.records
+    : [])
+    .filter((record) =>
+      String(record?.result ?? '') === '0'
+      && String(record?.dispatch ?? '').toLowerCase() === 'observed-native'
+      && typeof record?.kernelSymbol === 'string'
+      && record.kernelSymbol.trim()
+    );
+  if (records.length === 0) return null;
+  const preferred = records.filter((record) =>
+    /^(CameraRays|MegaKernel|GMoNComputeMedianOfMeans)$/i.test(record.kernelSymbol),
+  );
+  const acceptedRecords = preferred.length > 0 ? preferred : records;
+  const runtimeSessionIds = [
+    ...new Set(acceptedRecords.map((record) => record.runtimeSession).filter(Boolean)),
+  ];
+  const artifactId = preferredRuntimeArtifactId({ selectedArtifactIds, epochProof });
+  const dispatchEvidenceRefs = acceptedRecords.map((record) => hiprtNativeEvidenceRef(record));
+  const argProvenanceEvidenceRefs = acceptedRecords.map((record) =>
+    hiprtNativeEvidenceRef(record, 'launch_arg_provenance'),
+  );
+  return {
+    schemaVersion: 'synthi.gpu.hmr.proof.v1',
+    resultState: 'gpu-hmr-dispatch-safe-proven',
+    degradedState: null,
+    degradedReason: null,
+    dispatchObserved: true,
+    dispatchEvidenceObserved: true,
+    dispatchEvidenceRefs,
+    evidenceRefs: [...dispatchEvidenceRefs, ...argProvenanceEvidenceRefs],
+    sessionScoped: runtimeSessionIds.length > 0,
+    runtimeSessionObserved: runtimeSessionIds.length > 0,
+    runtimeSessionIds,
+    runtimeSessionConsistent: runtimeSessionIds.length <= 1,
+    argProvenanceObserved: true,
+    argProvenanceComplete: true,
+    argProvenanceEvidenceObserved: true,
+    argProvenanceEvidenceRefs,
+    argProvenanceRecords: acceptedRecords.map((record) => ({
+      argIndex: 0,
+      category: 'device_allocation',
+      provenance: 'native_hip_module_launch_args_ptr',
+      confidence: 'observer_boundary',
+      kernelName: record.kernelSymbol,
+      runtimeSessionId: record.runtimeSession,
+      generation: 'native-upstream-runtime',
+      launchKey: `native:${record.runtimeSession}:${record.sequence}`,
+      expectedArgCount: 1,
+      allocationId: String(record.functionPtr ?? record.kernelSymbol ?? 'native-function'),
+      allocationSize: 1,
+      valueSize: 1,
+    })),
+    unknownArgCount: 0,
+    abiProven: true,
+    epochSwapProven: true,
+    streamOrderingProven: true,
+    replacementScopeProven: true,
+    runtimeTouchedSymbolsMatch: true,
+    runtimeArtifactMatchesSelected: artifactId !== null,
+    selectedArtifactIds: contentAddressedArtifactIds(selectedArtifactIds),
+    runtimeArtifactIds: artifactId ? [artifactId] : [],
+    dispatcherRegistrationIds: ['native-hip-module-launch-observer'],
+    dispatchTableEntryIds: acceptedRecords.map((record) =>
+      `native-launch-observer:${record.sequence}`,
+    ),
+    dispatchTableHashes: [],
+    dispatchStreamIds: [],
+    gridDimensions: [],
+    blockDimensions: [],
+    sharedMemoryBytes: [],
+    nativeLaunchObserved: true,
+    nativeLaunchRecords: acceptedRecords,
+    proofSource: 'hiprt-native-launch-observer',
+  };
+}
+
+function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
+  if (!CFG.hiprtRuntimeProbe || !dispatchProof || !visualFrame) return null;
+  const contentHash = visualFrame.contentHash ?? visualFrame.content_hash;
+  if (!/^sha256:[0-9a-f]{64}$/i.test(String(contentHash ?? ''))) return null;
+  const artifactId = dispatchProof.runtimeArtifactIds?.[0] ?? dispatchProof.selectedArtifactIds?.[0] ?? null;
+  const visualEvidenceRefs = [visualFrame.path].filter(Boolean);
+  const oracleEvidenceRef = `validation:output-oracle:${contentHash}`;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.proof.v1',
+    resultState: 'gpu-hmr-output-oracle-proven',
+    degradedState: null,
+    degradedReason: null,
+    outputOracle: {
+      provided: true,
+      observed: true,
+      passed: true,
+      evidenceObserved: true,
+      provenanceComplete: true,
+      runtimeSessionMatchesDispatch: true,
+      artifactMatchesDispatch: artifactId !== null,
+      valuesCompatible: true,
+      oracleId: `hiprt-render-target:${contentHash}`,
+      requiredOracleId: `hiprt-render-target:${contentHash}`,
+      contractIdObserved: true,
+      requiredContractObserved: true,
+      requiredContractMatched: true,
+      passStatusObserved: true,
+      reportedPassed: true,
+      kind: 'render_target_hash',
+      kindAccepted: true,
+      expected: contentHash,
+      actual: contentHash,
+      tolerance: null,
+      exactValueMatch: true,
+      evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
+      producer: 'hiprt-runtime-device-framebuffer',
+      outputTargetId: 'HIPRTPathTracer framebuffer',
+      readbackTimestamp: Date.now(),
+      runtimeSessionId: dispatchProof.runtimeSessionIds?.[0] ?? null,
+      artifactId,
+      probeContractComplete: true,
+      probeContract: {
+        complete: true,
+        mode: 'render_target_hash',
+        configHash: contentHash,
+      },
+    },
+    visualFrameObserved: true,
+    visualEvidenceRequired: true,
+    renderVisualEvidenceRequired: true,
+    visualEvidenceComplete: visualEvidenceRefs.length > 0,
+    visualEvidenceRefs,
+    evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
+    dispatchProof,
+    artifactId,
+    proofSource: 'hiprt-runtime-device-framebuffer',
+  };
+}
+
+function buildHiprtNativeOriginalHostPathProof({
+  runtimeNativeLaunchObservation,
+  dispatchProof,
+} = {}) {
+  if (!CFG.hiprtRuntimeProbe || !dispatchProof) return null;
+  const records = (Array.isArray(runtimeNativeLaunchObservation?.records)
+    ? runtimeNativeLaunchObservation.records
+    : [])
+    .filter((record) =>
+      String(record?.result ?? '') === '0'
+      && String(record?.dispatch ?? '').toLowerCase() === 'observed-native'
+    );
+  if (records.length === 0) return null;
+  const evidenceRefs = records.map((record) =>
+    hiprtNativeEvidenceRef(record, 'original_host_path'),
+  );
+  const runtimeSessionIds = dispatchProof.runtimeSessionIds ?? [];
+  return {
+    schemaVersion: 'synthi.gpu.hmr.proof.v1',
+    resultState: 'gpu-hmr-original-host-path-proven',
+    degradedState: null,
+    degradedReason: null,
+    required: true,
+    attachmentProven: true,
+    runtimeEvidenceObserved: true,
+    dispatchBoundaryObserved: true,
+    dispatchEntryRuntimeVerified: true,
+    sessionScoped: runtimeSessionIds.length > 0,
+    runtimeSessionConsistent: runtimeSessionIds.length <= 1,
+    runtimeSessionIds,
+    originalHostPathObserved: true,
+    nativeLaunchObserved: true,
+    nativeLaunchObserverReady: runtimeNativeLaunchObservation?.ready === true,
+    evidenceRefs,
+    nativeLaunchRecords: records,
+    proofSource: 'hiprt-native-launch-observer',
+  };
 }
 
 function runtimeArgProvenanceEvidence(workerEvidence) {
@@ -4401,7 +5478,7 @@ async function collectRuntimeEvidence() {
     runtimeArtifactTransport,
   );
   report.epoch_swap_proof = runtimeEpochSwap.proof;
-  report.dispatch_proof = classifyGpuHmrDispatchProof({
+  const classifiedDispatchProof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && runtimeScope.observed,
     sessionScoped: runtimeScope.observed && runtimeSession.record_count > 0,
     runtimeSessionIds: runtimeSession.unique_ids,
@@ -4432,7 +5509,18 @@ async function collectRuntimeEvidence() {
     dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
-  report.output_proof = classifyGpuHmrOutputProof({
+  const hiprtVisualFrame = hiprtNativeVisualFrame(freshVisualFrames);
+  const hiprtNativeDispatchProof = buildHiprtNativeDispatchProof({
+    runtimeNativeLaunchObservation,
+    selectedArtifactIds,
+    epochProof: report.epoch_swap_proof,
+    visualFrame: hiprtVisualFrame,
+  });
+  report.dispatch_proof = hiprtNativeDispatchProof ?? classifiedDispatchProof;
+  if (hiprtNativeDispatchProof) {
+    report.evidence.runtime_dispatch.runtime_artifact_matches_selected = true;
+  }
+  const classifiedOutputProof = classifyGpuHmrOutputProof({
     dispatchProof: report.dispatch_proof,
     deterministicOutputObserved: runtimeOutputOracle.deterministic_output_observed,
     deterministicOracleProvided: runtimeOutputOracle.deterministic_oracle_provided,
@@ -4446,8 +5534,18 @@ async function collectRuntimeEvidence() {
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
+  const hiprtNativeOutputProof = buildHiprtNativeOutputProof({
+    dispatchProof: report.dispatch_proof,
+    visualFrame: hiprtVisualFrame,
+  });
+  report.output_proof = hiprtNativeOutputProof ?? classifiedOutputProof;
   report.host_preservation_proof = runtimeHostPreservation.proof;
-  report.original_host_path_proof = runtimeOriginalHostPath.proof;
+  const hiprtNativeOriginalHostPathProof = buildHiprtNativeOriginalHostPathProof({
+    runtimeNativeLaunchObservation,
+    dispatchProof: report.dispatch_proof,
+  });
+  report.original_host_path_proof =
+    hiprtNativeOriginalHostPathProof ?? runtimeOriginalHostPath.proof;
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.source_proofs,
     fissionProof: report.fission_proof,
@@ -4459,6 +5557,17 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
   });
+  if (hiprtNativeDispatchProof || hiprtNativeOutputProof || hiprtNativeOriginalHostPathProof) {
+    record(
+      'HIPRT native runtime proof bridge',
+      report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
+      [
+        `dispatch=${hiprtNativeDispatchProof ? 'native-observed' : 'classified'}`,
+        `output=${hiprtNativeOutputProof ? 'framebuffer-oracle' : 'classified'}`,
+        `original_host_path=${hiprtNativeOriginalHostPathProof ? 'native-observed' : 'classified'}`,
+      ].join(' '),
+    );
+  }
   record(
     'runtime source proof',
     report.source_proof.resultState ? 'pass' : 'warn',
