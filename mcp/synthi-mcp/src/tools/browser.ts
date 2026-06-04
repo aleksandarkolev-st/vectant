@@ -25,6 +25,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_stop_teach",
   "synthi_browser_get_trace",
   "synthi_browser_get_trace_status",
+  "synthi_browser_get_lane0_status",
   "synthi_browser_get_workflow_card",
   "synthi_browser_get_unresolved_steps",
   "synthi_browser_compile_workflow",
@@ -154,6 +155,12 @@ export const BROWSER_TOOLS = [
     name: "synthi_browser_get_trace_status",
     description:
       "Return semantic trace status and counts without raw trace events. Intended for agent-panel diagnostics and teach-mode progress.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_get_lane0_status",
+    description:
+      "Return Lane 0 sliding-window reducer status: trace version, window counts, annotation counts, and stale response count.",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -354,6 +361,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return jsonResponse({ ok: true, trace: browserBroker.traceSnapshot() });
       case "synthi_browser_get_trace_status":
         return browserTraceStatusTool();
+      case "synthi_browser_get_lane0_status":
+        return jsonResponse({ ok: true, lane0: browserBroker.lane0Status() });
       case "synthi_browser_get_workflow_card":
         return browserWorkflowCardTool();
       case "synthi_browser_get_unresolved_steps":
@@ -516,6 +525,7 @@ function browserTraceStatusTool(): ToolResponse {
       workflow_state: workflow.card.state,
       unresolved_count: workflow.card.unresolvedCount,
       limitations: workflow.contract.limitations,
+      lane0: workflow.contract.lane0,
     },
   });
 }

@@ -23,6 +23,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_browser_stop_teach",
   "synthi_browser_get_trace",
   "synthi_browser_get_trace_status",
+  "synthi_browser_get_lane0_status",
   "synthi_browser_get_workflow_card",
   "synthi_browser_get_unresolved_steps",
   "synthi_browser_compile_workflow",

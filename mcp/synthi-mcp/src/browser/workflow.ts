@@ -1,3 +1,4 @@
+import { reduceLane0Windows, type Lane0StatusV7 } from "./lane0.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserTraceEvent, LocatorCandidate } from "./types.js";
 
 export type WorkflowStateV7 =
@@ -81,6 +82,14 @@ export interface WorkflowStepContractV7 {
     status: "linked" | "missing";
     sourceId?: string;
   };
+  semanticPlan?: {
+    reducerVersion: string;
+    windowId: string;
+    groupId: string;
+    groupLabel: string;
+    confidence: "high" | "medium" | "low";
+    reasons: string[];
+  };
   expectedEffects: string[];
   mutation?: {
     kind: MutationKindV7;
@@ -121,6 +130,7 @@ export interface WorkflowContractV7 {
     source: "inferred" | "userMarked";
     required: boolean;
   }>;
+  lane0: Lane0StatusV7;
   failureClasses: FailureClassV7[];
   replayModes: Array<"sameSession" | "prefixOnly" | "ciIsolated">;
   limitations: WorkflowLimitationV7[];
@@ -195,7 +205,8 @@ const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
 ];
 
 export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWorkflowV7 {
-  const ordered = [...events].sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0));
+  const lane0 = reduceLane0Windows(events);
+  const ordered = lane0.events.sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0));
   const actionEvents = ordered.filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation");
   const appOrigin = firstHttpOrigin(actionEvents) ?? firstHttpOrigin(ordered) ?? "unknown";
   const steps = actionEvents.map((event, index) => stepFromEvent(event, index + 1));
@@ -238,6 +249,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     parameters,
     steps,
     successCriteria: successCriteriaFor(steps),
+    lane0: lane0.status,
     failureClasses: failureClassesFor(limitations, mutationSteps.length > 0),
     replayModes,
     limitations,
@@ -499,7 +511,9 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   const confidence = locatorConfidence(primary);
   const actionKind = event.kind === "navigation" ? "navigate" : event.action ?? "wait";
   const stepId = event.event_id || `step_${ordinal}`;
-  const parameterName = actionKind === "fill" || actionKind === "select" ? parameterNameFor(event, element, ordinal) : undefined;
+  const parameterName = actionKind === "fill" || actionKind === "select"
+    ? event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal)
+    : undefined;
   const mutation = mutationFor(actionKind, targetLabel, event);
   const limitations: WorkflowLimitationV7[] = [];
   if (!element?.source_id) limitations.push("sourceIdentityMissing");
@@ -515,7 +529,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
     stepId,
     eventSeq: event.event_seq,
     label: labelForAction(actionKind, targetLabel),
-    intent: intentForAction(actionKind, targetLabel),
+    intent: event.semantic?.intent ?? intentForAction(actionKind, targetLabel),
     action: {
       kind: actionKind,
       ...(targetLabel ? { target: { label: targetLabel, ...(element?.role ? { role: element.role } : {}), ...(primary?.locator ? { locator: primary.locator } : {}) } } : {}),
@@ -527,6 +541,16 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
       confidence,
     },
     sourcePlan: element?.source_id ? { status: "linked", sourceId: element.source_id } : { status: "missing" },
+    ...(event.semantic ? {
+      semanticPlan: {
+        reducerVersion: event.semantic.reducer_version,
+        windowId: event.semantic.window_id,
+        groupId: event.semantic.group_id,
+        groupLabel: event.semantic.group_label,
+        confidence: event.semantic.confidence,
+        reasons: event.semantic.reasons,
+      },
+    } : {}),
     expectedEffects: expectedEffectsFor(actionKind, targetLabel, mutation !== undefined),
     ...(mutation ? { mutation } : {}),
     limitations,

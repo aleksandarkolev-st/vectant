@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
+import { lane0Status } from "./lane0.js";
 import { BrowserTraceRecorder, generatePlaywrightScript } from "./trace.js";
 import { compileWorkflowContract, planWorkflowReplay, type WorkflowReplayModeV7 } from "./workflow.js";
 import { bridgeTokenMatches, normalizeOrigin, sameExactOrigin } from "./security.js";
@@ -322,6 +323,10 @@ export class BrowserBroker {
 
   traceSnapshot(): BrowserTraceEvent[] {
     return this.trace.snapshot();
+  }
+
+  lane0Status(): ReturnType<typeof lane0Status> {
+    return lane0Status(this.trace.snapshot());
   }
 
   generatedScript(mode?: WorkflowReplayModeV7): ReturnType<typeof generatePlaywrightScript> {

@@ -117,14 +117,22 @@ describe("browser MCP tool surface", () => {
         origins: string[];
         workflow_state: string[];
         unresolved_count: number;
+        lane0: { annotated_event_count: number };
       };
     }).trace_status).toEqual(expect.objectContaining({
       event_count: 1,
       action_count: 1,
       origins: ["https://app.example.com"],
       unresolved_count: 1,
+      lane0: expect.objectContaining({ annotated_event_count: 1 }),
     }));
     expect((status?.structuredContent as { trace_status: { workflow_state: string[] } }).trace_status.workflow_state).toContain("Limited");
+
+    const lane0 = await dispatchBrowserTool("synthi_browser_get_lane0_status", {});
+    expect(lane0?.isError).toBeUndefined();
+    expect((lane0?.structuredContent as { lane0: { reducer_version: string; annotated_event_count: number } }).lane0).toEqual(
+      expect.objectContaining({ reducer_version: "lane0_deterministic_v1", annotated_event_count: 1 })
+    );
 
     const card = await dispatchBrowserTool("synthi_browser_get_workflow_card", {});
     expect(card?.isError).toBeUndefined();

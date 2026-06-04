@@ -42,6 +42,15 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.parameters).toEqual([
       expect.objectContaining({ name: "test_token", valueShape: "email", redacted: false }),
     ]);
+    expect(workflow.contract.lane0).toEqual(expect.objectContaining({
+      reducer_version: "lane0_deterministic_v1",
+      annotated_event_count: 2,
+      stale_annotation_count: 0,
+    }));
+    expect(workflow.contract.steps[0]?.semanticPlan).toEqual(expect.objectContaining({
+      groupLabel: "Save workspace state workflow",
+      confidence: "high",
+    }));
     expect(workflow.contract.mutationBoundaryPlan.firstMutationStepId).toBe("browser_evt_2");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("prefixOnly");
     expect(workflow.contract.counterfactualPlan).toEqual(expect.objectContaining({

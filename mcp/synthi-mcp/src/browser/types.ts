@@ -98,6 +98,19 @@ export interface BrowserSelection {
   element?: BrowserElementMetadata;
 }
 
+export interface BrowserTraceSemanticAnnotation {
+  reducer_version: "lane0_deterministic_v1";
+  window_id: string;
+  trace_id: string;
+  trace_version: number;
+  group_id: string;
+  group_label: string;
+  intent: string;
+  confidence: "high" | "medium" | "low";
+  parameter_name?: string;
+  reasons: string[];
+}
+
 export interface BrowserTraceEvent {
   event_id: string;
   trace_id: string;
@@ -115,6 +128,7 @@ export interface BrowserTraceEvent {
   value?: string;
   redacted?: boolean;
   detail?: Record<string, unknown>;
+  semantic?: BrowserTraceSemanticAnnotation;
   security?: {
     exact_origin_approved: boolean;
     screenshot_approved: boolean;
