@@ -23,7 +23,7 @@ import {
 
 export const WORKFLOW_ACTIONS = Object.freeze({
   ATTACH_WORKSPACE: 'synthi_browser_attach_current_workspace',
-  OBSERVE: 'synthi_browser_observe',
+  OBSERVE: 'synthi_browser_observe_preview',
   BEGIN_TEACH: 'synthi_browser_begin_teach',
   END_TEACH: 'synthi_browser_end_teach',
   CONFIGURE_AUTH: 'synthi_auth_get_tool_auth_readiness',

@@ -2,6 +2,7 @@ import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
+import { resolveBrowserPreviewTarget } from "../browser/preview_target.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
 import {
@@ -17,6 +18,7 @@ import { errorFromException, errorResponse, jsonResponse, type ToolResponse } fr
 export const BROWSER_TOOL_NAMES = [
   "synthi_browser_attach_current_workspace",
   "synthi_browser_observe",
+  "synthi_browser_observe_preview",
   "synthi_browser_begin_teach",
   "synthi_browser_end_teach",
   "synthi_browser_attach",
@@ -75,6 +77,30 @@ export const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: { tab_id: { type: "string" } },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_observe_preview",
+    description:
+      "Find and observe the workspace app preview tab in the Synthi-hosted browser. The preview target is selected from configured preview URLs/origins or, in local development, same-loopback tabs when the workspace itself is loopback. This does not hardcode preview ports.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_url: { type: "string", description: "Current workspace URL. Used to avoid observing the IDE tab and to derive local-dev loopback preview policy." },
+        preferred_url: { type: "string", description: "Optional exact preview URL to prefer when the host already knows it." },
+        preview_url: { type: "string", description: "Optional workspace preview URL from the cloud preview/tunnel service." },
+        allowed_preview_origins: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional exact origins that may be treated as workspace previews.",
+        },
+        allowed_preview_host_suffixes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional host suffixes that may be treated as workspace previews, for example a deployment-specific preview domain.",
+        },
+      },
       required: [],
     },
   },
@@ -423,6 +449,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return await browserAttachCurrentWorkspaceTool(args);
       case "synthi_browser_observe":
         return await browserSnapshotTool(args);
+      case "synthi_browser_observe_preview":
+        return await browserObservePreviewTool(args);
       case "synthi_browser_begin_teach":
         return browserBeginTeachTool(args);
       case "synthi_browser_end_teach":
@@ -566,6 +594,53 @@ async function browserListTabsTool(): Promise<ToolResponse> {
   const allTabs = await browserPlaywrightAdapter.listTabs();
   const tabs = browserBroker.registerTabs(allTabs);
   return jsonResponse({ ok: true, tabs, hidden_tabs: allTabs.length - tabs.length });
+}
+
+async function browserObservePreviewTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const allTabs = await browserPlaywrightAdapter.listTabs();
+  const target = resolveBrowserPreviewTarget(
+    allTabs,
+    {
+      workspace_url: stringOpt(a["workspace_url"]),
+      preferred_url: stringOpt(a["preferred_url"]),
+      preview_url: stringOpt(a["preview_url"]),
+      allowed_preview_origins: stringArrayOpt(a["allowed_preview_origins"]),
+      allowed_preview_host_suffixes: stringArrayOpt(a["allowed_preview_host_suffixes"]),
+    },
+    process.env
+  );
+  if (!target.ok) {
+    return errorResponse(target.error, {
+      reason: target.reason,
+      eligible_tab_count: target.eligible_tab_count,
+    });
+  }
+
+  browserBroker.requestConsent(target.tab.url, "granted", "workspace_preview_observe", {
+    screenshot: true,
+    diagnostics: true,
+  });
+  const tabs = browserBroker.registerTabs(allTabs);
+  const brokerTab = browserBroker.selectTab(target.tab.tab_id);
+  if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: target.tab.tab_id });
+  await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
+  const snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
+  const gated = browserBroker.snapshot(snapshot);
+  if (!gated.ok) return errorResponse(gated.error);
+  return jsonResponse({
+    ok: true,
+    target: {
+      tab_id: target.tab.tab_id,
+      url: target.tab.url,
+      title: target.tab.title ?? null,
+      origin: target.origin,
+      reason: target.reason,
+    },
+    snapshot: gated.snapshot,
+    tabs,
+    hidden_tabs: allTabs.length - tabs.length,
+  });
 }
 
 async function browserSelectTabTool(args: unknown): Promise<ToolResponse> {
@@ -1090,6 +1165,11 @@ function stringOpt(value: unknown): string | undefined {
 
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArrayOpt(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
 function boolOpt(value: unknown): boolean | undefined {

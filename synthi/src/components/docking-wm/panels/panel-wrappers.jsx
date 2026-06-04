@@ -301,45 +301,13 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     return body;
   }, [applyBridgeState, bridgeConfig.token, bridgeConfig.url]);
 
-  const selectBestWorkspaceTab = useCallback(async (tabsBody) => {
-    const tabs = Array.isArray(tabsBody?.result?.tabs) ? tabsBody.result.tabs : [];
-    const currentUrl = workspaceUrl();
-    let currentOrigin = '';
-    try {
-      currentOrigin = currentUrl ? new URL(currentUrl).origin : '';
-    } catch {
-      currentOrigin = '';
-    }
-    const match = tabs.find((tab) => tab?.url === currentUrl) ||
-      tabs.find((tab) => {
-        try {
-          return currentOrigin && new URL(tab?.url || '').origin === currentOrigin;
-        } catch {
-          return false;
-        }
-      }) ||
-      tabs.find((tab) => tab?.active) ||
-      tabs[0];
-    if (match?.tab_id) {
-      await callWorkflowTool('synthi_browser_select_tab', { tab_id: match.tab_id });
-    }
-    return match;
-  }, [callWorkflowTool, workspaceUrl]);
-
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
-    await callWorkflowTool('synthi_browser_request_consent', {
-      url: currentUrl,
-      status: 'granted',
-      screenshot: true,
-      diagnostics: true,
-      reason: 'workspace_workflow_panel_observe',
+    return callWorkflowTool(WORKFLOW_ACTIONS.OBSERVE, {
+      workspace_url: currentUrl,
     });
-    const tabsBody = await callWorkflowTool('synthi_browser_list_tabs', {});
-    await selectBestWorkspaceTab(tabsBody);
-    return callWorkflowTool(WORKFLOW_ACTIONS.OBSERVE, {});
-  }, [callWorkflowTool, selectBestWorkspaceTab, workspaceUrl]);
+  }, [callWorkflowTool, workspaceUrl]);
 
   const handleWorkflowAction = useCallback(async (detail) => {
     const action = detail?.action;

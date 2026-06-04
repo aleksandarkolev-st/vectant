@@ -183,7 +183,14 @@ function updateBridgeState(
   const now = new Date().toISOString();
   state.lastTool = toolName;
   state.lastToolAt = now;
+  if (ok && toolName === "synthi_browser_begin_teach") {
+    state.compiledAt = undefined;
+    state.scriptGeneratedAt = undefined;
+    state.manifestGeneratedAt = undefined;
+    state.history = [];
+  }
   if (ok && toolName === "synthi_browser_observe") state.lastObserveAt = now;
+  if (ok && toolName === "synthi_browser_observe_preview") state.lastObserveAt = now;
   if (ok && (toolName === "synthi_browser_end_teach" || toolName === "synthi_browser_compile_workflow")) {
     state.compiledAt = now;
   }
@@ -225,7 +232,7 @@ export function buildBrowserWorkflowPanelState(
   const observed = Boolean(bridgeState.lastObserveAt) || Boolean(selected && screenshotAllowed);
   const traceReady = workflow.contract.steps.length > 0;
   const compiled = Boolean(bridgeState.compiledAt);
-  const scriptGenerated = Boolean(bridgeState.scriptGeneratedAt);
+  const scriptGenerated = Boolean(bridgeState.scriptGeneratedAt) && traceReady;
   const sourceCoverage = workflow.contract.sourceIdentityCoverage;
   const publish = workflow.contract.publishPlan;
 
