@@ -242,6 +242,9 @@ export class BrowserPlaywrightAdapter {
     const events = map.get(tab_id) ?? [];
     events.push({
       event_id: `browser_runtime_${Date.now()}_${events.length + 1}`,
+      trace_id: "browser_runtime",
+      trace_version: 0,
+      event_seq: events.length + 1,
       ts: Date.now(),
       tab_id,
       origin,

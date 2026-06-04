@@ -78,12 +78,15 @@ export const BROWSER_TOOLS = [
   },
   {
     name: "synthi_browser_request_consent",
-    description: "Grant or deny exact-origin consent. Consent does not cross scheme, host, subdomain, or port boundaries.",
+    description:
+      "Grant or deny exact-origin consent. Consent does not cross scheme, host, subdomain, or port boundaries. Screenshot and diagnostics access are explicit sub-grants.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string" },
         status: { type: "string", enum: ["granted", "denied"], default: "granted" },
+        screenshot: { type: "boolean", description: "Allow screenshots and DOM snapshots for this exact origin. Defaults to true when status is granted." },
+        diagnostics: { type: "boolean", description: "Allow console and network summaries for this exact origin. Defaults to true when status is granted." },
         reason: { type: "string" },
       },
       required: ["url"],
@@ -362,7 +365,10 @@ function browserRequestConsentTool(args: unknown): ToolResponse {
   const a = obj(args);
   const url = requiredString(a, "url");
   const status = stringOpt(a["status"]) === "denied" ? "denied" : "granted";
-  const record = browserBroker.requestConsent(url, status, stringOpt(a["reason"]));
+  const record = browserBroker.requestConsent(url, status, stringOpt(a["reason"]), {
+    screenshot: boolOpt(a["screenshot"]),
+    diagnostics: boolOpt(a["diagnostics"]),
+  });
   return jsonResponse({ ok: true, consent: record });
 }
 
@@ -379,6 +385,8 @@ function browserRevokeConsentTool(args: unknown): ToolResponse {
 
 async function browserSnapshotTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
+  const access = browserBroker.requireSnapshotAccess(tab.url);
+  if (!access.ok) return errorResponse(access.error);
   const snapshot = await browserPlaywrightAdapter.snapshot(tab.tab_id);
   const gated = browserBroker.snapshot(snapshot);
   if (!gated.ok) return errorResponse(gated.error);
@@ -449,11 +457,15 @@ async function browserWaitTool(args: unknown): Promise<ToolResponse> {
 
 function browserConsoleTool(args: unknown): ToolResponse {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
+  const access = browserBroker.requireDiagnosticsAccess(tab.url);
+  if (!access.ok) return errorResponse(access.error);
   return jsonResponse({ ok: true, entries: browserPlaywrightAdapter.consoleFor(tab.tab_id) });
 }
 
 function browserNetworkTool(args: unknown): ToolResponse {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
+  const access = browserBroker.requireDiagnosticsAccess(tab.url);
+  if (!access.ok) return errorResponse(access.error);
   return jsonResponse({ ok: true, entries: browserPlaywrightAdapter.networkFor(tab.tab_id) });
 }
 
@@ -504,4 +516,8 @@ function stringOpt(value: unknown): string | undefined {
 
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function boolOpt(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }

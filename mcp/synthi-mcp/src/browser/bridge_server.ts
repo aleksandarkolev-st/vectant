@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { browserBroker, type BrowserBridgeMessage } from "./broker.js";
+import { normalizeOrigin, sameExactOrigin } from "./security.js";
 
 export interface BrowserBridgeStartOptions {
   token?: string;
@@ -95,15 +96,16 @@ export class BrowserBridgeServer {
   private dispatch(message: BrowserBridgeMessage): { ok: true } | { ok: false; error: string } {
     const type = typeof message.type === "string" ? message.type : "";
     const payload = (message.payload ?? {}) as Record<string, unknown>;
+    const pageOrigin = typeof message.page_origin === "string" ? message.page_origin : "";
     switch (type) {
       case "selection": {
-        const enriched = this.withSelectedTab(payload);
+        const enriched = this.withSelectedTab(payload, pageOrigin);
         if (!enriched.ok) return enriched;
         const result = browserBroker.recordSelection(enriched.payload as never);
         return result.ok ? { ok: true } : { ok: false, error: result.error };
       }
       case "human_action": {
-        const enriched = this.withSelectedTab(payload);
+        const enriched = this.withSelectedTab(payload, pageOrigin);
         if (!enriched.ok) return enriched;
         const result = browserBroker.recordHumanAction(enriched.payload as never);
         return result.ok ? { ok: true } : { ok: false, error: result.error };
@@ -120,15 +122,35 @@ export class BrowserBridgeServer {
     }
   }
 
-  private withSelectedTab(payload: Record<string, unknown>): { ok: true; payload: Record<string, unknown> } | { ok: false; error: string } {
+  private withSelectedTab(payload: Record<string, unknown>, pageOrigin: string): { ok: true; payload: Record<string, unknown> } | { ok: false; error: string } {
     const selected = browserBroker.selectedTab();
     const tabId = typeof payload["tab_id"] === "string" ? payload["tab_id"] : selected?.tab_id;
     if (!tabId) return { ok: false, error: "tab_not_authorized" };
+    const url = typeof payload["url"] === "string" ? payload["url"] : selected?.url;
+    if (!url) return { ok: false, error: "missing_event_url" };
+    let normalizedUrlOrigin: string;
+    let normalizedPageOrigin: string;
+    try {
+      normalizedUrlOrigin = normalizeOrigin(url).origin;
+      normalizedPageOrigin = normalizeOrigin(pageOrigin).origin;
+    } catch {
+      return { ok: false, error: "invalid_event_origin" };
+    }
+    if (!sameExactOrigin(normalizedUrlOrigin, normalizedPageOrigin)) return { ok: false, error: "page_origin_payload_mismatch" };
+    let payloadOrigin = normalizedUrlOrigin;
+    try {
+      payloadOrigin = typeof payload["origin"] === "string" ? normalizeOrigin(payload["origin"]).origin : normalizedUrlOrigin;
+    } catch {
+      return { ok: false, error: "invalid_event_origin" };
+    }
+    if (payloadOrigin !== normalizedUrlOrigin) return { ok: false, error: "selection_origin_mismatch" };
     return {
       ok: true,
       payload: {
         ...payload,
         tab_id: tabId,
+        url,
+        origin: normalizedUrlOrigin,
       },
     };
   }

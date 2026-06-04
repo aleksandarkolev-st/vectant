@@ -37,10 +37,14 @@ describe("browser MCP tool surface", () => {
   it("round-trips exact-origin consent through browser tools", async () => {
     const grant = await dispatchBrowserTool("synthi_browser_request_consent", {
       url: "https://app.example.com",
+      screenshot: false,
       reason: "unit-test",
     });
     expect(grant?.isError).toBeUndefined();
     expect((grant?.structuredContent as { consent: { status: string } }).consent.status).toBe("granted");
+    expect((grant?.structuredContent as { consent: { screenshot: string; diagnostics: string } }).consent).toEqual(
+      expect.objectContaining({ screenshot: "denied", diagnostics: "granted" })
+    );
 
     const records = await dispatchBrowserTool("synthi_browser_get_consent", {
       url: "https://app.example.com/path",

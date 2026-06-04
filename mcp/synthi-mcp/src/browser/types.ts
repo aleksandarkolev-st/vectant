@@ -43,6 +43,8 @@ export interface BrowserFrameRef {
 export interface BrowserConsentRecord {
   origin: string;
   status: BrowserConsentStatus;
+  screenshot: BrowserConsentStatus;
+  diagnostics: BrowserConsentStatus;
   granted_at?: number;
   denied_at?: number;
   revoked_at?: number;
@@ -97,6 +99,9 @@ export interface BrowserSelection {
 
 export interface BrowserTraceEvent {
   event_id: string;
+  trace_id: string;
+  trace_version: number;
+  event_seq: number;
   ts: number;
   tab_id: string;
   frame_id?: string;
@@ -109,6 +114,12 @@ export interface BrowserTraceEvent {
   value?: string;
   redacted?: boolean;
   detail?: Record<string, unknown>;
+  security?: {
+    exact_origin_approved: boolean;
+    screenshot_approved: boolean;
+    diagnostics_approved: boolean;
+    auth_checkpoint_approved: boolean;
+  };
 }
 
 export interface BrowserSnapshot {

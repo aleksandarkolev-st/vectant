@@ -74,6 +74,29 @@ describe("browser extension bridge", () => {
     expect(browserBroker.traceSnapshot()).toHaveLength(1);
   });
 
+  it("rejects extension events whose payload URL does not match the reported page origin", async () => {
+    const bridge = await browserBridgeServer.start({ token: "secret", port: 0 });
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const response = await postBridge(bridge.url, {
+      bridge_token: "secret",
+      page_origin: "https://app.example.com",
+      type: "selection",
+      payload: {
+        tab_id: "app",
+        url: "https://evil.example.com",
+        origin: "https://evil.example.com",
+        element: { role: "button", name: "Save" },
+      },
+    }, { Origin: "chrome-extension://unit-test" });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ ok: false, error: "page_origin_payload_mismatch" });
+    expect(browserBroker.traceSnapshot()).toHaveLength(0);
+  });
+
   it("returns a caller-provided public bridge URL without assuming the bind address is extension-reachable", async () => {
     const bridge = await browserBridgeServer.start({
       token: "secret",

@@ -44,6 +44,11 @@ export interface BrowserBridgeMessage {
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
 
+export interface BrowserConsentGrantOptions {
+  screenshot?: boolean;
+  diagnostics?: boolean;
+}
+
 export class BrowserBroker {
   private readonly consent = new Map<string, BrowserConsentRecord>();
   private readonly tabs = new Map<string, BrowserTab>();
@@ -97,12 +102,20 @@ export class BrowserBroker {
     return tab ? { ...tab } : null;
   }
 
-  requestConsent(url: string, status: BrowserConsentStatus = "granted", reason?: string): BrowserConsentRecord {
+  requestConsent(
+    url: string,
+    status: BrowserConsentStatus = "granted",
+    reason?: string,
+    grants: BrowserConsentGrantOptions = {}
+  ): BrowserConsentRecord {
     const origin = normalizeOrigin(url).origin;
     const now = Date.now();
+    const granted = status === "granted";
     const record: BrowserConsentRecord = {
       origin,
       status,
+      screenshot: granted && grants.screenshot !== false ? "granted" : "denied",
+      diagnostics: granted && grants.diagnostics !== false ? "granted" : "denied",
       reason,
     };
     if (status === "granted") record.granted_at = now;
@@ -120,7 +133,7 @@ export class BrowserBroker {
     if (!url) return [...this.consent.values()].map((record) => ({ ...record }));
     const origin = normalizeOrigin(url).origin;
     const found = this.consent.get(origin);
-    return found ? [{ ...found }] : [{ origin, status: "unset" }];
+    return found ? [{ ...found }] : [{ origin, status: "unset", screenshot: "unset", diagnostics: "unset" }];
   }
 
   revokeConsent(url: string, reason?: string): BrowserConsentRecord {
@@ -128,6 +141,8 @@ export class BrowserBroker {
     const record: BrowserConsentRecord = {
       origin,
       status: "denied",
+      screenshot: "denied",
+      diagnostics: "denied",
       revoked_at: Date.now(),
       reason,
     };
@@ -150,6 +165,7 @@ export class BrowserBroker {
     if (!tab) return { ok: false, error: "tab_not_authorized" };
     const origin = normalizeOrigin(tab.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
+    this.trace.beginTrace();
     this.teachMode = { active: true, tab_id, origin };
     eventLog.push({
       kind: "browser",
@@ -188,7 +204,13 @@ export class BrowserBroker {
   recordSelection(selection: BrowserSelection): { ok: true; event: BrowserTraceEvent } | { ok: false; error: string } {
     const gate = this.requireTeach(selection.tab_id, selection.url);
     if (!gate.ok) return gate;
-    const event = this.trace.recordSelection(selection);
+    const normalized = this.normalizeSelectionOrigin(selection);
+    if (!normalized.ok) return normalized;
+    const event = this.trace.recordSelection({
+      ...selection,
+      origin: normalized.origin,
+      security: this.securityForUrl(selection.url),
+    });
     eventLog.push({ kind: "browser", action: "selection", payload: { event } });
     return { ok: true, event };
   }
@@ -198,17 +220,20 @@ export class BrowserBroker {
     | { ok: false; error: string } {
     const gate = this.requireTeach(selection.tab_id, selection.url);
     if (!gate.ok) return gate;
+    const normalized = this.normalizeSelectionOrigin(selection);
+    if (!normalized.ok) return normalized;
     const lease_conflict = this.activeLease !== null && !this.activeLease.revoked;
     const event = this.trace.recordHumanAction({
       tab_id: selection.tab_id,
       frame_id: selection.frame_id,
       url: selection.url,
-      origin: selection.origin,
+      origin: normalized.origin,
       action: selection.action,
       value: selection.value,
       field_name: selection.field_name,
       element: selection.element,
       detail: { lease_conflict },
+      security: this.securityForUrl(selection.url),
     });
     eventLog.push({ kind: "browser", action: "human_action", payload: { event, lease_conflict } });
     if (lease_conflict) {
@@ -224,6 +249,7 @@ export class BrowserBroker {
   snapshot(input: BrowserBrokerSnapshotInput): { ok: true; snapshot: BrowserSnapshot } | { ok: false; error: string } {
     const origin = normalizeOrigin(input.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
+    if (!this.hasScreenshotConsent(origin)) return { ok: false, error: "screenshot_consent_required" };
     const tab = this.tabs.get(input.tab_id);
     if (!tab) return { ok: false, error: "tab_not_authorized" };
     const snapshot: BrowserSnapshot = {
@@ -306,7 +332,20 @@ export class BrowserBroker {
       return { ok: false, error: "bad_bridge_token" };
     }
     if (typeof message.page_origin !== "string") return { ok: false, error: "missing_page_origin" };
+    if (!this.originOrNull(message.page_origin)) return { ok: false, error: "invalid_page_origin" };
     if (!this.hasOriginConsent(message.page_origin)) return { ok: false, error: "origin_consent_required" };
+    return { ok: true };
+  }
+
+  requireSnapshotAccess(url: string): { ok: true } | { ok: false; error: string } {
+    if (!this.hasOriginConsent(url)) return { ok: false, error: "origin_consent_required" };
+    if (!this.hasScreenshotConsent(url)) return { ok: false, error: "screenshot_consent_required" };
+    return { ok: true };
+  }
+
+  requireDiagnosticsAccess(url: string): { ok: true } | { ok: false; error: string } {
+    if (!this.hasOriginConsent(url)) return { ok: false, error: "origin_consent_required" };
+    if (!this.hasDiagnosticsConsent(url)) return { ok: false, error: "diagnostics_consent_required" };
     return { ok: true };
   }
 
@@ -331,6 +370,28 @@ export class BrowserBroker {
     return this.consent.get(origin)?.status === "granted";
   }
 
+  private hasScreenshotConsent(originOrUrl: string): boolean {
+    let origin: string;
+    try {
+      origin = normalizeOrigin(originOrUrl).origin;
+    } catch {
+      return false;
+    }
+    const record = this.consent.get(origin);
+    return record?.status === "granted" && record.screenshot === "granted";
+  }
+
+  private hasDiagnosticsConsent(originOrUrl: string): boolean {
+    let origin: string;
+    try {
+      origin = normalizeOrigin(originOrUrl).origin;
+    } catch {
+      return false;
+    }
+    const record = this.consent.get(origin);
+    return record?.status === "granted" && record.diagnostics === "granted";
+  }
+
   private requireTeach(tab_id: string, url: string): { ok: true } | { ok: false; error: string } {
     if (!this.teachMode.active) return { ok: false, error: "teach_mode_required" };
     if (this.teachMode.tab_id !== tab_id) return { ok: false, error: "teach_tab_mismatch" };
@@ -338,6 +399,30 @@ export class BrowserBroker {
     if (this.teachMode.origin !== origin) return { ok: false, error: "teach_origin_mismatch" };
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     return { ok: true };
+  }
+
+  private normalizeSelectionOrigin(selection: BrowserSelection): { ok: true; origin: string } | { ok: false; error: string } {
+    let origin: string;
+    let claimedOrigin: string;
+    try {
+      origin = normalizeOrigin(selection.url).origin;
+      claimedOrigin = normalizeOrigin(selection.origin).origin;
+    } catch {
+      return { ok: false, error: "invalid_event_origin" };
+    }
+    if (claimedOrigin !== origin) {
+      return { ok: false, error: "selection_origin_mismatch" };
+    }
+    return { ok: true, origin };
+  }
+
+  private securityForUrl(url: string): BrowserTraceEvent["security"] {
+    return {
+      exact_origin_approved: this.hasOriginConsent(url),
+      screenshot_approved: this.hasScreenshotConsent(url),
+      diagnostics_approved: this.hasDiagnosticsConsent(url),
+      auth_checkpoint_approved: false,
+    };
   }
 
   private originOrNull(url: string): string | null {

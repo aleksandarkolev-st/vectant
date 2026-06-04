@@ -45,6 +45,35 @@ describe("browser broker privacy boundary", () => {
     expect(response).toEqual({ ok: false, error: "origin_consent_required" });
   });
 
+  it("requires explicit screenshot consent before accepting snapshot data", () => {
+    browserBroker.requestConsent("https://app.example.com", "granted", "view-without-screenshot", {
+      screenshot: false,
+    });
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+
+    expect(browserBroker.requireSnapshotAccess("https://app.example.com")).toEqual({
+      ok: false,
+      error: "screenshot_consent_required",
+    });
+    expect(browserBroker.snapshot({
+      tab_id: "app",
+      url: "https://app.example.com",
+      screenshot_base64: "png",
+      dom: { text: "dom" },
+    })).toEqual({ ok: false, error: "screenshot_consent_required" });
+  });
+
+  it("requires explicit diagnostics consent before returning console or network data", () => {
+    browserBroker.requestConsent("https://app.example.com", "granted", "view-without-diagnostics", {
+      diagnostics: false,
+    });
+
+    expect(browserBroker.requireDiagnosticsAccess("https://app.example.com")).toEqual({
+      ok: false,
+      error: "diagnostics_consent_required",
+    });
+  });
+
   it("stops teach mode on unapproved origin change", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/a", active: true }]);
@@ -154,6 +183,53 @@ describe("browser broker privacy boundary", () => {
     if (!response.ok) throw new Error("unexpected record failure");
     expect(response.lease_conflict).toBe(true);
     expect(eventLog.query({ kind: "security" }).some((event) => event.code === "browser_human_action_during_agent_lease")).toBe(true);
+  });
+
+  it("assigns broker-owned trace order, version, and security metadata", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    browserBroker.recordSelection({
+      tab_id: "app",
+      url: "https://app.example.com/form",
+      origin: "https://app.example.com",
+      element: { label: "Name" },
+    });
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/form",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada",
+      field_name: "name",
+      element: { label: "Name" },
+    });
+
+    const trace = browserBroker.traceSnapshot();
+    expect(trace).toHaveLength(2);
+    expect(trace.map((event) => event.event_seq)).toEqual([1, 2]);
+    expect(trace[0]?.trace_id).toEqual(trace[1]?.trace_id);
+    expect(trace[0]?.trace_version).toEqual(trace[1]?.trace_version);
+    expect(trace[0]?.security).toEqual({
+      exact_origin_approved: true,
+      screenshot_approved: true,
+      diagnostics_approved: true,
+      auth_checkpoint_approved: false,
+    });
+  });
+
+  it("rejects bridge events that claim a different payload origin", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    expect(browserBroker.recordSelection({
+      tab_id: "app",
+      url: "https://app.example.com",
+      origin: "https://evil.example.com",
+      element: { role: "button", name: "Save" },
+    })).toEqual({ ok: false, error: "selection_origin_mismatch" });
   });
 });
 

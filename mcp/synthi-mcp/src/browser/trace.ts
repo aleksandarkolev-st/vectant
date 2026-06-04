@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { rankedLocatorCandidates } from "./locator.js";
 import { redactUrl, redactValue } from "./security.js";
 import type {
@@ -18,13 +19,26 @@ export interface TraceRecorderInput {
   field_name?: string;
   element?: BrowserElementMetadata;
   detail?: Record<string, unknown>;
+  security?: BrowserTraceEvent["security"];
 }
 
 export class BrowserTraceRecorder {
   private events: BrowserTraceEvent[] = [];
   private counter = 0;
+  private eventSeq = 0;
+  private traceVersion = 1;
+  private traceId = this.newTraceId();
 
-  recordSelection(selection: BrowserSelection): BrowserTraceEvent {
+  beginTrace(): { trace_id: string; trace_version: number } {
+    this.events = [];
+    this.counter = 0;
+    this.eventSeq = 0;
+    this.traceVersion += 1;
+    this.traceId = this.newTraceId();
+    return { trace_id: this.traceId, trace_version: this.traceVersion };
+  }
+
+  recordSelection(selection: BrowserSelection & { security?: BrowserTraceEvent["security"] }): BrowserTraceEvent {
     const locators = rankedLocatorCandidates(selection.element);
     const event = this.baseEvent("selection", {
       tab_id: selection.tab_id,
@@ -37,6 +51,7 @@ export class BrowserTraceRecorder {
       },
       locator_candidates: locators,
       selector: locators[0]?.locator,
+      security: selection.security,
     });
     this.events.push(event);
     return event;
@@ -90,6 +105,10 @@ export class BrowserTraceRecorder {
 
   clear(): void {
     this.events = [];
+    this.counter = 0;
+    this.eventSeq = 0;
+    this.traceVersion = 1;
+    this.traceId = this.newTraceId();
   }
 
   private recordAction(kind: "human_action" | "agent_action", input: TraceRecorderInput): BrowserTraceEvent {
@@ -115,8 +134,12 @@ export class BrowserTraceRecorder {
     }
   ): BrowserTraceEvent {
     this.counter += 1;
+    this.eventSeq += 1;
     const event: BrowserTraceEvent = {
       event_id: `browser_evt_${this.counter}`,
+      trace_id: this.traceId,
+      trace_version: this.traceVersion,
+      event_seq: this.eventSeq,
       ts: Date.now(),
       tab_id: input.tab_id,
       origin: input.origin,
@@ -130,7 +153,12 @@ export class BrowserTraceRecorder {
     if (input.value !== undefined) event.value = input.value;
     if (input.redacted !== undefined) event.redacted = input.redacted;
     if (input.detail !== undefined) event.detail = input.detail;
+    if (input.security !== undefined) event.security = input.security;
     return event;
+  }
+
+  private newTraceId(): string {
+    return `browser_trace_${randomUUID()}`;
   }
 }
 
