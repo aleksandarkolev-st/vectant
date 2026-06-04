@@ -139,6 +139,27 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("await target2.click();");
     expect(generated.warnings).toContain("prefixOnly stopped before mutation boundary save");
   });
+
+  it("treats cold-session script generation as prefix-safe around mutation", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "save",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          element: { role: "button", name: "Save changes" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save changes\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ], { mode: "coldSession" });
+
+    expect(generated.mode).toBe("coldSession");
+    expect(generated.code).toContain("Mutation boundary: save");
+    expect(generated.code).not.toContain("await target1.click();");
+    expect(generated.warnings).toContain("coldSession stopped before mutation boundary save");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

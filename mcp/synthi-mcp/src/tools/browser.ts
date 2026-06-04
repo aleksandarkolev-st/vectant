@@ -158,7 +158,7 @@ export const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        mode: { type: "string", enum: ["sameSession", "prefixOnly"], description: "Use prefixOnly to stop before the first mutation boundary." },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], description: "Use prefixOnly or coldSession to stop before the first mutation boundary." },
       },
       required: [],
     },
@@ -172,7 +172,7 @@ export const BROWSER_TOOLS = [
       properties: {
         lease_id: { type: "string" },
         tab_id: { type: "string" },
-        mode: { type: "string", enum: ["sameSession", "prefixOnly"], default: "prefixOnly" },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "prefixOnly" },
       },
       required: ["lease_id"],
     },
@@ -469,6 +469,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
     return jsonResponse({ ok: false, replay: { ...plan, failure_class: "unknown" } });
   }
 
+  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;
   let stepsRun = 0;
   for (const event of plan.events) {
     const action = actionForReplay(event);
@@ -478,7 +479,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
     const validation = browserBroker.validateAction({
       lease_id: leaseId,
       action,
-      tab_id: tab.tab_id,
+      tab_id: replayTab.tab_id,
       selector,
       value,
       url: action === "navigate" ? value : event.url,
@@ -497,7 +498,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
     try {
-      await browserPlaywrightAdapter.action(tab.tab_id, action, selector, value);
+      await browserPlaywrightAdapter.action(replayTab.tab_id, action, selector, value);
       stepsRun += 1;
     } catch (err) {
       return jsonResponse({
@@ -520,9 +521,19 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       ...plan,
       status: plan.status,
       steps_run: stepsRun,
+      tab_id: replayTab.tab_id,
       stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
     },
   });
+}
+
+async function openColdReplayTab(url: string): Promise<{ tab_id: string; url: string }> {
+  const access = browserBroker.requireSnapshotAccess(url);
+  if (!access.ok) throw new Error(access.error);
+  const tab = await browserPlaywrightAdapter.openCold(url);
+  browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
+  browserBroker.selectTab(tab.tab_id);
+  return { tab_id: tab.tab_id, url: tab.url };
 }
 
 async function browserActionTool(args: unknown): Promise<ToolResponse> {

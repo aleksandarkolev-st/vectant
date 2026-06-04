@@ -104,10 +104,13 @@ describe("browser workflow contract compiler", () => {
 
     const prefix = planWorkflowReplay(events, "prefixOnly");
     const sameSession = planWorkflowReplay(events, "sameSession");
+    const coldSession = planWorkflowReplay(events, "coldSession");
 
     expect(prefix.status).toBe("stoppedAtMutationBoundary");
     expect(prefix.stoppedBeforeStepId).toBe("save");
     expect(prefix.events.map((event) => event.event_id)).toEqual(["open"]);
+    expect(coldSession.status).toBe("stoppedAtMutationBoundary");
+    expect(coldSession.warnings[0]).toContain("fresh browser context");
     expect(sameSession.status).toBe("ready");
     expect(sameSession.events.map((event) => event.event_id)).toEqual(["open", "save", "after"]);
   });

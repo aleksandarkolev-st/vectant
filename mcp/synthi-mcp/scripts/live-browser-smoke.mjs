@@ -773,6 +773,17 @@ async function runFixtureFlow(client, attach, tabId, target) {
     `steps=${sameSessionReplay?.steps_run ?? 0}`,
   );
 
+  const coldReplay = expectToolOk(await client.tool("synthi_browser_run_workflow", {
+    lease_id: lease.lease_id,
+    tab_id: tabId,
+    mode: "coldSession",
+  }, 60_000), "synthi_browser_run_workflow coldSession").replay;
+  record(
+    "run cold-session prefix workflow replay",
+    coldReplay?.status === "stoppedAtMutationBoundary" && coldReplay?.steps_run >= 1 && coldReplay?.tab_id !== tabId,
+    `tab=${coldReplay?.tab_id ?? "missing"} steps=${coldReplay?.steps_run ?? 0}`,
+  );
+
   const released = expectToolOk(await client.tool("synthi_browser_release_lease", {
     lease_id: lease.lease_id,
     reason: "live-browser-smoke-complete",

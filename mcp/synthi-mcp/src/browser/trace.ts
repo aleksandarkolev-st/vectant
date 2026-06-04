@@ -251,10 +251,10 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     const target = `target${targetSeq}`;
     lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
     lines.push(`  await expect(${target}).toBeVisible();`);
-    if (mode === "prefixOnly" && firstMutationStepId === event.event_id) {
+    if ((mode === "prefixOnly" || mode === "coldSession") && firstMutationStepId === event.event_id) {
       lines.push(`  // Mutation boundary: ${event.event_id}. Prefix-only replay verifies reachability but does not commit this action.`);
       lines.push(`  await expect(${target}).toBeEnabled();`);
-      warnings.push(`prefixOnly stopped before mutation boundary ${event.event_id}`);
+      warnings.push(`${mode} stopped before mutation boundary ${event.event_id}`);
       continue;
     }
     switch (event.action) {

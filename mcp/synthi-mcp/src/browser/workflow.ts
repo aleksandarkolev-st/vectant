@@ -141,7 +141,7 @@ export interface CompiledWorkflowV7 {
   card: WorkflowCardV7;
 }
 
-export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly";
+export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly" | "coldSession";
 
 export interface WorkflowReplayPlanV7 {
   mode: WorkflowReplayModeV7;
@@ -235,14 +235,14 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
       warnings: ["No actionable taught steps were recorded."],
     };
   }
-  if (mode === "prefixOnly" && firstMutationStepId) {
+  if ((mode === "prefixOnly" || mode === "coldSession") && firstMutationStepId) {
     return {
       mode,
       status: "stoppedAtMutationBoundary",
       workflowId: workflow.contract.workflowId,
       events: ordered.filter((event) => event.event_id !== firstMutationStepId && event.event_seq < (workflow.contract.steps.find((step) => step.stepId === firstMutationStepId)?.eventSeq ?? Number.MAX_SAFE_INTEGER)),
       stoppedBeforeStepId: firstMutationStepId,
-      warnings: ["Prefix replay stops before the first mutation boundary."],
+      warnings: [mode === "coldSession" ? "Cold-session replay starts from a fresh browser context and stops before the first mutation boundary." : "Prefix replay stops before the first mutation boundary."],
     };
   }
   return {
@@ -250,7 +250,9 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
     status: "ready",
     workflowId: workflow.contract.workflowId,
     events: ordered,
-    warnings: workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0
+    warnings: mode === "coldSession"
+      ? ["Cold-session replay starts from a fresh browser context."]
+      : workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0
       ? ["Same-session replay includes mutation steps and must not be used for background hardening."]
       : [],
   };
@@ -266,6 +268,7 @@ export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTra
 }
 
 export function normalizeReplayMode(value: unknown): WorkflowReplayModeV7 {
+  if (value === "coldSession") return "coldSession";
   return value === "prefixOnly" ? "prefixOnly" : "sameSession";
 }
 
