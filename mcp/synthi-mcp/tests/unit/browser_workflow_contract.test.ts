@@ -254,6 +254,61 @@ describe("browser workflow contract compiler", () => {
     }));
   });
 
+  it("marks checkpoint-only authenticated workflows manual-only for publishing", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "open-billing",
+        event_seq: 1,
+        action: "click",
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: true,
+        },
+        detail: {
+          element: { role: "button", name: "Open billing", source_id: "src_open_billing" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.authPlan).toEqual(expect.objectContaining({
+      required: true,
+      durability: "interactiveCheckpoint",
+    }));
+    expect(workflow.card.state).toContain("Auth-ready");
+    expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
+      readiness: "manualOnly",
+      unattendedReady: false,
+      authDurability: "interactiveCheckpoint",
+    }));
+    expect(workflow.contract.publishPlan.notes.join(" ")).toContain("saved login checkpoint is valid");
+  });
+
+  it("allows unattended publishing only with explicit durable auth metadata", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "open-billing",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          auth_durability: "refreshProvider",
+          element: { role: "button", name: "Open billing", source_id: "src_open_billing" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.authPlan).toEqual(expect.objectContaining({
+      required: true,
+      durability: "refreshProvider",
+    }));
+    expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
+      readiness: "ready",
+      unattendedReady: true,
+      authDurability: "refreshProvider",
+    }));
+  });
+
   it("plans prefix-only replay up to but not including the first mutation boundary", () => {
     const events = [
       baseEvent({ event_id: "open", event_seq: 1, action: "click", detail: { element: { role: "button", name: "Open form" } } }),

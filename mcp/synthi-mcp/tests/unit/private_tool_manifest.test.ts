@@ -66,6 +66,35 @@ describe("private browser workflow MCP tool manifest", () => {
     expect(manifest.safety.blockers).toContain("mutationRequiresIsolation");
   });
 
+  it("marks checkpoint-only authenticated tools manual-only", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "open",
+        action: "click",
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: true,
+        },
+        detail: { element: { role: "button", name: "Open details", source_id: "s_open" } },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+
+    expect(manifest.status).toBe("manualOnly");
+    expect(manifest.auth).toEqual(expect.objectContaining({
+      durability: "interactiveCheckpoint",
+      unattended_ready: false,
+      required: true,
+    }));
+    expect(manifest.safety.notes.join(" ")).toContain("saved login checkpoint is valid");
+  });
+
   it("marks unsupported-surface workflows blocked", () => {
     const workflow = compileWorkflowContract([
       event({

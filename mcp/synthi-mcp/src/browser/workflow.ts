@@ -220,22 +220,19 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
   const sourceStatus = linkedSteps === 0 ? "missing" : linkedSteps === steps.length ? "complete" : "partial";
   const firstMutationStepId = mutationSteps[0]?.stepId;
   const name = workflowName(steps);
+  const authPlan = authPlanFor(actionEvents);
   const replayModes: WorkflowContractV7["replayModes"] = replayBlocked
     ? []
     : mutationSteps.length > 0 ? ["sameSession", "prefixOnly"] : ["sameSession"];
   const sourceAffordancePatches = sourceAffordancePatchesFor(steps);
-  const publishPlan = publishPlanFor(name, limitations, mutationSteps.length > 0, actionEvents.length);
+  const publishPlan = publishPlanFor(name, limitations, mutationSteps.length > 0, actionEvents.length, authPlan);
   const contract: WorkflowContractV7 = {
     workflowId: workflowIdFor(appOrigin, steps),
     name,
     description: steps.length > 0 ? `${name} compiled from ${steps.length} taught browser steps.` : "No actionable taught steps were recorded.",
     appOrigin,
     routePattern: routePatternFor(actionEvents),
-    authPlan: {
-      durability: "noneRequired",
-      required: false,
-      notes: ["No auth checkpoint was detected in this trace."],
-    },
+    authPlan,
     mutationBoundaryPlan: {
       ...(firstMutationStepId ? { firstMutationStepId } : {}),
       mutationSteps,
@@ -363,7 +360,8 @@ function publishPlanFor(
   workflowNameValue: string,
   limitations: WorkflowLimitationV7[],
   hasMutation: boolean,
-  actionCount: number
+  actionCount: number,
+  authPlan: WorkflowContractV7["authPlan"]
 ): WorkflowContractV7["publishPlan"] {
   const hardBlockers = limitations.filter((limitation) =>
     limitation === "unresolvedStep" ||
@@ -382,10 +380,11 @@ function publishPlanFor(
     limitation === "mutationRequiresIsolation"
   );
   const mutationMode = hasMutation ? "confirmBeforeCommit" : "readOnly";
+  const checkpointOnlyAuth = authPlan.required && !authDurabilityAllowsUnattended(authPlan.durability);
   const readiness = hardBlockers.length > 0
     ? "blocked"
-    : hasMutation || softBlockers.length > 0 ? "manualOnly" : "ready";
-  const unattendedReady = readiness === "ready";
+    : hasMutation || softBlockers.length > 0 || checkpointOnlyAuth ? "manualOnly" : "ready";
+  const unattendedReady = readiness === "ready" && authDurabilityAllowsUnattended(authPlan.durability);
   const runModes: WorkflowContractV7["publishPlan"]["runModes"] = hasMutation
     ? ["prefixOnly", "confirmBeforeCommit", "ciOnly"]
     : ["sameSession"];
@@ -393,11 +392,11 @@ function publishPlanFor(
     privateToolName: `synthi_app_${slugIdentifier(workflowNameValue)}`,
     readiness,
     unattendedReady,
-    authDurability: "noneRequired",
+    authDurability: authPlan.durability,
     mutationMode,
     runModes,
     blockers: [...new Set([...hardBlockers, ...softBlockers])],
-    notes: publishNotesFor(readiness, unattendedReady, hasMutation, hardBlockers, softBlockers),
+    notes: publishNotesFor(readiness, unattendedReady, hasMutation, hardBlockers, softBlockers, authPlan),
   };
 }
 
@@ -406,7 +405,8 @@ function publishNotesFor(
   unattendedReady: boolean,
   hasMutation: boolean,
   hardBlockers: WorkflowLimitationV7[],
-  softBlockers: WorkflowLimitationV7[]
+  softBlockers: WorkflowLimitationV7[],
+  authPlan: WorkflowContractV7["authPlan"]
 ): string[] {
   if (readiness === "blocked") {
     return [
@@ -421,12 +421,59 @@ function publishNotesFor(
   if (softBlockers.length > 0) {
     notes.push(`Manual-only until limitations are resolved: ${softBlockers.join(", ")}.`);
   }
+  if (authPlan.required && !authDurabilityAllowsUnattended(authPlan.durability)) {
+    notes.push("This workflow can run while the saved login checkpoint is valid. It is not configured for unattended background runs.");
+  }
   if (!unattendedReady) {
     notes.push("Do not mark this tool unattended durable without refreshProvider or ciTestAuth when auth is required.");
   } else {
     notes.push("Private MCP tool manifest can be generated for read-only unattended use.");
   }
   return notes;
+}
+
+function authPlanFor(events: BrowserTraceEvent[]): WorkflowContractV7["authPlan"] {
+  const explicitDurability = events
+    .map((event) => authDurabilityFromDetail(event.detail?.["auth_durability"]))
+    .find((durability): durability is AuthDurabilityV7 => durability !== null);
+  if (explicitDurability) {
+    return {
+      durability: explicitDurability,
+      required: explicitDurability !== "noneRequired",
+      notes: explicitDurability === "noneRequired"
+        ? ["Trace explicitly marked this workflow as not requiring auth."]
+        : [`Trace explicitly marked auth durability as ${explicitDurability}.`],
+    };
+  }
+  if (events.some((event) => event.security?.auth_checkpoint_approved === true)) {
+    return {
+      durability: "interactiveCheckpoint",
+      required: true,
+      notes: ["Trace was recorded with a broker-approved auth checkpoint. Auth values remain broker-only."],
+    };
+  }
+  return {
+    durability: "noneRequired",
+    required: false,
+    notes: ["No auth checkpoint was detected in this trace."],
+  };
+}
+
+function authDurabilityFromDetail(value: unknown): AuthDurabilityV7 | null {
+  if (
+    value === "noneRequired" ||
+    value === "interactiveCheckpoint" ||
+    value === "idpCheckpoint" ||
+    value === "refreshProvider" ||
+    value === "ciTestAuth"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function authDurabilityAllowsUnattended(durability: AuthDurabilityV7): boolean {
+  return durability === "noneRequired" || durability === "refreshProvider" || durability === "ciTestAuth";
 }
 
 function affordanceName(value: string): string {
@@ -743,7 +790,7 @@ function cardForContract(contract: WorkflowContractV7): WorkflowCardV7 {
   const state: WorkflowStateV7[] = ["Draft"];
   if (contract.mutationBoundaryPlan.defaultReplayMode === "blocked") state.push("Blocked");
   else if (contract.steps.length > 0) state.push("Runnable");
-  if (!contract.authPlan.required) state.push("Auth-ready");
+  if (!contract.authPlan.required || contract.authPlan.durability !== "noneRequired") state.push("Auth-ready");
   if (contract.sourceIdentityCoverage.status !== "missing") state.push("Source-linked");
   if (contract.mutationBoundaryPlan.mutationSteps.length > 0) state.push("Mutation-limited");
   if (contract.limitations.length > 0) state.push("Limited");
