@@ -75,9 +75,9 @@ const CFG = {
     ?? 'A HIPRT source delta materially changes the ray-traced framebuffer.',
   width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', 640),
   height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', 360),
-  runTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 180000),
+  runTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 0),
   buildTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_BUILD_TIMEOUT_MS', 600000),
-  reloadTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_RELOAD_TIMEOUT_MS', 60000),
+  reloadTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RELOAD_TIMEOUT_MS', 0),
   cmakeConfigName: process.env.SYNTHI_HIPRT_WARM_CMAKE_CONFIG
     ?? process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG
     ?? 'Release',
@@ -116,6 +116,16 @@ function positiveIntegerFromEnv(name, fallback) {
   return value;
 }
 
+function nonNegativeIntegerFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
 function parseStringListEnv(raw, fallback) {
   if (raw === undefined || String(raw).trim() === '') return Array.from(fallback);
   return String(raw).split(',').map((item) => item.trim()).filter(Boolean);
@@ -123,6 +133,30 @@ function parseStringListEnv(raw, fallback) {
 
 function shQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function hiprtWarmXdgRuntimeDir() {
+  return `/tmp/synthi-hiprt-warm-xdg-${cleanIdentifier(CFG.slug)}`;
+}
+
+function hiprtRuntimeDisplaySetup() {
+  const xdgRuntimeDir = hiprtWarmXdgRuntimeDir();
+  return [
+    `mkdir -p ${shQuote(xdgRuntimeDir)}`,
+    `chmod 700 ${shQuote(xdgRuntimeDir)} || true`,
+    `export XDG_RUNTIME_DIR=${shQuote(xdgRuntimeDir)}`,
+  ].join('\n');
+}
+
+function hiprtRuntimeRunInvocation(runCommand) {
+  const quoted = shQuote(runCommand);
+  return [
+    'if command -v xvfb-run >/dev/null 2>&1; then',
+    `  xvfb-run -a sh -lc ${quoted}`,
+    'else',
+    `  sh -lc ${quoted}`,
+    'fi',
+  ].join('\n');
 }
 
 function cleanIdentifier(value) {
@@ -300,6 +334,14 @@ int synthi_probe_env_int(const char* name, int fallback_value)
 	return std::max(1, std::atoi(raw));
 }
 
+int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(0, std::atoi(raw));
+}
+
 const char* synthi_probe_required_env(const char* name)
 {
 	const char* value = std::getenv(name);
@@ -317,15 +359,19 @@ bool synthi_wait_for_reload_trigger()
 	if (trigger_path == nullptr)
 		return false;
 
-	const int timeout_ms = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 60000);
+	const int timeout_ms = synthi_probe_env_timeout_ms("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 0);
+	const bool timeout_enabled = timeout_ms > 0;
 	const auto start = std::chrono::steady_clock::now();
-	std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\n", trigger_path, timeout_ms);
+	if (timeout_enabled)
+		std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\n", trigger_path, timeout_ms);
+	else
+		std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=unbounded\n", trigger_path);
 	while (!synthi_probe_file_exists(trigger_path))
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		const auto now = std::chrono::steady_clock::now();
 		const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-		if (elapsed_ms > timeout_ms)
+		if (timeout_enabled && elapsed_ms > timeout_ms)
 		{
 			std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_timeout trigger=%s elapsed_ms=%lld\n", trigger_path, static_cast<long long>(elapsed_ms));
 			return false;
@@ -494,10 +540,11 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH=${shQuote(workerCapturePath)}
 export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_CAPTURE=1
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
+${hiprtRuntimeDisplaySetup()}
 start=$(date +%s%3N)
 cd build
 set +e
-${runCommand}
+${hiprtRuntimeRunInvocation(runCommand)}
 status=$?
 set -e
 end=$(date +%s%3N)
@@ -631,6 +678,52 @@ async function applySameProcessAdapter() {
       text = text.replace(
         '\t\t\t\tconst char* second_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_SECOND_CAPTURE_PATH");',
         '\t\t\t\tconst char* second_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_SECOND_CAPTURE_PATH");\n\t\t\t\tconst int synthi_probe_width = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_WIDTH", m_renderer->m_render_resolution.x);\n\t\t\t\tconst int synthi_probe_height = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_HEIGHT", m_renderer->m_render_resolution.y);',
+      );
+      upgraded = true;
+    }
+    if (!text.includes('synthi_probe_env_timeout_ms(')) {
+      text = text.replace(
+        String.raw`int synthi_probe_env_int(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(1, std::atoi(raw));
+}
+
+`,
+        String.raw`int synthi_probe_env_int(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(1, std::atoi(raw));
+}
+
+int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(0, std::atoi(raw));
+}
+
+`,
+      );
+      upgraded = true;
+    }
+    if (text.includes('const int timeout_ms = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 60000);')) {
+      text = text.replace(
+        'const int timeout_ms = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 60000);',
+        'const int timeout_ms = synthi_probe_env_timeout_ms("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 0);\n\tconst bool timeout_enabled = timeout_ms > 0;',
+      );
+      text = text.replace(
+        'std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\\n", trigger_path, timeout_ms);',
+        'if (timeout_enabled)\n\t\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\\n", trigger_path, timeout_ms);\n\telse\n\t\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=unbounded\\n", trigger_path);',
+      );
+      text = text.replace(
+        'if (elapsed_ms > timeout_ms)',
+        'if (timeout_enabled && elapsed_ms > timeout_ms)',
       );
       upgraded = true;
     }
@@ -850,15 +943,34 @@ function spawnDockerShell(script, { timeout, maxBuffer = 96 * 1024 * 1024 } = {}
   return { child, completion };
 }
 
-async function waitForWorkerFile(workerPath, timeoutMs) {
+async function waitForWorkerFile(workerPath, timeoutMs, processCompletion = null) {
   const startedAt = Date.now();
+  const processState = {
+    settled: false,
+    error: null,
+  };
+  if (processCompletion) {
+    processCompletion.then(
+      () => {
+        processState.settled = true;
+      },
+      (err) => {
+        processState.settled = true;
+        processState.error = err;
+      },
+    );
+  }
   for (;;) {
     const exists = (await dockerShell(
       `test -s ${shQuote(workerPath)} && printf 1 || printf 0`,
       { timeout: 30000 },
     )).trim() === '1';
     if (exists) return Date.now() - startedAt;
-    if (Date.now() - startedAt > timeoutMs) {
+    if (processState.settled) {
+      if (processState.error) throw processState.error;
+      throw new Error(`runtime process exited before worker file was written: ${workerPath}`);
+    }
+    if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
       throw new Error(`timed out waiting for worker file ${workerPath}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -898,10 +1010,11 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS=1
 export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_SECOND_CAPTURE=1
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
+${hiprtRuntimeDisplaySetup()}
 start=$(date +%s%3N)
 cd build
 set +e
-${runCommand}
+${hiprtRuntimeRunInvocation(runCommand)}
 status=$?
 set -e
 end=$(date +%s%3N)
@@ -917,7 +1030,7 @@ exit "$status"
   let changedWrite = null;
   let triggerMs = null;
   try {
-    baselineReadyMs = await waitForWorkerFile(workerBaselinePath, Math.min(CFG.runTimeoutMs, 120000));
+    baselineReadyMs = await waitForWorkerFile(workerBaselinePath, CFG.runTimeoutMs, run.completion);
     changedWrite = await writeVariantSource({ variant: 'same-process-changed', text: changedSource });
     const triggerStart = Date.now();
     await dockerShell(`date +%s%3N > ${shQuote(workerTriggerPath)}`, { timeout: 30000 });
@@ -1283,6 +1396,13 @@ async function main() {
       target: CFG.targetName,
     },
     dimensions: { width: CFG.width, height: CFG.height },
+    runtimeLimits: {
+      runTimeoutMs: CFG.runTimeoutMs,
+      runTimeoutUnbounded: CFG.runTimeoutMs === 0,
+      reloadTimeoutMs: CFG.reloadTimeoutMs,
+      reloadTimeoutUnbounded: CFG.reloadTimeoutMs === 0,
+      buildTimeoutMs: CFG.buildTimeoutMs,
+    },
     source,
     sourceWrites: {
       baseline: baselineWrite,
