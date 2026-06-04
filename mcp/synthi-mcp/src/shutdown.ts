@@ -37,6 +37,11 @@ export interface ShutdownTarget {
    * streams so the process can exit without stranded sockets.
    */
   operatorBridge?: { close: () => Promise<void> | void };
+  /**
+   * Optional browser workflow HTTP bridge. Closing it releases the panel-facing
+   * local listener used for workflow teaching actions.
+   */
+  browserWorkflowBridge?: { close: () => Promise<void> | void };
   /** Optional logger for teardown errors. Defaults to silent. */
   logError?: (step: ShutdownStep, err: unknown) => void;
 }
@@ -47,7 +52,8 @@ export type ShutdownStep =
   | "close_server"
   | "unbind_metrics"
   | "close_metrics_server"
-  | "close_operator_bridge";
+  | "close_operator_bridge"
+  | "close_browser_workflow_bridge";
 
 /**
  * Drive the teardown sequence. Every step is isolated — a throw in one
@@ -94,6 +100,11 @@ export async function performShutdown(target: ShutdownTarget): Promise<ShutdownS
   if (target.operatorBridge) {
     await safe("close_operator_bridge", async () => {
       await target.operatorBridge!.close();
+    });
+  }
+  if (target.browserWorkflowBridge) {
+    await safe("close_browser_workflow_bridge", async () => {
+      await target.browserWorkflowBridge!.close();
     });
   }
   return ran;
