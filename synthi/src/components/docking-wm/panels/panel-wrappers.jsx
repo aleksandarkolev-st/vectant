@@ -360,10 +360,16 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await ensureObservedWorkspace();
           break;
         case WORKFLOW_ACTIONS.BEGIN_TEACH:
-          await ensureObservedWorkspace();
-          await callWorkflowTool(WORKFLOW_ACTIONS.BEGIN_TEACH, {
-            goal: `Teach workflow for ${workspaceId || 'current workspace'}`,
-          });
+          {
+            const observedState = workflowState?.observe?.status === 'ready'
+              ? { state: workflowState }
+              : await ensureObservedWorkspace();
+            const selectedTabId = observedState?.state?.observe?.selectedTabId;
+            await callWorkflowTool(WORKFLOW_ACTIONS.BEGIN_TEACH, {
+              ...(selectedTabId ? { tab_id: selectedTabId } : {}),
+              goal: `Teach workflow for ${workspaceId || 'current workspace'}`,
+            });
+          }
           break;
         case WORKFLOW_ACTIONS.END_TEACH:
           await callWorkflowTool(WORKFLOW_ACTIONS.END_TEACH, { reason: 'operator_stopped' });
@@ -403,7 +409,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     } finally {
       setBusyAction(null);
     }
-  }, [callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workspaceUrl]);
+  }, [callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workflowState, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
