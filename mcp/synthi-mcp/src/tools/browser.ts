@@ -24,9 +24,13 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_start_teach",
   "synthi_browser_stop_teach",
   "synthi_browser_get_trace",
+  "synthi_browser_get_trace_status",
+  "synthi_browser_get_workflow_card",
+  "synthi_browser_get_unresolved_steps",
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
   "synthi_browser_run_workflow",
+  "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",
   "synthi_browser_release_lease",
   "synthi_browser_action",
@@ -147,6 +151,24 @@ export const BROWSER_TOOLS = [
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "synthi_browser_get_trace_status",
+    description:
+      "Return semantic trace status and counts without raw trace events. Intended for agent-panel diagnostics and teach-mode progress.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_get_workflow_card",
+    description:
+      "Return the current workflow card and high-level replay readiness without raw trace events or generated code.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_get_unresolved_steps",
+    description:
+      "Return workflow steps that need review because they lack durable locators, source identity, or supported replay surfaces.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "synthi_browser_compile_workflow",
     description:
       "Compile the broker-recorded teach trace into a workflow card and v7 workflow contract. This is the primary teach-to-tool artifact before Playwright export.",
@@ -175,6 +197,22 @@ export const BROWSER_TOOLS = [
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "prefixOnly" },
       },
       required: ["lease_id"],
+    },
+  },
+  {
+    name: "synthi_browser_explain_failure",
+    description:
+      "Explain a workflow replay failure class in product-facing terms and return the safest next action. Does not expose raw browser state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        failure_class: {
+          type: "string",
+          description: "Failure class from a workflow contract or replay result.",
+        },
+        failed_step_id: { type: "string" },
+      },
+      required: ["failure_class"],
     },
   },
   {
@@ -314,12 +352,20 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserStopTeachTool(args);
       case "synthi_browser_get_trace":
         return jsonResponse({ ok: true, trace: browserBroker.traceSnapshot() });
+      case "synthi_browser_get_trace_status":
+        return browserTraceStatusTool();
+      case "synthi_browser_get_workflow_card":
+        return browserWorkflowCardTool();
+      case "synthi_browser_get_unresolved_steps":
+        return browserUnresolvedStepsTool();
       case "synthi_browser_compile_workflow":
         return jsonResponse({ ok: true, workflow: browserBroker.compiledWorkflow() });
       case "synthi_browser_generate_script":
         return browserGenerateScriptTool(args);
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
+      case "synthi_browser_explain_failure":
+        return browserExplainFailureTool(args);
       case "synthi_browser_acquire_lease":
         return browserAcquireLeaseTool(args);
       case "synthi_browser_release_lease":
@@ -441,6 +487,99 @@ function browserStopTeachTool(args: unknown): ToolResponse {
 function browserGenerateScriptTool(args: unknown): ToolResponse {
   const mode = normalizeReplayMode(obj(args)["mode"]);
   return jsonResponse({ ok: true, ...browserBroker.generatedScript(mode) });
+}
+
+function browserTraceStatusTool(): ToolResponse {
+  const trace = browserBroker.traceSnapshot();
+  const workflow = browserBroker.compiledWorkflow();
+  const last = trace[trace.length - 1];
+  const counts = trace.reduce<Record<string, number>>((acc, event) => {
+    acc[event.kind] = (acc[event.kind] ?? 0) + 1;
+    return acc;
+  }, {});
+  const origins = [...new Set(trace.map((event) => event.origin).filter((origin) => origin && origin !== "unknown"))];
+  const tabs = [...new Set(trace.map((event) => event.tab_id).filter(Boolean))];
+  return jsonResponse({
+    ok: true,
+    trace_status: {
+      trace_id: last?.trace_id ?? null,
+      trace_version: last?.trace_version ?? null,
+      last_event_seq: last?.event_seq ?? 0,
+      event_count: trace.length,
+      action_count: (counts["human_action"] ?? 0) + (counts["agent_action"] ?? 0),
+      selection_count: counts["selection"] ?? 0,
+      navigation_count: counts["navigation"] ?? 0,
+      origins,
+      tabs,
+      teach: browserBroker.teachState(),
+      workflow_id: workflow.contract.workflowId,
+      workflow_state: workflow.card.state,
+      unresolved_count: workflow.card.unresolvedCount,
+      limitations: workflow.contract.limitations,
+    },
+  });
+}
+
+function browserWorkflowCardTool(): ToolResponse {
+  const workflow = browserBroker.compiledWorkflow();
+  return jsonResponse({
+    ok: true,
+    workflow_id: workflow.contract.workflowId,
+    card: workflow.card,
+    replay: {
+      modes: workflow.contract.replayModes,
+      default_mode: workflow.contract.mutationBoundaryPlan.defaultReplayMode,
+      first_mutation_step_id: workflow.contract.mutationBoundaryPlan.firstMutationStepId ?? null,
+    },
+    auth: workflow.contract.authPlan,
+    source_identity_coverage: workflow.contract.sourceIdentityCoverage,
+    limitations: workflow.contract.limitations,
+    generated_outputs: workflow.contract.generatedOutputs,
+  });
+}
+
+function browserUnresolvedStepsTool(): ToolResponse {
+  const workflow = browserBroker.compiledWorkflow();
+  const reviewLimitations = new Set([
+    "unresolvedStep",
+    "lowConfidenceLocator",
+    "sourceIdentityMissing",
+    "iframeNeedsFrameLocator",
+    "popupOrMultiTab",
+    "canvasCoordinateOnly",
+    "closedShadowDomBlocked",
+    "pointerDragUnreliable",
+  ]);
+  const steps = workflow.contract.steps
+    .filter((step) => step.limitations.some((limitation) => reviewLimitations.has(limitation)))
+    .map((step) => ({
+      step_id: step.stepId,
+      event_seq: step.eventSeq,
+      label: step.label,
+      action: step.action.kind,
+      target: step.action.target ?? null,
+      locator_confidence: step.locatorPlan.confidence,
+      source_status: step.sourcePlan.status,
+      limitations: step.limitations,
+      suggested_affordances: workflow.contract.sourceAffordancePatches
+        .filter((patch) => patch.stepId === step.stepId)
+        .map((patch) => ({
+          reason: patch.reason,
+          suggested_attribute: patch.suggestedAttribute,
+        })),
+    }));
+  return jsonResponse({ ok: true, workflow_id: workflow.contract.workflowId, steps, unresolved_count: steps.length });
+}
+
+function browserExplainFailureTool(args: unknown): ToolResponse {
+  const failureClass = requiredString(obj(args), "failure_class");
+  const failedStepId = stringOpt(obj(args)["failed_step_id"]);
+  return jsonResponse({
+    ok: true,
+    failure_class: failureClass,
+    failed_step_id: failedStepId ?? null,
+    ...failureExplanation(failureClass),
+  });
 }
 
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
@@ -640,4 +779,50 @@ function numberOpt(value: unknown): number | undefined {
 
 function boolOpt(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function failureExplanation(failureClass: string): { explanation: string; suggested_next_action: string } {
+  switch (failureClass) {
+    case "authMissing":
+    case "authExpired":
+      return {
+        explanation: "The workflow could not reach the application state because authentication was missing or expired.",
+        suggested_next_action: "Renew or configure an auth checkpoint before replaying or publishing the workflow.",
+      };
+    case "mutationBlocked":
+    case "unsafeEnvironment":
+      return {
+        explanation: "The workflow reached a step that may mutate application state or requires an isolated replay environment.",
+        suggested_next_action: "Run prefix validation, require confirmation before commit, or configure a CI isolation profile.",
+      };
+    case "locatorDrift":
+    case "sourceIdentityMissing":
+      return {
+        explanation: "A taught step no longer has a durable locator or source identity.",
+        suggested_next_action: "Review unresolved steps and add a stable source affordance such as data-testid or data-synthi-affordance.",
+      };
+    case "closedShadowDomBlocked":
+      return {
+        explanation: "The step targets a closed Shadow DOM that normal browser automation cannot inspect.",
+        suggested_next_action: "Enable a dev-only shadow bridge or add an external component-level affordance.",
+      };
+    case "canvasUnreliable":
+    case "pointerDragUnreliable":
+      return {
+        explanation: "The step depends on coordinate or complex pointer behavior that is not durable across layouts and data states.",
+        suggested_next_action: "Add a semantic app bridge, source affordance, or calibrated test helper before hardening.",
+      };
+    case "networkFailure":
+    case "routeChanged":
+    case "hydrationDelay":
+      return {
+        explanation: "The replay environment did not reach the expected route or ready UI state in time.",
+        suggested_next_action: "Check the dev server, route, network state, and hydration waits before rerunning validation.",
+      };
+    default:
+      return {
+        explanation: "The workflow failed for an unknown reason.",
+        suggested_next_action: "Inspect the workflow card, unresolved steps, and replay result before retrying.",
+      };
+  }
 }

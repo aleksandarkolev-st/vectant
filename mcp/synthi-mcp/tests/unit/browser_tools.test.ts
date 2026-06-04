@@ -95,4 +95,63 @@ describe("browser MCP tool surface", () => {
     });
     expect(browserBridgeServer.isRunning()).toBe(false);
   });
+
+  it("returns high-level workflow diagnostics without requiring raw trace reads", async () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "click",
+      element: {},
+    });
+
+    const status = await dispatchBrowserTool("synthi_browser_get_trace_status", {});
+    expect(status?.isError).toBeUndefined();
+    expect((status?.structuredContent as {
+      trace_status: {
+        event_count: number;
+        action_count: number;
+        origins: string[];
+        workflow_state: string[];
+        unresolved_count: number;
+      };
+    }).trace_status).toEqual(expect.objectContaining({
+      event_count: 1,
+      action_count: 1,
+      origins: ["https://app.example.com"],
+      unresolved_count: 1,
+    }));
+    expect((status?.structuredContent as { trace_status: { workflow_state: string[] } }).trace_status.workflow_state).toContain("Limited");
+
+    const card = await dispatchBrowserTool("synthi_browser_get_workflow_card", {});
+    expect(card?.isError).toBeUndefined();
+    expect((card?.structuredContent as { card: { title: string; primaryCta: string } }).card).toEqual(
+      expect.objectContaining({ title: "Recorded target", primaryCta: "reviewLimitations" })
+    );
+
+    const unresolved = await dispatchBrowserTool("synthi_browser_get_unresolved_steps", {});
+    expect(unresolved?.isError).toBeUndefined();
+    expect((unresolved?.structuredContent as { steps: Array<{ limitations: string[]; suggested_affordances: unknown[] }> }).steps[0]).toEqual(
+      expect.objectContaining({
+        limitations: expect.arrayContaining(["sourceIdentityMissing", "unresolvedStep"]),
+        suggested_affordances: expect.arrayContaining([
+          expect.objectContaining({ suggested_attribute: "data-synthi-affordance=\"recorded.target\"" }),
+        ]),
+      })
+    );
+
+    const explanation = await dispatchBrowserTool("synthi_browser_explain_failure", {
+      failure_class: "closedShadowDomBlocked",
+      failed_step_id: "browser_evt_1",
+    });
+    expect(explanation?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      failure_class: "closedShadowDomBlocked",
+      failed_step_id: "browser_evt_1",
+      suggested_next_action: expect.stringContaining("shadow bridge"),
+    }));
+  });
 });
