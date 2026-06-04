@@ -36,7 +36,9 @@ export class BrowserPlaywrightAdapter {
   async attach(cdpUrl: string): Promise<BrowserTab[]> {
     if (!this.browser || this.cdpUrl !== cdpUrl) {
       if (this.browser) await this.browser.close().catch(() => undefined);
-      this.browser = await chromium.connectOverCDP(cdpUrl);
+      this.browser = await chromium.connectOverCDP(cdpUrl, {
+        timeout: resolveCdpConnectTimeoutMs(),
+      });
       this.cdpUrl = cdpUrl;
     }
     return this.listTabs();
@@ -358,3 +360,12 @@ function parseOneArgLocator(input: string): { kind: "label" | "placeholder" | "t
 }
 
 export const browserPlaywrightAdapter = new BrowserPlaywrightAdapter();
+
+export function resolveCdpConnectTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env["SYNTHI_BROWSER_CDP_CONNECT_TIMEOUT_MS"];
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.min(Math.floor(parsed), 300_000);
+  }
+  return 60_000;
+}
