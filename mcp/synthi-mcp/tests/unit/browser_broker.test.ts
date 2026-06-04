@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { rankedLocatorCandidates } from "../../src/browser/locator.js";
 import { redactText, redactUrl, redactValue } from "../../src/browser/security.js";
@@ -6,6 +7,7 @@ import { eventLog } from "../../src/events/index.js";
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  authCheckpointManager.resetForTests();
   eventLog._resetForTests();
 });
 
@@ -217,6 +219,35 @@ describe("browser broker privacy boundary", () => {
       diagnostics_approved: true,
       auth_checkpoint_approved: false,
     });
+  });
+
+  it("marks trace security when an explicit auth checkpoint is valid", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com/form", "unit-test");
+    const finished = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/form",
+      redirect_chain: ["https://idp.example.test/oauth"],
+      ttl_ms: 60_000,
+    });
+    expect(finished.ok).toBe(true);
+
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/form",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Save" },
+    });
+
+    const [event] = browserBroker.traceSnapshot();
+    expect(event?.security).toEqual(expect.objectContaining({
+      exact_origin_approved: true,
+      auth_checkpoint_approved: true,
+    }));
+    expect(JSON.stringify(event)).not.toMatch(/cookie|localStorage|sessionStorage|secret|token/i);
   });
 
   it("rejects bridge events that claim a different payload origin", () => {

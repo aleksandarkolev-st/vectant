@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
+import { authCheckpointManager } from "./auth.js";
 import { lane0Status } from "./lane0.js";
 import { BrowserTraceRecorder, generatePlaywrightScript } from "./trace.js";
 import { compileWorkflowContract, planWorkflowReplay, type WorkflowReplayModeV7 } from "./workflow.js";
@@ -500,7 +501,7 @@ export class BrowserBroker {
       exact_origin_approved: this.hasOriginConsent(url),
       screenshot_approved: this.hasScreenshotConsent(url),
       diagnostics_approved: this.hasDiagnosticsConsent(url),
-      auth_checkpoint_approved: false,
+      auth_checkpoint_approved: this.hasAuthCheckpointAccess(url),
     };
   }
 
@@ -509,6 +510,14 @@ export class BrowserBroker {
       return normalizeOrigin(url).origin;
     } catch {
       return null;
+    }
+  }
+
+  private hasAuthCheckpointAccess(url: string): boolean {
+    try {
+      return authCheckpointManager.readiness(url, false).ready;
+    } catch {
+      return false;
     }
   }
 }
