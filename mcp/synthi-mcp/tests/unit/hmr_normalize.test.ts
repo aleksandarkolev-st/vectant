@@ -303,4 +303,50 @@ describe("HmrNormalizer.waitForTerminal", () => {
     expect(result.source).toBe("compile_diagnostics");
     normalizer.dispose();
   });
+
+  it("recovers a terminal event observed after a caller-provided since_ts", async () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const sinceTs = Date.now();
+    mockDC.emit(JSON.stringify({ status: "applied", module: "device", preview_id: "p1" }));
+
+    const result = await normalizer.waitForTerminal({
+      timeoutMs: 1_000,
+      module: "device",
+      sinceTs,
+    });
+
+    expect(result.status).toBe("applied");
+    expect(result.retained).toBe(true);
+    expect(result.observedAt).toBeGreaterThanOrEqual(sinceTs);
+    normalizer.dispose();
+  });
+
+  it("does not recover stale or wrong-module terminal history", async () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const staleSinceTs = Date.now();
+    mockDC.emit(JSON.stringify({ status: "applied", module: "core", preview_id: "p1" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const freshSinceTs = Date.now();
+
+    const staleResult = await normalizer.waitForTerminal({
+      timeoutMs: 25,
+      module: "core",
+      sinceTs: freshSinceTs,
+    });
+    expect(staleResult.status).toBe("timeout");
+
+    const wrongModuleResult = await normalizer.waitForTerminal({
+      timeoutMs: 25,
+      module: "device",
+      sinceTs: staleSinceTs,
+    });
+    expect(wrongModuleResult.status).toBe("timeout");
+    normalizer.dispose();
+  });
 });

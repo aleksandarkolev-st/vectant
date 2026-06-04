@@ -875,7 +875,7 @@ const CFG = {
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 300000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
-  hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
+  hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 20 * 60 * 1000),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
   cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
@@ -3121,7 +3121,13 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
     throw new Error(`${phaseName} runtime identity changed after synthi_compile: ${wait.detail.reason}`);
   }
   const waitStart = Date.now();
-  const wait = await waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor);
+  const wait = await waitHmrForCurrentWorkspace(
+    state,
+    timeoutMs,
+    phaseName,
+    identityMonitor,
+    Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start,
+  );
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
   const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
   report.phases.push(phase);
@@ -3150,9 +3156,9 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
   };
 }
 
-async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor = null) {
+async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor = null, sinceTs = null) {
   const startedAt = Date.now();
-  const eventLogSinceTs = startedAt - 2000;
+  const eventLogSinceTs = Number.isFinite(sinceTs) ? sinceTs : startedAt - 2000;
   let last = null;
   while (Date.now() - startedAt < timeoutMs) {
     await capturePhaseRuntimeIdentity(identityMonitor, 'before_wait_poll');
@@ -3162,7 +3168,7 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
     try {
-      const waitArgs = { timeoutMs: sliceTimeoutMs };
+      const waitArgs = { timeoutMs: sliceTimeoutMs, since_ts: eventLogSinceTs };
       if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
       wait = await state.client.toolCall(
         'synthi_wait_hmr',

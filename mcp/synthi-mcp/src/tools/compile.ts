@@ -259,6 +259,6 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     filename,
     dispatched_at: dispatchedAt,
     note:
-      "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log.",
+      "Compile dispatched. Await terminal HMR status via synthi_wait_hmr({since_ts: dispatched_at}). Responses stream on build-log.",
   });
 }
