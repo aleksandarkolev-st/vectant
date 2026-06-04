@@ -63,6 +63,7 @@ import { snapshotTool } from "./tools/snapshot.js";
 import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
+import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
 import { BROWSER_TOOLS, dispatchBrowserTool } from "./tools/browser.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
@@ -74,6 +75,7 @@ export interface SynthiServerOptions {
 
 const TOOLS = [
   ...BROWSER_TOOLS,
+  ...AUTH_TOOLS,
   {
     name: "synthi_attach",
     description:
@@ -1137,6 +1139,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
   ): Promise<CallToolResult> {
     const browserResponse = await dispatchBrowserTool(toolName, args);
     if (browserResponse) return browserResponse as CallToolResult;
+    const authResponse = await dispatchAuthTool(toolName, args);
+    if (authResponse) return authResponse as CallToolResult;
     switch (toolName) {
       case "synthi_attach":
         return (await attachTool(args, ctx)) as CallToolResult;
