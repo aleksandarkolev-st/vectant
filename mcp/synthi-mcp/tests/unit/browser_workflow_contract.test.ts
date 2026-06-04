@@ -62,6 +62,17 @@ describe("browser workflow contract compiler", () => {
         suggestedAttribute: "data-synthi-mutation-boundary=\"save.workspace.state\"",
       }),
     ]));
+    expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
+      privateToolName: "synthi_app_save_workspace_state",
+      readiness: "manualOnly",
+      unattendedReady: false,
+      mutationMode: "confirmBeforeCommit",
+    }));
+    expect(workflow.contract.publishPlan.runModes).toEqual(["prefixOnly", "confirmBeforeCommit", "ciOnly"]);
+    expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
+      kind: "privateMcpToolManifest",
+      status: "available",
+    }));
     expect(workflow.contract.limitations).toContain("sourceIdentityMissing");
     expect(workflow.contract.limitations).toContain("mutationRequiresIsolation");
     expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["locatorDrift", "mutationBlocked", "sourceIdentityMissing"]));
@@ -133,6 +144,14 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("blocked");
     expect(workflow.contract.replayModes).toEqual([]);
     expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "blocked" }));
+    expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
+      readiness: "blocked",
+      unattendedReady: false,
+    }));
+    expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
+      kind: "privateMcpToolManifest",
+      status: "blocked",
+    }));
     expect(workflow.card.state).toEqual(expect.arrayContaining(["Blocked", "Limited"]));
     expect(replay.status).toBe("blocked");
     expect(replay.warnings[0]).toContain("popup or multi-tab");
@@ -197,6 +216,33 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "blocked" }));
     expect(replay.status).toBe("blocked");
     expect(classifyWorkflowReplayBlock(replay)).toBe("closedShadowDomBlocked");
+  });
+
+  it("marks clean read-only workflows ready for a private MCP tool manifest", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "open-details",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          element: { role: "button", name: "Open details", source_id: "src_open_details" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.limitations).toEqual([]);
+    expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
+      privateToolName: "synthi_app_open_details",
+      readiness: "ready",
+      unattendedReady: true,
+      mutationMode: "readOnly",
+      authDurability: "noneRequired",
+    }));
+    expect(workflow.contract.publishPlan.runModes).toEqual(["sameSession"]);
+    expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
+      kind: "privateMcpToolManifest",
+      status: "available",
+    }));
   });
 
   it("plans prefix-only replay up to but not including the first mutation boundary", () => {

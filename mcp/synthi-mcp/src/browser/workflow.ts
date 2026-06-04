@@ -141,8 +141,18 @@ export interface WorkflowContractV7 {
     reason: "missingSourceIdentity" | "lowConfidenceLocator" | "mutationBoundary";
     suggestedAttribute: string;
   }>;
+  publishPlan: {
+    privateToolName: string;
+    readiness: "ready" | "manualOnly" | "blocked";
+    unattendedReady: boolean;
+    authDurability: AuthDurabilityV7;
+    mutationMode: "readOnly" | "confirmBeforeCommit" | "ciOnly";
+    runModes: Array<"sameSession" | "prefixOnly" | "confirmBeforeCommit" | "ciOnly">;
+    blockers: WorkflowLimitationV7[];
+    notes: string[];
+  };
   generatedOutputs: Array<{
-    kind: "playwright" | "sourceAffordancePatch";
+    kind: "playwright" | "sourceAffordancePatch" | "privateMcpToolManifest";
     status: "available" | "blocked";
     notes: string[];
   }>;
@@ -203,6 +213,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     ? []
     : mutationSteps.length > 0 ? ["sameSession", "prefixOnly"] : ["sameSession"];
   const sourceAffordancePatches = sourceAffordancePatchesFor(steps);
+  const publishPlan = publishPlanFor(name, limitations, mutationSteps.length > 0, actionEvents.length);
   const contract: WorkflowContractV7 = {
     workflowId: workflowIdFor(appOrigin, steps),
     name,
@@ -232,6 +243,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     limitations,
     counterfactualPlan: counterfactualPlanFor(firstMutationStepId, steps.length, limitations),
     sourceAffordancePatches,
+    publishPlan,
     generatedOutputs: [
       {
         kind: "playwright",
@@ -248,6 +260,11 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
         notes: sourceAffordancePatches.length > 0
           ? ["Suggested source affordances target unstable or source-unlinked steps. No exact file path is required from the user."]
           : ["No source affordance suggestions are needed for this trace."],
+      },
+      {
+        kind: "privateMcpToolManifest",
+        status: publishPlan.readiness === "blocked" ? "blocked" : "available",
+        notes: publishPlan.notes,
       },
     ],
   };
@@ -328,6 +345,76 @@ function sourceAffordancePatchesFor(steps: WorkflowStepContractV7[]): WorkflowCo
     }
   }
   return patches;
+}
+
+function publishPlanFor(
+  workflowNameValue: string,
+  limitations: WorkflowLimitationV7[],
+  hasMutation: boolean,
+  actionCount: number
+): WorkflowContractV7["publishPlan"] {
+  const hardBlockers = limitations.filter((limitation) =>
+    limitation === "unresolvedStep" ||
+    limitation === "iframeNeedsFrameLocator" ||
+    limitation === "popupOrMultiTab" ||
+    limitation === "closedShadowDomBlocked"
+  );
+  if (actionCount === 0 && !hardBlockers.includes("unresolvedStep")) hardBlockers.push("unresolvedStep");
+
+  const softBlockers = limitations.filter((limitation) =>
+    limitation === "sourceIdentityMissing" ||
+    limitation === "lowConfidenceLocator" ||
+    limitation === "canvasCoordinateOnly" ||
+    limitation === "pointerDragUnreliable" ||
+    limitation === "redactedInputValue" ||
+    limitation === "mutationRequiresIsolation"
+  );
+  const mutationMode = hasMutation ? "confirmBeforeCommit" : "readOnly";
+  const readiness = hardBlockers.length > 0
+    ? "blocked"
+    : hasMutation || softBlockers.length > 0 ? "manualOnly" : "ready";
+  const unattendedReady = readiness === "ready";
+  const runModes: WorkflowContractV7["publishPlan"]["runModes"] = hasMutation
+    ? ["prefixOnly", "confirmBeforeCommit", "ciOnly"]
+    : ["sameSession"];
+  return {
+    privateToolName: `synthi_app_${slugIdentifier(workflowNameValue)}`,
+    readiness,
+    unattendedReady,
+    authDurability: "noneRequired",
+    mutationMode,
+    runModes,
+    blockers: [...new Set([...hardBlockers, ...softBlockers])],
+    notes: publishNotesFor(readiness, unattendedReady, hasMutation, hardBlockers, softBlockers),
+  };
+}
+
+function publishNotesFor(
+  readiness: WorkflowContractV7["publishPlan"]["readiness"],
+  unattendedReady: boolean,
+  hasMutation: boolean,
+  hardBlockers: WorkflowLimitationV7[],
+  softBlockers: WorkflowLimitationV7[]
+): string[] {
+  if (readiness === "blocked") {
+    return [
+      `Private MCP tool manifest is blocked by ${hardBlockers.join(", ")}.`,
+      "Review unresolved steps or unsupported browser surfaces before publishing.",
+    ];
+  }
+  const notes: string[] = [];
+  if (hasMutation) {
+    notes.push("Generated private MCP tool must default to confirmBeforeCommit or ciOnly for mutation steps.");
+  }
+  if (softBlockers.length > 0) {
+    notes.push(`Manual-only until limitations are resolved: ${softBlockers.join(", ")}.`);
+  }
+  if (!unattendedReady) {
+    notes.push("Do not mark this tool unattended durable without refreshProvider or ciTestAuth when auth is required.");
+  } else {
+    notes.push("Private MCP tool manifest can be generated for read-only unattended use.");
+  }
+  return notes;
 }
 
 function affordanceName(value: string): string {
