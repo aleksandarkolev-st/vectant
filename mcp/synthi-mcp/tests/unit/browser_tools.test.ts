@@ -6,11 +6,13 @@ import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, dispatchBrowserTool } from "../../src/tools/browser.js";
 
 const originalBrowserCdpUrl = process.env["SYNTHI_BROWSER_CDP_URL"];
+const originalHostedBrowserCdpUrl = process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
 
 beforeEach(() => {
   browserBroker.resetForTests();
   eventLog._resetForTests();
   delete process.env["SYNTHI_BROWSER_CDP_URL"];
+  delete process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
 });
 
 afterEach(async () => {
@@ -19,6 +21,11 @@ afterEach(async () => {
     delete process.env["SYNTHI_BROWSER_CDP_URL"];
   } else {
     process.env["SYNTHI_BROWSER_CDP_URL"] = originalBrowserCdpUrl;
+  }
+  if (originalHostedBrowserCdpUrl === undefined) {
+    delete process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
+  } else {
+    process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"] = originalHostedBrowserCdpUrl;
   }
 });
 
@@ -94,6 +101,28 @@ describe("browser MCP tool surface", () => {
       arg: "cdp_url",
     });
     expect(browserBridgeServer.isRunning()).toBe(false);
+  });
+
+  it("keeps hosted workspace attach separate from the local CDP harness", async () => {
+    process.env["SYNTHI_BROWSER_CDP_URL"] = "http://127.0.0.1:9222";
+    const response = await dispatchBrowserTool("synthi_browser_attach_current_workspace", {
+      workspace_id: "workspace-a",
+      workspace_url: "https://workspace.example.test/workspace/browser",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "hosted_runtime_not_configured",
+      low_level_local_dev_tool: "synthi_browser_attach",
+    }));
+    expect((response?.structuredContent as {
+      runtime: { configured: boolean; ignored_local_dev_env: string[]; required_env: string[] };
+    }).runtime).toEqual(expect.objectContaining({
+      configured: false,
+      ignored_local_dev_env: ["SYNTHI_BROWSER_CDP_URL"],
+      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    }));
+    expect(browserBroker.runtimeAttachment()).toBeNull();
   });
 
   it("returns high-level workflow diagnostics without requiring raw trace reads", async () => {

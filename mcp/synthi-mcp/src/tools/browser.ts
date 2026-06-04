@@ -1,5 +1,6 @@
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
+import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
 import {
@@ -13,6 +14,7 @@ import { eventLog } from "../events/index.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 export const BROWSER_TOOL_NAMES = [
+  "synthi_browser_attach_current_workspace",
   "synthi_browser_attach",
   "synthi_browser_list_tabs",
   "synthi_browser_select_tab",
@@ -45,6 +47,21 @@ export const BROWSER_TOOL_NAMES = [
 ] as const;
 
 export const BROWSER_TOOLS = [
+  {
+    name: "synthi_browser_attach_current_workspace",
+    description:
+      "Attach the agent to the Synthi-hosted browser for the current workspace. This is the primary cloud IDE path; it never requires the user to provide local Chrome, local CDP, or a desktop extension.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: { type: "string", description: "Optional workspace scope. Defaults to SYNTHI_WORKSPACE_ID or the active/default workspace." },
+        workspace_url: { type: "string", description: "Optional workspace URL to open in the hosted runtime. Defaults to SYNTHI_WORKSPACE_URL or SYNTHI_HOSTED_BROWSER_WORKSPACE_URL." },
+        runtime_id: { type: "string", description: "Optional hosted runtime id for diagnostics." },
+        open_workspace: { type: "boolean", description: "Open the workspace URL in the hosted runtime after attach. Defaults true when a workspace URL is known." },
+      },
+      required: [],
+    },
+  },
   {
     name: "synthi_browser_attach",
     description:
@@ -337,6 +354,8 @@ export const BROWSER_TOOLS = [
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
     switch (toolName) {
+      case "synthi_browser_attach_current_workspace":
+        return await browserAttachCurrentWorkspaceTool(args);
       case "synthi_browser_attach":
         return await browserAttachTool(args);
       case "synthi_browser_list_tabs":
@@ -403,6 +422,40 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
   }
 }
 
+async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const result = await attachHostedBrowserRuntime(
+    {
+      workspace_id: stringOpt(a["workspace_id"]),
+      workspace_url: stringOpt(a["workspace_url"]),
+      runtime_id: stringOpt(a["runtime_id"]),
+      open_workspace: boolOpt(a["open_workspace"]),
+    },
+    browserPlaywrightAdapter,
+    browserBroker
+  );
+  if (!result.ok) {
+    return errorResponse(result.error, {
+      runtime: result.runtime,
+      low_level_local_dev_tool: "synthi_browser_attach",
+      readiness: resolveHostedBrowserRuntime({
+        workspace_id: stringOpt(a["workspace_id"]),
+        workspace_url: stringOpt(a["workspace_url"]),
+        runtime_id: stringOpt(a["runtime_id"]),
+      }),
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    runtime: result.runtime,
+    tabs: result.tabs,
+    hidden_tabs: result.hidden_tabs,
+    opened_workspace_url: result.opened_workspace_url,
+    consent_required_for: result.consent_required_for,
+    permission_tiers: result.permission_tiers,
+  });
+}
+
 async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const cdpUrl = stringOpt(a["cdp_url"]) ?? process.env["SYNTHI_BROWSER_CDP_URL"];
@@ -416,9 +469,17 @@ async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   browserBroker.setBridgeToken(bridge.token);
   const allTabs = await browserPlaywrightAdapter.attach(cdpUrl);
   const tabs = browserBroker.registerTabs(allTabs);
+  const runtime = browserBroker.setRuntimeAttachment({
+    kind: "local-dev-cdp",
+    workspace_id: null,
+    runtime_id: null,
+    workspace_url: null,
+    adapter: "local-playwright-cdp",
+  });
   return jsonResponse({
     ok: true,
     cdp_url: cdpUrl,
+    runtime,
     bridge,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,

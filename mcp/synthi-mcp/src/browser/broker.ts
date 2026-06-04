@@ -43,6 +43,15 @@ export interface BrowserBridgeMessage {
   payload?: unknown;
 }
 
+export interface BrowserRuntimeAttachment {
+  kind: "hosted" | "local-dev-cdp";
+  workspace_id: string | null;
+  runtime_id: string | null;
+  workspace_url: string | null;
+  adapter: string;
+  attached_at: number;
+}
+
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
 
@@ -64,6 +73,21 @@ export class BrowserBroker {
   };
   private activeLease: BrowserLease | null = null;
   private queuedActions: BrowserActionInput[] = [];
+  private runtime: BrowserRuntimeAttachment | null = null;
+
+  setRuntimeAttachment(runtime: Omit<BrowserRuntimeAttachment, "attached_at">): BrowserRuntimeAttachment {
+    this.runtime = { ...runtime, attached_at: Date.now() };
+    eventLog.push({
+      kind: "browser",
+      action: "runtime_attached",
+      payload: { runtime: this.runtime },
+    });
+    return { ...this.runtime };
+  }
+
+  runtimeAttachment(): BrowserRuntimeAttachment | null {
+    return this.runtime ? { ...this.runtime } : null;
+  }
 
   setBridgeToken(token: string | undefined): void {
     this.bridgeToken = token;
@@ -372,6 +396,7 @@ export class BrowserBroker {
     this.activeLease = null;
     this.queuedActions = [];
     this.bridgeToken = undefined;
+    this.runtime = null;
   }
 
   private hasOriginConsent(originOrUrl: string): boolean {
