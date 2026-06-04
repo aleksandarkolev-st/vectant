@@ -31,6 +31,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_get_trace",
   "synthi_browser_get_trace_status",
   "synthi_browser_get_lane0_status",
+  "synthi_browser_answer_teach_question",
   "synthi_browser_get_workflow_card",
   "synthi_browser_get_unresolved_steps",
   "synthi_browser_compile_workflow",
@@ -215,6 +216,21 @@ export const BROWSER_TOOLS = [
     description:
       "Return Lane 0 sliding-window reducer status: trace version, window counts, annotation counts, and stale response count.",
     inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_answer_teach_question",
+    description:
+      "Record a one-click teach-mode answer or accepted source affordance. This appends broker audit metadata only; it cannot reorder trace events or force raw semantic annotations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question_id: { type: "string" },
+        answer: { type: "string" },
+        step_id: { type: "string" },
+        accepted_affordance: { type: "string" },
+      },
+      required: ["question_id", "answer"],
+    },
   },
   {
     name: "synthi_browser_get_workflow_card",
@@ -424,6 +440,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserTraceStatusTool();
       case "synthi_browser_get_lane0_status":
         return jsonResponse({ ok: true, lane0: browserBroker.lane0Status() });
+      case "synthi_browser_answer_teach_question":
+        return browserAnswerTeachQuestionTool(args);
       case "synthi_browser_get_workflow_card":
         return browserWorkflowCardTool();
       case "synthi_browser_get_unresolved_steps":
@@ -662,7 +680,23 @@ function browserTraceStatusTool(): ToolResponse {
       unresolved_count: workflow.card.unresolvedCount,
       limitations: workflow.contract.limitations,
       lane0: workflow.contract.lane0,
+      teach_question_answers_count: browserBroker.teachQuestionAnswers().length,
     },
+  });
+}
+
+function browserAnswerTeachQuestionTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const answer = browserBroker.recordTeachQuestionAnswer({
+    question_id: requiredString(a, "question_id"),
+    answer: requiredString(a, "answer"),
+    step_id: stringOpt(a["step_id"]),
+    accepted_affordance: stringOpt(a["accepted_affordance"]),
+  });
+  return jsonResponse({
+    ok: true,
+    answer,
+    teach_question_answers_count: browserBroker.teachQuestionAnswers().length,
   });
 }
 

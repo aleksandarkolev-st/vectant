@@ -52,6 +52,14 @@ export interface BrowserRuntimeAttachment {
   attached_at: number;
 }
 
+export interface BrowserTeachQuestionAnswer {
+  question_id: string;
+  answer: string;
+  step_id?: string;
+  accepted_affordance?: string;
+  answered_at: number;
+}
+
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
 
@@ -74,6 +82,7 @@ export class BrowserBroker {
   private activeLease: BrowserLease | null = null;
   private queuedActions: BrowserActionInput[] = [];
   private runtime: BrowserRuntimeAttachment | null = null;
+  private teachAnswers: BrowserTeachQuestionAnswer[] = [];
 
   setRuntimeAttachment(runtime: Omit<BrowserRuntimeAttachment, "attached_at">): BrowserRuntimeAttachment {
     this.runtime = { ...runtime, attached_at: Date.now() };
@@ -214,6 +223,36 @@ export class BrowserBroker {
 
   teachState(): { active: boolean; tab_id: string | null; origin: string | null } {
     return { ...this.teachMode };
+  }
+
+  recordTeachQuestionAnswer(input: {
+    question_id: string;
+    answer: string;
+    step_id?: string;
+    accepted_affordance?: string;
+  }): BrowserTeachQuestionAnswer {
+    const answer: BrowserTeachQuestionAnswer = {
+      question_id: input.question_id,
+      answer: input.answer,
+      ...(input.step_id ? { step_id: input.step_id } : {}),
+      ...(input.accepted_affordance ? { accepted_affordance: input.accepted_affordance } : {}),
+      answered_at: Date.now(),
+    };
+    this.teachAnswers.push(answer);
+    eventLog.push({
+      kind: "browser",
+      action: "teach_question_answered",
+      payload: {
+        question_id: answer.question_id,
+        step_id: answer.step_id ?? null,
+        accepted_affordance: answer.accepted_affordance ?? null,
+      },
+    });
+    return { ...answer };
+  }
+
+  teachQuestionAnswers(): BrowserTeachQuestionAnswer[] {
+    return this.teachAnswers.map((answer) => ({ ...answer }));
   }
 
   handleOriginChange(tab_id: string, nextUrl: string): void {
@@ -397,6 +436,7 @@ export class BrowserBroker {
     this.queuedActions = [];
     this.bridgeToken = undefined;
     this.runtime = null;
+    this.teachAnswers = [];
   }
 
   private hasOriginConsent(originOrUrl: string): boolean {

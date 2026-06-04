@@ -163,6 +163,20 @@ describe("browser MCP tool surface", () => {
       expect.objectContaining({ reducer_version: "lane0_deterministic_v1", annotated_event_count: 1 })
     );
 
+    const answered = await dispatchBrowserTool("synthi_browser_answer_teach_question", {
+      question_id: "q_source_1",
+      step_id: "browser_evt_1",
+      answer: "Use the stable affordance",
+      accepted_affordance: "data-synthi-affordance=\"recorded.target\"",
+    });
+    expect(answered?.isError).toBeUndefined();
+    expect((answered?.structuredContent as { teach_question_answers_count: number; answer: { question_id: string } })).toEqual(
+      expect.objectContaining({
+        teach_question_answers_count: 1,
+        answer: expect.objectContaining({ question_id: "q_source_1" }),
+      })
+    );
+
     const card = await dispatchBrowserTool("synthi_browser_get_workflow_card", {});
     expect(card?.isError).toBeUndefined();
     expect((card?.structuredContent as { card: { title: string; primaryCta: string } }).card).toEqual(
@@ -190,6 +204,11 @@ describe("browser MCP tool surface", () => {
       failed_step_id: "browser_evt_1",
       suggested_next_action: expect.stringContaining("shadow bridge"),
     }));
+
+    const statusAfterAnswer = await dispatchBrowserTool("synthi_browser_get_trace_status", {});
+    expect((statusAfterAnswer?.structuredContent as {
+      trace_status: { teach_question_answers_count: number };
+    }).trace_status.teach_question_answers_count).toBe(1);
   });
 
   it("supports primary begin/end teach aliases with workflow card output", async () => {
