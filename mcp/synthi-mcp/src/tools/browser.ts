@@ -23,6 +23,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_start_teach",
   "synthi_browser_stop_teach",
   "synthi_browser_get_trace",
+  "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
   "synthi_browser_acquire_lease",
   "synthi_browser_release_lease",
@@ -141,6 +142,12 @@ export const BROWSER_TOOLS = [
   {
     name: "synthi_browser_get_trace",
     description: "Return the broker-recorded teach/action trace.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_compile_workflow",
+    description:
+      "Compile the broker-recorded teach trace into a workflow card and v7 workflow contract. This is the primary teach-to-tool artifact before Playwright export.",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -285,6 +292,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserStopTeachTool(args);
       case "synthi_browser_get_trace":
         return jsonResponse({ ok: true, trace: browserBroker.traceSnapshot() });
+      case "synthi_browser_compile_workflow":
+        return jsonResponse({ ok: true, workflow: browserBroker.compiledWorkflow() });
       case "synthi_browser_generate_script":
         return jsonResponse({ ok: true, ...browserBroker.generatedScript() });
       case "synthi_browser_acquire_lease":

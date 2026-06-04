@@ -81,6 +81,7 @@ export interface BrowserElementMetadata {
   css?: string;
   xpath?: string;
   type?: string;
+  source_id?: string;
 }
 
 export interface BrowserSelection {

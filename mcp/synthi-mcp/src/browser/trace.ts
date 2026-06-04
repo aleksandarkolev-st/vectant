@@ -114,12 +114,18 @@ export class BrowserTraceRecorder {
   private recordAction(kind: "human_action" | "agent_action", input: TraceRecorderInput): BrowserTraceEvent {
     const locators = rankedLocatorCandidates(input.element);
     const value = input.value === undefined ? undefined : redactValue(input.field_name, input.value);
+    const detail = {
+      ...(input.detail ?? {}),
+      ...(input.field_name !== undefined ? { field_name: input.field_name } : {}),
+      ...(input.element !== undefined ? { element: input.element } : {}),
+    };
     const event = this.baseEvent(kind, {
       ...input,
       selector: locators[0]?.locator,
       locator_candidates: locators,
       value: value?.value,
       redacted: value?.redacted,
+      detail,
     });
     this.events.push(event);
     return event;
