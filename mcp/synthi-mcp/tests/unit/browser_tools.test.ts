@@ -248,4 +248,44 @@ describe("browser MCP tool surface", () => {
       replay: expect.objectContaining({ first_mutation_step_id: "browser_evt_1" }),
     }));
   });
+
+  it("requires file path parameters before replaying taught file drops", async () => {
+    const url = "https://app.example.com/uploads";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      detail: {
+        drag_mode: true,
+        drag_class: "fileDrop",
+        file_parameter: "UPLOAD_FILE",
+      },
+      element: { role: "button", name: "Upload area", source_id: "s_upload" },
+    }).ok).toBe(true);
+    const lease = browserBroker.acquireLease("agent", 5000, "test-file-drop");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as {
+      ok: boolean;
+      replay: { status: string; failure_class: string; failed_step_id: string; error: string };
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        failure_class: "testDataMissing",
+        failed_step_id: "browser_evt_1",
+        error: "missing_file_parameter:upload_file",
+      }),
+    }));
+  });
 });

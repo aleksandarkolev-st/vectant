@@ -1,4 +1,5 @@
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
+import { readFile } from "node:fs/promises";
 import { normalizeOrigin, redactText, redactUrl } from "./security.js";
 import type { BrowserActionKind, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
 
@@ -156,6 +157,33 @@ export class BrowserPlaywrightAdapter {
         break;
     }
     return { ok: true, action, tab_id, url: page.url() };
+  }
+
+  async fileDrop(
+    tab_id: string,
+    selector: string | undefined,
+    filePath: string,
+    options: { file_input?: boolean; mime_type?: string } = {}
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocator(page, selector);
+    if (options.file_input) {
+      await target.setInputFiles(filePath);
+    } else {
+      const buffer = await readFile(filePath);
+      const fileName = filePath.split(/[\\/]/).pop() || "upload.bin";
+      const mimeType = options.mime_type ?? "application/octet-stream";
+      const dataTransfer = await page.evaluateHandle(({ bytes, fileName, mimeType }) => {
+        const dataTransfer = new DataTransfer();
+        const file = new File([new Uint8Array(bytes)], fileName, { type: mimeType });
+        dataTransfer.items.add(file);
+        return dataTransfer;
+      }, { bytes: Array.from(buffer), fileName, mimeType });
+      await target.dispatchEvent("dragenter", { dataTransfer });
+      await target.dispatchEvent("dragover", { dataTransfer });
+      await target.dispatchEvent("drop", { dataTransfer });
+    }
+    return { ok: true, action: "drag", tab_id, url: page.url() };
   }
 
   async wait(input: BrowserWaitInput): Promise<{ ok: true; tab_id: string; condition: string }> {

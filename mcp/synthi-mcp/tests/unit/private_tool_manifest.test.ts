@@ -160,6 +160,11 @@ describe("private browser workflow MCP tool manifest", () => {
       expect.objectContaining({ step_id: "file-drop", kind: "fileDrop", replay: "parameterized" }),
       expect.objectContaining({ step_id: "canvas", kind: "canvas", replay: "unsupported" }),
     ]);
+    expect(manifest.parameters).toContainEqual(expect.objectContaining({
+      name: "upload_file",
+      value_shape: "filePath",
+      required: true,
+    }));
     expect(manifest.safety.limitations).toContain("canvasCoordinateOnly");
   });
 

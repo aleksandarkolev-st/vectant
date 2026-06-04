@@ -71,7 +71,7 @@ export interface WorkflowParameterV7 {
   name: string;
   label: string;
   sourceStepId: string;
-  valueShape: "empty" | "shortText" | "longText" | "email" | "number" | "secret" | "unknown";
+  valueShape: "empty" | "shortText" | "longText" | "email" | "number" | "secret" | "filePath" | "unknown";
   required: boolean;
   redacted: boolean;
 }
@@ -588,9 +588,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   const confidence = locatorConfidence(primary);
   const actionKind = event.kind === "navigation" ? "navigate" : event.action ?? "wait";
   const stepId = event.event_id || `step_${ordinal}`;
-  const parameterName = actionKind === "fill" || actionKind === "select"
-    ? event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal)
-    : undefined;
+  const parameterName = parameterNameForAction(event, element, ordinal, actionKind);
   const mutation = mutationFor(actionKind, targetLabel, event);
   const surfacePlan = surfacePlanFor(event, actionKind);
   const limitations: WorkflowLimitationV7[] = [];
@@ -747,17 +745,42 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
       name: valueRef,
       label: step.action.target?.label ?? valueRef,
       sourceStepId: step.stepId,
-      valueShape: valueShape(event?.value, event?.redacted === true),
+      valueShape: parameterValueShape(event),
       required: true,
       redacted: event?.redacted === true,
     }];
   });
 }
 
+function parameterNameForAction(
+  event: BrowserTraceEvent,
+  element: BrowserElementMetadata | undefined,
+  ordinal: number,
+  actionKind: BrowserActionKind
+): string | undefined {
+  if (actionKind === "fill" || actionKind === "select") {
+    return event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal);
+  }
+  if (actionKind === "drag" && dragClassFor(event) === "filedrop") {
+    const explicit = typeof event.detail?.["file_parameter"] === "string"
+      ? event.detail["file_parameter"] as string
+      : typeof event.detail?.["file_env"] === "string"
+        ? event.detail["file_env"] as string
+        : undefined;
+    return slugIdentifier(explicit || element?.label || element?.name || element?.test_id || `file_${ordinal}`);
+  }
+  return undefined;
+}
+
 function parameterNameFor(event: BrowserTraceEvent, element: BrowserElementMetadata | undefined, ordinal: number): string {
   const explicit = typeof event.detail?.["field_name"] === "string" ? event.detail["field_name"] as string : undefined;
   const base = explicit || element?.label || element?.name || element?.placeholder || element?.test_id || `input_${ordinal}`;
   return slugIdentifier(base);
+}
+
+function parameterValueShape(event: BrowserTraceEvent | undefined): WorkflowParameterV7["valueShape"] {
+  if (event?.action === "drag" && dragClassFor(event) === "filedrop") return "filePath";
+  return valueShape(event?.value, event?.redacted === true);
 }
 
 function valueShape(value: string | undefined, redacted: boolean): WorkflowParameterV7["valueShape"] {
@@ -892,14 +915,14 @@ function eventIsClosedShadowDomBlocked(event: BrowserTraceEvent): boolean {
 }
 
 function eventIsPointerDrag(event: BrowserTraceEvent): boolean {
-  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  const dragClass = dragClassFor(event);
   if (event.action === "drag" && dragClass !== "nativehtmldnd" && dragClass !== "filedrop" && dragClass !== "clipboarddrop") return true;
   return /pointersensor|unknowndrag|canvasdrag/.test(dragClass) ||
     event.detail?.["pointer_drag"] === true;
 }
 
 function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): WorkflowStepContractV7["surfacePlan"] {
-  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  const dragClass = dragClassFor(event);
   if (eventIsClosedShadowDomBlocked(event)) {
     return {
       kind: "closedShadowDom",
@@ -992,6 +1015,10 @@ function hasClosedShadowBridge(event: BrowserTraceEvent): boolean {
   return event.detail?.["dev_shadow_bridge"] === true ||
     event.detail?.["shadow_bridge"] === "dev" ||
     event.detail?.["closed_shadow_bridge"] === true;
+}
+
+function dragClassFor(event: BrowserTraceEvent): string {
+  return String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
 }
 
 function surfaceLabel(event: BrowserTraceEvent): string {

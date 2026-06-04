@@ -311,6 +311,11 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps[0]?.surfacePlan.replay).toBe("durable");
     expect(workflow.contract.steps[1]?.surfacePlan.replay).toBe("parameterized");
     expect(workflow.contract.steps[2]?.limitations).toContain("pointerDragUnreliable");
+    expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
+      name: "upload_file",
+      sourceStepId: "file-drop",
+      valueShape: "filePath",
+    }));
   });
 
   it("marks clean read-only workflows ready for a private MCP tool manifest", () => {

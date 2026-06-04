@@ -10,7 +10,7 @@ import {
   runBrowserProject,
   stopBrowserProject,
 } from "../browser/project_runner.js";
-import type { BrowserActionKind } from "../browser/types.js";
+import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
@@ -279,6 +279,11 @@ export const BROWSER_TOOLS = [
         lease_id: { type: "string" },
         tab_id: { type: "string" },
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "prefixOnly" },
+        parameters: {
+          type: "object",
+          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings here.",
+          additionalProperties: { type: "string" },
+        },
       },
       required: ["lease_id"],
     },
@@ -802,6 +807,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const leaseId = requiredString(a, "lease_id");
   const mode = normalizeReplayMode(a["mode"]);
+  const parameters = stringParameters(a["parameters"]);
   const plan = browserBroker.workflowReplayPlan(mode);
   if (plan.status === "blocked") {
     return jsonResponse({ ok: false, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
@@ -813,6 +819,63 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
     const action = actionForReplay(event);
     if (!action) continue;
     const selector = event.locator_candidates?.[0]?.locator ?? event.selector;
+    if (isFileDropEvent(event)) {
+      const filePath = fileDropPathFor(event, parameters);
+      if (!filePath) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: "testDataMissing",
+            error: `missing_file_parameter:${fileDropParameterName(event)}`,
+          },
+        });
+      }
+      const validation = browserBroker.validateAction({
+        lease_id: leaseId,
+        action,
+        tab_id: replayTab.tab_id,
+        selector,
+        value: filePath,
+        url: event.url,
+      });
+      if (!validation.ok) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            error: validation.error,
+          },
+        });
+      }
+      try {
+        await browserPlaywrightAdapter.fileDrop(replayTab.tab_id, selector, filePath, {
+          file_input: isFileInputDrop(event),
+          mime_type: stringOpt(event.detail?.["mime_type"]),
+        });
+        stepsRun += 1;
+      } catch (err) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyWorkflowReplayFailure(err, event),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      continue;
+    }
     const value = action === "navigate" ? event.url : event.value;
     const validation = browserBroker.validateAction({
       lease_id: leaseId,
@@ -898,6 +961,59 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
 function actionForReplay(event: { kind: string; action?: BrowserActionKind }): BrowserActionKind | null {
   if (event.kind === "navigation") return "navigate";
   return event.action ?? null;
+}
+
+function isFileDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "filedrop";
+}
+
+function fileDropPathFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  const parameterName = fileDropParameterName(event);
+  return parameters[parameterName] ??
+    stringOpt(event.detail?.["fixture_file"]) ??
+    stringOpt(event.detail?.["file_path"]);
+}
+
+function fileDropParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["file_parameter"]) ?? stringOpt(event.detail?.["file_env"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_file`);
+}
+
+function isFileInputDrop(event: BrowserTraceEvent): boolean {
+  const element = event.detail?.["element"];
+  if (!element || typeof element !== "object") return event.detail?.["file_input"] === true;
+  const input = element as { tag?: unknown; type?: unknown };
+  return event.detail?.["file_input"] === true ||
+    (String(input.tag ?? "").toLowerCase() === "input" && String(input.type ?? "").toLowerCase() === "file");
+}
+
+function dragClassFor(event: BrowserTraceEvent): string {
+  return String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+}
+
+function stringParameters(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, parameterValue] of Object.entries(value)) {
+    if (typeof parameterValue === "string" && parameterValue.length > 0) out[slugIdentifier(key)] = parameterValue;
+  }
+  return out;
+}
+
+function slugIdentifier(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "file";
 }
 
 async function browserWaitTool(args: unknown): Promise<ToolResponse> {
