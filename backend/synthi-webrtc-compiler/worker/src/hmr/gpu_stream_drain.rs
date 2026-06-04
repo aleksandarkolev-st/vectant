@@ -311,6 +311,12 @@ mod tests {
     unsafe extern "C" fn stub_dtod(_d: u64, _s: u64, _b: usize) -> CuResult {
         0
     }
+    unsafe extern "C" fn stub_htod(_d: u64, _s: *const c_void, _b: usize) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_dtoh(_d: *mut c_void, _s: u64, _b: usize) -> CuResult {
+        0
+    }
 
     fn stub_table() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
@@ -328,6 +334,8 @@ mod tests {
             cu_mem_alloc: stub_alloc,
             cu_mem_free: stub_free,
             cu_memcpy_dtod: stub_dtod,
+            cu_memcpy_htod: stub_htod,
+            cu_memcpy_dtoh: stub_dtoh,
         }
     }
 

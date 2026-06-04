@@ -100,6 +100,7 @@ pub struct HostIdentityRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputOracleRecord {
     pub oracle_id: String,
+    pub required_oracle_id: String,
     pub kind: String,
     pub expected: String,
     pub actual: String,
@@ -945,6 +946,7 @@ fn record_output_oracle_event_with_metadata(
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         guard.output_oracles.push(OutputOracleRecord {
             oracle_id: oracle_id.clone(),
+            required_oracle_id: oracle_id.clone(),
             kind: kind.clone(),
             expected: expected.clone(),
             actual: actual.clone(),
@@ -963,7 +965,8 @@ fn record_output_oracle_event_with_metadata(
         });
     }
     let mut line = format!(
-        "[gpu-runtime-boundary] output_oracle id={} kind={} expected={} actual={} passed={} generation={} runtime_session={}",
+        "[gpu-runtime-boundary] output_oracle id={} required_oracle_id={} kind={} expected={} actual={} passed={} generation={} runtime_session={}",
+        log_token(&oracle_id),
         log_token(&oracle_id),
         log_token(&kind),
         log_token(&expected),
@@ -1273,6 +1276,44 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_probe(
             probe_mode: cstr(probe_mode),
             probe_config_hash: cstr(probe_config_hash),
             probe_evidence_ref: cstr(probe_evidence_ref),
+        },
+    );
+    passed
+}
+
+pub fn record_output_buffer_checksum_with_probe_bytes(
+    oracle_id: &str,
+    data: &[u8],
+    expected_sha256: &str,
+    producer: &str,
+    output_target_id: &str,
+    artifact_id: Option<&str>,
+    visual_evidence_ref: Option<&str>,
+    probe_mode: &str,
+    probe_config_hash: &str,
+    probe_evidence_ref: &str,
+) -> bool {
+    let expected = normalize_checksum_value(expected_sha256.to_string());
+    let actual = sha256_checksum_value(data);
+    let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
+    record_output_oracle_event_with_metadata(
+        oracle_id.to_string(),
+        "buffer_checksum".to_string(),
+        expected,
+        actual,
+        passed,
+        OutputOracleMetadata {
+            tolerance: None,
+            producer: Some(producer.to_string()),
+            output_target_id: Some(output_target_id.to_string()),
+            readback_timestamp_ms: Some(epoch_millis_now()),
+            artifact_id: artifact_id
+                .map(str::to_string)
+                .or_else(|| dispatcher_metadata_snapshot().and_then(|metadata| metadata.artifact_id)),
+            visual_evidence_ref: visual_evidence_ref.map(str::to_string),
+            probe_mode: Some(probe_mode.to_string()),
+            probe_config_hash: Some(probe_config_hash.to_string()),
+            probe_evidence_ref: Some(probe_evidence_ref.to_string()),
         },
     );
     passed
@@ -2167,6 +2208,7 @@ mod tests {
         let records = output_oracle_records_snapshot();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].oracle_id, "probe.checksum");
+        assert_eq!(records[0].required_oracle_id, "probe.checksum");
         assert_eq!(records[0].kind, "buffer_checksum");
         assert_eq!(records[0].expected, "sha256:abc");
         assert_eq!(records[0].actual, "sha256:abc");
@@ -2206,6 +2248,7 @@ mod tests {
         let records = output_oracle_records_snapshot();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].oracle_id, "probe.pixel");
+        assert_eq!(records[0].required_oracle_id, "probe.pixel");
         assert_eq!(records[0].kind, "selected_pixels");
         assert_eq!(records[0].tolerance.as_deref(), Some("0.005"));
         assert_eq!(records[0].producer.as_deref(), Some("runtime_probe"));
@@ -2258,6 +2301,7 @@ mod tests {
         let records = output_oracle_records_snapshot();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].oracle_id, "probe.pixel");
+        assert_eq!(records[0].required_oracle_id, "probe.pixel");
         assert_eq!(records[0].kind, "selected_pixels");
         assert_eq!(records[0].tolerance.as_deref(), Some("0.005"));
         assert_eq!(records[0].producer.as_deref(), Some("runtime_probe"));
@@ -2303,6 +2347,7 @@ mod tests {
         let records = output_oracle_records_snapshot();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].oracle_id, "probe.buffer");
+        assert_eq!(records[0].required_oracle_id, "probe.buffer");
         assert_eq!(records[0].kind, "buffer_checksum");
         assert_eq!(records[0].expected, expected_text);
         assert_eq!(records[0].actual, expected_text);
@@ -2336,6 +2381,7 @@ mod tests {
         let records = output_oracle_records_snapshot();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].oracle_id, "probe.buffer");
+        assert_eq!(records[0].required_oracle_id, "probe.buffer");
         assert_eq!(records[0].kind, "buffer_checksum");
         assert_eq!(records[0].expected, expected_text);
         assert_eq!(records[0].actual, expected_text);
@@ -2382,6 +2428,7 @@ mod tests {
         let records = output_oracle_records_snapshot();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].oracle_id, "probe.buffer");
+        assert_eq!(records[0].required_oracle_id, "probe.buffer");
         assert_eq!(records[0].kind, "buffer_checksum");
         assert_eq!(records[0].expected, expected_text);
         assert_eq!(records[0].actual, expected_text);

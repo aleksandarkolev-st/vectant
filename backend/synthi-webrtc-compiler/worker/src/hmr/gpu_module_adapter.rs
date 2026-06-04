@@ -50,6 +50,7 @@
 #![cfg(feature = "gpu-hmr")]
 
 use std::collections::HashMap;
+use std::env;
 use std::ffi::c_void;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -67,7 +68,8 @@ use crate::hmr::adapter_trait::{
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
-    self, CuContext, CuFunction, CuStream, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
+    self, CuContext, CuDevicePtr, CuFunction, CuStream, DriverLoadError, GpuDriverHandle,
+    GpuDriverSymbolTable,
 };
 use crate::hmr::gpu_module_manager::{
     GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError,
@@ -80,7 +82,8 @@ use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher_with_metadata,
     launch_records_snapshot, managed_buffers_snapshot, record_hmr_runtime_identity_snapshot,
-    runtime_session_id, GpuLaunchDispatcher, GpuLaunchDispatcherMetadata, GpuLaunchRequest,
+    record_output_buffer_checksum_with_probe_bytes, runtime_session_id, GpuLaunchDispatcher,
+    GpuLaunchDispatcherMetadata, GpuLaunchRequest,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -411,6 +414,343 @@ fn log_optional_token(value: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("none")
         .to_string()
+}
+
+const RUNTIME_OUTPUT_ORACLE_DEFAULT_PATH: &str = "/tmp/synthi-gpu-hmr-runtime-output-oracle.json";
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeOutputOracleProfile {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    schema_version: String,
+    profile_id: String,
+    oracle_id: String,
+    expected_sha256: String,
+    producer: String,
+    output_target_id: String,
+    kernel_name: String,
+    grid: [u32; 3],
+    block: [u32; 3],
+    buffers: Vec<RuntimeOutputOracleBuffer>,
+    args: Vec<RuntimeOutputOracleArg>,
+    output_buffer: String,
+    probe_mode: String,
+    probe_config_hash: String,
+    probe_evidence_ref: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeOutputOracleBuffer {
+    name: String,
+    element_type: String,
+    count: usize,
+    initializer: RuntimeOutputOracleInitializer,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeOutputOracleInitializer {
+    kind: String,
+    #[serde(default)]
+    start: Option<f32>,
+    #[serde(default)]
+    value: Option<f32>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeOutputOracleArg {
+    kind: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeProbeArgStorage {
+    F32(f32),
+    U32(u32),
+    DevicePtr(CuDevicePtr),
+}
+
+impl RuntimeProbeArgStorage {
+    fn as_mut_ptr(&mut self) -> *mut c_void {
+        match self {
+            Self::F32(value) => (value as *mut f32).cast::<c_void>(),
+            Self::U32(value) => (value as *mut u32).cast::<c_void>(),
+            Self::DevicePtr(value) => (value as *mut CuDevicePtr).cast::<c_void>(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn runtime_output_oracle_profile_path() -> String {
+    env::var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| RUNTIME_OUTPUT_ORACLE_DEFAULT_PATH.to_string())
+}
+
+fn read_runtime_output_oracle_profile() -> Result<Option<RuntimeOutputOracleProfile>, String> {
+    let path = runtime_output_oracle_profile_path();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("runtime output oracle profile read failed: {error}")),
+    };
+    let profile: RuntimeOutputOracleProfile = serde_json::from_str(&text)
+        .map_err(|error| format!("runtime output oracle profile JSON invalid: {error}"))?;
+    if !profile.enabled {
+        return Ok(None);
+    }
+    if profile.profile_id.trim().is_empty()
+        || profile.oracle_id.trim().is_empty()
+        || profile.expected_sha256.trim().is_empty()
+        || profile.kernel_name.trim().is_empty()
+        || profile.output_buffer.trim().is_empty()
+        || profile.grid.contains(&0)
+        || profile.block.contains(&0)
+        || profile.buffers.is_empty()
+        || profile.args.is_empty()
+    {
+        return Err("runtime output oracle profile is missing required fields".to_string());
+    }
+    Ok(Some(profile))
+}
+
+fn runtime_oracle_buffer_bytes(buffer: &RuntimeOutputOracleBuffer) -> Result<Vec<u8>, String> {
+    if buffer.count == 0 || buffer.count > 64 * 1024 * 1024 {
+        return Err(format!(
+            "runtime output oracle buffer {:?} has invalid count {}",
+            buffer.name, buffer.count
+        ));
+    }
+    if buffer.element_type != "f32" {
+        return Err(format!(
+            "runtime output oracle buffer {:?} uses unsupported element type {:?}",
+            buffer.name, buffer.element_type
+        ));
+    }
+    let mut bytes = Vec::with_capacity(buffer.count * std::mem::size_of::<f32>());
+    match buffer.initializer.kind.as_str() {
+        "iota" => {
+            let start = buffer.initializer.start.unwrap_or(0.0);
+            for index in 0..buffer.count {
+                bytes.extend_from_slice(&(start + index as f32).to_le_bytes());
+            }
+        }
+        "fill" => {
+            let value = buffer.initializer.value.unwrap_or(0.0);
+            for _ in 0..buffer.count {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        other => {
+            return Err(format!(
+                "runtime output oracle buffer {:?} uses unsupported initializer {:?}",
+                buffer.name, other
+            ));
+        }
+    }
+    Ok(bytes)
+}
+
+fn runtime_oracle_json_f32(value: &serde_json::Value) -> Result<f32, String> {
+    value
+        .as_f64()
+        .filter(|value| value.is_finite())
+        .map(|value| value as f32)
+        .ok_or_else(|| "runtime output oracle scalar_f32 value must be finite number".to_string())
+}
+
+fn runtime_oracle_json_u32(value: &serde_json::Value) -> Result<u32, String> {
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| "runtime output oracle scalar_u32 value must be unsigned integer".to_string())?;
+    u32::try_from(raw)
+        .map_err(|_| "runtime output oracle scalar_u32 value exceeds u32".to_string())
+}
+
+fn run_runtime_output_oracle_profile(
+    symbols: &GpuDriverSymbolTable,
+    dispatcher_kernels: &HashMap<String, u64>,
+    changed_symbols: &[String],
+    active_generation: u64,
+    active_artifact_id: &str,
+) -> Result<Option<String>, String> {
+    let Some(profile) = read_runtime_output_oracle_profile()? else {
+        return Ok(None);
+    };
+    let kernel_name = profile.kernel_name.trim();
+    if !changed_symbols.iter().any(|symbol| symbol == kernel_name) {
+        return Ok(Some(format!(
+            "[gpu-runtime-boundary] runtime_output_oracle_probe status=skipped profile={} kernel={} generation={} reason=kernel_not_changed",
+            profile.profile_id, kernel_name, active_generation
+        )));
+    }
+    let Some(function_handle) = dispatcher_kernels.get(kernel_name).copied() else {
+        return Err(format!(
+            "runtime output oracle kernel {:?} is not resolved in active dispatch table",
+            kernel_name
+        ));
+    };
+
+    let mut allocations: Vec<(String, CuDevicePtr)> = Vec::new();
+    let result = (|| -> Result<String, String> {
+        let mut device_buffers: HashMap<String, (CuDevicePtr, usize)> = HashMap::new();
+        for buffer in &profile.buffers {
+            let host_bytes = runtime_oracle_buffer_bytes(buffer)?;
+            let mut device_ptr: CuDevicePtr = 0;
+            let alloc_code =
+                unsafe { (symbols.cu_mem_alloc)(&mut device_ptr as *mut CuDevicePtr, host_bytes.len()) };
+            if alloc_code != 0 || device_ptr == 0 {
+                return Err(format!(
+                    "runtime output oracle allocation {:?} failed code={alloc_code}",
+                    buffer.name
+                ));
+            }
+            allocations.push((buffer.name.clone(), device_ptr));
+            let copy_code = unsafe {
+                (symbols.cu_memcpy_htod)(
+                    device_ptr,
+                    host_bytes.as_ptr().cast::<c_void>(),
+                    host_bytes.len(),
+                )
+            };
+            if copy_code != 0 {
+                return Err(format!(
+                    "runtime output oracle HtoD copy {:?} failed code={copy_code}",
+                    buffer.name
+                ));
+            }
+            device_buffers.insert(buffer.name.clone(), (device_ptr, host_bytes.len()));
+        }
+
+        let mut arg_storage = Vec::new();
+        for arg in &profile.args {
+            match arg.kind.as_str() {
+                "scalar_f32" => {
+                    let value = arg
+                        .value
+                        .as_ref()
+                        .ok_or_else(|| "runtime output oracle scalar_f32 arg missing value".to_string())
+                        .and_then(runtime_oracle_json_f32)?;
+                    arg_storage.push(RuntimeProbeArgStorage::F32(value));
+                }
+                "scalar_u32" => {
+                    let value = arg
+                        .value
+                        .as_ref()
+                        .ok_or_else(|| "runtime output oracle scalar_u32 arg missing value".to_string())
+                        .and_then(runtime_oracle_json_u32)?;
+                    arg_storage.push(RuntimeProbeArgStorage::U32(value));
+                }
+                "buffer" => {
+                    let name = arg
+                        .name
+                        .as_deref()
+                        .ok_or_else(|| "runtime output oracle buffer arg missing name".to_string())?;
+                    let (device_ptr, _) = device_buffers
+                        .get(name)
+                        .copied()
+                        .ok_or_else(|| format!("runtime output oracle arg references unknown buffer {name:?}"))?;
+                    arg_storage.push(RuntimeProbeArgStorage::DevicePtr(device_ptr));
+                }
+                other => {
+                    return Err(format!("runtime output oracle arg kind {other:?} is unsupported"));
+                }
+            }
+        }
+        let mut arg_ptrs = arg_storage
+            .iter_mut()
+            .map(RuntimeProbeArgStorage::as_mut_ptr)
+            .collect::<Vec<_>>();
+        let launch_code = unsafe {
+            (symbols.cu_launch_kernel)(
+                function_handle as CuFunction,
+                profile.grid[0],
+                profile.grid[1],
+                profile.grid[2],
+                profile.block[0],
+                profile.block[1],
+                profile.block[2],
+                0,
+                std::ptr::null_mut(),
+                arg_ptrs.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+        if launch_code != 0 {
+            return Err(format!(
+                "runtime output oracle launch kernel={kernel_name:?} failed code={launch_code}"
+            ));
+        }
+        let sync_code = unsafe { (symbols.cu_ctx_synchronize)() };
+        if sync_code != 0 {
+            return Err(format!(
+                "runtime output oracle context synchronize failed code={sync_code}"
+            ));
+        }
+        let (output_ptr, output_bytes) = device_buffers
+            .get(&profile.output_buffer)
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "runtime output oracle output buffer {:?} is not declared",
+                    profile.output_buffer
+                )
+            })?;
+        let mut output = vec![0u8; output_bytes];
+        let dtoh_code = unsafe {
+            (symbols.cu_memcpy_dtoh)(
+                output.as_mut_ptr().cast::<c_void>(),
+                output_ptr,
+                output.len(),
+            )
+        };
+        if dtoh_code != 0 {
+            return Err(format!(
+                "runtime output oracle DtoH copy {:?} failed code={dtoh_code}",
+                profile.output_buffer
+            ));
+        }
+        let passed = record_output_buffer_checksum_with_probe_bytes(
+            &profile.oracle_id,
+            &output,
+            &profile.expected_sha256,
+            &profile.producer,
+            &profile.output_target_id,
+            Some(active_artifact_id),
+            None,
+            &profile.probe_mode,
+            &profile.probe_config_hash,
+            &profile.probe_evidence_ref,
+        );
+        Ok(format!(
+            "[gpu-runtime-boundary] runtime_output_oracle_probe status={} profile={} schema={} kernel={} generation={} output_buffer={} bytes={} artifact_id={}",
+            if passed { "pass" } else { "fail" },
+            profile.profile_id,
+            log_optional_token(Some(&profile.schema_version)),
+            kernel_name,
+            active_generation,
+            profile.output_buffer,
+            output.len(),
+            active_artifact_id
+        ))
+    })();
+
+    for (_name, ptr) in allocations.iter().rev() {
+        let _ = unsafe { (symbols.cu_mem_free)(*ptr) };
+    }
+    result.map(Some)
 }
 
 fn capsule_id_for_publication(
@@ -1529,6 +1869,7 @@ impl Adapter for GpuModuleAdapter {
             };
             let function_handle_ids =
                 changed_function_handle_ids(&dispatcher_kernels, &expected_symbols);
+            let dispatcher_kernels_for_probe = dispatcher_kernels.clone();
             record_hmr_runtime_identity_snapshot();
             let previous_generation = current_launch_generation();
             install_launch_dispatcher_with_metadata(
@@ -1661,6 +2002,35 @@ impl Adapter for GpuModuleAdapter {
             });
             eprintln!("{publication_graph_line}");
             runtime_log_lines.push(publication_graph_line);
+            if !first_device_load {
+                match run_runtime_output_oracle_profile(
+                    &symbols,
+                    &dispatcher_kernels_for_probe,
+                    &expected_symbols,
+                    active_generation,
+                    &new_artifact_id,
+                ) {
+                    Ok(Some(line)) => {
+                        eprintln!("{line}");
+                        runtime_log_lines.push(line);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let reason = error
+                            .chars()
+                            .map(|ch| if ch.is_whitespace() { '_' } else { ch })
+                            .collect::<String>();
+                        let line = format!(
+                            "[gpu-runtime-boundary] runtime_output_oracle_probe status=fail generation={} artifact_id={} reason={}",
+                            active_generation,
+                            new_artifact_id,
+                            reason
+                        );
+                        eprintln!("{line}");
+                        runtime_log_lines.push(line);
+                    }
+                }
+            }
             for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
@@ -1982,6 +2352,22 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn ok_memcpy_htod(
+        _dst: CuDevicePtr,
+        _src: *const c_void,
+        _bytes: usize,
+    ) -> CuResult {
+        0
+    }
+
+    unsafe extern "C" fn ok_memcpy_dtoh(
+        _dst: *mut c_void,
+        _src: CuDevicePtr,
+        _bytes: usize,
+    ) -> CuResult {
+        0
+    }
+
     fn stub_symbols() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
             cu_init: ok_init,
@@ -1998,6 +2384,8 @@ mod tests {
             cu_mem_alloc: ok_mem_alloc,
             cu_mem_free: ok_mem_free,
             cu_memcpy_dtod: ok_memcpy_dtod,
+            cu_memcpy_htod: ok_memcpy_htod,
+            cu_memcpy_dtoh: ok_memcpy_dtoh,
         }
     }
 
