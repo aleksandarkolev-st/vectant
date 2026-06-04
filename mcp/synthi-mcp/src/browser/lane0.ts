@@ -7,7 +7,7 @@ export interface Lane0WindowV7 {
   event_seq_range: [number, number];
   event_ids: string[];
   focus_event_id: string;
-  flush_reason: "slidingWindow" | "navigation" | "mutationSignal";
+  flush_reason: "slidingWindow" | "navigation" | "mutationSignal" | "explicitHover" | "dragIntent";
 }
 
 export interface Lane0StatusV7 {
@@ -21,9 +21,9 @@ export interface Lane0StatusV7 {
   unresolved_event_count: number;
   stale_annotation_count: number;
   last_event_seq: number;
-  flush_policy: {
-    window_size: number;
-    immediate_flush_on: Array<"navigation" | "mutationSignal">;
+    flush_policy: {
+      window_size: number;
+      immediate_flush_on: Array<"navigation" | "mutationSignal" | "explicitHover" | "dragIntent">;
   };
 }
 
@@ -75,7 +75,7 @@ export function reduceLane0Windows(events: BrowserTraceEvent[]): Lane0ReductionV
       last_event_seq: last?.event_seq ?? 0,
       flush_policy: {
         window_size: WINDOW_SIZE,
-        immediate_flush_on: ["navigation", "mutationSignal"],
+        immediate_flush_on: ["navigation", "mutationSignal", "explicitHover", "dragIntent"],
       },
     },
   };
@@ -97,6 +97,8 @@ function windowFor(event: BrowserTraceEvent, events: BrowserTraceEvent[]): Lane0
     focus_event_id: event.event_id,
     flush_reason: event.kind === "navigation" || event.action === "navigate"
       ? "navigation"
+      : event.action === "hover" ? "explicitHover"
+      : event.action === "drag" ? "dragIntent"
       : isMutationSignal(event) ? "mutationSignal" : "slidingWindow",
   };
 }
@@ -137,6 +139,10 @@ function intentFor(event: BrowserTraceEvent, target: string, groupLabel: string)
       return `Provide ${target} for ${groupLabel}`;
     case "click":
       return isMutationSignal(event) ? `Commit ${groupLabel}` : `Activate ${target}`;
+    case "hover":
+      return `Reveal or inspect ${target}`;
+    case "drag":
+      return `Drag ${target}`;
     case "press":
       return `Press key for ${target}`;
     case "check":
@@ -155,6 +161,8 @@ function reasonsFor(event: BrowserTraceEvent, windowEvents: BrowserTraceEvent[],
   if (windowEvents.some(isMutationSignal)) reasons.push("window_contains_mutation_signal");
   if (windowEvents.some((candidate) => candidate.action === "fill" || candidate.action === "select")) reasons.push("window_contains_form_input");
   if (event.kind === "navigation" || event.action === "navigate") reasons.push("navigation_immediate_flush");
+  if (event.action === "hover") reasons.push("explicit_hover_intent");
+  if (event.action === "drag") reasons.push("drag_mode_intent");
   if (event.locator_candidates?.[0]) reasons.push("locator_candidate_available");
   if (elementFor(event)?.source_id) reasons.push("source_identity_available");
   if (reasons.length === 0) reasons.push("deterministic_fallback");

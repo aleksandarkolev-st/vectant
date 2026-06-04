@@ -626,6 +626,10 @@ function labelForAction(action: BrowserActionKind, targetLabel: string): string 
       return `Fill ${targetLabel}`;
     case "click":
       return `Click ${targetLabel}`;
+    case "hover":
+      return `Hover over ${targetLabel}`;
+    case "drag":
+      return `Drag ${targetLabel}`;
     case "press":
       return `Press key on ${targetLabel}`;
     case "select":
@@ -648,6 +652,10 @@ function intentForAction(action: BrowserActionKind, targetLabel: string): string
       return `Provide ${targetLabel} input`;
     case "click":
       return `Activate ${targetLabel}`;
+    case "hover":
+      return `Reveal or inspect ${targetLabel}`;
+    case "drag":
+      return `Move ${targetLabel} with explicit drag mode`;
     case "navigate":
       return `Reach ${targetLabel}`;
     case "wait":
@@ -660,6 +668,8 @@ function intentForAction(action: BrowserActionKind, targetLabel: string): string
 function expectedEffectsFor(action: BrowserActionKind, targetLabel: string, mutates: boolean): string[] {
   if (mutates) return [`${targetLabel} changes application state or reaches a mutation boundary.`];
   if (action === "fill" || action === "select") return [`${targetLabel} contains the parameter value.`];
+  if (action === "hover") return [`${targetLabel} reveal state is visible.`];
+  if (action === "drag") return [`${targetLabel} drag target remains reachable.`];
   if (action === "navigate") return [`The browser reaches ${targetLabel}.`];
   return [`${targetLabel} remains visible and actionable.`];
 }
@@ -854,6 +864,7 @@ function eventIsClosedShadowDom(event: BrowserTraceEvent): boolean {
 
 function eventIsPointerDrag(event: BrowserTraceEvent): boolean {
   const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  if (event.action === "drag" && dragClass !== "nativehtmldnd") return true;
   return /pointersensor|unknowndrag|canvasdrag/.test(dragClass) ||
     event.detail?.["pointer_drag"] === true;
 }

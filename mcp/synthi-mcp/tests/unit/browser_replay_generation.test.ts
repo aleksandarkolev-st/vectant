@@ -72,6 +72,41 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code.indexOf("await expect(target1).toBeVisible();")).toBeLessThan(generated.code.indexOf("await target1.click();"));
   });
 
+  it("generates hover and native drag steps only from explicit taught actions", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "hover-menu",
+        event_seq: 1,
+        action: "hover",
+        detail: {
+          alt_option_intent: true,
+          element: { role: "button", name: "More actions", source_id: "src_more" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"More actions\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+      event({
+        event_id: "drag-task",
+        event_seq: 2,
+        action: "drag",
+        value: "page.getByRole(\"list\", { name: \"Done\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "nativeHtmlDnd",
+          element: { role: "listitem", name: "Task", source_id: "src_task" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"listitem\", { name: \"Task\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("await target1.hover();");
+    expect(generated.code).toContain("await target2.dragTo(page.getByRole(\"list\", { name: \"Done\" }));");
+    expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
+  });
+
   it("prefers unique fallback candidates when duplicate button labels exist", () => {
     const generated = generatePlaywrightScript([
       event({

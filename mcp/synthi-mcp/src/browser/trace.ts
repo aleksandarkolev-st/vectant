@@ -271,6 +271,20 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       case "click":
         lines.push(`  await ${target}.click();`);
         break;
+      case "hover":
+        lines.push(`  await ${target}.hover();`);
+        break;
+      case "drag": {
+        const dropLocator = typeof event.detail?.["drop_locator"] === "string"
+          ? event.detail["drop_locator"]
+          : event.value;
+        if (dropLocator) {
+          lines.push(`  await ${target}.dragTo(${locatorExpressionForEvent(event, dropLocator)});`);
+        } else {
+          warnings.push(`event ${event.event_id} is a drag step without a durable drop target locator`);
+        }
+        break;
+      }
       case "fill":
         lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
         lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);

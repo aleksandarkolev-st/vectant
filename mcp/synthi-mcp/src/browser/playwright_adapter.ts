@@ -129,6 +129,13 @@ export class BrowserPlaywrightAdapter {
       case "click":
         await this.resolveLocator(page, selector).click();
         break;
+      case "hover":
+        await this.resolveLocator(page, selector).hover();
+        break;
+      case "drag":
+        if (!value) throw new Error("missing_drag_target");
+        await this.resolveLocator(page, selector).dragTo(this.resolveLocator(page, value));
+        break;
       case "fill":
         await this.resolveLocator(page, selector).fill(value ?? "");
         break;

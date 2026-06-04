@@ -281,13 +281,15 @@ export class BrowserBroker {
     return { ok: true, event };
   }
 
-  recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string }):
+  recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string; detail?: Record<string, unknown> }):
     | { ok: true; event: BrowserTraceEvent; lease_conflict: boolean }
     | { ok: false; error: string } {
     const gate = this.requireTeach(selection.tab_id, selection.url);
     if (!gate.ok) return gate;
     const normalized = this.normalizeSelectionOrigin(selection);
     if (!normalized.ok) return normalized;
+    const intentGate = this.requireExplicitIntent(selection.action, selection.detail);
+    if (!intentGate.ok) return intentGate;
     const lease_conflict = this.activeLease !== null && !this.activeLease.revoked;
     const event = this.trace.recordHumanAction({
       tab_id: selection.tab_id,
@@ -298,7 +300,7 @@ export class BrowserBroker {
       value: selection.value,
       field_name: selection.field_name,
       element: selection.element,
-      detail: { lease_conflict },
+      detail: { ...(selection.detail ?? {}), lease_conflict },
       security: this.securityForUrl(selection.url),
     });
     eventLog.push({ kind: "browser", action: "human_action", payload: { event, lease_conflict } });
@@ -503,6 +505,32 @@ export class BrowserBroker {
       diagnostics_approved: this.hasDiagnosticsConsent(url),
       auth_checkpoint_approved: this.hasAuthCheckpointAccess(url),
     };
+  }
+
+  private requireExplicitIntent(
+    action: BrowserActionKind,
+    detail: Record<string, unknown> | undefined
+  ): { ok: true } | { ok: false; error: string } {
+    if (action === "hover" && !this.hasExplicitHoverIntent(detail)) {
+      return { ok: false, error: "explicit_hover_intent_required" };
+    }
+    if (action === "drag" && !this.hasDragModeIntent(detail)) {
+      return { ok: false, error: "drag_mode_required" };
+    }
+    return { ok: true };
+  }
+
+  private hasExplicitHoverIntent(detail: Record<string, unknown> | undefined): boolean {
+    if (!detail) return false;
+    return detail["explicit_intent"] === true ||
+      detail["alt_option_intent"] === true ||
+      detail["modifier_key"] === "Alt" ||
+      detail["modifier_key"] === "Option";
+  }
+
+  private hasDragModeIntent(detail: Record<string, unknown> | undefined): boolean {
+    if (!detail) return false;
+    return detail["drag_mode"] === true || detail["explicit_intent"] === true;
   }
 
   private originOrNull(url: string): string | null {

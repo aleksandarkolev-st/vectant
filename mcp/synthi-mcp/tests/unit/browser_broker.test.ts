@@ -187,6 +187,69 @@ describe("browser broker privacy boundary", () => {
     expect(eventLog.query({ kind: "security" }).some((event) => event.code === "browser_human_action_during_agent_lease")).toBe(true);
   });
 
+  it("rejects passive hover and records only explicit hover intent", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com",
+      origin: "https://app.example.com",
+      action: "hover",
+      element: { role: "button", name: "Reveal menu" },
+    })).toEqual({ ok: false, error: "explicit_hover_intent_required" });
+
+    const response = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com",
+      origin: "https://app.example.com",
+      action: "hover",
+      detail: { alt_option_intent: true },
+      element: { role: "button", name: "Reveal menu" },
+    });
+
+    expect(response.ok).toBe(true);
+    const [event] = browserBroker.traceSnapshot();
+    expect(event).toEqual(expect.objectContaining({
+      action: "hover",
+      detail: expect.objectContaining({ alt_option_intent: true }),
+    }));
+  });
+
+  it("requires explicit drag mode before recording drag steps", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com",
+      origin: "https://app.example.com",
+      action: "drag",
+      value: "page.getByRole(\"listitem\", { name: \"Done\" })",
+      element: { role: "listitem", name: "Task" },
+    })).toEqual({ ok: false, error: "drag_mode_required" });
+
+    const response = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com",
+      origin: "https://app.example.com",
+      action: "drag",
+      value: "page.getByRole(\"listitem\", { name: \"Done\" })",
+      detail: { drag_mode: true, drag_class: "nativeHtmlDnd" },
+      element: { role: "listitem", name: "Task" },
+    });
+
+    expect(response.ok).toBe(true);
+    const [event] = browserBroker.traceSnapshot();
+    expect(event).toEqual(expect.objectContaining({
+      action: "drag",
+      value: "page.getByRole(\"listitem\", { name: \"Done\" })",
+      detail: expect.objectContaining({ drag_mode: true, drag_class: "nativeHtmlDnd" }),
+    }));
+  });
+
   it("assigns broker-owned trace order, version, and security metadata", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);

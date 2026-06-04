@@ -80,6 +80,35 @@ describe("Lane 0 sliding-window reducer", () => {
     expect(reduced.status.stale_annotation_count).toBe(0);
     expect(reduced.windows.map((window) => window.focus_event_id)).toEqual(["first", "second", "third"]);
   });
+
+  it("immediately flushes explicit hover and drag teaching signals", () => {
+    const reduced = reduceLane0Windows([
+      event({
+        event_id: "hover-menu",
+        event_seq: 1,
+        action: "hover",
+        detail: { alt_option_intent: true, element: { role: "button", name: "More actions" } },
+      }),
+      event({
+        event_id: "drag-card",
+        event_seq: 2,
+        action: "drag",
+        detail: { drag_mode: true, drag_class: "nativeHtmlDnd", element: { role: "listitem", name: "Task" } },
+      }),
+    ]);
+
+    expect(reduced.status.flush_policy.immediate_flush_on).toEqual(
+      expect.arrayContaining(["explicitHover", "dragIntent"]),
+    );
+    expect(reduced.windows).toEqual([
+      expect.objectContaining({ focus_event_id: "hover-menu", flush_reason: "explicitHover" }),
+      expect.objectContaining({ focus_event_id: "drag-card", flush_reason: "dragIntent" }),
+    ]);
+    expect(reduced.events[0]?.semantic?.intent).toBe("Reveal or inspect More actions");
+    expect(reduced.events[0]?.semantic?.reasons).toContain("explicit_hover_intent");
+    expect(reduced.events[1]?.semantic?.intent).toBe("Drag Task");
+    expect(reduced.events[1]?.semantic?.reasons).toContain("drag_mode_intent");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

@@ -10,6 +10,8 @@ export type BrowserConsentStatus = "granted" | "denied" | "unset";
 export type BrowserActionKind =
   | "click"
   | "fill"
+  | "hover"
+  | "drag"
   | "press"
   | "select"
   | "check"

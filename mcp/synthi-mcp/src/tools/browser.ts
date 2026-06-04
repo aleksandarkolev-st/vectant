@@ -330,9 +330,9 @@ export const BROWSER_TOOLS = [
       properties: {
         lease_id: { type: "string" },
         tab_id: { type: "string" },
-        action: { type: "string", enum: ["click", "fill", "press", "select", "check", "uncheck", "navigate", "wait"] },
+        action: { type: "string", enum: ["click", "fill", "hover", "drag", "press", "select", "check", "uncheck", "navigate", "wait"] },
         selector: { type: "string", description: "A generated Playwright locator string or raw CSS selector." },
-        value: { type: "string", description: "Fill text, key name, select option, or navigation URL depending on action." },
+        value: { type: "string", description: "Fill text, key name, select option, navigation URL, or drag target locator depending on action." },
       },
       required: ["lease_id", "action"],
     },
