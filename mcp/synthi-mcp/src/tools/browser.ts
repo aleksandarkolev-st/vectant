@@ -1,6 +1,7 @@
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
 import {
@@ -36,6 +37,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_get_unresolved_steps",
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
+  "synthi_browser_generate_private_tool_manifest",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",
@@ -262,6 +264,12 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_generate_private_tool_manifest",
+    description:
+      "Generate a private app-specific MCP tool manifest from the taught workflow contract. Includes run modes, parameters, auth durability, mutation policy, blockers, and backing Synthi tools; never includes auth artifact values.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "synthi_browser_run_workflow",
     description:
       "Replay the compiled workflow in the current authorized browser session under a control lease. prefixOnly stops before the first mutation boundary.",
@@ -450,6 +458,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return jsonResponse({ ok: true, workflow: browserBroker.compiledWorkflow() });
       case "synthi_browser_generate_script":
         return browserGenerateScriptTool(args);
+      case "synthi_browser_generate_private_tool_manifest":
+        return browserGeneratePrivateToolManifestTool();
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
       case "synthi_browser_explain_failure":
@@ -650,6 +660,15 @@ function browserEndTeachTool(args: unknown): ToolResponse {
 function browserGenerateScriptTool(args: unknown): ToolResponse {
   const mode = normalizeReplayMode(obj(args)["mode"]);
   return jsonResponse({ ok: true, ...browserBroker.generatedScript(mode) });
+}
+
+function browserGeneratePrivateToolManifestTool(): ToolResponse {
+  const workflow = browserBroker.compiledWorkflow();
+  const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+  return jsonResponse({
+    ok: manifest.status !== "blocked",
+    manifest,
+  });
 }
 
 function browserTraceStatusTool(): ToolResponse {
