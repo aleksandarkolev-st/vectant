@@ -365,6 +365,7 @@ mod tests {
             ManagedBufferRecord {
                 ptr: 0x10,
                 bytes: 1024,
+                allocation_id: "runtime-allocation-a".into(),
                 semantic_name: Some("positions".into()),
                 lifetime_hint: Some("persistent".into()),
                 dirty: true,
@@ -372,6 +373,7 @@ mod tests {
             ManagedBufferRecord {
                 ptr: 0x20,
                 bytes: 2048,
+                allocation_id: "runtime-allocation-b".into(),
                 semantic_name: Some("scratch_tmp".into()),
                 lifetime_hint: Some("scratch".into()),
                 dirty: false,
@@ -379,6 +381,7 @@ mod tests {
             ManagedBufferRecord {
                 ptr: 0x30,
                 bytes: 4096,
+                allocation_id: "runtime-allocation-c".into(),
                 semantic_name: None,
                 lifetime_hint: None,
                 dirty: false,

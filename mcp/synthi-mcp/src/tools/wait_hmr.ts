@@ -5,14 +5,24 @@ import {
   type HmrTerminalEvent,
 } from "../hmr.js";
 import {
+  errorResponse,
   errorFromException,
   jsonResponse,
   type ToolResponse,
 } from "./shared.js";
+import {
+  GPU_HMR_PROOF_STATES,
+  classifyGpuHmrProofMessage,
+  isKnownGpuHmrProofState,
+  validateGpuHmrProofState,
+  type GpuHmrProofTelemetry,
+} from "../gpu_proof.js";
 
 interface WaitHmrArgs {
   timeoutMs?: unknown;
   module?: unknown;
+  requiredGpuProofState?: unknown;
+  requireGpuFullRuntimeProof?: unknown;
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -39,6 +49,64 @@ function terminalEventFromClassification(
   };
 }
 
+function requiredGpuProofState(args: WaitHmrArgs): string | null {
+  if (args.requireGpuFullRuntimeProof === true) {
+    return "gpu-hmr-full-runtime-proven";
+  }
+  if (typeof args.requiredGpuProofState !== "string" || !args.requiredGpuProofState.trim()) {
+    return null;
+  }
+  return args.requiredGpuProofState.trim();
+}
+
+function latestGpuProofFromAttached(attached: ReturnType<typeof session.require>): GpuHmrProofTelemetry | null {
+  const hmr = attached.channels.hmr as {
+    latestGpuProof?: () => GpuHmrProofTelemetry | null;
+  };
+  return hmr.latestGpuProof?.() ?? null;
+}
+
+function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unknown> | null {
+  if (proof === null) return null;
+  return {
+    schemaVersion: proof.schemaVersion,
+    proofId: proof.proofId,
+    proofArtifactPath: proof.proofArtifactPath,
+    resultState: proof.resultState,
+    degradedState: proof.degradedState,
+    degradedReason: proof.degradedReason,
+    label: proof.label,
+    source: proof.source,
+    observedAt: proof.observedAt,
+  };
+}
+
+function responseWithGpuProofValidation(
+  payload: Record<string, unknown>,
+  proof: GpuHmrProofTelemetry | null,
+  requiredState: string | null
+): ToolResponse {
+  if (proof !== null) {
+    payload.gpu_proof = gpuProofPayload(proof);
+  }
+  if (requiredState === null) {
+    return jsonResponse(payload);
+  }
+  if (!isKnownGpuHmrProofState(requiredState)) {
+    return errorResponse("invalid_gpu_hmr_required_proof_state", {
+      requiredGpuProofState: requiredState,
+      allowed: GPU_HMR_PROOF_STATES,
+    });
+  }
+
+  const validation = validateGpuHmrProofState(proof, requiredState);
+  payload.gpu_proof_validation = validation;
+  if (!validation.satisfied) {
+    return errorResponse("gpu_hmr_proof_insufficient", payload);
+  }
+  return jsonResponse(payload);
+}
+
 export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   const a = (args ?? {}) as WaitHmrArgs;
   const timeoutMs =
@@ -46,15 +114,19 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       ? a.timeoutMs
       : DEFAULT_TIMEOUT_MS;
   const module = typeof a.module === "string" && a.module.trim() ? a.module.trim() : undefined;
+  const requiredProofState = requiredGpuProofState(a);
   let unsubscribePostApply: (() => void) | null = null;
 
   try {
     const start = Date.now();
     const attached = session.require();
+    let latestGpuProof = latestGpuProofFromAttached(attached);
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
     unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
+      const proof = classifyGpuHmrProofMessage(msg);
+      if (proof) latestGpuProof = proof;
       const cls = classifyHmrMessage(msg);
       if (!cls) return;
       if (cls.status === "applied") {
@@ -114,14 +186,14 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         postApplyWait.cancel();
         if (outcome.kind === "terminal" && outcome.terminal) {
           const late = terminalEventFromClassification(outcome.terminal, Date.now() - start);
-          return jsonResponse({
+          return responseWithGpuProofValidation({
             status: late.status,
             elapsedMs: Date.now() - start,
             hmrElapsedMs: late.elapsedMs,
             source: late.source,
             detail: late.detail ?? null,
             post_apply_terminal: true,
-          });
+          }, latestGpuProof, requiredProofState);
         }
         if (outcome.kind === "terminal") {
           frameGate = {
@@ -150,14 +222,14 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         const lateTerminal = await waitForPostApplyTerminal(observeMs).promise;
         if (lateTerminal) {
           const late = terminalEventFromClassification(lateTerminal, Date.now() - start);
-          return jsonResponse({
+          return responseWithGpuProofValidation({
             status: late.status,
             elapsedMs: Date.now() - start,
             hmrElapsedMs: late.elapsedMs,
             source: late.source,
             detail: late.detail ?? null,
             post_apply_terminal: true,
-          });
+          }, latestGpuProof, requiredProofState);
         }
         frameGate = {
           status: "disabled",
@@ -168,14 +240,14 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       }
     }
 
-    return jsonResponse({
+    return responseWithGpuProofValidation({
       status: result.status,
       elapsedMs: Date.now() - start,
       hmrElapsedMs: result.elapsedMs,
       source: result.source,
       detail: result.detail ?? null,
       ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
-    });
+    }, latestGpuProof, requiredProofState);
   } catch (err) {
     return errorFromException("wait_hmr_failed", err);
   } finally {

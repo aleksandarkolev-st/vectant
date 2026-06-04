@@ -42,7 +42,13 @@
     "soak": "node tests/soak/soak_loop.mjs",
     "live:phase3": "node scripts/live-test-phase3.mjs",
     "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs",
-    "live:lease-contention": "node scripts/live-lease-contention.mjs"
+    "live:lease-contention": "node scripts/live-lease-contention.mjs",
+    "proof:real-rocm": "node scripts/gpu-hmr-real-rocm-repo-validation.mjs",
+    "proof:real-rocm:warm": "node -e \"process.env.SYNTHI_REAL_ROCM_REUSE_WORKER_REPO='1'; process.env.SYNTHI_REAL_ROCM_CLEAN_BUILD='0'; import('./scripts/gpu-hmr-real-rocm-repo-validation.mjs')\"",
+    "proof:hiprt:warm": "node scripts/hiprt-light-math-warm-proof.mjs",
+    "proof:hiprt:warm:camera-rays": "node -e \"process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH='mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
+    "proof:hiprt:same-process": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
+    "proof:hiprt:same-process:camera-rays": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH='mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json'; import('./scripts/hiprt-light-math-warm-proof.mjs')\""
   },
   "engines": {
     "node": ">=18.0.0"

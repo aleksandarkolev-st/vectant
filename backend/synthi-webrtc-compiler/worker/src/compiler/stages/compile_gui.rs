@@ -4,7 +4,7 @@ use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::serialization_utils::calculate_hash;
 use crate::compiler::stages::compile_helpers::{
     compile_to_object_command, cpp_compile_command, filter_unresolved_manifest_library_flags,
-    link_object_to_so_command, object_path_for_so,
+    link_object_to_so_command, object_path_for_so, shared_object_runtime_dependency_report,
 };
 use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
@@ -234,8 +234,18 @@ pub async fn compile_gui(
 
                 eprintln!("[CompileGUI] overall status: {}", output.status);
 
-                if !output.status.success() {
-                    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+                let runtime_dependency_stderr = if output.status.success() {
+                    shared_object_runtime_dependency_report(&gui_out).await
+                } else {
+                    None
+                };
+                if let Some(stderr) = runtime_dependency_stderr.as_deref() {
+                    eprintln!("[CompileGUI] runtime dependency check FAILED:\n{stderr}");
+                }
+
+                if !output.status.success() || runtime_dependency_stderr.is_some() {
+                    let stderr_str = runtime_dependency_stderr
+                        .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).to_string());
                     eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr_str);
 
                     // ── ULTRAPLAN Phase 6: manifest heal (link errors) ──
@@ -484,6 +494,65 @@ pub async fn compile_gui(
                             anyhow::bail!("GUI compilation failed: {}", truncated);
                         }
                     } // end source-heal else-branch (Phase 6 manifest_healed=false)
+                }
+
+                if let Some(stderr) = shared_object_runtime_dependency_report(&gui_out).await {
+                    eprintln!(
+                        "[CompileGUI] final runtime dependency check FAILED:\n{}",
+                        stderr
+                    );
+                    let manifest_healed =
+                        crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+                            &stderr,
+                            dir_path,
+                            "gui",
+                            &content,
+                            |m| {
+                                let mut cmd =
+                                    cpp_compile_command(m.select_compiler(ModuleKind::Gui));
+                                let retry_compiler = m.select_compiler(ModuleKind::Gui);
+                                cmd.arg(format!("-std={}", m.std));
+                                for f in &m.common_flags {
+                                    cmd.arg(f);
+                                }
+                                cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                                let mut retry_link_flags = m.gui_link_flags.clone();
+                                retry_link_flags.push("-ldl".to_string());
+                                retry_link_flags.push("-rdynamic".to_string());
+                                let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                                    retry_compiler,
+                                    &retry_link_flags,
+                                    dir_path,
+                                );
+                                for f in filtered_link_flags {
+                                    cmd.arg(f);
+                                }
+                                cmd.current_dir(dir_path);
+                                cmd
+                            },
+                        )
+                        .await
+                        .is_some();
+                    if !manifest_healed {
+                        let truncated = if stderr.len() > 500 {
+                            format!("{}...", &stderr[..500])
+                        } else {
+                            stderr
+                        };
+                        anyhow::bail!(
+                            "GUI shared object runtime dependencies unresolved: {truncated}"
+                        );
+                    }
+                    if let Some(stderr) = shared_object_runtime_dependency_report(&gui_out).await {
+                        let truncated = if stderr.len() > 500 {
+                            format!("{}...", &stderr[..500])
+                        } else {
+                            stderr
+                        };
+                        anyhow::bail!(
+                            "GUI shared object runtime dependencies unresolved: {truncated}"
+                        );
+                    }
                 }
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();

@@ -42,6 +42,7 @@ use anyhow::Context;
 use anyhow::Result;
 #[cfg(feature = "gpu-hmr")]
 use regex::Regex;
+use serde::Serialize;
 #[cfg(feature = "gpu-hmr")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "gpu-hmr")]
@@ -106,6 +107,27 @@ pub struct DeviceCompileOutcome {
     /// Raw stderr from the device compiler — preserved verbatim for the
     /// healer (Tier-1) when the compile fails.
     pub stderr: String,
+    /// Structured compile provenance for GPU HMR proof artifacts.
+    pub proof_metadata: DeviceCompileProofMetadata,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCompileProofMetadata {
+    pub compiler_executable: Option<String>,
+    pub compiler_identity: Option<String>,
+    pub device_compiler: Option<String>,
+    pub gpu_vendor: Option<String>,
+    pub gpu_arch: Vec<String>,
+    pub target_triple: Option<String>,
+    pub sdk_version: Option<String>,
+    pub source_filename: Option<String>,
+    pub effective_device_flags: Vec<String>,
+    pub compile_command_hash: Option<String>,
+    pub dependency_hash: Option<String>,
+    pub dependency_method: Option<String>,
+    pub artifact_cache_key: Option<String>,
+    pub cache_hit: bool,
 }
 
 /// Phase-0 entry point. Returns `Ok(None)` when:
@@ -266,12 +288,24 @@ async fn compile_device_inner(
             &current_source,
         )
         .await?;
+        let proof_metadata = device_compile_proof_metadata(
+            workspace_dir,
+            compiler_exe,
+            gpu,
+            source_filename,
+            &current_source,
+            cache_key.as_ref(),
+            false,
+        )
+        .await?;
         if let Some(cache_key) = cache_key.as_ref() {
             if restore_cached_device_artifact(workspace_dir, &cache_key.cache_key, &artifact_path)
                 .await?
             {
                 let artifact_exported_symbols =
                     inspect_device_artifact_exported_symbols(gpu.vendor, &artifact_path).await;
+                let mut proof_metadata = proof_metadata.clone();
+                proof_metadata.cache_hit = true;
                 eprintln!(
                     "[compile-device] artifact cache hit key={} dependency_hash={} dependency_method={} compile_command_hash={} artifact={}",
                     cache_key.cache_key,
@@ -295,6 +329,7 @@ async fn compile_device_inner(
                     artifact_exported_symbols,
                     diagnostics: GpuToolchainDiagnostics::default(),
                     stderr: String::new(),
+                    proof_metadata,
                 }));
             }
         }
@@ -346,6 +381,7 @@ async fn compile_device_inner(
                 artifact_exported_symbols,
                 diagnostics: compile.diagnostics,
                 stderr: compile.stderr,
+                proof_metadata,
             }));
         }
 
@@ -1174,6 +1210,49 @@ async fn device_artifact_cache_key(
         dependency_method: dependency_digest.method,
         compile_command_hash,
     }))
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn device_compile_proof_metadata(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+    source: &str,
+    cache_key: Option<&DeviceArtifactCacheKey>,
+    cache_hit: bool,
+) -> Result<DeviceCompileProofMetadata> {
+    let normalized_command =
+        normalized_device_compile_command_tokens(workspace_dir, compiler_exe, gpu, source_filename);
+    let dependency_digest = match cache_key {
+        Some(cache_key) => Some(DeviceDependencyDigest {
+            hash: cache_key.dependency_hash.clone(),
+            method: cache_key.dependency_method.clone(),
+        }),
+        None => device_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename, source)
+            .await?,
+    };
+
+    Ok(DeviceCompileProofMetadata {
+        compiler_executable: Some(compiler_exe.to_string()),
+        compiler_identity: device_compiler_identity(compiler_exe).await?,
+        device_compiler: Some(gpu.device_compiler.executable().to_string()),
+        gpu_vendor: Some(gpu.vendor.as_str().to_string()),
+        gpu_arch: gpu.arch.clone(),
+        target_triple: Some(target_triple_fingerprint(gpu)),
+        sdk_version: Some(gpu_sdk_version_fingerprint(gpu)),
+        source_filename: Some(source_filename.replace('\\', "/")),
+        effective_device_flags: gpu.device_flags.clone(),
+        compile_command_hash: Some(
+            cache_key
+                .map(|cache_key| cache_key.compile_command_hash.clone())
+                .unwrap_or_else(|| hash_string_sequence("compile_command", &normalized_command)),
+        ),
+        dependency_hash: dependency_digest.as_ref().map(|digest| digest.hash.clone()),
+        dependency_method: dependency_digest.as_ref().map(|digest| digest.method.clone()),
+        artifact_cache_key: cache_key.map(|cache_key| cache_key.cache_key.clone()),
+        cache_hit,
+    })
 }
 
 #[cfg(feature = "gpu-hmr")]

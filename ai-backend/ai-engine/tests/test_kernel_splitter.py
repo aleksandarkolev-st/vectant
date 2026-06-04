@@ -667,6 +667,21 @@ def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
     assert "remove that runtime launch" in prompt
 
 
+def test_build_split_retry_prompt_guides_source_launch_attachment_and_signature():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- source_launch_host_path_not_attached: Generated core launches a source-reachable kernel 'saxpy_kernel' without an explicit source-location wrapper.",
+            "- invalid_synthi_launch_signature: synthi_gpu_launch_source_location has the wrong arity.",
+        ],
+    )
+
+    assert "synthi_gpu_launch_source_location" in prompt
+    assert '"source_instrumented"' in prompt
+    assert "Do not omit the shared-bytes slot" in prompt
+    assert "takes 9 arguments" in prompt
+
+
 def test_build_split_retry_prompt_guides_repaired_source_launch_arg_removals():
     prompt = build_split_retry_prompt(
         "original prompt",
@@ -714,6 +729,8 @@ def test_source_launch_graph_contract_includes_bounded_source_snippets():
     assert '"sourceSnippet"' in contract
     assert "MegaKernel<<<grid, block, 0, stream>>>(render_data)" in contract
     assert '"requiredHostArgumentOwners":["render_data"]' in contract
+    assert "synthi_gpu_launch_source_location" in contract
+    assert "source_instrumented" in contract
 
 
 def test_split_repair_retry_notes_surface_launch_arg_repairs():
@@ -847,7 +864,7 @@ def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
         {
             "render_pass.cpp": (
                 'void setup(){ kernel.set_kernel_function_name("shade_pixels"); }\n'
-                'void draw(){ kernel.launch_asynchronous(BlockW, BlockH, w, h, args, stream); }'
+                'void draw(){ kernel.launch_asynchronous(BlockW, BlockH, w, h, launch_args, stream); }'
             )
         }
     )

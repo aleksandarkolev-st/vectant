@@ -138,4 +138,48 @@ describe("synthi_wait_hmr", () => {
     expect(body.post_apply_terminal).toBe(true);
     expect(body.detail?.reason).toContain("post-reload device dispatch rejected");
   });
+
+  it("returns the latest GPU proof state with wait_hmr", async () => {
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        schemaVersion: "synthi.gpu.hmr.proof.v1",
+        resultState: "gpu-hmr-symbol-bound",
+        degradedState: "gpu-hmr-dispatch-unobserved",
+        degradedReason: "runtime_dispatch_not_observed",
+        label: "gpu-hmr-partial",
+        proofId: "gpu-proof:abc",
+        proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_abc.json",
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500 });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      gpu_proof?: { resultState?: string; degradedState?: string; proofId?: string };
+    };
+    expect(body.gpu_proof?.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(body.gpu_proof?.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(body.gpu_proof?.proofId).toBe("gpu-proof:abc");
+  });
+
+  it("fails wait_hmr when requested GPU proof is stronger than observed", async () => {
+    installFakeAttached(async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }));
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+  });
 });

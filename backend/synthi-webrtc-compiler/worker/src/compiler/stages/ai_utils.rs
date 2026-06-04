@@ -550,7 +550,12 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     let cache_entries_before_lookup = {
         let cache = get_ai_split_cache().lock().await;
-        if let Some(cached) = cache.get(&source_hash) {
+        if req.bypass_ai_split_cache {
+            eprintln!(
+                "[AI Split] Level 1 BYPASS requested (cache entries: {})",
+                cache.len()
+            );
+        } else if let Some(cached) = cache.get(&source_hash) {
             eprintln!("[AI Split] Level 1 HIT (exact source_hash match)");
             return Ok(with_split_cache_report(
                 cached.result.clone(),
@@ -559,8 +564,9 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 "exact_source_hash",
                 cache.len(),
             ));
+        } else {
+            eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
         }
-        eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
         cache.len()
     };
 
@@ -776,7 +782,11 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         res,
         source_hash,
         false,
-        "exact_source_hash_miss",
+        if req.bypass_ai_split_cache {
+            "bypass_requested"
+        } else {
+            "exact_source_hash_miss"
+        },
         cache_entries_before_lookup,
     );
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
@@ -1015,6 +1025,7 @@ pub async fn perform_ai_diff_patch(
 pub struct GpuDiffPatchResult {
     pub reload_plan: String,
     pub edits: Vec<crate::hmr::edit_applier::Edit>,
+    pub fission_candidate: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1023,6 +1034,8 @@ struct GpuDiffPatchResponse {
     reload_plan: Option<String>,
     #[serde(default)]
     edits: Vec<crate::hmr::edit_applier::Edit>,
+    #[serde(rename = "fissionCandidate", default)]
+    fission_candidate: Option<serde_json::Value>,
     #[serde(default)]
     elapsed_seconds: Option<f64>,
 }
@@ -1096,6 +1109,7 @@ pub async fn perform_gpu_ai_diff_patch(
     Ok(GpuDiffPatchResult {
         reload_plan,
         edits: parsed.edits,
+        fission_candidate: parsed.fission_candidate,
     })
 }
 
@@ -1560,6 +1574,25 @@ mod tests {
     }
 
     #[test]
+    fn gpu_diff_patch_response_preserves_fission_candidate_proposal() {
+        let parsed: GpuDiffPatchResponse = serde_json::from_value(json!({
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "islandId": "island:proposal",
+                "targetSymbols": ["step"],
+                "proposalSource": "ai_delta"
+            }
+        }))
+        .unwrap();
+
+        let candidate = parsed.fission_candidate.expect("fission candidate");
+        assert_eq!(candidate["islandId"], "island:proposal");
+        assert_eq!(candidate["targetSymbols"], json!(["step"]));
+        assert_eq!(candidate["proposalSource"], "ai_delta");
+    }
+
+    #[test]
     fn summarizes_ai_error_body_detail_object() {
         let body = json!({
             "detail": {
@@ -1703,11 +1736,13 @@ mod tests {
             source: "__global__ void cache_poison_probe(float* x) { x[0] = 1.0f; }".to_string(),
             session_id: None,
             files: Vec::new(),
+            file_refs: Vec::new(),
             is_gui: true,
             width: None,
             height: None,
             supports_h265: None,
             use_ai_split: true,
+            bypass_ai_split_cache: false,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,
@@ -1741,11 +1776,13 @@ mod tests {
             source: "__global__ void healed_cache_probe(float* x) { x[0] = 1.0f; }".to_string(),
             session_id: None,
             files: Vec::new(),
+            file_refs: Vec::new(),
             is_gui: true,
             width: None,
             height: None,
             supports_h265: None,
             use_ai_split: true,
+            bypass_ai_split_cache: false,
             user_requested_ai: false,
             user_requested_deterministic: false,
             force_gpu_ai_delta: false,

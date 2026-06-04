@@ -34,14 +34,57 @@ For the latest HIPRT validation, the system proved:
 - `fallbackUsed=false`.
 - Full-device fallback was not used on the HMR path.
 
-The system did not prove full HIPRT render correctness:
+As of 2026-06-04, the HIPRT path also has an accepted profiled runtime proof for the `hiprt-megakernel-direct-light-zero` edit contract:
 
-- No session-scoped `synthi_gpu_launch` line was observed for the HIPRT run.
-- No post-HMR fresh frame was captured.
-- No deterministic output/readback was verified.
-- The generated core did not preserve the real HIPRT render loop.
+- Proof id: `hiprt-warm-runtime-proof:sha256:15968857c7025c80ccbc15bfdc8ee4b7bfd319336cd68e24edd6b51a38bd87c0`.
+- Proof artifact: `mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260604145153-proof.json`.
+- Mode: `same-process`.
+- Runtime adapter target: profile-provided HIPRT `Megakernel (1 SPP)` / `MegaKernel`.
+- Live in-process recompile time: `82 ms`.
+- Same-process trigger wait: `534 ms`.
+- Adapter rebuild time for this run: `12226 ms`.
+- Total proof wall time: `14503 ms`.
+- Visual evidence:
+  - baseline: `hiprt-warm-light-math-20260604145153-same-process-baseline-framebuffer.png`,
+  - changed: `hiprt-warm-light-math-20260604145153-same-process-changed-framebuffer.png`,
+  - amplified diff: `hiprt-warm-light-math-20260604145153-diff-amplified.png`.
+- Visual delta:
+  - changed pixel ratio: `0.41822916666666665`,
+  - mean absolute delta: `32.94620804398148`,
+  - max channel delta: `255`.
 
-Therefore HIPRT is currently partial artifact reload proven, not full runtime render proven.
+This proves that the HIPRT original runtime can remain in the same process, observe the edited source, recompile `MegaKernel`, launch the changed function pointer, and produce a fresh ray-traced framebuffer whose lighting changes match the edit contract.
+
+The target progression also includes an accepted smaller non-`MegaKernel` proof:
+
+- Proof id: `hiprt-warm-runtime-proof:sha256:feb225f5d6106c7fa7add8ea0f4eadb399fd83d41b0b4c8a3bf3b0bacdea60d0`.
+- Proof artifact: `mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260604144719-proof.json`.
+- Profile: `hiprt-camera-rays-horizontal-mirror`.
+- Runtime adapter target: profile-provided HIPRT `Fill G-Buffer` / `CameraRays`.
+- Live in-process recompile time: `45 ms`.
+- Same-process trigger wait: `383 ms`.
+- Adapter rebuild time for this run: `3702 ms`.
+- Total proof wall time: `244440 ms`, including cold worker build bootstrap after the strict ROCm validator had replaced the HIPRT checkout.
+- Visual evidence:
+  - baseline: `hiprt-warm-light-math-20260604144719-same-process-baseline-framebuffer.png`,
+  - changed: `hiprt-warm-light-math-20260604144719-same-process-changed-framebuffer.png`,
+  - amplified diff: `hiprt-warm-light-math-20260604144719-diff-amplified.png`.
+- Visual delta:
+  - changed pixel ratio: `0.9140190972222222`,
+  - mean absolute delta: `53.12725983796296`,
+  - max channel delta: `255`.
+
+This does not mean every HIPRT edit or every large renderer is now `gpu-hmr-full-runtime-proven`. The accepted proof is profile-scoped. Broader use still requires per-profile source anchors, required kernel lists, ABI/provenance gates, epoch evidence, and deterministic output-oracle coverage.
+
+The latest strict real-ROCm CI-grade validator run also passes the runtime layers it can prove for `ROCm/rocm-examples` `HIP-Basic/saxpy`:
+
+- Run slug: `gpu-real-rocm-rocm-examples-20260604143822`.
+- Model: `gemini-3.5-flash`.
+- First AI split compile: `73454 ms`, HMR wait: `9482 ms`, status: `applied`.
+- Source delta HMR compile: `1758 ms`, HMR wait: `1342 ms`, status: `applied`.
+- Runtime proof layers passed: ABI, fission, RAM artifact transport, epoch graph, dispatch safety, host preservation, and original-host-path attachment.
+- Full proof ceiling for this target: `gpu-hmr-dispatch-safe-proven`.
+- Remaining degraded reason: `output_oracle_not_collected`; the saxpy target has no framebuffer oracle in this run, so full runtime proof remains blocked at the output stage and the publication is quarantined.
 
 The current runtime replacement model is also still too stall-heavy for the desired production architecture. It can load a standby module, promote it, and unload retired modules, but the safe path is still organized around synchronization before replacement. The target architecture must move toward generation-published capsules: old code remains live for in-flight work, new launches use the new generation, and retirement happens only after stream fences prove the old generation is no longer reachable.
 
@@ -1855,6 +1898,31 @@ Acceptance:
 - result state is `gpu-hmr-full-runtime-proven`.
 
 If any item fails, the run must report the exact degraded state.
+
+## Operational Command Surface
+
+The validation workflow exposes strict and warm modes through `mcp/synthi-mcp/package.json`:
+
+- `npm --prefix mcp/synthi-mcp run proof:real-rocm`
+  - Runs the strict real ROCm validator with the default cold worker setup.
+- `npm --prefix mcp/synthi-mcp run proof:real-rocm:warm`
+  - Enables `SYNTHI_REAL_ROCM_REUSE_WORKER_REPO=1`.
+  - Enables `SYNTHI_REAL_ROCM_CLEAN_BUILD=0`.
+  - Reuses the worker repo and build directory only when the worker repo commit matches the host validation commit and the worker tree is clean.
+  - Falls back to the original cold worker copy when reuse is unsafe.
+- `npm --prefix mcp/synthi-mcp run proof:hiprt:warm`
+  - Runs the profile-driven HIPRT visual proof in fresh-process mode.
+  - Supports `SYNTHI_HIPRT_WARM_PROFILE_PATH`, `SYNTHI_HIPRT_WARM_PROFILE_JSON`, and `SYNTHI_HIPRT_WARM_REQUIRED_KERNELS`.
+- `npm --prefix mcp/synthi-mcp run proof:hiprt:warm:camera-rays`
+  - Runs the smaller non-`MegaKernel` `CameraRays` profile in fresh-process mode.
+- `npm --prefix mcp/synthi-mcp run proof:hiprt:same-process`
+  - Runs the profile-driven HIPRT visual proof in same-process mode.
+  - Injects the runtime adapter, waits for a reload trigger, recompiles the selected HIPRT kernel inside the running process, relaunches the original HIPRT render path, and compares baseline/changed/diff images.
+- `npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays`
+  - Runs the smaller non-`MegaKernel` `CameraRays` profile in same-process mode.
+  - If the HIPRT checkout exists but `build/HIPRTPathTracer` is absent, the runner bootstraps the CMake build before proving the hot reload.
+
+The warm real-ROCm mode is a speed optimization, not a weaker proof mode. The report records `worker_repo_reuse`, including whether reuse was requested, whether it was accepted, the expected and actual commit, dirty count, and fallback reason.
 
 ## Validation Matrix
 

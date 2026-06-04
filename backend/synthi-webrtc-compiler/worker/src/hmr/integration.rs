@@ -24,7 +24,10 @@ use std::time::Instant;
 use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, LifecycleEvent};
 use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
-use crate::hmr::adapter_trait::{AdapterHealth, AdapterReloadRequest, AdapterReloadResult};
+use crate::hmr::adapter_trait::{
+    AdapterHealth, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
+    ReloadCapsuleMetadata,
+};
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
 use crate::hmr::build_manifest::BuildManifest;
 use crate::hmr::candidate::CandidateState;
@@ -306,6 +309,7 @@ impl HmrPipeline {
 
     pub fn validate_active_candidate(&mut self, total_reload_ms: u64) -> PipelineNotifications {
         let mut notifications = PipelineNotifications::new();
+        let mut validated = false;
 
         if let Some(active) = self.candidate_queue.active_mut() {
             if active.state == CandidateState::Loading {
@@ -325,6 +329,11 @@ impl HmrPipeline {
                 generation: active.id.generation,
                 result,
             });
+            validated = true;
+        }
+
+        if validated {
+            self.consecutive_failures = 0;
         }
 
         notifications.extend(self.tick_candidates(current_time_ms()));
@@ -457,6 +466,8 @@ impl HmrPipeline {
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
+            artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: matches!(
                 planner_output.reason.state_strategy,
                 StateStrategy::Preserve | StateStrategy::Migrate
@@ -632,6 +643,8 @@ impl HmrPipeline {
         &mut self,
         language: &str,
         manifest: &BuildManifest,
+        artifact_blob: Option<ReloadArtifactBlob>,
+        capsule_metadata: Option<ReloadCapsuleMetadata>,
         reload_id: &str,
     ) -> (AdapterReloadResult, PipelineNotifications) {
         let start = Instant::now();
@@ -649,6 +662,8 @@ impl HmrPipeline {
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
+            artifact_blob,
+            capsule_metadata,
             preserve_state: true,
             timeout_ms: 5000,
         };
@@ -959,6 +974,73 @@ fn current_time_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod current_api_tests {
+    use super::*;
+    use crate::hmr::build_manifest::{
+        BuildSlot, HealthcheckStrategy, PreviewPreservationMode, SnapshotMode,
+    };
+    use crate::hmr::planner_decision::ReloadDecision;
+
+    fn make_manifest(language: &str) -> BuildManifest {
+        BuildManifest {
+            preview_id: "test-preview".into(),
+            language: language.into(),
+            adapter_family: "DynamicLibrary".into(),
+            capability_tier: 2,
+            slot: BuildSlot::Core,
+            artifact_path: "/tmp/test.so".into(),
+            artifact_hash: "abc123".into(),
+            toolchain_fingerprint: "gcc-12".into(),
+            abi_version: "1.0".into(),
+            state_schema_hash: "s1".into(),
+            snapshot_modes: vec![SnapshotMode::Binary],
+            capabilities: vec![],
+            preview_preservation_mode: PreviewPreservationMode::KeepAlive,
+            dirty_unit_source: None,
+            exported_symbols: vec!["core_on_load".into(), "core_on_update".into()],
+            dependencies: vec![],
+            healthcheck_strategy: HealthcheckStrategy::SymbolCheck,
+            rollout_flags: Default::default(),
+            build_time_ms: 200,
+            translation_units: None,
+            dirty_units: None,
+            header_fingerprint: None,
+            source_map_metadata: None,
+            candidate_generation: None,
+            boundary_map_version: None,
+            provenance_id: None,
+        }
+    }
+
+    fn warm_planner_output() -> PlannerOutput {
+        PlannerOutput {
+            decision: ReloadDecision::WarmReload,
+            reason: crate::hmr::planner_decision::PlannerReasonBundle {
+                decision: ReloadDecision::WarmReload,
+                decision_reason: "test".into(),
+                decision_code: "TEST".into(),
+                state_strategy: StateStrategy::Migrate,
+                fallback_strategy: crate::hmr::planner_decision::FallbackStrategy::ColdReload,
+                user_message: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn candidate_validation_clears_consecutive_failures() {
+        let mut pipeline = HmrPipeline::new("test");
+        let manifest = make_manifest("cpp");
+
+        pipeline.consecutive_failures = 2;
+        let _ = pipeline.enqueue_candidate(&manifest, &warm_planner_output());
+        let _ = pipeline.tick_candidates(current_time_ms());
+        let _ = pipeline.validate_active_candidate(42);
+
+        assert_eq!(pipeline.consecutive_failures, 0);
+    }
 }
 
 #[cfg(all(test, feature = "legacy_hmr_tests"))]

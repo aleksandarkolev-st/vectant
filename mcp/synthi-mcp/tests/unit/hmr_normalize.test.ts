@@ -101,6 +101,7 @@ describe("classifyHmrMessage (pure)", () => {
       expect(classifyHmrMessage({ status: "host-kv-reset-schema-mismatch" })).toBeNull();
       expect(classifyHmrMessage({ status: "host-kv-ready" })).toBeNull();
       expect(classifyHmrMessage({ status: "capability-detected" })).toBeNull();
+      expect(classifyHmrMessage({ status: "gpu-proof-state", resultState: "gpu-hmr-symbol-bound" })).toBeNull();
     });
   });
 

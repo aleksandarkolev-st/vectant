@@ -36,6 +36,52 @@ def test_heal_sanitizer_removes_missing_project_toolkit_include_and_calls():
     assert "glBegin(GL_TRIANGLES);" in repaired
 
 
+def test_repair_aligns_gui_render_state_cast_with_core_state_abi():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; int pixels[4]; };',
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            "struct GuiState { int frame; int pixels[4]; };\n"
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "GuiState* state = reinterpret_cast<GuiState*>(state_ptr); "
+            "(void)state->frame; }"
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+    )
+    assert any(v.rule == "generated.core_gui_state_abi_mismatch" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert "repair.core_gui_state_abi" in report["repairRules"]
+    assert "reinterpret_cast<AppState*>(state_ptr)" in repaired["gui.cpp"]
+    assert "AppState* state =" in repaired["gui.cpp"]
+    repaired_verification = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+    )
+    assert not any(
+        v.rule == "generated.core_gui_state_abi_mismatch"
+        for v in repaired_verification.violations
+    )
+
+
 def test_canonicalize_source_backed_device_role_removes_ai_prelude():
     source_files = {
         "src/device_defs.h": (
@@ -923,7 +969,7 @@ def test_repair_materializes_missing_source_launch_when_core_has_owned_args():
     assert report["repaired"] is True
     assert "repair.source_launch_sites" in report["repairRules"]
     assert (
-        'synthi_gpu_launch(nullptr, "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
+        'synthi_gpu_launch_original_host_path(nullptr, "src/render.cpp:1", nullptr, "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
         in repaired["core.cpp"]
     )
     after = verify_split_output(
@@ -933,6 +979,74 @@ def test_repair_materializes_missing_source_launch_when_core_has_owned_args():
     )
     assert not any(v.rule == "device_kernels_not_launched" for v in after.violations)
     assert not any(v.rule == "source_launch_args_not_preserved" for v in after.violations)
+
+
+def test_repair_materializes_source_launch_after_unresolved_generated_launch_removed():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+        ),
+        "src/Device/kernels/Shade.h": (
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "struct LaunchArgs { unsigned int* pixels; int width; int height; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) Shade(LaunchArgs launch_args) { "
+            "launch_args.pixels[0] = (unsigned int)launch_args.height; }\n"
+        ),
+        "src/render.cpp": (
+            "void render(auto& kernel, LaunchArgs launch_args, void* stream, int width, int height) { "
+            'kernel.set_kernel_function_name("Shade"); '
+            "kernel.launch_asynchronous(8, 8, width, height, launch_args, stream); }\n"
+        ),
+    }
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct LaunchArgs { unsigned int* pixels; int width; int height; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static LaunchArgs launch_args{}; return &launch_args; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* launch_args_ptr = static_cast<LaunchArgs*>(state); "
+            "LaunchArgs launch_args = *launch_args_ptr; "
+            "void* stream = nullptr; int width = launch_args.width; int height = launch_args.height; "
+            'bool launched = synthi_gpu_launch(nullptr, "GeneratedProbe", 1, 64, 0, stream, { &launch_args }); '
+            "if (launched) { width += 1; } }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": '#include "src/Device/kernels/Shade.h"\n',
+    }
+    verification = SimpleNamespace(
+        violations=[
+            Violation(
+                "launch_site_unresolved",
+                "generated launch target does not exist",
+                offending_symbol="GeneratedProbe",
+            ),
+        ]
+    )
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.unresolved_generated_launches" in report["repairRules"]
+    assert "repair.source_launch_sites" in report["repairRules"]
+    assert "GeneratedProbe" not in repaired["core.cpp"]
+    assert (
+        'synthi_gpu_launch_original_host_path(nullptr, "src/render.cpp:1", nullptr, "source_instrumented", "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
+        in repaired["core.cpp"]
+    )
 
 
 def test_repair_does_not_invent_missing_source_launch_args():
@@ -1909,6 +2023,104 @@ def test_repair_inserts_shared_bytes_for_legacy_launch_boundary():
     assert 'synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &s->dx, &s->count })' in repaired["core.cpp"]
     after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
     assert not any(v.rule == "invalid_synthi_launch_signature" for v in after.violations)
+
+
+def test_repair_inserts_shared_bytes_for_source_location_launch_boundary():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* dx; int count; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            'synthi_gpu_launch_source_location(nullptr, "src/host.cpp:run", '
+            '"source_instrumented", "step", 1, 64, nullptr, { &s->dx, &s->count }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void step(float* dx, int count) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < count) dx[i] += 1.0f; }"
+        ),
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "invalid_synthi_launch_signature" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.launch_boundary_arity" in report["repairRules"]
+    assert (
+        'synthi_gpu_launch_source_location(nullptr, "src/host.cpp:run", '
+        '"source_instrumented", "step", 1, 64, 0, nullptr, { &s->dx, &s->count })'
+    ) in repaired["core.cpp"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "invalid_synthi_launch_signature" for v in after.violations)
+
+
+def test_repair_attaches_source_location_to_source_reachable_bare_launch():
+    source_files = {
+        "src/main.hip": (
+            "#include <hip/hip_runtime.h>\n"
+            "__global__ void saxpy_kernel(const float a, const float* d_x, float* d_y, const unsigned int size) {}\n"
+            "void run(float a, float* d_x, float* d_y, unsigned int size) {\n"
+            "  saxpy_kernel<<<dim3(4), dim3(64), 0, hipStreamDefault>>>(a, d_x, d_y, size);\n"
+            "}\n"
+        )
+    }
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct AppState { float a; float* d_x; float* d_y; unsigned int size; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            "float a = s->a; float* d_x = s->d_x; float* d_y = s->d_y; unsigned int size = s->size; "
+            'synthi_gpu_launch(nullptr, "saxpy_kernel", 4, 64, 0, nullptr, { &a, &d_x, &d_y, &size }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void saxpy_kernel(const float a, const float* d_x, float* d_y, const unsigned int size) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < size) d_y[i] = a * d_x[i] + d_y[i]; }"
+        ),
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_launch_host_path_not_attached" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.source_launch_provenance" in report["repairRules"]
+    assert "synthi_gpu_launch_source_location(" in repaired["core.cpp"]
+    assert '"source_instrumented"' in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "source_launch_host_path_not_attached" for v in after.violations)
 
 
 def test_repair_materializes_inline_launch_initializer_argument():

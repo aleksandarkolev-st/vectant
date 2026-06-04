@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::rtp::packet::Packet;
 use webrtc_util::Unmarshal;
 
@@ -18,6 +19,7 @@ use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
+use crate::webrtc::PER_DC_SEND_TIMEOUT;
 
 fn extract_structured_runner_message(line: &str) -> Option<&str> {
     let trimmed = line.trim();
@@ -27,6 +29,32 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
 
     const PREFIX: &str = "[Runner] [HMR-STATUS] ";
     line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
+}
+
+fn should_forward_runner_stderr_line_to_log_dc(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.starts_with("[gpu-runtime-boundary]")
+}
+
+async fn send_log_dc_text_bounded(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &'static str,
+) -> bool {
+    match tokio::time::timeout(PER_DC_SEND_TIMEOUT, dc.send_text(text)).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(err)) => {
+            debug_log!("[build-log-dc] dropped {label}: {err}");
+            false
+        }
+        Err(_) => {
+            debug_log!(
+                "[build-log-dc] dropped {label}: send exceeded {}ms",
+                PER_DC_SEND_TIMEOUT.as_millis()
+            );
+            false
+        }
+    }
 }
 
 /// Emit a lifecycle-progress message on the build-log DC so the MCP +
@@ -57,10 +85,12 @@ async fn emit_lifecycle_progress(
     if let Some(ms) = estimated_ready_ms {
         payload["warming_progress"]["estimated_ready_at"] = serde_json::Value::from(now_ms() + ms);
     }
-    let _ = ctx
-        .log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
+    let _ = send_log_dc_text_bounded(
+        &ctx.log_dc,
+        serde_json::to_string(&payload).unwrap_or_default(),
+        "lifecycle-progress",
+    )
+    .await;
 }
 
 fn now_ms() -> u64 {
@@ -137,7 +167,7 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
                 .map(|rest| ("load_device", rest))
         });
     if let Some((command, rest)) = gpu_marker {
-        let mut fields = rest.splitn(3, ':');
+        let mut fields = rest.splitn(4, ':');
         let vendor = fields
             .next()
             .filter(|s| matches!(*s, "cuda" | "rocm"))
@@ -149,7 +179,18 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
             })?;
         let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
         let abi = fields.next().filter(|s| !s.is_empty());
-        if let Some(abi) = abi {
+        let capsule = fields.next().filter(|s| !s.is_empty());
+        if let Some(capsule) = capsule {
+            Ok(format!(
+                "{} {} {} {} {} {}\n",
+                command,
+                vendor,
+                path,
+                kernels,
+                abi.unwrap_or("-"),
+                capsule
+            ))
+        } else if let Some(abi) = abi {
             Ok(format!(
                 "{} {} {} {} {}\n",
                 command, vendor, path, kernels, abi
@@ -164,7 +205,7 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
 
 fn full_device_abi_from_marker(name: &str) -> Option<&str> {
     let rest = name.strip_prefix("__gpu_device:")?;
-    let mut fields = rest.splitn(3, ':');
+    let mut fields = rest.splitn(4, ':');
     fields.next()?;
     fields.next()?;
     fields.next().filter(|abi| !abi.is_empty())
@@ -175,6 +216,30 @@ fn next_full_device_abi(modules_to_load: &[(String, String)]) -> Option<String> 
         .iter()
         .filter_map(|(name, _)| full_device_abi_from_marker(name).map(str::to_string))
         .last()
+}
+
+#[derive(Debug, Clone)]
+struct LoadedRunnerModuleState {
+    module_hashes: ModuleHashes,
+    loaded_core_path: Option<String>,
+    loaded_gui_path: Option<String>,
+    loaded_device_abi: Option<String>,
+}
+
+fn loaded_runner_module_state(
+    new_hashes: &ModuleHashes,
+    core_lib_path: &str,
+    gui_lib_path: &str,
+    next_device_abi: Option<&str>,
+) -> LoadedRunnerModuleState {
+    LoadedRunnerModuleState {
+        module_hashes: new_hashes.clone(),
+        loaded_core_path: (!core_lib_path.is_empty()).then(|| core_lib_path.to_string()),
+        loaded_gui_path: (!gui_lib_path.is_empty()).then(|| gui_lib_path.to_string()),
+        loaded_device_abi: next_device_abi
+            .filter(|abi| !abi.is_empty())
+            .map(str::to_string),
+    }
 }
 
 fn same_session_full_device_abi_changed(
@@ -366,10 +431,12 @@ pub async fn handle_runner_execution(
             "success": true,
             "stage": "runner",
         });
-        let _ = ctx
-            .log_dc
-            .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
-            .await;
+        let _ = send_log_dc_text_bounded(
+            &ctx.log_dc,
+            serde_json::to_string(&done_payload).unwrap_or_default(),
+            "runner-done",
+        )
+        .await;
         return Ok(());
     }
 
@@ -845,10 +912,12 @@ pub async fn handle_runner_execution(
                                         "h": producer_viewport_height,
                                         "dpr": producer_viewport_dpr,
                                     },
-                                }).to_string();
+                                })
+                                .to_string();
                                 let dc = log_dc_for_frame_advance.clone();
                                 tokio::spawn(async move {
-                                    let _ = dc.send_text(msg).await;
+                                    let _ =
+                                        send_log_dc_text_bounded(&dc, msg, "frame-advance").await;
                                 });
                             }
                         }
@@ -919,7 +988,12 @@ pub async fn handle_runner_execution(
                         },
                         "pipeline_budget_estimate_ms": snap.pipeline_budget_estimate_ms,
                     });
-                    let _ = log_dc_for_timing.send_text(payload.to_string()).await;
+                    let _ = send_log_dc_text_bounded(
+                        &log_dc_for_timing,
+                        payload.to_string(),
+                        "frame-timing",
+                    )
+                    .await;
                 }
             });
         }
@@ -1075,10 +1149,12 @@ pub async fn handle_runner_execution(
                     "binary_fingerprint": registered.binary_fingerprint,
                     "expected_wm_class_hint": registered.expected_wm_class_hint,
                 });
-                let _ = ctx
-                    .log_dc
-                    .send_text(serde_json::to_string(&summary).unwrap_or_default())
-                    .await;
+                let _ = send_log_dc_text_bounded(
+                    &ctx.log_dc,
+                    serde_json::to_string(&summary).unwrap_or_default(),
+                    "guest-registered",
+                )
+                .await;
                 eprintln!(
                     "[GuestRegistry] session={} root_pid={} binary={:?}",
                     sid, registered.root_pid, registered.binary_path,
@@ -1111,10 +1187,12 @@ pub async fn handle_runner_execution(
                            "type": "stdout",
                            "line": l
                         });
-                        let _ = ctx_clone
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
+                        let _ = send_log_dc_text_bounded(
+                            &ctx_clone.log_dc,
+                            serde_json::to_string(&payload).unwrap_or_default(),
+                            "runner-stdout",
+                        )
+                        .await;
                     }
                     None => break,
                 }
@@ -1136,9 +1214,18 @@ pub async fn handle_runner_execution(
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
                             if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
-                                let _ = ctx_clone2.log_dc.send_text(structured.to_string()).await;
+                                let _ = send_log_dc_text_bounded(
+                                    &ctx_clone2.log_dc,
+                                    structured.to_string(),
+                                    "runner-structured",
+                                )
+                                .await;
                                 continue;
                             }
+                        }
+
+                        if !should_forward_runner_stderr_line_to_log_dc(&l) {
+                            continue;
                         }
 
                         // Send to frontend
@@ -1147,16 +1234,24 @@ pub async fn handle_runner_execution(
                            "type": "stderr",
                            "line": l
                         });
-                        let _ = ctx_clone2
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
+                        let _ = send_log_dc_text_bounded(
+                            &ctx_clone2.log_dc,
+                            serde_json::to_string(&payload).unwrap_or_default(),
+                            "runner-stderr",
+                        )
+                        .await;
                     }
                     None => break,
                 }
             }
         });
 
+        let loaded_module_state = loaded_runner_module_state(
+            &new_hashes,
+            &core_lib_path,
+            &gui_lib_path,
+            next_device_abi.as_deref(),
+        );
         *guard = Some(RunnerState {
             process: Some(child),
             stdin: Some(stdin.clone()),
@@ -1174,10 +1269,10 @@ pub async fn handle_runner_execution(
             height: req_height,
             wsl_display_str: wsl_display_str.clone(),
             gst_display_str,
-            module_hashes: ModuleHashes::new(),
-            loaded_core_path: None,
-            loaded_gui_path: None,
-            loaded_device_abi: None,
+            module_hashes: loaded_module_state.module_hashes,
+            loaded_core_path: loaded_module_state.loaded_core_path,
+            loaded_gui_path: loaded_module_state.loaded_gui_path,
+            loaded_device_abi: loaded_module_state.loaded_device_abi,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
@@ -1260,7 +1355,8 @@ pub async fn handle_runner_execution(
                     "dpr": producer_dpr,
                 },
             });
-            let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
+            let _ =
+                send_log_dc_text_bounded(&ctx.log_dc, gui_start.to_string(), "run-gui-start").await;
         }
 
         // ============================================================
@@ -1383,16 +1479,16 @@ pub async fn handle_runner_execution(
         }
 
         // Update RunnerState
-        state.module_hashes = new_hashes;
-        if !core_lib_path.is_empty() {
-            state.loaded_core_path = Some(core_lib_path.clone());
-        }
-        if !gui_lib_path.is_empty() {
-            state.loaded_gui_path = Some(gui_lib_path.clone());
-        }
-        if let Some(device_abi) = next_device_abi {
-            state.loaded_device_abi = Some(device_abi);
-        }
+        let loaded_module_state = loaded_runner_module_state(
+            &new_hashes,
+            &core_lib_path,
+            &gui_lib_path,
+            next_device_abi.as_deref(),
+        );
+        state.module_hashes = loaded_module_state.module_hashes;
+        state.loaded_core_path = loaded_module_state.loaded_core_path;
+        state.loaded_gui_path = loaded_module_state.loaded_gui_path;
+        state.loaded_device_abi = loaded_module_state.loaded_device_abi;
     }
 
     // Send build-status "done" so the frontend's compile() promise resolves.
@@ -1404,10 +1500,12 @@ pub async fn handle_runner_execution(
         "success": true,
         "stage": "runner",
     });
-    let _ = ctx
-        .log_dc
-        .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
-        .await;
+    let _ = send_log_dc_text_bounded(
+        &ctx.log_dc,
+        serde_json::to_string(&done_payload).unwrap_or_default(),
+        "runner-done",
+    )
+    .await;
 
     Ok(())
 }
@@ -1416,9 +1514,11 @@ pub async fn handle_runner_execution(
 mod tests {
     use super::{
         full_device_abi_from_marker, full_device_abi_restart_marker, next_full_device_abi,
-        runner_load_command, runner_reuse_allowed, runner_session_matches,
-        same_session_full_device_abi_changed, RunnerReloadPolicy,
+        loaded_runner_module_state, runner_load_command, runner_reuse_allowed,
+        runner_session_matches, same_session_full_device_abi_changed,
+        should_forward_runner_stderr_line_to_log_dc, RunnerReloadPolicy,
     };
+    use crate::compiler::builder::ModuleHashes;
 
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
@@ -1438,6 +1538,18 @@ mod tests {
     }
 
     #[test]
+    fn gpu_device_load_command_carries_capsule_token_when_present() {
+        assert_eq!(
+            runner_load_command(
+                "__gpu_device:rocm:advance,init:12345:capsulev1_abcd",
+                "/tmp/device.hsaco"
+            )
+            .unwrap(),
+            "load_device rocm /tmp/device.hsaco advance,init 12345 capsulev1_abcd\n"
+        );
+    }
+
+    #[test]
     fn gpu_device_partial_load_command_uses_partial_runner_verb() {
         assert_eq!(
             runner_load_command(
@@ -1453,6 +1565,10 @@ mod tests {
     fn full_device_abi_tracking_ignores_partial_markers() {
         assert_eq!(
             full_device_abi_from_marker("__gpu_device:rocm:advance:abi-full"),
+            Some("abi-full")
+        );
+        assert_eq!(
+            full_device_abi_from_marker("__gpu_device:rocm:advance:abi-full:capsulev1_abcd"),
             Some("abi-full")
         );
         assert_eq!(
@@ -1478,6 +1594,27 @@ mod tests {
             ),
         ];
         assert_eq!(next_full_device_abi(&modules).as_deref(), Some("abi-v2"));
+    }
+
+    #[test]
+    fn loaded_runner_module_state_records_fresh_spawn_host_paths_and_device_abi() {
+        let hashes = ModuleHashes {
+            shared_hash: 11,
+            core_hash: 22,
+            gui_hash: 33,
+            main_hash: 44,
+        };
+
+        let state =
+            loaded_runner_module_state(&hashes, "/tmp/libcore.so", "/tmp/libgui.so", Some("abi-v1"));
+
+        assert_eq!(state.module_hashes.shared_hash, 11);
+        assert_eq!(state.module_hashes.core_hash, 22);
+        assert_eq!(state.module_hashes.gui_hash, 33);
+        assert_eq!(state.module_hashes.main_hash, 44);
+        assert_eq!(state.loaded_core_path.as_deref(), Some("/tmp/libcore.so"));
+        assert_eq!(state.loaded_gui_path.as_deref(), Some("/tmp/libgui.so"));
+        assert_eq!(state.loaded_device_abi.as_deref(), Some("abi-v1"));
     }
 
     #[test]
@@ -1595,5 +1732,18 @@ mod tests {
     fn runner_reuse_policy_blocks_non_inprocess_plan() {
         let policy = RunnerReloadPolicy::require_runner_restart(vec!["process_swap".to_string()]);
         assert!(!runner_reuse_allowed(&policy, true, true, true, true));
+    }
+
+    #[test]
+    fn runtime_boundary_telemetry_stays_out_of_compile_datachannel() {
+        assert!(!should_forward_runner_stderr_line_to_log_dc(
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel=step dispatch=ok"
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            "[Runner] [HMR-STATUS] {\"status\":\"applied\"}"
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            "application stderr remains visible"
+        ));
     }
 }

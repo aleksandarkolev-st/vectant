@@ -145,6 +145,25 @@ const TOOLS = [
           type: "string",
           description: "Optional terminal HMR module filter, for example 'device' to wait for GPU sidecar HMR instead of the first core/gui status.",
         },
+        requiredGpuProofState: {
+          type: "string",
+          enum: [
+            "gpu-hmr-compile-proven",
+            "gpu-hmr-symbol-bound",
+            "gpu-hmr-abi-proven",
+            "gpu-hmr-epoch-swap-proven",
+            "gpu-hmr-dispatch-observed",
+            "gpu-hmr-dispatch-safe-proven",
+            "gpu-hmr-output-oracle-proven",
+            "gpu-hmr-host-preservation-proven",
+            "gpu-hmr-full-runtime-proven",
+          ],
+          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness.",
+        },
+        requireGpuFullRuntimeProof: {
+          type: "boolean",
+          description: "Shortcut for requiredGpuProofState='gpu-hmr-full-runtime-proven'. This must only pass when the full proof ladder has been satisfied.",
+        },
       },
       required: [],
     },
@@ -180,6 +199,19 @@ const TOOLS = [
           },
           description: "Additional source files keyed by relative path.",
         },
+        file_refs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              sha256: { type: "string" },
+              bytes: { type: "number" },
+            },
+            required: ["name"],
+          },
+          description: "Additional source files already present in the workspace. The worker reads each relative path and verifies optional sha256/bytes before using it as compile input.",
+        },
         is_gui: {
           type: "boolean",
           description: "Whether this compile emits a GUI (Xvfb + media pipeline). Default true.",
@@ -189,6 +221,23 @@ const TOOLS = [
         use_ai_split: {
           type: "boolean",
           description: "Let the worker decide split via AI (Tier 2/3). Default false.",
+        },
+        bypass_ai_split_cache: {
+          type: "boolean",
+          description:
+            "Require a fresh AI split request instead of accepting a cached split result. Used for provenance-sensitive validation.",
+        },
+        force_ai_split: {
+          type: "boolean",
+          description: "Alias for bypass_ai_split_cache.",
+        },
+        force_fresh_ai_split: {
+          type: "boolean",
+          description: "Alias for bypass_ai_split_cache.",
+        },
+        require_fresh_ai_split: {
+          type: "boolean",
+          description: "Alias for bypass_ai_split_cache.",
         },
         user_requested_ai: {
           type: "boolean",

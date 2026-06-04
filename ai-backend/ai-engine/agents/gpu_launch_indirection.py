@@ -15,7 +15,10 @@ from typing import Any, Mapping, Sequence
 SCHEMA_VERSION = "synthi.gpu.launch_indirection.v1"
 STALE_CHECK_SCHEMA_VERSION = "synthi.gpu.stale_launch_pointer_check.v1"
 
-_BOUNDARY_LAUNCH_RE = re.compile(r"\bsynthi_gpu_launch\s*\(", re.DOTALL)
+_BOUNDARY_LAUNCH_RE = re.compile(
+    r"\bsynthi_gpu_launch(?:_original_host_path|_source_location)?\s*\(",
+    re.DOTALL,
+)
 _BYPASS_RE = re.compile(
     r"\bsynthi_gpu_(?:launch_raw(?:_checked)?|launch_table|launch_generation)\s*\(",
     re.DOTALL,
