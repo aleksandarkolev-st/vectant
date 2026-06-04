@@ -50,6 +50,11 @@ const AIChatWindow = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const AgentWorkflowPanel = dynamic(
+  () => import('@/components/agent-workflows/AgentWorkflowPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 const ProblemsPanel = dynamic(
   () => import('@/components/analysis').then(m => ({ default: m.ProblemsPanel })),
   { ssr: false, loading: Placeholder },
@@ -195,6 +200,24 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
         initialPrompt={ctx?.initialPrompt}
         initialAttachments={ctx?.initialAttachments}
       />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Agent Workflows Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="agent-workflows"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <AgentWorkflowPanel workspaceSlug={ctx?.workspaceSlug} />
     </div>
   );
 });
@@ -423,6 +446,7 @@ export const PANEL_WRAPPERS = {
   editor:         EditorPanelWrapper,
   terminal:       TerminalPanelWrapper,
   chat:           ChatPanelWrapper,
+  'agent-workflows': AgentWorkflowsPanelWrapper,
   problems:       ProblemsPanelWrapper,
   output:         OutputPanelWrapper,
   preview:        PreviewPanelWrapper,
