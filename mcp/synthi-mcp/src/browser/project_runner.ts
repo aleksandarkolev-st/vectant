@@ -19,6 +19,13 @@ export interface ProjectDetection {
   package_json?: string;
   package_manager: "npm" | "pnpm" | "yarn" | "bun";
   candidates: ProjectCommandCandidate[];
+  source_identity: {
+    status: "supported" | "disabled" | "unknown";
+    adapter?: "vite-react";
+    ssr_safe: boolean;
+    transform: "compileTimeJsx" | "none";
+    notes: string[];
+  };
   notes: string[];
 }
 
@@ -52,6 +59,12 @@ export async function detectBrowserProject(rootInput: string | undefined): Promi
       root,
       package_manager: "npm",
       candidates: [],
+      source_identity: {
+        status: "unknown",
+        ssr_safe: false,
+        transform: "none",
+        notes: ["package_json_not_found"],
+      },
       notes: ["package_json_not_found"],
     };
   }
@@ -72,6 +85,7 @@ export async function detectBrowserProject(rootInput: string | undefined): Promi
     package_json: packagePath,
     package_manager: packageManager,
     candidates,
+    source_identity: sourceIdentitySupport(pkg),
     notes,
   };
 }
@@ -187,6 +201,33 @@ function candidateForScript(
     package_manager: packageManager,
     confidence: Math.min(confidence, 0.99),
     reason: reasons.join("+"),
+  };
+}
+
+function sourceIdentitySupport(pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }): ProjectDetection["source_identity"] {
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+  if (deps["vite"] && deps["react"] && deps["react-dom"]) {
+    return {
+      status: "supported",
+      adapter: "vite-react",
+      ssr_safe: true,
+      transform: "compileTimeJsx",
+      notes: ["vite_react_compile_time_transform_available", "no_browser_dom_mutation"],
+    };
+  }
+  if (deps["next"] || deps["@remix-run/react"] || deps["@remix-run/node"]) {
+    return {
+      status: "disabled",
+      ssr_safe: false,
+      transform: "none",
+      notes: ["ssr_adapter_requires_server_client_parity_tests"],
+    };
+  }
+  return {
+    status: "unknown",
+    ssr_safe: false,
+    transform: "none",
+    notes: ["no_supported_source_identity_adapter_detected"],
   };
 }
 

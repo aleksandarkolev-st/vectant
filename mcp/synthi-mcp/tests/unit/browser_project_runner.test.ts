@@ -38,6 +38,8 @@ describe("browser project detection", () => {
       },
       devDependencies: {
         vite: "^6.0.0",
+        react: "^19.0.0",
+        "react-dom": "^19.0.0",
       },
     }));
 
@@ -49,6 +51,13 @@ describe("browser project detection", () => {
       script: "dev",
     }));
     expect(detection.candidates.some((candidate) => candidate.command === "pnpm preview")).toBe(true);
+    expect(detection.source_identity).toEqual(expect.objectContaining({
+      status: "supported",
+      adapter: "vite-react",
+      ssr_safe: true,
+      transform: "compileTimeJsx",
+    }));
+    expect(detection.source_identity.notes).toContain("no_browser_dom_mutation");
   });
 
   it("returns notes when package.json is missing", async () => {
@@ -57,6 +66,24 @@ describe("browser project detection", () => {
     const detection = await detectBrowserProject(root);
     expect(detection.candidates).toEqual([]);
     expect(detection.notes).toContain("package_json_not_found");
+    expect(detection.source_identity.status).toBe("unknown");
+  });
+
+  it("keeps unsupported SSR source identity adapters disabled", async () => {
+    const root = await tempProjectRootForTests();
+    await writeFile(join(root, "package.json"), JSON.stringify({
+      scripts: { dev: "next dev" },
+      dependencies: { next: "^15.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+    }));
+
+    const detection = await detectBrowserProject(root);
+
+    expect(detection.source_identity).toEqual({
+      status: "disabled",
+      ssr_safe: false,
+      transform: "none",
+      notes: ["ssr_adapter_requires_server_client_parity_tests"],
+    });
   });
 });
 
