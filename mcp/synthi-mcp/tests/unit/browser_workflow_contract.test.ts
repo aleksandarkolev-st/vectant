@@ -44,11 +44,29 @@ describe("browser workflow contract compiler", () => {
     ]);
     expect(workflow.contract.mutationBoundaryPlan.firstMutationStepId).toBe("browser_evt_2");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("prefixOnly");
+    expect(workflow.contract.counterfactualPlan).toEqual(expect.objectContaining({
+      mode: "readOnlyPrefix",
+      readOnly: true,
+      stopsBeforeStepId: "browser_evt_2",
+    }));
+    expect(workflow.contract.counterfactualPlan.profiles).toContainEqual(expect.objectContaining({
+      name: "desktop",
+      enabled: true,
+      replayMode: "prefixOnly",
+    }));
     expect(workflow.contract.sourceIdentityCoverage.status).toBe("missing");
+    expect(workflow.contract.sourceAffordancePatches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stepId: "browser_evt_2",
+        reason: "mutationBoundary",
+        suggestedAttribute: "data-synthi-mutation-boundary=\"save.workspace.state\"",
+      }),
+    ]));
     expect(workflow.contract.limitations).toContain("sourceIdentityMissing");
     expect(workflow.contract.limitations).toContain("mutationRequiresIsolation");
     expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["locatorDrift", "mutationBlocked", "sourceIdentityMissing"]));
     expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "available" }));
+    expect(workflow.contract.generatedOutputs[1]).toEqual(expect.objectContaining({ kind: "sourceAffordancePatch", status: "available" }));
   });
 
   it("marks redacted inputs as secret parameters without leaking values", () => {

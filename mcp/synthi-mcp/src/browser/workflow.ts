@@ -119,8 +119,25 @@ export interface WorkflowContractV7 {
   failureClasses: FailureClassV7[];
   replayModes: Array<"sameSession" | "prefixOnly" | "ciIsolated">;
   limitations: WorkflowLimitationV7[];
+  counterfactualPlan: {
+    mode: "readOnlyPrefix" | "sameSessionOnly" | "blocked";
+    readOnly: boolean;
+    stopsBeforeStepId?: string;
+    profiles: Array<{
+      name: "desktop" | "mobile" | "reducedMotion";
+      enabled: boolean;
+      replayMode: "sameSession" | "prefixOnly";
+      reason: string;
+    }>;
+  };
+  sourceAffordancePatches: Array<{
+    stepId: string;
+    targetLabel: string;
+    reason: "missingSourceIdentity" | "lowConfidenceLocator" | "mutationBoundary";
+    suggestedAttribute: string;
+  }>;
   generatedOutputs: Array<{
-    kind: "playwright";
+    kind: "playwright" | "sourceAffordancePatch";
     status: "available" | "blocked";
     notes: string[];
   }>;
@@ -204,6 +221,8 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     failureClasses: failureClassesFor(limitations, mutationSteps.length > 0),
     replayModes,
     limitations,
+    counterfactualPlan: counterfactualPlanFor(firstMutationStepId, steps.length),
+    sourceAffordancePatches: sourceAffordancePatchesFor(steps),
     generatedOutputs: [
       {
         kind: "playwright",
@@ -212,12 +231,85 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
           ? ["Generated Playwright should stop at the first mutation boundary for background hardening."]
           : ["Generated Playwright can run in the current same-session context."],
       },
+      {
+        kind: "sourceAffordancePatch",
+        status: steps.length > 0 ? "available" : "blocked",
+        notes: sourceAffordancePatchesFor(steps).length > 0
+          ? ["Suggested source affordances target unstable or source-unlinked steps. No exact file path is required from the user."]
+          : ["No source affordance suggestions are needed for this trace."],
+      },
     ],
   };
   return {
     contract,
     card: cardForContract(contract),
   };
+}
+
+function counterfactualPlanFor(firstMutationStepId: string | undefined, stepCount: number): WorkflowContractV7["counterfactualPlan"] {
+  if (stepCount === 0) {
+    return {
+      mode: "blocked",
+      readOnly: true,
+      profiles: [],
+    };
+  }
+  if (firstMutationStepId) {
+    return {
+      mode: "readOnlyPrefix",
+      readOnly: true,
+      stopsBeforeStepId: firstMutationStepId,
+      profiles: [
+        { name: "desktop", enabled: true, replayMode: "prefixOnly", reason: "Stops before mutation boundary." },
+        { name: "mobile", enabled: false, replayMode: "prefixOnly", reason: "Mobile counterfactual requires source identity or visual bridge coverage." },
+        { name: "reducedMotion", enabled: true, replayMode: "prefixOnly", reason: "Verifies reachable controls without committing state." },
+      ],
+    };
+  }
+  return {
+    mode: "sameSessionOnly",
+    readOnly: true,
+    profiles: [
+      { name: "desktop", enabled: true, replayMode: "sameSession", reason: "No mutation boundary was detected." },
+      { name: "mobile", enabled: true, replayMode: "sameSession", reason: "No coordinate-only limitation was detected." },
+      { name: "reducedMotion", enabled: true, replayMode: "sameSession", reason: "No mutation boundary was detected." },
+    ],
+  };
+}
+
+function sourceAffordancePatchesFor(steps: WorkflowStepContractV7[]): WorkflowContractV7["sourceAffordancePatches"] {
+  const patches: WorkflowContractV7["sourceAffordancePatches"] = [];
+  for (const step of steps) {
+    const targetLabel = step.action.target?.label ?? step.label;
+    if (step.sourcePlan.status === "missing") {
+      patches.push({
+        stepId: step.stepId,
+        targetLabel,
+        reason: "missingSourceIdentity",
+        suggestedAttribute: `data-synthi-affordance="${affordanceName(targetLabel)}"`,
+      });
+    } else if (step.locatorPlan.confidence === "low") {
+      patches.push({
+        stepId: step.stepId,
+        targetLabel,
+        reason: "lowConfidenceLocator",
+        suggestedAttribute: `data-testid="${affordanceName(targetLabel)}"`,
+      });
+    }
+    if (step.mutation) {
+      patches.push({
+        stepId: step.stepId,
+        targetLabel,
+        reason: "mutationBoundary",
+        suggestedAttribute: `data-synthi-mutation-boundary="${affordanceName(targetLabel)}"`,
+      });
+    }
+  }
+  return patches;
+}
+
+function affordanceName(value: string): string {
+  return slugIdentifier(value).replace(/_/g, ".");
 }
 
 export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowReplayModeV7 = "sameSession"): WorkflowReplayPlanV7 {
