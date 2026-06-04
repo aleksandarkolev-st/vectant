@@ -410,6 +410,27 @@ def repair_split_artifacts(
         if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
             repair_rules.append("repair.source_launch_args")
 
+    if "source_launch_host_path_not_attached" in input_reason_codes:
+        symbols = {
+            str(violation.offending_symbol)
+            for violation in (verification.violations if verification is not None else [])
+            if violation.rule == "source_launch_host_path_not_attached"
+            and violation.offending_symbol
+        }
+        for host_path in (core_path, gui_path, host_runner_path):
+            if not host_path or host_path not in repaired:
+                continue
+            host_after, changed = _repair_source_launch_provenance(
+                repaired[host_path],
+                source_files,
+                symbols,
+            )
+            if changed:
+                repaired[host_path] = host_after
+                changed_files.add(host_path)
+        if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
+            repair_rules.append("repair.source_launch_provenance")
+
     if (
         device_path
         and device_path in repaired
@@ -1625,14 +1646,21 @@ def _insert_declaration_before_first_kernel(source: str, declaration: str) -> st
     return declaration + "\n" + source
 
 
-def _iter_launch_spans(source: str) -> Iterable[Tuple[int, int, str]]:
-    needle = "synthi_gpu_launch("
+def _iter_synthi_launch_spans_by_name(
+    source: str,
+    names: Sequence[str],
+) -> Iterable[Tuple[str, int, int, str]]:
+    if not names:
+        return
+    name_pattern = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    call_re = re.compile(rf"\b(?P<name>{name_pattern})\s*\(")
     cursor = 0
     while True:
-        start = source.find(needle, cursor)
-        if start < 0:
+        match = call_re.search(source, cursor)
+        if not match:
             return
-        i = start + len(needle)
+        start = match.start()
+        i = match.end()
         depth = 1
         while i < len(source) and depth:
             if source[i] == "(":
@@ -1642,8 +1670,16 @@ def _iter_launch_spans(source: str) -> Iterable[Tuple[int, int, str]]:
             i += 1
         if depth != 0:
             return
-        yield start, i, source[start + len(needle) : i - 1]
+        yield match.group("name"), start, i, source[match.end() : i - 1]
         cursor = i
+
+
+def _iter_launch_spans(source: str) -> Iterable[Tuple[int, int, str]]:
+    for _name, start, end, body in _iter_synthi_launch_spans_by_name(
+        source,
+        ("synthi_gpu_launch",),
+    ):
+        yield start, end, body
 
 
 def _statement_end(source: str, call_end: int) -> Optional[int]:
@@ -2111,6 +2147,74 @@ def _repair_source_launch_arg_ownership(
         out = out[:start] + replacement + out[end:]
     if remove_symbols:
         out, _ = _remove_unresolved_generated_launches(out, remove_symbols)
+    return out, out != host_source
+
+
+def _repair_source_launch_provenance(
+    host_source: str,
+    source_files: Mapping[str, str],
+    symbols: Set[str],
+) -> tuple[str, bool]:
+    if not symbols or "synthi_gpu_launch(" not in host_source:
+        return host_source, False
+
+    sites_by_kernel: Dict[str, List[LaunchSite]] = {}
+    for site in extract_launch_graph(source_files):
+        if site.kernel in symbols:
+            sites_by_kernel.setdefault(site.kernel, []).append(site)
+    if not sites_by_kernel:
+        return host_source, False
+
+    replacements: Dict[Tuple[int, int], str] = {}
+    for start, end, body in _iter_launch_spans(host_source):
+        args = _split_top_level_args(body)
+        if len(args) != 7:
+            continue
+        kernel = _launch_kernel_name(args[1])
+        if kernel not in sites_by_kernel or not _launch_initializer_literal(args[-1]):
+            continue
+
+        generated_arg_identities = [
+            _normalize_launch_arg_identity(entry)
+            for entry in _launch_initializer_args(args[-1])
+            if entry.strip()
+        ]
+        selected_site: Optional[LaunchSite] = None
+        for site in sites_by_kernel[kernel]:
+            source_arg_identities = [
+                _normalize_launch_arg_identity(arg)
+                for arg in site.args
+                if str(arg).strip()
+            ]
+            if generated_arg_identities == source_arg_identities:
+                selected_site = site
+                break
+        if selected_site is None:
+            continue
+
+        fixed_args = [
+            args[0],
+            _cpp_string_literal(selected_site.site),
+            '"source_instrumented"',
+            args[1],
+            args[2],
+            args[3],
+            args[4],
+            args[5],
+            args[6],
+        ]
+        replacements[(start, end)] = (
+            "synthi_gpu_launch_source_location("
+            + ", ".join(fixed_args)
+            + ")"
+        )
+
+    if not replacements:
+        return host_source, False
+
+    out = host_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
     return out, out != host_source
 
 
@@ -2730,16 +2834,30 @@ def _repair_launch_abi_mismatches(
 
 def _repair_launch_boundary_arity(core_source: str) -> tuple[str, bool]:
     replacements: Dict[Tuple[int, int], str] = {}
-    for start, end, body in _iter_launch_spans(core_source):
+    for name, start, end, body in _iter_synthi_launch_spans_by_name(
+        core_source,
+        ("synthi_gpu_launch", "synthi_gpu_launch_source_location"),
+    ):
         args = _split_top_level_args(body)
-        if len(args) != 6:
-            continue
-        if not _launch_kernel_name(args[1]):
-            continue
-        if not _launch_initializer_literal(args[-1]):
-            continue
-        fixed_args = list(args[:4]) + ["0"] + list(args[4:])
-        replacements[(start, end)] = "synthi_gpu_launch(" + ", ".join(fixed_args) + ")"
+        fixed_args: Optional[List[str]] = None
+        if name == "synthi_gpu_launch":
+            if len(args) != 6:
+                continue
+            if not _launch_kernel_name(args[1]):
+                continue
+            if not _launch_initializer_literal(args[-1]):
+                continue
+            fixed_args = list(args[:4]) + ["0"] + list(args[4:])
+        elif name == "synthi_gpu_launch_source_location":
+            if len(args) != 8:
+                continue
+            if not _launch_kernel_name(args[3]):
+                continue
+            if not _launch_initializer_literal(args[-1]):
+                continue
+            fixed_args = list(args[:6]) + ["0"] + list(args[6:])
+        if fixed_args is not None:
+            replacements[(start, end)] = name + "(" + ", ".join(fixed_args) + ")"
 
     if not replacements:
         return core_source, False

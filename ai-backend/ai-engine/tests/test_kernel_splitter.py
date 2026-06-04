@@ -667,6 +667,21 @@ def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
     assert "remove that runtime launch" in prompt
 
 
+def test_build_split_retry_prompt_guides_source_launch_attachment_and_signature():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- source_launch_host_path_not_attached: Generated core launches a source-reachable kernel 'saxpy_kernel' without an explicit source-location wrapper.",
+            "- invalid_synthi_launch_signature: synthi_gpu_launch_source_location has the wrong arity.",
+        ],
+    )
+
+    assert "synthi_gpu_launch_source_location" in prompt
+    assert '"source_instrumented"' in prompt
+    assert "Do not omit the shared-bytes slot" in prompt
+    assert "takes 9 arguments" in prompt
+
+
 def test_build_split_retry_prompt_guides_repaired_source_launch_arg_removals():
     prompt = build_split_retry_prompt(
         "original prompt",
