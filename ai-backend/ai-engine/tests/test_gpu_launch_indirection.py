@@ -22,6 +22,23 @@ def test_launch_indirection_report_accepts_public_wrapper():
     )
 
 
+def test_launch_indirection_report_accepts_source_location_wrapper():
+    report = build_launch_indirection_report(
+        generated_files={
+            ".synthi/generated/gpu/core.cpp": (
+                'void step(){ synthi_gpu_launch_source_location(gpu, "src/main.cpp:12", '
+                '"source_instrumented", "flow", 1, 256, 0, stream, {&x}); }'
+            ),
+            ".synthi/generated/gpu/device.hip": '__global__ void flow(float* x) {}',
+        },
+        verification={"ok": True, "violations": []},
+    )
+
+    assert report["status"] == "pass"
+    assert report["launchSiteCount"] == 1
+    assert report["generatedLaunchSitesUseIndirection"] is True
+
+
 def test_launch_indirection_report_rejects_raw_runtime_bypass():
     report = build_launch_indirection_report(
         generated_files={

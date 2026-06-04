@@ -196,6 +196,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # rust-analyzer installed via rustup
 RUN rustup component add rust-analyzer
 
+COPY cpp_src/synthi_gpu_native_launch_observer.c /tmp/synthi_gpu_native_launch_observer.c
+RUN cc -shared -fPIC -O2 -Wall -Wextra \
+    /tmp/synthi_gpu_native_launch_observer.c \
+    -ldl \
+    -o /usr/local/lib/synthi-gpu-native-launch-observer.so && \
+    rm -f /tmp/synthi_gpu_native_launch_observer.c
+
 # ── Copy compiled worker binaries ──────────────────────────────────────────
 COPY --from=builder /build/target/release/worker /usr/local/bin/worker
 COPY --from=builder /build/target/release/runner /usr/local/bin/runner

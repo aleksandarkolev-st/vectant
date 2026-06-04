@@ -8,6 +8,7 @@ import shlex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agents.abi_stamper import mask_comments_for_parsing
+from agents.gpu_device_mapping import extract_kernel_region_records
 from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE
 from agents.launch_graph_extractor import extract_launch_graph
 from gpu_hmr.canonical import canonical_hash
@@ -39,6 +40,18 @@ _BACKEND_PATTERNS = {
 _KERNEL_DECL_RE = re.compile(
     GPU_DEVICE_MARKER_RE.pattern,
     GPU_DEVICE_MARKER_RE.flags,
+)
+_GPU_RUNTIME_LAUNCH_API_RE = re.compile(
+    r"\b(?:"
+    r"oroModuleLaunchKernel"
+    r"|hipModuleLaunchKernel"
+    r"|cuModuleLaunchKernel"
+    r"|cudaLaunchKernel"
+    r"|clEnqueueNDRangeKernel"
+    r"|zeCommandListAppendLaunchKernel"
+    r"|vkCmdDispatch(?:Indirect)?"
+    r")\b",
+    re.I,
 )
 _TEMPLATE_EVIDENCE_BASENAMES = {
     "template-evidence.json",
@@ -124,7 +137,29 @@ def _has_source_launch_site(path: str, source: str) -> bool:
     return bool(extract_launch_graph({normalize_path(path): source or ""}))
 
 
-def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[int, str]:
+def _declared_kernel_names(source: str) -> set[str]:
+    return {region.name for region in extract_kernel_region_records(source or "")}
+
+
+def _launches_any_kernel(path: str, source: str, kernel_names: set[str]) -> bool:
+    if not kernel_names:
+        return False
+    return any(
+        site.kernel in kernel_names
+        for site in extract_launch_graph({normalize_path(path): source or ""})
+    )
+
+
+def _has_runtime_launch_boundary(source: str) -> bool:
+    return bool(_GPU_RUNTIME_LAUNCH_API_RE.search(source or ""))
+
+
+def _reason_and_priority(
+    path: str,
+    source: str,
+    focus: Optional[str],
+    focus_kernel_names: Optional[set[str]] = None,
+) -> Tuple[int, str]:
     normalized = normalize_path(path)
     focus_path = normalize_path(focus or "")
     parsed_source = mask_comments_for_parsing(source or "")
@@ -135,10 +170,14 @@ def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[
         return (1, "build_metadata")
     if normalized.lower().endswith((".cu", ".cuh", ".hip")) and _KERNEL_DECL_RE.search(parsed_source):
         return (2, "device_translation_unit")
+    if _has_runtime_launch_boundary(parsed_source):
+        return (2, "runtime_launch_boundary")
     if looks_like_source_file(normalized) and _KERNEL_DECL_RE.search(parsed_source):
         if "/kernels/" in normalized:
             return (3, "kernel_declaration")
         return (4, "kernel_declaration")
+    if _launches_any_kernel(normalized, parsed_source, focus_kernel_names or set()):
+        return (2, "focused_kernel_launch_site")
     if "<<<" in parsed_source and ">>>" in parsed_source:
         return (5, "kernel_launch_site")
     if _has_source_launch_site(normalized, parsed_source):
@@ -771,12 +810,14 @@ def build_source_context_report(
     selected_command = _selected_compile_command(normalized_files, focus)
     cmake_file_api = _cmake_file_api_report(normalized_files, focus)
     selected_target_scope = _selected_target_source_scope(cmake_file_api, focus)
+    focus_path = normalize_path(focus or "")
+    focus_kernel_names = _declared_kernel_names(normalized_files.get(focus_path, ""))
     candidates: List[dict] = []
     dropped: List[dict] = []
 
     for path, source in sorted(normalized_files.items()):
         static_drop = _drop_reason(path)
-        priority, reason = _reason_and_priority(path, source, focus)
+        priority, reason = _reason_and_priority(path, source, focus, focus_kernel_names)
         is_target_scoped = (
             not selected_target_scope
             or not looks_like_source_file(path)
@@ -833,7 +874,7 @@ def build_source_context_report(
         item
         for item in dropped
         if item.get("dropReason") == "prompt_budget_exclusion"
-        and int(item.get("priority", 99)) <= 4
+        and int(item.get("priority", 99)) <= 5
     ]
     device_translation_units = [
         {

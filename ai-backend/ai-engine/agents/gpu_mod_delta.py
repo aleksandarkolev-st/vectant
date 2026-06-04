@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover
             self.detail = detail
 
 from agents.abi_stamper import constant_layout_hash, stamp_device_source
+from gpu_hmr.reason_codes import UnknownReasonCodeError, assert_registered_reason_codes
 from llm.prompts import GPU_DIFF_PATCH_PROMPT
 
 
@@ -31,6 +32,271 @@ VALID_GPU_EDIT_MODULES = {"core", "gui", "shared", "host_runner", "device"}
 VALID_GPU_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
 DEVICE_PATHS = {"device.cu", "device.hip"}
 _QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+_SHA256_DIGEST_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
+FISSION_CANDIDATE_STRING_FIELDS = {
+    "abiMembraneId",
+    "aiProposalId",
+    "artifactScope",
+    "artifactKind",
+    "candidateSource",
+    "compileCommandHash",
+    "compileRecipeHash",
+    "dependencyClosureHash",
+    "expectedAbiScope",
+    "generatedRolePath",
+    "islandId",
+    "originalHostLaunchMappingId",
+    "plannerSource",
+    "replacementScope",
+    "requiredOracleId",
+    "safeExportSupersetReason",
+    "scope",
+    "sourceEditId",
+}
+FISSION_CANDIDATE_SHA256_FIELDS = {
+    "compileCommandHash",
+    "compileRecipeHash",
+    "dependencyClosureHash",
+}
+FISSION_CANDIDATE_STRING_LIST_FIELDS = {
+    "abiEvidenceIds",
+    "abiMembraneEvidenceIds",
+    "attachmentInstrumentationProposalIds",
+    "compileCommandEvidenceIds",
+    "compileEvidenceIds",
+    "compileRecipeEvidenceIds",
+    "dependencyClosureEvidenceIds",
+    "evidenceIds",
+    "exportedSymbolsExpected",
+    "includeClosure",
+    "includeClosureEvidenceIds",
+    "loaderCapabilityEvidenceIds",
+    "loaderEvidenceIds",
+    "oracleEvidenceIds",
+    "originalHostAttachmentInstrumentationProposalIds",
+    "originalHostLaunchMappingEvidenceIds",
+    "originalHostPathEvidenceIds",
+    "outputOracleEvidenceIds",
+    "proofEvidenceIds",
+    "proofFailureReasonCodes",
+    "rejectionEvidenceIds",
+    "safeExportSupersetEvidenceIds",
+    "sourceMappingEvidenceIds",
+    "sourceMapEvidenceIds",
+    "sourcePaths",
+    "symbolOwnershipEvidenceIds",
+    "symbols",
+    "targetSymbols",
+    "verifierEvidenceIds",
+}
+FISSION_CANDIDATE_OBJECT_FIELDS = {
+    "loaderCapabilityRequirement",
+    "oracleProposal",
+    "originalHostPathRequirement",
+    "outputOracleProposal",
+    "runtimeAttachmentRequirement",
+    "runtimeOwnershipRequirement",
+}
+FISSION_CANDIDATE_BOOL_FIELDS = {
+    "aiGenerated",
+    "aiProposalIdRequired",
+    "generatedRolePathRequired",
+    "llmGenerated",
+    "originalHostLaunchMappingRequired",
+    "requiresOriginalHostPath",
+}
+FISSION_CANDIDATE_NON_NEGATIVE_INT_FIELDS = {
+    "compileCostEstimateMs",
+    "compileCostMs",
+    "compileEstimateMs",
+    "estimatedCompileMs",
+    "historicalCompileMs",
+    "historicalTimingMs",
+    "lastCompileMs",
+    "meanCompileMs",
+    "p50CompileMs",
+}
+FISSION_CANDIDATE_ALIASES = {
+    "hostLaunchAttachmentProposals": "attachmentInstrumentationProposals",
+    "launchAttachmentProposals": "attachmentInstrumentationProposals",
+    "oracleProposal": "outputOracleProposal",
+    "originalHostAttachmentInstrumentationProposals": "attachmentInstrumentationProposals",
+    "originalHostAttachmentProposalIds": "originalHostAttachmentInstrumentationProposalIds",
+    "symbols": "targetSymbols",
+}
+FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS = {
+    "synthi_gpu_launch_original_host_path",
+    "synthi_gpu_launch_source_location",
+    "synthi_original_host_path_with_provenance",
+}
+FISSION_ATTACHMENT_PROPOSAL_ACTIONS = {
+    "upgrade_runtime_boundary_to_original_host_attachment",
+    "attach_runtime_object_dispatch_boundary",
+    "wrap_source_launch_with_synthi_runtime_boundary",
+    "instrument_host_launch_boundary",
+}
+FISSION_ATTACHMENT_PROPOSAL_STRING_FIELDS = {
+    "dispatchEntryId",
+    "hostPathId",
+    "instrumentationAction",
+    "kernel",
+    "path",
+    "proposalId",
+    "reason",
+    "runtimeProofBoundary",
+    "snippetHash",
+    "sourceLaunchSiteId",
+    "sourceHash",
+    "sourcePath",
+    "sourceProvenance",
+}
+FISSION_ATTACHMENT_PROPOSAL_RUNTIME_EVIDENCE_BOOL_FIELDS = {
+    "dispatchBoundaryObserved",
+    "dispatchEntryRuntimeVerified",
+    "launchArgProvenanceComplete",
+    "runtimeSessionScoped",
+}
+FISSION_OUTPUT_ORACLE_STRING_FIELDS = {
+    "artifact",
+    "artifactId",
+    "artifact_id",
+    "expected",
+    "expectedHash",
+    "expectedValue",
+    "expected_hash",
+    "expected_value",
+    "id",
+    "kind",
+    "oracleId",
+    "oracle_id",
+    "outputTarget",
+    "outputTargetId",
+    "output_target",
+    "output_target_id",
+    "probeMode",
+    "producer",
+    "producerId",
+    "producerSubsystem",
+    "producer_id",
+    "producer_subsystem",
+    "readbackPlan",
+    "runtimeSession",
+    "runtimeSessionId",
+    "runtime_session",
+    "runtime_session_id",
+    "sessionId",
+    "session_id",
+    "target",
+    "visualEvidenceRef",
+    "visualRef",
+    "visual_evidence_ref",
+    "visual_ref",
+}
+FISSION_OUTPUT_ORACLE_NUMERIC_FIELDS = {
+    "absoluteTolerance",
+    "absTolerance",
+    "absolute_tolerance",
+    "abs_tolerance",
+    "tolerance",
+}
+FISSION_OUTPUT_ORACLE_ACCEPTED_KINDS = {
+    "edit_contract",
+    "sentinel_buffer_value",
+    "kernel_checksum",
+    "kernel_side_checksum",
+    "render_target_hash",
+    "accumulation_buffer_hash",
+    "selected_pixels",
+    "selected_pixel_values",
+    "per_pass_checksum",
+    "dispatch_counter",
+    "buffer_checksum",
+}
+FISSION_RENDER_OUTPUT_ORACLE_KINDS = {
+    "render_target_hash",
+    "accumulation_buffer_hash",
+    "selected_pixels",
+    "selected_pixel_values",
+}
+FISSION_OUTPUT_ORACLE_EXPECTED_FIELDS = {
+    "expected",
+    "expectedValue",
+    "expectedHash",
+    "expectedIncrement",
+    "expected_value",
+    "expected_hash",
+}
+FISSION_OUTPUT_ORACLE_PRODUCER_FIELDS = {
+    "producer",
+    "producerSubsystem",
+    "producerId",
+    "producer_id",
+    "producer_subsystem",
+}
+FISSION_OUTPUT_ORACLE_TARGET_FIELDS = {
+    "outputTargetId",
+    "outputTarget",
+    "target",
+    "output_target_id",
+    "output_target",
+}
+FISSION_OUTPUT_ORACLE_READBACK_FIELDS = {
+    "readbackPlan",
+    "readbackTimestampSource",
+    "readbackAfterHmr",
+    "readbackAfterHMR",
+    "syncPoint",
+    "synchronizationPoint",
+    "knownSyncPoint",
+    "probeMode",
+    "probeConfig",
+    "deterministicProbeMode",
+}
+FISSION_OUTPUT_ORACLE_SESSION_FIELDS = {
+    "runtimeSessionId",
+    "runtimeSession",
+    "sessionId",
+    "runtimeSessionBinding",
+    "sessionBinding",
+    "runtimeSessionIdSource",
+    "sessionIdSource",
+    "runtime_session_id",
+    "runtime_session",
+    "session_id",
+}
+FISSION_OUTPUT_ORACLE_ARTIFACT_FIELDS = {
+    "artifactId",
+    "artifact",
+    "artifactBinding",
+    "artifactIdSource",
+    "selectedArtifactId",
+    "runtimeArtifactBinding",
+    "artifact_id",
+}
+FISSION_OUTPUT_ORACLE_VISUAL_FIELDS = {
+    "visualEvidenceRef",
+    "visualEvidenceRefs",
+    "visualEvidencePlan",
+    "visualEvidenceRequirement",
+    "requiresVisualEvidence",
+    "visualRef",
+    "visual_evidence_ref",
+    "visual_ref",
+}
+FISSION_REJECTION_STRING_FIELDS = {
+    "artifactKind",
+    "artifactScope",
+    "reasonCode",
+    "replacementScope",
+    "scope",
+}
+FISSION_REJECTION_STRING_LIST_FIELDS = {
+    "evidenceIds",
+    "proofEvidenceIds",
+    "reasonCodes",
+    "rejectionEvidenceIds",
+    "verifierEvidenceIds",
+}
 HOST_PATH_TO_MODULE = {
     "core.cpp": "core",
     "gui.cpp": "gui",
@@ -365,7 +631,440 @@ def parse_gpu_diff_response(raw: str) -> dict:
     if plan not in VALID_RELOAD_PLANS:
         raise HTTPException(status_code=400, detail=f"invalid reload_plan {plan!r}")
     edits = validate_gpu_edit_list(parsed.get("edits", []))
-    return {"reload_plan": plan, "edits": edits}
+    result = {"reload_plan": plan, "edits": edits}
+    fission_candidate = validate_fission_candidate(parsed.get("fissionCandidate"))
+    if fission_candidate is not None:
+        result["fissionCandidate"] = fission_candidate
+    return result
+
+
+def validate_fission_candidate(candidate: object) -> Optional[dict]:
+    if candidate is None:
+        return None
+    if not isinstance(candidate, dict):
+        raise HTTPException(status_code=400, detail="`fissionCandidate` must be an object when present")
+    cleaned = dict(candidate)
+    for source_field, target_field in FISSION_CANDIDATE_ALIASES.items():
+        if target_field not in cleaned and source_field in cleaned:
+            cleaned[target_field] = cleaned[source_field]
+    for field in sorted(FISSION_CANDIDATE_STRING_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a string")
+    for field in sorted(FISSION_CANDIDATE_SHA256_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            value = cleaned[field]
+            if not isinstance(value, str) or not _SHA256_DIGEST_RE.match(value.strip()):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.{field}` must be a SHA-256 digest",
+                )
+    for field in sorted(FISSION_CANDIDATE_STRING_LIST_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            cleaned[field] = _validate_fission_string_list(cleaned[field], field)
+    if "proofFailureReasonCodes" in cleaned and cleaned["proofFailureReasonCodes"] is not None:
+        _validate_registered_reason_codes(
+            cleaned["proofFailureReasonCodes"],
+            "fissionCandidate.proofFailureReasonCodes",
+        )
+    for field in sorted(FISSION_CANDIDATE_OBJECT_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], dict):
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be an object")
+    if "outputOracleProposal" in cleaned and cleaned["outputOracleProposal"] is not None:
+        cleaned["outputOracleProposal"] = _validate_fission_output_oracle_proposal(
+            cleaned["outputOracleProposal"]
+        )
+    if "attachmentInstrumentationProposals" in cleaned and cleaned["attachmentInstrumentationProposals"] is not None:
+        cleaned["attachmentInstrumentationProposals"] = _validate_fission_attachment_proposals(
+            cleaned["attachmentInstrumentationProposals"]
+        )
+    for field in sorted(FISSION_CANDIDATE_BOOL_FIELDS):
+        if field in cleaned and cleaned[field] is not None and type(cleaned[field]) is not bool:
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a boolean")
+    for field in sorted(FISSION_CANDIDATE_NON_NEGATIVE_INT_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            cleaned[field] = _validate_non_negative_int(cleaned[field], f"fissionCandidate.{field}")
+    if "sourceSpans" in cleaned and cleaned["sourceSpans"] is not None:
+        cleaned["sourceSpans"] = _validate_fission_source_spans(cleaned["sourceSpans"])
+    if "narrowerCandidateRejections" in cleaned and cleaned["narrowerCandidateRejections"] is not None:
+        cleaned["narrowerCandidateRejections"] = _validate_fission_rejections(
+            cleaned["narrowerCandidateRejections"]
+        )
+    _validate_fission_attachment_proposal_id_coverage(cleaned)
+    return cleaned
+
+
+def _validate_fission_attachment_proposals(value: object) -> List[dict]:
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.attachmentInstrumentationProposals` must be an array",
+        )
+    cleaned: List[dict] = []
+    for i, proposal in enumerate(value):
+        if not isinstance(proposal, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.attachmentInstrumentationProposals[{i}]` must be an object",
+            )
+        cleaned.append(_validate_fission_attachment_proposal(proposal, i))
+    return cleaned
+
+
+def _validate_fission_attachment_proposal(value: Mapping[str, object], index: int) -> dict:
+    cleaned = dict(value)
+    for field in sorted(FISSION_ATTACHMENT_PROPOSAL_STRING_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.attachmentInstrumentationProposals[{index}].{field}` must be a string",
+            )
+    for field in (
+        "proposalId",
+        "sourceLaunchSiteId",
+        "hostPathId",
+        "path",
+        "sourceProvenance",
+        "instrumentationAction",
+    ):
+        if not isinstance(cleaned.get(field), str) or not str(cleaned[field]).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.attachmentInstrumentationProposals[{index}].{field}` must be a non-empty string",
+            )
+    action = str(cleaned["instrumentationAction"]).strip()
+    if action not in FISSION_ATTACHMENT_PROPOSAL_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.attachmentInstrumentationProposals"
+                f"[{index}].instrumentationAction` must be an accepted attachment action"
+            ),
+        )
+    for field in ("line", "column"):
+        value = cleaned.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.attachmentInstrumentationProposals"
+                    f"[{index}].{field}` must be a positive integer"
+                ),
+            )
+    for field in ("sourceHash", "snippetHash"):
+        value = cleaned.get(field)
+        if not isinstance(value, str) or not _SHA256_DIGEST_RE.match(value.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.attachmentInstrumentationProposals"
+                    f"[{index}].{field}` must be a SHA-256 digest"
+                ),
+            )
+    boundary_apis = _validate_fission_string_list(
+        cleaned.get("requiredBoundaryApis"),
+        f"attachmentInstrumentationProposals[{index}].requiredBoundaryApis",
+    )
+    missing_boundary_apis = sorted(
+        FISSION_ATTACHMENT_PROPOSAL_REQUIRED_BOUNDARY_APIS.difference(boundary_apis)
+    )
+    if missing_boundary_apis:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.attachmentInstrumentationProposals"
+                f"[{index}].requiredBoundaryApis` must include the complete runtime boundary API contract"
+            ),
+        )
+    runtime_evidence = cleaned.get("runtimeEvidenceRequired")
+    if not isinstance(runtime_evidence, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.attachmentInstrumentationProposals"
+                f"[{index}].runtimeEvidenceRequired` must be an object"
+            ),
+        )
+    runtime_evidence_cleaned = dict(runtime_evidence)
+    for field in sorted(FISSION_ATTACHMENT_PROPOSAL_RUNTIME_EVIDENCE_BOOL_FIELDS):
+        if runtime_evidence_cleaned.get(field) is not True:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.attachmentInstrumentationProposals"
+                    f"[{index}].runtimeEvidenceRequired.{field}` must be true"
+                ),
+            )
+    cleaned["requiredBoundaryApis"] = boundary_apis
+    cleaned["runtimeEvidenceRequired"] = runtime_evidence_cleaned
+    return cleaned
+
+
+def _validate_fission_attachment_proposal_id_coverage(candidate: Mapping[str, object]) -> None:
+    proposal_ids = candidate.get("originalHostAttachmentInstrumentationProposalIds")
+    if not proposal_ids:
+        return
+    proposals = candidate.get("attachmentInstrumentationProposals")
+    if not isinstance(proposals, list):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`fissionCandidate.originalHostAttachmentInstrumentationProposalIds` "
+                "requires matching structured attachmentInstrumentationProposals"
+            ),
+        )
+    structured_ids = {
+        str(proposal.get("proposalId")).strip()
+        for proposal in proposals
+        if isinstance(proposal, dict) and isinstance(proposal.get("proposalId"), str)
+    }
+    for i, proposal_id in enumerate(proposal_ids):
+        if proposal_id not in structured_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`fissionCandidate.originalHostAttachmentInstrumentationProposalIds"
+                    f"[{i}]` must match a structured attachmentInstrumentationProposals entry"
+                ),
+            )
+
+
+def _validate_fission_output_oracle_proposal(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.outputOracleProposal` must be an object",
+        )
+    cleaned = dict(value)
+    for field in sorted(FISSION_OUTPUT_ORACLE_STRING_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.outputOracleProposal.{field}` must be a string",
+            )
+    for field in sorted(FISSION_OUTPUT_ORACLE_NUMERIC_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            number = cleaned[field]
+            if type(number) not in {int, float} or number < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.outputOracleProposal.{field}` must be a non-negative number",
+                )
+    kind = cleaned.get("kind")
+    if not isinstance(kind, str) or not kind.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.outputOracleProposal.kind` must be an accepted oracle kind",
+        )
+    normalized_kind = kind.strip().lower()
+    if normalized_kind not in FISSION_OUTPUT_ORACLE_ACCEPTED_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.outputOracleProposal.kind` must be an accepted oracle kind",
+        )
+    cleaned["kind"] = normalized_kind
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_EXPECTED_FIELDS,
+        "expected",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_PRODUCER_FIELDS,
+        "producer",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_TARGET_FIELDS,
+        "outputTargetId",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_READBACK_FIELDS,
+        "readbackPlan",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_SESSION_FIELDS,
+        "runtimeSessionId",
+    )
+    _require_fission_output_oracle_field(
+        cleaned,
+        FISSION_OUTPUT_ORACLE_ARTIFACT_FIELDS,
+        "artifactId",
+    )
+    if normalized_kind in FISSION_RENDER_OUTPUT_ORACLE_KINDS:
+        _require_fission_output_oracle_field(
+            cleaned,
+            FISSION_OUTPUT_ORACLE_VISUAL_FIELDS,
+            "visualEvidenceRef",
+        )
+    return cleaned
+
+
+def _fission_value_present(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set)):
+        return bool(value)
+    if isinstance(value, dict):
+        return bool(value)
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    return False
+
+
+def _require_fission_output_oracle_field(
+    proposal: Mapping[str, object],
+    aliases: Iterable[str],
+    label: str,
+) -> None:
+    if any(_fission_value_present(proposal.get(field)) for field in aliases):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=f"`fissionCandidate.outputOracleProposal.{label}` must be present",
+    )
+
+
+def _validate_fission_string_list(value: object, field: str) -> List[str]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a string array")
+    cleaned: List[str] = []
+    for i, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.{field}[{i}]` must be a non-empty string",
+            )
+        cleaned.append(item)
+    return cleaned
+
+
+def _validate_fission_source_spans(value: object) -> List[dict]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="`fissionCandidate.sourceSpans` must be an array")
+    cleaned: List[dict] = []
+    for i, span in enumerate(value):
+        if not isinstance(span, dict):
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.sourceSpans[{i}]` must be an object")
+        path = span.get("path")
+        start_line = span.get("startLine")
+        end_line = span.get("endLine")
+        start_byte = span.get("startByte")
+        end_byte = span.get("endByte")
+        if not isinstance(path, str) or not path:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.sourceSpans[{i}].path` must be a non-empty string",
+            )
+        has_line_range = start_line is not None or end_line is not None
+        has_byte_range = start_byte is not None or end_byte is not None
+        if not has_line_range and not has_byte_range:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.sourceSpans[{i}]` must include a line or byte range",
+            )
+        if has_line_range:
+            if type(start_line) is not int or start_line < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].startLine` must be a positive integer",
+                )
+            if type(end_line) is not int or end_line < start_line:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].endLine` must be an integer >= startLine",
+                )
+        if has_byte_range:
+            if type(start_byte) is not int or start_byte < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].startByte` must be a non-negative integer",
+                )
+            if type(end_byte) is not int or end_byte <= start_byte:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].endByte` must be an integer > startByte",
+                )
+        cleaned_span = dict(span)
+        cleaned_span["path"] = path
+        if has_line_range:
+            cleaned_span["startLine"] = start_line
+            cleaned_span["endLine"] = end_line
+        if has_byte_range:
+            cleaned_span["startByte"] = start_byte
+            cleaned_span["endByte"] = end_byte
+        cleaned.append(cleaned_span)
+    return cleaned
+
+
+def _validate_fission_rejections(value: object) -> List[dict]:
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.narrowerCandidateRejections` must be an array",
+        )
+    cleaned: List[dict] = []
+    for i, rejection in enumerate(value):
+        if not isinstance(rejection, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.narrowerCandidateRejections[{i}]` must be an object",
+            )
+        cleaned_rejection = dict(rejection)
+        if "scopeRank" in cleaned_rejection and cleaned_rejection["scopeRank"] is not None:
+            cleaned_rejection["scopeRank"] = _validate_non_negative_int(
+                cleaned_rejection["scopeRank"],
+                f"fissionCandidate.narrowerCandidateRejections[{i}].scopeRank",
+            )
+        for field in sorted(FISSION_REJECTION_STRING_FIELDS):
+            if (
+                field in cleaned_rejection
+                and cleaned_rejection[field] is not None
+                and not isinstance(cleaned_rejection[field], str)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.narrowerCandidateRejections[{i}].{field}` must be a string",
+                )
+        for field in sorted(FISSION_REJECTION_STRING_LIST_FIELDS):
+            if field in cleaned_rejection and cleaned_rejection[field] is not None:
+                cleaned_rejection[field] = _validate_fission_string_list(
+                    cleaned_rejection[field],
+                    f"narrowerCandidateRejections[{i}].{field}",
+                )
+        if "reasonCode" in cleaned_rejection and cleaned_rejection["reasonCode"] is not None:
+            _validate_registered_reason_codes(
+                [cleaned_rejection["reasonCode"]],
+                f"fissionCandidate.narrowerCandidateRejections[{i}].reasonCode",
+            )
+        if "reasonCodes" in cleaned_rejection and cleaned_rejection["reasonCodes"] is not None:
+            _validate_registered_reason_codes(
+                cleaned_rejection["reasonCodes"],
+                f"fissionCandidate.narrowerCandidateRejections[{i}].reasonCodes",
+            )
+        cleaned.append(cleaned_rejection)
+    return cleaned
+
+
+def _validate_registered_reason_codes(codes: Iterable[str], label: str) -> None:
+    try:
+        assert_registered_reason_codes(codes)
+    except UnknownReasonCodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"`{label}` contains unregistered reason codes: {', '.join(exc.unknown_codes)}",
+        ) from exc
+
+
+def _validate_non_negative_int(value: object, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise HTTPException(status_code=400, detail=f"`{label}` must be a non-negative integer")
+    return value
 
 
 def _normalize_module(module: str) -> str:

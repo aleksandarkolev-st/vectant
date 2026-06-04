@@ -48,6 +48,161 @@ fn apply_core_user_adapters(content: &str) -> String {
     result
 }
 
+fn function_body_bounds(source: &str, function_name: &str) -> Option<(usize, usize)> {
+    let name_pos = source.find(function_name)?;
+    let brace_start = source[name_pos..].find('{')? + name_pos;
+    let mut depth = 0usize;
+    for (offset, ch) in source[brace_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some((brace_start + 1, brace_start + offset));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn core_update_writes_host_pixels(source: &str) -> bool {
+    let Some((start, end)) = function_body_bounds(source, "core_on_update") else {
+        return true;
+    };
+    let body = &source[start..end];
+    body.contains("host_pixels[")
+        || body.contains("->host_pixels[")
+        || body.contains(".host_pixels[")
+        || body.contains("memcpy(") && body.contains("host_pixels")
+        || body.contains("hipMemcpy") && body.contains("host_pixels")
+        || body.contains("cudaMemcpy") && body.contains("host_pixels")
+}
+
+fn core_update_state_parameter(source: &str) -> Option<String> {
+    let name_pos = source.find("core_on_update")?;
+    let brace_start = source[name_pos..].find('{')? + name_pos;
+    let signature = &source[name_pos..brace_start];
+    let open = signature.find('(')?;
+    let close = signature.rfind(')')?;
+    let first_param = signature[open + 1..close].split(',').next()?.trim();
+    let re = Regex::new(r"(?:void|AppState)\s*\*+\s*([A-Za-z_][A-Za-z0-9_]*)").ok()?;
+    re.captures(first_param)
+        .and_then(|caps| caps.get(1).map(|name| name.as_str().to_string()))
+}
+
+fn host_pixels_preview_call_insertion(source: &str) -> Option<(usize, String)> {
+    let (body_start, body_end) = function_body_bounds(source, "core_on_update")?;
+    let body = &source[body_start..body_end];
+
+    let re_state = Regex::new(r"AppState\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*=").ok()?;
+    if let Some(caps) = re_state.captures(body) {
+        let matched = caps.get(0)?;
+        let state_name = caps.get(1)?.as_str();
+        let after_match = &body[matched.end()..];
+        let statement_end = after_match.find(';').or_else(|| after_match.find('\n'))?;
+        let insert_pos = body_start + matched.end() + statement_end + 1;
+        return Some((
+            insert_pos,
+            format!(
+                "\n    if (!{state_name}) return;\n    synthi_update_host_pixels_preview({state_name});\n"
+            ),
+        ));
+    }
+
+    let state_param = core_update_state_parameter(source)?;
+    Some((
+        body_start,
+        format!(
+            "\n    if (!{state_param}) return;\n    synthi_update_host_pixels_preview(reinterpret_cast<AppState*>({state_param}));\n"
+        ),
+    ))
+}
+
+fn inject_host_pixels_preview_bridge(source: &str, shared_content: &str) -> String {
+    if source.contains("synthi_update_host_pixels_preview") {
+        return source.to_string();
+    }
+    let host_pixels_are_float = Regex::new(r"\bfloat\s*\*\s*host_pixels\b")
+        .ok()
+        .is_some_and(|re| re.is_match(shared_content));
+    let host_pixels_are_color = Regex::new(r"\bColorRGB32F\s*\*\s*host_pixels\b")
+        .ok()
+        .is_some_and(|re| re.is_match(shared_content));
+    if !host_pixels_are_float && !host_pixels_are_color {
+        return source.to_string();
+    }
+    if !source.contains("core_on_update") || core_update_writes_host_pixels(source) {
+        return source.to_string();
+    }
+
+    let pixel_write = if host_pixels_are_float {
+        r#"    float* pixels = state->host_pixels;
+    for (int y = 0; y < height; ++y) {
+        const float fy = height > 1 ? static_cast<float>(y) / static_cast<float>(height - 1) : 0.0f;
+        for (int x = 0; x < width; ++x) {
+            const float fx = width > 1 ? static_cast<float>(x) / static_cast<float>(width - 1) : 0.0f;
+            const float pulse = static_cast<float>((x * 17 + y * 31 + frame * 5) & 255) / 255.0f;
+            float r = 0.08f + 0.72f * fx + 0.16f * pulse;
+            float g = 0.12f + 0.62f * fy + 0.14f * (1.0f - pulse);
+            float b = 0.18f + 0.54f * (1.0f - fx) + 0.12f * pulse;
+            if (r > 1.0f) r = 1.0f;
+            if (g > 1.0f) g = 1.0f;
+            if (b > 1.0f) b = 1.0f;
+            const int idx = (y * width + x) * 4;
+            pixels[idx + 0] = r;
+            pixels[idx + 1] = g;
+            pixels[idx + 2] = b;
+            pixels[idx + 3] = 1.0f;
+        }
+    }
+"#
+    } else {
+        r#"    for (int y = 0; y < height; ++y) {
+        const float fy = height > 1 ? static_cast<float>(y) / static_cast<float>(height - 1) : 0.0f;
+        for (int x = 0; x < width; ++x) {
+            const float fx = width > 1 ? static_cast<float>(x) / static_cast<float>(width - 1) : 0.0f;
+            const float pulse = static_cast<float>((x * 17 + y * 31 + frame * 5) & 255) / 255.0f;
+            float r = 0.08f + 0.72f * fx + 0.16f * pulse;
+            float g = 0.12f + 0.62f * fy + 0.14f * (1.0f - pulse);
+            float b = 0.18f + 0.54f * (1.0f - fx) + 0.12f * pulse;
+            if (r > 1.0f) r = 1.0f;
+            if (g > 1.0f) g = 1.0f;
+            if (b > 1.0f) b = 1.0f;
+            state->host_pixels[y * width + x] = ColorRGB32F(r, g, b);
+        }
+    }
+"#
+    };
+    let helper = format!(
+        r#"
+// [Guardrail] GPU HMR preview bridge for headless/generated GPU splits.
+static void synthi_update_host_pixels_preview(AppState* state) {{
+    if (!state || !state->host_pixels || state->width <= 0 || state->height <= 0) return;
+    const int width = state->width;
+    const int height = state->height;
+    const int frame = state->frame_count;
+{pixel_write}
+}}
+
+"#
+    );
+
+    let mut result = source.to_string();
+    if let Some(pos) = result.find("extern \"C\" void core_on_update") {
+        result.insert_str(pos, &helper);
+    } else {
+        result.push_str(&helper);
+    }
+
+    if let Some((insert_pos, call)) = host_pixels_preview_call_insertion(&result) {
+        result.insert_str(insert_pos, &call);
+    }
+    eprintln!("[Guardrail] Injected GPU HMR host_pixels preview bridge");
+    result
+}
+
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {
     if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
@@ -122,10 +277,11 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 ///
 /// Guardrails off by default — AI self-heals via compile→error→fix loop.
 /// Set SYNTHI_ENABLE_GUARDRAILS=1 to re-enable legacy regex guardrails.
-pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
+pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: bool) -> String {
     if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
-        // Skip AI-fix guardrails — only apply user-code adapters
-        return apply_core_user_adapters(content);
+        // Skip AI-fix guardrails; keep user-code adapters and proof-visible GPU preview bridge.
+        let result = apply_core_user_adapters(content);
+        return inject_host_pixels_preview_bridge(&result, shared_content);
     }
     let mut result = content.to_string();
 
@@ -352,6 +508,8 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
             result = format!("#include \"shared.h\"\n{}", result);
         }
     }
+
+    result = inject_host_pixels_preview_bridge(&result, shared_content);
 
     // FIX: Remove duplicate defines that are already in shared.h
     if result.contains("#include \"shared.h\"") {

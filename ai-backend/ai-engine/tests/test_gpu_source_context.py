@@ -53,7 +53,7 @@ def test_source_context_treats_macro_wrapped_runtime_kernels_as_gpu_context():
     prompt, report = build_project_source_context(files, focus="src/main.cpp")
     included_reasons = {item["path"]: item["includeReason"] for item in report["included"]}
 
-    assert included_reasons["src/Device/GPUKernel.cpp"] == "kernel_declaration"
+    assert included_reasons["src/Device/GPUKernel.cpp"] == "runtime_launch_boundary"
     assert included_reasons["src/Device/kernels/CameraRays.h"] == "kernel_declaration"
     assert "GLOBAL_KERNEL_SIGNATURE" in prompt
     assert "oroModuleLaunchKernel" in prompt
@@ -177,6 +177,115 @@ def test_source_context_marks_critical_budget_drop():
     assert report["deterministicContextComplete"] is False
     assert report["criticalDropped"]
     assert report["criticalDropped"][0]["dropReason"] == "prompt_budget_exclusion"
+
+
+def test_source_context_promotes_launch_site_for_focused_kernel_under_budget_pressure():
+    files = {
+        "CMakeLists.txt": "add_executable(app src/app/main.cpp src/gpu/shade.hip src/render/launch.cpp)",
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/gpu/shade.hip": """
+        GLOBAL_KERNEL_SIGNATURE(void) ShadeKernel(RenderData render_data) {
+          render_data.accum[threadIdx.x] = make_float4(1.0f);
+        }
+        """,
+        "src/render/launch.cpp": """
+        void configure(){ kernels.main.set_kernel_function_name("ShadeKernel"); }
+        void render(){
+          void* launch_args[] = { &render_data };
+          kernels.main.launch_asynchronous(8, 8, width, height, launch_args, stream);
+        }
+        """,
+        **{
+            f"src/gpu/other_{idx}.hip": f"__global__ void Other{idx}(float* out) {{ out[threadIdx.x] = {idx}.0f; }}\n"
+            + ("// filler\n" * 80)
+            for idx in range(8)
+        },
+    }
+
+    prompt, report = build_project_source_context(
+        files,
+        focus="src/gpu/shade.hip",
+        max_chars=1800,
+        per_file_max_chars=900,
+    )
+    reasons = {item["path"]: item["includeReason"] for item in report["included"]}
+    included_paths = set(reasons)
+
+    assert "src/render/launch.cpp" in included_paths
+    assert reasons["src/render/launch.cpp"] == "focused_kernel_launch_site"
+    assert 'set_kernel_function_name("ShadeKernel")' in prompt
+    assert any(
+        item["path"].startswith("src/gpu/other_")
+        and item.get("dropReason") == "prompt_budget_exclusion"
+        for item in report["dropped"]
+    )
+
+
+def test_source_context_marks_dropped_focused_launch_site_as_incomplete():
+    files = {
+        "src/gpu/shade.hip": """
+        GLOBAL_KERNEL_SIGNATURE(void) ShadeKernel(RenderData render_data) {
+          render_data.accum[threadIdx.x] = make_float4(1.0f);
+        }
+        """,
+        "src/render/launch.cpp": """
+        void configure(){ kernels.main.set_kernel_function_name("ShadeKernel"); }
+        void render(){ kernels.main.launch_asynchronous(8, 8, width, height, launch_args, stream); }
+        """,
+    }
+
+    _prompt, report = build_project_source_context(
+        files,
+        focus="src/gpu/shade.hip",
+        max_chars=120,
+        per_file_max_chars=1000,
+    )
+
+    assert report["deterministicContextComplete"] is False
+    assert any(
+        item["path"] == "src/render/launch.cpp"
+        and item["reason"] == "focused_kernel_launch_site"
+        and item["dropReason"] == "prompt_budget_exclusion"
+        for item in report["criticalDropped"]
+    )
+
+
+def test_source_context_promotes_runtime_launch_boundary_under_budget_pressure():
+    files = {
+        "CMakeLists.txt": "add_executable(app src/app/main.cpp src/gpu/shade.hip src/runtime/launcher.cpp)",
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/gpu/shade.hip": """
+        GLOBAL_KERNEL_SIGNATURE(void) ShadeKernel(RenderData render_data) {
+          render_data.accum[threadIdx.x] = make_float4(1.0f);
+        }
+        """,
+        "src/runtime/launcher.cpp": """
+        void RuntimeKernel::launch(void* fn, void** args, void* stream) {
+          oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, nullptr);
+        }
+        """,
+        **{
+            f"src/gpu/other_{idx}.hip": f"__global__ void Other{idx}(float* out) {{ out[threadIdx.x] = {idx}.0f; }}\n"
+            + ("// filler\n" * 80)
+            for idx in range(8)
+        },
+    }
+
+    prompt, report = build_project_source_context(
+        files,
+        focus="src/gpu/shade.hip",
+        max_chars=1800,
+        per_file_max_chars=900,
+    )
+    reasons = {item["path"]: item["includeReason"] for item in report["included"]}
+
+    assert reasons["src/runtime/launcher.cpp"] == "runtime_launch_boundary"
+    assert "oroModuleLaunchKernel" in prompt
+    assert any(
+        item["path"].startswith("src/gpu/other_")
+        and item.get("dropReason") == "prompt_budget_exclusion"
+        for item in report["dropped"]
+    )
 
 
 def test_source_context_reports_multi_device_tu_topology():

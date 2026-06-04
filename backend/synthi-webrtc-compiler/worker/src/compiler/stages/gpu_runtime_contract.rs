@@ -15,6 +15,27 @@ use std::path::{Path, PathBuf};
 use crate::hmr::compile_manifest::{DeviceVendor, GpuBuildBlock};
 
 pub const SYNTHI_GPU_RUNTIME_HEADER: &str = "synthi_gpu_runtime.h";
+pub const SYNTHI_GPU_RUNNER_PROVIDED_SYMBOLS: &[&str] = &[
+    "synthi_gpu_launch_generation",
+    "synthi_gpu_launch_raw",
+    "synthi_gpu_launch_raw_checked",
+    "synthi_gpu_launch_raw_arg_info",
+    "synthi_gpu_launch_raw_arg_info_checked",
+    "synthi_gpu_launch_original_host_path_raw_arg_info_checked",
+    "synthi_gpu_launch_source_location_raw_arg_info_checked",
+    "synthi_gpu_pack_buffer",
+    "synthi_gpu_record_host_identity",
+    "synthi_gpu_record_output_buffer_checksum",
+    "synthi_gpu_record_output_buffer_checksum_with_provenance",
+    "synthi_gpu_record_output_buffer_checksum_with_probe",
+    "synthi_gpu_record_original_host_path",
+    "synthi_gpu_record_original_host_path_with_provenance",
+    "synthi_gpu_record_output_oracle",
+    "synthi_gpu_record_output_oracle_with_provenance",
+    "synthi_gpu_record_output_oracle_with_probe",
+    "synthi_gpu_register_buffer",
+    "synthi_gpu_restore_buffer",
+];
 
 pub fn render_gpu_runtime_header(gpu: &GpuBuildBlock) -> String {
     let vendor_define = match gpu.vendor {
@@ -81,6 +102,62 @@ struct Dim3 {{
 }};
 #endif
 
+enum SynthiGpuLaunchArgKind : std::uint32_t {{
+    SYNTHI_GPU_ARG_KIND_UNKNOWN = 0,
+    SYNTHI_GPU_ARG_KIND_POINTER = 1,
+    SYNTHI_GPU_ARG_KIND_INTEGER = 2,
+    SYNTHI_GPU_ARG_KIND_FLOATING = 3,
+    SYNTHI_GPU_ARG_KIND_ENUM = 4,
+    SYNTHI_GPU_ARG_KIND_AGGREGATE = 5,
+}};
+
+template <typename T>
+struct SynthiGpuLaunchArgKindFor {{
+    typedef typename std::remove_cv<T>::type BareT;
+    static constexpr std::uint32_t value =
+        std::is_pointer<BareT>::value ? SYNTHI_GPU_ARG_KIND_POINTER :
+        std::is_integral<BareT>::value ? SYNTHI_GPU_ARG_KIND_INTEGER :
+        std::is_floating_point<BareT>::value ? SYNTHI_GPU_ARG_KIND_FLOATING :
+        std::is_enum<BareT>::value ? SYNTHI_GPU_ARG_KIND_ENUM :
+        SYNTHI_GPU_ARG_KIND_AGGREGATE;
+}};
+
+struct SynthiGpuLaunchArg {{
+    const void* value_ptr;
+    std::size_t value_size;
+    std::uint32_t value_kind;
+
+    constexpr SynthiGpuLaunchArg()
+        : value_ptr(nullptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+    constexpr SynthiGpuLaunchArg(const void* ptr)
+        : value_ptr(ptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+    constexpr SynthiGpuLaunchArg(void* ptr)
+        : value_ptr(ptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+    constexpr SynthiGpuLaunchArg(const void* ptr, std::size_t size)
+        : value_ptr(ptr), value_size(size), value_kind(SYNTHI_GPU_ARG_KIND_AGGREGATE) {{}}
+    constexpr SynthiGpuLaunchArg(void* ptr, std::size_t size)
+        : value_ptr(ptr), value_size(size), value_kind(SYNTHI_GPU_ARG_KIND_AGGREGATE) {{}}
+    constexpr SynthiGpuLaunchArg(const void* ptr, std::size_t size, std::uint32_t kind)
+        : value_ptr(ptr), value_size(size), value_kind(kind) {{}}
+    constexpr SynthiGpuLaunchArg(void* ptr, std::size_t size, std::uint32_t kind)
+        : value_ptr(ptr), value_size(size), value_kind(kind) {{}}
+
+    template <typename T>
+    constexpr SynthiGpuLaunchArg(T* ptr)
+        : value_ptr(static_cast<const void*>(ptr)),
+          value_size(sizeof(T)),
+          value_kind(SynthiGpuLaunchArgKindFor<T>::value) {{}}
+
+    template <typename T>
+    constexpr SynthiGpuLaunchArg(const T* ptr)
+        : value_ptr(static_cast<const void*>(ptr)),
+          value_size(sizeof(T)),
+          value_kind(SynthiGpuLaunchArgKindFor<T>::value) {{}}
+
+    constexpr SynthiGpuLaunchArg(std::nullptr_t)
+        : value_ptr(nullptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+}};
+
 extern "C" {{
 
 struct DeviceDescriptor {{
@@ -127,12 +204,147 @@ bool synthi_gpu_launch_raw_checked(
     std::size_t arg_count,
     std::uint64_t expected_generation);
 
+bool synthi_gpu_launch_raw_arg_info_checked(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const void* grid,
+    std::size_t grid_size,
+    const void* block,
+    std::size_t block_size,
+    std::size_t shared_bytes,
+    std::uintptr_t stream_token,
+    const SynthiGpuLaunchArg* args,
+    std::size_t arg_count,
+    std::uint64_t expected_generation);
+
+bool synthi_gpu_launch_original_host_path_raw_arg_info_checked(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const void* grid,
+    std::size_t grid_size,
+    const void* block,
+    std::size_t block_size,
+    std::size_t shared_bytes,
+    std::uintptr_t stream_token,
+    const SynthiGpuLaunchArg* args,
+    std::size_t arg_count,
+    std::uint64_t expected_generation,
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance);
+
+bool synthi_gpu_launch_source_location_raw_arg_info_checked(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const void* grid,
+    std::size_t grid_size,
+    const void* block,
+    std::size_t block_size,
+    std::size_t shared_bytes,
+    std::uintptr_t stream_token,
+    const SynthiGpuLaunchArg* args,
+    std::size_t arg_count,
+    std::uint64_t expected_generation,
+    const char* host_path_id,
+    const char* attachment_provenance);
+
+bool synthi_gpu_launch_raw_arg_info(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const void* grid,
+    std::size_t grid_size,
+    const void* block,
+    std::size_t block_size,
+    std::size_t shared_bytes,
+    std::uintptr_t stream_token,
+    const SynthiGpuLaunchArg* args,
+    std::size_t arg_count);
+
 void synthi_gpu_register_buffer(
     SynthiGpuRuntime* gpu,
     void* ptr,
     std::size_t bytes,
     const char* semantic_name,
     const char* lifetime_hint);
+
+void synthi_gpu_record_host_identity(
+    const char* role,
+    const void* identity_ptr,
+    std::uint64_t aux_identity);
+
+void synthi_gpu_record_output_oracle(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    bool passed);
+
+void synthi_gpu_record_output_oracle_with_provenance(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    const char* tolerance,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    bool passed);
+
+void synthi_gpu_record_output_oracle_with_probe(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    const char* tolerance,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref,
+    bool passed);
+
+bool synthi_gpu_record_output_buffer_checksum(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256);
+
+bool synthi_gpu_record_output_buffer_checksum_with_provenance(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref);
+
+bool synthi_gpu_record_output_buffer_checksum_with_probe(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref);
+
+void synthi_gpu_record_original_host_path(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    bool dispatch_boundary_observed);
+
+void synthi_gpu_record_original_host_path_with_provenance(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    bool dispatch_boundary_observed);
 
 bool synthi_gpu_pack_buffer(const char* semantic_name, const void* ptr, std::size_t bytes);
 bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_name, void** out_ptr);
@@ -150,7 +362,7 @@ struct SynthiGpuLaunchTable {{
         std::size_t,
         std::size_t,
         std::uintptr_t,
-        const void* const*,
+        const SynthiGpuLaunchArg*,
         std::size_t,
         std::uint64_t);
 }};
@@ -158,7 +370,7 @@ struct SynthiGpuLaunchTable {{
 inline SynthiGpuLaunchTable synthi_gpu_launch_table() {{
     return SynthiGpuLaunchTable{{
         synthi_gpu_launch_generation(),
-        &synthi_gpu_launch_raw_checked,
+        &synthi_gpu_launch_raw_arg_info_checked,
     }};
 }}
 
@@ -189,7 +401,7 @@ inline bool synthi_gpu_launch(
     const Block& block,
     std::size_t shared_bytes,
     Stream stream,
-    std::initializer_list<const void*> args) {{
+    std::initializer_list<SynthiGpuLaunchArg> args) {{
     const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
     return table.launch_raw(
         gpu,
@@ -205,6 +417,173 @@ inline bool synthi_gpu_launch(
         table.generation);
 }}
 
+template <typename Grid, typename Block, typename Stream>
+inline bool synthi_gpu_launch_original_host_path(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    std::initializer_list<SynthiGpuLaunchArg> args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    return synthi_gpu_launch_original_host_path_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        args.begin(),
+        args.size(),
+        table.generation,
+        host_path_id,
+        dispatch_table_entry_id,
+        attachment_provenance);
+}}
+
+template <typename Grid, typename Block, typename Stream>
+inline bool synthi_gpu_launch_original_host_path(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    std::initializer_list<SynthiGpuLaunchArg> args) {{
+    return synthi_gpu_launch_original_host_path(
+        gpu,
+        host_path_id,
+        dispatch_table_entry_id,
+        "host_runtime_explicit",
+        kernel_name,
+        grid,
+        block,
+        shared_bytes,
+        stream,
+        args);
+}}
+
+template <typename Grid, typename Block, typename Stream>
+inline bool synthi_gpu_launch_source_location(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    std::initializer_list<SynthiGpuLaunchArg> args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    return synthi_gpu_launch_source_location_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        args.begin(),
+        args.size(),
+        table.generation,
+        host_path_id,
+        attachment_provenance);
+}}
+
+template <typename Grid, typename Block, typename Stream, typename... Args>
+inline bool synthi_gpu_launch_args(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    const Args&... args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    return table.launch_raw(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        packed_args.begin(),
+        packed_args.size(),
+        table.generation);
+}}
+
+template <typename Grid, typename Block, typename Stream, typename... Args>
+inline bool synthi_gpu_launch_original_host_path_args(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    const Args&... args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    return synthi_gpu_launch_original_host_path_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        packed_args.begin(),
+        packed_args.size(),
+        table.generation,
+        host_path_id,
+        dispatch_table_entry_id,
+        attachment_provenance);
+}}
+
+template <typename Grid, typename Block, typename Stream, typename... Args>
+inline bool synthi_gpu_launch_source_location_args(
+    SynthiGpuRuntime* gpu,
+    const char* host_path_id,
+    const char* attachment_provenance,
+    const char* kernel_name,
+    const Grid& grid,
+    const Block& block,
+    std::size_t shared_bytes,
+    Stream stream,
+    const Args&... args) {{
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    return synthi_gpu_launch_source_location_raw_arg_info_checked(
+        gpu,
+        kernel_name,
+        static_cast<const void*>(&grid),
+        sizeof(Grid),
+        static_cast<const void*>(&block),
+        sizeof(Block),
+        shared_bytes,
+        synthi_gpu_stream_token(stream),
+        packed_args.begin(),
+        packed_args.size(),
+        table.generation,
+        host_path_id,
+        attachment_provenance);
+}}
+
 inline void synthi_register(
     SynthiGpuRuntime* gpu,
     void* ptr,
@@ -217,6 +596,179 @@ inline void synthi_register(
 inline void synthi_register(void* ptr, std::size_t bytes, const char* lifetime_hint) {{
     synthi_gpu_register_buffer(nullptr, ptr, bytes, nullptr, lifetime_hint);
 }}
+
+inline void synthi_host_identity(
+    const char* role,
+    const void* identity_ptr,
+    std::uint64_t aux_identity = 0) {{
+    synthi_gpu_record_host_identity(role, identity_ptr, aux_identity);
+}}
+
+inline void synthi_output_oracle(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    bool passed) {{
+    synthi_gpu_record_output_oracle(oracle_id, kind, expected_value, actual_value, passed);
+}}
+
+inline void synthi_output_oracle_with_provenance(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    const char* tolerance,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    bool passed) {{
+    synthi_gpu_record_output_oracle_with_provenance(
+        oracle_id,
+        kind,
+        expected_value,
+        actual_value,
+        tolerance,
+        producer,
+        output_target_id,
+        artifact_id,
+        visual_evidence_ref,
+        passed);
+}}
+
+inline void synthi_output_oracle_with_probe(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    const char* tolerance,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref,
+    bool passed) {{
+    synthi_gpu_record_output_oracle_with_probe(
+        oracle_id,
+        kind,
+        expected_value,
+        actual_value,
+        tolerance,
+        producer,
+        output_target_id,
+        artifact_id,
+        visual_evidence_ref,
+        probe_mode,
+        probe_config_hash,
+        probe_evidence_ref,
+        passed);
+}}
+
+inline bool synthi_output_buffer_checksum(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256) {{
+    return synthi_gpu_record_output_buffer_checksum(
+        oracle_id,
+        data,
+        bytes,
+        expected_sha256);
+}}
+
+inline bool synthi_output_buffer_checksum_with_provenance(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref) {{
+    return synthi_gpu_record_output_buffer_checksum_with_provenance(
+        oracle_id,
+        data,
+        bytes,
+        expected_sha256,
+        producer,
+        output_target_id,
+        artifact_id,
+        visual_evidence_ref);
+}}
+
+inline bool synthi_output_buffer_checksum_with_probe(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref) {{
+    return synthi_gpu_record_output_buffer_checksum_with_probe(
+        oracle_id,
+        data,
+        bytes,
+        expected_sha256,
+        producer,
+        output_target_id,
+        artifact_id,
+        visual_evidence_ref,
+        probe_mode,
+        probe_config_hash,
+        probe_evidence_ref);
+}}
+
+inline void synthi_original_host_path(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    bool dispatch_boundary_observed = true) {{
+    synthi_gpu_record_original_host_path(
+        host_path_id,
+        dispatch_table_entry_id,
+        dispatch_boundary_observed);
+}}
+
+inline void synthi_original_host_path_with_provenance(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    const char* attachment_provenance,
+    bool dispatch_boundary_observed = true) {{
+    synthi_gpu_record_original_host_path_with_provenance(
+        host_path_id,
+        dispatch_table_entry_id,
+        attachment_provenance,
+        dispatch_boundary_observed);
+}}
+
+#ifndef SYNTHI_GPU_STRINGIFY_DETAIL
+#define SYNTHI_GPU_STRINGIFY_DETAIL(value) #value
+#endif
+#ifndef SYNTHI_GPU_STRINGIFY
+#define SYNTHI_GPU_STRINGIFY(value) SYNTHI_GPU_STRINGIFY_DETAIL(value)
+#endif
+#ifndef SYNTHI_GPU_HOST_PATH_ID
+#define SYNTHI_GPU_HOST_PATH_ID __FILE__ ":" SYNTHI_GPU_STRINGIFY(__LINE__)
+#endif
+#ifndef SYNTHI_GPU_DISABLE_LAUNCH_AUTO_HOST_PATH
+#define synthi_gpu_launch(gpu, kernel_name, grid, block, shared_bytes, stream, ...) \
+    synthi_gpu_launch_source_location( \
+        (gpu), \
+        SYNTHI_GPU_HOST_PATH_ID, \
+        "host_runtime_explicit", \
+        (kernel_name), \
+        (grid), \
+        (block), \
+        (shared_bytes), \
+        (stream), \
+        __VA_ARGS__)
+#endif
 
 #endif // SYNTHI_GPU_RUNTIME_H
 "#
@@ -279,14 +831,46 @@ mod tests {
         let h = render_gpu_runtime_header(&gpu(DeviceVendor::Cuda));
         assert!(h.contains("synthi_gpu_launch_raw"));
         assert!(h.contains("synthi_gpu_launch_raw_checked"));
+        assert!(h.contains("synthi_gpu_launch_raw_arg_info_checked"));
+        assert!(h.contains("synthi_gpu_launch_original_host_path_raw_arg_info_checked"));
+        assert!(h.contains("synthi_gpu_launch_source_location_raw_arg_info_checked"));
+        assert!(h.contains("struct SynthiGpuLaunchArg"));
+        assert!(h.contains("value_kind"));
+        assert!(h.contains("SYNTHI_GPU_ARG_KIND_POINTER"));
         assert!(h.contains("SynthiGpuLaunchTable"));
         assert!(h.contains("inline bool synthi_gpu_launch"));
+        assert!(h.contains("inline bool synthi_gpu_launch_original_host_path"));
+        assert!(h.contains("inline bool synthi_gpu_launch_source_location"));
+        assert!(h.contains("inline bool synthi_gpu_launch_args"));
+        assert!(h.contains("inline bool synthi_gpu_launch_original_host_path_args"));
+        assert!(h.contains("inline bool synthi_gpu_launch_source_location_args"));
+        assert!(h.contains("#define SYNTHI_GPU_HOST_PATH_ID"));
+        assert!(h.contains("#define synthi_gpu_launch(gpu, kernel_name"));
+        assert!(h.contains("\"host_runtime_explicit\""));
         assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
         assert!(h.contains("const DeviceDescriptor* device_descriptor()"));
         assert!(h.contains("void device_on_load"));
         assert!(h.contains("std::size_t device_save_size()"));
         assert!(h.contains("void device_save_write"));
         assert!(h.contains("unsigned long long device_kernel_sig_hash"));
+        assert!(h.contains("synthi_gpu_record_host_identity"));
+        assert!(h.contains("inline void synthi_host_identity"));
+        assert!(h.contains("synthi_gpu_record_output_oracle"));
+        assert!(h.contains("inline void synthi_output_oracle"));
+        assert!(h.contains("synthi_gpu_record_output_oracle_with_provenance"));
+        assert!(h.contains("inline void synthi_output_oracle_with_provenance"));
+        assert!(h.contains("synthi_gpu_record_output_oracle_with_probe"));
+        assert!(h.contains("inline void synthi_output_oracle_with_probe"));
+        assert!(h.contains("synthi_gpu_record_output_buffer_checksum"));
+        assert!(h.contains("inline bool synthi_output_buffer_checksum"));
+        assert!(h.contains("synthi_gpu_record_output_buffer_checksum_with_provenance"));
+        assert!(h.contains("inline bool synthi_output_buffer_checksum_with_provenance"));
+        assert!(h.contains("synthi_gpu_record_output_buffer_checksum_with_probe"));
+        assert!(h.contains("inline bool synthi_output_buffer_checksum_with_probe"));
+        assert!(h.contains("synthi_gpu_record_original_host_path"));
+        assert!(h.contains("inline void synthi_original_host_path"));
+        assert!(h.contains("synthi_gpu_record_original_host_path_with_provenance"));
+        assert!(h.contains("inline void synthi_original_host_path_with_provenance"));
     }
 
     #[test]
@@ -326,12 +910,31 @@ void smoke(SynthiGpuRuntime* gpu) {
     int2 resolution{800, 600};
     int value = 0;
     const void* arg = &value;
+    SynthiGpuLaunchArg sized_arg(&resolution, sizeof(resolution));
+    SynthiGpuLaunchArg scalar_arg(&value, sizeof(value), SYNTHI_GPU_ARG_KIND_INTEGER);
     (void)point;
     (void)resolution;
+    (void)sized_arg;
+    (void)scalar_arg;
     (void)synthi_gpu_stream_token(nullptr);
     (void)synthi_gpu_stream_token(static_cast<void*>(nullptr));
     (void)synthi_gpu_stream_token(0);
     (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
+    (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "noop", grid, block, 0, nullptr, {sized_arg});
+    (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
+    (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", nullptr, "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
+    (void)synthi_gpu_launch_args(gpu, "noop", grid, block, 0, nullptr, value, arg);
+    (void)synthi_gpu_launch_original_host_path_args(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
+    (void)synthi_gpu_launch_source_location_args(gpu, "source.cpp:42", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
+    synthi_host_identity("smoke", gpu, 0);
+    synthi_output_oracle("smoke", "sentinel", "1", "1", true);
+    synthi_output_oracle_with_provenance("smoke", "sentinel", "1", "1", "0", "probe", "target", "artifact", nullptr, true);
+    synthi_output_oracle_with_probe("smoke", "sentinel", "1", "1", "0", "probe", "target", "artifact", nullptr, "mode", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "evidence:output-oracle:probe:smoke", true);
+    (void)synthi_output_buffer_checksum("buffer", &value, sizeof(value), "sha256:missing");
+    (void)synthi_output_buffer_checksum_with_provenance("buffer", &value, sizeof(value), "sha256:missing", "probe", "target", "artifact", nullptr);
+    (void)synthi_output_buffer_checksum_with_probe("buffer", &value, sizeof(value), "sha256:missing", "probe", "target", "artifact", nullptr, "mode", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "evidence:output-oracle:probe:buffer");
+    synthi_original_host_path("host-loop", "entry-noop", true);
+    synthi_original_host_path_with_provenance("host-loop", "entry-noop", "source_instrumented", true);
 }
 "#,
         )

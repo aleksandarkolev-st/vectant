@@ -9,7 +9,17 @@ import {
   type ToolResponse,
 } from "./shared.js";
 
-function computeContentHash(source: string, files: Array<{ name: string; content: string }>): string {
+interface FileRef {
+  name: string;
+  sha256?: string;
+  bytes?: number;
+}
+
+function computeContentHash(
+  source: string,
+  files: Array<{ name: string; content: string }>,
+  fileRefs: FileRef[] = [],
+): string {
   const hasher = createHash("sha256");
   hasher.update("primary:");
   hasher.update(source);
@@ -18,6 +28,14 @@ function computeContentHash(source: string, files: Array<{ name: string; content
     hasher.update(f.name);
     hasher.update("::");
     hasher.update(f.content);
+  }
+  for (const ref of fileRefs) {
+    hasher.update("\n::file-ref::");
+    hasher.update(ref.name);
+    hasher.update("::sha256=");
+    hasher.update(ref.sha256 ?? "");
+    hasher.update("::bytes=");
+    hasher.update(ref.bytes === undefined ? "" : String(ref.bytes));
   }
   return hasher.digest("hex").slice(0, 16);
 }
@@ -38,10 +56,15 @@ interface RawArgs {
   filename?: unknown;
   source?: unknown;
   files?: unknown;
+  file_refs?: unknown;
   is_gui?: unknown;
   width?: unknown;
   height?: unknown;
   use_ai_split?: unknown;
+  bypass_ai_split_cache?: unknown;
+  force_ai_split?: unknown;
+  force_fresh_ai_split?: unknown;
+  require_fresh_ai_split?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
   force_gpu_ai_delta?: unknown;
@@ -87,6 +110,41 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       }
     }
   }
+  let fileRefs: FileRef[] = [];
+  if (a.file_refs !== undefined) {
+    if (!Array.isArray(a.file_refs)) {
+      return errorResponse("invalid_args", { field: "file_refs", expected: "array" });
+    }
+    fileRefs = [];
+    for (let i = 0; i < a.file_refs.length; i++) {
+      const ref = a.file_refs[i] as { name?: unknown; sha256?: unknown; bytes?: unknown };
+      if (!ref || typeof ref !== "object" || typeof ref.name !== "string") {
+        return errorResponse("invalid_args", {
+          field: `file_refs[${i}]`,
+          expected: "{name:string, sha256?:string, bytes?:number}",
+        });
+      }
+      if (ref.sha256 !== undefined && typeof ref.sha256 !== "string") {
+        return errorResponse("invalid_args", {
+          field: `file_refs[${i}].sha256`,
+          expected: "string",
+        });
+      }
+      if (Object.prototype.hasOwnProperty.call(ref, "bytes")) {
+        if (typeof ref.bytes !== "number" || !Number.isFinite(ref.bytes) || ref.bytes < 0) {
+          return errorResponse("invalid_args", {
+            field: `file_refs[${i}].bytes`,
+            expected: "non-negative number",
+          });
+        }
+      }
+      fileRefs.push({
+        name: ref.name,
+        ...(typeof ref.sha256 === "string" ? { sha256: ref.sha256 } : {}),
+        ...(typeof ref.bytes === "number" ? { bytes: ref.bytes } : {}),
+      });
+    }
+  }
 
   const gate = checkInputGate();
   if (gate) return errorResponse(gate.error, gate);
@@ -103,6 +161,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     filename,
     source: a.source,
     files,
+    ...(fileRefs.length > 0 ? { file_refs: fileRefs } : {}),
     session_id: attached.sessionId,
     is_gui: isGui,
     supports_h265: false,
@@ -110,6 +169,11 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof a.width === "number") payload["width"] = a.width;
   if (typeof a.height === "number") payload["height"] = a.height;
   if (typeof a.use_ai_split === "boolean") payload["use_ai_split"] = a.use_ai_split;
+  const bypassAiSplitCache =
+    a.bypass_ai_split_cache ?? a.force_ai_split ?? a.force_fresh_ai_split ?? a.require_fresh_ai_split;
+  if (typeof bypassAiSplitCache === "boolean") {
+    payload["bypass_ai_split_cache"] = bypassAiSplitCache;
+  }
   if (typeof a.user_requested_ai === "boolean") payload["user_requested_ai"] = a.user_requested_ai;
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
@@ -158,7 +222,10 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       filename,
       is_gui: isGui,
       use_ai_split: Boolean(payload["use_ai_split"]),
+      bypass_ai_split_cache:
+        typeof bypassAiSplitCache === "boolean" ? bypassAiSplitCache : undefined,
       file_count: files.length,
+      file_ref_count: fileRefs.length,
       source_chars: (a.source as string).length,
       prefer_gpu_pipeline:
         typeof a.prefer_gpu_pipeline === "boolean" ? a.prefer_gpu_pipeline : undefined,
@@ -174,8 +241,8 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   // made up the compile input, so `synthi_get_source_state` and
   // `wait({condition:"source_state"})` see real data instead of a
   // "producer not wired" placeholder.
-  const lastChangedFiles = [filename, ...files.map((f) => f.name)];
-  const contentHash = computeContentHash(a.source as string, files);
+  const lastChangedFiles = [filename, ...files.map((f) => f.name), ...fileRefs.map((ref) => ref.name)];
+  const contentHash = computeContentHash(a.source as string, files, fileRefs);
   eventLog.push({
     kind: "source_state",
     last_changed_files: lastChangedFiles,

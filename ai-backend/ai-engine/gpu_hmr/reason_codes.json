@@ -772,6 +772,606 @@
       "owner": "path_scope_verifier"
     },
     {
+      "code": "fission.candidate_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "No fission candidate was provided for deterministic verification.",
+      "requiredRemediation": "Provide at least one fission island candidate with verifier evidence.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.candidate_accepted",
+      "phase": "fission_verification",
+      "severity": "info",
+      "blocking": false,
+      "message": "At least one fission candidate passed deterministic verification.",
+      "requiredRemediation": "No remediation required; use the selected verified candidate.",
+      "safeFallbackMode": "continue",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.candidate_verified",
+      "phase": "fission_verification",
+      "severity": "info",
+      "blocking": false,
+      "message": "The fission candidate passed deterministic verifier gates.",
+      "requiredRemediation": "No remediation required; keep proof artifacts attached to the candidate.",
+      "safeFallbackMode": "continue",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.no_accepted_candidate",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "All fission candidates were rejected by deterministic verification.",
+      "requiredRemediation": "Use the verifier reason codes to repair candidates or select a wider proven scope.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.candidate_not_object",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A fission candidate was not a structured object.",
+      "requiredRemediation": "Return a structured fission candidate object that matches the verifier contract.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.islandId_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The fission island id is missing.",
+      "requiredRemediation": "Attach a stable island id derived from deterministic candidate identity.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.sourceEditId_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The source edit id is missing.",
+      "requiredRemediation": "Attach the source edit id covered by the fission candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.artifactKind_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate artifact kind is missing.",
+      "requiredRemediation": "Declare the artifact kind using the generic fission scope vocabulary.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.artifactKind_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate artifact kind is not recognized by the generic fission verifier.",
+      "requiredRemediation": "Use a supported generic artifact scope or provide deterministic verifier support for a new scope.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.dependencyClosureHash_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The dependency closure hash is missing.",
+      "requiredRemediation": "Compute and attach the dependency closure hash from deterministic dependency evidence.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.dependencyClosureHash_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The dependency closure hash is not a valid sha256 digest.",
+      "requiredRemediation": "Recompute the dependency closure hash from verifier-owned inputs.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.abiMembraneId_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The ABI membrane id is missing.",
+      "requiredRemediation": "Attach the ABI membrane id proven by deterministic ABI extraction.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.compileRecipeHash_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The compile recipe hash is missing.",
+      "requiredRemediation": "Attach the compile recipe hash for the selected fission island.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.compileRecipeHash_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The compile recipe hash is not a valid sha256 digest.",
+      "requiredRemediation": "Recompute the compile recipe hash from verifier-owned inputs.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.compileCommandHash_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The compile command hash is missing.",
+      "requiredRemediation": "Attach the compile command hash for the selected fission island.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.compileCommandHash_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The compile command hash is not a valid sha256 digest.",
+      "requiredRemediation": "Recompute the compile command hash from verifier-owned inputs.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.replacementScope_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The replacement scope is not recognized by the generic fission verifier.",
+      "requiredRemediation": "Use a supported generic replacement scope.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.artifactScope_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The artifact scope is not recognized by the generic fission verifier.",
+      "requiredRemediation": "Use a supported generic artifact scope.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.scope_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The fission scope is not recognized by the generic fission verifier.",
+      "requiredRemediation": "Use a supported generic fission scope.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.replacement_scope_narrows_artifact_kind",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The declared replacement scope is narrower than the artifact kind can prove.",
+      "requiredRemediation": "Align the replacement scope with the artifact kind or provide a narrower verified artifact.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.sourcePaths_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate source paths are missing.",
+      "requiredRemediation": "Attach workspace-relative source paths covered by the fission island.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.sourceSpans_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate source spans are missing.",
+      "requiredRemediation": "Attach source spans that map to the declared source paths.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.targetSymbols_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The target symbols are missing.",
+      "requiredRemediation": "Attach the target symbols owned by the fission island.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.exportedSymbolsExpected_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The expected exported symbols are missing.",
+      "requiredRemediation": "Attach the expected artifact export set and symbol ownership evidence.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.verifierEvidenceIds_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Verifier evidence ids are missing.",
+      "requiredRemediation": "Attach deterministic verifier evidence ids for the fission candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.source_path_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A source path is not workspace-relative or escapes the workspace.",
+      "requiredRemediation": "Use normalized workspace-relative source paths.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.generated_role_path_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The generated role path required for this fission scope is missing.",
+      "requiredRemediation": "Attach the verifier-owned generated role path or choose a source-only scope.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.generated_role_path_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The generated role path is not workspace-relative or escapes the workspace.",
+      "requiredRemediation": "Use a normalized workspace-relative generated role path.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.deterministic_verifier_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate has no deterministic verifier evidence.",
+      "requiredRemediation": "Attach verifier-owned evidence; AI or model evidence cannot certify the candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.source_mapping_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Source mapping evidence is missing.",
+      "requiredRemediation": "Attach deterministic source mapping evidence for the candidate spans.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.include_closure_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Include closure evidence is missing.",
+      "requiredRemediation": "Attach deterministic include closure evidence for the candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.symbol_ownership_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Symbol ownership evidence is missing.",
+      "requiredRemediation": "Attach deterministic symbol ownership evidence for target and exported symbols.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.dependency_closure_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Dependency closure evidence is missing.",
+      "requiredRemediation": "Attach deterministic dependency closure evidence for the candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.abi_membrane_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "ABI membrane evidence is missing.",
+      "requiredRemediation": "Attach accepted ABI extractor evidence for the candidate membrane.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.abi_membrane_unverified",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "ABI membrane verification did not pass.",
+      "requiredRemediation": "Run the ABI verifier with accepted extractor provenance before publishing the candidate.",
+      "safeFallbackMode": "abi_breaking",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.compile_recipe_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Compile recipe evidence is missing.",
+      "requiredRemediation": "Attach deterministic compile recipe evidence for the candidate artifact.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.loader_capability_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Loader capability evidence is missing.",
+      "requiredRemediation": "Attach deterministic evidence for the required loader capability and transport.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.output_oracle_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Output oracle evidence is missing.",
+      "requiredRemediation": "Attach deterministic output oracle evidence or a required oracle contract.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.source_span_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A source span is malformed.",
+      "requiredRemediation": "Attach valid line or byte spans mapped to workspace-relative source paths.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.source_span_path_unmapped",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A source span path is not included in the declared source paths.",
+      "requiredRemediation": "Normalize source span paths and ensure each is covered by the candidate source path set.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.includeClosure_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The include closure is missing.",
+      "requiredRemediation": "Attach an explicit include closure, even if it is empty.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.includeClosure_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "An include closure entry is malformed or escapes the workspace.",
+      "requiredRemediation": "Attach normalized workspace-relative include closure entries.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.loader_capability_requirement_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The loader capability requirement is missing.",
+      "requiredRemediation": "Declare the required artifact loader capability and transport.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.loader_capability_requirement_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The loader capability requirement is invalid.",
+      "requiredRemediation": "Use a supported generic loader transport or provide deterministic support for a new transport.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.output_oracle_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate has no deterministic output oracle contract.",
+      "requiredRemediation": "Attach a required oracle id or a valid inline output oracle proposal.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.output_oracle_invalid",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The output oracle proposal is incomplete or uses an unaccepted oracle kind.",
+      "requiredRemediation": "Provide an accepted deterministic oracle with expected value, producer, output target, session binding, artifact binding, and readback contract.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.target_symbol_not_exported",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A target symbol is not in the expected exported symbol set.",
+      "requiredRemediation": "Attach symbol identity mapping evidence or correct the candidate export set.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.safe_export_superset_unverified",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate exports extra symbols without deterministic safety evidence.",
+      "requiredRemediation": "Provide a safe export superset reason and deterministic evidence, or narrow the artifact.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.narrower_candidate_rejections_incomplete",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate is wider than the narrowest scope without complete narrower-rejection evidence.",
+      "requiredRemediation": "Record deterministic rejection reasons and evidence for narrower scopes or provide a narrower candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.original_host_launch_mapping_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Original host path mapping is required but missing.",
+      "requiredRemediation": "Attach the original host launch mapping id or select a scope that does not require original host path attachment.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.original_host_launch_mapping_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Original host path mapping evidence is missing.",
+      "requiredRemediation": "Attach deterministic evidence for the original host launch mapping.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.original_host_attachment_instrumentation_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Original host path attachment requires runtime instrumentation or proven attachment evidence.",
+      "requiredRemediation": "Attach a complete instrumentation proposal or runtime-proven original host attachment evidence.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.stream_ordering_evidence_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Stream ordering evidence is required but missing.",
+      "requiredRemediation": "Attach deterministic stream ordering evidence for the affected dispatch path.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.epoch_retirement_unavailable",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Epoch retirement evidence is required but unavailable.",
+      "requiredRemediation": "Attach retirement fence evidence or mark the candidate degraded to a conservative synchronization strategy.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.ai_proposal_id_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "An AI-proposed candidate is missing its AI proposal id.",
+      "requiredRemediation": "Attach the AI proposal id so deterministic promotion can be audited.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.ai_proposal_deterministic_promotion_missing",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "An AI-proposed candidate has not been promoted by deterministic verifier evidence.",
+      "requiredRemediation": "Run deterministic verification and attach promotion evidence before accepting the candidate.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.edit_crosses_body_boundary",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A function-body fission island was rejected because the edit crosses the body boundary.",
+      "requiredRemediation": "Select a wider generic fission scope or provide a narrower candidate with source-span proof.",
+      "safeFallbackMode": "wider_fission_scope",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.include_closure_unknown",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A narrow fission island was rejected because include closure evidence is unavailable.",
+      "requiredRemediation": "Collect include closure evidence or select a wider generic fission scope.",
+      "safeFallbackMode": "wider_fission_scope",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.symbol_ownership_ambiguous",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A narrow fission island was rejected because symbol ownership is ambiguous.",
+      "requiredRemediation": "Collect symbol ownership evidence or select a wider generic fission scope.",
+      "safeFallbackMode": "wider_fission_scope",
+      "owner": "fission_verifier"
+    },
+    {
+      "code": "fission.narrower_scope_not_materialized_by_runtime_artifact_selection",
+      "phase": "fission_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A narrower scope was rejected because the runtime artifact selection did not materialize it.",
+      "requiredRemediation": "Materialize the narrower artifact with deterministic evidence or select the proven wider artifact.",
+      "safeFallbackMode": "wider_fission_scope",
+      "owner": "fission_verifier"
+    },
+    {
       "code": "source.prompt_injection_ignored",
       "phase": "scope_verification",
       "severity": "info",

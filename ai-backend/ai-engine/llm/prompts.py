@@ -4591,12 +4591,93 @@ Return a JSON object:
       "operation": "insert_after" | "insert_before" | "replace" | "delete",
       "anchor": "...exact existing substring...",
       "content": "...replacement or insertion..." }
-  ]
+  ],
+  "fissionCandidate": null | {
+    "islandId": "...",
+    "sourceEditId": "...",
+    "sourcePaths": ["..."],
+    "sourceSpans": [{ "path": "...", "startLine": 1, "endLine": 1 }],
+    "generatedRolePath": "...",
+    "targetSymbols": ["..."],
+    "exportedSymbolsExpected": ["..."],
+    "artifactKind": "...",
+    "includeClosure": ["..."],
+    "dependencyClosureHash": "...",
+    "abiMembraneId": "...",
+    "compileRecipeHash": "...",
+    "compileCommandHash": "...",
+    "loaderCapabilityRequirement": {},
+    "requiredOracleId": "...",
+    "outputOracleProposal": {
+      "id": "...",
+      "kind": "...",
+      "producer": "...",
+      "expected": "...",
+      "tolerance": 0.0,
+      "outputTargetId": "...",
+      "readbackPlan": "...",
+      "probeMode": "...",
+      "artifactId": "...",
+      "runtimeSessionId": "...",
+      "visualEvidenceRef": "..."
+    },
+    "originalHostLaunchMappingId": "...",
+    "attachmentInstrumentationProposals": [
+      {
+        "proposalId": "...",
+        "sourceLaunchSiteId": "...",
+        "hostPathId": "...",
+        "path": "...",
+        "line": 1,
+        "column": 1,
+        "sourceProvenance": "...",
+        "sourceHash": "sha256:...",
+        "snippetHash": "sha256:...",
+        "instrumentationAction": "upgrade_runtime_boundary_to_original_host_attachment",
+        "requiredBoundaryApis": [
+          "synthi_gpu_launch_source_location",
+          "synthi_gpu_launch_original_host_path"
+        ],
+        "runtimeEvidenceRequired": {
+          "runtimeSessionScoped": true,
+          "dispatchBoundaryObserved": true,
+          "dispatchEntryRuntimeVerified": true,
+          "launchArgProvenanceComplete": true
+        }
+      }
+    ],
+    "originalHostAttachmentInstrumentationProposalIds": ["..."],
+    "sourceMappingEvidenceIds": ["..."],
+    "includeClosureEvidenceIds": ["..."],
+    "symbolOwnershipEvidenceIds": ["..."],
+    "dependencyClosureEvidenceIds": ["..."],
+    "abiMembraneEvidenceIds": ["..."],
+    "compileRecipeEvidenceIds": ["..."],
+    "loaderCapabilityEvidenceIds": ["..."],
+    "outputOracleEvidenceIds": ["..."],
+    "originalHostLaunchMappingEvidenceIds": ["..."],
+    "safeExportSupersetReason": "...",
+    "safeExportSupersetEvidenceIds": ["..."],
+    "narrowerCandidateRejections": [
+      {
+        "scopeRank": 0,
+        "reasonCode": "fission.edit_crosses_body_boundary",
+        "verifierEvidenceIds": ["..."]
+      }
+    ],
+    "proofFailureReasonCodes": ["fission.output_oracle_missing"],
+    "verifierEvidenceIds": ["..."],
+    "aiProposalId": "..."
+  }
 }
 
 Rules:
 - Keep the Synthi GPU runtime boundary intact. Host launch sites must use
   `synthi_gpu_launch(...)`, not raw `kernel<<<...>>>(...)`.
+- When deterministic original host launch mapping evidence is present, preserve
+  the real host launch path by using `synthi_gpu_launch_original_host_path(...)`
+  with the mapped host path id and dispatch table entry id. If that evidence is
+  missing, do not invent a mapping and do not claim original-host attachment.
 - Do not add wrapper kernels such as `_safe`, `_v2`, `_fallback`, or
   `safe_<kernel>`. Patch existing kernels in place.
 - Do not create new `.cu` or `.hip` files. The Phase-1/2 contract has a
@@ -4619,6 +4700,43 @@ Rules:
   includes may only target emitted Synthi role files such as `shared.h` or
   `synthi_gpu_runtime.h`. Copy or adapt required structs, constants, and
   helpers into the generated roles instead.
+- `fissionCandidate` is optional proposal metadata only. Include it only when
+  the source mapping, symbol set, dependency closure, ABI membrane, loader
+  capability requirement, and output oracle requirement can be stated from the
+  provided evidence. Do not claim proof: the worker's deterministic verifier
+  will accept or reject the proposal. Use null when any required field would be
+  guessed.
+- `outputOracleProposal` must be an explicit deterministic contract when
+  present: include an accepted oracle kind, producer, expected value or hash,
+  output target id, readback/probe plan, runtime session binding, and artifact
+  binding from evidence. For render-output oracle kinds, include a visual
+  evidence contract as supplemental evidence. If any of those fields would be
+  guessed, return null instead of emitting a partial oracle proposal; do not use
+  screenshots as the expected value.
+- `attachmentInstrumentationProposals` are allowed only when original-host
+  mapping evidence identifies a concrete source launch site and host path id,
+  but runtime attachment evidence is still missing. Include the full structured
+  proposal with `proposalId`, `sourceLaunchSiteId`, `hostPathId`, source
+  `path`, positive `line` and `column`, `sourceProvenance`, real `sourceHash`
+  and `snippetHash` SHA-256 digests, an accepted `instrumentationAction`, an
+  accepted Synthi runtime boundary API, and the runtime evidence requirements
+  above, including complete launch argument provenance.
+  These booleans declare evidence that must later be observed; they are not
+  proof claims. Do not emit bare attachment proposal ids without the matching
+  structured proposal object.
+- Evidence id fields are provenance for the deterministic verifier to re-check,
+  not proof claims. Use ids already present in the mapping, compile, reload, or
+  failure reports. Do not invent ids. If phase evidence is missing for source
+  mapping, include closure, symbol ownership, dependency closure, ABI membrane,
+  compile recipe, loader capability, output oracle, or original host launch
+  mapping, return null or include the registered `fission.*` reason code for
+  the missing phase in `proofFailureReasonCodes`.
+- `dependencyClosureHash`, `compileRecipeHash`, and `compileCommandHash` must be
+  real SHA-256 digests as 64 hex characters, optionally prefixed with `sha256:`.
+  Use null when that digest is not present in provided evidence.
+- Use `narrowerCandidateRejections` only for deterministic reasons already
+  present in local reports, use registered reason codes, and include evidence
+  ids for each rejected narrower scope. It is not a place for model speculation.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}

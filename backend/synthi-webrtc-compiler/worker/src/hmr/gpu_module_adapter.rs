@@ -52,28 +52,35 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
+    ReloadCapsuleMetadata,
 };
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
-    self, CuContext, CuFunction, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
+    self, CuContext, CuFunction, CuStream, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
-use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
+use crate::hmr::gpu_module_manager::{
+    GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError,
+};
+use crate::hmr::gpu_proof::{sha256_hex_bytes, GpuHmrDegradedState};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
-use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome, DrainScope};
+use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
-    clear_launch_dispatcher, install_launch_dispatcher, managed_buffers_snapshot,
-    GpuLaunchDispatcher, GpuLaunchRequest,
+    clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher_with_metadata,
+    launch_records_snapshot, managed_buffers_snapshot, record_hmr_runtime_identity_snapshot,
+    runtime_session_id, GpuLaunchDispatcher, GpuLaunchDispatcherMetadata, GpuLaunchRequest,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -189,6 +196,9 @@ pub struct GpuModuleAdapterConfig {
     /// Whether the adapter is allowed to fall back from Tier A
     /// driver checkpoint to Tier B userspace snapshot at runtime.
     pub allow_snapshot_downgrade: bool,
+    /// Loader transport selected by runtime capability policy. This is
+    /// intentionally not inferred from project names or renderer paths.
+    pub artifact_loader_transport: ArtifactLoaderTransport,
 }
 
 impl Default for GpuModuleAdapterConfig {
@@ -198,6 +208,7 @@ impl Default for GpuModuleAdapterConfig {
             max_module_bytes: 128 * 1024 * 1024, // 128 MB
             drain_timeout_ms: 2_000,
             allow_snapshot_downgrade: true,
+            artifact_loader_transport: ArtifactLoaderTransport::RamBytes,
         }
     }
 }
@@ -268,6 +279,39 @@ struct DeviceReloadOwnership {
     touched_symbols: Vec<String>,
     retired_module_count: usize,
     replaced_primary: bool,
+    runtime_log_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactLoaderTransport {
+    FilesystemPath,
+    RamBytes,
+}
+
+impl ArtifactLoaderTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FilesystemPath => "filesystem_path",
+            Self::RamBytes => "ram_bytes",
+        }
+    }
+
+    pub fn loader_api(self) -> &'static str {
+        match self {
+            Self::FilesystemPath => "module_load_path",
+            Self::RamBytes => "module_load_data",
+        }
+    }
+}
+
+fn normalized_sha256_hex(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let value = value.strip_prefix("sha256:").unwrap_or(value);
+    if value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(value.to_ascii_lowercase())
+    } else {
+        None
+    }
 }
 
 fn sorted_unique_symbols(symbols: &[String]) -> Vec<String> {
@@ -325,6 +369,387 @@ fn resolved_kernel_symbols(manager: &GpuModuleManager) -> Vec<String> {
     out
 }
 
+fn dispatch_table_entries(table: &KernelTable) -> Vec<(String, u64)> {
+    let mut entries = table
+        .names()
+        .filter_map(|name| table.get(name).map(|handle| (name.clone(), handle)))
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
+fn dispatch_table_hash(table: &KernelTable) -> u64 {
+    let entries = dispatch_table_entries(table);
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn epoch_millis_now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u64) {
+    let entries = dispatch_table_entries(manager.kernel_table());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    let table_hash = hasher.finish();
+    (entries.into_iter().collect(), table_hash)
+}
+
+fn artifact_id_for_hash(hash: &str) -> String {
+    format!("artifact:sha256:{}", hash.trim().trim_start_matches("sha256:"))
+}
+
+fn log_optional_token(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn capsule_id_for_publication(
+    artifact_id: &str,
+    capsule_metadata: Option<&ReloadCapsuleMetadata>,
+) -> String {
+    let mut material = String::new();
+    material.push_str(artifact_id);
+    if let Some(metadata) = capsule_metadata {
+        material.push('|');
+        material.push_str(metadata.fission_island_id.as_deref().unwrap_or(""));
+        material.push('|');
+        material.push_str(metadata.abi_membrane_hash.as_deref().unwrap_or(""));
+        material.push('|');
+        material.push_str(metadata.dependency_closure_hash.as_deref().unwrap_or(""));
+        material.push('|');
+        material.push_str(metadata.proof_hash.as_deref().unwrap_or(""));
+    }
+    format!("capsule:sha256:{}", sha256_hex_bytes(material.as_bytes()))
+}
+
+fn changed_function_handle_ids(
+    table: &HashMap<String, u64>,
+    changed_symbols: &[String],
+) -> String {
+    let mut ids = changed_symbols
+        .iter()
+        .filter_map(|symbol| {
+            table
+                .get(symbol)
+                .map(|handle| format!("{}:0x{:x}", symbol, handle))
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(",")
+    }
+}
+
+fn log_list_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && *item != "none")
+        .map(str::to_string)
+        .collect()
+}
+
+#[derive(Debug)]
+struct EpochGenerationGraphLineInput<'a> {
+    runtime_session: &'a str,
+    publish_timestamp_ms: u128,
+    previous_generation: u64,
+    active_generation: u64,
+    old_artifact_id: &'a str,
+    new_artifact_id: &'a str,
+    new_artifact_hash: &'a str,
+    capsule_id: &'a str,
+    fission_island_id: &'a str,
+    abi_membrane_hash: &'a str,
+    dependency_closure_hash: &'a str,
+    proof_hash: &'a str,
+    changed_symbols: &'a [String],
+    function_handle_ids: &'a str,
+    stream_epoch_counters: serde_json::Value,
+    dispatch_table_hash_before: u64,
+    dispatch_table_hash_after: u64,
+    changed_entries: usize,
+    retirement_fence_ids: &'a str,
+    retirement_strategy: &'a str,
+    delayed_unload_result: &'a str,
+    retirement_state: &'a str,
+}
+
+fn epoch_generation_graph_line(input: EpochGenerationGraphLineInput<'_>) -> String {
+    let previous_node_id = format!("generation:{}", input.previous_generation);
+    let active_node_id = format!("generation:{}", input.active_generation);
+    let retirement_fence_ids = log_list_values(input.retirement_fence_ids);
+    let publication_edge = json!({
+        "kind": "publish",
+        "from": previous_node_id,
+        "to": active_node_id,
+        "previousGeneration": input.previous_generation,
+        "activeGeneration": input.active_generation,
+        "runtimeSession": input.runtime_session,
+        "publishTimestampMs": input.publish_timestamp_ms,
+        "oldArtifactId": input.old_artifact_id,
+        "newArtifactId": input.new_artifact_id,
+        "newArtifactHash": input.new_artifact_hash,
+        "capsuleId": input.capsule_id,
+        "fissionIslandId": input.fission_island_id,
+        "abiMembraneHash": input.abi_membrane_hash,
+        "dependencyClosureHash": input.dependency_closure_hash,
+        "proofHash": input.proof_hash,
+        "changedSymbols": input.changed_symbols,
+        "functionHandleIds": log_list_values(input.function_handle_ids),
+        "streamEpochCounters": input.stream_epoch_counters.clone(),
+        "dispatchTableHashBefore": format!("0x{:016x}", input.dispatch_table_hash_before),
+        "dispatchTableHashAfter": format!("0x{:016x}", input.dispatch_table_hash_after),
+        "dispatchTableHash": format!("0x{:016x}", input.dispatch_table_hash_after),
+        "changedEntries": input.changed_entries,
+        "retirementFenceIds": retirement_fence_ids.clone(),
+        "retirementStrategy": input.retirement_strategy,
+        "delayedUnloadResult": input.delayed_unload_result,
+    });
+    let mut edges = vec![publication_edge];
+    if input.retirement_state == "retired" {
+        edges.push(json!({
+            "kind": "retire",
+            "from": format!("generation:{}", input.previous_generation),
+            "to": format!("generation:{}", input.active_generation),
+            "previousGeneration": input.previous_generation,
+            "activeGeneration": input.active_generation,
+            "runtimeSession": input.runtime_session,
+            "retirementFenceIds": retirement_fence_ids.clone(),
+            "retirementStrategy": input.retirement_strategy,
+            "delayedUnloadResult": input.delayed_unload_result,
+        }));
+    }
+    let previous_state = match input.retirement_state {
+        "retired" => "retired",
+        "not-required" => "not-required",
+        _ => "pending-retirement",
+    };
+    let graph = json!({
+        "schemaVersion": "synthi.gpu.epoch_graph.v1",
+        "runtimeSessionIds": [input.runtime_session],
+        "latestPublication": {
+            "previousGeneration": input.previous_generation,
+            "activeGeneration": input.active_generation,
+            "publishTimestampMs": input.publish_timestamp_ms,
+            "oldArtifactId": input.old_artifact_id,
+            "newArtifactId": input.new_artifact_id,
+            "newArtifactHash": input.new_artifact_hash,
+            "capsuleId": input.capsule_id,
+            "fissionIslandId": input.fission_island_id,
+            "abiMembraneHash": input.abi_membrane_hash,
+            "dependencyClosureHash": input.dependency_closure_hash,
+            "proofHash": input.proof_hash,
+            "changedSymbols": input.changed_symbols,
+            "functionHandleIds": log_list_values(input.function_handle_ids),
+            "streamEpochCounters": input.stream_epoch_counters.clone(),
+            "dispatchTableHashBefore": format!("0x{:016x}", input.dispatch_table_hash_before),
+            "dispatchTableHashAfter": format!("0x{:016x}", input.dispatch_table_hash_after),
+            "dispatchTableHash": format!("0x{:016x}", input.dispatch_table_hash_after),
+            "changedEntries": input.changed_entries,
+            "retirementFenceIds": retirement_fence_ids.clone(),
+            "retirementStrategy": input.retirement_strategy,
+            "delayedUnloadResult": input.delayed_unload_result,
+        },
+        "retirementState": input.retirement_state,
+        "retirementRequired": input.retirement_state != "not-required",
+        "nodes": [
+            {
+                "id": format!("generation:{}", input.previous_generation),
+                "generation": input.previous_generation,
+                "state": previous_state,
+            },
+            {
+                "id": format!("generation:{}", input.active_generation),
+                "generation": input.active_generation,
+                "state": "published",
+            }
+        ],
+        "edges": edges,
+    });
+    format!("[gpu-runtime-boundary] epoch_generation_graph json={graph}")
+}
+
+#[derive(Debug, Clone)]
+struct StreamOrderingDrain {
+    outcome: DrainOutcome,
+    scope_label: &'static str,
+    stream_tokens: Vec<usize>,
+}
+
+impl StreamOrderingDrain {
+    fn no_old_generation(budget_ms: u64) -> Self {
+        Self {
+            outcome: DrainOutcome::Synced {
+                scope: DrainScope::Stream,
+                elapsed_ms: 0,
+                budget_ms,
+            },
+            scope_label: "none",
+            stream_tokens: Vec::new(),
+        }
+    }
+
+    fn is_synced(&self) -> bool {
+        self.outcome.is_synced()
+    }
+
+    fn stream_count(&self) -> u32 {
+        self.stream_tokens.len().min(u32::MAX as usize) as u32
+    }
+
+    fn stream_id_label(token: usize) -> String {
+        if token == 0 {
+            "default".to_string()
+        } else {
+            format!("0x{token:x}")
+        }
+    }
+
+    fn stream_ids_for_log(&self) -> String {
+        if self.stream_tokens.is_empty() {
+            return "none".to_string();
+        }
+        self.stream_tokens
+            .iter()
+            .map(|token| Self::stream_id_label(*token))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn retirement_fence_ids_for_log(
+        &self,
+        previous_generation: u64,
+        active_generation: u64,
+    ) -> String {
+        if self.stream_tokens.is_empty() {
+            return "none".to_string();
+        }
+        self.stream_tokens
+            .iter()
+            .map(|token| {
+                format!(
+                    "stream-sync:{}:{}->{}",
+                    Self::stream_id_label(*token),
+                    previous_generation,
+                    active_generation
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn stream_epoch_counters_for_log(&self, generation: u64) -> String {
+        if self.stream_tokens.is_empty() {
+            return format!("none:{generation}");
+        }
+        self.stream_tokens
+            .iter()
+            .map(|token| {
+                let stream_id = Self::stream_id_label(*token);
+                format!("{stream_id}:{generation}")
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn stream_epoch_counters_for_graph(&self, generation: u64) -> serde_json::Value {
+        let mut counters = serde_json::Map::new();
+        if self.stream_tokens.is_empty() {
+            counters.insert("none".to_string(), json!(generation));
+        } else {
+            for token in &self.stream_tokens {
+                counters.insert(Self::stream_id_label(*token), json!(generation));
+            }
+        }
+        serde_json::Value::Object(counters)
+    }
+
+    fn retirement_strategy_for_log(&self) -> &'static str {
+        if self.stream_tokens.is_empty() {
+            return "no_retirement_required";
+        }
+
+        match self.outcome {
+            DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                ..
+            } => "conservative_drain_fallback",
+            _ => "epoch_fence",
+        }
+    }
+}
+
+fn affected_stream_tokens_for_symbols(expected_symbols: &[String]) -> Vec<usize> {
+    let active_generation = current_launch_generation();
+    let mut tokens = launch_records_snapshot()
+        .into_iter()
+        .filter(|record| {
+            record.dispatched
+                && record.dispatch_error.is_none()
+                && record.active_generation == active_generation
+                && expected_symbols
+                    .iter()
+                    .any(|symbol| symbol == &record.kernel_name)
+        })
+        .map(|record| record.stream_token)
+        .collect::<Vec<_>>();
+    tokens.sort_unstable();
+    tokens.dedup();
+    tokens
+}
+
+fn drain_affected_streams(
+    symbols: &GpuDriverSymbolTable,
+    expected_symbols: &[String],
+    first_device_load: bool,
+    budget_ms: u64,
+) -> StreamOrderingDrain {
+    if first_device_load {
+        return StreamOrderingDrain::no_old_generation(budget_ms);
+    }
+
+    let stream_tokens = affected_stream_tokens_for_symbols(expected_symbols);
+    if stream_tokens.is_empty() {
+        return StreamOrderingDrain::no_old_generation(budget_ms);
+    }
+
+    let started = Instant::now();
+    for token in &stream_tokens {
+        let outcome = drain_stream(symbols, *token as CuStream, budget_ms);
+        if !outcome.is_synced() {
+            return StreamOrderingDrain {
+                outcome,
+                scope_label: "affected",
+                stream_tokens,
+            };
+        }
+    }
+
+    StreamOrderingDrain {
+        outcome: DrainOutcome::Synced {
+            scope: DrainScope::Stream,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            budget_ms,
+        },
+        scope_label: "affected",
+        stream_tokens,
+    }
+}
+
 pub struct GpuModuleAdapter {
     config: GpuModuleAdapterConfig,
     phase: GpuPhase,
@@ -337,6 +762,10 @@ pub struct GpuModuleAdapter {
     /// than `*mut c_void` so `GpuModuleAdapter: Send` falls out for
     /// free — the actual pointer crossing is a Phase 3 concern.
     active_module_handle: Option<u64>,
+    /// Content-addressed artifact id for the currently published dispatch
+    /// generation. Epoch proof uses this to describe capsule lineage without
+    /// relying on target-specific paths.
+    active_generation_artifact_id: Option<String>,
     /// Live kernel name → CUfunction-handle-as-u64 map. Empty in
     /// Phase 2; populated when Phase 3 calls `cuModuleGetFunction`
     /// for every kernel in the manifest right after a successful
@@ -387,6 +816,7 @@ impl GpuModuleAdapter {
             phase: GpuPhase::Uninitialized,
             reload_count: 0,
             active_module_handle: None,
+            active_generation_artifact_id: None,
             kernel_table: HashMap::new(),
             health: AdapterHealth::Unknown,
             driver: None,
@@ -462,7 +892,9 @@ impl GpuModuleAdapter {
         let mut context: CuContext = std::ptr::null_mut();
         let code = unsafe { (symbols.cu_ctx_get_current)(&mut context as *mut CuContext) };
         if code != 0 {
-            return Err(format!("GPU context query failed before sidecar reload: {code}"));
+            return Err(format!(
+                "GPU context query failed before sidecar reload: {code}"
+            ));
         }
         if context.is_null() {
             self.reload_context = None;
@@ -523,7 +955,9 @@ impl GpuModuleAdapter {
         };
         let code = unsafe { (symbols.cu_ctx_set_current)(context as CuContext) };
         if code != 0 {
-            return Err(format!("GPU context bind failed before sidecar reload: {code}"));
+            return Err(format!(
+                "GPU context bind failed before sidecar reload: {code}"
+            ));
         }
         Ok(())
     }
@@ -613,11 +1047,7 @@ impl GpuModuleAdapter {
         }
     }
 
-    fn emit_runtime_ownership_report(
-        &mut self,
-        ownership: &DeviceReloadOwnership,
-        artifact: &str,
-    ) {
+    fn emit_runtime_ownership_report(&mut self, ownership: &DeviceReloadOwnership, artifact: &str) {
         let label = if ownership.partial_reload {
             "gpu-hmr-partial"
         } else {
@@ -664,11 +1094,18 @@ impl Adapter for GpuModuleAdapter {
         extra.insert("reload_count".into(), self.reload_count.to_string());
         extra.insert("driver_state".into(), self.driver_state_label().into());
         extra.insert(
+            "artifact_loader_transport".into(),
+            self.config.artifact_loader_transport.as_str().into(),
+        );
+        extra.insert(
             "swap_count".into(),
             self.module_manager.swap_count().to_string(),
         );
         if let Some(primary) = self.module_manager.primary() {
             extra.insert("active_module_bytes".into(), primary.blob_bytes.to_string());
+        }
+        if let Some(artifact_id) = &self.active_generation_artifact_id {
+            extra.insert("active_generation_artifact_id".into(), artifact_id.clone());
         }
         if let Some(err) = &self.last_driver_error {
             extra.insert("driver_error".into(), err.short_label().into());
@@ -730,6 +1167,7 @@ impl Adapter for GpuModuleAdapter {
         // runs dlclose in its Drop impl as long as no other Arc
         // clone outlives this adapter.
         self.active_module_handle = None;
+        self.active_generation_artifact_id = None;
         self.kernel_table.clear();
         self.driver = None;
         self.module_manager = GpuModuleManager::new();
@@ -763,22 +1201,89 @@ impl Adapter for GpuModuleAdapter {
         }
 
         let artifact = req.build_manifest.artifact_path.trim();
-        if artifact.is_empty() {
+        let loader_transport = self.config.artifact_loader_transport;
+        let ram_artifact = req
+            .artifact_blob
+            .as_ref()
+            .filter(|artifact| !artifact.bytes.is_empty());
+        if artifact.is_empty() && ram_artifact.is_none() {
             return AdapterReloadResult::Unsupported {
-                reason: "gpu_module_adapter missing device artifact path; cold reload required"
+                reason: "gpu_module_adapter missing device artifact path or RAM artifact; cold reload required"
                     .into(),
             };
         }
+        if artifact.is_empty() && loader_transport == ArtifactLoaderTransport::FilesystemPath {
+            return AdapterReloadResult::Unsupported {
+                reason:
+                    "gpu_module_adapter selected loader requires a device artifact path; cold reload required"
+                        .into(),
+            };
+        }
 
-        let blob = match fs::read(artifact) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.health = AdapterHealth::Degraded;
-                return AdapterReloadResult::Failed {
-                    error: format!("failed to read GPU sidecar artifact {artifact:?}: {e}"),
-                    recoverable: true,
-                };
+        let path_blob = if artifact.is_empty() {
+            None
+        } else {
+            match fs::read(artifact) {
+                Ok(bytes) => Some(bytes),
+                Err(e)
+                    if ram_artifact.is_some()
+                        && loader_transport == ArtifactLoaderTransport::RamBytes =>
+                {
+                    eprintln!(
+                        "[gpu-runtime-boundary] artifact_transport_path_validation artifact={} result=unavailable error={}",
+                        artifact,
+                        e
+                    );
+                    None
+                }
+                Err(e) => {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!("failed to read GPU sidecar artifact {artifact:?}: {e}"),
+                        recoverable: true,
+                    };
+                }
             }
+        };
+        let blob = if let Some(ram_artifact) = ram_artifact {
+            let ram_hash = sha256_hex_bytes(&ram_artifact.bytes);
+            match normalized_sha256_hex(&ram_artifact.content_hash) {
+                Some(expected_hash) if expected_hash == ram_hash => {}
+                Some(expected_hash) => {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU RAM artifact hash mismatch: expected sha256:{expected_hash} got sha256:{ram_hash}"
+                        ),
+                        recoverable: true,
+                    };
+                }
+                None => {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU RAM artifact has invalid content hash {:?}",
+                            ram_artifact.content_hash
+                        ),
+                        recoverable: true,
+                    };
+                }
+            }
+            if let Some(path_blob) = path_blob.as_ref() {
+                let path_hash = sha256_hex_bytes(path_blob);
+                if path_hash != ram_hash {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU RAM artifact does not match filesystem artifact: ram=sha256:{ram_hash} path=sha256:{path_hash}"
+                        ),
+                        recoverable: true,
+                    };
+                }
+            }
+            ram_artifact.bytes.clone()
+        } else {
+            path_blob.expect("path artifact is present when no RAM artifact exists")
         };
         if blob.len() as u64 > self.config.max_module_bytes {
             return AdapterReloadResult::Unsupported {
@@ -789,6 +1294,36 @@ impl Adapter for GpuModuleAdapter {
                 ),
             };
         }
+        let artifact_hash = sha256_hex_bytes(&blob);
+        let new_artifact_id = artifact_id_for_hash(&artifact_hash);
+        let capsule_metadata = req.capsule_metadata.as_ref();
+        let capsule_id = capsule_id_for_publication(&new_artifact_id, capsule_metadata);
+        let fission_island_id = log_optional_token(
+            capsule_metadata
+                .and_then(|metadata| metadata.fission_island_id.as_deref()),
+        );
+        let abi_membrane_hash = log_optional_token(
+            capsule_metadata
+                .and_then(|metadata| metadata.abi_membrane_hash.as_deref()),
+        );
+        let dependency_closure_hash = log_optional_token(
+            capsule_metadata
+                .and_then(|metadata| metadata.dependency_closure_hash.as_deref()),
+        );
+        let proof_hash = log_optional_token(
+            capsule_metadata.and_then(|metadata| metadata.proof_hash.as_deref()),
+        );
+        let ram_artifact_reference_provided = ram_artifact.is_some();
+        let ram_blob_id = ram_artifact
+            .map(|artifact| artifact.blob_id.as_str())
+            .unwrap_or("-");
+        let reload_request_transport = if ram_artifact_reference_provided && !artifact.is_empty() {
+            "filesystem_path,ram_blob"
+        } else if ram_artifact_reference_provided {
+            "ram_blob"
+        } else {
+            "filesystem_path"
+        };
 
         let plan = self.classify_plan(req);
         let (snapshot_bytes, dirty_buffers) = Self::managed_snapshot_stats();
@@ -858,6 +1393,45 @@ impl Adapter for GpuModuleAdapter {
             .any(|capability| capability == "gpu_sidecar_partial_module");
         let first_device_load =
             self.active_module_handle.is_none() && self.module_manager.primary().is_none();
+        if partial_device_reload && first_device_load {
+            self.health = AdapterHealth::Degraded;
+            self.phase = GpuPhase::Ready;
+            return AdapterReloadResult::Failed {
+                error: "partial GPU sidecar reload requires an existing full device module".into(),
+                recoverable: true,
+            };
+        }
+        if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
+            self.health = AdapterHealth::Degraded;
+            self.phase = GpuPhase::Ready;
+            return AdapterReloadResult::Failed {
+                error: "partial GPU sidecar reload has no target symbols".into(),
+                recoverable: true,
+            };
+        }
+        let kernel_resolutions = match kernel_resolution_specs(&req.build_manifest.exported_symbols)
+        {
+            Ok(resolutions) => resolutions,
+            Err(error) => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error,
+                    recoverable: true,
+                };
+            }
+        };
+        let expected_symbols = match logical_kernel_symbols(&req.build_manifest.exported_symbols) {
+            Ok(symbols) => symbols,
+            Err(error) => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error,
+                    recoverable: true,
+                };
+            }
+        };
         if first_device_load {
             let init_code = unsafe { (symbols.cu_init)(0) };
             if init_code != 0 {
@@ -869,24 +1443,21 @@ impl Adapter for GpuModuleAdapter {
                 };
             }
         }
-        let drain = if first_device_load {
-            DrainOutcome::Synced {
-                scope: DrainScope::Context,
-                elapsed_ms: 0,
-                budget_ms: self.config.drain_timeout_ms,
-            }
-        } else {
-            drain_context(&symbols, self.config.drain_timeout_ms)
-        };
+        let drain = drain_affected_streams(
+            &symbols,
+            &expected_symbols,
+            first_device_load,
+            self.config.drain_timeout_ms,
+        );
         if !drain.is_synced() {
-            let timed_out = matches!(drain, DrainOutcome::TimedOut { .. });
+            let timed_out = matches!(drain.outcome, DrainOutcome::TimedOut { .. });
             self.emit_report(GpuSwapInputs {
                 plan,
-                reason: drain.short_label().into(),
-                streams_synced: 0,
+                reason: drain.outcome.short_label().into(),
+                streams_synced: drain.stream_count(),
                 force_drain_timeout: timed_out,
                 snapshot_bytes,
-                snapshot_ms: drain.elapsed_ms(),
+                snapshot_ms: drain.outcome.elapsed_ms(),
                 dirty_buffers,
                 expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                 matched_kernel_hashes: 0,
@@ -894,31 +1465,30 @@ impl Adapter for GpuModuleAdapter {
             self.health = AdapterHealth::Faulted;
             self.phase = GpuPhase::Faulted;
             return AdapterReloadResult::Failed {
-                error: format!("GPU drain failed: {:?}", drain),
+                error: format!("GPU drain failed: {:?}", drain.outcome),
                 recoverable: !timed_out,
             };
         }
 
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
-            if partial_device_reload && first_device_load {
-                return Err(
-                    "partial GPU sidecar reload requires an existing full device module".into(),
-                );
-            }
-            if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
-                return Err("partial GPU sidecar reload has no target symbols".into());
-            }
-            let kernel_resolutions = kernel_resolution_specs(&req.build_manifest.exported_symbols)?;
-            let expected_symbols = logical_kernel_symbols(&req.build_manifest.exported_symbols)?;
             let previous_table = self.module_manager.kernel_table().clone();
-            if self.config.vendor == GpuVendor::Rocm {
-                self.module_manager
-                    .load_standby_from_file(&symbols, artifact, blob.len())
-                    .map_err(Self::module_manager_error)?;
-            } else {
-                self.module_manager
-                    .load_standby(&symbols, &blob)
-                    .map_err(Self::module_manager_error)?;
+            let previous_dispatch_table_hash = dispatch_table_hash(&previous_table);
+            let previous_artifact_id = self
+                .active_generation_artifact_id
+                .as_deref()
+                .unwrap_or("none")
+                .to_string();
+            match loader_transport {
+                ArtifactLoaderTransport::FilesystemPath => {
+                    self.module_manager
+                        .load_standby_from_file(&symbols, artifact, blob.len())
+                        .map_err(Self::module_manager_error)?;
+                }
+                ArtifactLoaderTransport::RamBytes => {
+                    self.module_manager
+                        .load_standby(&symbols, &blob)
+                        .map_err(Self::module_manager_error)?;
+                }
             }
             self.module_manager
                 .resolve_kernel_symbols(&symbols, &kernel_resolutions)
@@ -950,17 +1520,201 @@ impl Adapter for GpuModuleAdapter {
                 retired
             };
             let retired_module_count = retired.len();
+            let (dispatcher_kernels, dispatch_table_hash) =
+                active_dispatch_table(&self.module_manager);
+            let changed_symbols_for_log = if expected_symbols.is_empty() {
+                "none".to_string()
+            } else {
+                expected_symbols.join(",")
+            };
+            let function_handle_ids =
+                changed_function_handle_ids(&dispatcher_kernels, &expected_symbols);
+            record_hmr_runtime_identity_snapshot();
+            let previous_generation = current_launch_generation();
+            install_launch_dispatcher_with_metadata(
+                Arc::new(DriverLaunchDispatcher {
+                    symbols,
+                    kernels: dispatcher_kernels,
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some(new_artifact_id.clone()),
+                    dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
+                    changed_symbols: expected_symbols.clone(),
+                    function_handle_ids: function_handle_ids
+                        .split(',')
+                        .filter(|value| !value.trim().is_empty() && *value != "none")
+                        .map(str::to_string)
+                        .collect(),
+                },
+            );
+            let active_generation = current_launch_generation();
+            record_hmr_runtime_identity_snapshot();
+            let mut runtime_log_lines = Vec::new();
+            let stream_epoch_counters = drain.stream_epoch_counters_for_log(active_generation);
+            let ram_transport_proven = ram_artifact_reference_provided
+                && loader_transport == ArtifactLoaderTransport::RamBytes;
+            let (degraded_state, degraded_reason) = if ram_transport_proven {
+                ("none", "none")
+            } else if ram_artifact_reference_provided {
+                (
+                    GpuHmrDegradedState::RamIoUnavailable.as_str(),
+                    "selected_loader_uses_filesystem_path",
+                )
+            } else {
+                (
+                    GpuHmrDegradedState::RamIoUnavailable.as_str(),
+                    "reload_request_contains_filesystem_path_only",
+                )
+            };
+            let artifact_transport_line = format!(
+                "[gpu-runtime-boundary] artifact_transport runtime_session={} generation={} artifact_hash=sha256:{} artifact_bytes={} reload_request_transport={} selected_loader_transport={} loader_api={} ram_reference={} ram_blob_id={} ram_transport_proven={} degraded_state={} degraded_reason={} load_result=ok",
+                runtime_session_id(),
+                active_generation,
+                artifact_hash,
+                blob.len(),
+                reload_request_transport,
+                loader_transport.as_str(),
+                loader_transport.loader_api(),
+                ram_artifact_reference_provided,
+                ram_blob_id,
+                ram_transport_proven,
+                degraded_state,
+                degraded_reason,
+            );
+            eprintln!("{artifact_transport_line}");
+            runtime_log_lines.push(artifact_transport_line);
+            let retirement_fence_ids =
+                drain.retirement_fence_ids_for_log(previous_generation, active_generation);
+            let retirement_strategy = drain.retirement_strategy_for_log();
+            let delayed_unload_result = if retired_module_count == 0 {
+                "not_required"
+            } else {
+                "pending"
+            };
+            let new_artifact_hash = format!("sha256:{artifact_hash}");
+            let runtime_session = runtime_session_id();
+            let stream_epoch_counters_graph =
+                drain.stream_epoch_counters_for_graph(active_generation);
+            let publish_timestamp_ms = epoch_millis_now();
+            let publish_line = format!(
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                runtime_session,
+                publish_timestamp_ms,
+                previous_generation,
+                active_generation,
+                previous_artifact_id,
+                new_artifact_id,
+                artifact_hash,
+                capsule_id,
+                fission_island_id,
+                abi_membrane_hash,
+                dependency_closure_hash,
+                proof_hash,
+                changed_symbols_for_log,
+                function_handle_ids,
+                stream_epoch_counters,
+                previous_dispatch_table_hash,
+                dispatch_table_hash,
+                dispatch_table_hash,
+                touched_symbols.len(),
+                retired_module_count,
+                retired_module_count == 0,
+                drain.scope_label,
+                drain.stream_ids_for_log(),
+                drain.is_synced(),
+                retirement_fence_ids,
+                retirement_strategy,
+                delayed_unload_result,
+                drain.outcome.short_label(),
+                drain.outcome.elapsed_ms(),
+                drain.outcome.budget_ms().unwrap_or(0)
+            );
+            eprintln!("{publish_line}");
+            runtime_log_lines.push(publish_line);
+            let publication_graph_line = epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                runtime_session: &runtime_session,
+                publish_timestamp_ms,
+                previous_generation,
+                active_generation,
+                old_artifact_id: &previous_artifact_id,
+                new_artifact_id: &new_artifact_id,
+                new_artifact_hash: &new_artifact_hash,
+                capsule_id: &capsule_id,
+                fission_island_id: &fission_island_id,
+                abi_membrane_hash: &abi_membrane_hash,
+                dependency_closure_hash: &dependency_closure_hash,
+                proof_hash: &proof_hash,
+                changed_symbols: &expected_symbols,
+                function_handle_ids: &function_handle_ids,
+                stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                dispatch_table_hash_before: previous_dispatch_table_hash,
+                dispatch_table_hash_after: dispatch_table_hash,
+                changed_entries: touched_symbols.len(),
+                retirement_fence_ids: &retirement_fence_ids,
+                retirement_strategy,
+                delayed_unload_result,
+                retirement_state: if retired_module_count == 0 {
+                    "not-required"
+                } else {
+                    "pending"
+                },
+            });
+            eprintln!("{publication_graph_line}");
+            runtime_log_lines.push(publication_graph_line);
             for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
                     .map_err(Self::module_manager_error)?;
             }
+            if retired_module_count > 0 {
+                let retired_line = format!(
+                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} retirement_strategy={} delayed_unload_result=unloaded",
+                    runtime_session_id(),
+                    previous_generation,
+                    active_generation,
+                    retired_module_count,
+                    drain.scope_label,
+                    drain.stream_ids_for_log(),
+                    retirement_fence_ids,
+                    retirement_strategy
+                );
+                eprintln!("{retired_line}");
+                runtime_log_lines.push(retired_line);
+                let retired_graph_line = epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                    runtime_session: &runtime_session,
+                    publish_timestamp_ms,
+                    previous_generation,
+                    active_generation,
+                    old_artifact_id: &previous_artifact_id,
+                    new_artifact_id: &new_artifact_id,
+                    new_artifact_hash: &new_artifact_hash,
+                    capsule_id: &capsule_id,
+                    fission_island_id: &fission_island_id,
+                    abi_membrane_hash: &abi_membrane_hash,
+                    dependency_closure_hash: &dependency_closure_hash,
+                    proof_hash: &proof_hash,
+                    changed_symbols: &expected_symbols,
+                    function_handle_ids: &function_handle_ids,
+                    stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                    dispatch_table_hash_before: previous_dispatch_table_hash,
+                    dispatch_table_hash_after: dispatch_table_hash,
+                    changed_entries: touched_symbols.len(),
+                    retirement_fence_ids: &retirement_fence_ids,
+                    retirement_strategy,
+                    delayed_unload_result: "unloaded",
+                    retirement_state: "retired",
+                });
+                eprintln!("{retired_graph_line}");
+                runtime_log_lines.push(retired_graph_line);
+            }
+            self.active_generation_artifact_id = Some(new_artifact_id.clone());
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
                 expected_symbols,
                 touched_symbols,
                 retired_module_count,
                 replaced_primary,
+                runtime_log_lines,
             })
         })();
 
@@ -973,10 +1727,6 @@ impl Adapter for GpuModuleAdapter {
                         self.kernel_table.insert(name.clone(), handle);
                     }
                 }
-                install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
-                    symbols,
-                    kernels: self.kernel_table.clone(),
-                }));
                 self.emit_report(GpuSwapInputs {
                     plan,
                     reason: if partial_device_reload {
@@ -984,7 +1734,7 @@ impl Adapter for GpuModuleAdapter {
                     } else {
                         "device-file-only-edit".into()
                     },
-                    streams_synced: 1,
+                    streams_synced: drain.stream_count(),
                     force_drain_timeout: false,
                     snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
@@ -992,6 +1742,8 @@ impl Adapter for GpuModuleAdapter {
                     expected_kernel_hashes: ownership.expected_symbols.len() as u32,
                     matched_kernel_hashes: ownership.touched_symbols.len() as u32,
                 });
+                self.last_reload_log
+                    .extend(ownership.runtime_log_lines.iter().cloned());
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
                 self.health = AdapterHealth::Healthy;
@@ -1049,18 +1801,20 @@ impl Adapter for GpuModuleAdapter {
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::AdapterFamily;
-    use crate::hmr::adapter_trait::AdapterReloadRequest;
+    use crate::hmr::adapter_trait::{
+        AdapterReloadRequest, ReloadArtifactBlob, ReloadCapsuleMetadata,
+    };
     use crate::hmr::build_manifest::BuildManifest;
     use crate::hmr::gpu_driver_loader::{
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
     use crate::runtime::gpu_runtime_boundary::{
-        reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
-        test_guard_for_test as runtime_boundary_test_guard,
+        current_launch_generation, reset_for_test, synthi_gpu_launch_raw,
+        synthi_gpu_register_buffer, test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     fn dummy_request() -> AdapterReloadRequest {
         AdapterReloadRequest {
@@ -1068,9 +1822,19 @@ mod tests {
             module_id: "device".into(),
             changed_files: vec!["device.cu".into()],
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
+            artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: true,
             timeout_ms: 5_000,
         }
+    }
+
+    fn epoch_graph_json_from_line(line: &str) -> serde_json::Value {
+        let graph_json = line
+            .split_once("json=")
+            .map(|(_, json)| json)
+            .expect("epoch graph JSON payload");
+        serde_json::from_str(graph_json).expect("valid epoch graph JSON")
     }
 
     #[test]
@@ -1100,9 +1864,12 @@ mod tests {
     static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
     static CTX_SET_CALLS: AtomicUsize = AtomicUsize::new(0);
     static CTX_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static STREAM_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LAST_STREAM_SYNC_TOKEN: AtomicUsize = AtomicUsize::new(0);
     static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
+    static UNLOAD_GENERATION_AT_CALL: AtomicU64 = AtomicU64::new(0);
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
     }
@@ -1144,6 +1911,7 @@ mod tests {
     }
 
     unsafe extern "C" fn ok_module_unload(_module: CuModule) -> CuResult {
+        UNLOAD_GENERATION_AT_CALL.store(current_launch_generation(), Ordering::SeqCst);
         0
     }
 
@@ -1183,12 +1951,16 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn err_ctx_synchronize() -> CuResult {
-        700
+    unsafe extern "C" fn ok_stream_synchronize(stream: CuStream) -> CuResult {
+        STREAM_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(stream as usize, Ordering::SeqCst);
+        0
     }
 
-    unsafe extern "C" fn ok_stream_synchronize(_stream: CuStream) -> CuResult {
-        0
+    unsafe extern "C" fn err_stream_synchronize(stream: CuStream) -> CuResult {
+        STREAM_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(stream as usize, Ordering::SeqCst);
+        700
     }
 
     unsafe extern "C" fn ok_mem_alloc(dptr: *mut CuDevicePtr, _bytes: usize) -> CuResult {
@@ -1231,13 +2003,20 @@ mod tests {
 
     fn drain_error_symbols() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
-            cu_ctx_synchronize: err_ctx_synchronize,
+            cu_stream_synchronize: err_stream_synchronize,
             ..stub_symbols()
         }
     }
 
     fn adapter_with_symbols(symbols: GpuDriverSymbolTable) -> GpuModuleAdapter {
-        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        adapter_with_config_and_symbols(GpuModuleAdapterConfig::default(), symbols)
+    }
+
+    fn adapter_with_config_and_symbols(
+        config: GpuModuleAdapterConfig,
+        symbols: GpuDriverSymbolTable,
+    ) -> GpuModuleAdapter {
+        let mut a = GpuModuleAdapter::new(config);
         a.phase = GpuPhase::Ready;
         a.health = AdapterHealth::Healthy;
         a.test_symbols = Some(symbols);
@@ -1262,9 +2041,29 @@ mod tests {
             module_id: "device".into(),
             changed_files,
             build_manifest: manifest,
+            artifact_blob: None,
+            capsule_metadata: None,
             preserve_state: true,
             timeout_ms: 5_000,
         }
+    }
+
+    fn launch_vec_add_on_stream(stream_token: usize) {
+        let kernel = CString::new("vec_add").unwrap();
+        let grid = 8_u32;
+        let block = 256_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            (&block as *const u32).cast(),
+            std::mem::size_of_val(&block),
+            0,
+            stream_token,
+            std::ptr::null(),
+            4,
+        ));
     }
 
     #[test]
@@ -1273,6 +2072,10 @@ mod tests {
         assert_eq!(cfg.vendor, GpuVendor::Cuda);
         assert_eq!(cfg.drain_timeout_ms, 2_000);
         assert!(cfg.allow_snapshot_downgrade);
+        assert_eq!(
+            cfg.artifact_loader_transport,
+            ArtifactLoaderTransport::RamBytes
+        );
     }
 
     #[test]
@@ -1288,6 +2091,12 @@ mod tests {
         assert_eq!(
             info.extra.get("driver_library").map(|s| s.as_str()),
             Some("libcuda.so.1")
+        );
+        assert_eq!(
+            info.extra
+                .get("artifact_loader_transport")
+                .map(|s| s.as_str()),
+            Some("ram_bytes")
         );
     }
 
@@ -1379,9 +2188,11 @@ mod tests {
         a.initialize().unwrap();
         a.kernel_table.insert("vec_add".into(), 0xdead_beef);
         a.active_module_handle = Some(0x1234_5678);
+        a.active_generation_artifact_id = Some("artifact:sha256:test".into());
         a.last_device_abi_version = Some("sig-v1".into());
         assert!(a.shutdown().is_ok());
         assert!(a.active_module_handle.is_none());
+        assert!(a.active_generation_artifact_id.is_none());
         assert!(a.kernel_table.is_empty());
         assert!(a.last_device_abi_version.is_none());
     }
@@ -1544,6 +2355,189 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("gpu_snapshot_telemetry")));
+        let transport = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("artifact_transport"))
+            .expect("runtime artifact transport report");
+        assert!(transport.contains("reload_request_transport=filesystem_path"));
+        assert!(transport.contains("selected_loader_transport=ram_bytes"));
+        assert!(transport.contains("ram_reference=false"));
+        assert!(transport.contains("ram_transport_proven=false"));
+        assert!(transport.contains(&format!(
+            "artifact_hash=sha256:{}",
+            sha256_hex_bytes(b"fake-cubin")
+        )));
+    }
+
+    #[test]
+    fn phase3_reload_reports_ram_artifact_when_byte_loader_is_selected() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let artifact_hash = sha256_hex_bytes(b"fake-cubin");
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.artifact_blob = Some(ReloadArtifactBlob {
+            blob_id: format!("artifact:sha256:{artifact_hash}"),
+            content_hash: format!("sha256:{artifact_hash}"),
+            bytes: b"fake-cubin".to_vec(),
+        });
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&req);
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let transport = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("artifact_transport"))
+            .expect("runtime artifact transport report");
+        assert!(transport.contains("reload_request_transport=filesystem_path,ram_blob"));
+        assert!(transport.contains("selected_loader_transport=ram_bytes"));
+        assert!(transport.contains("ram_reference=true"));
+        assert!(transport.contains(&format!("ram_blob_id=artifact:sha256:{artifact_hash}")));
+        assert!(transport.contains("ram_transport_proven=true"));
+        assert!(transport.contains("degraded_state=none"));
+    }
+
+    #[test]
+    fn phase3_reload_reports_filesystem_fallback_when_path_loader_is_selected() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let artifact_hash = sha256_hex_bytes(b"fake-cubin");
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.artifact_blob = Some(ReloadArtifactBlob {
+            blob_id: format!("artifact:sha256:{artifact_hash}"),
+            content_hash: format!("sha256:{artifact_hash}"),
+            bytes: b"fake-cubin".to_vec(),
+        });
+        let mut a = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                artifact_loader_transport: ArtifactLoaderTransport::FilesystemPath,
+                ..Default::default()
+            },
+            stub_symbols(),
+        );
+        let r = a.reload(&req);
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let transport = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("artifact_transport"))
+            .expect("runtime artifact transport report");
+        assert!(transport.contains("reload_request_transport=filesystem_path,ram_blob"));
+        assert!(transport.contains("selected_loader_transport=filesystem_path"));
+        assert!(transport.contains("ram_reference=true"));
+        assert!(transport.contains("ram_transport_proven=false"));
+        assert!(transport.contains("degraded_state=gpu-hmr-ram-io-unavailable"));
+        assert!(transport.contains("degraded_reason=selected_loader_uses_filesystem_path"));
+    }
+
+    #[test]
+    fn phase3_epoch_publication_records_capsule_metadata() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.capsule_metadata = Some(ReloadCapsuleMetadata {
+            fission_island_id: Some(format!(
+                "fission-island:sha256:{}",
+                "a".repeat(64)
+            )),
+            abi_membrane_hash: Some(format!("sha256:{}", "b".repeat(64))),
+            dependency_closure_hash: Some(format!("sha256:{}", "c".repeat(64))),
+            proof_hash: Some(format!("sha256:{}", "d".repeat(64))),
+        });
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&req);
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("dispatcher epoch publication report");
+        assert!(publish.contains("publish_timestamp_ms="));
+        assert!(publish.contains("capsule_id=capsule:sha256:"));
+        assert!(publish.contains(
+            "fission_island_id=fission-island:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(publish.contains(
+            "abi_membrane_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+        assert!(publish.contains(
+            "dependency_closure_hash=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ));
+        assert!(publish.contains(
+            "proof_hash=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ));
+        assert!(publish.contains("stream_epoch_counters=none:"));
+        assert!(publish.contains("retirement_fence_ids=none"));
+        assert!(publish.contains("retirement_strategy=no_retirement_required"));
+        assert!(publish.contains("delayed_unload_result=not_required"));
+        let graph_line = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("epoch_generation_graph json="))
+            .expect("epoch generation graph report");
+        let graph = epoch_graph_json_from_line(graph_line);
+        assert_eq!(
+            graph.get("schemaVersion").and_then(serde_json::Value::as_str),
+            Some("synthi.gpu.epoch_graph.v1")
+        );
+        assert_eq!(
+            graph
+                .get("retirementState")
+                .and_then(serde_json::Value::as_str),
+            Some("not-required")
+        );
+        assert_eq!(
+            graph
+                .pointer("/latestPublication/fissionIslandId")
+                .and_then(serde_json::Value::as_str),
+            Some("fission-island:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            graph
+                .pointer("/latestPublication/streamEpochCounters/none")
+                .and_then(serde_json::Value::as_u64),
+            Some(current_launch_generation())
+        );
+    }
+
+    #[test]
+    fn stream_ordering_drain_reports_retirement_strategy() {
+        let no_retirement = StreamOrderingDrain::no_old_generation(25);
+        assert_eq!(
+            no_retirement.retirement_strategy_for_log(),
+            "no_retirement_required"
+        );
+
+        let epoch_fence = StreamOrderingDrain {
+            outcome: DrainOutcome::Synced {
+                scope: DrainScope::Stream,
+                elapsed_ms: 1,
+                budget_ms: 25,
+            },
+            scope_label: "affected",
+            stream_tokens: vec![0x77],
+        };
+        assert_eq!(epoch_fence.retirement_strategy_for_log(), "epoch_fence");
+
+        let context_fallback = StreamOrderingDrain {
+            outcome: DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                elapsed_ms: 1,
+                budget_ms: 25,
+            },
+            scope_label: "context",
+            stream_tokens: vec![0x77],
+        };
+        assert_eq!(
+            context_fallback.retirement_strategy_for_log(),
+            "conservative_drain_fallback"
+        );
     }
 
     #[test]
@@ -1609,6 +2603,95 @@ mod tests {
         ));
         assert_eq!(a.module_manager.swap_count(), 2);
         assert_ne!(a.active_module_handle, first_handle);
+    }
+
+    #[test]
+    fn phase3_second_reload_publishes_dispatcher_before_retiring_old_module() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        UNLOAD_GENERATION_AT_CALL.store(0, Ordering::SeqCst);
+
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_hash = sha256_hex_bytes(b"fake-cubin-1");
+        let second_hash = sha256_hex_bytes(b"fake-cubin-2");
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(stub_symbols());
+
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &first_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let first_generation = current_launch_generation();
+
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &second_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let unload_generation = UNLOAD_GENERATION_AT_CALL.load(Ordering::SeqCst);
+
+        assert!(unload_generation > first_generation);
+        assert_eq!(unload_generation, current_launch_generation());
+        let publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("dispatcher epoch publication report");
+        assert!(publish
+            .contains("dispatcher_epoch event=published")
+            && publish.contains("publish_timestamp_ms=")
+            && publish.contains("dispatch_table_hash_before=0x")
+            && publish.contains("dispatch_table_hash_after=0x")
+            && publish.contains("retired_modules=1")
+            && publish.contains("stream_ordering_proven=true")
+            && publish.contains("retirement_strategy=no_retirement_required")
+            && publish.contains("delayed_unload_result=pending"));
+        assert!(publish.contains(&format!(
+            "old_artifact_id=artifact:sha256:{first_hash}"
+        )));
+        assert!(publish.contains(&format!(
+            "new_artifact_id=artifact:sha256:{second_hash}"
+        )));
+        assert!(publish.contains(&format!("new_artifact_hash=sha256:{second_hash}")));
+        assert!(publish.contains("changed_symbols=vec_add"));
+        assert!(publish.contains("function_handle_ids=vec_add:0x"));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=retired")
+                && line.contains("old_generation_retired=true")
+                && line.contains("retirement_strategy=no_retirement_required")
+                && line.contains("delayed_unload_result=unloaded")));
+        let final_graph_line = a
+            .last_reload_log()
+            .iter()
+            .filter(|line| line.contains("epoch_generation_graph json="))
+            .last()
+            .expect("final epoch generation graph report");
+        let final_graph = epoch_graph_json_from_line(final_graph_line);
+        assert_eq!(
+            final_graph
+                .get("retirementState")
+                .and_then(serde_json::Value::as_str),
+            Some("retired")
+        );
+        assert!(final_graph
+            .get("edges")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|edges| edges.iter().any(|edge| edge
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("retire"))));
+        reset_for_test();
     }
 
     #[test]
@@ -1707,7 +2790,9 @@ mod tests {
     }
 
     #[test]
-    fn partial_reload_drains_context_before_module_load() {
+    fn partial_reload_drains_only_streams_that_used_touched_symbols() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         let mut partial_file = tempfile::NamedTempFile::new().unwrap();
@@ -1719,6 +2804,8 @@ mod tests {
         let partial_path = partial_file.path().to_string_lossy().to_string();
 
         CTX_SYNC_CALLS.store(0, Ordering::SeqCst);
+        STREAM_SYNC_CALLS.store(0, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(0, Ordering::SeqCst);
         let mut a = adapter_with_symbols(stub_symbols());
         assert!(matches!(
             a.reload(&request_with_artifact_and_abi(
@@ -1729,6 +2816,8 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        launch_vec_add_on_stream(0x77);
 
         assert!(matches!(
             a.reload(&request_with_artifact_and_abi(
@@ -1738,8 +2827,37 @@ mod tests {
             )),
             AdapterReloadResult::Success { .. }
         ));
-        let full_reload_syncs = CTX_SYNC_CALLS.load(Ordering::SeqCst);
-        assert!(full_reload_syncs > 0);
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
+        let publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("dispatcher epoch publication");
+        assert!(publish.contains("stream_scope=affected"));
+        assert!(publish.contains("stream_ids=0x77"));
+        assert!(publish.contains("retirement_fence_ids=stream-sync:0x77:"));
+        assert!(publish.contains("retirement_strategy=epoch_fence"));
+        let stream_graph_line = a
+            .last_reload_log()
+            .iter()
+            .filter(|line| line.contains("epoch_generation_graph json="))
+            .last()
+            .expect("stream epoch generation graph report");
+        let stream_graph = epoch_graph_json_from_line(stream_graph_line);
+        assert_eq!(
+            stream_graph
+                .pointer("/latestPublication/streamEpochCounters/0x77")
+                .and_then(serde_json::Value::as_u64),
+            Some(current_launch_generation())
+        );
+        assert!(stream_graph
+            .pointer("/latestPublication/retirementFenceIds")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| ids.iter().any(|id| id
+                .as_str()
+                .is_some_and(|id| id.starts_with("stream-sync:0x77:")))));
 
         let mut partial =
             request_with_artifact_and_abi(&partial_path, vec!["device.cu".into()], "sig-v2");
@@ -1747,11 +2865,15 @@ mod tests {
             .build_manifest
             .capabilities
             .push("gpu_sidecar_partial_module".into());
+        launch_vec_add_on_stream(0x88);
         assert!(matches!(
             a.reload(&partial),
             AdapterReloadResult::Success { .. }
         ));
-        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), full_reload_syncs + 1);
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x88);
+        reset_for_test();
     }
 
     #[test]
@@ -1765,10 +2887,7 @@ mod tests {
         assert_eq!(a.capture_current_context_for_reload().unwrap(), Some(0x44));
 
         assert!(matches!(
-            a.reload(&request_with_artifact(
-                &path,
-                vec!["device.cu".into()]
-            )),
+            a.reload(&request_with_artifact(&path, vec!["device.cu".into()])),
             AdapterReloadResult::Success { .. }
         ));
         assert_eq!(CTX_SET_CALLS.load(Ordering::SeqCst), 1);
@@ -1787,7 +2906,10 @@ mod tests {
         ];
 
         let mut a = adapter_with_symbols(stub_symbols());
-        assert!(matches!(a.reload(&req), AdapterReloadResult::Success { .. }));
+        assert!(matches!(
+            a.reload(&req),
+            AdapterReloadResult::Success { .. }
+        ));
 
         let ownership = a
             .last_reload_log()
@@ -1849,6 +2971,8 @@ mod tests {
 
     #[test]
     fn phase3_drain_error_faults_adapter_without_swapping() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         first.write_all(b"fake-cubin-a").unwrap();
@@ -1861,6 +2985,7 @@ mod tests {
             vec!["device.cu".into()],
         ));
         assert!(matches!(initial, AdapterReloadResult::Success { .. }));
+        launch_vec_add_on_stream(0x99);
 
         let r = a.reload(&request_with_artifact(
             &second_path,
@@ -1878,6 +3003,8 @@ mod tests {
         }
         assert_eq!(a.module_manager.swap_count(), 1);
         assert_eq!(a.healthcheck(), AdapterHealth::Faulted);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x99);
+        reset_for_test();
     }
 
     #[test]

@@ -113,7 +113,9 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
         }
 
         // "Compiling entry function 'mangled' for 'sm_80'"
-        if let Some(rest) = line.strip_prefix("ptxas info    : Compiling entry function '") {
+        if let Some(rest) = strip_diagnostic_prefix(line, "ptxas", "info")
+            .and_then(|rest| rest.strip_prefix("Compiling entry function '"))
+        {
             if let Some(end) = rest.find('\'') {
                 let mangled = &rest[..end];
                 current_kernel = Some(mangled.to_string());
@@ -122,7 +124,9 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
         }
 
         // "Function properties for mangled"
-        if let Some(rest) = line.strip_prefix("ptxas info    : Function properties for ") {
+        if let Some(rest) = strip_diagnostic_prefix(line, "ptxas", "info")
+            .and_then(|rest| rest.strip_prefix("Function properties for "))
+        {
             let mangled = rest.trim().to_string();
             current_props_kernel = Some(mangled);
             current_props = Some(RegisterPressureRecord {
@@ -148,7 +152,9 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
         }
 
         // "Used N registers, ... K bytes cmem[B]"
-        if let Some(rest) = line.strip_prefix("ptxas info    : Used ") {
+        if let Some(rest) = strip_diagnostic_prefix(line, "ptxas", "info")
+            .and_then(|rest| rest.strip_prefix("Used "))
+        {
             let registers = extract_leading_u32(rest).unwrap_or(0);
             let kernel = current_props_kernel
                 .clone()
@@ -177,7 +183,7 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("ptxas warning : ") {
+        if let Some(rest) = strip_diagnostic_prefix(line, "ptxas", "warning") {
             // shared-memory exhaustion is the most common Tier-2 promoter
             // we care about. Other warnings are kept verbatim under the
             // same record so triage can decide.
@@ -188,7 +194,9 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("nvlink error   : Undefined reference to '") {
+        if let Some(rest) = strip_diagnostic_prefix(line, "nvlink", "error")
+            .and_then(|rest| rest.strip_prefix("Undefined reference to '"))
+        {
             if let Some(end) = rest.find('\'') {
                 let symbol = rest[..end].to_string();
                 let referenced_in = rest[end..]
@@ -207,6 +215,13 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
     }
 
     out
+}
+
+fn strip_diagnostic_prefix<'a>(line: &'a str, tool: &str, level: &str) -> Option<&'a str> {
+    let rest = line.trim_start().strip_prefix(tool)?;
+    let rest = rest.trim_start().strip_prefix(level)?;
+    let rest = rest.trim_start().strip_prefix(':')?;
+    Some(rest.trim_start())
 }
 
 /// Read the integer that prefixes `s` (digits + optional unit).
@@ -333,6 +348,28 @@ nvlink error   : Undefined reference to '_Z3barPi' in '/tmp/main.o'
         assert_eq!(diag.link_errors.len(), 1);
         assert_eq!(diag.link_errors[0].symbol, "_Z3barPi");
         assert!(diag.link_errors[0].referenced_in.contains("main.o"));
+    }
+
+    #[test]
+    fn parses_diagnostic_prefixes_with_variable_spacing() {
+        let stderr = r#"
+ptxas info : Compiling entry function '_Z4stepPi' for 'sm_90'
+ptxas   info    : Function properties for _Z4stepPi
+    8 bytes stack frame, 4 bytes spill stores, 0 bytes spill loads
+ptxas	info	: Used 42 registers, 128 bytes cmem[0]
+ptxas  warning   : advisory text
+nvlink error : Undefined reference to '_Z5missv' in '/tmp/missing.o'
+"#;
+
+        let diag = parse(stderr);
+
+        assert_eq!(diag.register_pressure.len(), 1);
+        assert_eq!(diag.register_pressure[0].kernel_mangled, "_Z4stepPi");
+        assert_eq!(diag.register_pressure[0].registers, 42);
+        assert_eq!(diag.register_pressure[0].spill_stores_bytes, 4);
+        assert_eq!(diag.constant_mem_usage[0].bytes, 128);
+        assert_eq!(diag.shared_mem_warnings[0].message, "advisory text");
+        assert_eq!(diag.link_errors[0].symbol, "_Z5missv");
     }
 
     #[test]
