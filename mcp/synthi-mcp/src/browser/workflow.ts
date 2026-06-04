@@ -50,6 +50,23 @@ export type FailureClassV7 =
 
 type MutationKindV7 = "create" | "update" | "delete" | "archive" | "send" | "payment" | "deploy" | "unknown";
 
+export type WorkflowSurfaceKindV7 =
+  | "dom"
+  | "nativeHtmlDrag"
+  | "fileDrop"
+  | "clipboardDrop"
+  | "pointerDrag"
+  | "canvas"
+  | "openShadowDom"
+  | "closedShadowDom";
+
+export type WorkflowSurfaceReplayV7 =
+  | "durable"
+  | "parameterized"
+  | "sameSessionOnly"
+  | "blocked"
+  | "unsupported";
+
 export interface WorkflowParameterV7 {
   name: string;
   label: string;
@@ -89,6 +106,11 @@ export interface WorkflowStepContractV7 {
     groupLabel: string;
     confidence: "high" | "medium" | "low";
     reasons: string[];
+  };
+  surfacePlan: {
+    kind: WorkflowSurfaceKindV7;
+    replay: WorkflowSurfaceReplayV7;
+    notes: string[];
   };
   expectedEffects: string[];
   mutation?: {
@@ -531,6 +553,9 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
 export function classifyWorkflowReplayBlock(plan: Pick<WorkflowReplayPlanV7, "warnings">): FailureClassV7 {
   const message = plan.warnings.join(" ");
   if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
+  if (/canvas/i.test(message)) return "canvasUnreliable";
+  if (/pointer drag|pointer-drag/i.test(message)) return "pointerDragUnreliable";
+  if (/mutation/i.test(message)) return "mutationBlocked";
   if (/iframe|frame locator/i.test(message)) return "locatorDrift";
   if (/popup|multi-tab/i.test(message)) return "unsafeEnvironment";
   return "unknown";
@@ -538,7 +563,12 @@ export function classifyWorkflowReplayBlock(plan: Pick<WorkflowReplayPlanV7, "wa
 
 export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTraceEvent): FailureClassV7 {
   const message = error instanceof Error ? error.message : String(error);
+  if (/auth.*expired|expired.*auth|checkpoint.*expired/i.test(message)) return "authExpired";
   if (/auth|login|unauthorized|forbidden|checkpoint/i.test(message)) return "authMissing";
+  if (/mutation.*blocked|mutation boundary|unsafe mutation/i.test(message)) return "mutationBlocked";
+  if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
+  if (/canvas/i.test(message)) return "canvasUnreliable";
+  if (/pointer drag|pointer-drag/i.test(message)) return "pointerDragUnreliable";
   if (/timeout|waiting|visible|locator|selector|strict mode|No locator/i.test(message)) return "locatorDrift";
   if (/navigation|url|net::|ERR_|network/i.test(message)) return "networkFailure";
   if (event?.action === "navigate") return "routeChanged";
@@ -562,6 +592,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
     ? event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal)
     : undefined;
   const mutation = mutationFor(actionKind, targetLabel, event);
+  const surfacePlan = surfacePlanFor(event, actionKind);
   const limitations: WorkflowLimitationV7[] = [];
   if (!element?.source_id) limitations.push("sourceIdentityMissing");
   if (!primary) limitations.push("unresolvedStep");
@@ -570,7 +601,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   if (mutation) limitations.push("mutationRequiresIsolation");
   if (eventNeedsFrameLocator(event)) limitations.push("iframeNeedsFrameLocator");
   if (eventIsCanvasCoordinateOnly(event)) limitations.push("canvasCoordinateOnly");
-  if (eventIsClosedShadowDom(event)) limitations.push("closedShadowDomBlocked");
+  if (eventIsClosedShadowDomBlocked(event)) limitations.push("closedShadowDomBlocked");
   if (eventIsPointerDrag(event)) limitations.push("pointerDragUnreliable");
   return {
     stepId,
@@ -598,6 +629,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
         reasons: event.semantic.reasons,
       },
     } : {}),
+    surfacePlan,
     expectedEffects: expectedEffectsFor(actionKind, targetLabel, mutation !== undefined),
     ...(mutation ? { mutation } : {}),
     limitations,
@@ -848,6 +880,100 @@ function eventNeedsFrameLocator(event: BrowserTraceEvent): boolean {
 }
 
 function eventIsCanvasCoordinateOnly(event: BrowserTraceEvent): boolean {
+  return isCanvasSurface(event) && !hasSemanticCanvasBridge(event);
+}
+
+function eventIsClosedShadowDomBlocked(event: BrowserTraceEvent): boolean {
+  const surface = surfaceLabel(event);
+  const closed = /closedshadow|closed-shadow/.test(surface) ||
+    event.detail?.["closed_shadow_dom"] === true ||
+    event.detail?.["shadow_dom"] === "closed";
+  return closed && !hasClosedShadowBridge(event);
+}
+
+function eventIsPointerDrag(event: BrowserTraceEvent): boolean {
+  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  if (event.action === "drag" && dragClass !== "nativehtmldnd" && dragClass !== "filedrop" && dragClass !== "clipboarddrop") return true;
+  return /pointersensor|unknowndrag|canvasdrag/.test(dragClass) ||
+    event.detail?.["pointer_drag"] === true;
+}
+
+function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): WorkflowStepContractV7["surfacePlan"] {
+  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  if (eventIsClosedShadowDomBlocked(event)) {
+    return {
+      kind: "closedShadowDom",
+      replay: "blocked",
+      notes: ["Closed Shadow DOM is blocked unless the app exposes a dev-only bridge or durable external affordance."],
+    };
+  }
+  if (hasClosedShadowBridge(event)) {
+    return {
+      kind: "closedShadowDom",
+      replay: "sameSessionOnly",
+      notes: ["Closed Shadow DOM is reachable through an explicit dev bridge; do not publish it as generic browser automation."],
+    };
+  }
+  if (event.detail?.["shadow_dom"] === "open") {
+    return {
+      kind: "openShadowDom",
+      replay: "durable",
+      notes: ["Open Shadow DOM can use normal Playwright locator piercing where the locator remains stable."],
+    };
+  }
+  if (eventIsCanvasCoordinateOnly(event)) {
+    return {
+      kind: "canvas",
+      replay: "unsupported",
+      notes: ["Canvas/WebGL action is coordinate-only and is not durable without a semantic app bridge."],
+    };
+  }
+  if (isCanvasSurface(event)) {
+    const mode = String(event.detail?.["canvas_replay_mode"] ?? event.detail?.["canvasReplayMode"] ?? "").toLowerCase();
+    return {
+      kind: "canvas",
+      replay: mode === "vlmlocatethenclick" ? "sameSessionOnly" : "durable",
+      notes: mode === "vlmlocatethenclick"
+        ? ["Canvas replay uses an optional VLM locate-then-click adapter and should remain review-gated."]
+        : ["Canvas replay is backed by an explicit semantic app bridge."],
+    };
+  }
+  if (action === "drag") {
+    if (dragClass === "nativehtmldnd") {
+      return {
+        kind: "nativeHtmlDrag",
+        replay: typeof event.detail?.["drop_locator"] === "string" || typeof event.value === "string" ? "durable" : "sameSessionOnly",
+        notes: ["Native HTML drag-and-drop can use Playwright dragTo when a durable drop target locator is recorded."],
+      };
+    }
+    if (dragClass === "filedrop") {
+      return {
+        kind: "fileDrop",
+        replay: "parameterized",
+        notes: ["File drop replay requires a caller-provided file path or declared fixture; generated code must not invent file contents."],
+      };
+    }
+    if (dragClass === "clipboarddrop") {
+      return {
+        kind: "clipboardDrop",
+        replay: "parameterized",
+        notes: ["Clipboard drop replay requires caller-provided clipboard data and is review-gated."],
+      };
+    }
+    return {
+      kind: "pointerDrag",
+      replay: "sameSessionOnly",
+      notes: ["Pointer-sensor drag is not high-confidence without calibration."],
+    };
+  }
+  return {
+    kind: "dom",
+    replay: "durable",
+    notes: ["Ordinary DOM interaction with broker-ranked locators."],
+  };
+}
+
+function isCanvasSurface(event: BrowserTraceEvent): boolean {
   const element = elementForEvent(event);
   const surface = surfaceLabel(event);
   return element?.tag?.toLowerCase() === "canvas" ||
@@ -855,18 +981,17 @@ function eventIsCanvasCoordinateOnly(event: BrowserTraceEvent): boolean {
     event.detail?.["canvas"] === true;
 }
 
-function eventIsClosedShadowDom(event: BrowserTraceEvent): boolean {
-  const surface = surfaceLabel(event);
-  return /closedshadow|closed-shadow/.test(surface) ||
-    event.detail?.["closed_shadow_dom"] === true ||
-    event.detail?.["shadow_dom"] === "closed";
+function hasSemanticCanvasBridge(event: BrowserTraceEvent): boolean {
+  const mode = String(event.detail?.["canvas_replay_mode"] ?? event.detail?.["canvasReplayMode"] ?? "").toLowerCase();
+  return event.detail?.["semantic_bridge"] === true ||
+    event.detail?.["app_affordance_bridge"] === true ||
+    mode === "semanticbridge";
 }
 
-function eventIsPointerDrag(event: BrowserTraceEvent): boolean {
-  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
-  if (event.action === "drag" && dragClass !== "nativehtmldnd") return true;
-  return /pointersensor|unknowndrag|canvasdrag/.test(dragClass) ||
-    event.detail?.["pointer_drag"] === true;
+function hasClosedShadowBridge(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dev_shadow_bridge"] === true ||
+    event.detail?.["shadow_bridge"] === "dev" ||
+    event.detail?.["closed_shadow_bridge"] === true;
 }
 
 function surfaceLabel(event: BrowserTraceEvent): string {

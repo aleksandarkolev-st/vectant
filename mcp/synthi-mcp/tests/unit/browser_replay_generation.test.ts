@@ -107,6 +107,57 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
 
+  it("generates parameterized file drop replay without inventing file contents", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "file-drop",
+        event_seq: 1,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "fileDrop",
+          file_parameter: "UPLOAD_FILE",
+          mime_type: "text/plain",
+          element: { role: "button", name: "Upload area", source_id: "src_upload" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Upload area\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("import fs from 'node:fs/promises';");
+    expect(generated.code).toContain("const filePath1 = process.env[\"UPLOAD_FILE\"];");
+    expect(generated.code).toContain("test.skip(!filePath1");
+    expect(generated.code).toContain("await dropFile(page, target1, filePath1, \"text/plain\");");
+    expect(generated.code).not.toContain("hello world");
+    expect(generated.warnings).toContain("event file-drop file drop replay is parameterized by UPLOAD_FILE");
+    expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
+  });
+
+  it("uses setInputFiles for file input drop traces", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "file-input",
+        event_seq: 1,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "fileDrop",
+          fixture_file: "tests/fixtures/upload.txt",
+          element: { tag: "input", type: "file", label: "Upload file", source_id: "src_file" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Upload file\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("const filePath1 = process.env[\"SYNTHI_FILE_DROP_1\"] ?? \"tests/fixtures/upload.txt\";");
+    expect(generated.code).toContain("await target1.setInputFiles(filePath1);");
+    expect(generated.code).not.toContain("await dropFile(page, target1");
+  });
+
   it("prefers unique fallback candidates when duplicate button labels exist", () => {
     const generated = generatePlaywrightScript([
       event({

@@ -187,8 +187,10 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const workflow = compileWorkflowContract(events);
   const contract = workflow.contract;
   const baseOrigin = firstHttpOrigin(events);
+  const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
+    ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
     "",
     `// Workflow: ${contract.name}`,
     `// Status: ${workflow.card.status}`,
@@ -214,6 +216,21 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   lines.push("    if (fallback) return fallback;");
   lines.push("    throw new Error('No locator candidate matched');");
   lines.push("  }");
+  if (usesFileDrop) {
+    lines.push("  async function dropFile(page, target, filePath, mimeType = 'application/octet-stream') {");
+    lines.push("    const buffer = await fs.readFile(filePath);");
+    lines.push("    const fileName = filePath.split(/[\\\\/]/).pop() || 'upload.bin';");
+    lines.push("    const dataTransfer = await page.evaluateHandle(({ bytes, fileName, mimeType }) => {");
+    lines.push("      const dataTransfer = new DataTransfer();");
+    lines.push("      const file = new File([new Uint8Array(bytes)], fileName, { type: mimeType });");
+    lines.push("      dataTransfer.items.add(file);");
+    lines.push("      return dataTransfer;");
+    lines.push("    }, { bytes: Array.from(buffer), fileName, mimeType });");
+    lines.push("    await target.dispatchEvent('dragenter', { dataTransfer });");
+    lines.push("    await target.dispatchEvent('dragover', { dataTransfer });");
+    lines.push("    await target.dispatchEvent('drop', { dataTransfer });");
+    lines.push("  }");
+  }
   const used_locators: GeneratedScript["used_locators"] = [];
   const warnings: string[] = [];
   warnings.push(...contract.limitations.map((limitation) => `workflow limitation: ${limitation}`));
@@ -275,6 +292,27 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         lines.push(`  await ${target}.hover();`);
         break;
       case "drag": {
+        const dragClass = dragClassFor(event);
+        if (dragClass === "filedrop") {
+          const envName = fileDropEnvNameFor(event, targetSeq);
+          const fixtureFile = typeof event.detail?.["fixture_file"] === "string" ? event.detail["fixture_file"] : undefined;
+          const filePath = `filePath${targetSeq}`;
+          lines.push(`  const ${filePath} = process.env[${JSON.stringify(envName)}]${fixtureFile ? ` ?? ${JSON.stringify(fixtureFile)}` : ""};`);
+          lines.push(`  test.skip(!${filePath}, ${JSON.stringify(`Set ${envName} or detail.fixture_file for file drop step ${event.event_id}.`)});`);
+          lines.push(`  if (!${filePath}) throw new Error(${JSON.stringify(`missing file drop path for ${event.event_id}`)});`);
+          if (isFileInputDrop(event)) {
+            lines.push(`  await ${target}.setInputFiles(${filePath});`);
+          } else {
+            const mimeType = typeof event.detail?.["mime_type"] === "string" ? event.detail["mime_type"] : "application/octet-stream";
+            lines.push(`  await dropFile(page, ${target}, ${filePath}, ${JSON.stringify(mimeType)});`);
+          }
+          warnings.push(`event ${event.event_id} file drop replay is parameterized by ${envName}`);
+          break;
+        }
+        if (dragClass === "clipboarddrop") {
+          warnings.push(`event ${event.event_id} is a clipboard drop step and requires caller-provided clipboard data`);
+          break;
+        }
         const dropLocator = typeof event.detail?.["drop_locator"] === "string"
           ? event.detail["drop_locator"]
           : event.value;
@@ -345,4 +383,26 @@ function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string): s
   const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : null;
   if (!frameLocator) return locator;
   return locator.replace(/^page\./, `page.frameLocator(${JSON.stringify(frameLocator)}).`);
+}
+
+function dragClassFor(event: BrowserTraceEvent): string {
+  return String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+}
+
+function fileDropEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
+  const explicit = typeof event.detail?.["file_env"] === "string"
+    ? event.detail["file_env"]
+    : typeof event.detail?.["file_parameter"] === "string"
+      ? event.detail["file_parameter"]
+      : `SYNTHI_FILE_DROP_${ordinal}`;
+  const normalized = explicit.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized : `SYNTHI_FILE_DROP_${ordinal}`;
+}
+
+function isFileInputDrop(event: BrowserTraceEvent): boolean {
+  const element = event.detail?.["element"];
+  if (!element || typeof element !== "object") return event.detail?.["file_input"] === true;
+  const input = element as BrowserElementMetadata;
+  return event.detail?.["file_input"] === true ||
+    (input.tag?.toLowerCase() === "input" && input.type?.toLowerCase() === "file");
 }

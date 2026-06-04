@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
-import { classifyWorkflowReplayBlock, compileWorkflowContract, planWorkflowReplay } from "../../src/browser/workflow.js";
+import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, compileWorkflowContract, planWorkflowReplay } from "../../src/browser/workflow.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { BROWSER_TOOL_NAMES, dispatchBrowserTool } from "../../src/tools/browser.js";
@@ -199,10 +199,33 @@ describe("browser workflow contract compiler", () => {
 
     expect(workflow.contract.limitations).toEqual(expect.arrayContaining(["canvasCoordinateOnly", "pointerDragUnreliable"]));
     expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["canvasUnreliable", "pointerDragUnreliable"]));
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "canvas",
+      replay: "unsupported",
+    }));
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("sameSession");
     expect(workflow.contract.counterfactualPlan.profiles).toContainEqual(expect.objectContaining({
       name: "mobile",
       enabled: false,
+    }));
+  });
+
+  it("keeps semantically bridged canvas actions reviewable without coordinate-only durability claims", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "canvas-bridge",
+        detail: {
+          canvas: true,
+          canvas_replay_mode: "semanticBridge",
+          element: { tag: "canvas", label: "Node graph", source_id: "src_graph" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.limitations).not.toContain("canvasCoordinateOnly");
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "canvas",
+      replay: "durable",
     }));
   });
 
@@ -225,6 +248,69 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "blocked" }));
     expect(replay.status).toBe("blocked");
     expect(classifyWorkflowReplayBlock(replay)).toBe("closedShadowDomBlocked");
+  });
+
+  it("allows closed Shadow DOM only when an explicit dev bridge is recorded", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "shadow-bridge",
+        detail: {
+          closed_shadow_dom: true,
+          dev_shadow_bridge: true,
+          element: { role: "button", name: "Submit inside component", source_id: "src_shadow" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.limitations).not.toContain("closedShadowDomBlocked");
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "closedShadowDom",
+      replay: "sameSessionOnly",
+    }));
+  });
+
+  it("classifies explicit drag surface replay plans", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "native-drag",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"list\", { name: \"Done\" })",
+        detail: {
+          drag_class: "nativeHtmlDnd",
+          element: { role: "listitem", name: "Task", source_id: "src_task" },
+        },
+      }),
+      baseEvent({
+        event_id: "file-drop",
+        event_seq: 2,
+        action: "drag",
+        detail: {
+          drag_class: "fileDrop",
+          file_parameter: "UPLOAD_FILE",
+          element: { role: "button", name: "Upload area", source_id: "src_upload" },
+        },
+      }),
+      baseEvent({
+        event_id: "pointer-drag",
+        event_seq: 3,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          element: { role: "slider", name: "Budget", source_id: "src_budget" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps.map((step) => step.surfacePlan.kind)).toEqual([
+      "nativeHtmlDrag",
+      "fileDrop",
+      "pointerDrag",
+    ]);
+    expect(workflow.contract.steps[0]?.surfacePlan.replay).toBe("durable");
+    expect(workflow.contract.steps[1]?.surfacePlan.replay).toBe("parameterized");
+    expect(workflow.contract.steps[2]?.limitations).toContain("pointerDragUnreliable");
   });
 
   it("marks clean read-only workflows ready for a private MCP tool manifest", () => {
@@ -338,6 +424,14 @@ describe("browser workflow contract compiler", () => {
     const result = await dispatchBrowserTool("synthi_browser_compile_workflow", {});
     expect(result?.isError).toBeUndefined();
     expect((result?.structuredContent as { workflow: { card: { status: string } } }).workflow.card.status).toContain("Blocked");
+  });
+
+  it("classifies replay failures by concrete browser boundary", () => {
+    expect(classifyWorkflowReplayFailure(new Error("auth checkpoint expired"))).toBe("authExpired");
+    expect(classifyWorkflowReplayFailure(new Error("mutation boundary blocked by safety policy"))).toBe("mutationBlocked");
+    expect(classifyWorkflowReplayFailure(new Error("canvas replay missing semantic bridge"))).toBe("canvasUnreliable");
+    expect(classifyWorkflowReplayFailure(new Error("pointer drag calibration missing"))).toBe("pointerDragUnreliable");
+    expect(classifyWorkflowReplayFailure(new Error("closed Shadow DOM not reachable"))).toBe("closedShadowDomBlocked");
   });
 });
 
