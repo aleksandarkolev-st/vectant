@@ -186,6 +186,29 @@ Source and safety tools:
 - `synthi_source_lookup_token`, `synthi_source_open_in_ide`, `synthi_source_get_mapping_status`, and `synthi_source_suggest_affordance_patch` connect compile-time source identity back to workspace source locations without exact-path prompts.
 - `synthi_safety_get_mutation_plan`, `synthi_safety_set_replay_isolation_profile`, `synthi_safety_run_prefix_validation`, and `synthi_safety_explain_blocked_hardening` keep read-only hardening separate from CI-only mutation replay.
 
+Vite React source identity adapter:
+
+```ts
+// vite.config.ts
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+import { createSynthiViteReactSourceIdentityPlugin } from "@synthi-inc/mcp-server/source-identity";
+
+export default defineConfig({
+  plugins: [
+    createSynthiViteReactSourceIdentityPlugin({
+      root: process.cwd(),
+      workspaceId: process.env.SYNTHI_WORKSPACE_ID,
+      enabled: process.env.SYNTHI_SOURCE_IDENTITY === "1",
+      mode: process.env.NODE_ENV === "production" ? "strip" : "inject",
+    }),
+    react(),
+  ],
+});
+```
+
+This adapter runs at compile time and only targets intrinsic JSX DOM elements. It does not mutate hydrated DOM, does not ask users for local file paths, and should be disabled for SSR adapters until server/client parity tests pass.
+
 Replay modes:
 
 - `sameSession` replays all supported steps in the current authorized browser session and can include mutations.

@@ -9,6 +9,17 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./source-identity": {
+      "types": "./dist/browser/source_identity.d.ts",
+      "import": "./dist/browser/source_identity.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "README.md"
