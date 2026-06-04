@@ -91,6 +91,11 @@ Use this while actively developing the MCP. End-user consumers should prefer opt
 | `SYNTHI_QUOTA_SCREENSHOTS_PER_MIN` | `30` | Rolling-60s cap on `synthi_screenshot` calls. Gates only screenshots. |
 | `SYNTHI_LOCAL_VISION_URL` | *(unset)* | **Phase 3.** HTTP endpoint for the `local` vision backend (body `{description, hints, frame:{png_base64, width, height}}` → `{bbox, confidence, trace?}`). When unset, `preferred_vision_backend:"local"` fails with `local_vision_backend_not_configured`. |
 | `SYNTHI_SNAPSHOT_DIR` | *(unset)* | **Phase 3.** When set, `synthi_snapshot` writes JSON records to this directory (one file per snapshot) so they survive MCP subprocess restarts. Default behaviour is in-memory. |
+| `SYNTHI_HOSTED_BROWSER_CDP_URL` | *(unset)* | Hosted browser runtime endpoint used internally by `synthi_browser_attach_current_workspace`. This is the cloud/workspace path; the value is never returned to agents. |
+| `SYNTHI_WORKSPACE_ID` | `default` | Workspace scope used by hosted browser/source/safety tools when the caller does not pass `workspace_id`. |
+| `SYNTHI_WORKSPACE_URL` | *(unset)* | Workspace URL opened by `synthi_browser_attach_current_workspace` when no tool arg overrides it. |
+| `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL` | *(unset)* | Fallback workspace URL for hosted browser attach when `SYNTHI_WORKSPACE_URL` is unset. |
+| `SYNTHI_HOSTED_BROWSER_RUNTIME_ID` | *(unset)* | Optional hosted runtime id returned in runtime diagnostics. |
 | `SYNTHI_BROWSER_CDP_URL` | *(unset)* | Developer harness only. Existing Chrome/Chromium CDP endpoint for `synthi_browser_attach`. |
 | `SYNTHI_BROWSER_EXECUTABLE` | *(auto-detect)* | Developer harness only. Browser executable used by `npm run live:browser` when no CDP URL is supplied. |
 | `SYNTHI_BROWSER_BRIDGE_HOST` | `127.0.0.1` | Developer harness bridge bind host for page-origin teaching events. |
@@ -143,23 +148,43 @@ The broker is the authority for browser visibility and action. It grants exact-o
 Typical flow:
 
 ```ts
+await synthi_browser_attach_current_workspace({
+  workspace_id: "workspace_123",
+  workspace_url: "https://ide.synthi.example/workspace/workspace_123"
+});
 await synthi_browser_request_consent({
   url: "https://preview.example.com",
   screenshot: true,
   diagnostics: true
 });
-await synthi_browser_snapshot();
-await synthi_browser_start_teach();
+await synthi_browser_observe();
+await synthi_browser_begin_teach({ goal: "Save billing settings" });
 // Human demonstrates the workflow in the hosted preview.
-await synthi_browser_stop_teach();
+await synthi_browser_end_teach();
 const { workflow } = await synthi_browser_compile_workflow();
+const { validation } = await synthi_safety_run_prefix_validation();
+const { manifest } = await synthi_browser_generate_private_tool_manifest();
 ```
 
 The workflow compiler returns:
 
 - a workflow card for the agent panel
 - a v7 workflow contract with parameters, success criteria, auth durability, source coverage, mutation boundaries, replay modes, failure classes, counterfactual plan, and source affordance patch suggestions
-- generated output availability, including Playwright and source-affordance patch notes
+- generated output availability, including Playwright, source-affordance patch notes, and a private MCP tool manifest when the workflow is safe enough
+
+Primary browser workflow tools:
+
+- `synthi_browser_attach_current_workspace` — attach to the Synthi-hosted browser/runtime. This ignores the local CDP harness env and reports `hosted_runtime_not_configured` when the hosted runtime endpoint is not configured.
+- `synthi_browser_observe` — broker-gated screenshot and bounded DOM summary after exact-origin screenshot consent.
+- `synthi_browser_begin_teach` / `synthi_browser_end_teach` — start/stop teaching and return the workflow card after stop.
+- `synthi_browser_compile_workflow` — emit the v7 contract.
+- `synthi_browser_generate_script` — emit Playwright for same-session, prefix-only, or cold-session replay.
+- `synthi_browser_generate_private_tool_manifest` — emit an app-specific MCP tool manifest with run modes, auth durability, mutation policy, blockers, and backing Synthi tool calls.
+
+Source and safety tools:
+
+- `synthi_source_lookup_token`, `synthi_source_open_in_ide`, `synthi_source_get_mapping_status`, and `synthi_source_suggest_affordance_patch` connect compile-time source identity back to workspace source locations without exact-path prompts.
+- `synthi_safety_get_mutation_plan`, `synthi_safety_set_replay_isolation_profile`, `synthi_safety_run_prefix_validation`, and `synthi_safety_explain_blocked_hardening` keep read-only hardening separate from CI-only mutation replay.
 
 Replay modes:
 
@@ -184,7 +209,7 @@ npm run live:browser -- --no-keep-browser
 npm run live:browser:workspace -- --slug browser-mcp-live-manual
 ```
 
-`npm run live:browser` uses the local CDP harness. It seeds a fixture, attaches through the broker, captures a real screenshot, records a teach trace, compiles a workflow contract, generates Playwright, and validates same-session, prefix-only, and cold-session replay. Use `npm run live:browser:install` if the Playwright Chromium cache is missing.
+`npm run live:browser` uses the local CDP harness. It is for collaborators validating broker/compiler behavior when the hosted runtime is unavailable. It seeds a fixture, attaches through the broker, captures a real screenshot, records a teach trace, compiles a workflow contract, generates Playwright, and validates same-session, prefix-only, and cold-session replay. Use `npm run live:browser:install` if the Playwright Chromium cache is missing.
 
 ---
 
