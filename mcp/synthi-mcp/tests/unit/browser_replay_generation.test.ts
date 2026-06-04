@@ -160,6 +160,27 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("await target1.click();");
     expect(generated.warnings).toContain("coldSession stopped before mutation boundary save");
   });
+
+  it("marks generated Playwright as skipped when replay is blocked by surface support", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "iframe",
+        frame_id: "payment-frame",
+        action: "fill",
+        detail: {
+          element: { role: "textbox", label: "Cardholder" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Cardholder\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("test.skip(true, \"Replay blocked: iframe step has no durable frame locator.\");");
+    expect(generated.code).not.toContain("await target1.fill");
+    expect(generated.warnings).toContain("workflow limitation: iframeNeedsFrameLocator");
+    expect(generated.warnings).toContain("workflow replay blocked by unsupported browser surface");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

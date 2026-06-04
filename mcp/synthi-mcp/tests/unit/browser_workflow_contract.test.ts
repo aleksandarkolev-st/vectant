@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
-import { compileWorkflowContract, planWorkflowReplay } from "../../src/browser/workflow.js";
+import { classifyWorkflowReplayBlock, compileWorkflowContract, planWorkflowReplay } from "../../src/browser/workflow.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { BROWSER_TOOL_NAMES, dispatchBrowserTool } from "../../src/tools/browser.js";
@@ -111,6 +111,92 @@ describe("browser workflow contract compiler", () => {
 
     expect(workflow.contract.limitations).toContain("crossOriginTrace");
     expect(workflow.card.state).toContain("Limited");
+  });
+
+  it("blocks same-tab replay for popup and multi-tab traces", () => {
+    const events = [
+      baseEvent({ event_id: "main", event_seq: 1, tab_id: "main", detail: { element: { role: "button", name: "Open billing" } } }),
+      baseEvent({
+        event_id: "popup",
+        event_seq: 2,
+        tab_id: "popup",
+        origin: "https://billing.example.com",
+        url: "https://billing.example.com/pay",
+        detail: { surface: "popup", element: { role: "button", name: "Continue" } },
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toEqual(expect.arrayContaining(["crossOriginTrace", "popupOrMultiTab"]));
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("blocked");
+    expect(workflow.contract.replayModes).toEqual([]);
+    expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "blocked" }));
+    expect(workflow.card.state).toEqual(expect.arrayContaining(["Blocked", "Limited"]));
+    expect(replay.status).toBe("blocked");
+    expect(replay.warnings[0]).toContain("popup or multi-tab");
+    expect(classifyWorkflowReplayBlock(replay)).toBe("unsafeEnvironment");
+  });
+
+  it("blocks iframe traces that lack a durable frame locator", () => {
+    const events = [
+      baseEvent({
+        event_id: "card",
+        frame_id: "checkout-frame",
+        detail: { element: { role: "textbox", label: "Cardholder" } },
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "prefixOnly");
+
+    expect(workflow.contract.steps[0]?.limitations).toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("blocked");
+    expect(replay.status).toBe("blocked");
+    expect(classifyWorkflowReplayBlock(replay)).toBe("locatorDrift");
+  });
+
+  it("surfaces coordinate and pointer limitations without marking them hardened", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "chart",
+        event_seq: 1,
+        detail: {
+          pointer_drag: true,
+          element: { tag: "canvas", label: "Revenue chart", source_id: "src_chart" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.limitations).toEqual(expect.arrayContaining(["canvasCoordinateOnly", "pointerDragUnreliable"]));
+    expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["canvasUnreliable", "pointerDragUnreliable"]));
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("sameSession");
+    expect(workflow.contract.counterfactualPlan.profiles).toContainEqual(expect.objectContaining({
+      name: "mobile",
+      enabled: false,
+    }));
+  });
+
+  it("blocks closed Shadow DOM traces unless a bridge or external affordance exists", () => {
+    const events = [
+      baseEvent({
+        event_id: "shadow",
+        detail: {
+          closed_shadow_dom: true,
+          element: { role: "button", name: "Submit inside component" },
+        },
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toContain("closedShadowDomBlocked");
+    expect(workflow.contract.failureClasses).toContain("closedShadowDomBlocked");
+    expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "blocked" }));
+    expect(replay.status).toBe("blocked");
+    expect(classifyWorkflowReplayBlock(replay)).toBe("closedShadowDomBlocked");
   });
 
   it("plans prefix-only replay up to but not including the first mutation boundary", () => {

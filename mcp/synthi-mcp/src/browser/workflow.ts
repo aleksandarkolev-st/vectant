@@ -16,7 +16,12 @@ export type WorkflowLimitationV7 =
   | "unresolvedStep"
   | "crossOriginTrace"
   | "redactedInputValue"
-  | "lowConfidenceLocator";
+  | "lowConfidenceLocator"
+  | "iframeNeedsFrameLocator"
+  | "popupOrMultiTab"
+  | "canvasCoordinateOnly"
+  | "closedShadowDomBlocked"
+  | "pointerDragUnreliable";
 
 export type AuthDurabilityV7 =
   | "noneRequired"
@@ -189,11 +194,15 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     .filter((step) => step.mutation)
     .map((step) => ({ stepId: step.stepId, ...step.mutation! }));
   const limitations = workflowLimitations(ordered, steps, appOrigin, mutationSteps.length > 0);
+  const replayBlocked = actionEvents.length === 0 || replayBlockingWarnings(limitations).length > 0;
   const linkedSteps = steps.filter((step) => step.sourcePlan.status === "linked").length;
   const sourceStatus = linkedSteps === 0 ? "missing" : linkedSteps === steps.length ? "complete" : "partial";
   const firstMutationStepId = mutationSteps[0]?.stepId;
   const name = workflowName(steps);
-  const replayModes: WorkflowContractV7["replayModes"] = mutationSteps.length > 0 ? ["sameSession", "prefixOnly"] : ["sameSession"];
+  const replayModes: WorkflowContractV7["replayModes"] = replayBlocked
+    ? []
+    : mutationSteps.length > 0 ? ["sameSession", "prefixOnly"] : ["sameSession"];
+  const sourceAffordancePatches = sourceAffordancePatchesFor(steps);
   const contract: WorkflowContractV7 = {
     workflowId: workflowIdFor(appOrigin, steps),
     name,
@@ -208,7 +217,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     mutationBoundaryPlan: {
       ...(firstMutationStepId ? { firstMutationStepId } : {}),
       mutationSteps,
-      defaultReplayMode: mutationSteps.length > 0 ? "prefixOnly" : "sameSession",
+      defaultReplayMode: replayBlocked ? "blocked" : mutationSteps.length > 0 ? "prefixOnly" : "sameSession",
     },
     sourceIdentityCoverage: {
       linkedSteps,
@@ -221,20 +230,22 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     failureClasses: failureClassesFor(limitations, mutationSteps.length > 0),
     replayModes,
     limitations,
-    counterfactualPlan: counterfactualPlanFor(firstMutationStepId, steps.length),
-    sourceAffordancePatches: sourceAffordancePatchesFor(steps),
+    counterfactualPlan: counterfactualPlanFor(firstMutationStepId, steps.length, limitations),
+    sourceAffordancePatches,
     generatedOutputs: [
       {
         kind: "playwright",
-        status: steps.length > 0 ? "available" : "blocked",
-        notes: mutationSteps.length > 0
+        status: replayBlocked ? "blocked" : "available",
+        notes: replayBlocked
+          ? replayBlockingWarnings(limitations)
+          : mutationSteps.length > 0
           ? ["Generated Playwright should stop at the first mutation boundary for background hardening."]
           : ["Generated Playwright can run in the current same-session context."],
       },
       {
         kind: "sourceAffordancePatch",
         status: steps.length > 0 ? "available" : "blocked",
-        notes: sourceAffordancePatchesFor(steps).length > 0
+        notes: sourceAffordancePatches.length > 0
           ? ["Suggested source affordances target unstable or source-unlinked steps. No exact file path is required from the user."]
           : ["No source affordance suggestions are needed for this trace."],
       },
@@ -246,8 +257,12 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
   };
 }
 
-function counterfactualPlanFor(firstMutationStepId: string | undefined, stepCount: number): WorkflowContractV7["counterfactualPlan"] {
-  if (stepCount === 0) {
+function counterfactualPlanFor(
+  firstMutationStepId: string | undefined,
+  stepCount: number,
+  limitations: WorkflowLimitationV7[]
+): WorkflowContractV7["counterfactualPlan"] {
+  if (stepCount === 0 || replayBlockingWarnings(limitations).length > 0) {
     return {
       mode: "blocked",
       readOnly: true,
@@ -271,7 +286,14 @@ function counterfactualPlanFor(firstMutationStepId: string | undefined, stepCoun
     readOnly: true,
     profiles: [
       { name: "desktop", enabled: true, replayMode: "sameSession", reason: "No mutation boundary was detected." },
-      { name: "mobile", enabled: true, replayMode: "sameSession", reason: "No coordinate-only limitation was detected." },
+      {
+        name: "mobile",
+        enabled: !limitations.includes("canvasCoordinateOnly") && !limitations.includes("pointerDragUnreliable"),
+        replayMode: "sameSession",
+        reason: limitations.includes("canvasCoordinateOnly") || limitations.includes("pointerDragUnreliable")
+          ? "Mobile counterfactual is skipped for coordinate or pointer-drag replay limitations."
+          : "No coordinate-only limitation was detected.",
+      },
       { name: "reducedMotion", enabled: true, replayMode: "sameSession", reason: "No mutation boundary was detected." },
     ],
   };
@@ -327,6 +349,16 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
       warnings: ["No actionable taught steps were recorded."],
     };
   }
+  const blockedWarnings = replayBlockingWarnings(workflow.contract.limitations);
+  if (blockedWarnings.length > 0) {
+    return {
+      mode,
+      status: "blocked",
+      workflowId: workflow.contract.workflowId,
+      events: [],
+      warnings: blockedWarnings,
+    };
+  }
   if ((mode === "prefixOnly" || mode === "coldSession") && firstMutationStepId) {
     return {
       mode,
@@ -348,6 +380,14 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
       ? ["Same-session replay includes mutation steps and must not be used for background hardening."]
       : [],
   };
+}
+
+export function classifyWorkflowReplayBlock(plan: Pick<WorkflowReplayPlanV7, "warnings">): FailureClassV7 {
+  const message = plan.warnings.join(" ");
+  if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
+  if (/iframe|frame locator/i.test(message)) return "locatorDrift";
+  if (/popup|multi-tab/i.test(message)) return "unsafeEnvironment";
+  return "unknown";
 }
 
 export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTraceEvent): FailureClassV7 {
@@ -380,6 +420,10 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   if (primary && primary.confidence < 0.7) limitations.push("lowConfidenceLocator");
   if (event.redacted) limitations.push("redactedInputValue");
   if (mutation) limitations.push("mutationRequiresIsolation");
+  if (eventNeedsFrameLocator(event)) limitations.push("iframeNeedsFrameLocator");
+  if (eventIsCanvasCoordinateOnly(event)) limitations.push("canvasCoordinateOnly");
+  if (eventIsClosedShadowDom(event)) limitations.push("closedShadowDomBlocked");
+  if (eventIsPointerDrag(event)) limitations.push("pointerDragUnreliable");
   return {
     stepId,
     eventSeq: event.event_seq,
@@ -536,8 +580,17 @@ function workflowLimitations(
   if (steps.some((step) => step.locatorPlan.confidence === "none")) limitations.add("unresolvedStep");
   if (steps.some((step) => step.locatorPlan.confidence === "low")) limitations.add("lowConfidenceLocator");
   if (steps.some((step) => step.limitations.includes("redactedInputValue"))) limitations.add("redactedInputValue");
+  if (steps.some((step) => step.limitations.includes("iframeNeedsFrameLocator"))) limitations.add("iframeNeedsFrameLocator");
+  if (steps.some((step) => step.limitations.includes("canvasCoordinateOnly"))) limitations.add("canvasCoordinateOnly");
+  if (steps.some((step) => step.limitations.includes("closedShadowDomBlocked"))) limitations.add("closedShadowDomBlocked");
+  if (steps.some((step) => step.limitations.includes("pointerDragUnreliable"))) limitations.add("pointerDragUnreliable");
   if (hasMutation) limitations.add("mutationRequiresIsolation");
   if (events.some((event) => event.origin && appOrigin !== "unknown" && event.origin !== appOrigin)) limitations.add("crossOriginTrace");
+  const actionTabIds = new Set(events
+    .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
+    .map((event) => event.tab_id)
+    .filter(Boolean));
+  if (actionTabIds.size > 1 || events.some((event) => event.detail?.["surface"] === "popup")) limitations.add("popupOrMultiTab");
   return [...limitations];
 }
 
@@ -564,6 +617,10 @@ function failureClassesFor(limitations: WorkflowLimitationV7[], hasMutation: boo
   const classes = new Set<FailureClassV7>(["locatorDrift", "hydrationDelay", "routeChanged", "networkFailure", "unknown"]);
   if (limitations.includes("sourceIdentityMissing")) classes.add("sourceIdentityMissing");
   if (limitations.includes("unresolvedStep")) classes.add("testDataMissing");
+  if (limitations.includes("canvasCoordinateOnly")) classes.add("canvasUnreliable");
+  if (limitations.includes("closedShadowDomBlocked")) classes.add("closedShadowDomBlocked");
+  if (limitations.includes("pointerDragUnreliable")) classes.add("pointerDragUnreliable");
+  if (limitations.includes("popupOrMultiTab")) classes.add("unsafeEnvironment");
   if (hasMutation) {
     classes.add("mutationBlocked");
     classes.add("unsafeEnvironment");
@@ -573,7 +630,8 @@ function failureClassesFor(limitations: WorkflowLimitationV7[], hasMutation: boo
 
 function cardForContract(contract: WorkflowContractV7): WorkflowCardV7 {
   const state: WorkflowStateV7[] = ["Draft"];
-  if (contract.steps.length > 0) state.push("Runnable");
+  if (contract.mutationBoundaryPlan.defaultReplayMode === "blocked") state.push("Blocked");
+  else if (contract.steps.length > 0) state.push("Runnable");
   if (!contract.authPlan.required) state.push("Auth-ready");
   if (contract.sourceIdentityCoverage.status !== "missing") state.push("Source-linked");
   if (contract.mutationBoundaryPlan.mutationSteps.length > 0) state.push("Mutation-limited");
@@ -582,7 +640,9 @@ function cardForContract(contract: WorkflowContractV7): WorkflowCardV7 {
   return {
     title: contract.name,
     status: contract.steps.length > 0
-      ? contract.mutationBoundaryPlan.mutationSteps.length > 0
+      ? contract.mutationBoundaryPlan.defaultReplayMode === "blocked"
+        ? "Blocked. Review unsupported replay surfaces before validation."
+        : contract.mutationBoundaryPlan.mutationSteps.length > 0
         ? "Runnable in this session. Background hardening stops before mutation."
         : "Runnable in this session. Not hardened yet."
       : "Blocked. No actionable taught steps were recorded.",
@@ -595,8 +655,59 @@ function cardForContract(contract: WorkflowContractV7): WorkflowCardV7 {
     ],
     stepCount: contract.steps.length,
     unresolvedCount,
-    primaryCta: contract.steps.length === 0 ? "blocked" : unresolvedCount > 0 ? "reviewLimitations" : "validateSameSession",
+    primaryCta: contract.steps.length === 0 || contract.mutationBoundaryPlan.defaultReplayMode === "blocked"
+      ? "blocked"
+      : unresolvedCount > 0 ? "reviewLimitations" : "validateSameSession",
   };
+}
+
+function replayBlockingWarnings(limitations: WorkflowLimitationV7[]): string[] {
+  const warnings: string[] = [];
+  if (limitations.includes("iframeNeedsFrameLocator")) {
+    warnings.push("Replay blocked: iframe step has no durable frame locator.");
+  }
+  if (limitations.includes("popupOrMultiTab")) {
+    warnings.push("Replay blocked: popup or multi-tab workflows are not supported by the current same-tab runner.");
+  }
+  if (limitations.includes("closedShadowDomBlocked")) {
+    warnings.push("Replay blocked: closed Shadow DOM requires a dev-only bridge or external affordance.");
+  }
+  return warnings;
+}
+
+function eventNeedsFrameLocator(event: BrowserTraceEvent): boolean {
+  return Boolean(event.frame_id) && typeof event.detail?.["frame_locator"] !== "string";
+}
+
+function eventIsCanvasCoordinateOnly(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  const surface = surfaceLabel(event);
+  return element?.tag?.toLowerCase() === "canvas" ||
+    /canvas|webgl/.test(surface) ||
+    event.detail?.["canvas"] === true;
+}
+
+function eventIsClosedShadowDom(event: BrowserTraceEvent): boolean {
+  const surface = surfaceLabel(event);
+  return /closedshadow|closed-shadow/.test(surface) ||
+    event.detail?.["closed_shadow_dom"] === true ||
+    event.detail?.["shadow_dom"] === "closed";
+}
+
+function eventIsPointerDrag(event: BrowserTraceEvent): boolean {
+  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  return /pointersensor|unknowndrag|canvasdrag/.test(dragClass) ||
+    event.detail?.["pointer_drag"] === true;
+}
+
+function surfaceLabel(event: BrowserTraceEvent): string {
+  return String(
+    event.detail?.["surface"] ??
+    event.detail?.["interaction_surface"] ??
+    event.detail?.["visual_surface"] ??
+    event.detail?.["surface_class"] ??
+    ""
+  ).toLowerCase();
 }
 
 function workflowName(steps: WorkflowStepContractV7[]): string {

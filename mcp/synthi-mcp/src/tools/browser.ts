@@ -1,7 +1,7 @@
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
-import { classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
+import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
 import {
   detectBrowserProject,
   projectRunStatus,
@@ -466,7 +466,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const mode = normalizeReplayMode(a["mode"]);
   const plan = browserBroker.workflowReplayPlan(mode);
   if (plan.status === "blocked") {
-    return jsonResponse({ ok: false, replay: { ...plan, failure_class: "unknown" } });
+    return jsonResponse({ ok: false, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
   }
 
   const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;

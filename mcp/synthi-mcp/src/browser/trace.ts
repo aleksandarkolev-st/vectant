@@ -198,6 +198,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     "",
     "test('replayed browser workflow', async ({ page }) => {",
   ];
+  const replayBlocked = contract.mutationBoundaryPlan.defaultReplayMode === "blocked";
   if (baseOrigin) {
     lines.push(`  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? ${JSON.stringify(baseOrigin)};`);
   }
@@ -216,9 +217,18 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const used_locators: GeneratedScript["used_locators"] = [];
   const warnings: string[] = [];
   warnings.push(...contract.limitations.map((limitation) => `workflow limitation: ${limitation}`));
+  if (replayBlocked) warnings.push("workflow replay blocked by unsupported browser surface");
   let currentUrl: string | null = null;
   let targetSeq = 0;
   const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
+
+  if (replayBlocked) {
+    const reason = contract.generatedOutputs.find((output) => output.kind === "playwright")?.notes.join(" ") ||
+      "Workflow replay is blocked.";
+    lines.push(`  test.skip(true, ${JSON.stringify(reason)});`);
+    lines.push("});");
+    return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
+  }
 
   for (const event of events) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
