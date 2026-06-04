@@ -48,6 +48,10 @@ export const ADVERTISED_TOOLS = [
   "synthi_auth_configure_refresh_provider",
   "synthi_auth_test_refresh_provider",
   "synthi_auth_get_tool_auth_readiness",
+  // Workspace source identity
+  "synthi_source_lookup_token",
+  "synthi_source_get_mapping_status",
+  "synthi_source_suggest_affordance_patch",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",

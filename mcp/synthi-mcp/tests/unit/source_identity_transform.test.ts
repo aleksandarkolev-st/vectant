@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   createSynthiViteReactSourceIdentityPlugin,
+  sourceIdentityRegistry,
   transformJsxSourceIdentity,
 } from "../../src/browser/source_identity.js";
+
+afterEach(() => {
+  sourceIdentityRegistry.resetForTests();
+});
 
 describe("SSR-safe source identity transform", () => {
   it("injects stable source ids into intrinsic JSX elements", async () => {
@@ -60,6 +65,8 @@ describe("SSR-safe source identity transform", () => {
     const seen: string[] = [];
     const plugin = createSynthiViteReactSourceIdentityPlugin({
       root: "/repo",
+      workspaceId: "workspace-a",
+      registry: sourceIdentityRegistry,
       onTokens: (_file, tokens) => seen.push(...tokens.map((token) => token.token)),
     });
 
@@ -69,5 +76,37 @@ describe("SSR-safe source identity transform", () => {
     expect(plugin.enforce).toBe("pre");
     expect(result?.code).toContain("data-synthi-source-id");
     expect(seen).toHaveLength(1);
+    const mapping = sourceIdentityRegistry.lookup(seen[0]!, "workspace-a");
+    expect(mapping).toEqual(expect.objectContaining({
+      file: "src/App.jsx",
+      tag: "button",
+      workspace_id: "workspace-a",
+      adapter: "vite-react",
+    }));
+    expect(sourceIdentityRegistry.status("workspace-a")).toEqual(expect.objectContaining({
+      status: "mapped",
+      token_count: 1,
+      file_count: 1,
+    }));
+  });
+
+  it("refreshes registry mappings for preserved source ids on hot rebuilds", async () => {
+    const seen: string[] = [];
+    const plugin = createSynthiViteReactSourceIdentityPlugin({
+      root: "/repo",
+      workspaceId: "workspace-b",
+      registry: sourceIdentityRegistry,
+      onTokens: (_file, tokens) => seen.push(...tokens.map((token) => token.token)),
+    });
+
+    const result = await plugin.transform("export const App = () => <button data-synthi-source-id=\"s_existing\">Save</button>;", "/repo/src/App.jsx");
+
+    expect(result).toBeNull();
+    expect(seen).toEqual(["s_existing"]);
+    expect(sourceIdentityRegistry.lookup("s_existing", "workspace-b")).toEqual(expect.objectContaining({
+      file: "src/App.jsx",
+      line: 1,
+      column: 26,
+    }));
   });
 });
