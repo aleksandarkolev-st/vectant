@@ -140,4 +140,26 @@ describe('AgentWorkflowPanel rendering', () => {
 
     window.removeEventListener('synthi:agent-workflow-action', eventListener);
   });
+
+  it('labels unresolved workflow items as publish hardening', () => {
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      workflowState: {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Save workspace state',
+          stepCount: 2,
+          unresolvedCount: 1,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        unresolvedSteps: [{ id: 'save', label: 'Save state', detail: 'Needs publish hardening: mutationRequiresIsolation.' }],
+      },
+    });
+
+    expect(panel.textContent).toContain('Publish Hardening');
+    expect(panel.textContent).toContain('Needs publish hardening');
+    expect(panel.textContent).not.toContain('Review Queue');
+  });
 });

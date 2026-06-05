@@ -584,14 +584,14 @@ function ReviewQueue({ items, blockers }) {
     <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-review">
       <div className="flex items-center gap-2 px-3 py-2">
         <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--warning, #b7791f)' }} />
-        <h3 className="truncate text-xs font-semibold">Review Queue</h3>
+        <h3 className="truncate text-xs font-semibold">Publish Hardening</h3>
       </div>
       <ul>
         {rows.map((item, index) => (
           <li key={item.id || `${item.label || item.title}-${index}`} className="border-t px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
             <div className="truncate text-xs font-medium">{item.label || item.title || 'Workflow question'}</div>
             <div className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {item.detail || item.reason || 'Needs a stable replay decision.'}
+              {item.detail || item.reason || 'Needs hardening before unattended replay.'}
             </div>
           </li>
         ))}

@@ -333,8 +333,8 @@ export function buildBrowserWorkflowPanelState(
         id: step.stepId,
         label: step.label,
         detail: step.limitations.length
-          ? `Needs review: ${step.limitations.join(", ")}.`
-          : "Needs a stable replay decision.",
+          ? `Needs publish hardening: ${step.limitations.join(", ")}.`
+          : "Needs hardening before unattended replay.",
       })),
     blockers: workflow.contract.limitations.map((limitation) => ({
       id: `limitation_${limitation}`,
