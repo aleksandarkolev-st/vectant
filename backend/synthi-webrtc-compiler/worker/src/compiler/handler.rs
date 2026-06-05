@@ -6643,43 +6643,78 @@ fn runner_device_sidecar_status(line: &str) -> Option<Result<(), String>> {
     }
 }
 
-fn runner_device_sidecar_ack_timeout() -> std::time::Duration {
-    let ms = std::env::var("SYNTHI_GPU_HMR_DEVICE_RELOAD_ACK_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
-    std::time::Duration::from_millis(ms)
+fn runner_device_sidecar_ack_timeout_from_env_value(
+    raw: Option<&str>,
+) -> Option<std::time::Duration> {
+    let text = raw?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let ms = text.parse::<u64>().ok()?;
+    if ms == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_millis(ms))
+    }
+}
+
+fn runner_device_sidecar_ack_timeout() -> Option<std::time::Duration> {
+    runner_device_sidecar_ack_timeout_from_env_value(
+        std::env::var("SYNTHI_GPU_HMR_DEVICE_RELOAD_ACK_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+async fn receive_runner_device_sidecar_status(
+    output_rx: &mut tokio::sync::broadcast::Receiver<String>,
+) -> Result<()> {
+    loop {
+        match output_rx.recv().await {
+            Ok(line) => {
+                if let Some(status) = runner_device_sidecar_status(&line) {
+                    return status.map_err(anyhow::Error::msg);
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                anyhow::bail!("runner output channel closed before device sidecar reload status");
+            }
+        }
+    }
+}
+
+async fn receive_runner_device_sidecar_status_with_timeout(
+    output_rx: &mut tokio::sync::broadcast::Receiver<String>,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    match tokio::time::timeout(timeout, receive_runner_device_sidecar_status(output_rx)).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "runner device sidecar reload did not acknowledge terminal device HMR status within {}ms",
+            timeout.as_millis()
+        ),
+    }
+}
+
+fn runner_device_sidecar_ack_timeout_label(timeout: Option<std::time::Duration>) -> String {
+    timeout
+        .map(|value| value.as_millis().to_string())
+        .unwrap_or_else(|| "unbounded".to_string())
 }
 
 async fn wait_for_runner_device_sidecar_status(
     output_rx: &mut tokio::sync::broadcast::Receiver<String>,
 ) -> Result<()> {
     let timeout = runner_device_sidecar_ack_timeout();
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => {
-                anyhow::bail!(
-                    "runner device sidecar reload did not acknowledge terminal device HMR status within {}ms",
-                    timeout.as_millis()
-                );
-            }
-            received = output_rx.recv() => {
-                match received {
-                    Ok(line) => {
-                        if let Some(status) = runner_device_sidecar_status(&line) {
-                            return status.map_err(anyhow::Error::msg);
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        anyhow::bail!("runner output channel closed before device sidecar reload status");
-                    }
-                }
-            }
-        }
+    eprintln!(
+        "[compile-device] waiting for runner device sidecar terminal status timeout_ms={}",
+        runner_device_sidecar_ack_timeout_label(timeout)
+    );
+    if let Some(timeout) = timeout {
+        receive_runner_device_sidecar_status_with_timeout(output_rx, timeout).await
+    } else {
+        receive_runner_device_sidecar_status(output_rx).await
     }
 }
 
@@ -12903,6 +12938,19 @@ mod gpu_host_contract_tests {
     fn device_sidecar_status_ignores_non_device_hmr() {
         let runner_status = r#"[Runner] [HMR-STATUS] {"status":"runtime-paused","module":"runner","runtimePaused":true}"#;
         assert!(runner_device_sidecar_status(runner_status).is_none());
+    }
+
+    #[test]
+    fn device_sidecar_ack_timeout_is_unbounded_unless_configured() {
+        assert!(runner_device_sidecar_ack_timeout_from_env_value(None).is_none());
+        assert!(runner_device_sidecar_ack_timeout_from_env_value(Some("")).is_none());
+        assert!(runner_device_sidecar_ack_timeout_from_env_value(Some("0")).is_none());
+        assert_eq!(
+            runner_device_sidecar_ack_timeout_from_env_value(Some("125"))
+                .unwrap()
+                .as_millis(),
+            125
+        );
     }
 
     #[test]

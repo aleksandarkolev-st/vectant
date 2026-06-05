@@ -1,11 +1,47 @@
 {
+  "schemaVersion": "synthi.gpu.hmr.runtime_profile.v1",
   "id": "hiprt-camera-rays-horizontal-mirror",
-  "targetName": "HIPRTPathTracer",
-  "sourceRel": "src/Device/kernels/CameraRays.h",
-  "before": "hiprtRay ray = render_data.current_camera.get_camera_ray(x_ray_point_direction, y_ray_point_direction, render_data.render_settings.render_resolution);",
-  "after": "hiprtRay ray = render_data.current_camera.get_camera_ray(render_data.render_settings.render_resolution.x - x_ray_point_direction, y_ray_point_direction, render_data.render_settings.render_resolution);",
-  "requiredKernels": ["CameraRays", "MegaKernel"],
-  "reloadKernelName": "Fill G-Buffer",
-  "reloadKernelSymbol": "CameraRays",
-  "claim": "A HIPRT CameraRays primary-ray horizontal mirror delta materially changes the ray-traced framebuffer."
+  "adapter": {
+    "family": "hiprt-path-tracer",
+    "proofRunner": "hiprt-warm-visual",
+    "capabilities": [
+      "same-process-reload",
+      "runtime-framebuffer-readback",
+      "native-launch-observation"
+    ]
+  },
+  "runtime": {
+    "targetName": "HIPRTPathTracer",
+    "args": [
+      "../data/GLTFs/cornell_pbr.gltf",
+      "--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr"
+    ],
+    "requiredFiles": [
+      "data/GLTFs/cornell_pbr.gltf",
+      "data/Skyspheres/evening_road_01_puresky_2k.hdr"
+    ],
+    "requiredKernels": [
+      "CameraRays",
+      "MegaKernel"
+    ],
+    "reload": {
+      "kernelName": "Fill G-Buffer",
+      "kernelSymbol": "CameraRays"
+    }
+  },
+  "source": {
+    "file": "src/Device/kernels/CameraRays.h",
+    "before": "hiprtRay ray = render_data.current_camera.get_camera_ray(x_ray_point_direction, y_ray_point_direction, render_data.render_settings.render_resolution);",
+    "after": "hiprtRay ray = render_data.current_camera.get_camera_ray(render_data.render_settings.render_resolution.x - x_ray_point_direction, y_ray_point_direction, render_data.render_settings.render_resolution);"
+  },
+  "visualProof": {
+    "claim": "A HIPRT CameraRays primary-ray horizontal mirror delta materially changes the ray-traced framebuffer.",
+    "width": 640,
+    "height": 360,
+    "minChangedPixelRatio": 0.05,
+    "minMeanAbsDelta8bit": 1.0
+  },
+  "proof": {
+    "requireStrictProvenance": true
+  }
 }

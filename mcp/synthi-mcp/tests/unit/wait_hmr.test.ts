@@ -4,8 +4,22 @@ import { session } from "../../src/session.js";
 import { waitHmrTool } from "../../src/tools/wait_hmr.js";
 import { resolvePipelineBudgetMs } from "../../src/protocol/index.js";
 
+type FakeWaitOpts = {
+  timeoutMs?: number;
+  module?: string;
+  sinceTs?: number;
+  previewId?: string;
+};
+
 function installFakeAttached(
-  waitForTerminal: () => Promise<{ status: "applied"; source: "hmr_status"; elapsedMs: number }>
+  waitForTerminal: (opts?: FakeWaitOpts) => Promise<{
+    status: "applied";
+    source: "hmr_status";
+    elapsedMs: number;
+    observedAt?: number;
+    retained?: boolean;
+    sequence?: number;
+  }>
 ): { feedHmr: (msg: Record<string, unknown>) => void } {
   const listeners: Array<(msg: Record<string, unknown>) => void> = [];
   (session as unknown as { state: string }).state = "attached";
@@ -181,5 +195,50 @@ describe("synthi_wait_hmr", () => {
     };
     expect(body.error).toBe("gpu_hmr_proof_insufficient");
     expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+  });
+
+  it("passes the compile dispatch timestamp through for retained terminal recovery", async () => {
+    const sinceTs = Date.now() - 100;
+    let observedOpts: FakeWaitOpts | undefined;
+    installFakeAttached(async (opts) => {
+      observedOpts = opts;
+      return {
+        status: "applied",
+        source: "hmr_status",
+        elapsedMs: 25,
+        observedAt: sinceTs + 25,
+        retained: true,
+        sequence: 7,
+      };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      module: "device",
+      since_ts: sinceTs,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(observedOpts?.module).toBe("device");
+    expect(observedOpts?.sinceTs).toBe(sinceTs);
+    const body = res.structuredContent as {
+      terminal_recovered_from?: string;
+      terminal_sequence?: number;
+      hmrObservedAt?: number;
+    };
+    expect(body.terminal_recovered_from).toBe("hmr_terminal_history");
+    expect(body.terminal_sequence).toBe(7);
+    expect(body.hmrObservedAt).toBe(sinceTs + 25);
+  });
+
+  it("rejects malformed since_ts instead of treating it as a default wait", async () => {
+    installFakeAttached(async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }));
+
+    const res = await waitHmrTool({ since_ts: "yesterday" });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as { error?: string; field?: string };
+    expect(body.error).toBe("invalid_args");
+    expect(body.field).toBe("since_ts");
   });
 });

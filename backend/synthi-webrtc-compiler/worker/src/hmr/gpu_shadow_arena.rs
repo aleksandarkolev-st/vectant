@@ -401,6 +401,12 @@ mod tests {
             s.dtod_result
         })
     }
+    unsafe extern "C" fn stub_htod(_dst: CuDevicePtr, _src: *const c_void, _bytes: usize) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_dtoh(_dst: *mut c_void, _src: CuDevicePtr, _bytes: usize) -> CuResult {
+        0
+    }
     // Unused stubs to satisfy table layout.
     unsafe extern "C" fn stub_init(_f: u32) -> CuResult {
         0
@@ -468,6 +474,8 @@ mod tests {
             cu_mem_alloc: stub_alloc,
             cu_mem_free: stub_free,
             cu_memcpy_dtod: stub_dtod,
+            cu_memcpy_htod: stub_htod,
+            cu_memcpy_dtoh: stub_dtoh,
         }
     }
 

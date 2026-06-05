@@ -65,7 +65,7 @@ pub type CuFunction = *mut c_void;
 pub type CuContext = *mut c_void;
 pub type CuKernelParams = *mut *mut c_void;
 
-pub const REQUIRED_SYMBOL_COUNT: usize = 14;
+pub const REQUIRED_SYMBOL_COUNT: usize = 16;
 
 pub type CuInitFn = unsafe extern "C" fn(flags: u32) -> CuResult;
 pub type CuDeviceGetFn = unsafe extern "C" fn(device: *mut i32, ordinal: i32) -> CuResult;
@@ -100,6 +100,10 @@ pub type CuMemAllocFn = unsafe extern "C" fn(dptr: *mut CuDevicePtr, bytes: usiz
 pub type CuMemFreeFn = unsafe extern "C" fn(dptr: CuDevicePtr) -> CuResult;
 pub type CuMemcpyDtoDFn =
     unsafe extern "C" fn(dst: CuDevicePtr, src: CuDevicePtr, bytes: usize) -> CuResult;
+pub type CuMemcpyHtoDFn =
+    unsafe extern "C" fn(dst: CuDevicePtr, src: *const c_void, bytes: usize) -> CuResult;
+pub type CuMemcpyDtoHFn =
+    unsafe extern "C" fn(dst: *mut c_void, src: CuDevicePtr, bytes: usize) -> CuResult;
 
 // ── Symbol table ────────────────────────────────────────────
 
@@ -123,6 +127,8 @@ pub struct GpuDriverSymbolTable {
     pub cu_mem_alloc: CuMemAllocFn,
     pub cu_mem_free: CuMemFreeFn,
     pub cu_memcpy_dtod: CuMemcpyDtoDFn,
+    pub cu_memcpy_htod: CuMemcpyHtoDFn,
+    pub cu_memcpy_dtoh: CuMemcpyDtoHFn,
 }
 
 /// The driver symbols the loader must resolve, in the order
@@ -145,6 +151,8 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; REQUIRED_SYMBO
             "cuMemAlloc_v2",
             "cuMemFree_v2",
             "cuMemcpyDtoD_v2",
+            "cuMemcpyHtoD_v2",
+            "cuMemcpyDtoH_v2",
         ],
         GpuVendor::Rocm => [
             "hipInit",
@@ -161,6 +169,8 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; REQUIRED_SYMBO
             "hipMalloc",
             "hipFree",
             "hipMemcpyDtoD",
+            "hipMemcpyHtoD",
+            "hipMemcpyDtoH",
         ],
     }
 }
@@ -370,6 +380,8 @@ unsafe fn resolve_symbols(
         cu_mem_alloc: fetch!(11, CuMemAllocFn),
         cu_mem_free: fetch!(12, CuMemFreeFn),
         cu_memcpy_dtod: fetch!(13, CuMemcpyDtoDFn),
+        cu_memcpy_htod: fetch!(14, CuMemcpyHtoDFn),
+        cu_memcpy_dtoh: fetch!(15, CuMemcpyDtoHFn),
     })
 }
 
@@ -400,6 +412,8 @@ mod tests {
         assert!(names.contains(&"cuMemAlloc_v2"));
         assert!(names.contains(&"cuMemFree_v2"));
         assert!(names.contains(&"cuMemcpyDtoD_v2"));
+        assert!(names.contains(&"cuMemcpyHtoD_v2"));
+        assert!(names.contains(&"cuMemcpyDtoH_v2"));
         assert!(names.contains(&"cuLaunchKernel"));
         assert!(names.contains(&"cuModuleLoad"));
     }
@@ -412,6 +426,8 @@ mod tests {
         assert!(names.contains(&"hipMalloc"));
         assert!(names.contains(&"hipFree"));
         assert!(names.contains(&"hipMemcpyDtoD"));
+        assert!(names.contains(&"hipMemcpyHtoD"));
+        assert!(names.contains(&"hipMemcpyDtoH"));
         assert!(names.contains(&"hipModuleLaunchKernel"));
         assert!(names.contains(&"hipModuleLoad"));
     }

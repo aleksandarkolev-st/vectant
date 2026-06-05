@@ -177,6 +177,11 @@ function parseOutputOracleContract(raw) {
   return contract;
 }
 
+function outputOracleProfileMode(raw) {
+  const text = String(raw ?? 'auto').trim().toLowerCase();
+  return text || 'auto';
+}
+
 function parseTargetProgressionLedger(raw) {
   const text = String(raw ?? '').trim();
   if (!text) {
@@ -870,7 +875,7 @@ const CFG = {
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 300000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
-  hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
+  hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 20 * 60 * 1000),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
   cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
@@ -898,6 +903,11 @@ const CFG = {
       ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
       ?? '',
   ),
+  outputOracleProfile: outputOracleProfileMode(
+    process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE
+      ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_PROFILE
+      ?? 'auto',
+  ),
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
   gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
@@ -909,6 +919,8 @@ const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
 const RESULTS_JSON = path.join(LOG_DIR, 'real-rocm-results.json');
 const RESULTS_TXT = path.join(LOG_DIR, 'real-rocm-results.txt');
+const WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH =
+  '/tmp/synthi-gpu-hmr-runtime-output-oracle.json';
 
 const report = {
   slug: CFG.slug,
@@ -978,6 +990,10 @@ const report = {
   compile_projection: {},
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
+  output_oracle_profile: CFG.outputOracleProfile,
+  output_oracle_adaptations: [],
+  output_oracle_runtime_profile_path: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
+  output_oracle_runtime_profile: null,
   render_preview_enabled: CFG.renderPreview,
   runtime_capability_preflight: null,
   upstream_run_environment: null,
@@ -1051,6 +1067,56 @@ function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
       resolve(`${stdout ?? ''}${stderr ?? ''}`.trim());
     });
   });
+}
+
+async function syncWorkerRuntimeOutputOracleProfile(profile) {
+  if (CFG.mcpTransport !== 'docker') {
+    record(
+      'runtime output oracle profile sync',
+      profile ? 'warn' : 'info',
+      `transport=${CFG.mcpTransport} worker profile sync skipped`,
+    );
+    return;
+  }
+  if (!profile) {
+    await execText(
+      'docker',
+      [
+        'exec',
+        CFG.workerContainer,
+        'sh',
+        '-lc',
+        `rm -f '${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}'`,
+      ],
+      30000,
+      false,
+    );
+    record(
+      'runtime output oracle profile sync',
+      'info',
+      `cleared=${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}`,
+    );
+    return;
+  }
+  const payload = `${JSON.stringify(profile, null, 2)}\n`;
+  const encoded = Buffer.from(payload, 'utf8').toString('base64');
+  await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      `mkdir -p "$(dirname '${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}')" && printf '%s' '${encoded}' | base64 -d > '${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}'`,
+    ],
+    30000,
+    true,
+  );
+  record(
+    'runtime output oracle profile sync',
+    'pass',
+    `profile=${profile.profileId} kernel=${profile.kernelName} path=${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}`,
+  );
 }
 
 function shouldFetchRequestedCommit({ requestedCommit, localCommitAvailable }) {
@@ -3055,7 +3121,13 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
     throw new Error(`${phaseName} runtime identity changed after synthi_compile: ${wait.detail.reason}`);
   }
   const waitStart = Date.now();
-  const wait = await waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor);
+  const wait = await waitHmrForCurrentWorkspace(
+    state,
+    timeoutMs,
+    phaseName,
+    identityMonitor,
+    Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start,
+  );
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
   const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
   report.phases.push(phase);
@@ -3084,9 +3156,9 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
   };
 }
 
-async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor = null) {
+async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor = null, sinceTs = null) {
   const startedAt = Date.now();
-  const eventLogSinceTs = startedAt - 2000;
+  const eventLogSinceTs = Number.isFinite(sinceTs) ? sinceTs : startedAt - 2000;
   let last = null;
   while (Date.now() - startedAt < timeoutMs) {
     await capturePhaseRuntimeIdentity(identityMonitor, 'before_wait_poll');
@@ -3096,7 +3168,7 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
     try {
-      const waitArgs = { timeoutMs: sliceTimeoutMs };
+      const waitArgs = { timeoutMs: sliceTimeoutMs, since_ts: eventLogSinceTs };
       if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
@@ -3247,6 +3319,317 @@ function editSource(source, before, after, label) {
 
 function editConfiguredSource(source) {
   return editSource(source, CFG.deltaBefore, CFG.deltaAfter, 'configured');
+}
+
+function parseCppNumericLiteral(raw) {
+  const text = String(raw ?? '').trim().replace(/[fFuUlL]+$/g, '');
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+function parseSaxpySourceConstants(source) {
+  const sizeMatch = /\bconstexpr\s+unsigned\s+int\s+size\s*=\s*(\d+)\s*;/m.exec(source);
+  const blockSizeMatch = /\bconstexpr\s+unsigned\s+int\s+block_size\s*=\s*(\d+)\s*;/m.exec(source);
+  const aMatch = /\bconstexpr\s+float\s+a\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?f?)\s*;/im.exec(source);
+  const xStartMatch = /\bstd::iota\s*\(\s*x\.begin\s*\(\s*\)\s*,\s*x\.end\s*\(\s*\)\s*,\s*([^)]+?)\s*\)\s*;/m.exec(source);
+  const yFillMatch = /\bstd::fill\s*\(\s*y\.begin\s*\(\s*\)\s*,\s*y\.end\s*\(\s*\)\s*,\s*([^)]+?)\s*\)\s*;/m.exec(source);
+  const size = sizeMatch ? Number(sizeMatch[1]) : NaN;
+  const blockSize = blockSizeMatch ? Number(blockSizeMatch[1]) : NaN;
+  const a = aMatch ? parseCppNumericLiteral(aMatch[1]) : null;
+  const xStart = xStartMatch ? parseCppNumericLiteral(xStartMatch[1]) : null;
+  const yFill = yFillMatch ? parseCppNumericLiteral(yFillMatch[1]) : null;
+  if (
+    !Number.isInteger(size)
+    || size <= 0
+    || size > 64 * 1024 * 1024
+    || !Number.isInteger(blockSize)
+    || blockSize <= 0
+    || blockSize > 1024
+    || a === null
+    || xStart === null
+    || yFill === null
+  ) {
+    return null;
+  }
+  return { size, blockSize, a, xStart, yFill };
+}
+
+function saxpyMultiplierPlanAfterDelta(source, deltaAfter) {
+  const constants = parseSaxpySourceConstants(source);
+  if (!constants) return null;
+  const after = String(deltaAfter ?? '');
+  const plusMatch = /\(\s*a\s*\+\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?f?)\s*\)\s*\*\s*d_x\s*\[\s*global_idx\s*\]\s*\+\s*d_y\s*\[\s*global_idx\s*\]/im.exec(after);
+  if (plusMatch) {
+    const delta = parseCppNumericLiteral(plusMatch[1]);
+    if (delta === null) return null;
+    return {
+      argumentMultiplier: Math.fround(constants.a),
+      effectiveMultiplier: Math.fround(Math.fround(constants.a) + Math.fround(delta)),
+      kernelDelta: Math.fround(delta),
+    };
+  }
+  if (/\ba\s*\*\s*d_x\s*\[\s*global_idx\s*\]\s*\+\s*d_y\s*\[\s*global_idx\s*\]/im.test(after)) {
+    return {
+      argumentMultiplier: Math.fround(constants.a),
+      effectiveMultiplier: Math.fround(constants.a),
+      kernelDelta: 0,
+    };
+  }
+  return null;
+}
+
+function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
+  const constants = parseSaxpySourceConstants(source);
+  const multiplierPlan = saxpyMultiplierPlanAfterDelta(source, deltaAfter);
+  if (!constants || multiplierPlan === null) return null;
+  const bytes = Buffer.allocUnsafe(constants.size * 4);
+  const yInitial = Math.fround(constants.yFill);
+  for (let index = 0; index < constants.size; index += 1) {
+    const xValue = Math.fround(constants.xStart + index);
+    const value = Math.fround(Math.fround(multiplierPlan.effectiveMultiplier * xValue) + yInitial);
+    bytes.writeFloatLE(value, index * 4);
+  }
+  const expectedSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const config = {
+    schemaVersion: 'synthi.real_rocm.output_oracle_profile.saxpy_readback_y.v1',
+    sourceFile,
+    outputTargetId: `${sourceFile}:y`,
+    size: constants.size,
+    blockSize: constants.blockSize,
+    xStart: constants.xStart,
+    yInitial: constants.yFill,
+    argumentMultiplier: multiplierPlan.argumentMultiplier,
+    effectiveMultiplier: multiplierPlan.effectiveMultiplier,
+    kernelDelta: multiplierPlan.kernelDelta,
+    deltaAfterSha256: `sha256:${createHash('sha256').update(deltaAfter).digest('hex')}`,
+    expectedSha256,
+  };
+  const configJson = JSON.stringify(config);
+  const configHash = `sha256:${createHash('sha256').update(configJson).digest('hex')}`;
+  return {
+    ...config,
+    configHash,
+    oracleId: `oracle:real-rocm:saxpy-readback-y:${configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`,
+    producer: 'real_rocm_source_derived_output_profile',
+    probeMode: 'post_hmr_device_to_host_buffer_checksum',
+    probeEvidenceRef: 'evidence:output-oracle:real-rocm-saxpy-y-buffer',
+    runtimeProfile: {
+      schemaVersion: 'synthi.gpu_hmr.runtime_output_oracle.v1',
+      enabled: true,
+      profileId: 'hip.saxpy.readback-y.v1',
+      oracleId: `oracle:real-rocm:saxpy-readback-y:${configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`,
+      expectedSha256,
+      producer: 'real_rocm_source_derived_output_profile',
+      outputTargetId: `${sourceFile}:y`,
+      kernelName: 'saxpy_kernel',
+      grid: [Math.ceil(constants.size / constants.blockSize), 1, 1],
+      block: [constants.blockSize, 1, 1],
+      buffers: [
+        {
+          name: 'x',
+          elementType: 'f32',
+          count: constants.size,
+          initializer: { kind: 'iota', start: constants.xStart },
+        },
+        {
+          name: 'y',
+          elementType: 'f32',
+          count: constants.size,
+          initializer: { kind: 'fill', value: constants.yFill },
+        },
+      ],
+      args: [
+        { kind: 'scalar_f32', value: multiplierPlan.argumentMultiplier },
+        { kind: 'buffer', name: 'x' },
+        { kind: 'buffer', name: 'y' },
+        { kind: 'scalar_u32', value: constants.size },
+      ],
+      outputBuffer: 'y',
+      probeMode: 'post_hmr_active_kernel_readback_checksum',
+      probeConfigHash: configHash,
+      probeEvidenceRef: 'evidence:output-oracle:real-rocm-saxpy-runtime-probe',
+    },
+  };
+}
+
+function instrumentSaxpyOutputOracleSource(source, oracle, profileId) {
+  if (!oracle) return null;
+  if (source.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE')) {
+    return source;
+  }
+  const declaration = `
+extern "C" bool synthi_gpu_record_output_buffer_checksum_with_probe(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref);
+`;
+  const includeMatch = /^#include\s+<cstddef>\s*\r?\n/m.exec(source);
+  if (!includeMatch) return null;
+  const withDeclaration = source.replace(includeMatch[0], includeMatch[0] + declaration);
+  const copyMatch = /^([ \t]*)HIP_CHECK\s*\(\s*hipMemcpy\s*\(\s*y\.data\s*\(\s*\)\s*,\s*d_y\s*,\s*size_bytes\s*,\s*hipMemcpyDeviceToHost\s*\)\s*\)\s*;\s*\r?\n/m.exec(withDeclaration);
+  if (!copyMatch) return null;
+  const indent = copyMatch[1] ?? '    ';
+  const oracleCall = `
+${indent}// SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE:${profileId}
+${indent}// Actual post-dispatch device readback proof.
+${indent}(void)synthi_gpu_record_output_buffer_checksum_with_probe(
+${indent}    "${oracle.oracleId}",
+${indent}    y.data(),
+${indent}    size_bytes,
+${indent}    "${oracle.expectedSha256}",
+${indent}    "${oracle.producer}",
+${indent}    "${oracle.outputTargetId}",
+${indent}    nullptr,
+${indent}    nullptr,
+${indent}    "${oracle.probeMode}",
+${indent}    "${oracle.configHash}",
+${indent}    "${oracle.probeEvidenceRef}");
+`;
+  return withDeclaration.replace(copyMatch[0], copyMatch[0] + oracleCall);
+}
+
+const SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES = Object.freeze([
+  {
+    id: 'hip.saxpy.readback-y.v1',
+    aliases: Object.freeze(['saxpy-readback-y', 'saxpy-y-buffer']),
+    label: 'HIP saxpy post-copy y-buffer checksum',
+    derive({ source, sourceFile, deltaAfter }) {
+      const oracle = saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter });
+      if (!oracle) return null;
+      return {
+        ...oracle,
+        profileId: this.id,
+        profileLabel: this.label,
+      };
+    },
+    instrument({ source, oracle }) {
+      return instrumentSaxpyOutputOracleSource(source, oracle, this.id);
+    },
+  },
+]);
+
+function outputOracleProfilesByName() {
+  const profiles = new Map();
+  for (const profile of SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES) {
+    profiles.set(profile.id.toLowerCase(), profile);
+    for (const alias of profile.aliases ?? []) {
+      profiles.set(String(alias).toLowerCase(), profile);
+    }
+  }
+  return profiles;
+}
+
+function outputOracleProfileModeDisabled(mode) {
+  return ['0', 'false', 'off', 'none', 'disabled'].includes(String(mode ?? '').trim().toLowerCase());
+}
+
+function candidateOutputOracleAdaptations(files) {
+  const file = files.find((candidate) => candidate.path === CFG.deltaFile);
+  if (!file) return [];
+  const candidates = [];
+  for (const profile of SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES) {
+    const oracle = profile.derive({
+      source: file.content,
+      sourceFile: CFG.deltaFile,
+      deltaAfter: CFG.deltaAfter,
+      cfg: CFG,
+    });
+    if (!oracle) continue;
+    const instrumented = profile.instrument({
+      source: file.content,
+      sourceFile: CFG.deltaFile,
+      oracle,
+      cfg: CFG,
+    });
+    if (!instrumented || instrumented === file.content) continue;
+    candidates.push({
+      profile,
+      file,
+      oracle,
+      instrumented,
+    });
+  }
+  return candidates;
+}
+
+function selectedOutputOracleAdaptation(files) {
+  const mode = CFG.outputOracleProfile;
+  if (outputOracleProfileModeDisabled(mode)) return null;
+  const candidates = candidateOutputOracleAdaptations(files);
+  if (mode === 'auto') {
+    if (candidates.length <= 1) return candidates[0] ?? null;
+    const names = candidates.map((candidate) => candidate.profile.id).join(', ');
+    throw new Error(`output oracle profile auto-discovery was ambiguous: ${names}`);
+  }
+  const requested = outputOracleProfilesByName().get(mode);
+  if (!requested) {
+    const available = SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES
+      .map((profile) => profile.id)
+      .join(', ');
+    throw new Error(`unknown output oracle profile "${mode}"; available profiles: auto, none, ${available}`);
+  }
+  const selected = candidates.find((candidate) => candidate.profile.id === requested.id);
+  if (!selected) {
+    throw new Error(
+      `output oracle profile "${requested.id}" could not derive a valid oracle from ${CFG.deltaFile}; `
+      + 'the source constants, delta math, or readback instrumentation anchors did not match',
+    );
+  }
+  return selected;
+}
+
+function applyOutputOracleProfileAdaptation(files, updateFileContent) {
+  const adaptation = selectedOutputOracleAdaptation(files);
+  if (!adaptation) {
+    record(
+      'source-derived output oracle profile',
+      outputOracleProfileModeDisabled(CFG.outputOracleProfile) ? 'info' : 'warn',
+      `profile=${CFG.outputOracleProfile} no source-derived runtime oracle instrumentation applied`,
+    );
+    return null;
+  }
+  const { profile, oracle, instrumented } = adaptation;
+  updateFileContent(CFG.deltaFile, instrumented);
+  const contract = {
+    oracleId: oracle.oracleId,
+    requiredOracleId: oracle.oracleId,
+    kind: 'buffer_checksum',
+    expected: oracle.expectedSha256,
+    producer: oracle.producer,
+    outputTargetId: oracle.outputTargetId,
+  };
+  report.output_oracle_contract = contract;
+  report.output_oracle_runtime_profile = oracle.runtimeProfile ?? null;
+  report.output_oracle_adaptations.push({
+    profileId: profile.id,
+    profileLabel: profile.label,
+    kind: 'source_derived_buffer_checksum',
+    file: CFG.deltaFile,
+    oracleId: oracle.oracleId,
+    expectedSha256: oracle.expectedSha256,
+    configHash: oracle.configHash,
+    producer: oracle.producer,
+    outputTargetId: oracle.outputTargetId,
+    probeMode: oracle.probeMode,
+    probeEvidenceRef: oracle.probeEvidenceRef,
+    runtimeProbeMode: oracle.runtimeProfile?.probeMode ?? null,
+    runtimeProbeEvidenceRef: oracle.runtimeProfile?.probeEvidenceRef ?? null,
+  });
+  record(
+    'source-derived output oracle profile',
+    'pass',
+    `profile=${profile.id} oracle=${oracle.oracleId} expected=${oracle.expectedSha256} config=${oracle.configHash}`,
+  );
+  return oracle;
 }
 
 function safePhaseLabel(label, index) {
@@ -4775,6 +5158,66 @@ async function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime output oracle contract filter failed');
   }
+  const saxpySelfCheckSource = `
+#include <cstddef>
+constexpr unsigned int size = 4;
+constexpr unsigned int block_size = 2;
+constexpr float a = 2.f;
+__global__ void saxpy_kernel(const float a, const float* d_x, float* d_y, const unsigned int size)
+{
+    const unsigned int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(global_idx < size)
+    {
+        d_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];
+    }
+}
+int main()
+{
+    constexpr size_t size_bytes = size * sizeof(float);
+    std::vector<float> x(size);
+    std::iota(x.begin(), x.end(), 1.f);
+    std::vector<float> y(size);
+    std::fill(y.begin(), y.end(), 1.f);
+    HIP_CHECK(hipMemcpy(y.data(), d_y, size_bytes, hipMemcpyDeviceToHost));
+}
+`;
+  const saxpyOracle = saxpyExpectedOutputChecksum(saxpySelfCheckSource, {
+    sourceFile: 'self-check/saxpy/main.hip',
+    deltaAfter: CFG.deltaAfter,
+  });
+  const saxpyInstrumented = instrumentSaxpyOutputOracleSource(
+    saxpySelfCheckSource,
+    saxpyOracle,
+    'hip.saxpy.readback-y.v1',
+  );
+  const saxpyInstrumentedCrlf = instrumentSaxpyOutputOracleSource(
+    saxpySelfCheckSource.replace(/\n/g, '\r\n'),
+    saxpyOracle,
+    'hip.saxpy.readback-y.v1',
+  );
+  const saxpyProfileCandidate = SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES[0].derive({
+    source: saxpySelfCheckSource,
+    sourceFile: 'self-check/saxpy/main.hip',
+    deltaAfter: CFG.deltaAfter,
+  });
+  if (
+    !saxpyOracle
+    || !saxpyProfileCandidate
+    || saxpyProfileCandidate.profileId !== 'hip.saxpy.readback-y.v1'
+    || saxpyOracle.runtimeProfile?.kernelName !== 'saxpy_kernel'
+    || saxpyOracle.runtimeProfile?.grid?.[0] !== 2
+    || saxpyOracle.runtimeProfile?.args?.length !== 4
+    || saxpyOracle.argumentMultiplier !== 2
+    || saxpyOracle.effectiveMultiplier !== 2.25
+    || saxpyOracle.runtimeProfile?.args?.[0]?.value !== saxpyOracle.argumentMultiplier
+    || !/^sha256:[0-9a-f]{64}$/i.test(saxpyOracle.expectedSha256)
+    || saxpyOracle.oracleId !== `oracle:real-rocm:saxpy-readback-y:${saxpyOracle.configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`
+    || !saxpyInstrumented?.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE:hip.saxpy.readback-y.v1')
+    || !saxpyInstrumentedCrlf?.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE:hip.saxpy.readback-y.v1')
+    || !saxpyInstrumented.includes(saxpyOracle.expectedSha256)
+  ) {
+    throw new Error('source-derived output oracle profile self-check failed');
+  }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
     visualFrameObserved: true,
@@ -4782,6 +5225,73 @@ async function selfCheckRuntimeDispatchEvidence() {
   const outputMissingProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
     visualFrameObserved: false,
+  });
+  const oldRuntimeArtifactId = `artifact:sha256:${'1'.repeat(64)}`;
+  const activeEpochArtifactId = `artifact:sha256:${'2'.repeat(64)}`;
+  const selectedOnlyArtifactId = `artifact:sha256:${'3'.repeat(64)}`;
+  const epochBoundOutputOracle = {
+    oracleId: 'probe.epoch-bound',
+    requiredOracleId: 'probe.epoch-bound',
+    kind: 'buffer_checksum',
+    producer: 'runtime_probe',
+    expected: 'sha256:abc',
+    actual: 'sha256:abc',
+    passed: true,
+    runtimeSession: 'pid1',
+    outputTargetId: 'target:main',
+    readbackTimestamp: 300,
+    artifactId: activeEpochArtifactId,
+    probeMode: 'post_hmr_active_kernel_readback_checksum',
+    probeConfigHash: `sha256:${'4'.repeat(64)}`,
+    evidenceRefs: ['worker-log:output_oracle:probe.epoch-bound'],
+    probeEvidenceRefs: ['worker-log:output_oracle:probe.epoch-bound'],
+  };
+  const epochBoundOutputProof = classifyGpuHmrOutputProof({
+    dispatchProof: {
+      resultState: 'gpu-hmr-dispatch-safe-proven',
+      runtimeSessionIds: ['pid1'],
+      runtimeArtifactIds: [oldRuntimeArtifactId],
+      selectedArtifactIds: [oldRuntimeArtifactId, activeEpochArtifactId],
+      dispatchTimestamps: [100],
+    },
+    epochProof: {
+      epochGenerationGraph: {
+        latestPublication: {
+          newArtifactId: activeEpochArtifactId,
+          publishTimestampMs: 200,
+        },
+      },
+    },
+    deterministicOutputObserved: true,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: true,
+    outputOracle: epochBoundOutputOracle,
+    evidenceRefs: epochBoundOutputOracle.evidenceRefs,
+  });
+  const selectedOnlyOutputProof = classifyGpuHmrOutputProof({
+    dispatchProof: {
+      resultState: 'gpu-hmr-dispatch-safe-proven',
+      runtimeSessionIds: ['pid1'],
+      runtimeArtifactIds: [oldRuntimeArtifactId],
+      selectedArtifactIds: [oldRuntimeArtifactId, selectedOnlyArtifactId],
+      dispatchTimestamps: [100],
+    },
+    epochProof: {
+      epochGenerationGraph: {
+        latestPublication: {
+          newArtifactId: activeEpochArtifactId,
+          publishTimestampMs: 200,
+        },
+      },
+    },
+    deterministicOutputObserved: true,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: true,
+    outputOracle: {
+      ...epochBoundOutputOracle,
+      artifactId: selectedOnlyArtifactId,
+    },
+    evidenceRefs: epochBoundOutputOracle.evidenceRefs,
   });
   const dispatchUnknownProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
@@ -4795,6 +5305,10 @@ async function selfCheckRuntimeDispatchEvidence() {
   if (
     visualOnlyProof.degradedState !== 'gpu-hmr-visual-only'
     || outputMissingProof.degradedState !== 'gpu-hmr-output-unobserved'
+    || epochBoundOutputProof.resultState !== 'gpu-hmr-output-oracle-proven'
+    || !epochBoundOutputProof.outputOracle?.artifactMatchesActiveEpoch
+    || selectedOnlyOutputProof.degradedReason !== 'output_oracle_artifact_mismatch'
+    || selectedOnlyOutputProof.outputOracle?.artifactMatchesRuntime
     || dispatchUnknownProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
   ) {
     throw new Error('runtime dispatch/output proof classifier failed');
@@ -5226,7 +5740,7 @@ async function collectRuntimeEvidence() {
   const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
   const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence, {
-    outputOracleContract: CFG.outputOracleContract,
+    outputOracleContract: report.output_oracle_contract ?? CFG.outputOracleContract,
     runtimeSessionIds: runtimeSession.unique_ids,
   });
   const hostRestartCount = countMatches(workerEvidence, /Restarting runner/i);
@@ -5522,6 +6036,8 @@ async function collectRuntimeEvidence() {
   }
   const classifiedOutputProof = classifyGpuHmrOutputProof({
     dispatchProof: report.dispatch_proof,
+    epochProof: report.epoch_swap_proof,
+    selectedArtifactIds,
     deterministicOutputObserved: runtimeOutputOracle.deterministic_output_observed,
     deterministicOracleProvided: runtimeOutputOracle.deterministic_oracle_provided,
     deterministicOraclePassed: runtimeOutputOracle.deterministic_oracle_passed,
@@ -5946,6 +6462,8 @@ async function run() {
     }
     return fileContentByPath.get(normalized);
   };
+  const outputOracleProfile = applyOutputOracleProfileAdaptation(files, updateFileContent);
+  await syncWorkerRuntimeOutputOracleProfile(outputOracleProfile?.runtimeProfile ?? null);
   const extraDeltas = parseExtraDeltas();
   report.extra_deltas = extraDeltas.map((delta) => ({
     label: delta.label,
