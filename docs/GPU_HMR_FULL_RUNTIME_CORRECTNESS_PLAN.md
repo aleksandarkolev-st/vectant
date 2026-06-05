@@ -1924,9 +1924,21 @@ The validation workflow exposes strict and warm modes through `mcp/synthi-mcp/pa
   - Enables `SYNTHI_REAL_ROCM_CLEAN_BUILD=0`.
   - Reuses the worker repo and build directory only when the worker repo commit matches the host validation commit and the worker tree is clean.
   - Falls back to the original cold worker copy when reuse is unsafe.
+- `npm --prefix mcp/synthi-mcp run proof:runtime-profile`
+  - Runs the generic runtime-profile dispatcher.
+  - Accepts `SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH` or `SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON`.
+  - Profiles use `synthi.gpu.hmr.runtime_profile.v1` and describe adapter family, target, source delta, required kernels, reload symbol, and visual/oracle thresholds as data.
+  - Unsupported adapter families fail closed with an explicit unsupported-adapter error. They must be added as adapter implementations, not project-name branches.
+- `npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check`
+  - Validates shipped runtime profiles and verifies unknown adapter families are rejected.
+- `npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt`
+  - Runs the generic runtime-profile dispatcher against the HIPRT `MegaKernel` profile in same-process mode.
+- `npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays`
+  - Runs the generic runtime-profile dispatcher against the smaller HIPRT `CameraRays` profile in same-process mode.
 - `npm --prefix mcp/synthi-mcp run proof:hiprt:warm`
   - Runs the profile-driven HIPRT visual proof in fresh-process mode.
   - Supports `SYNTHI_HIPRT_WARM_PROFILE_PATH`, `SYNTHI_HIPRT_WARM_PROFILE_JSON`, and `SYNTHI_HIPRT_WARM_REQUIRED_KERNELS`.
+  - Kept as a compatibility wrapper; new profiles should prefer `proof:runtime-profile`.
 - `npm --prefix mcp/synthi-mcp run proof:hiprt:warm:camera-rays`
   - Runs the smaller non-`MegaKernel` `CameraRays` profile in fresh-process mode.
 - `npm --prefix mcp/synthi-mcp run proof:hiprt:same-process`

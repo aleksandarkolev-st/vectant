@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
+import {
+  DEFAULT_HIPRT_RUNTIME_PROFILE,
+  loadRuntimeProofProfileFromEnv,
+  runtimeProfileToLegacyHiprtWarmProfile,
+} from './lib/gpu-hmr-runtime-profile.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -21,25 +25,10 @@ const DEFAULT_AFTER =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator) * 0.0f;';
 
 function loadProfile() {
-  const inline = process.env.SYNTHI_HIPRT_WARM_PROFILE_JSON;
-  const profilePath = process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH;
-  if (inline && inline.trim()) {
-    return JSON.parse(inline);
-  }
-  if (profilePath && profilePath.trim()) {
-    return JSON.parse(readFileSync(path.resolve(REPO_ROOT, profilePath), 'utf8'));
-  }
+  const normalized = loadRuntimeProofProfileFromEnv(process.env, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
   return {
-    id: 'hiprt-megakernel-direct-light-zero',
-    targetName: 'HIPRTPathTracer',
-    sourceRel: 'src/Device/kernels/Megakernel.h',
-    before: DEFAULT_BEFORE,
-    after: DEFAULT_AFTER,
-    requiredKernels: ['CameraRays', 'MegaKernel'],
-    reloadKernelName: 'Megakernel (1 SPP)',
-    reloadKernelSymbol: 'MegaKernel',
-    claim:
-      'A HIPRT MegaKernel direct-lighting math delta materially changes the ray-traced framebuffer.',
+    ...runtimeProfileToLegacyHiprtWarmProfile(normalized),
+    runtimeProfile: normalized,
   };
 }
 
@@ -49,35 +38,67 @@ const CFG = {
   slug: process.env.SLUG
     ?? `hiprt-warm-light-math-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
-  workerRepoPath: process.env.SYNTHI_HIPRT_WARM_WORKER_REPO
+  workerRepoPath: process.env.SYNTHI_GPU_HMR_RUNTIME_WORKER_REPO
+    ?? process.env.SYNTHI_HIPRT_WARM_WORKER_REPO
+    ?? PROFILE.workerRepoPath
     ?? process.env.SYNTHI_REAL_ROCM_WORKER_PATH
     ?? '/tmp/synthi-real-rocm/HIPRT-Path-Tracer',
-  mode: (process.env.SYNTHI_HIPRT_WARM_MODE ?? PROFILE.mode ?? 'fresh-process').toLowerCase(),
-  targetName: process.env.SYNTHI_HIPRT_WARM_TARGET ?? PROFILE.targetName ?? 'HIPRTPathTracer',
-  sourceRel: process.env.SYNTHI_HIPRT_WARM_SOURCE_REL ?? PROFILE.sourceRel ?? 'src/Device/kernels/Megakernel.h',
-  before: process.env.SYNTHI_HIPRT_WARM_DELTA_BEFORE ?? PROFILE.before ?? DEFAULT_BEFORE,
-  after: process.env.SYNTHI_HIPRT_WARM_DELTA_AFTER ?? PROFILE.after ?? DEFAULT_AFTER,
+  mode: (
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MODE
+    ?? process.env.SYNTHI_HIPRT_WARM_MODE
+    ?? PROFILE.mode
+    ?? 'fresh-process'
+  ).toLowerCase(),
+  targetName:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_TARGET
+    ?? process.env.SYNTHI_HIPRT_WARM_TARGET
+    ?? PROFILE.targetName
+    ?? 'HIPRTPathTracer',
+  sourceRel:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_SOURCE_REL
+    ?? process.env.SYNTHI_HIPRT_WARM_SOURCE_REL
+    ?? PROFILE.sourceRel
+    ?? 'src/Device/kernels/Megakernel.h',
+  before:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DELTA_BEFORE
+    ?? process.env.SYNTHI_HIPRT_WARM_DELTA_BEFORE
+    ?? PROFILE.before
+    ?? DEFAULT_BEFORE,
+  after:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DELTA_AFTER
+    ?? process.env.SYNTHI_HIPRT_WARM_DELTA_AFTER
+    ?? PROFILE.after
+    ?? DEFAULT_AFTER,
   requiredKernels: parseStringListEnv(
-    process.env.SYNTHI_HIPRT_WARM_REQUIRED_KERNELS,
+    process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_KERNELS
+      ?? process.env.SYNTHI_HIPRT_WARM_REQUIRED_KERNELS,
     PROFILE.requiredKernels ?? ['CameraRays', 'MegaKernel'],
   ),
   reloadKernelName:
-    process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_NAME
+    process.env.SYNTHI_GPU_HMR_RUNTIME_RELOAD_KERNEL_NAME
+    ?? process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_NAME
     ?? PROFILE.reloadKernelName
     ?? 'Megakernel (1 SPP)',
   reloadKernelSymbol:
-    process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_SYMBOL
+    process.env.SYNTHI_GPU_HMR_RUNTIME_RELOAD_KERNEL_SYMBOL
+    ?? process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_SYMBOL
     ?? PROFILE.reloadKernelSymbol
     ?? 'MegaKernel',
-  profileId: process.env.SYNTHI_HIPRT_WARM_PROFILE_ID ?? PROFILE.id ?? 'custom',
-  claim: process.env.SYNTHI_HIPRT_WARM_CLAIM
+  profileId:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_ID
+    ?? process.env.SYNTHI_HIPRT_WARM_PROFILE_ID
+    ?? PROFILE.id
+    ?? 'custom',
+  claim:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_CLAIM
+    ?? process.env.SYNTHI_HIPRT_WARM_CLAIM
     ?? PROFILE.claim
     ?? 'A HIPRT source delta materially changes the ray-traced framebuffer.',
-  width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', 640),
-  height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', 360),
-  runTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 0),
-  buildTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_BUILD_TIMEOUT_MS', 600000),
-  reloadTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RELOAD_TIMEOUT_MS', 0),
+  width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', PROFILE.width ?? 640, 'SYNTHI_GPU_HMR_RUNTIME_WIDTH'),
+  height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', PROFILE.height ?? 360, 'SYNTHI_GPU_HMR_RUNTIME_HEIGHT'),
+  runTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 0, 'SYNTHI_GPU_HMR_RUNTIME_RUN_TIMEOUT_MS'),
+  buildTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_BUILD_TIMEOUT_MS', 600000, 'SYNTHI_GPU_HMR_RUNTIME_BUILD_TIMEOUT_MS'),
+  reloadTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RELOAD_TIMEOUT_MS', 0, 'SYNTHI_GPU_HMR_RUNTIME_RELOAD_TIMEOUT_MS'),
   cmakeConfigName: process.env.SYNTHI_HIPRT_WARM_CMAKE_CONFIG
     ?? process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG
     ?? 'Release',
@@ -91,37 +112,57 @@ const CFG = {
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
   outputDir: path.resolve(
     REPO_ROOT,
-    process.env.SYNTHI_HIPRT_WARM_OUTPUT_DIR
+    process.env.SYNTHI_GPU_HMR_RUNTIME_OUTPUT_DIR
+      ?? process.env.SYNTHI_HIPRT_WARM_OUTPUT_DIR
       ?? 'mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof',
   ),
-  strictProofJson: process.env.SYNTHI_HIPRT_WARM_STRICT_PROOF_JSON ?? '',
-  reuseBaseline: process.env.SYNTHI_HIPRT_WARM_REUSE_BASELINE !== '0',
-  minChangedPixelRatio: Number(process.env.SYNTHI_HIPRT_WARM_MIN_CHANGED_RATIO ?? 0.05),
-  minMeanAbsDelta8bit: Number(process.env.SYNTHI_HIPRT_WARM_MIN_MEAN_ABS_DELTA_8BIT ?? 1.0),
-  requireStrictProvenance: process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE !== '0',
-  allowRejected: process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED === '1',
+  strictProofJson:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_STRICT_PROOF_JSON
+    ?? process.env.SYNTHI_HIPRT_WARM_STRICT_PROOF_JSON
+    ?? '',
+  reuseBaseline: (process.env.SYNTHI_GPU_HMR_RUNTIME_REUSE_BASELINE ?? process.env.SYNTHI_HIPRT_WARM_REUSE_BASELINE) !== '0',
+  minChangedPixelRatio: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_CHANGED_RATIO
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_CHANGED_RATIO
+      ?? PROFILE.minChangedPixelRatio
+      ?? 0.05,
+  ),
+  minMeanAbsDelta8bit: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_MEAN_ABS_DELTA_8BIT
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_MEAN_ABS_DELTA_8BIT
+      ?? PROFILE.minMeanAbsDelta8bit
+      ?? 1.0,
+  ),
+  requireStrictProvenance:
+    (process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRE_STRICT_PROVENANCE ?? process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE) !== '0',
+  allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
+  runtimeProfile: PROFILE.runtimeProfile,
 };
 
 if (!['fresh-process', 'same-process'].includes(CFG.mode)) {
   throw new Error(`SYNTHI_HIPRT_WARM_MODE must be fresh-process or same-process, got ${CFG.mode}`);
 }
 
-function positiveIntegerFromEnv(name, fallback) {
-  const raw = process.env[name];
+function positiveIntegerFromEnv(name, fallback, aliasName = null) {
+  const raw = aliasName && process.env[aliasName] !== undefined
+    ? process.env[aliasName]
+    : process.env[name];
   if (raw === undefined || String(raw).trim() === '') return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer`);
+    throw new Error(`${aliasName ?? name} must be a positive integer`);
   }
   return value;
 }
 
-function nonNegativeIntegerFromEnv(name, fallback) {
-  const raw = process.env[name];
+function nonNegativeIntegerFromEnv(name, fallback, aliasName = null) {
+  const raw = aliasName && process.env[aliasName] !== undefined
+    ? process.env[aliasName]
+    : process.env[name];
   if (raw === undefined || String(raw).trim() === '') return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative integer`);
+    throw new Error(`${aliasName ?? name} must be a non-negative integer`);
   }
   return value;
 }
@@ -1388,6 +1429,7 @@ async function main() {
       reloadKernelName: CFG.reloadKernelName,
       reloadKernelSymbol: CFG.reloadKernelSymbol,
     },
+    runtimeProfile: CFG.runtimeProfile,
     claim: CFG.claim,
     repo: {
       workerContainer: CFG.workerContainer,

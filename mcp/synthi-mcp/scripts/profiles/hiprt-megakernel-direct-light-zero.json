@@ -1,11 +1,39 @@
 {
+  "schemaVersion": "synthi.gpu.hmr.runtime_profile.v1",
   "id": "hiprt-megakernel-direct-light-zero",
-  "targetName": "HIPRTPathTracer",
-  "sourceRel": "src/Device/kernels/Megakernel.h",
-  "before": "ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator);",
-  "after": "ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator) * 0.0f;",
-  "requiredKernels": ["CameraRays", "MegaKernel"],
-  "reloadKernelName": "Megakernel (1 SPP)",
-  "reloadKernelSymbol": "MegaKernel",
-  "claim": "A HIPRT MegaKernel direct-lighting math delta materially changes the ray-traced framebuffer."
+  "adapter": {
+    "family": "hiprt-path-tracer",
+    "proofRunner": "hiprt-warm-visual",
+    "capabilities": [
+      "same-process-reload",
+      "runtime-framebuffer-readback",
+      "native-launch-observation"
+    ]
+  },
+  "runtime": {
+    "targetName": "HIPRTPathTracer",
+    "requiredKernels": [
+      "CameraRays",
+      "MegaKernel"
+    ],
+    "reload": {
+      "kernelName": "Megakernel (1 SPP)",
+      "kernelSymbol": "MegaKernel"
+    }
+  },
+  "source": {
+    "file": "src/Device/kernels/Megakernel.h",
+    "before": "ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator);",
+    "after": "ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator) * 0.0f;"
+  },
+  "visualProof": {
+    "claim": "A HIPRT MegaKernel direct-lighting math delta materially changes the ray-traced framebuffer.",
+    "width": 640,
+    "height": 360,
+    "minChangedPixelRatio": 0.05,
+    "minMeanAbsDelta8bit": 1.0
+  },
+  "proof": {
+    "requireStrictProvenance": true
+  }
 }
