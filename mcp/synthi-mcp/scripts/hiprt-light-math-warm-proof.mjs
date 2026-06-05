@@ -94,6 +94,18 @@ const CFG = {
     ?? process.env.SYNTHI_HIPRT_WARM_CLAIM
     ?? PROFILE.claim
     ?? 'A HIPRT source delta materially changes the ray-traced framebuffer.',
+  runtimeArgs: parseJsonStringListEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_ARGS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_RUN_ARGS_JSON,
+    PROFILE.runtimeArgs ?? [],
+    'runtime arguments',
+  ),
+  requiredFiles: parseJsonStringListEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_FILES_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_REQUIRED_FILES_JSON,
+    PROFILE.requiredFiles ?? [],
+    'required runtime files',
+  ),
   width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', PROFILE.width ?? 640, 'SYNTHI_GPU_HMR_RUNTIME_WIDTH'),
   height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', PROFILE.height ?? 360, 'SYNTHI_GPU_HMR_RUNTIME_HEIGHT'),
   runTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 0, 'SYNTHI_GPU_HMR_RUNTIME_RUN_TIMEOUT_MS'),
@@ -170,6 +182,17 @@ function nonNegativeIntegerFromEnv(name, fallback, aliasName = null) {
 function parseStringListEnv(raw, fallback) {
   if (raw === undefined || String(raw).trim() === '') return Array.from(fallback);
   return String(raw).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function parseJsonStringListEnv(raw, fallback, label) {
+  const source = raw === undefined || String(raw).trim() === '' ? fallback : JSON.parse(raw);
+  if (!Array.isArray(source)) throw new Error(`${label} must be a JSON string array`);
+  return source.map((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new Error(`${label}[${index}] must be a non-empty string`);
+    }
+    return item.trim();
+  });
 }
 
 function shQuote(value) {
@@ -259,14 +282,22 @@ function countOccurrences(haystack, needle) {
   }
 }
 
+function workerRuntimeRequiredFilePath(file) {
+  const normalized = String(file).replace(/\\/g, '/');
+  if (normalized.startsWith('/')) return normalized;
+  return `${CFG.workerRepoPath}/${normalized}`;
+}
+
 async function preflight() {
+  const requiredFileChecks = CFG.requiredFiles
+    .map((file) => `test -f ${shQuote(workerRuntimeRequiredFilePath(file))}`)
+    .join('\n');
   const script = `
 set -e
 test -d ${shQuote(CFG.workerRepoPath)}
 test -d ${shQuote(`${CFG.workerRepoPath}/.git`)}
 test -f ${shQuote(CFG.nativeLaunchObserverPath)}
-test -f ${shQuote(`${CFG.workerRepoPath}/data/GLTFs/cornell_pbr.gltf`)}
-test -f ${shQuote(`${CFG.workerRepoPath}/data/Skyspheres/evening_road_01_puresky_2k.hdr`)}
+${requiredFileChecks}
 repo_commit=$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD)
 if [ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ]; then
   build_executable=present
@@ -566,8 +597,7 @@ async function runHiprtVariant(variant) {
   const localLogPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${variant}-run.log`);
   const runCommand = [
     `./${shQuote(CFG.targetName)}`,
-    '../data/GLTFs/cornell_pbr.gltf',
-    '--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    ...CFG.runtimeArgs.map(shQuote),
     `--width=${CFG.width}`,
     `--height=${CFG.height}`,
   ].join(' ');
@@ -1028,8 +1058,7 @@ async function runHiprtSameProcess({ changedSource }) {
   const localLogPath = path.join(CFG.outputDir, `${slug}-same-process-run.log`);
   const runCommand = [
     `./${shQuote(CFG.targetName)}`,
-    '../data/GLTFs/cornell_pbr.gltf',
-    '--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    ...CFG.runtimeArgs.map(shQuote),
     `--width=${CFG.width}`,
     `--height=${CFG.height}`,
   ].join(' ');

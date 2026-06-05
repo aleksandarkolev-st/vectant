@@ -12,6 +12,14 @@
   },
   "runtime": {
     "targetName": "HIPRTPathTracer",
+    "args": [
+      "../data/GLTFs/cornell_pbr.gltf",
+      "--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr"
+    ],
+    "requiredFiles": [
+      "data/GLTFs/cornell_pbr.gltf",
+      "data/Skyspheres/evening_road_01_puresky_2k.hdr"
+    ],
     "requiredKernels": [
       "CameraRays",
       "MegaKernel"

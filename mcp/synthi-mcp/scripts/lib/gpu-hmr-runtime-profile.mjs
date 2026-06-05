@@ -12,6 +12,14 @@ export const DEFAULT_HIPRT_RUNTIME_PROFILE = {
   },
   runtime: {
     targetName: 'HIPRTPathTracer',
+    args: [
+      '../data/GLTFs/cornell_pbr.gltf',
+      '--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    ],
+    requiredFiles: [
+      'data/GLTFs/cornell_pbr.gltf',
+      'data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    ],
     requiredKernels: ['CameraRays', 'MegaKernel'],
     reload: {
       kernelName: 'Megakernel (1 SPP)',
@@ -144,6 +152,10 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       args: Array.isArray(runtime.args)
         ? runtime.args.map((item, index) => nonEmptyString(item, `runtime.args[${index}]`))
         : [],
+      requiredFiles: Array.isArray(runtime.requiredFiles)
+        ? runtime.requiredFiles.map((item, index) =>
+          nonEmptyString(item, `runtime.requiredFiles[${index}]`).replace(/\\/g, '/'))
+        : [],
     },
     source: {
       file: sourceFile,
@@ -190,6 +202,8 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     reloadKernelName: normalized.runtime.reload.kernelName,
     reloadKernelSymbol: normalized.runtime.reload.kernelSymbol,
     mode: normalized.runtime.mode ?? undefined,
+    runtimeArgs: normalized.runtime.args,
+    requiredFiles: normalized.runtime.requiredFiles,
     claim: normalized.visualProof.claim,
     width: normalized.visualProof.width,
     height: normalized.visualProof.height,
@@ -219,6 +233,10 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
   };
   if (normalized.runtime.mode) env.SYNTHI_HIPRT_WARM_MODE = normalized.runtime.mode;
   if (normalized.runtime.workerRepoPath) env.SYNTHI_HIPRT_WARM_WORKER_REPO = normalized.runtime.workerRepoPath;
+  if (normalized.runtime.args.length > 0) env.SYNTHI_HIPRT_WARM_RUN_ARGS_JSON = JSON.stringify(normalized.runtime.args);
+  if (normalized.runtime.requiredFiles.length > 0) {
+    env.SYNTHI_HIPRT_WARM_REQUIRED_FILES_JSON = JSON.stringify(normalized.runtime.requiredFiles);
+  }
   return env;
 }
 
