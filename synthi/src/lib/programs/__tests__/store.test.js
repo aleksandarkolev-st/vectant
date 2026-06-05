@@ -5,8 +5,8 @@ const h = vi.hoisted(() => ({
     permissionGrant: { create: vi.fn(), findMany: vi.fn() },
     programSession: { create: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     programRuntimeEvent: { create: vi.fn(), findMany: vi.fn() },
-    marketplaceProgram: { upsert: vi.fn() },
-    programVersion: { upsert: vi.fn() },
+    marketplaceProgram: { upsert: vi.fn(), findMany: vi.fn() },
+    programVersion: { upsert: vi.fn(), findUnique: vi.fn() },
     programInstall: { create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
   },
 }));
@@ -19,7 +19,9 @@ import {
   createPermissionGrant,
   createProgramSession,
   getInstall,
+  getProgramVersion,
   listInstalls,
+  listLocalPrograms,
   listPermissionGrants,
   listProgramRuntimeEvents,
   listProgramSessions,
@@ -297,6 +299,31 @@ describe('getInstall / listInstalls', () => {
 
     expect(h.prisma.programInstall.findUnique).toHaveBeenCalledWith({ where: { id: 'inst1' }, include: { program: true } });
     expect(row.id).toBe('inst1');
+  });
+
+  it('lists workspace-local programs by namespaced packageId prefix', async () => {
+    h.prisma.marketplaceProgram.findMany.mockResolvedValue([
+      { id: 'prog1', packageId: 'local:team:web', publisher: 'local', verified: false, latestVersion: '1.0.0' },
+    ]);
+
+    const rows = await listLocalPrograms('team');
+
+    expect(h.prisma.marketplaceProgram.findMany).toHaveBeenCalledWith({
+      where: { packageId: { startsWith: 'local:team:' } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  it('fetches a program version by compound key', async () => {
+    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'ver1', programId: 'prog1', version: '1.0.0', manifestJson: '{"launch":"npm run dev"}' });
+
+    const row = await getProgramVersion('prog1', '1.0.0');
+
+    expect(h.prisma.programVersion.findUnique).toHaveBeenCalledWith({
+      where: { programId_version: { programId: 'prog1', version: '1.0.0' } },
+    });
+    expect(JSON.parse(row.manifestJson).launch).toBe('npm run dev');
   });
 
   it('lists workspace installs newest-first with the program joined', async () => {

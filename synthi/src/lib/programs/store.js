@@ -148,6 +148,21 @@ export async function getInstall(installId) {
   return prisma.programInstall.findUnique({ where: { id: installId }, include: { program: true } });
 }
 
+/** List the workspace-local marketplace programs (publisher 'local'). */
+export async function listLocalPrograms(workspaceSlug) {
+  return prisma.marketplaceProgram.findMany({
+    where: { packageId: { startsWith: `local:${workspaceSlug}:` } },
+    orderBy: { updatedAt: 'desc' },
+  });
+}
+
+/** Fetch a stored program version (its manifestJson is the installed recipe). */
+export async function getProgramVersion(programId, version) {
+  return prisma.programVersion.findUnique({
+    where: { programId_version: { programId, version } },
+  });
+}
+
 export async function listInstalls(workspaceSlug) {
   return prisma.programInstall.findMany({
     where: { workspaceSlug },
