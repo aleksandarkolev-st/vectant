@@ -89,6 +89,43 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.generatedOutputs[1]).toEqual(expect.objectContaining({ kind: "sourceAffordancePatch", status: "available" }));
   });
 
+  it("coalesces repeated fills on the same target before the next action", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    for (const value of ["t", "to", "tok", "token-final"]) {
+      browserBroker.recordHumanAction({
+        tab_id: "app",
+        url: "https://app.example.com/settings",
+        origin: "https://app.example.com",
+        action: "fill",
+        field_name: "Test token",
+        value,
+        element: { label: "Test token", role: "textbox", css: "#token" },
+      });
+    }
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Save workspace state", test_id: "workspace-save" },
+    });
+
+    const workflow = browserBroker.compiledWorkflow();
+
+    expect(browserBroker.traceSnapshot()).toHaveLength(5);
+    expect(workflow.contract.steps).toHaveLength(2);
+    expect(workflow.contract.steps.map((step) => step.label)).toEqual([
+      "Fill Test token",
+      "Click Save workspace state",
+    ]);
+    expect(workflow.contract.parameters).toEqual([
+      expect.objectContaining({ name: "test_token", valueShape: "shortText" }),
+    ]);
+  });
+
   it("marks redacted inputs as secret parameters without leaking values", () => {
     const workflow = compileWorkflowContract([
       {

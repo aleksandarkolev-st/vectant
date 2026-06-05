@@ -229,7 +229,9 @@ const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
 export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWorkflowV7 {
   const lane0 = reduceLane0Windows(events);
   const ordered = lane0.events.sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0));
-  const actionEvents = ordered.filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation");
+  const actionEvents = coalesceActionEvents(
+    ordered.filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
+  );
   const appOrigin = firstHttpOrigin(actionEvents) ?? firstHttpOrigin(ordered) ?? "unknown";
   const steps = actionEvents.map((event, index) => stepFromEvent(event, index + 1));
   const parameters = parametersFromSteps(steps, actionEvents);
@@ -303,6 +305,50 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     contract,
     card: cardForContract(contract),
   };
+}
+
+function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] {
+  const result: BrowserTraceEvent[] = [];
+  for (const event of events) {
+    const previous = result[result.length - 1];
+    if (previous && shouldReplaceWithLatestFill(previous, event)) {
+      result[result.length - 1] = event;
+      continue;
+    }
+    result.push(event);
+  }
+  return result;
+}
+
+function shouldReplaceWithLatestFill(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "fill" || next.action !== "fill") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const previousTarget = fillTargetKey(previous);
+  const nextTarget = fillTargetKey(next);
+  return previousTarget.length > 0 && previousTarget === nextTarget;
+}
+
+function fillTargetKey(event: BrowserTraceEvent): string {
+  const element = elementForEvent(event);
+  return [
+    event.selector,
+    event.locator_candidates?.[0]?.locator,
+    stringDetail(event, "field_name"),
+    element?.source_id,
+    element?.test_id,
+    element?.id,
+    element?.label,
+    element?.placeholder,
+    element?.name,
+    element?.css,
+    element?.xpath,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0).join("|");
+}
+
+function stringDetail(event: BrowserTraceEvent, key: string): string | undefined {
+  const value = event.detail?.[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function counterfactualPlanFor(
