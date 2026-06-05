@@ -2,9 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe } from 'lucide-react';
+import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe, Package, Download, ShieldCheck, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { fetchProgramSessions, launchProgramSession, restartProgramSession, stopProgramSession } from './programsClient';
+import {
+  fetchProgramSessions,
+  launchProgramSession,
+  restartProgramSession,
+  stopProgramSession,
+  fetchInstalledPrograms,
+  installWorkspaceProgram,
+  launchInstalledProgram,
+} from './programsClient';
 import {
   buildProgramSessionSections,
   canRestartProgramSession,
@@ -137,27 +145,120 @@ function SessionCard({ session, acting, onOpen, onStop, onRestart }) {
   );
 }
 
+function ConsentPrompt({ requested = [], busy, onApprove, onCancel }) {
+  return (
+    <div
+      className="rounded-lg border px-3 py-3 flex flex-col gap-2"
+      data-testid="consent-prompt"
+      style={{ borderColor: 'color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle))', background: 'var(--bg-surface)' }}
+    >
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <ShieldCheck className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} /> Permission consent required
+      </div>
+      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        This program requests the following scopes:
+      </div>
+      <ul className="flex flex-wrap gap-1.5">
+        {requested.map((scope) => (
+          <li
+            key={scope}
+            className="text-[11px] px-1.5 py-0.5 rounded border"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+          >
+            {scope}
+          </li>
+        ))}
+      </ul>
+      <div className="flex items-center justify-end gap-2 mt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+        >
+          <X className="w-3 h-3" /> Cancel
+        </button>
+        <button
+          type="button"
+          data-testid="approve-consent"
+          onClick={onApprove}
+          disabled={busy}
+          className="text-[11px] px-2 py-1 rounded inline-flex items-center gap-1 font-medium disabled:opacity-50"
+          style={{ background: 'var(--brand-gradient-horizontal)', color: '#fff' }}
+        >
+          <ShieldCheck className="w-3 h-3" /> {busy ? 'Approving…' : 'Approve & install'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InstallCard({ install, acting, canManage, onLaunch }) {
+  return (
+    <div
+      className="rounded-lg border px-3 py-2 flex items-center justify-between gap-3"
+      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+    >
+      <div className="min-w-0 flex items-center gap-2">
+        <Package className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+        <div className="min-w-0">
+          <div className="text-sm font-medium truncate">{install.packageId || 'program'}</div>
+          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            v{install.version} · {install.status}
+          </div>
+        </div>
+      </div>
+      {canManage ? (
+        <button
+          type="button"
+          data-testid={`launch-install-${install.id}`}
+          onClick={() => onLaunch(install)}
+          disabled={acting}
+          className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1 disabled:opacity-50"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+        >
+          <Play className="w-3 h-3" /> Launch
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ProgramsPanel() {
   const dispatch = useDispatch();
   const workspaceSlug = useSelector((state) => state.workspace?.slug || null);
+  const workspaceRole = useSelector((state) => state.workspace?.role || null);
   const nodes = useSelector(selectNodes);
   const tabs = useSelector(selectTabs);
   const [command, setCommand] = useState('npm run dev');
   const [sessions, setSessions] = useState([]);
+  const [installs, setInstalls] = useState([]);
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [consent, setConsent] = useState(null);
   const [actingSessionId, setActingSessionId] = useState(null);
+
+  // Members get a read-only view; owner/admin (or unknown role — the API still
+  // enforces) can launch / install. 'member' is the only role denied here.
+  const canManage = workspaceRole !== 'member';
 
   const load = useCallback(async () => {
     if (!workspaceSlug) {
       setSessions([]);
+      setInstalls([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
     try {
-      setSessions(await fetchProgramSessions(workspaceSlug));
+      const [nextSessions, nextInstalls] = await Promise.all([
+        fetchProgramSessions(workspaceSlug),
+        fetchInstalledPrograms(workspaceSlug).catch(() => []),
+      ]);
+      setSessions(nextSessions);
+      setInstalls(nextInstalls);
     } catch (error) {
       toast.error(error.message || 'Failed to load programs');
     } finally {
@@ -257,6 +358,46 @@ export default function ProgramsPanel() {
     }
   }, [load, workspaceSlug]);
 
+  const handleInstall = useCallback(async (grantScopes) => {
+    if (!workspaceSlug) return;
+
+    setInstalling(true);
+    try {
+      await installWorkspaceProgram(workspaceSlug, grantScopes ? { grantScopes } : {});
+      toast.success('Program installed');
+      setConsent(null);
+      await load();
+    } catch (error) {
+      if (error?.status === 409) {
+        setConsent({ requested: error.body?.requested || [] });
+      } else if (error?.status === 404) {
+        toast.error('No synthi.program.json or devcontainer.json found in this workspace.');
+      } else {
+        toast.error(error.message || 'Failed to install program');
+      }
+    } finally {
+      setInstalling(false);
+    }
+  }, [load, workspaceSlug]);
+
+  const handleLaunchInstall = useCallback(async (install) => {
+    if (!workspaceSlug || !install?.id) return;
+
+    setActingSessionId(install.id);
+    try {
+      const result = await launchInstalledProgram(workspaceSlug, install.id);
+      toast.success('Program launched');
+      if (result?.session) {
+        openProgramSession(result.session);
+      }
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to launch program');
+    } finally {
+      setActingSessionId(null);
+    }
+  }, [load, openProgramSession, workspaceSlug]);
+
   return (
     <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)' }}>
       <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -275,6 +416,7 @@ export default function ProgramsPanel() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-4">
+        {canManage ? (
         <form
           onSubmit={handleLaunch}
           className="rounded-lg border p-3 flex flex-col gap-3"
@@ -321,6 +463,64 @@ export default function ProgramsPanel() {
             </button>
           </div>
         </form>
+        ) : null}
+
+        {canManage && consent ? (
+          <ConsentPrompt
+            requested={consent.requested}
+            busy={installing}
+            onApprove={() => handleInstall(consent.requested)}
+            onCancel={() => setConsent(null)}
+          />
+        ) : null}
+
+        {canManage ? (
+          <div
+            className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Install from manifest</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                Detects synthi.program.json or devcontainer.json in this workspace.
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="install-from-manifest"
+              onClick={() => handleInstall()}
+              disabled={!workspaceSlug || installing}
+              className="h-9 px-3 rounded-md inline-flex items-center gap-2 text-sm font-medium border disabled:opacity-50"
+              style={{ borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+            >
+              <Download className="w-4 h-4" /> {installing ? 'Installing…' : 'Install'}
+            </button>
+          </div>
+        ) : null}
+
+        <section className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+              Installed
+            </h3>
+            <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{installs.length}</span>
+          </div>
+          {installs.length === 0 ? (
+            <div className="text-xs rounded-lg border px-3 py-4" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+              No installed programs yet.
+            </div>
+          ) : (
+            installs.map((install) => (
+              <InstallCard
+                key={install.id}
+                install={install}
+                acting={actingSessionId === install.id}
+                canManage={canManage}
+                onLaunch={handleLaunchInstall}
+              />
+            ))
+          )}
+        </section>
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between">

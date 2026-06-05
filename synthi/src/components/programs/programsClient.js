@@ -52,3 +52,33 @@ export async function restartProgramSession(workspaceSlug, sessionId) {
     method: 'POST',
   });
 }
+
+// ── Phase 2: persisted installs (manifest-driven) ──
+
+function programsBase(workspaceSlug) {
+  return `${BASE}/${encodeURIComponent(workspaceSlug)}/programs`;
+}
+
+export async function fetchInstalledPrograms(workspaceSlug) {
+  if (!workspaceSlug) return [];
+  const body = await request(`${programsBase(workspaceSlug)}/installed`);
+  return body.installs || [];
+}
+
+/**
+ * Install the workspace recipe (synthi.program.json / devcontainer.json).
+ * Throws with `error.status === 409` and `error.body.requested` (scopes) when
+ * consent is required; pass `{ grantScopes }` to approve and re-submit.
+ */
+export async function installWorkspaceProgram(workspaceSlug, payload) {
+  return request(`${programsBase(workspaceSlug)}/install`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function launchInstalledProgram(workspaceSlug, installId) {
+  return request(`${programsBase(workspaceSlug)}/${encodeURIComponent(installId)}/launch`, {
+    method: 'POST',
+  });
+}
