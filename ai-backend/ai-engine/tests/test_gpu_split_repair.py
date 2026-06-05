@@ -257,6 +257,68 @@ def test_repair_replaces_project_ui_toolkit_render_with_self_contained_opengl():
     assert not any(v.rule == "gui_render_no_effect" for v in after.violations)
 
 
+def test_repair_restores_opengl_projection_for_pixel_space_render():
+    source_files = {
+        "src/main.cpp": (
+            "#include <GLFW/glfw3.h>\n"
+            "void draw_frame() { "
+            "glViewport(0, 0, 800, 600); "
+            "glMatrixMode(GL_PROJECTION); "
+            "glLoadIdentity(); "
+            "glOrtho(0.0, 800.0, 600.0, 0.0, -1.0, 1.0); "
+            "glBegin(GL_QUADS); glEnd(); }"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame_count; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            "#include <GL/gl.h>\n"
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "(void)state_ptr; "
+            "glBegin(GL_QUADS); "
+            "glVertex2f(10.0f, 10.0f); "
+            "glVertex2f(100.0f, 10.0f); "
+            "glVertex2f(100.0f, 100.0f); "
+            "glVertex2f(10.0f, 100.0f); "
+            "glEnd(); }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void noop() {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "opengl_projection_not_preserved" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.gui_render_effect" in report["repairRules"]
+    assert "glViewport" in repaired["gui.cpp"]
+    assert "glMatrixMode(GL_PROJECTION)" in repaired["gui.cpp"]
+    assert "glOrtho" in repaired["gui.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "opengl_projection_not_preserved" for v in after.violations)
+
+
 def test_repair_uses_generated_opengl_context_when_source_context_is_target_scoped():
     source_files = {
         "src/Device/kernels/CameraRays.h": 'extern "C" __global__ void CameraRays() {}',

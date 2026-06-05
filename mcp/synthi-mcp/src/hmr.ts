@@ -48,6 +48,9 @@ export interface HmrTerminalEvent {
   source: HmrTerminalSource;
   elapsedMs: number;
   detail?: Record<string, unknown>;
+  observedAt?: number;
+  retained?: boolean;
+  sequence?: number;
 }
 
 export type WireMessage = Record<string, unknown>;
@@ -127,7 +130,7 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
 
 type MessageHandler = (msg: WireMessage) => void;
 
-function terminalModule(detail: Record<string, unknown>): string | null {
+export function terminalModule(detail: Record<string, unknown>): string | null {
   if (typeof detail.module === "string") return detail.module;
   const data = detail.data;
   if (data && typeof data === "object" && typeof (data as Record<string, unknown>).module === "string") {
@@ -136,10 +139,58 @@ function terminalModule(detail: Record<string, unknown>): string | null {
   return null;
 }
 
+export function terminalPreviewId(detail: Record<string, unknown>): string | null {
+  if (typeof detail.preview_id === "string") return detail.preview_id;
+  const data = detail.data;
+  if (data && typeof data === "object" && typeof (data as Record<string, unknown>).preview_id === "string") {
+    return (data as Record<string, unknown>).preview_id as string;
+  }
+  const nested = detail.detail;
+  if (nested && typeof nested === "object" && typeof (nested as Record<string, unknown>).preview_id === "string") {
+    return (nested as Record<string, unknown>).preview_id as string;
+  }
+  return null;
+}
+
+function terminalMatches(
+  cls: HmrClassification,
+  expectedModule?: string,
+  expectedPreviewId?: string
+): boolean {
+  if (expectedModule) {
+    const actualModule = terminalModule(cls.detail);
+    if ((cls.status === "applied" || actualModule !== null) && actualModule !== expectedModule) {
+      return false;
+    }
+  }
+  if (expectedPreviewId && terminalPreviewId(cls.detail) !== expectedPreviewId) {
+    return false;
+  }
+  return true;
+}
+
+interface RetainedHmrTerminalEvent {
+  status: HmrTerminalStatus;
+  source: HmrTerminalSource;
+  detail: Record<string, unknown>;
+  observedAt: number;
+  sequence: number;
+}
+
+interface WaitForTerminalOpts {
+  timeoutMs?: number;
+  module?: string;
+  sinceTs?: number;
+  previewId?: string;
+}
+
 export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
+  private readonly terminalHistory: RetainedHmrTerminalEvent[] = [];
+  private terminalSequence = 0;
+  private static readonly TERMINAL_HISTORY_LIMIT = 128;
 
   constructor(dc: RTCDataChannel) {
     const dcListener = (ev: Event): void => {
@@ -159,6 +210,8 @@ export class HmrNormalizer {
       } catch {
         return;
       }
+      const cls = classifyHmrMessage(parsed);
+      if (cls) this.rememberTerminal(cls, Date.now());
       const proof = classifyGpuHmrProofMessage(parsed);
       if (proof) this.latestProof = proof;
       for (const listener of this.listeners) listener(parsed);
@@ -178,6 +231,33 @@ export class HmrNormalizer {
     return this.latestProof;
   }
 
+  private rememberTerminal(cls: HmrClassification, observedAt: number): void {
+    this.terminalSequence += 1;
+    this.terminalHistory.push({
+      status: cls.status,
+      source: cls.source,
+      detail: cls.detail,
+      observedAt,
+      sequence: this.terminalSequence,
+    });
+    while (this.terminalHistory.length > HmrNormalizer.TERMINAL_HISTORY_LIMIT) {
+      this.terminalHistory.shift();
+    }
+  }
+
+  private latestRetainedTerminal(opts: {
+    sinceTs: number;
+    module?: string;
+    previewId?: string;
+  }): RetainedHmrTerminalEvent | null {
+    for (const retained of this.terminalHistory.slice().reverse()) {
+      if (retained.observedAt < opts.sinceTs) continue;
+      if (!terminalMatches(retained, opts.module, opts.previewId)) continue;
+      return retained;
+    }
+    return null;
+  }
+
   /**
    * Block until a terminal event arrives or the timeout elapses.
    *
@@ -186,10 +266,32 @@ export class HmrNormalizer {
    * discarded. This matches the implementation plan F2 guidance and the
    * `hmr_normalize.test.ts` dedupe expectation.
    */
-  async waitForTerminal(opts: { timeoutMs?: number; module?: string } = {}): Promise<HmrTerminalEvent> {
+  async waitForTerminal(opts: WaitForTerminalOpts = {}): Promise<HmrTerminalEvent> {
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const expectedModule = opts.module?.trim();
+    const expectedPreviewId = opts.previewId?.trim();
+    const sinceTs = Number.isFinite(opts.sinceTs) && opts.sinceTs !== undefined
+      ? opts.sinceTs
+      : undefined;
     const start = Date.now();
+    if (sinceTs !== undefined) {
+      const retained = this.latestRetainedTerminal({
+        sinceTs,
+        module: expectedModule,
+        previewId: expectedPreviewId,
+      });
+      if (retained) {
+        return {
+          status: retained.status,
+          source: retained.source,
+          elapsedMs: Math.max(0, retained.observedAt - sinceTs),
+          detail: retained.detail,
+          observedAt: retained.observedAt,
+          retained: true,
+          sequence: retained.sequence,
+        };
+      }
+    }
 
     return new Promise<HmrTerminalEvent>((resolve) => {
       let settled = false;
@@ -197,13 +299,7 @@ export class HmrNormalizer {
         if (settled) return;
         const cls = classifyHmrMessage(msg);
         if (!cls) return;
-        if (
-          expectedModule &&
-          cls.status === "applied" &&
-          terminalModule(cls.detail) !== expectedModule
-        ) {
-          return;
-        }
+        if (!terminalMatches(cls, expectedModule, expectedPreviewId)) return;
         settled = true;
         clearTimeout(timer);
         unsub();
@@ -212,6 +308,7 @@ export class HmrNormalizer {
           source: cls.source,
           elapsedMs: Date.now() - start,
           detail: cls.detail,
+          observedAt: Date.now(),
         });
       });
 

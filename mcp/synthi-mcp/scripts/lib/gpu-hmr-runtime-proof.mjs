@@ -169,6 +169,84 @@ function dispatchRuntimeArtifactIdsFromProof(dispatchProof) {
   return contentAddressedArtifactIds(dispatchProof?.runtimeArtifactIds);
 }
 
+function epochGraphFromProof(proof) {
+  if (!proof || typeof proof !== 'object') return {};
+  if (proof.epochGenerationGraph && typeof proof.epochGenerationGraph === 'object') {
+    return proof.epochGenerationGraph;
+  }
+  if (proof.epoch_generation_graph && typeof proof.epoch_generation_graph === 'object') {
+    return proof.epoch_generation_graph;
+  }
+  if (proof.generationGraph && typeof proof.generationGraph === 'object') {
+    return proof.generationGraph;
+  }
+  if (proof.generation_graph && typeof proof.generation_graph === 'object') {
+    return proof.generation_graph;
+  }
+  return {};
+}
+
+function latestEpochPublicationFromProof(proof) {
+  const graph = epochGraphFromProof(proof);
+  const publication =
+    graph.latestPublication && typeof graph.latestPublication === 'object'
+      ? graph.latestPublication
+      : graph.latest_publication && typeof graph.latest_publication === 'object'
+        ? graph.latest_publication
+        : null;
+  if (publication) return publication;
+  const publishEdges = Array.isArray(graph.edges)
+    ? graph.edges.filter((edge) =>
+        edge
+        && typeof edge === 'object'
+        && String(edge.kind ?? edge.event ?? '').toLowerCase() === 'publish'
+      )
+    : [];
+  return publishEdges.at(-1) ?? null;
+}
+
+function activeEpochArtifactIdsFromProof(proof) {
+  const publication = latestEpochPublicationFromProof(proof);
+  return contentAddressedArtifactIds([
+    proof?.newArtifactId,
+    proof?.new_artifact_id,
+    proof?.activeArtifactId,
+    proof?.active_artifact_id,
+    proof?.publishedArtifactId,
+    proof?.published_artifact_id,
+    publication?.newArtifactId,
+    publication?.new_artifact_id,
+    publication?.activeArtifactId,
+    publication?.active_artifact_id,
+    publication?.publishedArtifactId,
+    publication?.published_artifact_id,
+    ...artifactIdsFromSha256Hashes([
+      proof?.newArtifactHash,
+      proof?.new_artifact_hash,
+      proof?.newHash,
+      proof?.new_hash,
+      publication?.newArtifactHash,
+      publication?.new_artifact_hash,
+      publication?.newHash,
+      publication?.new_hash,
+    ]),
+  ]);
+}
+
+function latestEpochPublicationTimestampFromProof(proof) {
+  const publication = latestEpochPublicationFromProof(proof);
+  return finiteNonNegativeNumber(
+    publication?.publishTimestampMs
+    ?? publication?.publish_timestamp_ms
+    ?? publication?.timestampMs
+    ?? publication?.timestamp_ms
+    ?? proof?.publishTimestampMs
+    ?? proof?.publish_timestamp_ms
+    ?? proof?.timestampMs
+    ?? proof?.timestamp_ms,
+  );
+}
+
 function contentAddressedArtifactIds(values) {
   return compactStringList(values).filter((id) => /^artifact:sha256:[0-9a-f]{64}$/i.test(id));
 }
@@ -1519,10 +1597,36 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       ? rawOracle.artifact_id.trim()
       : null;
   const dispatchArtifactIds = dispatchRuntimeArtifactIdsFromProof(dispatchProof);
+  const epochProof = observation.epochProof && typeof observation.epochProof === 'object'
+    ? observation.epochProof
+    : observation.epoch_proof && typeof observation.epoch_proof === 'object'
+      ? observation.epoch_proof
+      : dispatchProof?.epochProof && typeof dispatchProof.epochProof === 'object'
+        ? dispatchProof.epochProof
+        : dispatchProof?.epoch_proof && typeof dispatchProof.epoch_proof === 'object'
+          ? dispatchProof.epoch_proof
+          : null;
+  const activeEpochArtifactIds = activeEpochArtifactIdsFromProof(epochProof);
+  const selectedArtifactIds = contentAddressedArtifactIds([
+    ...(Array.isArray(observation.selectedArtifactIds) ? observation.selectedArtifactIds : []),
+    ...(Array.isArray(observation.selected_artifact_ids) ? observation.selected_artifact_ids : []),
+    ...(Array.isArray(dispatchProof?.selectedArtifactIds) ? dispatchProof.selectedArtifactIds : []),
+    ...(Array.isArray(dispatchProof?.selected_artifact_ids) ? dispatchProof.selected_artifact_ids : []),
+  ]);
   const oracleArtifactMatchesDispatch =
     oracleArtifactId !== null
     && dispatchArtifactIds.length > 0
     && dispatchArtifactIds.includes(oracleArtifactId);
+  const oracleArtifactMatchesActiveEpoch =
+    oracleArtifactId !== null
+    && activeEpochArtifactIds.length > 0
+    && activeEpochArtifactIds.includes(oracleArtifactId);
+  const oracleArtifactMatchesSelected =
+    oracleArtifactId !== null
+    && selectedArtifactIds.length > 0
+    && selectedArtifactIds.includes(oracleArtifactId);
+  const oracleArtifactMatchesRuntime =
+    oracleArtifactMatchesDispatch || oracleArtifactMatchesActiveEpoch;
   const oracleProvenanceComplete =
     oracleProducer !== null
     && oracleOutputTargetId !== null
@@ -1536,6 +1640,15 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     dispatchTimestampObserved
     && oracleReadbackTimestampObserved
     && oracleReadbackTimestamp >= latestDispatchTimestamp;
+  const latestEpochPublishTimestamp = latestEpochPublicationTimestampFromProof(epochProof);
+  const epochPublishTimestampObserved = latestEpochPublishTimestamp !== null;
+  const oracleReadbackAfterEpochPublication =
+    !oracleArtifactMatchesActiveEpoch
+    || (
+      epochPublishTimestampObserved
+      && oracleReadbackTimestampObserved
+      && oracleReadbackTimestamp >= latestEpochPublishTimestamp
+    );
   const hasTolerance = Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance')
     && rawOracle.tolerance !== null
     && rawOracle.tolerance !== undefined;
@@ -1567,8 +1680,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && oracleEvidenceObserved
     && oracleProvenanceComplete
     && oracleRuntimeSessionMatchesDispatch
-    && oracleArtifactMatchesDispatch
+    && oracleArtifactMatchesRuntime
     && oracleReadbackAfterDispatch
+    && oracleReadbackAfterEpochPublication
     && probeContractComplete
     && oracleValuesCompatible
     && oracleContractIdObserved
@@ -1593,8 +1707,16 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     runtimeSessionId: oracleRuntimeSessionId,
     artifactId: oracleArtifactId,
     artifactMatchesDispatch: oracleArtifactMatchesDispatch,
+    artifactMatchesActiveEpoch: oracleArtifactMatchesActiveEpoch,
+    artifactMatchesSelected: oracleArtifactMatchesSelected,
+    artifactMatchesRuntime: oracleArtifactMatchesRuntime,
     dispatchArtifactIds,
+    activeEpochArtifactIds,
+    selectedArtifactIds,
     valuesCompatible: oracleValuesCompatible,
+    epochPublishTimestampObserved,
+    latestEpochPublishTimestamp,
+    readbackAfterEpochPublication: oracleReadbackAfterEpochPublication,
     oracleId,
     requiredOracleId,
     contractIdObserved: oracleContractIdObserved,
@@ -1707,27 +1829,31 @@ export function classifyGpuHmrOutputProof(observation = {}) {
             ? 'output_oracle_provenance_incomplete'
             : oraclePayloadOtherwisePassed && !oracleRuntimeSessionMatchesDispatch
               ? 'output_oracle_session_mismatch'
-              : oraclePayloadOtherwisePassed && !oracleArtifactMatchesDispatch
+              : oraclePayloadOtherwisePassed && !oracleArtifactMatchesRuntime
                 ? 'output_oracle_artifact_mismatch'
                 : oraclePayloadOtherwisePassed && !dispatchTimestampObserved
                   ? 'output_oracle_dispatch_timestamp_missing'
                   : oraclePayloadOtherwisePassed && !oracleReadbackAfterDispatch
                     ? 'output_oracle_precedes_dispatch'
-                    : oraclePayloadOtherwisePassed && !probeContractComplete
-                      ? 'output_oracle_probe_contract_missing'
-                      : oraclePayloadOtherwisePassed && !oracleContractIdObserved
-                        ? 'output_oracle_contract_id_missing'
-                        : oraclePayloadOtherwisePassed && !oracleRequiredContractObserved
-                          ? 'output_oracle_required_contract_id_missing'
-                          : oraclePayloadOtherwisePassed && !oracleRequiredContractMatched
-                            ? 'output_oracle_contract_mismatch'
-                            : oraclePayloadOtherwisePassed && !oraclePassStatusObserved
-                              ? 'output_oracle_pass_status_missing'
-                              : oraclePayloadOtherwisePassed && !oraclePassStatusPassed
-                                ? 'output_oracle_reported_failed'
-                                : visualFrameObserved
-                                  ? 'visual_frame_without_deterministic_output_oracle'
-                                  : 'output_oracle_not_collected';
+                    : oraclePayloadOtherwisePassed && oracleArtifactMatchesActiveEpoch && !epochPublishTimestampObserved
+                      ? 'output_oracle_epoch_publish_timestamp_missing'
+                      : oraclePayloadOtherwisePassed && !oracleReadbackAfterEpochPublication
+                        ? 'output_oracle_precedes_epoch_publication'
+                        : oraclePayloadOtherwisePassed && !probeContractComplete
+                          ? 'output_oracle_probe_contract_missing'
+                          : oraclePayloadOtherwisePassed && !oracleContractIdObserved
+                            ? 'output_oracle_contract_id_missing'
+                            : oraclePayloadOtherwisePassed && !oracleRequiredContractObserved
+                              ? 'output_oracle_required_contract_id_missing'
+                              : oraclePayloadOtherwisePassed && !oracleRequiredContractMatched
+                                ? 'output_oracle_contract_mismatch'
+                                : oraclePayloadOtherwisePassed && !oraclePassStatusObserved
+                                  ? 'output_oracle_pass_status_missing'
+                                  : oraclePayloadOtherwisePassed && !oraclePassStatusPassed
+                                    ? 'output_oracle_reported_failed'
+                                    : visualFrameObserved
+                                      ? 'visual_frame_without_deterministic_output_oracle'
+                                      : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

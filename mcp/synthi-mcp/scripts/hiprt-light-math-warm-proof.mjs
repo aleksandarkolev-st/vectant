@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
+import {
+  DEFAULT_HIPRT_RUNTIME_PROFILE,
+  loadRuntimeProofProfileFromEnv,
+  runtimeProfileToLegacyHiprtWarmProfile,
+} from './lib/gpu-hmr-runtime-profile.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -21,25 +25,10 @@ const DEFAULT_AFTER =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator) * 0.0f;';
 
 function loadProfile() {
-  const inline = process.env.SYNTHI_HIPRT_WARM_PROFILE_JSON;
-  const profilePath = process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH;
-  if (inline && inline.trim()) {
-    return JSON.parse(inline);
-  }
-  if (profilePath && profilePath.trim()) {
-    return JSON.parse(readFileSync(path.resolve(REPO_ROOT, profilePath), 'utf8'));
-  }
+  const normalized = loadRuntimeProofProfileFromEnv(process.env, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
   return {
-    id: 'hiprt-megakernel-direct-light-zero',
-    targetName: 'HIPRTPathTracer',
-    sourceRel: 'src/Device/kernels/Megakernel.h',
-    before: DEFAULT_BEFORE,
-    after: DEFAULT_AFTER,
-    requiredKernels: ['CameraRays', 'MegaKernel'],
-    reloadKernelName: 'Megakernel (1 SPP)',
-    reloadKernelSymbol: 'MegaKernel',
-    claim:
-      'A HIPRT MegaKernel direct-lighting math delta materially changes the ray-traced framebuffer.',
+    ...runtimeProfileToLegacyHiprtWarmProfile(normalized),
+    runtimeProfile: normalized,
   };
 }
 
@@ -49,35 +38,79 @@ const CFG = {
   slug: process.env.SLUG
     ?? `hiprt-warm-light-math-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
-  workerRepoPath: process.env.SYNTHI_HIPRT_WARM_WORKER_REPO
+  workerRepoPath: process.env.SYNTHI_GPU_HMR_RUNTIME_WORKER_REPO
+    ?? process.env.SYNTHI_HIPRT_WARM_WORKER_REPO
+    ?? PROFILE.workerRepoPath
     ?? process.env.SYNTHI_REAL_ROCM_WORKER_PATH
     ?? '/tmp/synthi-real-rocm/HIPRT-Path-Tracer',
-  mode: (process.env.SYNTHI_HIPRT_WARM_MODE ?? PROFILE.mode ?? 'fresh-process').toLowerCase(),
-  targetName: process.env.SYNTHI_HIPRT_WARM_TARGET ?? PROFILE.targetName ?? 'HIPRTPathTracer',
-  sourceRel: process.env.SYNTHI_HIPRT_WARM_SOURCE_REL ?? PROFILE.sourceRel ?? 'src/Device/kernels/Megakernel.h',
-  before: process.env.SYNTHI_HIPRT_WARM_DELTA_BEFORE ?? PROFILE.before ?? DEFAULT_BEFORE,
-  after: process.env.SYNTHI_HIPRT_WARM_DELTA_AFTER ?? PROFILE.after ?? DEFAULT_AFTER,
+  mode: (
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MODE
+    ?? process.env.SYNTHI_HIPRT_WARM_MODE
+    ?? PROFILE.mode
+    ?? 'fresh-process'
+  ).toLowerCase(),
+  targetName:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_TARGET
+    ?? process.env.SYNTHI_HIPRT_WARM_TARGET
+    ?? PROFILE.targetName
+    ?? 'HIPRTPathTracer',
+  sourceRel:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_SOURCE_REL
+    ?? process.env.SYNTHI_HIPRT_WARM_SOURCE_REL
+    ?? PROFILE.sourceRel
+    ?? 'src/Device/kernels/Megakernel.h',
+  before:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DELTA_BEFORE
+    ?? process.env.SYNTHI_HIPRT_WARM_DELTA_BEFORE
+    ?? PROFILE.before
+    ?? DEFAULT_BEFORE,
+  after:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DELTA_AFTER
+    ?? process.env.SYNTHI_HIPRT_WARM_DELTA_AFTER
+    ?? PROFILE.after
+    ?? DEFAULT_AFTER,
   requiredKernels: parseStringListEnv(
-    process.env.SYNTHI_HIPRT_WARM_REQUIRED_KERNELS,
+    process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_KERNELS
+      ?? process.env.SYNTHI_HIPRT_WARM_REQUIRED_KERNELS,
     PROFILE.requiredKernels ?? ['CameraRays', 'MegaKernel'],
   ),
   reloadKernelName:
-    process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_NAME
+    process.env.SYNTHI_GPU_HMR_RUNTIME_RELOAD_KERNEL_NAME
+    ?? process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_NAME
     ?? PROFILE.reloadKernelName
     ?? 'Megakernel (1 SPP)',
   reloadKernelSymbol:
-    process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_SYMBOL
+    process.env.SYNTHI_GPU_HMR_RUNTIME_RELOAD_KERNEL_SYMBOL
+    ?? process.env.SYNTHI_HIPRT_WARM_RELOAD_KERNEL_SYMBOL
     ?? PROFILE.reloadKernelSymbol
     ?? 'MegaKernel',
-  profileId: process.env.SYNTHI_HIPRT_WARM_PROFILE_ID ?? PROFILE.id ?? 'custom',
-  claim: process.env.SYNTHI_HIPRT_WARM_CLAIM
+  profileId:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_ID
+    ?? process.env.SYNTHI_HIPRT_WARM_PROFILE_ID
+    ?? PROFILE.id
+    ?? 'custom',
+  claim:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_CLAIM
+    ?? process.env.SYNTHI_HIPRT_WARM_CLAIM
     ?? PROFILE.claim
     ?? 'A HIPRT source delta materially changes the ray-traced framebuffer.',
-  width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', 640),
-  height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', 360),
-  runTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 180000),
-  buildTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_BUILD_TIMEOUT_MS', 600000),
-  reloadTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_RELOAD_TIMEOUT_MS', 60000),
+  runtimeArgs: parseJsonStringListEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_ARGS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_RUN_ARGS_JSON,
+    PROFILE.runtimeArgs ?? [],
+    'runtime arguments',
+  ),
+  requiredFiles: parseJsonStringListEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_FILES_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_REQUIRED_FILES_JSON,
+    PROFILE.requiredFiles ?? [],
+    'required runtime files',
+  ),
+  width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', PROFILE.width ?? 640, 'SYNTHI_GPU_HMR_RUNTIME_WIDTH'),
+  height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', PROFILE.height ?? 360, 'SYNTHI_GPU_HMR_RUNTIME_HEIGHT'),
+  runTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 0, 'SYNTHI_GPU_HMR_RUNTIME_RUN_TIMEOUT_MS'),
+  buildTimeoutMs: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_BUILD_TIMEOUT_MS', 600000, 'SYNTHI_GPU_HMR_RUNTIME_BUILD_TIMEOUT_MS'),
+  reloadTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RELOAD_TIMEOUT_MS', 0, 'SYNTHI_GPU_HMR_RUNTIME_RELOAD_TIMEOUT_MS'),
   cmakeConfigName: process.env.SYNTHI_HIPRT_WARM_CMAKE_CONFIG
     ?? process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG
     ?? 'Release',
@@ -91,27 +124,57 @@ const CFG = {
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
   outputDir: path.resolve(
     REPO_ROOT,
-    process.env.SYNTHI_HIPRT_WARM_OUTPUT_DIR
+    process.env.SYNTHI_GPU_HMR_RUNTIME_OUTPUT_DIR
+      ?? process.env.SYNTHI_HIPRT_WARM_OUTPUT_DIR
       ?? 'mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof',
   ),
-  strictProofJson: process.env.SYNTHI_HIPRT_WARM_STRICT_PROOF_JSON ?? '',
-  reuseBaseline: process.env.SYNTHI_HIPRT_WARM_REUSE_BASELINE !== '0',
-  minChangedPixelRatio: Number(process.env.SYNTHI_HIPRT_WARM_MIN_CHANGED_RATIO ?? 0.05),
-  minMeanAbsDelta8bit: Number(process.env.SYNTHI_HIPRT_WARM_MIN_MEAN_ABS_DELTA_8BIT ?? 1.0),
-  requireStrictProvenance: process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE !== '0',
-  allowRejected: process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED === '1',
+  strictProofJson:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_STRICT_PROOF_JSON
+    ?? process.env.SYNTHI_HIPRT_WARM_STRICT_PROOF_JSON
+    ?? '',
+  reuseBaseline: (process.env.SYNTHI_GPU_HMR_RUNTIME_REUSE_BASELINE ?? process.env.SYNTHI_HIPRT_WARM_REUSE_BASELINE) !== '0',
+  minChangedPixelRatio: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_CHANGED_RATIO
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_CHANGED_RATIO
+      ?? PROFILE.minChangedPixelRatio
+      ?? 0.05,
+  ),
+  minMeanAbsDelta8bit: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_MEAN_ABS_DELTA_8BIT
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_MEAN_ABS_DELTA_8BIT
+      ?? PROFILE.minMeanAbsDelta8bit
+      ?? 1.0,
+  ),
+  requireStrictProvenance:
+    (process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRE_STRICT_PROVENANCE ?? process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE) !== '0',
+  allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
+  runtimeProfile: PROFILE.runtimeProfile,
 };
 
 if (!['fresh-process', 'same-process'].includes(CFG.mode)) {
   throw new Error(`SYNTHI_HIPRT_WARM_MODE must be fresh-process or same-process, got ${CFG.mode}`);
 }
 
-function positiveIntegerFromEnv(name, fallback) {
-  const raw = process.env[name];
+function positiveIntegerFromEnv(name, fallback, aliasName = null) {
+  const raw = aliasName && process.env[aliasName] !== undefined
+    ? process.env[aliasName]
+    : process.env[name];
   if (raw === undefined || String(raw).trim() === '') return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer`);
+    throw new Error(`${aliasName ?? name} must be a positive integer`);
+  }
+  return value;
+}
+
+function nonNegativeIntegerFromEnv(name, fallback, aliasName = null) {
+  const raw = aliasName && process.env[aliasName] !== undefined
+    ? process.env[aliasName]
+    : process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${aliasName ?? name} must be a non-negative integer`);
   }
   return value;
 }
@@ -121,8 +184,43 @@ function parseStringListEnv(raw, fallback) {
   return String(raw).split(',').map((item) => item.trim()).filter(Boolean);
 }
 
+function parseJsonStringListEnv(raw, fallback, label) {
+  const source = raw === undefined || String(raw).trim() === '' ? fallback : JSON.parse(raw);
+  if (!Array.isArray(source)) throw new Error(`${label} must be a JSON string array`);
+  return source.map((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new Error(`${label}[${index}] must be a non-empty string`);
+    }
+    return item.trim();
+  });
+}
+
 function shQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function hiprtWarmXdgRuntimeDir() {
+  return `/tmp/synthi-hiprt-warm-xdg-${cleanIdentifier(CFG.slug)}`;
+}
+
+function hiprtRuntimeDisplaySetup() {
+  const xdgRuntimeDir = hiprtWarmXdgRuntimeDir();
+  return [
+    `mkdir -p ${shQuote(xdgRuntimeDir)}`,
+    `chmod 700 ${shQuote(xdgRuntimeDir)} || true`,
+    `export XDG_RUNTIME_DIR=${shQuote(xdgRuntimeDir)}`,
+  ].join('\n');
+}
+
+function hiprtRuntimeRunInvocation(runCommand) {
+  const quoted = shQuote(runCommand);
+  return [
+    'if command -v xvfb-run >/dev/null 2>&1; then',
+    `  xvfb-run -a sh -lc ${quoted}`,
+    'else',
+    `  sh -lc ${quoted}`,
+    'fi',
+  ].join('\n');
 }
 
 function cleanIdentifier(value) {
@@ -184,14 +282,22 @@ function countOccurrences(haystack, needle) {
   }
 }
 
+function workerRuntimeRequiredFilePath(file) {
+  const normalized = String(file).replace(/\\/g, '/');
+  if (normalized.startsWith('/')) return normalized;
+  return `${CFG.workerRepoPath}/${normalized}`;
+}
+
 async function preflight() {
+  const requiredFileChecks = CFG.requiredFiles
+    .map((file) => `test -f ${shQuote(workerRuntimeRequiredFilePath(file))}`)
+    .join('\n');
   const script = `
 set -e
 test -d ${shQuote(CFG.workerRepoPath)}
 test -d ${shQuote(`${CFG.workerRepoPath}/.git`)}
 test -f ${shQuote(CFG.nativeLaunchObserverPath)}
-test -f ${shQuote(`${CFG.workerRepoPath}/data/GLTFs/cornell_pbr.gltf`)}
-test -f ${shQuote(`${CFG.workerRepoPath}/data/Skyspheres/evening_road_01_puresky_2k.hdr`)}
+${requiredFileChecks}
 repo_commit=$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD)
 if [ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ]; then
   build_executable=present
@@ -300,6 +406,14 @@ int synthi_probe_env_int(const char* name, int fallback_value)
 	return std::max(1, std::atoi(raw));
 }
 
+int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(0, std::atoi(raw));
+}
+
 const char* synthi_probe_required_env(const char* name)
 {
 	const char* value = std::getenv(name);
@@ -317,15 +431,19 @@ bool synthi_wait_for_reload_trigger()
 	if (trigger_path == nullptr)
 		return false;
 
-	const int timeout_ms = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 60000);
+	const int timeout_ms = synthi_probe_env_timeout_ms("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 0);
+	const bool timeout_enabled = timeout_ms > 0;
 	const auto start = std::chrono::steady_clock::now();
-	std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\n", trigger_path, timeout_ms);
+	if (timeout_enabled)
+		std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\n", trigger_path, timeout_ms);
+	else
+		std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=unbounded\n", trigger_path);
 	while (!synthi_probe_file_exists(trigger_path))
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		const auto now = std::chrono::steady_clock::now();
 		const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-		if (elapsed_ms > timeout_ms)
+		if (timeout_enabled && elapsed_ms > timeout_ms)
 		{
 			std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_timeout trigger=%s elapsed_ms=%lld\n", trigger_path, static_cast<long long>(elapsed_ms));
 			return false;
@@ -479,8 +597,7 @@ async function runHiprtVariant(variant) {
   const localLogPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${variant}-run.log`);
   const runCommand = [
     `./${shQuote(CFG.targetName)}`,
-    '../data/GLTFs/cornell_pbr.gltf',
-    '--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    ...CFG.runtimeArgs.map(shQuote),
     `--width=${CFG.width}`,
     `--height=${CFG.height}`,
   ].join(' ');
@@ -494,10 +611,11 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH=${shQuote(workerCapturePath)}
 export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_CAPTURE=1
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
+${hiprtRuntimeDisplaySetup()}
 start=$(date +%s%3N)
 cd build
 set +e
-${runCommand}
+${hiprtRuntimeRunInvocation(runCommand)}
 status=$?
 set -e
 end=$(date +%s%3N)
@@ -631,6 +749,52 @@ async function applySameProcessAdapter() {
       text = text.replace(
         '\t\t\t\tconst char* second_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_SECOND_CAPTURE_PATH");',
         '\t\t\t\tconst char* second_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_SECOND_CAPTURE_PATH");\n\t\t\t\tconst int synthi_probe_width = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_WIDTH", m_renderer->m_render_resolution.x);\n\t\t\t\tconst int synthi_probe_height = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_HEIGHT", m_renderer->m_render_resolution.y);',
+      );
+      upgraded = true;
+    }
+    if (!text.includes('synthi_probe_env_timeout_ms(')) {
+      text = text.replace(
+        String.raw`int synthi_probe_env_int(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(1, std::atoi(raw));
+}
+
+`,
+        String.raw`int synthi_probe_env_int(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(1, std::atoi(raw));
+}
+
+int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
+{
+	const char* raw = std::getenv(name);
+	if (raw == nullptr || raw[0] == '\0')
+		return fallback_value;
+	return std::max(0, std::atoi(raw));
+}
+
+`,
+      );
+      upgraded = true;
+    }
+    if (text.includes('const int timeout_ms = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 60000);')) {
+      text = text.replace(
+        'const int timeout_ms = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 60000);',
+        'const int timeout_ms = synthi_probe_env_timeout_ms("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TIMEOUT_MS", 0);\n\tconst bool timeout_enabled = timeout_ms > 0;',
+      );
+      text = text.replace(
+        'std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\\n", trigger_path, timeout_ms);',
+        'if (timeout_enabled)\n\t\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=%d\\n", trigger_path, timeout_ms);\n\telse\n\t\tstd::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_wait trigger=%s timeout_ms=unbounded\\n", trigger_path);',
+      );
+      text = text.replace(
+        'if (elapsed_ms > timeout_ms)',
+        'if (timeout_enabled && elapsed_ms > timeout_ms)',
       );
       upgraded = true;
     }
@@ -850,15 +1014,34 @@ function spawnDockerShell(script, { timeout, maxBuffer = 96 * 1024 * 1024 } = {}
   return { child, completion };
 }
 
-async function waitForWorkerFile(workerPath, timeoutMs) {
+async function waitForWorkerFile(workerPath, timeoutMs, processCompletion = null) {
   const startedAt = Date.now();
+  const processState = {
+    settled: false,
+    error: null,
+  };
+  if (processCompletion) {
+    processCompletion.then(
+      () => {
+        processState.settled = true;
+      },
+      (err) => {
+        processState.settled = true;
+        processState.error = err;
+      },
+    );
+  }
   for (;;) {
     const exists = (await dockerShell(
       `test -s ${shQuote(workerPath)} && printf 1 || printf 0`,
       { timeout: 30000 },
     )).trim() === '1';
     if (exists) return Date.now() - startedAt;
-    if (Date.now() - startedAt > timeoutMs) {
+    if (processState.settled) {
+      if (processState.error) throw processState.error;
+      throw new Error(`runtime process exited before worker file was written: ${workerPath}`);
+    }
+    if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
       throw new Error(`timed out waiting for worker file ${workerPath}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -875,8 +1058,7 @@ async function runHiprtSameProcess({ changedSource }) {
   const localLogPath = path.join(CFG.outputDir, `${slug}-same-process-run.log`);
   const runCommand = [
     `./${shQuote(CFG.targetName)}`,
-    '../data/GLTFs/cornell_pbr.gltf',
-    '--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr',
+    ...CFG.runtimeArgs.map(shQuote),
     `--width=${CFG.width}`,
     `--height=${CFG.height}`,
   ].join(' ');
@@ -898,10 +1080,11 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS=1
 export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_SECOND_CAPTURE=1
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
+${hiprtRuntimeDisplaySetup()}
 start=$(date +%s%3N)
 cd build
 set +e
-${runCommand}
+${hiprtRuntimeRunInvocation(runCommand)}
 status=$?
 set -e
 end=$(date +%s%3N)
@@ -917,7 +1100,7 @@ exit "$status"
   let changedWrite = null;
   let triggerMs = null;
   try {
-    baselineReadyMs = await waitForWorkerFile(workerBaselinePath, Math.min(CFG.runTimeoutMs, 120000));
+    baselineReadyMs = await waitForWorkerFile(workerBaselinePath, CFG.runTimeoutMs, run.completion);
     changedWrite = await writeVariantSource({ variant: 'same-process-changed', text: changedSource });
     const triggerStart = Date.now();
     await dockerShell(`date +%s%3N > ${shQuote(workerTriggerPath)}`, { timeout: 30000 });
@@ -1275,6 +1458,7 @@ async function main() {
       reloadKernelName: CFG.reloadKernelName,
       reloadKernelSymbol: CFG.reloadKernelSymbol,
     },
+    runtimeProfile: CFG.runtimeProfile,
     claim: CFG.claim,
     repo: {
       workerContainer: CFG.workerContainer,
@@ -1283,6 +1467,13 @@ async function main() {
       target: CFG.targetName,
     },
     dimensions: { width: CFG.width, height: CFG.height },
+    runtimeLimits: {
+      runTimeoutMs: CFG.runTimeoutMs,
+      runTimeoutUnbounded: CFG.runTimeoutMs === 0,
+      reloadTimeoutMs: CFG.reloadTimeoutMs,
+      reloadTimeoutUnbounded: CFG.reloadTimeoutMs === 0,
+      buildTimeoutMs: CFG.buildTimeoutMs,
+    },
     source,
     sourceWrites: {
       baseline: baselineWrite,

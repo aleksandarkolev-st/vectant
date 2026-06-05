@@ -108,6 +108,7 @@ _GUI_RENDER_EFFECT_REASON_CODES = {
     "gui_render_no_effect",
     "gui_render_placeholder",
     "gui_render_too_sparse",
+    "opengl_projection_not_preserved",
 }
 _SOURCE_OPENGL_MARKER_RE = re.compile(
     r"\b(?:glClear|glClearColor|glViewport|glMatrixMode|glOrtho|"

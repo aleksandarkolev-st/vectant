@@ -21,6 +21,10 @@ import {
 interface WaitHmrArgs {
   timeoutMs?: unknown;
   module?: unknown;
+  since_ts?: unknown;
+  sinceTs?: unknown;
+  preview_id?: unknown;
+  previewId?: unknown;
   requiredGpuProofState?: unknown;
   requireGpuFullRuntimeProof?: unknown;
 }
@@ -114,6 +118,24 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       ? a.timeoutMs
       : DEFAULT_TIMEOUT_MS;
   const module = typeof a.module === "string" && a.module.trim() ? a.module.trim() : undefined;
+  const sinceTsValue = a.since_ts ?? a.sinceTs;
+  if (sinceTsValue !== undefined && (typeof sinceTsValue !== "number" || !Number.isFinite(sinceTsValue) || sinceTsValue < 0)) {
+    return errorResponse("invalid_args", {
+      field: a.since_ts !== undefined ? "since_ts" : "sinceTs",
+      expected: "non-negative ms epoch timestamp",
+    });
+  }
+  const sinceTs = typeof sinceTsValue === "number" ? sinceTsValue : undefined;
+  const previewIdValue = a.preview_id ?? a.previewId;
+  if (previewIdValue !== undefined && typeof previewIdValue !== "string") {
+    return errorResponse("invalid_args", {
+      field: a.preview_id !== undefined ? "preview_id" : "previewId",
+      expected: "string",
+    });
+  }
+  const previewId = typeof previewIdValue === "string" && previewIdValue.trim()
+    ? previewIdValue.trim()
+    : undefined;
   const requiredProofState = requiredGpuProofState(a);
   let unsubscribePostApply: (() => void) | null = null;
 
@@ -165,11 +187,16 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       return { promise, cancel };
     };
 
-    const result = await attached.channels.hmr.waitForTerminal({ timeoutMs, module });
+    const result = await attached.channels.hmr.waitForTerminal({
+      timeoutMs,
+      module,
+      sinceTs,
+      previewId,
+    });
     let frameGate: Record<string, unknown> | undefined;
 
     if (result.status === "applied") {
-      const tHmr = Date.now();
+      const tHmr = result.observedAt ?? Date.now();
       const budget = session.pipelineBudgetMs();
       const remaining = Math.max(0, timeoutMs - (Date.now() - start));
       if (session.frameSeqGateEnabled()) {
@@ -246,6 +273,11 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       hmrElapsedMs: result.elapsedMs,
       source: result.source,
       detail: result.detail ?? null,
+      ...(result.observedAt !== undefined ? { hmrObservedAt: result.observedAt } : {}),
+      ...(result.retained ? {
+        terminal_recovered_from: "hmr_terminal_history",
+        terminal_sequence: result.sequence ?? null,
+      } : {}),
       ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
     }, latestGpuProof, requiredProofState);
   } catch (err) {

@@ -145,6 +145,14 @@ const TOOLS = [
           type: "string",
           description: "Optional terminal HMR module filter, for example 'device' to wait for GPU sidecar HMR instead of the first core/gui status.",
         },
+        since_ts: {
+          type: "number",
+          description: "Optional ms epoch anchor from synthi_compile.dispatched_at. Lets the wait return a terminal HMR event that completed after compile dispatch but before this wait subscribed.",
+        },
+        preview_id: {
+          type: "string",
+          description: "Optional preview/session slug filter for retained or live terminal HMR events.",
+        },
         requiredGpuProofState: {
           type: "string",
           enum: [
@@ -171,7 +179,7 @@ const TOOLS = [
   {
     name: "synthi_compile",
     description:
-      "Dispatch a CompileRequest on the worker's `compile` data channel. Fire-and-forget — the HMR status streams on `build-log`, so follow up with synthi_wait({condition:\"hmr\"}) to block on applied/compile-error/etc. Closes the edit→HMR→screenshot loop without a frontend open.",
+      "Dispatch a CompileRequest on the worker's `compile` data channel. Fire-and-forget — the HMR status streams on `build-log`, so follow up with synthi_wait_hmr({since_ts: dispatched_at}) to block on applied/compile-error/etc. Closes the edit→HMR→screenshot loop without a frontend open.",
     inputSchema: {
       type: "object",
       properties: {
