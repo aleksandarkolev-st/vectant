@@ -1928,7 +1928,8 @@ The validation workflow exposes strict and warm modes through `mcp/synthi-mcp/pa
   - Runs the generic runtime-profile dispatcher.
   - Accepts `SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH` or `SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON`.
   - Profiles use `synthi.gpu.hmr.runtime_profile.v1` and describe adapter family, target, runtime launch arguments, required runtime files, source delta, required kernels, reload symbol, and visual/oracle thresholds as data.
-  - Unsupported adapter families fail closed with an explicit unsupported-adapter error. They must be added as adapter implementations, not project-name branches.
+  - Unsupported adapter families fail closed with an explicit unsupported-adapter error unless the profile provides `adapter.runnerPath`, `adapter.runnerKind`, and optional `adapter.runnerArgs` for a repo-contained project adapter.
+  - Project adapters receive `SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON` and must produce their own runtime visual/oracle proof; dispatcher support must not be added as project-name branches.
 - `npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check`
   - Validates shipped runtime profiles and verifies unknown adapter families are rejected.
 - `npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt`

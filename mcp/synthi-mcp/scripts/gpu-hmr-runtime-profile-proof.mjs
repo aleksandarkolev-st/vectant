@@ -19,6 +19,7 @@ const ADAPTERS = new Map([
   ['hiprt-path-tracer', {
     runner: path.resolve(__dirname, 'hiprt-light-math-warm-proof.mjs'),
     runnerKind: 'node-script',
+    envKind: 'hiprt-warm',
   }],
 ]);
 
@@ -54,19 +55,53 @@ function parseArgs(argv) {
 
 function adapterForProfile(profile) {
   const adapter = ADAPTERS.get(profile.adapter.family);
-  if (!adapter) {
-    const supported = Array.from(ADAPTERS.keys()).sort();
-    throw new Error(
-      `unsupported runtime adapter family "${profile.adapter.family}". `
-      + `Add an adapter implementation instead of hardcoding project behavior. supported=${supported.join(',')}`,
-    );
+  if (adapter) return adapter;
+  if (profile.adapter.runnerPath) {
+    const runnerKind = profile.adapter.runnerKind ?? 'process';
+    if (!['node-script', 'process'].includes(runnerKind)) {
+      throw new Error(`unsupported profile adapter runner kind: ${runnerKind}`);
+    }
+    return {
+      runner: resolveProfileRunnerPath(profile.adapter.runnerPath),
+      runnerKind,
+      runnerArgs: profile.adapter.runnerArgs ?? [],
+      envKind: 'generic-profile',
+    };
   }
-  return adapter;
+  const supported = Array.from(ADAPTERS.keys()).sort();
+  throw new Error(
+    `unsupported runtime adapter family "${profile.adapter.family}". `
+    + 'Add a built-in adapter or provide adapter.runnerPath in the profile instead of hardcoding project behavior. '
+    + `supported=${supported.join(',')}`,
+  );
 }
 
-function spawnNodeScript(scriptPath, env) {
+function isInsideDirectory(baseDir, targetPath) {
+  const relative = path.relative(baseDir, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveProfileRunnerPath(runnerPath) {
+  const raw = String(runnerPath);
+  if (path.isAbsolute(raw)) {
+    if (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_ABSOLUTE_ADAPTER_RUNNER !== '1') {
+      throw new Error(
+        'absolute adapter.runnerPath is disabled by default; set '
+        + 'SYNTHI_GPU_HMR_RUNTIME_ALLOW_ABSOLUTE_ADAPTER_RUNNER=1 to opt in',
+      );
+    }
+    return raw;
+  }
+  const resolved = path.resolve(REPO_ROOT, raw);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`adapter.runnerPath must stay inside the repo: ${runnerPath}`);
+  }
+  return resolved;
+}
+
+function spawnNodeScript(scriptPath, env, runnerArgs = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath], {
+    const child = spawn(process.execPath, [scriptPath, ...runnerArgs], {
       cwd: REPO_ROOT,
       env,
       stdio: 'inherit',
@@ -81,6 +116,38 @@ function spawnNodeScript(scriptPath, env) {
       resolve(code ?? 1);
     });
   });
+}
+
+function spawnProcess(command, args, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: REPO_ROOT,
+      env,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (signal) {
+        resolve(128);
+        return;
+      }
+      resolve(code ?? 1);
+    });
+  });
+}
+
+function envForAdapter(profile, adapter) {
+  const env = {
+    ...process.env,
+    SYNTHI_GPU_HMR_RUNTIME_PROFILE_ID: profile.id,
+    SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON: JSON.stringify(profile),
+  };
+  if (profile.runtime.mode) env.SYNTHI_GPU_HMR_RUNTIME_MODE = profile.runtime.mode;
+  if (adapter.envKind === 'hiprt-warm') {
+    Object.assign(env, runtimeProfileToHiprtWarmEnv(profile));
+  }
+  return env;
 }
 
 async function loadPackagedProfile(profilePath) {
@@ -126,6 +193,26 @@ async function selfCheck() {
     name: 'unsupported-adapter-fails-closed',
     ok: unsupportedRejected,
   });
+  const external = normalizeRuntimeProofProfile({
+    ...DEFAULT_HIPRT_RUNTIME_PROFILE,
+    id: 'external-adapter-smoke',
+    adapter: {
+      family: 'external-adapter-smoke',
+      proofRunner: 'profile-runner',
+      runnerKind: 'node-script',
+      runnerPath: 'mcp/synthi-mcp/scripts/fixtures/runtime-profile-external-adapter-smoke.mjs',
+    },
+  });
+  const externalAdapter = adapterForProfile(external);
+  checks.push({
+    name: 'profile-declared-adapter-resolves',
+    ok:
+      externalAdapter.runnerKind === 'node-script'
+      && externalAdapter.envKind === 'generic-profile'
+      && isInsideDirectory(REPO_ROOT, externalAdapter.runner),
+    adapter: external.adapter.family,
+    runner: path.relative(REPO_ROOT, externalAdapter.runner).replace(/\\/g, '/'),
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.runtime_profile.self_check.v1',
@@ -152,17 +239,16 @@ async function main() {
     profile.runtime.mode = process.env.SYNTHI_GPU_HMR_RUNTIME_MODE;
   }
   const adapter = adapterForProfile(profile);
-  const env = {
-    ...process.env,
-    ...runtimeProfileToHiprtWarmEnv(profile),
-    SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON: JSON.stringify(profile),
-  };
-  if (profile.runtime.mode) env.SYNTHI_GPU_HMR_RUNTIME_MODE = profile.runtime.mode;
+  const env = envForAdapter(profile, adapter);
 
-  if (adapter.runnerKind !== 'node-script') {
+  let exitCode;
+  if (adapter.runnerKind === 'node-script') {
+    exitCode = await spawnNodeScript(adapter.runner, env, adapter.runnerArgs ?? []);
+  } else if (adapter.runnerKind === 'process') {
+    exitCode = await spawnProcess(adapter.runner, adapter.runnerArgs ?? [], env);
+  } else {
     throw new Error(`unsupported adapter runner kind: ${adapter.runnerKind}`);
   }
-  const exitCode = await spawnNodeScript(adapter.runner, env);
   process.exitCode = exitCode;
 }
 

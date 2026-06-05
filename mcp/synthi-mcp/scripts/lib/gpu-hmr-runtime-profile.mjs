@@ -136,6 +136,11 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     adapter: {
       family: adapterFamily,
       proofRunner,
+      runnerKind: optionalString(adapter.runnerKind, 'adapter.runnerKind')?.toLowerCase(),
+      runnerPath: optionalString(adapter.runnerPath ?? adapter.runner, 'adapter.runnerPath')?.replace(/\\/g, '/'),
+      runnerArgs: Array.isArray(adapter.runnerArgs)
+        ? adapter.runnerArgs.map((item, index) => nonEmptyString(item, `adapter.runnerArgs[${index}]`))
+        : [],
       capabilities: Array.isArray(adapter.capabilities)
         ? adapter.capabilities.map((item, index) => nonEmptyString(item, `adapter.capabilities[${index}]`))
         : [],
