@@ -87,7 +87,7 @@ export const BROWSER_TOOLS = [
   {
     name: "synthi_browser_observe_preview",
     description:
-      "Find and observe the workspace app preview tab in the Synthi-hosted browser. The preview target is selected from configured preview URLs/origins or, in local development, same-loopback tabs when the workspace itself is loopback. This does not hardcode preview ports.",
+      "Find and observe the workspace app preview tab in the Synthi-hosted browser. The preview target is selected from configured preview URLs/origins or, in local development, same-loopback tabs when the workspace itself is loopback. When a preview URL is supplied, the hosted browser opens or reloads it. This does not hardcode preview ports.",
     inputSchema: {
       type: "object",
       properties: {
@@ -602,18 +602,39 @@ async function browserListTabsTool(): Promise<ToolResponse> {
 
 async function browserObservePreviewTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const allTabs = await browserPlaywrightAdapter.listTabs();
-  const target = resolveBrowserPreviewTarget(
+  const input = {
+    workspace_url: stringOpt(a["workspace_url"]),
+    preferred_url: stringOpt(a["preferred_url"]),
+    preview_url: stringOpt(a["preview_url"]),
+    allowed_preview_origins: stringArrayOpt(a["allowed_preview_origins"]),
+    allowed_preview_host_suffixes: stringArrayOpt(a["allowed_preview_host_suffixes"]),
+  };
+  const previewUrl = httpUrlOpt(
+    input.preferred_url ??
+    input.preview_url ??
+    process.env["SYNTHI_WORKSPACE_PREVIEW_URL"] ??
+    process.env["SYNTHI_PREVIEW_URL"]
+  );
+  if (previewUrl) await browserPlaywrightAdapter.openOrNavigate(previewUrl);
+  let allTabs = await browserPlaywrightAdapter.listTabs();
+  let target = resolveBrowserPreviewTarget(
     allTabs,
-    {
-      workspace_url: stringOpt(a["workspace_url"]),
-      preferred_url: stringOpt(a["preferred_url"]),
-      preview_url: stringOpt(a["preview_url"]),
-      allowed_preview_origins: stringArrayOpt(a["allowed_preview_origins"]),
-      allowed_preview_host_suffixes: stringArrayOpt(a["allowed_preview_host_suffixes"]),
-    },
+    input,
     process.env
   );
+  if (!target.ok && previewUrl) {
+    await browserPlaywrightAdapter.open(previewUrl);
+    allTabs = await browserPlaywrightAdapter.listTabs();
+    target = resolveBrowserPreviewTarget(
+      allTabs,
+      {
+        ...input,
+        preferred_url: input.preferred_url ?? previewUrl,
+        preview_url: input.preview_url ?? previewUrl,
+      },
+      process.env
+    );
+  }
   if (!target.ok) {
     return errorResponse(target.error, {
       reason: target.reason,
@@ -1165,6 +1186,17 @@ function requiredString(args: Record<string, unknown>, field: string): string {
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function httpUrlOpt(value: unknown): string | undefined {
+  const raw = stringOpt(value);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function numberOpt(value: unknown): number | undefined {

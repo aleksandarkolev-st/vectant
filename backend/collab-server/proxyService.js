@@ -247,13 +247,28 @@ function proxyHttpRequest(clientReq, clientRes) {
     // Rewrite Content-Type for known extensions if upstream sends wrong type
     const headers = { ...proxyRes.headers };
     const inferred = inferMime(downstream);
-    if (inferred && !headers['content-type']?.includes(inferred.split('/')[1])) {
+    const existingContentType = String(headers['content-type'] || '').toLowerCase();
+    if (inferred && (!existingContentType || existingContentType.includes('text/plain') || existingContentType.includes('application/octet-stream'))) {
       headers['content-type'] = inferred;
     }
     // CORS — allow the Synthi frontend to fetch
     headers['access-control-allow-origin'] = '*';
     headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
     headers['access-control-allow-headers'] = '*';
+
+    if (shouldRewriteBody(headers)) {
+      const chunks = [];
+      proxyRes.on('data', (chunk) => chunks.push(chunk));
+      proxyRes.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        const rewritten = rewriteRootAbsoluteUrls(body, port);
+        delete headers['content-length'];
+        delete headers['content-encoding'];
+        clientRes.writeHead(proxyRes.statusCode, headers);
+        clientRes.end(rewritten);
+      });
+      return;
+    }
 
     clientRes.writeHead(proxyRes.statusCode, headers);
     proxyRes.pipe(clientRes, { end: true });
@@ -277,6 +292,23 @@ function proxyHttpRequest(clientReq, clientRes) {
 
   // Pipe the client body to the upstream
   clientReq.pipe(proxyReq, { end: true });
+}
+
+function shouldRewriteBody(headers) {
+  if (headers['content-encoding']) return false;
+  const contentType = String(headers['content-type'] || '').toLowerCase();
+  return (
+    contentType.includes('text/html') ||
+    contentType.includes('javascript') ||
+    contentType.includes('text/css')
+  );
+}
+
+function rewriteRootAbsoluteUrls(body, port) {
+  const prefix = `/port/${port}`;
+  return body
+    .replace(/(["'`])\/(?!\/|port\/)/g, `$1${prefix}/`)
+    .replace(/(url\(\s*["']?)\/(?!\/|port\/)/g, `$1${prefix}/`);
 }
 
 // ─── WebSocket Reverse Proxy ────────────────────────────────────────────────

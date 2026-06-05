@@ -67,6 +67,34 @@ const ProblemsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+function resolveCollabServerUrl() {
+  const configured = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL;
+  if (configured && configured.trim()) return configured.replace(/\/$/, '');
+  if (typeof window === 'undefined') return 'http://localhost:1234';
+  const { protocol, hostname } = window.location;
+  return `${protocol}//${hostname}:1234`;
+}
+
+async function discoverWorkspacePreviewUrl() {
+  if (typeof window === 'undefined') return null;
+  const base = resolveCollabServerUrl();
+  try {
+    const res = await fetch(`${base}/ports`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const ports = Array.isArray(data?.activePorts)
+      ? data.activePorts
+        .map((port) => Number(port))
+        .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535)
+        .sort((a, b) => a - b)
+      : [];
+    const port = ports[0];
+    return port ? `${base}/port/${port}/` : null;
+  } catch {
+    return null;
+  }
+}
+
 const SearchView = dynamic(
   () => import('@/app/workspace/[slug]/SearchView'),
   { ssr: false, loading: Placeholder },
@@ -304,8 +332,10 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
+    const previewUrl = await discoverWorkspacePreviewUrl();
     return callWorkflowTool(WORKFLOW_ACTIONS.OBSERVE, {
       workspace_url: currentUrl,
+      ...(previewUrl ? { preview_url: previewUrl, preferred_url: previewUrl } : {}),
     });
   }, [callWorkflowTool, workspaceUrl]);
 

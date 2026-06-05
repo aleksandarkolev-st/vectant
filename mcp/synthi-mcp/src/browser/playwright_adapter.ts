@@ -94,6 +94,16 @@ export class BrowserPlaywrightAdapter {
     return this.describePage(page);
   }
 
+  async openOrNavigate(url: string): Promise<BrowserTab> {
+    const browser = this.requireBrowser();
+    const context = browser.contexts()[0] ?? await browser.newContext();
+    const existingPage = context.pages().find((page) => page.url() === url);
+    const page = existingPage ?? await context.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.bringToFront();
+    return this.describePage(page);
+  }
+
   async openCold(url: string): Promise<BrowserTab> {
     const browser = this.requireBrowser();
     const context = await browser.newContext();
