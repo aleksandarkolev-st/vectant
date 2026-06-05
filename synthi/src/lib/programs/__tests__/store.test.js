@@ -5,6 +5,9 @@ const h = vi.hoisted(() => ({
     permissionGrant: { create: vi.fn(), findMany: vi.fn() },
     programSession: { create: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     programRuntimeEvent: { create: vi.fn(), findMany: vi.fn() },
+    marketplaceProgram: { upsert: vi.fn() },
+    programVersion: { upsert: vi.fn() },
+    programInstall: { create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
   },
 }));
 
@@ -12,12 +15,18 @@ vi.mock('@/lib/prisma', () => ({ default: h.prisma }));
 
 import {
   appendProgramRuntimeEvent,
+  createInstall,
   createPermissionGrant,
   createProgramSession,
+  getInstall,
+  listInstalls,
   listPermissionGrants,
   listProgramRuntimeEvents,
   listProgramSessions,
+  toPublicInstall,
+  updateInstallStatus,
   updateProgramSession,
+  upsertLocalProgram,
 } from '../store';
 
 beforeEach(() => {
@@ -204,5 +213,130 @@ describe('listProgramRuntimeEvents', () => {
     const rows = await listProgramRuntimeEvents('ps1');
 
     expect(rows[0].data).toBeNull();
+  });
+});
+
+describe('upsertLocalProgram', () => {
+  it('namespaces the packageId per workspace and upserts program + version with the manifest', async () => {
+    const config = {
+      packageId: 'my-dev-server',
+      version: '1.2.0',
+      displayName: 'My Dev Server',
+      runtimeType: 'web',
+      workingDir: '',
+      install: ['npm ci'],
+      launch: 'npm run dev',
+      env: {},
+      ports: [3000],
+      surfaces: [],
+      health: null,
+      permissions: ['program.launch'],
+      source: 'synthi.program.json',
+      sourceHints: {},
+    };
+    h.prisma.marketplaceProgram.upsert.mockResolvedValue({
+      id: 'prog1',
+      packageId: 'local:team:my-dev-server',
+      publisher: 'local',
+      verified: false,
+      latestVersion: '1.2.0',
+    });
+    h.prisma.programVersion.upsert.mockResolvedValue({ id: 'ver1', programId: 'prog1', version: '1.2.0' });
+
+    const { program, version } = await upsertLocalProgram({ workspaceSlug: 'team', config });
+
+    expect(h.prisma.marketplaceProgram.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { packageId: 'local:team:my-dev-server' },
+        create: expect.objectContaining({ packageId: 'local:team:my-dev-server', publisher: 'local', verified: false, latestVersion: '1.2.0' }),
+        update: expect.objectContaining({ latestVersion: '1.2.0' }),
+      }),
+    );
+    expect(h.prisma.programVersion.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { programId_version: { programId: 'prog1', version: '1.2.0' } },
+        create: expect.objectContaining({ programId: 'prog1', version: '1.2.0', ports: ['3000'] }),
+      }),
+    );
+    expect(program.id).toBe('prog1');
+    expect(version.id).toBe('ver1');
+    const upsertArg = h.prisma.programVersion.upsert.mock.calls[0][0];
+    expect(JSON.parse(upsertArg.create.manifestJson).launch).toBe('npm run dev');
+  });
+});
+
+describe('createInstall / updateInstallStatus', () => {
+  it('creates an install in the installing state', async () => {
+    h.prisma.programInstall.create.mockResolvedValue({
+      id: 'inst1', programId: 'prog1', workspaceSlug: 'team', version: '1.2.0', status: 'installing', installedByUserId: 'u1', grantId: 'pg1',
+    });
+
+    const row = await createInstall({ programId: 'prog1', workspaceSlug: 'team', version: '1.2.0', installedByUserId: 'u1', grantId: 'pg1' });
+
+    expect(h.prisma.programInstall.create).toHaveBeenCalledWith({
+      data: { programId: 'prog1', workspaceSlug: 'team', version: '1.2.0', installedByUserId: 'u1', grantId: 'pg1', status: 'installing' },
+    });
+    expect(row.id).toBe('inst1');
+  });
+
+  it('updates install status', async () => {
+    h.prisma.programInstall.update.mockResolvedValue({ id: 'inst1', status: 'installed' });
+
+    const row = await updateInstallStatus('inst1', 'installed');
+
+    expect(h.prisma.programInstall.update).toHaveBeenCalledWith({ where: { id: 'inst1' }, data: { status: 'installed' } });
+    expect(row.status).toBe('installed');
+  });
+});
+
+describe('getInstall / listInstalls', () => {
+  it('gets an install with the program joined', async () => {
+    h.prisma.programInstall.findUnique.mockResolvedValue({ id: 'inst1', program: { id: 'prog1', packageId: 'local:team:x', publisher: 'local' } });
+
+    const row = await getInstall('inst1');
+
+    expect(h.prisma.programInstall.findUnique).toHaveBeenCalledWith({ where: { id: 'inst1' }, include: { program: true } });
+    expect(row.id).toBe('inst1');
+  });
+
+  it('lists workspace installs newest-first with the program joined', async () => {
+    h.prisma.programInstall.findMany.mockResolvedValue([
+      { id: 'inst1', programId: 'prog1', workspaceSlug: 'team', version: '1.2.0', status: 'installed', installedByUserId: 'u1', grantId: null, createdAt: new Date(), updatedAt: new Date(), program: { id: 'prog1', packageId: 'local:team:my-dev-server', publisher: 'local' } },
+    ]);
+
+    const rows = await listInstalls('team');
+
+    expect(h.prisma.programInstall.findMany).toHaveBeenCalledWith({
+      where: { workspaceSlug: 'team' },
+      orderBy: { createdAt: 'desc' },
+      include: { program: true },
+    });
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe('toPublicInstall', () => {
+  it('returns only public install metadata and never raw manifest/env', () => {
+    const pub = toPublicInstall({
+      id: 'inst1',
+      programId: 'prog1',
+      workspaceSlug: 'team',
+      version: '1.2.0',
+      status: 'installed',
+      installedByUserId: 'u1',
+      grantId: 'pg1',
+      createdAt: new Date('2026-06-06T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-06T00:00:00.000Z'),
+      program: { id: 'prog1', packageId: 'local:team:my-dev-server', publisher: 'local', versions: [{ manifestJson: '{"env":{"SECRET":"x"}}' }] },
+    });
+
+    expect(pub.packageId).toBe('local:team:my-dev-server');
+    expect(pub.publisher).toBe('local');
+    expect(pub.status).toBe('installed');
+    expect(pub.version).toBe('1.2.0');
+    expect(pub).not.toHaveProperty('program');
+    expect(pub).not.toHaveProperty('manifestJson');
+    expect(pub).not.toHaveProperty('env');
+    expect(JSON.stringify(pub)).not.toContain('SECRET');
   });
 });
