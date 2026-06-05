@@ -140,3 +140,19 @@ Disk gate: do not run `next build`, `docker build`, or `docker compose build`.
 
 ## Slice 3 Phase 1 — COMPLETE (C1–C7, on `tool-compatibility`)
 All seven checkpoints landed and verified. C6 committed as `e82b69e8`. Regression green (synthi 201 + backend 6; only the pre-existing empty preview-store stub tolerated), schema synced, Phase-1 security constraints verified. Deferred by environment gate: `next build` / `docker build` (disk). Branch not pushed (awaiting direction).
+
+---
+
+# Task: Slice 3 Phase 2 — Recipe Manifests & Persisted Installs (2026-06-06, tool-compatibility)
+
+Plan: `docs/superpowers/plans/2026-06-06-slice3-phase2-recipe-manifests-installs-plan.md`.
+Branch: `tool-compatibility` only. Disk gate: TDD only (vitest / `node --test` / `prisma generate|db push`); NO `next build` / `docker build`. No schema change expected (C2 models exist).
+
+## Phase-2 Implementation Tasks (TDD, commit per task)
+- [ ] P2-T1 `synthi.program.json` manifest parser/validator (`src/lib/programs/manifest.js`) — normalize + fail-closed validation (path-escape, unknown-scope, port range, unsupported runtime).
+- [ ] P2-T2 devcontainer import mapper (`src/lib/programs/devcontainer.js`) — documented subset → same normalized shape; reject host mounts / docker.sock / privileged; strip blocked env.
+- [ ] P2-T3 Local program + install store helpers (`src/lib/programs/store.js`) — upsertLocalProgram / install CRUD / toPublicInstall redaction.
+- [ ] P2-T4 Manifest discovery + install/launch orchestration (`runtimeClient.js` + `programRuntimeManager.js`) — run install steps then launch; declared env still scrubbed.
+- [ ] P2-T5 Program install/launch API routes (marketplace/installed/install/[installId]/launch) — owner-admin write, member read, consent→PermissionGrant w/ manifest scopes.
+- [ ] P2-T6 Programs sidebar Installed section + install-from-manifest + consent prompt + launch-from-install.
+- [ ] P2-T7 Regression + security sweep (full vitest + backend node test + prisma; security checklist).
