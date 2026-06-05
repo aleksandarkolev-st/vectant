@@ -1,3 +1,6 @@
+import { parseProgramManifest } from './manifest';
+import { importDevcontainer } from './devcontainer';
+
 const COLLAB_BASE = (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
 
 async function parseJsonResponse(response) {
@@ -72,4 +75,37 @@ export async function restartProgramRuntimeSession(workspaceSlug, sessionId) {
 export async function listProgramRuntimeSessionEvents(workspaceSlug, sessionId) {
   const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/sessions/${encodeURIComponent(sessionId)}/events`);
   return data.events || [];
+}
+
+/**
+ * Discover a recipe manifest in the workspace (synthi.program.json preferred,
+ * else .devcontainer/devcontainer.json) and parse it into a NormalizedProgramConfig.
+ *
+ * @returns {Promise<{ config: object, source: string } | null>}
+ */
+export async function discoverManifest(workspaceSlug) {
+  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/manifest`);
+  if (!data || !data.found || !data.raw) {
+    return null;
+  }
+  if (data.source === 'devcontainer.json') {
+    const { config } = importDevcontainer(data.raw);
+    return { config, source: 'devcontainer.json' };
+  }
+  const config = parseProgramManifest(data.raw);
+  return { config, source: 'synthi.program.json' };
+}
+
+/**
+ * Launch an installed program from its NormalizedProgramConfig recipe through
+ * the collab-server managed runtime (install steps then launch).
+ *
+ * @returns {Promise<object|null>} the managed session snapshot
+ */
+export async function launchInstalledProgram({ workspaceSlug, sessionId, config, userId = '', title = null }) {
+  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/launch-program`, {
+    method: 'POST',
+    body: JSON.stringify({ sessionId, userId, title, config }),
+  });
+  return data.session || null;
 }

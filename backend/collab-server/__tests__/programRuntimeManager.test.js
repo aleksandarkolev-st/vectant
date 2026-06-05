@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const {
   createProgramRuntimeManager,
   DEFAULT_HEADLESS_TTL_MS,
+  composeProgramCommand,
 } = require('../programRuntimeManager');
 
 function createTimerHarness() {
@@ -360,4 +361,63 @@ test('idle culls inactive managed sessions and runtime exits mark crashes', asyn
   const crashed = runtimeManager2.getManagedSession('ps-4');
   assert.equal(crashed.state, 'crashed');
   assert.equal(crashed.exitCode, 1);
+});
+
+test('composeProgramCommand sequences workingDir, install steps, then launch', () => {
+  assert.equal(
+    composeProgramCommand({ workingDir: 'apps/web', install: ['npm ci', 'npm run build'], launch: 'npm run dev' }),
+    'cd "apps/web" && npm ci && npm run build && npm run dev',
+  );
+  assert.equal(composeProgramCommand({ install: [], launch: './run.sh' }), './run.sh');
+  assert.equal(composeProgramCommand({ launch: 'serve' }), 'serve');
+});
+
+test('launchManagedProgram composes the recipe, scrubs declared env, and seeds declared ports', async () => {
+  const activeSessions = new Map();
+  const timers = createTimerHarness();
+  const runtime = createManagedRuntimeHandle();
+  const launches = [];
+  const runtimeManager = createProgramRuntimeManager({
+    activeSessions,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    now: () => 40_000,
+    launchRuntime: async (spec) => {
+      launches.push(spec);
+      return runtime;
+    },
+    getActivePorts: () => [],
+    logger: { warn() {} },
+  });
+
+  const session = await runtimeManager.launchManagedProgram({
+    sessionId: 'ps-prog',
+    workspaceSlug: 'team',
+    userId: 'u1',
+    config: {
+      packageId: 'web',
+      version: '1.0.0',
+      displayName: 'Web',
+      runtimeType: 'web',
+      workingDir: 'apps/web',
+      install: ['npm ci'],
+      launch: 'npm run dev',
+      env: { SAFE: '1', DATABASE_URL: 'postgres://secret' },
+      ports: [3000],
+      surfaces: [],
+      health: null,
+      permissions: ['program.launch'],
+      source: 'synthi.program.json',
+      sourceHints: {},
+    },
+  });
+
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].command, 'cd "apps/web" && npm ci && npm run dev');
+  assert.equal(launches[0].env.SAFE, '1');
+  assert.equal('DATABASE_URL' in launches[0].env, false);
+  assert.equal(launches[0].runtimeType, 'web');
+  assert.equal(session.title, 'Web');
+  assert.deepEqual(session.activePorts, [3000]);
+  assert.equal(session.webPort, 3000);
 });

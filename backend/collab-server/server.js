@@ -1593,6 +1593,77 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /program-runtime/:slug/launch-program  { sessionId, userId?, title?, config }
+  // Launch an installed program from its NormalizedProgramConfig recipe (Phase 2).
+  const launchProgramMatch = /^\/program-runtime\/([^/]+)\/launch-program$/.exec(programRuntimeUrl.pathname);
+  if (launchProgramMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(launchProgramMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const config = parsed && typeof parsed.config === 'object' ? parsed.config : null;
+    const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+    if (!config || !sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing config or sessionId' }));
+      return;
+    }
+
+    try {
+      const session = await managedProgramRuntime.launchManagedProgram({
+        sessionId,
+        workspaceSlug: slug,
+        userId: parsed.userId || '',
+        title: parsed.title || null,
+        config,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Program launch failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/manifest  → { found, source, raw }
+  // Reads the workspace recipe manifest (synthi.program.json preferred, else
+  // .devcontainer/devcontainer.json). Returns raw bytes for the caller to parse.
+  const manifestMatch = /^\/program-runtime\/([^/]+)\/manifest$/.exec(programRuntimeUrl.pathname);
+  if (manifestMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(manifestMatch[1]);
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const cwd = await resolveWorkspaceCwd(slug);
+      const candidates = [
+        { source: 'synthi.program.json', file: path.join(cwd, 'synthi.program.json') },
+        { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer', 'devcontainer.json') },
+        { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer.json') },
+      ];
+      let result = { found: false };
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate.file)) {
+          result = { found: true, source: candidate.source, raw: fs.readFileSync(candidate.file, 'utf8') };
+          break;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Manifest read failed' }));
+    }
+    return;
+  }
+
   // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
   // ========================================================================
   // POST /exec-terminal/:slug  { command: string, timeout?: number }

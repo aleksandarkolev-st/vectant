@@ -102,6 +102,30 @@ function buildManagedRuntimeEnv(baseEnv = process.env, overrides = {}) {
   return merged;
 }
 
+/**
+ * Compose an install/launch recipe into one shell command.
+ *
+ * `cd "<workingDir>" && <install[0]> && ... && <launch>` — real recipe
+ * semantics: a failed install step short-circuits the `&&` chain before launch
+ * and exits non-zero, which the existing exit handler marks as `crashed`.
+ */
+function composeProgramCommand({ install = [], launch, workingDir = '' } = {}) {
+  const parts = [];
+  if (workingDir) {
+    parts.push(`cd "${String(workingDir).replace(/"/g, '\\"')}"`);
+  }
+  for (const step of Array.isArray(install) ? install : []) {
+    if (typeof step === 'string' && step.trim()) {
+      parts.push(step.trim());
+    }
+  }
+  const launchCmd = String(launch || '').trim();
+  if (launchCmd) {
+    parts.push(launchCmd);
+  }
+  return parts.join(' && ');
+}
+
 function createProgramRuntimeManager(options = {}) {
   const {
     activeSessions,
@@ -326,6 +350,7 @@ function createProgramRuntimeManager(options = {}) {
     runtimeType = 'cli',
     title = null,
     metadata = null,
+    ports = [],
   } = {}) {
     if (typeof launchRuntime !== 'function') {
       throw new TypeError('launchRuntime is required');
@@ -344,6 +369,9 @@ function createProgramRuntimeManager(options = {}) {
 
     const currentTime = now();
     const safeEnv = buildManagedRuntimeEnv(baseEnv, env);
+    // Phase 2 surfaces *declared* manifest ports immediately (Phase 3 adds
+    // live auto-detection via refreshManagedSessionPorts).
+    const declaredPorts = normalizePorts(ports);
 
     const existing = managedSessions.get(sessionId);
     if (existing?.runtime) {
@@ -373,8 +401,8 @@ function createProgramRuntimeManager(options = {}) {
       lastOutputAt: null,
       output: '',
       outputTruncated: false,
-      activePorts: [],
-      webPort: null,
+      activePorts: declaredPorts,
+      webPort: declaredPorts[0] ?? null,
       exitCode: null,
       stopReason: null,
       metadata,
@@ -389,6 +417,7 @@ function createProgramRuntimeManager(options = {}) {
         runtimeType,
         title,
         metadata,
+        ports: declaredPorts,
       },
       runtime,
       runtimeDataDisposable: null,
@@ -406,6 +435,32 @@ function createProgramRuntimeManager(options = {}) {
     });
 
     return toPublicManagedSession(record);
+  }
+
+  /**
+   * Launch a managed session from a NormalizedProgramConfig recipe: compose the
+   * install + launch commands, carry declared env (scrubbed) + declared ports.
+   */
+  async function launchManagedProgram({ sessionId, workspaceSlug, userId = '', config, title = null, metadata = null } = {}) {
+    if (!config || typeof config !== 'object') {
+      throw new TypeError('config is required');
+    }
+    const command = composeProgramCommand(config);
+    return launchManagedSession({
+      sessionId,
+      workspaceSlug,
+      userId,
+      command,
+      env: config.env || {},
+      runtimeType: config.runtimeType || 'cli',
+      title: title || config.displayName || config.packageId || null,
+      ports: Array.isArray(config.ports) ? config.ports : [],
+      metadata: metadata || {
+        packageId: config.packageId || null,
+        version: config.version || null,
+        source: config.source || null,
+      },
+    });
   }
 
   async function stopManagedSession(sessionId, { reason = 'user_stop', state = 'stopped' } = {}) {
@@ -489,6 +544,7 @@ function createProgramRuntimeManager(options = {}) {
     getManagedRuntime,
     getManagedSession,
     launchManagedSession,
+    launchManagedProgram,
     listManagedSessionEvents,
     listManagedSessions,
     refreshManagedSessionPorts,
@@ -504,4 +560,5 @@ module.exports = {
   DEFAULT_IDLE_TTL_MS,
   DEFAULT_OUTPUT_CAP,
   buildManagedRuntimeEnv,
+  composeProgramCommand,
 };

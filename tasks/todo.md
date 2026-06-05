@@ -149,10 +149,10 @@ Plan: `docs/superpowers/plans/2026-06-06-slice3-phase2-recipe-manifests-installs
 Branch: `tool-compatibility` only. Disk gate: TDD only (vitest / `node --test` / `prisma generate|db push`); NO `next build` / `docker build`. No schema change expected (C2 models exist).
 
 ## Phase-2 Implementation Tasks (TDD, commit per task)
-- [ ] P2-T1 `synthi.program.json` manifest parser/validator (`src/lib/programs/manifest.js`) — normalize + fail-closed validation (path-escape, unknown-scope, port range, unsupported runtime).
-- [ ] P2-T2 devcontainer import mapper (`src/lib/programs/devcontainer.js`) — documented subset → same normalized shape; reject host mounts / docker.sock / privileged; strip blocked env.
-- [ ] P2-T3 Local program + install store helpers (`src/lib/programs/store.js`) — upsertLocalProgram / install CRUD / toPublicInstall redaction.
-- [ ] P2-T4 Manifest discovery + install/launch orchestration (`runtimeClient.js` + `programRuntimeManager.js`) — run install steps then launch; declared env still scrubbed.
+- [x] P2-T1 `synthi.program.json` manifest parser/validator (`src/lib/programs/manifest.js`) — normalize + fail-closed validation (path-escape, unknown-scope, port range, unsupported runtime). Committed `bed5f6cf`; 14 new tests, `src/lib/programs` 22 pass.
+- [x] P2-T2 devcontainer import mapper (`src/lib/programs/devcontainer.js`) — documented subset → same normalized shape; reject host mounts / docker.sock / privileged; strip blocked env. Committed `ae81151d`; 11 new tests, `src/lib/programs` 33 pass. Refinement: workspaceFolder ignored-with-warning (container path) instead of path_escape false-reject.
+- [x] P2-T3 Local program + install store helpers (`src/lib/programs/store.js`) — upsertLocalProgram / install CRUD / toPublicInstall redaction. Committed `3db60ced`; 6 new tests, `src/lib/programs` 39 pass.
+- [x] P2-T4 Manifest discovery + install/launch orchestration (`runtimeClient.js` + `programRuntimeManager.js` + `server.js`). composeProgramCommand (`cd && install && launch`), launchManagedProgram (declared env scrubbed, declared ports seeded), runtimeClient discoverManifest/launchInstalledProgram, collab `POST /launch-program` + `GET /manifest` endpoints. Backend `node --test` 8 pass; `src/lib/programs` 43 pass; server.js `node --check` ok.
 - [ ] P2-T5 Program install/launch API routes (marketplace/installed/install/[installId]/launch) — owner-admin write, member read, consent→PermissionGrant w/ manifest scopes.
 - [ ] P2-T6 Programs sidebar Installed section + install-from-manifest + consent prompt + launch-from-install.
 - [ ] P2-T7 Regression + security sweep (full vitest + backend node test + prisma; security checklist).
