@@ -15,6 +15,10 @@ import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
+browserPlaywrightAdapter.setTeachEventSink((event) => {
+  browserBroker.recordHumanAction(event);
+});
+
 export const BROWSER_TOOL_NAMES = [
   "synthi_browser_attach_current_workspace",
   "synthi_browser_observe",

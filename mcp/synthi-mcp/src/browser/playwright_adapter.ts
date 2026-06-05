@@ -1,7 +1,7 @@
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
 import { readFile } from "node:fs/promises";
 import { normalizeOrigin, redactText, redactUrl } from "./security.js";
-import type { BrowserActionKind, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
+import type { BrowserActionKind, BrowserElementMetadata, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
 
 interface PageRecord {
   page: Page;
@@ -23,6 +23,26 @@ export interface BrowserWaitInput {
   timeout_ms?: number;
 }
 
+export interface CapturedBrowserHumanAction {
+  tab_id: string;
+  frame_id?: string;
+  url: string;
+  origin: string;
+  action: BrowserActionKind;
+  value?: string;
+  field_name?: string;
+  element?: BrowserElementMetadata;
+  bbox?: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
+  detail?: Record<string, unknown>;
+}
+
+export type BrowserTeachEventSink = (event: CapturedBrowserHumanAction) => void;
+
 export class BrowserPlaywrightAdapter {
   private browser: Browser | null = null;
   private cdpUrl: string | null = null;
@@ -32,6 +52,11 @@ export class BrowserPlaywrightAdapter {
   private readonly instrumented = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
+  private teachEventSink: BrowserTeachEventSink | null = null;
+
+  setTeachEventSink(sink: BrowserTeachEventSink | null): void {
+    this.teachEventSink = sink;
+  }
 
   async attach(cdpUrl: string): Promise<BrowserTab[]> {
     if (!this.browser || this.cdpUrl !== cdpUrl) {
@@ -226,12 +251,13 @@ export class BrowserPlaywrightAdapter {
     this.pages.clear();
     this.consoleEvents.clear();
     this.networkEvents.clear();
+    this.teachEventSink = null;
   }
 
   private async describePage(page: Page): Promise<BrowserTab> {
     const tab_id = this.idForPage(page);
     this.pages.set(tab_id, { page, tab_id });
-    this.instrumentPage(page, tab_id);
+    await this.instrumentPage(page, tab_id);
     return {
       tab_id,
       url: page.url(),
@@ -249,7 +275,7 @@ export class BrowserPlaywrightAdapter {
     return id;
   }
 
-  private instrumentPage(page: Page, tab_id: string): void {
+  private async instrumentPage(page: Page, tab_id: string): Promise<void> {
     if (this.instrumented.has(page)) return;
     this.instrumented.add(page);
     page.on("console", (msg) => {
@@ -271,6 +297,7 @@ export class BrowserPlaywrightAdapter {
         detail: { method: request.method(), resource_type: request.resourceType() },
       });
     });
+    await this.installTeachCapture(page, tab_id);
   }
 
   private pushEvent(
@@ -326,6 +353,18 @@ export class BrowserPlaywrightAdapter {
     return page.locator(trimmed);
   }
 
+  private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
+    const bindingName = "__synthiRecordHumanAction";
+    await page.exposeBinding(bindingName, (_source, payload: unknown) => {
+      const event = normalizeCapturedHumanAction(payload, tab_id);
+      if (!event) return;
+      this.teachEventSink?.(event);
+    }).catch(() => undefined);
+    const script = teachCaptureInitScript(bindingName);
+    await page.addInitScript(script).catch(() => undefined);
+    await page.evaluate(script).catch(() => undefined);
+  }
+
   private requireBrowser(): Browser {
     if (!this.browser) throw new Error("browser_not_attached");
     return this.browser;
@@ -336,6 +375,289 @@ export class BrowserPlaywrightAdapter {
     if (!page || page.isClosed()) throw new Error("tab_not_found");
     return page;
   }
+}
+
+export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): CapturedBrowserHumanAction | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const raw = payload as Record<string, unknown>;
+  const url = stringOpt(raw["url"]);
+  const origin = stringOpt(raw["origin"]);
+  const action = browserActionOpt(raw["action"]);
+  if (!url || !origin || !action) return null;
+  const event: CapturedBrowserHumanAction = {
+    tab_id,
+    url,
+    origin,
+    action,
+    detail: {
+      capture_source: "hosted_browser_dom",
+      ...(recordOpt(raw["detail"]) ?? {}),
+    },
+  };
+  const value = stringOpt(raw["value"]);
+  if (value !== undefined) event.value = value;
+  const fieldName = stringOpt(raw["field_name"]);
+  if (fieldName !== undefined) event.field_name = fieldName;
+  const frameId = stringOpt(raw["frame_id"]);
+  if (frameId !== undefined) event.frame_id = frameId;
+  const element = elementOpt(raw["element"]);
+  if (element !== undefined) event.element = element;
+  const bbox = bboxOpt(raw["bbox"]);
+  if (bbox !== undefined) event.bbox = bbox;
+  return event;
+}
+
+function browserActionOpt(value: unknown): BrowserActionKind | undefined {
+  return typeof value === "string" && [
+    "click",
+    "fill",
+    "hover",
+    "drag",
+    "press",
+    "select",
+    "check",
+    "uncheck",
+    "navigate",
+    "wait",
+  ].includes(value) ? value as BrowserActionKind : undefined;
+}
+
+function elementOpt(value: unknown): BrowserElementMetadata | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const element: BrowserElementMetadata = {};
+  for (const key of ["tag", "role", "name", "label", "placeholder", "test_id", "text", "id", "class_name", "css", "xpath", "type", "source_id"] as const) {
+    const found = stringOpt(raw[key]);
+    if (found !== undefined) element[key] = found;
+  }
+  return Object.keys(element).length ? element : undefined;
+}
+
+function bboxOpt(value: unknown): CapturedBrowserHumanAction["bbox"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const x = numberOpt(raw["x"]);
+  const y = numberOpt(raw["y"]);
+  const w = numberOpt(raw["w"]);
+  const h = numberOpt(raw["h"]);
+  return x !== undefined && y !== undefined && w !== undefined && h !== undefined ? { x, y, w, h } : undefined;
+}
+
+function recordOpt(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringOpt(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function numberOpt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function teachCaptureInitScript(bindingName: string): string {
+  return `(() => {
+    const bindingName = ${JSON.stringify(bindingName)};
+    if (window.__SYNTHI_TEACH_CAPTURE_INSTALLED__) return;
+    window.__SYNTHI_TEACH_CAPTURE_INSTALLED__ = true;
+    const pending = new WeakMap();
+    const lastSent = new WeakMap();
+    const editableTags = new Set(['input', 'textarea', 'select']);
+
+    function isElement(value) {
+      return value instanceof Element;
+    }
+
+    function text(value) {
+      return typeof value === 'string' ? value.trim().replace(/\\s+/g, ' ').slice(0, 160) : '';
+    }
+
+    function attr(el, name) {
+      return text(el.getAttribute(name) || '');
+    }
+
+    function associatedLabel(el) {
+      if (el.id) {
+        const label = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (label) return text(label.textContent || '');
+      }
+      const parent = el.closest('label');
+      return parent ? text(parent.textContent || '') : '';
+    }
+
+    function roleFor(el) {
+      const explicit = attr(el, 'role');
+      if (explicit) return explicit;
+      const tag = el.tagName.toLowerCase();
+      const type = attr(el, 'type').toLowerCase();
+      if (tag === 'button') return 'button';
+      if (tag === 'a' && attr(el, 'href')) return 'link';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'input') {
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (['button', 'submit', 'reset'].includes(type)) return 'button';
+        return 'textbox';
+      }
+      return '';
+    }
+
+    function cssFor(el) {
+      if (!isElement(el)) return '';
+      const testId = attr(el, 'data-testid') || attr(el, 'data-test');
+      if (testId) return '[data-testid="' + testId.replace(/"/g, '\\\\"') + '"]';
+      if (el.id) return '#' + CSS.escape(el.id);
+      const parts = [];
+      let node = el;
+      while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+        const tag = node.tagName.toLowerCase();
+        let part = tag;
+        if (node.id) {
+          parts.unshift('#' + CSS.escape(node.id));
+          break;
+        }
+        const parent = node.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+          if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+        }
+        parts.unshift(part);
+        node = parent;
+      }
+      return parts.join(' > ');
+    }
+
+    function xpathFor(el) {
+      if (!isElement(el)) return '';
+      const parts = [];
+      let node = el;
+      while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
+        const tag = node.tagName.toLowerCase();
+        const parent = node.parentElement;
+        if (!parent) {
+          parts.unshift(tag);
+          break;
+        }
+        const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+        parts.unshift(tag + '[' + (siblings.indexOf(node) + 1) + ']');
+        node = parent;
+      }
+      return '/' + parts.join('/');
+    }
+
+    function metadata(el) {
+      const tag = el.tagName.toLowerCase();
+      const label = associatedLabel(el);
+      const placeholder = attr(el, 'placeholder');
+      const aria = attr(el, 'aria-label');
+      const textContent = text(el.textContent || '');
+      const testId = attr(el, 'data-testid') || attr(el, 'data-test');
+      const type = attr(el, 'type');
+      return {
+        tag,
+        role: roleFor(el),
+        name: aria || label || placeholder || textContent,
+        label,
+        placeholder,
+        test_id: testId,
+        text: textContent,
+        id: attr(el, 'id'),
+        class_name: text(el.className || ''),
+        css: cssFor(el),
+        xpath: xpathFor(el),
+        type,
+        source_id: attr(el, 'data-synthi-source-id'),
+      };
+    }
+
+    function bbox(el) {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    }
+
+    function fieldName(el, element) {
+      return attr(el, 'name') || element.label || element.placeholder || element.name || element.id || element.test_id || element.tag;
+    }
+
+    function actionForChange(el) {
+      const tag = el.tagName.toLowerCase();
+      const type = attr(el, 'type').toLowerCase();
+      if (tag === 'select') return 'select';
+      if (tag === 'input' && type === 'checkbox') return el.checked ? 'check' : 'uncheck';
+      if (tag === 'input' && type === 'radio') return 'check';
+      return 'fill';
+    }
+
+    function isEditableTextTarget(el) {
+      const tag = el.tagName.toLowerCase();
+      const type = attr(el, 'type').toLowerCase();
+      if (tag === 'textarea') return true;
+      if (tag !== 'input') return false;
+      return !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'hidden'].includes(type);
+    }
+
+    function shouldSkipClick(el) {
+      const tag = el.tagName.toLowerCase();
+      if (isEditableTextTarget(el)) return true;
+      return tag === 'select';
+    }
+
+    function emit(el, action, value, detail) {
+      if (!window[bindingName] || !isElement(el)) return;
+      const element = metadata(el);
+      const payload = {
+        url: location.href,
+        origin: location.origin,
+        action,
+        value: typeof value === 'string' ? value : undefined,
+        field_name: fieldName(el, element),
+        element,
+        bbox: bbox(el),
+        detail: Object.assign({ event_source: 'dom_listener' }, detail || {}),
+      };
+      const signature = action + '|' + (payload.value || '') + '|' + location.href;
+      const last = lastSent.get(el);
+      const now = Date.now();
+      if (last && last.signature === signature && now - last.ts < 300) return;
+      lastSent.set(el, { signature, ts: now });
+      window[bindingName](payload).catch(() => {});
+    }
+
+    function clearPending(el) {
+      const timer = pending.get(el);
+      if (timer) clearTimeout(timer);
+      pending.delete(el);
+    }
+
+    document.addEventListener('input', (event) => {
+      const el = event.target;
+      if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
+      if (!isEditableTextTarget(el)) return;
+      clearPending(el);
+      pending.set(el, setTimeout(() => {
+        pending.delete(el);
+        emit(el, 'fill', String(el.value || ''), { input_debounced: true });
+      }, 300));
+    }, true);
+
+    document.addEventListener('change', (event) => {
+      const el = event.target;
+      if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
+      clearPending(el);
+      const action = actionForChange(el);
+      const value = action === 'check' || action === 'uncheck' ? String(Boolean(el.checked)) : String(el.value || '');
+      emit(el, action, value, { change_event: true });
+    }, true);
+
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
+      if (!isElement(el) || shouldSkipClick(el)) return;
+      emit(el, 'click', undefined, { click_event: true });
+    }, true);
+  })();`;
 }
 
 function parseRoleLocator(input: string): { role: string; name: string } | null {
