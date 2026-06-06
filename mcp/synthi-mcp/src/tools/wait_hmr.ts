@@ -13,6 +13,8 @@ import {
 import {
   GPU_HMR_PROOF_STATES,
   classifyGpuHmrProofMessage,
+  gpuHmrProofMatches,
+  type GpuHmrProofMatchOpts,
   isKnownGpuHmrProofState,
   validateGpuHmrProofState,
   type GpuHmrProofTelemetry,
@@ -63,11 +65,15 @@ function requiredGpuProofState(args: WaitHmrArgs): string | null {
   return args.requiredGpuProofState.trim();
 }
 
-function latestGpuProofFromAttached(attached: ReturnType<typeof session.require>): GpuHmrProofTelemetry | null {
+function latestGpuProofFromAttached(
+  attached: ReturnType<typeof session.require>,
+  opts: GpuHmrProofMatchOpts
+): GpuHmrProofTelemetry | null {
   const hmr = attached.channels.hmr as {
-    latestGpuProof?: () => GpuHmrProofTelemetry | null;
+    latestGpuProof?: (opts?: GpuHmrProofMatchOpts) => GpuHmrProofTelemetry | null;
   };
-  return hmr.latestGpuProof?.() ?? null;
+  const proof = hmr.latestGpuProof?.(opts) ?? null;
+  return gpuHmrProofMatches(proof, opts) ? proof : null;
 }
 
 function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unknown> | null {
@@ -142,13 +148,18 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   try {
     const start = Date.now();
     const attached = session.require();
-    let latestGpuProof = latestGpuProofFromAttached(attached);
+    const proofMatchOpts: GpuHmrProofMatchOpts = {
+      ...(sinceTs !== undefined ? { sinceTs } : {}),
+      ...(module ? { module } : {}),
+      ...(previewId ? { previewId } : {}),
+    };
+    let latestGpuProof = latestGpuProofFromAttached(attached, proofMatchOpts);
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
     unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
       const proof = classifyGpuHmrProofMessage(msg);
-      if (proof) latestGpuProof = proof;
+      if (gpuHmrProofMatches(proof, proofMatchOpts)) latestGpuProof = proof;
       const cls = classifyHmrMessage(msg);
       if (!cls) return;
       if (cls.status === "applied") {

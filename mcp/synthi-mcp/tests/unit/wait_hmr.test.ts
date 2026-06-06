@@ -3,6 +3,11 @@ import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
 import { waitHmrTool } from "../../src/tools/wait_hmr.js";
 import { resolvePipelineBudgetMs } from "../../src/protocol/index.js";
+import {
+  classifyGpuHmrProofMessage,
+  type GpuHmrProofMatchOpts,
+  type GpuHmrProofTelemetry,
+} from "../../src/gpu_proof.js";
 
 type FakeWaitOpts = {
   timeoutMs?: number;
@@ -19,7 +24,8 @@ function installFakeAttached(
     observedAt?: number;
     retained?: boolean;
     sequence?: number;
-  }>
+  }>,
+  latestGpuProof?: (opts?: GpuHmrProofMatchOpts) => GpuHmrProofTelemetry | null
 ): { feedHmr: (msg: Record<string, unknown>) => void } {
   const listeners: Array<(msg: Record<string, unknown>) => void> = [];
   (session as unknown as { state: string }).state = "attached";
@@ -48,6 +54,7 @@ function installFakeAttached(
           };
         },
         waitForTerminal,
+        latestGpuProof,
       },
     },
   };
@@ -185,6 +192,61 @@ describe("synthi_wait_hmr", () => {
 
     const res = await waitHmrTool({
       timeoutMs: 500,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+  });
+
+  it("rejects a retained GPU proof that predates since_ts", async () => {
+    const staleProof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      module: "device",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }, Date.now() - 1000);
+    const sinceTs = Date.now();
+    installFakeAttached(
+      async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10, observedAt: sinceTs + 10 }),
+      () => staleProof
+    );
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      module: "device",
+      since_ts: sinceTs,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+  });
+
+  it("rejects a fresh full GPU proof from the wrong module during a device wait", async () => {
+    const sinceTs = Date.now();
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        module: "core",
+        resultState: "gpu-hmr-full-runtime-proven",
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10, observedAt: sinceTs + 10 };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      module: "device",
+      since_ts: sinceTs,
       requireGpuFullRuntimeProof: true,
     });
 

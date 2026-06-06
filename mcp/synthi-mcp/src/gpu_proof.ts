@@ -55,6 +55,12 @@ export interface GpuHmrProofValidation {
   reason?: string;
 }
 
+export interface GpuHmrProofMatchOpts {
+  sinceTs?: number;
+  module?: string;
+  previewId?: string;
+}
+
 const PROOF_STATE_RANKS = new Map<string, number>(
   GPU_HMR_PROOF_STATES.map((state, index) => [state, index + 1])
 );
@@ -77,6 +83,47 @@ const DEGRADED_STATE_RANK_CAPS = new Map<string, number>([
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function nestedString(raw: Record<string, unknown>, key: string): string | null {
+  const direct = stringOrNull(raw[key]);
+  if (direct) return direct;
+  for (const nestedKey of ["data", "detail"]) {
+    const nested = raw[nestedKey];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const value = stringOrNull((nested as Record<string, unknown>)[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+export function gpuHmrProofModule(proof: GpuHmrProofTelemetry | null): string | null {
+  return proof ? nestedString(proof.raw, "module") : null;
+}
+
+export function gpuHmrProofPreviewId(proof: GpuHmrProofTelemetry | null): string | null {
+  if (!proof) return null;
+  return nestedString(proof.raw, "preview_id") ?? nestedString(proof.raw, "previewId");
+}
+
+export function gpuHmrProofMatches(
+  proof: GpuHmrProofTelemetry | null,
+  opts: GpuHmrProofMatchOpts = {}
+): proof is GpuHmrProofTelemetry {
+  if (proof === null) return false;
+  if (opts.sinceTs !== undefined && Number.isFinite(opts.sinceTs) && proof.observedAt < opts.sinceTs) {
+    return false;
+  }
+  const expectedModule = opts.module?.trim();
+  if (expectedModule && gpuHmrProofModule(proof) !== expectedModule) {
+    return false;
+  }
+  const expectedPreviewId = opts.previewId?.trim();
+  if (expectedPreviewId && gpuHmrProofPreviewId(proof) !== expectedPreviewId) {
+    return false;
+  }
+  return true;
 }
 
 export function isKnownGpuHmrProofState(value: unknown): value is GpuHmrProofState {
