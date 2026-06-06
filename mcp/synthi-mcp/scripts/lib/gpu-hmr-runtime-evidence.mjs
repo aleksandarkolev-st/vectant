@@ -1862,6 +1862,10 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           visualEvidenceRef: latest.visualEvidenceRef,
           probeMode: latest.probeMode,
           probeConfigHash: latest.probeConfigHash,
+          readbackBytes: latest.readbackBytes,
+          readbackSampleStride: latest.readbackSampleStride,
+          readbackSampleSha256: latest.readbackSampleSha256,
+          readbackSampleHex: latest.readbackSampleHex,
           probeEvidenceRefs: compactStringList([
             latest.probeEvidenceRef,
             ...evidenceRefs,

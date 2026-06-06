@@ -3402,6 +3402,13 @@ function digestBytes(value) {
   return Buffer.from(digest, 'hex');
 }
 
+function readbackSampleBytes(oracle) {
+  const hex = String(oracle?.readbackSampleHex ?? '').trim();
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const bytes = Buffer.from(hex, 'hex');
+  return bytes.length > 0 ? bytes : null;
+}
+
 function computeProofArtifactName(oracle) {
   const base = `${CFG.slug}-${oracle?.oracleId ?? 'runtime-output-oracle'}`
     .replace(/[^A-Za-z0-9_.-]+/g, '-')
@@ -3423,6 +3430,7 @@ async function writeRuntimeOutputOracleVisualProof(runtimeOutputOracle) {
   const height = 540;
   const expectedBytes = digestBytes(oracle.expected);
   const actualBytes = digestBytes(oracle.actual);
+  const sampleBytes = readbackSampleBytes(oracle);
   const mixedBytes = digestBytes([
     oracle.oracleId,
     oracle.outputTargetId,
@@ -3438,10 +3446,13 @@ async function writeRuntimeOutputOracleVisualProof(runtimeOutputOracle) {
       const band = Math.floor((y / height) * 32) % 32;
       const e = expectedBytes[(stripe + band) % expectedBytes.length];
       const a = actualBytes[(stripe * 3 + band) % actualBytes.length];
+      const sample = sampleBytes
+        ? sampleBytes[(x + y * width + stripe * 17 + band * 31) % sampleBytes.length]
+        : mixedBytes[(x + y + stripe) % mixedBytes.length];
       const m = mixedBytes[(x + y + stripe) % mixedBytes.length];
-      raw[i] = (18 + ((e ^ m) % 180)) & 0xff;
-      raw[i + 1] = (36 + ((a + m) % 170)) & 0xff;
-      raw[i + 2] = (48 + ((e + a + band * 7) % 190)) & 0xff;
+      raw[i] = (18 + ((e ^ sample ^ m) % 180)) & 0xff;
+      raw[i + 1] = (36 + ((a + sample + m) % 170)) & 0xff;
+      raw[i + 2] = (48 + ((e + a + sample + band * 7) % 190)) & 0xff;
     }
   }
   const expectedShort = String(oracle.expected ?? '').slice(0, 23);
@@ -3466,6 +3477,7 @@ async function writeRuntimeOutputOracleVisualProof(runtimeOutputOracle) {
   <text x="524" y="320" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Probe</text>
   <text x="524" y="354" fill="#ffe39e" font-family="Consolas, monospace" font-size="18">${xmlEscape(String(oracle.probeMode ?? 'unknown').slice(0, 42))}</text>
   <text x="524" y="414" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">readback ${xmlEscape(oracle.readbackTimestamp ?? 'unknown')}</text>
+  <text x="524" y="442" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">sample ${xmlEscape(sampleBytes ? `${sampleBytes.length} bytes from GPU readback` : 'checksum-derived fallback')}</text>
 </svg>`;
   await sharp(raw, { raw: { width, height, channels: 3 } })
     .composite([{ input: Buffer.from(svg) }])
