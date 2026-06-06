@@ -75,7 +75,7 @@ function resolveCollabServerUrl() {
   return `${protocol}//${hostname}:1234`;
 }
 
-async function discoverWorkspacePreviewUrl() {
+async function discoverWorkspacePreviewUrl(workspaceSlug) {
   if (typeof window === 'undefined') return null;
   const base = resolveCollabServerUrl();
   const resolvePreviewUrl = (path) => {
@@ -87,7 +87,10 @@ async function discoverWorkspacePreviewUrl() {
     }
   };
   try {
-    const res = await fetch(`${base}/ports`, { cache: 'no-store' });
+    const query = typeof workspaceSlug === 'string' && workspaceSlug.trim()
+      ? `?workspace=${encodeURIComponent(workspaceSlug.trim())}`
+      : '';
+    const res = await fetch(`${base}/ports${query}`, { cache: 'no-store' });
     if (!res.ok) return null;
     const data = await res.json();
     const previews = Array.isArray(data?.previews)
@@ -356,7 +359,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
-    const previewUrl = await discoverWorkspacePreviewUrl();
+    const previewUrl = await discoverWorkspacePreviewUrl(ctx?.workspaceSlug);
     return callWorkflowTool(WORKFLOW_ACTIONS.OBSERVE, {
       workspace_url: currentUrl,
       ...(previewUrl ? { preview_url: previewUrl, preferred_url: previewUrl } : {}),

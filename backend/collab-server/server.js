@@ -1222,7 +1222,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /ports — list active dev-server ports
-  if (req.url === '/ports' && req.method === 'GET') {
+  if (req.method === 'GET' && (req.url === '/ports' || req.url.startsWith('/ports?'))) {
     proxyService.handlePortsStatus(req, res);
     return;
   }
@@ -4252,4 +4252,3 @@ process.on('uncaughtException', (err) => {
     shadowContinuousProducer.start();
   });
 })();
-

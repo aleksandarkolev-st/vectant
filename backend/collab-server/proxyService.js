@@ -25,6 +25,7 @@
 const http = require('http');
 const net = require('net');
 const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
 
 // ─── Configuration ──────────────────────────────────────────────────────────
@@ -49,6 +50,13 @@ const CONFIGURED_SCAN_PORTS = parsePortList(
   DEFAULT_SCAN_PORTS.join(',')
 );
 
+/** Repo roots used to attribute a listening process to a workspace. */
+const REPO_ROOTS = [
+  process.env.REPOS_DIR,
+  process.env.REPO_CACHE_DIR,
+  '/data/repos',
+].filter((value, index, arr) => value && arr.indexOf(value) === index);
+
 /** How often to re-scan (ms). */
 const SCAN_INTERVAL_MS = 3000;
 
@@ -65,6 +73,9 @@ const activePorts = new Set();
 
 /** @type {Map<number, string>} Maps port → resolved host (127.0.0.1 or ::1). */
 const portHostMap = new Map();
+
+/** @type {Map<number, { port: number, pid?: number, cwd?: string, command?: string, workspaceSlug?: string, userId?: string }>} */
+const portProcessMap = new Map();
 
 /** Listeners notified when the active port set changes. */
 const changeListeners = [];
@@ -109,7 +120,8 @@ async function probePort(port) {
  * change listeners when the set differs.
  */
 async function scanOnce(serverPort) {
-  const discoveredPorts = discoverListeningPorts();
+  const discovered = discoverListeningPorts();
+  const discoveredPorts = [...discovered.keys()];
   const portsToProbe = [...new Set([
     ...discoveredPorts,
     ...CONFIGURED_SCAN_PORTS,
@@ -125,8 +137,15 @@ async function scanOnce(serverPort) {
   const found = new Set(results.filter((r) => r.host !== null).map((r) => r.port));
   // Update host map for each discovered port
   for (const r of results) {
-    if (r.host) portHostMap.set(r.port, r.host);
-    else portHostMap.delete(r.port);
+    if (r.host) {
+      portHostMap.set(r.port, r.host);
+      const processInfo = discovered.get(r.port);
+      if (processInfo) portProcessMap.set(r.port, processInfo);
+      else portProcessMap.delete(r.port);
+    } else {
+      portHostMap.delete(r.port);
+      portProcessMap.delete(r.port);
+    }
   }
 
   // Diff
@@ -390,20 +409,51 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
  * Handle `GET /ports` — returns the list of active ports as JSON.
  */
 function handlePortsStatus(req, res) {
-  const ports = [...activePorts].sort((a, b) => a - b);
+  const requestedWorkspace = workspaceFilterFromReq(req);
+  const allPorts = [...activePorts].sort((a, b) => a - b);
+  const workspacePorts = requestedWorkspace
+    ? allPorts.filter((port) => portMatchesWorkspace(port, requestedWorkspace))
+    : allPorts;
+  const hasWorkspaceAttribution = allPorts.some((port) => Boolean(portProcessMap.get(port)?.workspaceSlug));
+  const ports = requestedWorkspace && (workspacePorts.length > 0 || hasWorkspaceAttribution)
+    ? workspacePorts
+    : allPorts;
   res.writeHead(200, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
   });
   res.end(JSON.stringify({
     activePorts: ports,
+    allActivePorts: allPorts,
     host: PROXY_HOST,
-    previews: ports.map((port) => ({
-      port,
-      url: `/port/${port}/`,
-      target: `http://${portHostMap.get(port) || PROXY_HOST}:${port}/`,
-    })),
+    workspace: requestedWorkspace,
+    previews: ports.map(previewForPort),
   }));
+}
+
+function previewForPort(port) {
+  const processInfo = portProcessMap.get(port);
+  return {
+    port,
+    url: `/port/${port}/`,
+    target: `http://${portHostMap.get(port) || PROXY_HOST}:${port}/`,
+    workspace: processInfo?.workspaceSlug ?? null,
+    attributed: Boolean(processInfo?.workspaceSlug),
+  };
+}
+
+function workspaceFilterFromReq(req) {
+  try {
+    const parsed = new URL(req.url || '/ports', 'http://collab.local');
+    const value = parsed.searchParams.get('workspace') || parsed.searchParams.get('slug');
+    return value && value.trim() ? value.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function portMatchesWorkspace(port, workspaceSlug) {
+  return portProcessMap.get(port)?.workspaceSlug === workspaceSlug;
 }
 
 function parsePortList(value) {
@@ -429,10 +479,11 @@ function parsePortList(value) {
 }
 
 function discoverListeningPorts() {
-  const ports = new Set();
+  const ports = new Map();
   collectListeningPorts('/proc/net/tcp', ports);
   collectListeningPorts('/proc/net/tcp6', ports);
-  return [...ports].sort((a, b) => a - b);
+  enrichListeningPortProcesses(ports);
+  return ports;
 }
 
 function collectListeningPorts(path, ports) {
@@ -447,9 +498,99 @@ function collectListeningPorts(path, ports) {
     if (fields.length < 4 || fields[3] !== '0A') continue;
     const local = fields[1];
     const portHex = local.slice(local.lastIndexOf(':') + 1);
+    const inode = fields[9];
     const port = Number.parseInt(portHex, 16);
-    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) continue;
+    const current = ports.get(port) || { port, inodes: [] };
+    if (inode && !current.inodes.includes(inode)) current.inodes.push(inode);
+    ports.set(port, current);
   }
+}
+
+function enrichListeningPortProcesses(ports) {
+  const inodeToPort = new Map();
+  for (const [port, info] of ports) {
+    for (const inode of info.inodes || []) inodeToPort.set(inode, port);
+  }
+  if (inodeToPort.size === 0) return;
+
+  let procEntries;
+  try {
+    procEntries = fs.readdirSync('/proc', { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of procEntries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    const fdDir = `/proc/${entry.name}/fd`;
+    let fds;
+    try {
+      fds = fs.readdirSync(fdDir);
+    } catch {
+      continue;
+    }
+    for (const fd of fds) {
+      let target;
+      try {
+        target = fs.readlinkSync(path.join(fdDir, fd));
+      } catch {
+        continue;
+      }
+      const match = target.match(/^socket:\[(\d+)\]$/);
+      if (!match) continue;
+      const port = inodeToPort.get(match[1]);
+      if (!port) continue;
+      const info = ports.get(port);
+      if (!info || info.pid) continue;
+      const cwd = readProcLink(`/proc/${entry.name}/cwd`);
+      const command = readProcCommand(entry.name);
+      const workspace = inferWorkspaceFromCwd(cwd);
+      ports.set(port, {
+        ...info,
+        pid,
+        cwd,
+        command,
+        ...(workspace || {}),
+      });
+    }
+  }
+}
+
+function readProcLink(linkPath) {
+  try {
+    return fs.readlinkSync(linkPath);
+  } catch {
+    return undefined;
+  }
+}
+
+function readProcCommand(pid) {
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+      .split('\0')
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 240) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function inferWorkspaceFromCwd(cwd) {
+  if (!cwd) return null;
+  for (const root of REPO_ROOTS) {
+    const relative = path.relative(root, cwd);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) continue;
+    const parts = relative.split(path.sep).filter(Boolean);
+    if (!parts[0]) continue;
+    return {
+      workspaceSlug: parts[0],
+      ...(parts[1] ? { userId: parts[1] } : {}),
+    };
+  }
+  return null;
 }
 
 // ─── Exports ────────────────────────────────────────────────────────────────
