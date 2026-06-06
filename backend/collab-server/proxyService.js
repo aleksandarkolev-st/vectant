@@ -6,8 +6,9 @@
  *
  * Two responsibilities:
  *
- *   1. Port Scanner — periodically probes common dev-server ports on
- *      localhost and tracks which ones are alive.
+ *   1. Port Scanner — discovers listening workspace ports from /proc and
+ *      probes them, with a configurable fallback list for environments where
+ *      socket discovery is unavailable.
  *
  *   2. Reverse Proxy — routes  HTTP  requests from `/port/<N>/...` to
  *      `http://127.0.0.1:<N>/...` so the Synthi IDE can preview running
@@ -23,6 +24,7 @@
 
 const http = require('http');
 const net = require('net');
+const fs = require('fs');
 const { URL } = require('url');
 
 // ─── Configuration ──────────────────────────────────────────────────────────
@@ -30,8 +32,8 @@ const { URL } = require('url');
 /** Where proxied requests are forwarded to.  127.0.0.1 locally, pod IP in K8s. */
 const PROXY_HOST = process.env.PROXY_TARGET_HOST || '127.0.0.1';
 
-/** Ports to actively scan (covers most common dev frameworks). */
-const SCAN_PORTS = [
+/** Fallback ports to actively scan when socket discovery is unavailable. */
+const DEFAULT_SCAN_PORTS = [
   3000, 3001, 3002, 3003,   // React / Next.js
   4000, 4001, 4200,          // Angular / NestJS
   5000, 5001,                // Flask / .NET
@@ -39,6 +41,13 @@ const SCAN_PORTS = [
   8000,                      // Django / FastAPI (8001 excluded — used by WebRTC worker WS)
   8080, 8081, 8888,          // misc / Jupyter
 ];
+
+/** Extra/fallback scan ports. Comma-separated values and ranges are accepted. */
+const CONFIGURED_SCAN_PORTS = parsePortList(
+  process.env.PROXY_SCAN_PORTS ||
+  process.env.SYNTHI_PREVIEW_SCAN_PORTS ||
+  DEFAULT_SCAN_PORTS.join(',')
+);
 
 /** How often to re-scan (ms). */
 const SCAN_INTERVAL_MS = 3000;
@@ -100,9 +109,16 @@ async function probePort(port) {
  * change listeners when the set differs.
  */
 async function scanOnce(serverPort) {
+  const discoveredPorts = discoverListeningPorts();
+  const portsToProbe = [...new Set([
+    ...discoveredPorts,
+    ...CONFIGURED_SCAN_PORTS,
+  ])]
+    .filter((port) => port !== serverPort)
+    .sort((a, b) => a - b);
+
   const results = await Promise.all(
-    SCAN_PORTS
-      .filter((p) => p !== serverPort)               // never proxy ourselves
+    portsToProbe
       .map(async (port) => ({ port, host: await probePort(port) }))
   );
 
@@ -143,7 +159,7 @@ function startScanner(serverPort) {
   scanTimer = setInterval(() => scanOnce(serverPort).catch(() => {}), SCAN_INTERVAL_MS);
   // Don't keep the process alive just for the scanner
   if (scanTimer.unref) scanTimer.unref();
-  console.log(`[Proxy] Port scanner started (interval=${SCAN_INTERVAL_MS}ms, host=${PROXY_HOST})`);
+  console.log(`[Proxy] Port scanner started (interval=${SCAN_INTERVAL_MS}ms, host=${PROXY_HOST}, fallbackPorts=${CONFIGURED_SCAN_PORTS.join(',')})`);
 }
 
 function stopScanner() {
@@ -374,11 +390,66 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
  * Handle `GET /ports` — returns the list of active ports as JSON.
  */
 function handlePortsStatus(req, res) {
+  const ports = [...activePorts].sort((a, b) => a - b);
   res.writeHead(200, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
   });
-  res.end(JSON.stringify({ activePorts: [...activePorts], host: PROXY_HOST }));
+  res.end(JSON.stringify({
+    activePorts: ports,
+    host: PROXY_HOST,
+    previews: ports.map((port) => ({
+      port,
+      url: `/port/${port}/`,
+      target: `http://${portHostMap.get(port) || PROXY_HOST}:${port}/`,
+    })),
+  }));
+}
+
+function parsePortList(value) {
+  if (!value) return [];
+  const ports = new Set();
+  for (const rawPart of String(value).split(',')) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+      for (let port = Math.max(1, Math.min(start, end)); port <= Math.min(65535, Math.max(start, end)); port += 1) {
+        ports.add(port);
+      }
+      continue;
+    }
+    const port = Number(part);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
+  }
+  return [...ports].sort((a, b) => a - b);
+}
+
+function discoverListeningPorts() {
+  const ports = new Set();
+  collectListeningPorts('/proc/net/tcp', ports);
+  collectListeningPorts('/proc/net/tcp6', ports);
+  return [...ports].sort((a, b) => a - b);
+}
+
+function collectListeningPorts(path, ports) {
+  let content;
+  try {
+    content = fs.readFileSync(path, 'utf8');
+  } catch {
+    return;
+  }
+  for (const line of content.split('\n').slice(1)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 4 || fields[3] !== '0A') continue;
+    const local = fields[1];
+    const portHex = local.slice(local.lastIndexOf(':') + 1);
+    const port = Number.parseInt(portHex, 16);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
+  }
 }
 
 // ─── Exports ────────────────────────────────────────────────────────────────

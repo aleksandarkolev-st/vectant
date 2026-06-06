@@ -78,10 +78,34 @@ function resolveCollabServerUrl() {
 async function discoverWorkspacePreviewUrl() {
   if (typeof window === 'undefined') return null;
   const base = resolveCollabServerUrl();
+  const resolvePreviewUrl = (path) => {
+    if (typeof path !== 'string' || !path.trim()) return null;
+    try {
+      return new URL(path, `${base}/`).href;
+    } catch {
+      return null;
+    }
+  };
   try {
     const res = await fetch(`${base}/ports`, { cache: 'no-store' });
     if (!res.ok) return null;
     const data = await res.json();
+    const previews = Array.isArray(data?.previews)
+      ? data.previews
+        .map((preview) => ({
+          port: Number(preview?.port),
+          url: resolvePreviewUrl(preview?.url),
+        }))
+        .filter((preview) => (
+          Number.isInteger(preview.port) &&
+          preview.port > 0 &&
+          preview.port <= 65535 &&
+          preview.url
+        ))
+        .sort((a, b) => a.port - b.port)
+      : [];
+    if (previews[0]?.url) return previews[0].url;
+
     const ports = Array.isArray(data?.activePorts)
       ? data.activePorts
         .map((port) => Number(port))
@@ -89,7 +113,7 @@ async function discoverWorkspacePreviewUrl() {
         .sort((a, b) => a - b)
       : [];
     const port = ports[0];
-    return port ? `${base}/port/${port}/` : null;
+    return port ? resolvePreviewUrl(`/port/${port}/`) : null;
   } catch {
     return null;
   }
