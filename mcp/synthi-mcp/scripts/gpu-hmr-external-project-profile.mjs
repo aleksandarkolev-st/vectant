@@ -210,6 +210,36 @@ function normalizeProfile(rawProfile) {
   return normalized;
 }
 
+function mcpPreviewGpuProofGate(profile) {
+  if (profile.proofMode !== 'mcp_preview') {
+    return {
+      required: false,
+      satisfied: true,
+      hmrModule: null,
+      requireGpuFullRuntimeProof: null,
+      requiredGpuProofState: null,
+    };
+  }
+  const preview = profile.mcpPreview;
+  const fullRuntimeStateRequested = preview.requiredGpuProofState === 'gpu-hmr-full-runtime-proven';
+  const satisfied = (
+    preview.hmrModule === 'device'
+    && (preview.requireGpuFullRuntimeProof === true || fullRuntimeStateRequested)
+  );
+  return {
+    required: true,
+    satisfied,
+    hmrModule: preview.hmrModule,
+    requireGpuFullRuntimeProof: preview.requireGpuFullRuntimeProof,
+    requiredGpuProofState: preview.requiredGpuProofState,
+    waitContract: {
+      module: preview.hmrModule,
+      requireGpuFullRuntimeProof: preview.requireGpuFullRuntimeProof === true,
+      ...(preview.requiredGpuProofState ? { requiredGpuProofState: preview.requiredGpuProofState } : {}),
+    },
+  };
+}
+
 function parseArgs(argv) {
   const args = {
     profilePath: '',
@@ -699,25 +729,27 @@ async function compileViaMcp(client, profile, dir, label) {
   if (!compile?.ok) {
     throw new Error(`${label} synthi_compile failed: ${JSON.stringify(compile).slice(0, 2000)}`);
   }
+  const waitArgs = {
+    timeoutMs: profile.mcpPreview.hmrTimeoutMs,
+    since_ts: Number.isFinite(compile.dispatched_at) ? compile.dispatched_at : startedAt,
+    module: profile.mcpPreview.hmrModule,
+    ...(profile.mcpPreview.requiredGpuProofState
+      ? { requiredGpuProofState: profile.mcpPreview.requiredGpuProofState }
+      : {}),
+    ...(profile.mcpPreview.requireGpuFullRuntimeProof
+      ? { requireGpuFullRuntimeProof: true }
+      : {}),
+  };
   const wait = await client.toolCall(
     'synthi_wait_hmr',
-    {
-      timeoutMs: profile.mcpPreview.hmrTimeoutMs,
-      since_ts: Number.isFinite(compile.dispatched_at) ? compile.dispatched_at : startedAt,
-      module: profile.mcpPreview.hmrModule,
-      ...(profile.mcpPreview.requiredGpuProofState
-        ? { requiredGpuProofState: profile.mcpPreview.requiredGpuProofState }
-        : {}),
-      ...(profile.mcpPreview.requireGpuFullRuntimeProof
-        ? { requireGpuFullRuntimeProof: true }
-        : {}),
-    },
+    waitArgs,
     profile.mcpPreview.hmrTimeoutMs,
   );
   return {
     label,
     compile,
     wait,
+    waitArgs,
     compileWallMs: Date.now() - startedAt,
     waitStatus: wait?.status ?? null,
   };
@@ -904,6 +936,7 @@ async function selfCheck() {
       || profile.visualProof.screenshot.command.includes('{output}');
     const mcpPreviewComplete = profile.proofMode !== 'mcp_preview'
       || Boolean(profile.mcpPreview?.language && profile.mcpPreview?.entryFile);
+    const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
     const runtimeCommandComplete = profile.proofMode === 'mcp_preview'
       || Boolean(profile.runtime.run?.command);
     checks.push({
@@ -913,7 +946,8 @@ async function selfCheck() {
         && runtimeCommandComplete
         && profile.source.before !== profile.source.after
         && screenshotHasOutput
-        && mcpPreviewComplete,
+        && mcpPreviewComplete
+        && mcpPreviewGpuProof.satisfied,
       id: profile.id,
       project: profile.project.name,
       source: profile.source.file,
@@ -921,6 +955,7 @@ async function selfCheck() {
       runtimeCommandComplete,
       screenshotHasOutput,
       mcpPreviewComplete,
+      mcpPreviewGpuProofGate: mcpPreviewGpuProof,
     });
   }
   const failed = checks.filter((check) => !check.ok);
@@ -1039,7 +1074,11 @@ async function runMcpPreviewProfile(profile, dir, report) {
       attach: mcp.attach,
       splitModel: mcp.cfg.splitModel,
       deltaModel: mcp.cfg.deltaModel,
+      visualProofGate: mcpPreviewGpuProofGate(profile),
     };
+    if (!report.mcp.visualProofGate.satisfied) {
+      throw new Error(`MCP visual proof gate is not GPU-only: ${JSON.stringify(report.mcp.visualProofGate)}`);
+    }
     if (profile.runtime.build) {
       const build = await runCommand(profile.runtime.build, profile, { projectDir: dir });
       report.timings.buildMs = build.elapsedMs;
@@ -1103,11 +1142,14 @@ async function main() {
   }
   const profile = await loadProfile(args);
   if (args.dryRun) {
+    const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
     console.log(JSON.stringify({
       schemaVersion: 'synthi.gpu.hmr.external_project_profile.dry_run.v1',
       profile,
       projectDir: projectDir(profile),
+      mcpPreviewGpuProofGate: mcpPreviewGpuProof,
     }, null, 2));
+    if (!mcpPreviewGpuProof.satisfied) process.exitCode = 1;
     return;
   }
   await runProfile(profile);
