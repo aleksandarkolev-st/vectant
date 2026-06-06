@@ -125,6 +125,14 @@ function normalizeMcpPreview(rawPreview, field, proofMode) {
       1500,
       0,
     ),
+    hmrModule: optionalString(rawPreview.hmrModule ?? rawPreview.module, `${field}.hmrModule`) ?? 'device',
+    requiredGpuProofState: optionalString(
+      rawPreview.requiredGpuProofState,
+      `${field}.requiredGpuProofState`,
+    ),
+    requireGpuFullRuntimeProof: rawPreview.requireGpuFullRuntimeProof !== undefined
+      ? Boolean(rawPreview.requireGpuFullRuntimeProof)
+      : true,
     env: stringRecord(rawPreview.env, `${field}.env`),
   };
 }
@@ -696,6 +704,13 @@ async function compileViaMcp(client, profile, dir, label) {
     {
       timeoutMs: profile.mcpPreview.hmrTimeoutMs,
       since_ts: Number.isFinite(compile.dispatched_at) ? compile.dispatched_at : startedAt,
+      module: profile.mcpPreview.hmrModule,
+      ...(profile.mcpPreview.requiredGpuProofState
+        ? { requiredGpuProofState: profile.mcpPreview.requiredGpuProofState }
+        : {}),
+      ...(profile.mcpPreview.requireGpuFullRuntimeProof
+        ? { requireGpuFullRuntimeProof: true }
+        : {}),
     },
     profile.mcpPreview.hmrTimeoutMs,
   );
