@@ -18,8 +18,8 @@ describe('agentWorkflowClient', () => {
     window.localStorage.clear();
   });
 
-  it('uses local bridge defaults and localStorage overrides', () => {
-    expect(resolveAgentWorkflowBridgeUrl()).toBe('http://127.0.0.1:9466');
+  it('uses current-host bridge defaults and localStorage overrides', () => {
+    expect(resolveAgentWorkflowBridgeUrl()).toBe('http://localhost:9466');
     expect(resolveAgentWorkflowBridgeToken()).toBe('');
 
     window.localStorage.setItem('synthi.agentWorkflowBridgeUrl', 'http://127.0.0.1:9555');

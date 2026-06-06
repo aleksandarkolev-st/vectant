@@ -4,19 +4,36 @@
 // bridge (mcp/synthi-mcp/src/browser_workflow_bridge/server.ts).
 //
 // Config:
-//   NEXT_PUBLIC_SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL - default http://127.0.0.1:9466
+//   NEXT_PUBLIC_SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL - optional explicit bridge URL.
+//   By default local development follows the current page host on port 9466 so
+//   a workspace opened at localhost does not try to post to 127.0.0.1.
 //   Optional header X-Synthi-Workflow-Token is supplied via localStorage or
 //   explicit options when the bridge is token-gated.
 
-const DEFAULT_URL = 'http://127.0.0.1:9466';
+const DEFAULT_BRIDGE_PORT = '9466';
+const DEFAULT_SERVER_URL = `http://127.0.0.1:${DEFAULT_BRIDGE_PORT}`;
+
+function normalizeBridgeUrl(value) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().replace(/\/$/, '')
+    : '';
+}
+
+function browserDefaultBridgeUrl() {
+  if (typeof window === 'undefined') return DEFAULT_SERVER_URL;
+  const hostname = window.location?.hostname || 'localhost';
+  const host = hostname === '0.0.0.0' ? 'localhost' : hostname;
+  return `http://${host}:${DEFAULT_BRIDGE_PORT}`;
+}
 
 export function resolveAgentWorkflowBridgeUrl() {
-  if (typeof window === 'undefined') return DEFAULT_URL;
-  const fromStorage = window.localStorage?.getItem('synthi.agentWorkflowBridgeUrl');
+  if (typeof window === 'undefined') return DEFAULT_SERVER_URL;
+  const fromStorage = normalizeBridgeUrl(window.localStorage?.getItem('synthi.agentWorkflowBridgeUrl'));
   if (fromStorage) return fromStorage;
-  const fromEnv =
-    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL) || '';
-  return fromEnv || DEFAULT_URL;
+  const fromEnv = normalizeBridgeUrl(
+    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL) || '',
+  );
+  return fromEnv || browserDefaultBridgeUrl();
 }
 
 export function resolveAgentWorkflowBridgeToken() {
