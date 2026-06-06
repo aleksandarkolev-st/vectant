@@ -24,16 +24,30 @@ fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap
     AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+fn first_nonempty_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn gpu_split_model_override() -> Option<String> {
+    first_nonempty_env(&["SYNTHI_GPU_SPLIT_MODEL", "SYNTHI_GEMINI_MODEL"])
+}
+
+fn gpu_delta_model_override() -> Option<String> {
+    first_nonempty_env(&["SYNTHI_GPU_DELTA_MODEL", "SYNTHI_GEMINI_DELTA_MODEL"])
+}
+
 fn ai_split_cache_key(req: &CompileRequest) -> u64 {
     let gpu_mode = req
         .gpu_mode
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let split_model = std::env::var("SYNTHI_GEMINI_MODEL")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let split_model = gpu_split_model_override();
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
@@ -529,10 +543,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let split_model = std::env::var("SYNTHI_GEMINI_MODEL")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let split_model = gpu_split_model_override();
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
@@ -1038,6 +1049,16 @@ struct GpuDiffPatchResponse {
     fission_candidate: Option<serde_json::Value>,
     #[serde(default)]
     elapsed_seconds: Option<f64>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    requested_model: Option<String>,
+    #[serde(default)]
+    actual_model: Option<String>,
+    #[serde(default)]
+    model_fallback_used: Option<bool>,
+    #[serde(default)]
+    model_role: Option<String>,
 }
 
 /// GPU-aware AI delta path. Unlike the generic diff patch endpoint, this sends
@@ -1060,16 +1081,18 @@ pub async fn perform_gpu_ai_diff_patch(
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/diff_patch/gpu", backend_url);
 
+    let delta_model = gpu_delta_model_override();
     eprintln!(
-        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={}",
+        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={} model={}",
         url,
         diff.len(),
         architecture.map(|s| s.len()).unwrap_or(0),
         device_content.len(),
         reload_plan_hint.unwrap_or("none"),
+        delta_model.as_deref().unwrap_or("ai-engine-default"),
     );
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "diff": diff,
         "core_content": core_content,
         "gui_content": gui_content,
@@ -1082,6 +1105,9 @@ pub async fn perform_gpu_ai_diff_patch(
         "reload_plan_report": reload_plan_report.cloned().unwrap_or(serde_json::Value::Null),
         "reload_plan": reload_plan_hint,
     });
+    if let Some(model) = &delta_model {
+        payload["model"] = serde_json::Value::String(model.clone());
+    }
 
     let res: serde_json::Value = add_ai_auth(client.post(&url))
         .json(&payload)
@@ -1100,10 +1126,18 @@ pub async fn perform_gpu_ai_diff_patch(
     })?;
     let reload_plan = parsed.reload_plan.unwrap_or_else(|| "mixed".to_string());
     eprintln!(
-        "[GPU AI Delta] Completed in {:.2}s plan={} edit(s)={}",
+        "[GPU AI Delta] Completed in {:.2}s plan={} edit(s)={} model={} actual_model={} fallback_used={} role={}",
         parsed.elapsed_seconds.unwrap_or(0.0),
         reload_plan,
-        parsed.edits.len()
+        parsed.edits.len(),
+        parsed
+            .requested_model
+            .as_deref()
+            .or(parsed.model.as_deref())
+            .unwrap_or("unspecified"),
+        parsed.actual_model.as_deref().unwrap_or("unspecified"),
+        parsed.model_fallback_used.unwrap_or(false),
+        parsed.model_role.as_deref().unwrap_or("gpu_delta"),
     );
 
     Ok(GpuDiffPatchResult {

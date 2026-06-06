@@ -91,6 +91,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
   const source = raw.source && typeof raw.source === 'object' ? raw.source : {};
   const runtime = raw.runtime && typeof raw.runtime === 'object' ? raw.runtime : {};
   const reload = runtime.reload && typeof runtime.reload === 'object' ? runtime.reload : {};
+  const backend = runtime.backend && typeof runtime.backend === 'object' ? runtime.backend : {};
   const adapter = raw.adapter && typeof raw.adapter === 'object' ? raw.adapter : {};
   const visual = raw.visualProof && typeof raw.visualProof === 'object' ? raw.visualProof : {};
 
@@ -161,6 +162,12 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
         ? runtime.requiredFiles.map((item, index) =>
           nonEmptyString(item, `runtime.requiredFiles[${index}]`).replace(/\\/g, '/'))
         : [],
+      backend: {
+        orochiApi: optionalString(
+          backend.orochiApi ?? runtime.orochiApi ?? raw.orochiApi,
+          'runtime.backend.orochiApi',
+        )?.toLowerCase() ?? null,
+      },
     },
     source: {
       file: sourceFile,
@@ -192,6 +199,13 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     },
   };
 
+  if (
+    normalized.runtime.backend.orochiApi !== null
+    && !['auto', 'hip', 'cuda'].includes(normalized.runtime.backend.orochiApi)
+  ) {
+    throw new Error('runtime profile runtime.backend.orochiApi must be one of auto, hip, cuda');
+  }
+
   return normalized;
 }
 
@@ -209,6 +223,7 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     mode: normalized.runtime.mode ?? undefined,
     runtimeArgs: normalized.runtime.args,
     requiredFiles: normalized.runtime.requiredFiles,
+    orochiApi: normalized.runtime.backend.orochiApi ?? undefined,
     claim: normalized.visualProof.claim,
     width: normalized.visualProof.width,
     height: normalized.visualProof.height,
@@ -237,6 +252,9 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
     SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE: normalized.proof.requireStrictProvenance ? '1' : '0',
   };
   if (normalized.runtime.mode) env.SYNTHI_HIPRT_WARM_MODE = normalized.runtime.mode;
+  if (normalized.runtime.backend.orochiApi) {
+    env.SYNTHI_HIPRT_WARM_OROCHI_API = normalized.runtime.backend.orochiApi;
+  }
   if (normalized.runtime.workerRepoPath) env.SYNTHI_HIPRT_WARM_WORKER_REPO = normalized.runtime.workerRepoPath;
   if (normalized.runtime.args.length > 0) env.SYNTHI_HIPRT_WARM_RUN_ARGS_JSON = JSON.stringify(normalized.runtime.args);
   if (normalized.runtime.requiredFiles.length > 0) {

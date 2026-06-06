@@ -2322,8 +2322,8 @@ mod tests {
         )
         .expect("capsule token");
 
-        let metadata = gpu_reload_capsule_metadata_from_token(Some(&token))
-            .expect("runner capsule metadata");
+        let metadata =
+            gpu_reload_capsule_metadata_from_token(Some(&token)).expect("runner capsule metadata");
 
         assert_eq!(
             metadata.fission_island_id.as_deref(),

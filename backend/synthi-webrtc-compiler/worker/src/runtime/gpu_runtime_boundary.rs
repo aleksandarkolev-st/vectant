@@ -113,6 +113,10 @@ pub struct OutputOracleRecord {
     pub probe_mode: Option<String>,
     pub probe_config_hash: Option<String>,
     pub probe_evidence_ref: Option<String>,
+    pub readback_bytes: Option<usize>,
+    pub readback_sample_stride: Option<usize>,
+    pub readback_sample_sha256: Option<String>,
+    pub readback_sample_hex: Option<String>,
     pub passed: bool,
     pub generation: u64,
     pub runtime_session_id: String,
@@ -914,6 +918,10 @@ struct OutputOracleMetadata {
     probe_mode: Option<String>,
     probe_config_hash: Option<String>,
     probe_evidence_ref: Option<String>,
+    readback_bytes: Option<usize>,
+    readback_sample_stride: Option<usize>,
+    readback_sample_sha256: Option<String>,
+    readback_sample_hex: Option<String>,
 }
 
 fn epoch_millis_now() -> u128 {
@@ -930,6 +938,24 @@ fn append_log_token(line: &mut String, key: &str, value: Option<&str>) {
         line.push('=');
         line.push_str(&log_token(value));
     }
+}
+
+fn attach_readback_sample_metadata(metadata: &mut OutputOracleMetadata, data: &[u8]) {
+    if data.is_empty() {
+        return;
+    }
+    const MAX_SAMPLE_BYTES: usize = 1024;
+    let stride = std::cmp::max(1, (data.len() + MAX_SAMPLE_BYTES - 1) / MAX_SAMPLE_BYTES);
+    let sample = data
+        .iter()
+        .step_by(stride)
+        .take(MAX_SAMPLE_BYTES)
+        .copied()
+        .collect::<Vec<_>>();
+    metadata.readback_bytes = Some(data.len());
+    metadata.readback_sample_stride = Some(stride);
+    metadata.readback_sample_sha256 = Some(sha256_checksum_value(&sample));
+    metadata.readback_sample_hex = Some(hex::encode(sample));
 }
 
 fn record_output_oracle_event_with_metadata(
@@ -959,6 +985,10 @@ fn record_output_oracle_event_with_metadata(
             probe_mode: metadata.probe_mode.clone(),
             probe_config_hash: metadata.probe_config_hash.clone(),
             probe_evidence_ref: metadata.probe_evidence_ref.clone(),
+            readback_bytes: metadata.readback_bytes,
+            readback_sample_stride: metadata.readback_sample_stride,
+            readback_sample_sha256: metadata.readback_sample_sha256.clone(),
+            readback_sample_hex: metadata.readback_sample_hex.clone(),
             passed,
             generation,
             runtime_session_id: runtime_session.clone(),
@@ -1002,6 +1032,24 @@ fn record_output_oracle_event_with_metadata(
         &mut line,
         "probe_evidence_ref",
         metadata.probe_evidence_ref.as_deref(),
+    );
+    if let Some(readback_bytes) = metadata.readback_bytes {
+        line.push_str(" readback_bytes=");
+        line.push_str(&readback_bytes.to_string());
+    }
+    if let Some(readback_sample_stride) = metadata.readback_sample_stride {
+        line.push_str(" readback_sample_stride=");
+        line.push_str(&readback_sample_stride.to_string());
+    }
+    append_log_token(
+        &mut line,
+        "readback_sample_sha256",
+        metadata.readback_sample_sha256.as_deref(),
+    );
+    append_log_token(
+        &mut line,
+        "readback_sample_hex",
+        metadata.readback_sample_hex.as_deref(),
     );
     eprintln!("{line}");
 }
@@ -1186,12 +1234,18 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum(
         let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
         (actual, passed)
     };
-    record_output_oracle_event(
+    let mut metadata = OutputOracleMetadata::default();
+    if !data.is_null() && bytes > 0 {
+        let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
+        attach_readback_sample_metadata(&mut metadata, data);
+    }
+    record_output_oracle_event_with_metadata(
         oracle_id,
         "buffer_checksum".to_string(),
         expected,
         actual,
         passed,
+        metadata,
     );
     passed
 }
@@ -1217,21 +1271,26 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_provenance(
         let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
         (actual, passed)
     };
+    let mut metadata = OutputOracleMetadata {
+        tolerance: None,
+        producer: cstr(producer),
+        output_target_id: cstr(output_target_id),
+        readback_timestamp_ms: Some(epoch_millis_now()),
+        artifact_id: cstr_or_active_artifact_id(artifact_id),
+        visual_evidence_ref: cstr(visual_evidence_ref),
+        ..OutputOracleMetadata::default()
+    };
+    if !data.is_null() && bytes > 0 {
+        let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
+        attach_readback_sample_metadata(&mut metadata, data);
+    }
     record_output_oracle_event_with_metadata(
         oracle_id,
         "buffer_checksum".to_string(),
         expected,
         actual,
         passed,
-        OutputOracleMetadata {
-            tolerance: None,
-            producer: cstr(producer),
-            output_target_id: cstr(output_target_id),
-            readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: cstr_or_active_artifact_id(artifact_id),
-            visual_evidence_ref: cstr(visual_evidence_ref),
-            ..OutputOracleMetadata::default()
-        },
+        metadata,
     );
     passed
 }
@@ -1260,23 +1319,29 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_probe(
         let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
         (actual, passed)
     };
+    let mut metadata = OutputOracleMetadata {
+        tolerance: None,
+        producer: cstr(producer),
+        output_target_id: cstr(output_target_id),
+        readback_timestamp_ms: Some(epoch_millis_now()),
+        artifact_id: cstr_or_active_artifact_id(artifact_id),
+        visual_evidence_ref: cstr(visual_evidence_ref),
+        probe_mode: cstr(probe_mode),
+        probe_config_hash: cstr(probe_config_hash),
+        probe_evidence_ref: cstr(probe_evidence_ref),
+        ..OutputOracleMetadata::default()
+    };
+    if !data.is_null() && bytes > 0 {
+        let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
+        attach_readback_sample_metadata(&mut metadata, data);
+    }
     record_output_oracle_event_with_metadata(
         oracle_id,
         "buffer_checksum".to_string(),
         expected,
         actual,
         passed,
-        OutputOracleMetadata {
-            tolerance: None,
-            producer: cstr(producer),
-            output_target_id: cstr(output_target_id),
-            readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: cstr_or_active_artifact_id(artifact_id),
-            visual_evidence_ref: cstr(visual_evidence_ref),
-            probe_mode: cstr(probe_mode),
-            probe_config_hash: cstr(probe_config_hash),
-            probe_evidence_ref: cstr(probe_evidence_ref),
-        },
+        metadata,
     );
     passed
 }
@@ -1296,25 +1361,28 @@ pub fn record_output_buffer_checksum_with_probe_bytes(
     let expected = normalize_checksum_value(expected_sha256.to_string());
     let actual = sha256_checksum_value(data);
     let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
+    let mut metadata = OutputOracleMetadata {
+        tolerance: None,
+        producer: Some(producer.to_string()),
+        output_target_id: Some(output_target_id.to_string()),
+        readback_timestamp_ms: Some(epoch_millis_now()),
+        artifact_id: artifact_id.map(str::to_string).or_else(|| {
+            dispatcher_metadata_snapshot().and_then(|metadata| metadata.artifact_id)
+        }),
+        visual_evidence_ref: visual_evidence_ref.map(str::to_string),
+        probe_mode: Some(probe_mode.to_string()),
+        probe_config_hash: Some(probe_config_hash.to_string()),
+        probe_evidence_ref: Some(probe_evidence_ref.to_string()),
+        ..OutputOracleMetadata::default()
+    };
+    attach_readback_sample_metadata(&mut metadata, data);
     record_output_oracle_event_with_metadata(
         oracle_id.to_string(),
         "buffer_checksum".to_string(),
         expected,
         actual,
         passed,
-        OutputOracleMetadata {
-            tolerance: None,
-            producer: Some(producer.to_string()),
-            output_target_id: Some(output_target_id.to_string()),
-            readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: artifact_id
-                .map(str::to_string)
-                .or_else(|| dispatcher_metadata_snapshot().and_then(|metadata| metadata.artifact_id)),
-            visual_evidence_ref: visual_evidence_ref.map(str::to_string),
-            probe_mode: Some(probe_mode.to_string()),
-            probe_config_hash: Some(probe_config_hash.to_string()),
-            probe_evidence_ref: Some(probe_evidence_ref.to_string()),
-        },
+        metadata,
     );
     passed
 }

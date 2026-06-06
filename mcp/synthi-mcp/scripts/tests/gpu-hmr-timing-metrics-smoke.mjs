@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import {
+  externalProjectTimingMetrics,
+  hiprtWarmTimingMetrics,
+  realRocmTimingMetrics,
+  GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+} from '../lib/gpu-hmr-timing-metrics.mjs';
+
+const REQUIRED_KEYS = [
+  'schemaVersion',
+  'source',
+  'profileId',
+  'projectName',
+  'proofMode',
+  'status',
+  'totalWallMs',
+  'setupBuildMs',
+  'adapterBuildMs',
+  'runtimeReadyMs',
+  'initialCompileWallMs',
+  'sourceWriteMs',
+  'aiDeltaWallMs',
+  'hotHmrCompileWallMs',
+  'sameProcessLiveRecompileMs',
+  'sameProcessTriggerWaitMs',
+  'hotReloadSignalMs',
+  'editToFirstVisualMs',
+  'beforeCaptureMs',
+  'afterCaptureMs',
+  'visualDiffMs',
+  'teardownMs',
+  'visualEvidence',
+  'phases',
+];
+
+function assertCommonShape(metrics) {
+  assert.equal(metrics.schemaVersion, GPU_HMR_TIMING_METRICS_SCHEMA_VERSION);
+  for (const key of REQUIRED_KEYS) {
+    assert.ok(Object.prototype.hasOwnProperty.call(metrics, key), `missing key ${key}`);
+  }
+  assert.ok(Array.isArray(metrics.phases), 'phases must be an array');
+  assert.equal(typeof metrics.visualEvidence, 'object');
+}
+
+const external = externalProjectTimingMetrics({
+  profile: { id: 'threejs-webgl-shader-lava', project: { name: 'Three.js' } },
+  proofMode: 'external_runtime_screenshot',
+  status: 'pass',
+  timings: {
+    buildMs: 100,
+    runtimeReadyMs: 20,
+    sourceWriteMs: 3,
+    editToRuntimeSignalMs: 50,
+    editToScreenshotMs: 400,
+    visualDiffMs: 7,
+    runtimeStopMs: 9,
+    totalMs: 600,
+  },
+  screenshots: [
+    { label: 'before', elapsedMs: 111 },
+    { label: 'after', elapsedMs: 222 },
+  ],
+  visualDiff: { changedPixelRatio: 0.25, meanAbsDelta8bit: 12 },
+});
+assertCommonShape(external);
+assert.equal(external.hotReloadSignalMs, 50);
+assert.equal(external.beforeCaptureMs, 111);
+
+const hiprt = hiprtWarmTimingMetrics({
+  accepted: true,
+  mode: 'same-process',
+  profile: { id: 'hiprt-megakernel-direct-light-zero' },
+  repo: { target: 'HIPRTPathTracer' },
+  timings: {
+    totalWallMs: 1000,
+    sameProcessAdapterBuildMs: 300,
+    sameProcessLiveRecompileMs: 31,
+    sameProcessTriggerWaitMs: 2,
+    baselineHostWallMs: 100,
+    changedHostWallMs: 120,
+  },
+  sourceWrites: {
+    baseline: { hostWallMs: 4 },
+    changed: { hostWallMs: 5 },
+    restoredBaseline: { hostWallMs: 6 },
+  },
+  runtime: {
+    baseline: { hostWallMs: 100 },
+    changed: { hostWallMs: 120, triggerTouchMs: 1, totalHostWallMs: 180 },
+  },
+  diff: { changedPixelRatioThreshold4: 0.4, meanAbsDelta8bit: 30 },
+});
+assertCommonShape(hiprt);
+assert.equal(hiprt.sourceWriteMs, 15);
+assert.equal(hiprt.sameProcessLiveRecompileMs, 31);
+
+const rocm = realRocmTimingMetrics({
+  slug: 'rocm-saxpy',
+  target_name: 'saxpy',
+  duration_ms: 2000,
+  phases: [
+    { name: 'upstream_gpu_build_run', timings: 'configure_ms=10\nbuild_ms=20\nrun_ms=30\n' },
+    { name: 'first split/HMR', compile_wall_ms: 400, wait_hmr_elapsed_ms: 50, wait_call_wall_ms: 55 },
+    { name: 'gpu delta HMR', compile_wall_ms: 40, wait_hmr_elapsed_ms: 8, wait_call_wall_ms: 10 },
+  ],
+  evidence: { ai_call_counts: { gpu_delta: 1 } },
+  screenshots: [{ accepted_as_visual_evidence: true }],
+});
+assertCommonShape(rocm);
+assert.equal(rocm.setupBuildMs, 30);
+assert.equal(rocm.hotHmrCompileWallMs, 40);
+assert.equal(rocm.aiDeltaWallMs, 40);
+
+console.log(JSON.stringify({
+  ok: true,
+  schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+  checkedProfiles: [external.profileId, hiprt.profileId, rocm.profileId],
+}, null, 2));

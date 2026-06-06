@@ -405,7 +405,10 @@ fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u
 }
 
 fn artifact_id_for_hash(hash: &str) -> String {
-    format!("artifact:sha256:{}", hash.trim().trim_start_matches("sha256:"))
+    format!(
+        "artifact:sha256:{}",
+        hash.trim().trim_start_matches("sha256:")
+    )
 }
 
 fn log_optional_token(value: Option<&str>) -> String {
@@ -504,7 +507,11 @@ fn read_runtime_output_oracle_profile() -> Result<Option<RuntimeOutputOracleProf
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("runtime output oracle profile read failed: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "runtime output oracle profile read failed: {error}"
+            ))
+        }
     };
     let profile: RuntimeOutputOracleProfile = serde_json::from_str(&text)
         .map_err(|error| format!("runtime output oracle profile JSON invalid: {error}"))?;
@@ -572,11 +579,10 @@ fn runtime_oracle_json_f32(value: &serde_json::Value) -> Result<f32, String> {
 }
 
 fn runtime_oracle_json_u32(value: &serde_json::Value) -> Result<u32, String> {
-    let raw = value
-        .as_u64()
-        .ok_or_else(|| "runtime output oracle scalar_u32 value must be unsigned integer".to_string())?;
-    u32::try_from(raw)
-        .map_err(|_| "runtime output oracle scalar_u32 value exceeds u32".to_string())
+    let raw = value.as_u64().ok_or_else(|| {
+        "runtime output oracle scalar_u32 value must be unsigned integer".to_string()
+    })?;
+    u32::try_from(raw).map_err(|_| "runtime output oracle scalar_u32 value exceeds u32".to_string())
 }
 
 fn run_runtime_output_oracle_profile(
@@ -609,8 +615,9 @@ fn run_runtime_output_oracle_profile(
         for buffer in &profile.buffers {
             let host_bytes = runtime_oracle_buffer_bytes(buffer)?;
             let mut device_ptr: CuDevicePtr = 0;
-            let alloc_code =
-                unsafe { (symbols.cu_mem_alloc)(&mut device_ptr as *mut CuDevicePtr, host_bytes.len()) };
+            let alloc_code = unsafe {
+                (symbols.cu_mem_alloc)(&mut device_ptr as *mut CuDevicePtr, host_bytes.len())
+            };
             if alloc_code != 0 || device_ptr == 0 {
                 return Err(format!(
                     "runtime output oracle allocation {:?} failed code={alloc_code}",
@@ -641,7 +648,9 @@ fn run_runtime_output_oracle_profile(
                     let value = arg
                         .value
                         .as_ref()
-                        .ok_or_else(|| "runtime output oracle scalar_f32 arg missing value".to_string())
+                        .ok_or_else(|| {
+                            "runtime output oracle scalar_f32 arg missing value".to_string()
+                        })
                         .and_then(runtime_oracle_json_f32)?;
                     arg_storage.push(RuntimeProbeArgStorage::F32(value));
                 }
@@ -649,23 +658,25 @@ fn run_runtime_output_oracle_profile(
                     let value = arg
                         .value
                         .as_ref()
-                        .ok_or_else(|| "runtime output oracle scalar_u32 arg missing value".to_string())
+                        .ok_or_else(|| {
+                            "runtime output oracle scalar_u32 arg missing value".to_string()
+                        })
                         .and_then(runtime_oracle_json_u32)?;
                     arg_storage.push(RuntimeProbeArgStorage::U32(value));
                 }
                 "buffer" => {
-                    let name = arg
-                        .name
-                        .as_deref()
-                        .ok_or_else(|| "runtime output oracle buffer arg missing name".to_string())?;
-                    let (device_ptr, _) = device_buffers
-                        .get(name)
-                        .copied()
-                        .ok_or_else(|| format!("runtime output oracle arg references unknown buffer {name:?}"))?;
+                    let name = arg.name.as_deref().ok_or_else(|| {
+                        "runtime output oracle buffer arg missing name".to_string()
+                    })?;
+                    let (device_ptr, _) = device_buffers.get(name).copied().ok_or_else(|| {
+                        format!("runtime output oracle arg references unknown buffer {name:?}")
+                    })?;
                     arg_storage.push(RuntimeProbeArgStorage::DevicePtr(device_ptr));
                 }
                 other => {
-                    return Err(format!("runtime output oracle arg kind {other:?} is unsupported"));
+                    return Err(format!(
+                        "runtime output oracle arg kind {other:?} is unsupported"
+                    ));
                 }
             }
         }
@@ -772,10 +783,7 @@ fn capsule_id_for_publication(
     format!("capsule:sha256:{}", sha256_hex_bytes(material.as_bytes()))
 }
 
-fn changed_function_handle_ids(
-    table: &HashMap<String, u64>,
-    changed_symbols: &[String],
-) -> String {
+fn changed_function_handle_ids(table: &HashMap<String, u64>, changed_symbols: &[String]) -> String {
     let mut ids = changed_symbols
         .iter()
         .filter_map(|symbol| {
@@ -1639,16 +1647,13 @@ impl Adapter for GpuModuleAdapter {
         let capsule_metadata = req.capsule_metadata.as_ref();
         let capsule_id = capsule_id_for_publication(&new_artifact_id, capsule_metadata);
         let fission_island_id = log_optional_token(
-            capsule_metadata
-                .and_then(|metadata| metadata.fission_island_id.as_deref()),
+            capsule_metadata.and_then(|metadata| metadata.fission_island_id.as_deref()),
         );
         let abi_membrane_hash = log_optional_token(
-            capsule_metadata
-                .and_then(|metadata| metadata.abi_membrane_hash.as_deref()),
+            capsule_metadata.and_then(|metadata| metadata.abi_membrane_hash.as_deref()),
         );
         let dependency_closure_hash = log_optional_token(
-            capsule_metadata
-                .and_then(|metadata| metadata.dependency_closure_hash.as_deref()),
+            capsule_metadata.and_then(|metadata| metadata.dependency_closure_hash.as_deref()),
         );
         let proof_hash = log_optional_token(
             capsule_metadata.and_then(|metadata| metadata.proof_hash.as_deref()),
@@ -1972,34 +1977,35 @@ impl Adapter for GpuModuleAdapter {
             );
             eprintln!("{publish_line}");
             runtime_log_lines.push(publish_line);
-            let publication_graph_line = epoch_generation_graph_line(EpochGenerationGraphLineInput {
-                runtime_session: &runtime_session,
-                publish_timestamp_ms,
-                previous_generation,
-                active_generation,
-                old_artifact_id: &previous_artifact_id,
-                new_artifact_id: &new_artifact_id,
-                new_artifact_hash: &new_artifact_hash,
-                capsule_id: &capsule_id,
-                fission_island_id: &fission_island_id,
-                abi_membrane_hash: &abi_membrane_hash,
-                dependency_closure_hash: &dependency_closure_hash,
-                proof_hash: &proof_hash,
-                changed_symbols: &expected_symbols,
-                function_handle_ids: &function_handle_ids,
-                stream_epoch_counters: stream_epoch_counters_graph.clone(),
-                dispatch_table_hash_before: previous_dispatch_table_hash,
-                dispatch_table_hash_after: dispatch_table_hash,
-                changed_entries: touched_symbols.len(),
-                retirement_fence_ids: &retirement_fence_ids,
-                retirement_strategy,
-                delayed_unload_result,
-                retirement_state: if retired_module_count == 0 {
-                    "not-required"
-                } else {
-                    "pending"
-                },
-            });
+            let publication_graph_line =
+                epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                    runtime_session: &runtime_session,
+                    publish_timestamp_ms,
+                    previous_generation,
+                    active_generation,
+                    old_artifact_id: &previous_artifact_id,
+                    new_artifact_id: &new_artifact_id,
+                    new_artifact_hash: &new_artifact_hash,
+                    capsule_id: &capsule_id,
+                    fission_island_id: &fission_island_id,
+                    abi_membrane_hash: &abi_membrane_hash,
+                    dependency_closure_hash: &dependency_closure_hash,
+                    proof_hash: &proof_hash,
+                    changed_symbols: &expected_symbols,
+                    function_handle_ids: &function_handle_ids,
+                    stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                    dispatch_table_hash_before: previous_dispatch_table_hash,
+                    dispatch_table_hash_after: dispatch_table_hash,
+                    changed_entries: touched_symbols.len(),
+                    retirement_fence_ids: &retirement_fence_ids,
+                    retirement_strategy,
+                    delayed_unload_result,
+                    retirement_state: if retired_module_count == 0 {
+                        "not-required"
+                    } else {
+                        "pending"
+                    },
+                });
             eprintln!("{publication_graph_line}");
             runtime_log_lines.push(publication_graph_line);
             if !first_device_load {
@@ -2050,30 +2056,31 @@ impl Adapter for GpuModuleAdapter {
                 );
                 eprintln!("{retired_line}");
                 runtime_log_lines.push(retired_line);
-                let retired_graph_line = epoch_generation_graph_line(EpochGenerationGraphLineInput {
-                    runtime_session: &runtime_session,
-                    publish_timestamp_ms,
-                    previous_generation,
-                    active_generation,
-                    old_artifact_id: &previous_artifact_id,
-                    new_artifact_id: &new_artifact_id,
-                    new_artifact_hash: &new_artifact_hash,
-                    capsule_id: &capsule_id,
-                    fission_island_id: &fission_island_id,
-                    abi_membrane_hash: &abi_membrane_hash,
-                    dependency_closure_hash: &dependency_closure_hash,
-                    proof_hash: &proof_hash,
-                    changed_symbols: &expected_symbols,
-                    function_handle_ids: &function_handle_ids,
-                    stream_epoch_counters: stream_epoch_counters_graph.clone(),
-                    dispatch_table_hash_before: previous_dispatch_table_hash,
-                    dispatch_table_hash_after: dispatch_table_hash,
-                    changed_entries: touched_symbols.len(),
-                    retirement_fence_ids: &retirement_fence_ids,
-                    retirement_strategy,
-                    delayed_unload_result: "unloaded",
-                    retirement_state: "retired",
-                });
+                let retired_graph_line =
+                    epoch_generation_graph_line(EpochGenerationGraphLineInput {
+                        runtime_session: &runtime_session,
+                        publish_timestamp_ms,
+                        previous_generation,
+                        active_generation,
+                        old_artifact_id: &previous_artifact_id,
+                        new_artifact_id: &new_artifact_id,
+                        new_artifact_hash: &new_artifact_hash,
+                        capsule_id: &capsule_id,
+                        fission_island_id: &fission_island_id,
+                        abi_membrane_hash: &abi_membrane_hash,
+                        dependency_closure_hash: &dependency_closure_hash,
+                        proof_hash: &proof_hash,
+                        changed_symbols: &expected_symbols,
+                        function_handle_ids: &function_handle_ids,
+                        stream_epoch_counters: stream_epoch_counters_graph.clone(),
+                        dispatch_table_hash_before: previous_dispatch_table_hash,
+                        dispatch_table_hash_after: dispatch_table_hash,
+                        changed_entries: touched_symbols.len(),
+                        retirement_fence_ids: &retirement_fence_ids,
+                        retirement_strategy,
+                        delayed_unload_result: "unloaded",
+                        retirement_state: "retired",
+                    });
                 eprintln!("{retired_graph_line}");
                 runtime_log_lines.push(retired_graph_line);
             }
@@ -2829,10 +2836,7 @@ mod tests {
         let path = file.path().to_string_lossy().to_string();
         let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
         req.capsule_metadata = Some(ReloadCapsuleMetadata {
-            fission_island_id: Some(format!(
-                "fission-island:sha256:{}",
-                "a".repeat(64)
-            )),
+            fission_island_id: Some(format!("fission-island:sha256:{}", "a".repeat(64))),
             abi_membrane_hash: Some(format!("sha256:{}", "b".repeat(64))),
             dependency_closure_hash: Some(format!("sha256:{}", "c".repeat(64))),
             proof_hash: Some(format!("sha256:{}", "d".repeat(64))),
@@ -2871,7 +2875,9 @@ mod tests {
             .expect("epoch generation graph report");
         let graph = epoch_graph_json_from_line(graph_line);
         assert_eq!(
-            graph.get("schemaVersion").and_then(serde_json::Value::as_str),
+            graph
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
             Some("synthi.gpu.epoch_graph.v1")
         );
         assert_eq!(
@@ -3034,31 +3040,26 @@ mod tests {
             .iter()
             .find(|line| line.contains("dispatcher_epoch event=published"))
             .expect("dispatcher epoch publication report");
-        assert!(publish
-            .contains("dispatcher_epoch event=published")
-            && publish.contains("publish_timestamp_ms=")
-            && publish.contains("dispatch_table_hash_before=0x")
-            && publish.contains("dispatch_table_hash_after=0x")
-            && publish.contains("retired_modules=1")
-            && publish.contains("stream_ordering_proven=true")
-            && publish.contains("retirement_strategy=no_retirement_required")
-            && publish.contains("delayed_unload_result=pending"));
-        assert!(publish.contains(&format!(
-            "old_artifact_id=artifact:sha256:{first_hash}"
-        )));
-        assert!(publish.contains(&format!(
-            "new_artifact_id=artifact:sha256:{second_hash}"
-        )));
+        assert!(
+            publish.contains("dispatcher_epoch event=published")
+                && publish.contains("publish_timestamp_ms=")
+                && publish.contains("dispatch_table_hash_before=0x")
+                && publish.contains("dispatch_table_hash_after=0x")
+                && publish.contains("retired_modules=1")
+                && publish.contains("stream_ordering_proven=true")
+                && publish.contains("retirement_strategy=no_retirement_required")
+                && publish.contains("delayed_unload_result=pending")
+        );
+        assert!(publish.contains(&format!("old_artifact_id=artifact:sha256:{first_hash}")));
+        assert!(publish.contains(&format!("new_artifact_id=artifact:sha256:{second_hash}")));
         assert!(publish.contains(&format!("new_artifact_hash=sha256:{second_hash}")));
         assert!(publish.contains("changed_symbols=vec_add"));
         assert!(publish.contains("function_handle_ids=vec_add:0x"));
-        assert!(a
-            .last_reload_log()
-            .iter()
-            .any(|line| line.contains("dispatcher_epoch event=retired")
-                && line.contains("old_generation_retired=true")
-                && line.contains("retirement_strategy=no_retirement_required")
-                && line.contains("delayed_unload_result=unloaded")));
+        assert!(a.last_reload_log().iter().any(|line| line
+            .contains("dispatcher_epoch event=retired")
+            && line.contains("old_generation_retired=true")
+            && line.contains("retirement_strategy=no_retirement_required")
+            && line.contains("delayed_unload_result=unloaded")));
         let final_graph_line = a
             .last_reload_log()
             .iter()
@@ -3075,10 +3076,11 @@ mod tests {
         assert!(final_graph
             .get("edges")
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|edges| edges.iter().any(|edge| edge
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                == Some("retire"))));
+            .is_some_and(|edges| edges
+                .iter()
+                .any(
+                    |edge| edge.get("kind").and_then(serde_json::Value::as_str) == Some("retire")
+                )));
         reset_for_test();
     }
 

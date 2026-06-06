@@ -172,7 +172,10 @@ async fn push_existing_file_ref_candidate(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => {
             return Err(err).with_context(|| {
-                format!("resolving collab workspace file ref {}", candidate.display())
+                format!(
+                    "resolving collab workspace file ref {}",
+                    candidate.display()
+                )
             });
         }
     };
@@ -261,9 +264,7 @@ impl CollabFileRefIndex {
                 }
                 if seen_dirs.insert(canonical_child.clone()) {
                     if seen_dirs.len() > search_limit {
-                        anyhow::bail!(
-                            "workspace file ref search exceeded directory limit: {slug}"
-                        );
+                        anyhow::bail!("workspace file ref search exceeded directory limit: {slug}");
                     }
                     queue.push_back((canonical_child, depth + 1));
                 }
@@ -498,6 +499,56 @@ fn normalized_request_filename(path: &str) -> Option<String> {
     compile_request_relpath(path)
         .ok()
         .map(|p| p.to_string_lossy().replace('\\', "/"))
+}
+
+fn compile_request_content_hash(req: &CompileRequest) -> u64 {
+    let primary_name = normalized_request_filename(&req.filename)
+        .unwrap_or_else(|| req.filename.trim().replace('\\', "/"));
+    let mut files: BTreeMap<String, &str> = BTreeMap::new();
+    for file in &req.files {
+        let name = normalized_request_filename(&file.name)
+            .unwrap_or_else(|| file.name.trim().replace('\\', "/"));
+        files.insert(name, file.content.as_str());
+    }
+    files.insert(primary_name.clone(), req.source.as_str());
+
+    let mut fingerprint = String::new();
+    fingerprint.push_str("compile_request.v2\n");
+    fingerprint.push_str("language:");
+    fingerprint.push_str(&req.language);
+    fingerprint.push('\n');
+    fingerprint.push_str("primary:");
+    fingerprint.push_str(&primary_name);
+    fingerprint.push('\n');
+    for (name, content) in files {
+        fingerprint.push_str("file:");
+        fingerprint.push_str(&name);
+        fingerprint.push(':');
+        fingerprint.push_str(&content.len().to_string());
+        fingerprint.push('\n');
+        fingerprint.push_str(content);
+        fingerprint.push('\n');
+    }
+    if !req.file_refs.is_empty() {
+        let mut refs: BTreeMap<String, (Option<&str>, Option<u64>)> = BTreeMap::new();
+        for file_ref in &req.file_refs {
+            let name = normalized_request_filename(&file_ref.name)
+                .unwrap_or_else(|| file_ref.name.trim().replace('\\', "/"));
+            refs.insert(name, (file_ref.sha256.as_deref(), file_ref.bytes));
+        }
+        for (name, (sha256, bytes)) in refs {
+            fingerprint.push_str("file_ref:");
+            fingerprint.push_str(&name);
+            fingerprint.push_str(":sha256=");
+            fingerprint.push_str(sha256.unwrap_or(""));
+            fingerprint.push_str(":bytes=");
+            if let Some(bytes) = bytes {
+                fingerprint.push_str(&bytes.to_string());
+            }
+            fingerprint.push('\n');
+        }
+    }
+    hash_content(&fingerprint)
 }
 
 fn is_editing_adapted_module_or_device(
@@ -746,8 +797,7 @@ use crate::hmr::gpu_fission::verify_fission_candidates;
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
     read_proof_artifact, sha256_hex_bytes, sha256_hex_str, write_proof_artifact,
-    GpuHmrDegradedState,
-    GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
+    GpuHmrDegradedState, GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
     GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry,
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -1081,11 +1131,7 @@ fn parse_clang_record_layout_name(line: &str) -> Option<String> {
     let rest = ["struct ", "class ", "union "]
         .into_iter()
         .find_map(|prefix| trimmed.strip_prefix(prefix))?;
-    let name = rest
-        .split(" (")
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let name = rest.split(" (").next().unwrap_or_default().trim();
     if name.is_empty() || name.starts_with("(anonymous") {
         return None;
     }
@@ -1485,8 +1531,7 @@ fn clang_ast_include_dir_args(
 fn clang_ast_passthrough_separate_flag(flag: &str) -> bool {
     matches!(
         flag,
-        "-I"
-            | "-isystem"
+        "-I" | "-isystem"
             | "-iquote"
             | "-idirafter"
             | "-include"
@@ -1607,7 +1652,11 @@ fn clang_ast_abi_extractor_args(
     language: &str,
     input_path: &Path,
 ) -> Vec<String> {
-    let mut args = vec!["-x".to_string(), language.to_string(), "-fsyntax-only".to_string()];
+    let mut args = vec![
+        "-x".to_string(),
+        language.to_string(),
+        "-fsyntax-only".to_string(),
+    ];
     args.extend(clang_ast_include_dir_args(workspace, metadata));
     args.extend(clang_ast_compile_context_args(metadata));
     args.extend(clang_ast_gpu_language_args(language, metadata));
@@ -1686,12 +1735,8 @@ async fn clang_ast_abi_extraction(
     let mut successful_dump = None;
     let mut attempts = Vec::new();
     for language in clang_ast_language_candidates(&outcome.compiled_source) {
-        let args = clang_ast_abi_extractor_args(
-            workspace,
-            &outcome.proof_metadata,
-            language,
-            &input_path,
-        );
+        let args =
+            clang_ast_abi_extractor_args(workspace, &outcome.proof_metadata, language, &input_path);
         let command_display = clang_ast_command_display(&compiler, &args, &input_path);
         let mut command = tokio::process::Command::new(&compiler);
         command.current_dir(workspace).args(&args);
@@ -3399,9 +3444,8 @@ fn finalize_full_device_outcome(
     let direct_translation_unit_rejection = direct_translation_unit_partial_candidate
         .then(|| direct_translation_unit_partial_rejection_reason(sources))
         .flatten();
-    let fallback_reason = fallback_reason.or_else(|| {
-        direct_translation_unit_rejection.map(str::to_string)
-    });
+    let fallback_reason =
+        fallback_reason.or_else(|| direct_translation_unit_rejection.map(str::to_string));
     let fallback_used = fallback_reason.is_some();
     let direct_translation_unit_partial =
         direct_translation_unit_partial_candidate && direct_translation_unit_rejection.is_none();
@@ -3745,7 +3789,11 @@ fn device_hmr_proof_stage_results(
     } else {
         Some("expected_device_symbols_not_bound".to_string())
     };
-    let abi_stage_status = if abi_stage_proven { "passed" } else { "blocked" };
+    let abi_stage_status = if abi_stage_proven {
+        "passed"
+    } else {
+        "blocked"
+    };
 
     vec![
         GpuHmrProofStageResult {
@@ -3916,12 +3964,18 @@ fn abi_metadata_accepted_extractor_provenance(
     let refs = refs.into_iter().collect::<Vec<_>>();
     let sources = sources.into_iter().collect::<Vec<_>>();
     let refs_match = explicit_refs.is_empty()
-        || explicit_refs.iter().all(|explicit| refs.iter().any(|value| value == explicit));
+        || explicit_refs
+            .iter()
+            .all(|explicit| refs.iter().any(|value| value == explicit));
     let sources_match = explicit_sources.is_empty()
         || explicit_sources
             .iter()
             .all(|explicit| sources.iter().any(|value| value == explicit));
-    (!refs.is_empty() && refs_match && sources_match, refs, sources)
+    (
+        !refs.is_empty() && refs_match && sources_match,
+        refs,
+        sources,
+    )
 }
 
 fn abi_hash_token_string(value: &str) -> Option<String> {
@@ -3940,16 +3994,15 @@ fn abi_hash_token_string(value: &str) -> Option<String> {
     if sha256_digest_string(token) {
         return Some(token.to_string());
     }
-    if token.len() >= 16
-        && token.len() <= 20
-        && token.chars().all(|ch| ch.is_ascii_digit())
-    {
+    if token.len() >= 16 && token.len() <= 20 && token.chars().all(|ch| ch.is_ascii_digit()) {
         return Some(token.to_string());
     }
     if token.len() >= 16
         && token.len() <= 63
         && token.chars().all(|ch| ch.is_ascii_hexdigit())
-        && token.chars().any(|ch| ch.is_ascii_hexdigit() && ch.is_ascii_alphabetic())
+        && token
+            .chars()
+            .any(|ch| ch.is_ascii_hexdigit() && ch.is_ascii_alphabetic())
     {
         return Some(token.to_string());
     }
@@ -4282,6 +4335,25 @@ fn upsert_source_baseline_content(
     Some(baseline_hash)
 }
 
+fn upsert_compile_request_source_baselines(
+    meta: &mut serde_json::Value,
+    req: &CompileRequest,
+) -> usize {
+    let Some(root) = meta.as_object_mut() else {
+        return 0;
+    };
+    let mut count = 0;
+    if upsert_source_baseline_content(root, &req.filename, &req.source).is_some() {
+        count += 1;
+    }
+    for file in &req.files {
+        if upsert_source_baseline_content(root, &file.name, &file.content).is_some() {
+            count += 1;
+        }
+    }
+    count
+}
+
 async fn persist_direct_workspace_source_baseline(
     sidecar_path: &Path,
     filename: &str,
@@ -4299,12 +4371,7 @@ async fn persist_direct_workspace_source_baseline(
     let Some(baseline_hash) = upsert_source_baseline_content(&mut root, filename, source) else {
         return Ok(false);
     };
-    write_sidecar_logged(
-        sidecar_path,
-        &serde_json::Value::Object(root),
-        session_id,
-    )
-    .await;
+    write_sidecar_logged(sidecar_path, &serde_json::Value::Object(root), session_id).await;
     eprintln!(
         "[compile-device] persisted direct source baseline file={} hash={}",
         normalized_request_filename(filename).unwrap_or_else(|| filename.replace('\\', "/")),
@@ -4333,11 +4400,13 @@ fn build_launch_mapping_sources(
     }
     if let Some(path) = normalized_request_filename(&req.filename) {
         if !req.source.trim().is_empty() {
-            sources.entry(path.clone()).or_insert_with(|| LaunchMappingSourceContent {
-                path,
-                content: req.source.clone(),
-                provenance: "compile_request_primary_source".to_string(),
-            });
+            sources
+                .entry(path.clone())
+                .or_insert_with(|| LaunchMappingSourceContent {
+                    path,
+                    content: req.source.clone(),
+                    provenance: "compile_request_primary_source".to_string(),
+                });
         }
     }
     for file in &req.files {
@@ -4347,11 +4416,13 @@ fn build_launch_mapping_sources(
         if file.content.trim().is_empty() {
             continue;
         }
-        sources.entry(path.clone()).or_insert_with(|| LaunchMappingSourceContent {
-            path,
-            content: file.content.clone(),
-            provenance: "compile_request_projection".to_string(),
-        });
+        sources
+            .entry(path.clone())
+            .or_insert_with(|| LaunchMappingSourceContent {
+                path,
+                content: file.content.clone(),
+                provenance: "compile_request_projection".to_string(),
+            });
     }
     sources.into_values().collect()
 }
@@ -4536,18 +4607,19 @@ fn source_raw_launch_descriptor(
     let config = source.get(config_start..config_end)?;
     let config_parts = split_launch_config_expression(config);
     let after_config = config_end + 3;
-    let open_paren_offset = source
-        .get(after_config..)?
-        .char_indices()
-        .find_map(|(index, ch)| {
-            if ch.is_whitespace() {
-                None
-            } else if ch == '(' {
-                Some(after_config + index)
-            } else {
-                Some(usize::MAX)
-            }
-        })?;
+    let open_paren_offset =
+        source
+            .get(after_config..)?
+            .char_indices()
+            .find_map(|(index, ch)| {
+                if ch.is_whitespace() {
+                    None
+                } else if ch == '(' {
+                    Some(after_config + index)
+                } else {
+                    Some(usize::MAX)
+                }
+            })?;
     if open_paren_offset == usize::MAX {
         return None;
     }
@@ -4556,19 +4628,39 @@ fn source_raw_launch_descriptor(
     if let Some(object) = descriptor.as_object_mut() {
         object.insert(
             "gridExpression".to_string(),
-            serde_json::Value::String(config_parts.first().cloned().unwrap_or_else(|| "1".to_string())),
+            serde_json::Value::String(
+                config_parts
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "1".to_string()),
+            ),
         );
         object.insert(
             "blockExpression".to_string(),
-            serde_json::Value::String(config_parts.get(1).cloned().unwrap_or_else(|| "1".to_string())),
+            serde_json::Value::String(
+                config_parts
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| "1".to_string()),
+            ),
         );
         object.insert(
             "sharedMemoryExpression".to_string(),
-            serde_json::Value::String(config_parts.get(2).cloned().unwrap_or_else(|| "0".to_string())),
+            serde_json::Value::String(
+                config_parts
+                    .get(2)
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
         );
         object.insert(
             "streamExpression".to_string(),
-            serde_json::Value::String(config_parts.get(3).cloned().unwrap_or_else(|| "0".to_string())),
+            serde_json::Value::String(
+                config_parts
+                    .get(3)
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
         );
         object.insert(
             "argumentMode".to_string(),
@@ -4746,7 +4838,9 @@ fn push_source_launch_mapping_site(
     let snippet_hash = sha256_hex_str(&snippet);
     let site_id = format!(
         "launch-site:sha256:{}",
-        sha256_hex_str(&format!("{path}:{line}:{column}:{symbol}:{form}:{snippet_hash}"))
+        sha256_hex_str(&format!(
+            "{path}:{line}:{column}:{symbol}:{form}:{snippet_hash}"
+        ))
     );
     let mut site = serde_json::json!({
         "siteId": site_id,
@@ -4771,10 +4865,7 @@ fn source_baseline_raw_launch_sites(
     symbol: &str,
     sites: &mut Vec<serde_json::Value>,
 ) {
-    let pattern = format!(
-        r"\b{}\s*<<<",
-        regex::escape(symbol)
-    );
+    let pattern = format!(r"\b{}\s*<<<", regex::escape(symbol));
     let Ok(re) = regex::Regex::new(&pattern) else {
         return;
     };
@@ -4868,10 +4959,7 @@ fn source_baseline_runtime_object_launch_sites(
             continue;
         };
         let owner_pattern = regex::escape(owner).replace(r"\ ", r"\s*");
-        let launch_pattern = format!(
-            r"{}\s*(?:->|\.)\s*launch_asynchronous\s*\(",
-            owner_pattern
-        );
+        let launch_pattern = format!(r"{}\s*(?:->|\.)\s*launch_asynchronous\s*\(", owner_pattern);
         let Ok(launch_re) = regex::Regex::new(&launch_pattern) else {
             continue;
         };
@@ -5409,7 +5497,12 @@ fn device_hmr_fission_publication_blocker(
     };
 
     if stage.status == "passed"
-        && stage.degraded_state.as_deref().unwrap_or_default().trim().is_empty()
+        && stage
+            .degraded_state
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
         && stage
             .degraded_reason
             .as_deref()
@@ -5605,6 +5698,8 @@ fn partial_fission_candidate_and_evidence(
         "schemaVersion": crate::hmr::gpu_fission::FISSION_ISLAND_SCHEMA_VERSION,
         "islandId": island_id,
         "sourceEditId": source_edit_id,
+        "selectedArtifactId": selected_artifact_id,
+        "artifactHash": format!("sha256:{artifact_hash}"),
         "sourcePaths": source_paths,
         "sourceSpans": source_spans,
         "generatedRolePath": sources
@@ -5622,6 +5717,7 @@ fn partial_fission_candidate_and_evidence(
         "compileCommandHash": compile_command_hash,
         "loaderCapabilityRequirement": {
             "selectedArtifactId": selected_artifact_id,
+            "contentHash": format!("sha256:{artifact_hash}"),
             "acceptedTransports": ["ram_blob", "filesystem_path"],
         },
         "requiredOracleId": required_oracle_id,
@@ -5645,8 +5741,7 @@ fn partial_fission_candidate_and_evidence(
             "kind": "partial_artifact_selection_metadata"
         },
     });
-    if let Some(proposal) = sources.and_then(|sources| sources.partial_fission_candidate.as_ref())
-    {
+    if let Some(proposal) = sources.and_then(|sources| sources.partial_fission_candidate.as_ref()) {
         let promotion_evidence_ids = vec![
             candidate_evidence_id.clone(),
             compiler_evidence_id.to_string(),
@@ -5865,7 +5960,10 @@ fn fission_report_reason_codes(report: &serde_json::Value) -> Vec<&str> {
     {
         codes.extend(reason_codes.iter().filter_map(serde_json::Value::as_str));
     }
-    if let Some(candidates) = report.get("candidates").and_then(serde_json::Value::as_array) {
+    if let Some(candidates) = report
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+    {
         for candidate in candidates {
             if candidate.get("status").and_then(serde_json::Value::as_str) == Some("pass") {
                 continue;
@@ -5988,15 +6086,17 @@ fn proof_fission_island_id(proof: &serde_json::Value) -> Option<String> {
                         .and_then(serde_json::Value::as_array)
                         .and_then(|candidates| {
                             candidates.iter().find_map(|candidate| {
-                                let selected =
-                                    candidate.get("selected").and_then(serde_json::Value::as_bool)
-                                        == Some(true);
-                                let passed = candidate
-                                    .get("status")
-                                    .and_then(serde_json::Value::as_str)
-                                    == Some("pass");
+                                let selected = candidate
+                                    .get("selected")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true);
+                                let passed =
+                                    candidate.get("status").and_then(serde_json::Value::as_str)
+                                        == Some("pass");
                                 if selected && passed {
-                                    candidate.get("islandId").and_then(serde_json::Value::as_str)
+                                    candidate
+                                        .get("islandId")
+                                        .and_then(serde_json::Value::as_str)
                                 } else {
                                     None
                                 }
@@ -6025,9 +6125,7 @@ fn proof_dependency_closure_hash(
         .and_then(|metadata| metadata.get("dependencyClosureHash"))
         .and_then(serde_json::Value::as_str)
         .and_then(|value| normalized_capsule_hash(Some(value)))
-        .or_else(|| {
-            normalized_capsule_hash(outcome.proof_metadata.dependency_hash.as_deref())
-        })
+        .or_else(|| normalized_capsule_hash(outcome.proof_metadata.dependency_hash.as_deref()))
 }
 
 async fn reload_capsule_metadata_from_proof_artifact(
@@ -6346,9 +6444,9 @@ async fn write_device_hmr_proof_artifact(
         evidence_refs.extend(evidence.iter().cloned());
     }
     let fission_report = fission_verifier_report_from_sidecar(sidecar_meta).or_else(|| {
-        generated_fission
-            .as_ref()
-            .map(|(candidate, _)| verify_fission_candidates(&serde_json::Value::Array(vec![candidate.clone()])))
+        generated_fission.as_ref().map(|(candidate, _)| {
+            verify_fission_candidates(&serde_json::Value::Array(vec![candidate.clone()]))
+        })
     });
     let fission_stage = fission_report.map(|report| {
         let (evidence, stage) = fission_verifier_evidence_and_stage(
@@ -7034,7 +7132,9 @@ fn gpu_ai_delta_policy_rejection_reports(
     (plan_report, verifier_report, reason_codes)
 }
 
-fn gpu_ai_delta_fission_proposal(candidate: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+fn gpu_ai_delta_fission_proposal(
+    candidate: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
     let candidate = candidate?;
     let mut proposal = candidate.as_object()?.clone();
     let proposal_id = proposal
@@ -8454,7 +8554,9 @@ pub async fn handle_compile_request(
     };
 
     // ── Compute source hash ──
-    let source_hash_value = hash_content(&req.source);
+    // Hash the materialized compile input, not only the primary source, so
+    // auxiliary shader/header/source edits invalidate adapted-project state.
+    let source_hash_value = compile_request_content_hash(&req);
     let source_hash_str = format!("{}", source_hash_value);
 
     let sidecar_path = ctx.workspace_path.join(".synthi_split_meta.json");
@@ -8496,10 +8598,11 @@ pub async fn handle_compile_request(
         &req.filename,
         req.force_gpu_ai_delta,
     );
-    let classifier_user_requested_ai = req.user_requested_ai && !prefer_deterministic_gpu_edit_flag;
+    let classifier_user_requested_ai =
+        req.user_requested_ai && !prefer_deterministic_gpu_edit_flag && !req.force_gpu_ai_delta;
     let classifier_consecutive_failures = classifier_failure_count_for_request(
         consecutive_failures,
-        prefer_deterministic_gpu_edit_flag,
+        prefer_deterministic_gpu_edit_flag || req.force_gpu_ai_delta,
     );
 
     let classifier_input = LoopClassifierInput {
@@ -8601,7 +8704,7 @@ pub async fn handle_compile_request(
             let mapping_report = device_mapping_report(&result);
             let source_report = source_context_report(&result);
             let launch_report = launch_indirection_report(&result);
-            let meta = serde_json::json!({
+            let mut meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
                 "architecture": architecture_md,
@@ -8613,6 +8716,11 @@ pub async fn handle_compile_request(
                 "source_context_report": source_report,
                 "launch_indirection_report": launch_report,
             });
+            let baseline_count = upsert_compile_request_source_baselines(&mut meta, &req);
+            eprintln!(
+                "[HMR] sidecar source baselines persisted: count={}",
+                baseline_count
+            );
             write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
 
             // Cache the result for future Loop A lookups
@@ -9578,6 +9686,51 @@ pub async fn handle_compile_request(
                             )
                             .await?;
                             let touched_roles = gpu_ai_delta_touched_roles(&ai_delta.edits);
+                            if req.force_gpu_ai_delta && ai_delta.reload_plan != "device_only" {
+                                let (plan_report, verifier_report, reason_codes) =
+                                    gpu_ai_delta_policy_rejection_reports(
+                                        &ai_delta.reload_plan,
+                                        &request_device_name,
+                                        &generated_device_path,
+                                        vec![
+                                            "forced_delta_requires_device_only".to_string(),
+                                            format!(
+                                                "ai_delta.reload_plan.{}",
+                                                ai_delta.reload_plan
+                                            ),
+                                        ],
+                                        touched_roles.clone(),
+                                    );
+                                let mut meta =
+                                    sidecar_meta.as_object().cloned().unwrap_or_default();
+                                meta.insert("lastReloadPlanReport".to_string(), plan_report);
+                                meta.insert(
+                                    "lastGpuAiDeltaVerifierReport".to_string(),
+                                    verifier_report,
+                                );
+                                meta.insert(
+                                    "patchTier".to_string(),
+                                    serde_json::Value::String("ai_delta_rejected".to_string()),
+                                );
+                                invalidate_derived_gpu_reports(&mut meta);
+                                write_sidecar_logged(
+                                    &sidecar_path,
+                                    &serde_json::Value::Object(meta),
+                                    &session_id,
+                                )
+                                .await;
+                                eprintln!(
+                                    "[GPU AI Delta] forced delta rejected non-device-only plan: user={} generated={} requested_plan={} reasons={}",
+                                    request_device_name,
+                                    generated_device_path,
+                                    ai_delta.reload_plan,
+                                    reason_codes.join(",")
+                                );
+                                anyhow::bail!(
+                                    "GPU AI delta forced mode rejected non-device-only plan: reason_codes={}",
+                                    reason_codes.join(",")
+                                );
+                            }
                             let mut policy_reasons = Vec::new();
                             if ai_delta.reload_plan == "device_only" {
                                 if let Some(reason) =
@@ -10093,7 +10246,7 @@ pub async fn handle_compile_request(
                                                             source_context_report(&result);
                                                         let fresh_launch_report =
                                                             launch_indirection_report(&result);
-                                                        let meta = serde_json::json!({
+                                                        let mut meta = serde_json::json!({
                                                             "split_hash": source_hash_str,
                                                             "original_source": req.source,
                                                             "architecture": fresh_arch,
@@ -10105,6 +10258,9 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
+                                                        upsert_compile_request_source_baselines(
+                                                            &mut meta, &req,
+                                                        );
                                                         write_sidecar_logged(
                                                             &sidecar_path,
                                                             &meta,
@@ -10140,7 +10296,7 @@ pub async fn handle_compile_request(
                                                     source_context_report(&result);
                                                 let fresh_launch_report =
                                                     launch_indirection_report(&result);
-                                                let meta = serde_json::json!({
+                                                let mut meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
                                                     "architecture": fresh_arch,
@@ -10152,6 +10308,9 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
+                                                upsert_compile_request_source_baselines(
+                                                    &mut meta, &req,
+                                                );
                                                 write_sidecar_logged(
                                                     &sidecar_path,
                                                     &meta,
@@ -10310,7 +10469,7 @@ pub async fn handle_compile_request(
                                                             source_context_report(&result);
                                                         let fresh_launch_report =
                                                             launch_indirection_report(&result);
-                                                        let meta = serde_json::json!({
+                                                        let mut meta = serde_json::json!({
                                                             "split_hash": source_hash_str,
                                                             "original_source": req.source,
                                                             "architecture": fresh_arch,
@@ -10322,6 +10481,9 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
+                                                        upsert_compile_request_source_baselines(
+                                                            &mut meta, &req,
+                                                        );
                                                         write_sidecar_logged(
                                                             &sidecar_path,
                                                             &meta,
@@ -10360,7 +10522,7 @@ pub async fn handle_compile_request(
                                                     source_context_report(&result);
                                                 let fresh_launch_report =
                                                     launch_indirection_report(&result);
-                                                let meta = serde_json::json!({
+                                                let mut meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
                                                     "architecture": fresh_arch,
@@ -10372,6 +10534,9 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
+                                                upsert_compile_request_source_baselines(
+                                                    &mut meta, &req,
+                                                );
                                                 write_sidecar_logged(
                                                     &sidecar_path,
                                                     &meta,
@@ -10451,7 +10616,7 @@ pub async fn handle_compile_request(
                                 .or_else(|| sidecar_meta.get("launch_indirection_report"))
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
-                            let meta = serde_json::json!({
+                            let mut meta = serde_json::json!({
                                 "split_hash": source_hash_str,
                                 "original_source": req.source,
                                 "architecture": architecture_md,
@@ -10459,6 +10624,7 @@ pub async fn handle_compile_request(
                                 "source_context_report": source_report.clone(),
                                 "launch_indirection_report": launch_report.clone(),
                             });
+                            upsert_compile_request_source_baselines(&mut meta, &req);
                             write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
 
                             serde_json::json!({
@@ -10474,6 +10640,56 @@ pub async fn handle_compile_request(
                     }
                 } else {
                     // No original source saved — need AI re-split
+                    if req.force_gpu_ai_delta {
+                        let request_name = normalized_request_filename(&req.filename)
+                            .unwrap_or_else(|| req.filename.replace('\\', "/"));
+                        let generated_device_path =
+                            mapped_generated_device_path(&sidecar_meta, &request_name)
+                                .or_else(|| {
+                                    CompileManifest::from_json_value(&sidecar_manifest_json)
+                                        .and_then(|manifest| {
+                                            manifest
+                                                .device_source_filename()
+                                                .map(|path| path.replace('\\', "/"))
+                                        })
+                                })
+                                .unwrap_or_else(|| "unresolved-generated-device-role".to_string());
+                        let (plan_report, verifier_report, reason_codes) =
+                            gpu_ai_delta_policy_rejection_reports(
+                                "device_only",
+                                &request_name,
+                                &generated_device_path,
+                                vec![
+                                    "ai_delta.source_baseline_missing".to_string(),
+                                    "ai_delta.forced_delta_cannot_resplit".to_string(),
+                                ],
+                                vec!["device".to_string()],
+                            );
+                        let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
+                        meta.insert("lastReloadPlanReport".to_string(), plan_report);
+                        meta.insert("lastGpuAiDeltaVerifierReport".to_string(), verifier_report);
+                        meta.insert(
+                            "patchTier".to_string(),
+                            serde_json::Value::String("ai_delta_rejected".to_string()),
+                        );
+                        invalidate_derived_gpu_reports(&mut meta);
+                        write_sidecar_logged(
+                            &sidecar_path,
+                            &serde_json::Value::Object(meta),
+                            &session_id,
+                        )
+                        .await;
+                        eprintln!(
+                            "[GPU AI Delta] forced delta rejected before full split: user={} generated={} reasons={}",
+                            request_name,
+                            generated_device_path,
+                            reason_codes.join(",")
+                        );
+                        anyhow::bail!(
+                            "GPU AI delta forced but no source baseline was available; refusing full re-split: reason_codes={}",
+                            reason_codes.join(",")
+                        );
+                    }
                     debug_log!("[HMR] No original source baseline, falling back to AI split");
                     let result = perform_ai_split(&req).await?;
                     let fresh_arch = result
@@ -10493,7 +10709,7 @@ pub async fn handle_compile_request(
                     let fresh_mapping_report = device_mapping_report(&result);
                     let fresh_source_report = source_context_report(&result);
                     let fresh_launch_report = launch_indirection_report(&result);
-                    let meta = serde_json::json!({
+                    let mut meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
                         "architecture": fresh_arch,
@@ -10505,6 +10721,7 @@ pub async fn handle_compile_request(
                         "source_context_report": fresh_source_report,
                         "launch_indirection_report": fresh_launch_report,
                     });
+                    upsert_compile_request_source_baselines(&mut meta, &req);
                     write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
                     result
                 }
@@ -11386,6 +11603,9 @@ pub async fn handle_compile_request(
         prev_gui_path.is_some(),
         req.is_gui,
     );
+    let partial_device_artifact_stage = has_gpu_device_stage
+        && matches!(split_reload_plan_name(&split_data), Some("device_only"))
+        && split_data.get("_synthi_device_partial").is_some();
     let allow_direct_translation_unit_partial = allow_direct_translation_unit_partial(
         &split_data,
         has_gpu_device_stage,
@@ -11645,7 +11865,7 @@ pub async fn handle_compile_request(
                     &sidecar_path,
                     &session_id,
                     allow_direct_translation_unit_partial,
-                    false,
+                    partial_device_artifact_stage,
                 )
                 .await,
                 "compile_device_failed",
@@ -13200,10 +13420,7 @@ mod gpu_host_contract_tests {
         let (proven, reason) = abi_stage_verdict_from_metadata(&abi_material);
 
         assert!(!proven);
-        assert_eq!(
-            reason.as_deref(),
-            Some("abi_fingerprint_hashes_unverified")
-        );
+        assert_eq!(reason.as_deref(), Some("abi_fingerprint_hashes_unverified"));
     }
 
     #[test]
@@ -13628,8 +13845,14 @@ __constant__ int scale;
             Some("island:sha256:abc")
         );
         assert_eq!(fission_stage.status, "passed");
-        assert_eq!(fission_stage.evidence_refs, vec![fission_evidence.evidence_id.clone()]);
-        assert_eq!(artifact.stage_results[0].stage_id, "fission-candidate-verification");
+        assert_eq!(
+            fission_stage.evidence_refs,
+            vec![fission_evidence.evidence_id.clone()]
+        );
+        assert_eq!(
+            artifact.stage_results[0].stage_id,
+            "fission-candidate-verification"
+        );
         assert_eq!(
             device_hmr_fission_publication_blocker(&artifact, &outcome),
             None
@@ -13962,9 +14185,7 @@ __constant__ int scale;
             .get("islandId")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| value.starts_with("fission-island:sha256:")));
-        assert!(promotion_ids
-            .iter()
-            .all(|id| id.starts_with("evidence:")));
+        assert!(promotion_ids.iter().all(|id| id.starts_with("evidence:")));
         assert!(promotion_ids
             .iter()
             .any(|id| id.starts_with("evidence:fission-island-input:")));
@@ -14031,8 +14252,7 @@ __constant__ int scale;
             partial_fission_candidate: None,
             source_baseline_contents: vec![(
                 "src/render.cpp".to_string(),
-                "void render(float* pixels) { shade<<<1, 64, 0, stream>>>(pixels); }"
-                    .to_string(),
+                "void render(float* pixels) { shade<<<1, 64, 0, stream>>>(pixels); }".to_string(),
             )],
             launch_mapping_sources: vec![LaunchMappingSourceContent {
                 path: "src/render.cpp".to_string(),
@@ -14156,9 +14376,7 @@ __constant__ int scale;
             .metadata
             .as_ref()
             .and_then(|metadata| {
-                metadata.pointer(
-                    "/attachmentInstrumentationProposals/0/hostLaunchDescriptorHash",
-                )
+                metadata.pointer("/attachmentInstrumentationProposals/0/hostLaunchDescriptorHash")
             })
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| value.starts_with("sha256:")));
@@ -14167,9 +14385,7 @@ __constant__ int scale;
                 .metadata
                 .as_ref()
                 .and_then(|metadata| {
-                    metadata.pointer(
-                        "/attachmentInstrumentationProposals/0/instrumentationAction",
-                    )
+                    metadata.pointer("/attachmentInstrumentationProposals/0/instrumentationAction")
                 })
                 .and_then(serde_json::Value::as_str),
             Some("wrap_source_launch_with_synthi_runtime_boundary")
@@ -14249,9 +14465,7 @@ __constant__ int scale;
         assert!(report
             .pointer("/candidates/0/originalHostAttachmentInstrumentationProposalIds/0")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| {
-                value.starts_with("launch-attachment-proposal:sha256:")
-            }));
+            .is_some_and(|value| { value.starts_with("launch-attachment-proposal:sha256:") }));
         let fission_stage = artifact
             .stage_results
             .iter()
@@ -14429,9 +14643,7 @@ void bind_and_launch(Buffer* pixels) {
                 .metadata
                 .as_ref()
                 .and_then(|metadata| {
-                    metadata.pointer(
-                        "/attachmentInstrumentationProposals/0/instrumentationAction",
-                    )
+                    metadata.pointer("/attachmentInstrumentationProposals/0/instrumentationAction")
                 })
                 .and_then(serde_json::Value::as_str),
             Some("attach_runtime_object_dispatch_boundary")
@@ -14455,9 +14667,9 @@ void bind_and_launch(Buffer* pixels) {
                 metadata.pointer("/attachmentInstrumentationProposals/0/requiredBoundaryApis")
             })
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|apis| apis.iter().any(|api| {
-                api.as_str() == Some("synthi_gpu_launch_original_host_path")
-            })));
+            .is_some_and(|apis| apis
+                .iter()
+                .any(|api| { api.as_str() == Some("synthi_gpu_launch_original_host_path") })));
         assert_eq!(
             mapping_evidence
                 .metadata
@@ -14634,7 +14846,9 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
             .iter()
             .find(|source| source.path == "src/render_pass.cpp")
             .expect("projection host source should be present");
-        assert!(projection_source.content.contains("set_kernel_function_name"));
+        assert!(projection_source
+            .content
+            .contains("set_kernel_function_name"));
         assert_eq!(projection_source.provenance, "compile_request_projection");
     }
 
@@ -14809,9 +15023,9 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
                 && window[1].replace('\\', "/") == temp.path().to_string_lossy().replace('\\', "/")
         }));
         assert!(joined.contains("-Isrc"));
-        assert!(args.windows(2).any(|window| {
-            window[0] == "-isystem" && window[1] == "thirdparty/include"
-        }));
+        assert!(args
+            .windows(2)
+            .any(|window| { window[0] == "-isystem" && window[1] == "thirdparty/include" }));
         assert!(joined.contains("-DVALUE=1"));
         assert!(joined.contains("-std=gnu++20"));
         assert!(joined.contains("--offload-arch=gfx1201"));
@@ -14821,7 +15035,9 @@ void enqueue(float* pixels, dim3 grid, dim3 block, void** args, void* stream) {
 
         let cxx_args = clang_ast_abi_extractor_args(temp.path(), &metadata, "c++", &input_path);
         assert!(cxx_args.iter().any(|arg| arg == "-D__global__="));
-        assert!(cxx_args.iter().any(|arg| arg == "-D__launch_bounds__(...)="));
+        assert!(cxx_args
+            .iter()
+            .any(|arg| arg == "-D__launch_bounds__(...)="));
     }
 
     #[test]
@@ -14878,7 +15094,10 @@ extern "C" __global__ void shade(RenderData* render_data) {}
 
         assert!(extraction.layout_size_alignment_verified);
         assert_eq!(extraction.parameter_abi_records.len(), 1);
-        assert_eq!(extraction.parameter_abi_records[0]["typeIdentity"], "RenderData*");
+        assert_eq!(
+            extraction.parameter_abi_records[0]["typeIdentity"],
+            "RenderData*"
+        );
         assert_eq!(extraction.parameter_abi_records[0]["size"], 8);
         assert_eq!(extraction.degraded_reason, None);
     }
@@ -14910,7 +15129,10 @@ extern "C" __global__ void shade(RenderData render_data) {}
 
         assert!(extraction.layout_size_alignment_verified);
         assert_eq!(extraction.parameter_abi_records.len(), 1);
-        assert_eq!(extraction.parameter_abi_records[0]["typeIdentity"], "RenderData");
+        assert_eq!(
+            extraction.parameter_abi_records[0]["typeIdentity"],
+            "RenderData"
+        );
         assert_eq!(extraction.parameter_abi_records[0]["size"], 8);
         assert_eq!(extraction.parameter_abi_records[0]["alignment"], 4);
         assert_eq!(
@@ -16471,14 +16693,10 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             req.files[0].content,
             String::from_utf8_lossy(content).to_string()
         );
-        let materialized = tokio::fs::read(
-            workspace
-                .path()
-                .join("inputs")
-                .join("runtime-input.json"),
-        )
-        .await
-        .expect("materialized workspace ref");
+        let materialized =
+            tokio::fs::read(workspace.path().join("inputs").join("runtime-input.json"))
+                .await
+                .expect("materialized workspace ref");
         assert_eq!(materialized, content);
 
         if let Some(value) = previous {

@@ -2351,6 +2351,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     split = None
     split_model = (
         req.model
+        or os.getenv("SYNTHI_GPU_SPLIT_MODEL")
         or os.getenv("SYNTHI_GEMINI_MODEL")
         or "gemini-3.5-flash"
     )
@@ -2602,6 +2603,15 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     verification = split.verification.to_dict() if split.verification else None
     if split.verification and not split.verification.ok:
         logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
+    split_provider_model = getattr(provider, "last_call_metadata", {}) or {}
+    split_actual_model = split_provider_model.get("actual_model") or split_model
+    split_fallback_used = bool(split_provider_model.get("fallback_used"))
+    logger.info(
+        "[split/gpu] accepted model=%s actual_model=%s fallback_used=%s",
+        split_model,
+        split_actual_model,
+        split_fallback_used,
+    )
 
     return {
         "result": json.dumps(split_files_out),
@@ -2621,6 +2631,12 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         ),
         "split_repair_report": split.repair_report,
         "lang": req.lang,
+        "model": split_model,
+        "requested_model": split_model,
+        "actual_model": split_actual_model,
+        "model_fallback_used": split_fallback_used,
+        "provider_model": split_provider_model,
+        "model_role": "gpu_split",
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,
         "elapsed_seconds": elapsed,
@@ -2642,8 +2658,13 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
     default_model = (
         os.getenv("SYNTHI_OPENAI_MODEL", "qwen2.5-coder:7b")
         if provider_name == "openai"
-        else "gemini-3.1-flash-lite-preview"
+        else (
+            os.getenv("SYNTHI_GPU_DELTA_MODEL")
+            or os.getenv("SYNTHI_GEMINI_DELTA_MODEL")
+            or "gemini-3.1-flash-lite-preview"
+        )
     )
+    selected_model = req.model or default_model
     max_delta_attempts = 2
     try:
         last_parsed = None
@@ -2654,7 +2675,7 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
                 "cpp",
                 None,
                 mode="delta",
-                model=req.model or default_model,
+                model=selected_model,
                 api_key=req.api_key,
             )
             parsed = _parse_gpu_diff_response(ai_response)
@@ -2662,12 +2683,26 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
             failures.extend(_gpu_diff_patch_content_failures(req, parsed["edits"]))
             if not failures:
                 elapsed = time.time() - start_time
+                provider_model = getattr(provider, "last_call_metadata", {}) or {}
+                actual_model = provider_model.get("actual_model") or selected_model
+                fallback_used = bool(provider_model.get("fallback_used"))
                 print(
                     f"[GpuDiffPatch] plan={parsed['reload_plan']} "
                     f"edits={len(parsed['edits'])} attempt={attempt}/{max_delta_attempts} "
-                    f"elapsed={elapsed:.2f}s"
+                    f"elapsed={elapsed:.2f}s model={selected_model} "
+                    f"actual_model={actual_model} fallback_used={str(fallback_used).lower()}"
                 )
-                return {**parsed, "elapsed_seconds": elapsed, "attempt_count": attempt}
+                return {
+                    **parsed,
+                    "elapsed_seconds": elapsed,
+                    "attempt_count": attempt,
+                    "model": selected_model,
+                    "requested_model": selected_model,
+                    "actual_model": actual_model,
+                    "model_fallback_used": fallback_used,
+                    "provider_model": provider_model,
+                    "model_role": "gpu_delta",
+                }
 
             last_parsed = parsed
             last_failures = failures
@@ -2686,6 +2721,8 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
                 "reload_plan": (last_parsed or {}).get("reload_plan"),
                 "failures": last_failures,
                 "elapsed_seconds": elapsed,
+                "model": selected_model,
+                "model_role": "gpu_delta",
             },
         )
     except HTTPException:

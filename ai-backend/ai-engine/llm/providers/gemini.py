@@ -146,6 +146,7 @@ class GeminiProvider(AiProvider):
     def __init__(self) -> None:
         super().__init__(name="gemini")
         self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+        self.last_call_metadata: Dict[str, Any] = {}
         # Keep generation parameters centralized so they can be passed into each stream request.
         self.generation_config = genai.GenerationConfig(
             temperature=0.2,
@@ -260,7 +261,9 @@ class GeminiProvider(AiProvider):
                 full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus)
 
         try:
-            model_name = model or self.model_name
+            requested_model = model or self.model_name
+            model_name = requested_model
+            fallback_used = False
 
             # Metrics tracking
             start_time = time.time()
@@ -299,6 +302,7 @@ class GeminiProvider(AiProvider):
                             f"retrying with discovered fallback model={fallback_model}"
                         )
                         model_name = fallback_model
+                        fallback_used = True
                         combined = await generate_once(model_name)
                         total_tokens = _count_tokens(combined)
                         print(
@@ -348,9 +352,25 @@ class GeminiProvider(AiProvider):
             if not combined:
                 return "No suggestion returned."
 
+            self.last_call_metadata = {
+                "provider": self.name,
+                "requested_model": requested_model,
+                "actual_model": model_name,
+                "fallback_used": fallback_used,
+                "mode": mode_lower,
+                "latency_ms": total_latency_ms,
+            }
             return combined
 
         except Exception as e:
+            self.last_call_metadata = {
+                "provider": self.name,
+                "requested_model": model or self.model_name,
+                "actual_model": None,
+                "fallback_used": False,
+                "mode": mode_lower if 'mode_lower' in locals() else None,
+                "error_type": type(e).__name__,
+            }
             # Record error metrics
             is_timeout = "timeout" in str(e).lower()
             collector = _get_metrics_collector()

@@ -842,6 +842,10 @@ function outputOracleRecord(line) {
       ?? fields.probe_hash
       ?? null,
     probeEvidenceRef: fields.probe_evidence_ref ?? fields.probe_ref ?? null,
+    readbackBytes: integerValue(fields.readback_bytes),
+    readbackSampleStride: integerValue(fields.readback_sample_stride),
+    readbackSampleSha256: fields.readback_sample_sha256 ?? null,
+    readbackSampleHex: fields.readback_sample_hex ?? null,
   };
 }
 

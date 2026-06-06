@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
@@ -73,6 +74,7 @@ import {
   buildUpstreamRunLaunchPlan,
   canContinueWithCachedMetadataAfterLifecycleFailure,
 } from './lib/real-rocm-upstream-lifecycle.mjs';
+import { realRocmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -489,6 +491,57 @@ function partialArtifactReplacementProofObserved(sourceProofs = [], fissionProof
       /partial|source[_-]?include|kernel[_-]?region/i.test(String(contract?.artifactKind ?? ''))
       || String(contract?.replacementScope ?? '').trim().toLowerCase() === 'partial'
     );
+}
+
+function artifactKindLooksFullDevice(kind) {
+  return /(^|[-_])full[-_]?device($|[-_])|device[-_]?module/i.test(String(kind ?? ''));
+}
+
+function artifactKindLooksPartial(kind) {
+  return /partial|source[_-]?include|kernel[_-]?region|kernel[_-]?translation[_-]?unit|direct[_-]?device[_-]?translation[_-]?unit/i
+    .test(String(kind ?? ''));
+}
+
+function forcedGpuAiDeltaArtifactGateRows({ sourceProofs = [], fissionProof = null, workerEvidence = [] }) {
+  const proofs = Array.isArray(sourceProofs) ? sourceProofs : [];
+  const selectedKinds = proofs.flatMap((proof) => [
+    proof?.selectedArtifactKind,
+    ...(Array.isArray(proof?.selectedArtifactKinds) ? proof.selectedArtifactKinds : []),
+  ]).filter((kind) => typeof kind === 'string' && kind.trim());
+  const selectedKind = proofs.map((proof) => proof?.selectedArtifactKind)
+    .find((kind) => typeof kind === 'string' && kind.trim()) ?? null;
+  const fissionKinds = Array.isArray(fissionProof?.selectedIslandContracts)
+    ? fissionProof.selectedIslandContracts
+      .map((contract) => contract?.artifactKind)
+      .filter((kind) => typeof kind === 'string' && kind.trim())
+    : [];
+  const partialSourceProof = proofs.some((proof) =>
+    proof?.partialArtifactReplacement === true
+    && artifactKindLooksPartial(proof?.selectedArtifactKind));
+  const partialFissionProof = fissionKinds.some(artifactKindLooksPartial);
+  const fallbackLines = (Array.isArray(workerEvidence) ? workerEvidence : [])
+    .filter((line) =>
+      /\[compile-device\].*(sidecar ready|reload package).*fallbackUsed=true/i.test(String(line)));
+  const selectedFullDevice = selectedKind ? artifactKindLooksFullDevice(selectedKind) : false;
+  return [
+    {
+      name: 'forced GPU AI delta partial artifact selection',
+      status: partialSourceProof || partialFissionProof ? 'pass' : 'fail',
+      detail: `selected=${selectedKind ?? 'none'} observed=${selectedKinds.join(',') || 'none'} fission=${fissionKinds.join(',') || 'none'}`,
+    },
+    {
+      name: 'forced GPU AI delta no full-device selected artifact',
+      status: selectedFullDevice ? 'fail' : 'pass',
+      detail: `selected=${selectedKind ?? 'none'} observed=${selectedKinds.join(',') || 'none'}`,
+    },
+    {
+      name: 'forced GPU AI delta no compile fallback',
+      status: fallbackLines.length === 0 ? 'pass' : 'fail',
+      detail: fallbackLines.length === 0
+        ? 'fallbackUsed=false'
+        : fallbackLines.slice(0, 3).join(' | ').slice(0, 1200),
+    },
+  ];
 }
 
 function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
@@ -909,9 +962,20 @@ const CFG = {
       ?? 'auto',
   ),
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
+  forceGpuAiDelta: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_FORCE_GPU_AI_DELTA',
+    false,
+  ),
   gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite-preview',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS === '1',
 };
 
@@ -945,6 +1009,10 @@ const report = {
   cmake_config: CFG.cmakeConfigName,
   cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
+  model_roles: {
+    gpu_split: CFG.gpuSplitModel,
+    gpu_delta: CFG.gpuDeltaModel,
+  },
   gpu_vendor: CFG.gpuMode,
   gpu_arch: CFG.gpuArch,
   containers: {
@@ -982,6 +1050,7 @@ const report = {
   epoch_swap_proof: null,
   dispatch_proof: null,
   output_proof: null,
+  compute_output_oracle_visual_evidence: null,
   host_preservation_proof: null,
   original_host_path_proof: null,
   full_runtime_proof: null,
@@ -1008,6 +1077,7 @@ const report = {
   full_runtime_proof_required: CFG.requireFullRuntimeProof,
   started_at: new Date().toISOString(),
   finished_at: null,
+  timingMetrics: null,
 };
 
 function record(name, status, detail = '') {
@@ -2946,6 +3016,8 @@ async function ensureMcpAttached() {
         '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
         '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
         '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+        '-e', `SYNTHI_GPU_SPLIT_MODEL=${CFG.gpuSplitModel}`,
+        '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
         CFG.mcpContainer,
         'node',
         '/app/dist/index.js',
@@ -3308,7 +3380,118 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}
 }
 
 function visualEvidenceFrames() {
-  return report.screenshots.filter(screenshotQualifiesAsVisualEvidence);
+  return report.screenshots.filter((shot) =>
+    shot?.visualEvidenceSupplementalOnly !== true
+    && shot?.visual_evidence_supplemental_only !== true
+    && screenshotQualifiesAsVisualEvidence(shot)
+  );
+}
+
+function xmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function digestBytes(value) {
+  const text = String(value ?? '');
+  const digest = text.match(/^sha256:([0-9a-f]{64})$/i)?.[1]
+    ?? createHash('sha256').update(text).digest('hex');
+  return Buffer.from(digest, 'hex');
+}
+
+function computeProofArtifactName(oracle) {
+  const base = `${CFG.slug}-${oracle?.oracleId ?? 'runtime-output-oracle'}`
+    .replace(/[^A-Za-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 160);
+  return `${base || CFG.slug}-compute-output-oracle.png`;
+}
+
+async function writeRuntimeOutputOracleVisualProof(runtimeOutputOracle) {
+  const oracle = runtimeOutputOracle?.output_oracle
+    ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
+    : null;
+  if (!oracle || runtimeOutputOracle.deterministic_oracle_passed !== true) {
+    return null;
+  }
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const outPath = path.join(ARTIFACT_DIR, computeProofArtifactName(oracle));
+  const width = 960;
+  const height = 540;
+  const expectedBytes = digestBytes(oracle.expected);
+  const actualBytes = digestBytes(oracle.actual);
+  const mixedBytes = digestBytes([
+    oracle.oracleId,
+    oracle.outputTargetId,
+    oracle.runtimeSession,
+    oracle.artifactId,
+    oracle.probeConfigHash,
+  ].join('|'));
+  const raw = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 3;
+      const stripe = Math.floor((x / width) * 32) % 32;
+      const band = Math.floor((y / height) * 32) % 32;
+      const e = expectedBytes[(stripe + band) % expectedBytes.length];
+      const a = actualBytes[(stripe * 3 + band) % actualBytes.length];
+      const m = mixedBytes[(x + y + stripe) % mixedBytes.length];
+      raw[i] = (18 + ((e ^ m) % 180)) & 0xff;
+      raw[i + 1] = (36 + ((a + m) % 170)) & 0xff;
+      raw[i + 2] = (48 + ((e + a + band * 7) % 190)) & 0xff;
+    }
+  }
+  const expectedShort = String(oracle.expected ?? '').slice(0, 23);
+  const actualShort = String(oracle.actual ?? '').slice(0, 23);
+  const svg = `
+<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="${width}" height="${height}" fill="rgba(4,8,12,0.18)"/>
+  <rect x="36" y="32" width="888" height="132" rx="8" fill="rgba(0,0,0,0.62)"/>
+  <rect x="36" y="184" width="424" height="282" rx="8" fill="rgba(0,0,0,0.50)"/>
+  <rect x="500" y="184" width="424" height="282" rx="8" fill="rgba(0,0,0,0.50)"/>
+  <text x="60" y="74" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="30" font-weight="700">Runtime Compute Output Oracle</text>
+  <text x="60" y="112" fill="#9ed8ff" font-family="Arial, sans-serif" font-size="18">target ${xmlEscape(oracle.outputTargetId ?? 'unknown')}</text>
+  <text x="60" y="140" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">session ${xmlEscape(oracle.runtimeSession ?? 'unknown')} | generation ${xmlEscape(oracle.generation ?? 'unknown')} | ${oracle.passed ? 'PASSED' : 'FAILED'}</text>
+  <text x="60" y="228" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Expected</text>
+  <text x="60" y="262" fill="#b7ffd2" font-family="Consolas, monospace" font-size="20">${xmlEscape(expectedShort)}</text>
+  <text x="60" y="308" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Actual Readback</text>
+  <text x="60" y="342" fill="#b7ffd2" font-family="Consolas, monospace" font-size="20">${xmlEscape(actualShort)}</text>
+  <text x="60" y="400" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">kind ${xmlEscape(oracle.kind ?? 'unknown')}</text>
+  <text x="60" y="430" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">producer ${xmlEscape(oracle.producer ?? 'unknown')}</text>
+  <text x="524" y="228" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Artifact</text>
+  <text x="524" y="262" fill="#ffe39e" font-family="Consolas, monospace" font-size="18">${xmlEscape(String(oracle.artifactId ?? 'unknown').slice(0, 42))}</text>
+  <text x="524" y="320" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Probe</text>
+  <text x="524" y="354" fill="#ffe39e" font-family="Consolas, monospace" font-size="18">${xmlEscape(String(oracle.probeMode ?? 'unknown').slice(0, 42))}</text>
+  <text x="524" y="414" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">readback ${xmlEscape(oracle.readbackTimestamp ?? 'unknown')}</text>
+</svg>`;
+  await sharp(raw, { raw: { width, height, channels: 3 } })
+    .composite([{ input: Buffer.from(svg) }])
+    .png()
+    .toFile(outPath);
+  const stats = await analyzeGpuHmrImageEvidence(outPath);
+  const row = visualEvidenceRow({
+    label: 'rocm-compute-output-oracle',
+    path: outPath,
+    source: 'runtime-output-oracle-readback-visualization',
+    evidence_refs: oracle.evidenceRefs ?? runtimeOutputOracle.evidence_refs ?? [],
+    oracle_id: oracle.oracleId,
+    output_target_id: oracle.outputTargetId,
+    runtime_session: oracle.runtimeSession,
+    artifact_id: oracle.artifactId,
+    visualEvidenceSupplementalOnly: true,
+    ...stats,
+  });
+  report.screenshots.push(row);
+  report.compute_output_oracle_visual_evidence = row;
+  record(
+    'runtime output oracle visual proof',
+    row.accepted_as_visual_evidence ? 'pass' : 'warn',
+    `quality=${row.visual_quality} path=${row.path}`,
+  );
+  return row;
 }
 
 function editSource(source, before, after, label) {
@@ -3719,6 +3902,16 @@ function runtimeEvidenceScope(scopedWorkerLogs, upstreamRunEvidence) {
 
 function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
+}
+
+function uniqueLogFieldValues(lines, key, linePattern = null) {
+  const values = [];
+  for (const line of lines) {
+    if (linePattern && !linePattern.test(line)) continue;
+    const value = logField(line, key);
+    if (value && !values.includes(value)) values.push(value);
+  }
+  return values;
 }
 
 function normalizeSessionMarker(value) {
@@ -5724,7 +5917,7 @@ async function collectRuntimeEvidence() {
   );
   const aiEvidence = evidenceLines(
     aiLogs,
-    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split(?:\/verified|\/gpu)?|diff_patch(?:\/gpu)?|heal)/i,
+    /Calling API|mode=delta|mode=split|\[GpuDiffPatch\]|verifier rejected|POST \/refactor\/(?:split(?:\/verified|\/gpu)?|diff_patch(?:\/gpu)?|heal)/i,
   );
   const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
@@ -5794,6 +5987,16 @@ async function collectRuntimeEvidence() {
       compile_heal: compileHealCalls,
       model_delta_mode: countMatches(aiEvidence, /mode=delta/i),
     },
+    ai_model_provenance: {
+      expected_gpu_split_model: CFG.gpuSplitModel,
+      expected_gpu_delta_model: CFG.gpuDeltaModel,
+      observed_gpu_split_actual_models: uniqueLogFieldValues(aiEvidence, 'actual_model', /\[split\/gpu\]\s+accepted/i),
+      observed_gpu_split_fallback_used: uniqueLogFieldValues(aiEvidence, 'fallback_used', /\[split\/gpu\]\s+accepted/i),
+      observed_gpu_delta_models: uniqueLogFieldValues(aiEvidence, 'model', /\[GpuDiffPatch\]/i),
+      observed_gpu_delta_actual_models: uniqueLogFieldValues(aiEvidence, 'actual_model', /\[GpuDiffPatch\]/i),
+      observed_gpu_delta_fallback_used: uniqueLogFieldValues(aiEvidence, 'fallback_used', /\[GpuDiffPatch\]/i),
+      forced_gpu_ai_delta: CFG.forceGpuAiDelta,
+    },
     runner_policy_counts: {
       existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
       runner_restarts: hostRestartCount,
@@ -5814,18 +6017,48 @@ async function collectRuntimeEvidence() {
   };
   report.evidence.ai_split_provenance = classifyFreshAiSplitProvenance({
     required: CFG.requireFreshAiSplit,
-    model: CFG.geminiModel,
+    model: CFG.gpuSplitModel,
     aiCallCounts: report.evidence.ai_call_counts,
     evidenceLines: aiEvidence,
   });
   if (CFG.requireFreshAiSplit) {
     const provenance = report.evidence.ai_split_provenance;
+    const observedSplitActualModels = report.evidence.ai_model_provenance.observed_gpu_split_actual_models;
+    const observedSplitFallback = report.evidence.ai_model_provenance.observed_gpu_split_fallback_used;
+    const splitActualModelObserved = observedSplitActualModels.length === 0
+      || observedSplitActualModels.includes(CFG.gpuSplitModel);
+    const splitFallbackObserved = observedSplitFallback.some((value) =>
+      /^(1|true|yes|on)$/i.test(String(value)));
     record(
       'fresh AI split provenance',
-      provenance.observed ? 'pass' : 'fail',
-      `model=${provenance.model ?? 'unspecified'} split_calls=${provenance.splitCallCount}`,
+      provenance.observed && splitActualModelObserved && !splitFallbackObserved ? 'pass' : 'fail',
+      `model=${provenance.model ?? 'unspecified'} actual=${observedSplitActualModels.join(',') || 'none'} fallback=${observedSplitFallback.join(',') || 'none'} split_calls=${provenance.splitCallCount}`,
     );
-    if (!provenance.observed) process.exitCode = 1;
+    if (!provenance.observed || !splitActualModelObserved || splitFallbackObserved) process.exitCode = 1;
+  }
+  if (CFG.forceGpuAiDelta) {
+    const observedDeltaModels = report.evidence.ai_model_provenance.observed_gpu_delta_models;
+    const observedActualDeltaModels = report.evidence.ai_model_provenance.observed_gpu_delta_actual_models;
+    const observedDeltaFallback = report.evidence.ai_model_provenance.observed_gpu_delta_fallback_used;
+    const deltaModelObserved = observedDeltaModels.includes(CFG.gpuDeltaModel);
+    const actualDeltaModelObserved = observedActualDeltaModels.length > 0
+      ? observedActualDeltaModels.includes(CFG.gpuDeltaModel)
+      : deltaModelObserved;
+    const deltaFallbackObserved = observedDeltaFallback.some((value) =>
+      /^(1|true|yes|on)$/i.test(String(value)));
+    record(
+      'forced GPU AI delta endpoint',
+      gpuDeltaCalls > 0 ? 'pass' : 'fail',
+      `gpu_delta_calls=${gpuDeltaCalls}`,
+    );
+    record(
+      'forced GPU AI delta model provenance',
+      deltaModelObserved && actualDeltaModelObserved && !deltaFallbackObserved ? 'pass' : 'fail',
+      `expected=${CFG.gpuDeltaModel} requested=${observedDeltaModels.join(',') || 'none'} actual=${observedActualDeltaModels.join(',') || 'none'} fallback=${observedDeltaFallback.join(',') || 'none'}`,
+    );
+    if (gpuDeltaCalls <= 0 || !deltaModelObserved || !actualDeltaModelObserved || deltaFallbackObserved) {
+      process.exitCode = 1;
+    }
   }
   if (upstreamRunEvidence.length > 0) {
     record('runtime original host run evidence', 'pass', `lines=${upstreamRunEvidence.length}`);
@@ -5934,6 +6167,7 @@ async function collectRuntimeEvidence() {
       runtimeOutputOracle.deterministic_oracle_passed ? 'pass' : 'warn',
       `records=${runtimeOutputOracle.total_count} matched=${runtimeOutputOracle.matched_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
     );
+    await writeRuntimeOutputOracleVisualProof(runtimeOutputOracle);
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
   }
@@ -6142,6 +6376,13 @@ async function collectRuntimeEvidence() {
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
   });
+  if (CFG.forceGpuAiDelta) {
+    strictProofRows.push(...forcedGpuAiDeltaArtifactGateRows({
+      sourceProofs: report.source_proofs,
+      fissionProof: report.fission_proof,
+      workerEvidence,
+    }));
+  }
   report.strict_proof_gates = strictProofRows;
   for (const gate of strictProofRows) {
     record(gate.name, gate.status, gate.detail);
@@ -6221,6 +6462,7 @@ async function writeResults() {
   report.duration_ms = Number.isFinite(startedMs) && Number.isFinite(finishedMs)
     ? Math.max(0, finishedMs - startedMs)
     : null;
+  report.timingMetrics = realRocmTimingMetrics(report);
   const validationContext = {
     command: report.command,
     docker: report.docker,
@@ -6248,6 +6490,7 @@ async function writeResults() {
       started_at: report.started_at,
       finished_at: report.finished_at,
       duration_ms: report.duration_ms,
+      timingMetrics: report.timingMetrics,
       phases: report.phases.map((phase) => ({
         name: phase.name,
         timings: phase.timings ?? null,
@@ -6279,6 +6522,9 @@ async function writeResults() {
     uniqueColorSampleCount: shot.unique_color_sample_count ?? null,
     visualQuality: shot.visual_quality ?? null,
     acceptedAsVisualEvidence: shot.accepted_as_visual_evidence === true,
+    visualEvidenceSupplementalOnly:
+      shot.visualEvidenceSupplementalOnly === true
+      || shot.visual_evidence_supplemental_only === true,
   }));
   let runtimeProofVisualEvidenceArtifacts = [];
   if (report.full_runtime_proof) {
@@ -6394,6 +6640,7 @@ async function writeResults() {
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
     `model: ${report.model}`,
+    `model_roles: ${JSON.stringify(report.model_roles)}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
     `duration_ms: ${report.duration_ms}`,
@@ -6525,7 +6772,8 @@ async function run() {
     is_gui: CFG.renderPreview,
     use_ai_split: true,
     bypass_ai_split_cache: CFG.requireFreshAiSplit,
-    user_requested_ai: true,
+    user_requested_ai: false,
+    force_gpu_ai_delta: CFG.forceGpuAiDelta,
     prefer_gpu_pipeline: true,
     gpu_mode: CFG.gpuMode,
     gpu_arch: CFG.gpuArch,
@@ -6567,7 +6815,8 @@ async function run() {
       is_gui: CFG.renderPreview,
       use_ai_split: true,
       bypass_ai_split_cache: CFG.requireFreshAiSplit,
-      user_requested_ai: true,
+      user_requested_ai: false,
+      force_gpu_ai_delta: CFG.forceGpuAiDelta,
       prefer_gpu_pipeline: true,
       gpu_mode: CFG.gpuMode,
       gpu_arch: CFG.gpuArch,

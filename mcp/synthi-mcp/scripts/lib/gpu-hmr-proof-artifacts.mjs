@@ -895,6 +895,24 @@ function proofArtifactPath(record) {
   return nonEmptyString(record?.proofArtifactPath) ?? nonEmptyString(record?.containerPath);
 }
 
+function artifactKindRank(kind) {
+  const normalized = String(kind ?? '').trim().toLowerCase();
+  if (!normalized) return 99;
+  if (/source[_-]?include|kernel[_-]?region|partial/.test(normalized)) return 0;
+  if (/kernel[_-]?translation[_-]?unit|direct[_-]?device[_-]?translation[_-]?unit/.test(normalized)) return 1;
+  if (/multi[_-]?artifact|region/.test(normalized)) return 2;
+  if (/full[_-]?device|device[_-]?module/.test(normalized)) return 3;
+  return 2;
+}
+
+function preferredArtifactKind(kinds) {
+  const unique = uniqueStrings(kinds);
+  return unique
+    .slice()
+    .sort((left, right) => artifactKindRank(left) - artifactKindRank(right))
+    .at(0) ?? null;
+}
+
 export function sourceProofFromProofArtifacts(records, fallbackProof = null) {
   const proofArtifactPaths = [];
   const evidenceRefs = [];
@@ -1044,8 +1062,10 @@ export function sourceProofFromProofArtifacts(records, fallbackProof = null) {
     partialArtifactReplacement,
     partialModule: partialArtifactReplacement,
     label: fallbackLabel,
-    selectedArtifactKind: uniqueStrings(selectedArtifactKinds)[0] ?? null,
-    requestedArtifactKind: uniqueStrings(requestedArtifactKinds)[0] ?? null,
+    selectedArtifactKind: preferredArtifactKind(selectedArtifactKinds),
+    selectedArtifactKinds: uniqueStrings(selectedArtifactKinds),
+    requestedArtifactKind: preferredArtifactKind(requestedArtifactKinds),
+    requestedArtifactKinds: uniqueStrings(requestedArtifactKinds),
   };
 }
 

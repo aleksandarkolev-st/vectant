@@ -32,6 +32,16 @@ function parseBBox(v: unknown): BBox | "invalid" | undefined {
   return { x: o["x"] as number, y: o["y"] as number, w: o["w"] as number, h: o["h"] as number };
 }
 
+function readOnlyScreenshotDpr(dpr: unknown): { dpr: number; inferred: boolean } {
+  if (typeof dpr === "number" && Number.isFinite(dpr) && dpr > 0) {
+    return { dpr, inferred: false };
+  }
+  // Read-only screenshots do not need DPR for coordinate safety. Input tools
+  // still reject missing producer DPR; observation can safely report CSS-pixel
+  // parity when the worker video stream lacks viewport metadata.
+  return { dpr: 1, inferred: true };
+}
+
 /**
  * Return the latest video frame as PNG, optionally cropped + downscaled.
  *
@@ -138,9 +148,11 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     }
 
     const base64 = png.toString("base64");
+    const screenshotDpr = readOnlyScreenshotDpr(frame.dpr);
     const brokerFrame = recordBrokerFrameObservation({
       session_id: attached.sessionId,
       frame,
+      dpr: screenshotDpr.dpr,
     });
     const responseTs = Date.now();
     brokerSloRecorder.recordDuration("screenshot_age_p95", responseTs - frame.ts, responseTs);
@@ -153,6 +165,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         frame_ts: frame.ts,
         response_ts: responseTs,
         screenshot_age_ms: responseTs - frame.ts,
+        dpr_inferred: screenshotDpr.inferred,
         ...(resultMeta.crop !== undefined ? { cropped: true } : {}),
         ...(resultMeta.scaled === true ? { scaled: true } : {}),
       },
@@ -165,8 +178,9 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       seq: frame.seq,
       original_w: frame.width,
       original_h: frame.height,
-      dpr: frame.dpr,
-      viewport: { w: frame.width, h: frame.height, dpr: frame.dpr },
+      dpr: screenshotDpr.dpr,
+      dpr_inferred: screenshotDpr.inferred,
+      viewport: { w: frame.width, h: frame.height, dpr: screenshotDpr.dpr },
       broker_frame: brokerFrame,
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),

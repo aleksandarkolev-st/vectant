@@ -139,8 +139,7 @@ mod tests {
 
     #[test]
     fn compile_request_defaults_to_ai_split_cache_enabled() {
-        let req: CompileRequest =
-            serde_json::from_value(base_request()).expect("compile request");
+        let req: CompileRequest = serde_json::from_value(base_request()).expect("compile request");
 
         assert!(!req.bypass_ai_split_cache);
     }
@@ -158,8 +157,7 @@ mod tests {
                 .expect("object")
                 .insert(field.to_string(), json!(true));
 
-            let req: CompileRequest =
-                serde_json::from_value(raw).expect("compile request");
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
 
             assert!(req.bypass_ai_split_cache, "alias {field}");
         }

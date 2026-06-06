@@ -113,7 +113,9 @@ impl GpuHmrProofTelemetry {
             proof_id: None,
             proof_artifact_path: None,
             result_state: result_state.as_str().to_string(),
-            degraded_state: degraded_state.map(GpuHmrDegradedState::as_str).map(str::to_string),
+            degraded_state: degraded_state
+                .map(GpuHmrDegradedState::as_str)
+                .map(str::to_string),
             degraded_reason,
             label,
         }

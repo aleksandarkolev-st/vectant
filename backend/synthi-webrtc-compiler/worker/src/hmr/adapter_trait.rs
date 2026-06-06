@@ -76,9 +76,7 @@ pub fn encode_reload_capsule_metadata_token(metadata: &ReloadCapsuleMetadata) ->
     let metadata = normalized_reload_capsule_metadata(metadata)?;
     let json = serde_json::to_vec(&metadata).ok()?;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
-    Some(format!(
-        "{RELOAD_CAPSULE_METADATA_TOKEN_PREFIX}{payload}"
-    ))
+    Some(format!("{RELOAD_CAPSULE_METADATA_TOKEN_PREFIX}{payload}"))
 }
 
 pub fn decode_reload_capsule_metadata_token(token: &str) -> Option<ReloadCapsuleMetadata> {

@@ -4,7 +4,6 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT_HIPRT_RUNTIME_PROFILE,
   GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
   loadRuntimeProofProfileFromEnv,
   normalizeRuntimeProofProfile,
@@ -14,6 +13,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const PROFILE_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
 
 const ADAPTERS = new Map([
   ['hiprt-path-tracer', {
@@ -154,15 +154,46 @@ async function loadPackagedProfile(profilePath) {
   return JSON.parse(await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8'));
 }
 
+async function discoverPackagedRuntimeProfiles() {
+  const entries = await fs.readdir(PROFILE_DIR, { withFileTypes: true });
+  const profiles = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const absolutePath = path.join(PROFILE_DIR, entry.name);
+    let parsed;
+    try {
+      parsed = JSON.parse(await fs.readFile(absolutePath, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (parsed?.schemaVersion !== GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION) continue;
+    profiles.push(path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/'));
+  }
+  profiles.sort();
+  return profiles;
+}
+
+async function defaultPackagedRuntimeProfilePath() {
+  const profilePaths = await discoverPackagedRuntimeProfiles();
+  const defaultId = process.env.SYNTHI_GPU_HMR_RUNTIME_DEFAULT_PROFILE_ID?.trim();
+  if (defaultId) {
+    for (const profilePath of profilePaths) {
+      const profile = normalizeRuntimeProofProfile(await loadPackagedProfile(profilePath));
+      if (profile.id === defaultId) return profilePath;
+    }
+    throw new Error(`runtime default profile id was not found: ${defaultId}`);
+  }
+  const [first] = profilePaths;
+  if (!first) throw new Error(`no packaged runtime profiles found in ${PROFILE_DIR}`);
+  return first;
+}
+
 async function selfCheck() {
   const checks = [];
-  const packagedProfiles = [
-    'mcp/synthi-mcp/scripts/profiles/hiprt-megakernel-direct-light-zero.json',
-    'mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json',
-  ];
-  const defaultProfile = normalizeRuntimeProofProfile(DEFAULT_HIPRT_RUNTIME_PROFILE);
+  const packagedProfiles = await discoverPackagedRuntimeProfiles();
+  const defaultProfile = normalizeRuntimeProofProfile(await loadPackagedProfile(await defaultPackagedRuntimeProfilePath()));
   checks.push({
-    name: 'default-profile-normalizes',
+    name: 'default-packaged-profile-normalizes',
     ok: defaultProfile.schemaVersion === GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
     adapter: defaultProfile.adapter.family,
   });
@@ -179,8 +210,9 @@ async function selfCheck() {
       source: profile.source.file,
     });
   }
+  const baseProfile = defaultProfile;
   const unsupported = normalizeRuntimeProofProfile({
-    ...DEFAULT_HIPRT_RUNTIME_PROFILE,
+    ...baseProfile,
     adapter: { family: 'unknown-renderer-runtime', proofRunner: 'custom' },
   });
   let unsupportedRejected = false;
@@ -194,7 +226,7 @@ async function selfCheck() {
     ok: unsupportedRejected,
   });
   const external = normalizeRuntimeProofProfile({
-    ...DEFAULT_HIPRT_RUNTIME_PROFILE,
+    ...baseProfile,
     id: 'external-adapter-smoke',
     adapter: {
       family: 'external-adapter-smoke',
@@ -217,6 +249,8 @@ async function selfCheck() {
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.runtime_profile.self_check.v1',
     ok: failed.length === 0,
+    profileDirectory: path.relative(REPO_ROOT, PROFILE_DIR).replace(/\\/g, '/'),
+    discoveredProfileCount: packagedProfiles.length,
     checks,
   }, null, 2));
   if (failed.length > 0) process.exitCode = 1;
@@ -232,7 +266,13 @@ async function main() {
   const envForLoad = { ...process.env };
   if (args.profilePath) envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH = args.profilePath;
   if (args.profileJson) envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON = args.profileJson;
-  const profile = loadRuntimeProofProfileFromEnv(envForLoad, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
+  if (!envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON?.trim()
+    && !envForLoad.SYNTHI_HIPRT_WARM_PROFILE_JSON?.trim()
+    && !envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH?.trim()
+    && !envForLoad.SYNTHI_HIPRT_WARM_PROFILE_PATH?.trim()) {
+    envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH = await defaultPackagedRuntimeProfilePath();
+  }
+  const profile = loadRuntimeProofProfileFromEnv(envForLoad, REPO_ROOT);
   if (args.mode) {
     profile.runtime.mode = args.mode;
   } else if (process.env.SYNTHI_GPU_HMR_RUNTIME_MODE) {

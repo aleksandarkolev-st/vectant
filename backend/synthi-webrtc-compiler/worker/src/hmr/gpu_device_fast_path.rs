@@ -652,10 +652,9 @@ fn source_include_bridge_partial_status(
                 rejection.get_or_insert("selection.unknown_symbol");
                 continue;
             }
-            if artifact_symbols
-                .iter()
-                .all(|candidate| device_symbol_maps_to_scope(sidecar, candidate, &source, &generated))
-            {
+            if artifact_symbols.iter().all(|candidate| {
+                device_symbol_maps_to_scope(sidecar, candidate, &source, &generated)
+            }) {
                 return SourceIncludeBridgePartialStatus::Available;
             }
             rejection.get_or_insert("selection.unsafe_symbol_superset");
@@ -687,11 +686,7 @@ fn device_symbol_known(sidecar: &Value, symbol: &str) -> bool {
         };
         if items.iter().any(|item| {
             item.get("kind").and_then(Value::as_str) == Some("kernel")
-                && item
-                    .get("symbol")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    == Some(symbol)
+                && item.get("symbol").and_then(Value::as_str).map(str::trim) == Some(symbol)
         }) {
             return true;
         }
@@ -711,11 +706,7 @@ fn device_symbol_maps_to_scope(
         };
         if items.iter().any(|item| {
             item.get("kind").and_then(Value::as_str) == Some("kernel")
-                && item
-                    .get("symbol")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    == Some(symbol)
+                && item.get("symbol").and_then(Value::as_str).map(str::trim) == Some(symbol)
                 && item
                     .get("sourcePath")
                     .and_then(Value::as_str)
@@ -787,11 +778,7 @@ fn device_symbol_identity_uncertain_for_scope(
         };
         for item in items {
             let same_scope = item.get("kind").and_then(Value::as_str) == Some("kernel")
-                && item
-                    .get("symbol")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    == Some(symbol)
+                && item.get("symbol").and_then(Value::as_str).map(str::trim) == Some(symbol)
                 && item
                     .get("sourcePath")
                     .and_then(Value::as_str)
@@ -1139,9 +1126,9 @@ fn device_function_signature_evidence(before: Option<&str>, after: Option<&str>)
         .map(device_function_signature_snapshot)
         .unwrap_or(Value::Null);
     let changed = match (before, after) {
-        (Some(before), Some(after)) => {
-            Value::Bool(device_function_signature_hash(before) != device_function_signature_hash(after))
-        }
+        (Some(before), Some(after)) => Value::Bool(
+            device_function_signature_hash(before) != device_function_signature_hash(after),
+        ),
         _ => Value::Null,
     };
     json!({
@@ -1162,7 +1149,9 @@ fn device_function_body_evidence(before: Option<&str>, after: Option<&str>) -> V
     let before_snapshot = before
         .map(device_function_body_snapshot)
         .unwrap_or(Value::Null);
-    let after_snapshot = after.map(device_function_body_snapshot).unwrap_or(Value::Null);
+    let after_snapshot = after
+        .map(device_function_body_snapshot)
+        .unwrap_or(Value::Null);
     let changed = match (before, after) {
         (Some(before), Some(after)) => {
             Value::Bool(device_function_body_hash(before) != device_function_body_hash(after))
@@ -1843,8 +1832,7 @@ fn declaration_surface_hash(source: &str) -> String {
 }
 
 fn static_constexpr_data_hash(source: &str) -> String {
-    let re =
-        Regex::new(r#"\b(static|constexpr)\b[^;{()]*;"#).expect("static constexpr data regex");
+    let re = Regex::new(r#"\b(static|constexpr)\b[^;{()]*;"#).expect("static constexpr data regex");
     hash_lines(normalized_source_lines_matching(source, &re))
 }
 
@@ -1861,7 +1849,11 @@ fn type_layout_hash(source: &str) -> String {
             continue;
         };
         let mut end = close;
-        while end < source.len() && source.as_bytes().get(end).is_some_and(u8::is_ascii_whitespace)
+        while end < source.len()
+            && source
+                .as_bytes()
+                .get(end)
+                .is_some_and(u8::is_ascii_whitespace)
         {
             end += 1;
         }
@@ -2050,10 +2042,9 @@ fn strict_body_only_rejection(old_source: &str, new_source: &str) -> Option<&'st
         {
             return Some("abi.device_function_set_changed");
         }
-        if old_device_signatures
-            .iter()
-            .any(|(name, signatures)| new_device_signatures.get(name).map(Vec::len) != Some(signatures.len()))
-        {
+        if old_device_signatures.iter().any(|(name, signatures)| {
+            new_device_signatures.get(name).map(Vec::len) != Some(signatures.len())
+        }) {
             return Some("abi.overload_set_changed");
         }
         return Some("abi.device_function_signature_changed");
@@ -2255,7 +2246,10 @@ fn strip_redundant_global_scope_qualifiers(text: &str) -> String {
 }
 
 fn starts_redundant_global_scope(text: &str, scope_idx: usize) -> bool {
-    let Some(next) = text.get(scope_idx + 2..).and_then(|rest| rest.chars().next()) else {
+    let Some(next) = text
+        .get(scope_idx + 2..)
+        .and_then(|rest| rest.chars().next())
+    else {
         return false;
     };
     if !is_cpp_identifier_start(next) {
@@ -2863,12 +2857,8 @@ mod tests {
         let generated = "#include \"synthi_gpu_runtime.h\"\n#include \"src/gpu/source_backed_kernel.h\"\nextern \"C\" __global__ void SourceBackedKernel(RenderState state) {\n  state.value = state.value + 1;\n}\n";
         assert!(kernel_regions(generated).contains_key("SourceBackedKernel"));
 
-        let result = try_direct_device_body_patch(
-            &meta,
-            "src/gpu/source_backed_kernel.h",
-            &next,
-            generated,
-        );
+        let result =
+            try_direct_device_body_patch(&meta, "src/gpu/source_backed_kernel.h", &next, generated);
 
         assert!(result.accepted, "{:?}", result.reason_codes);
         assert_eq!(result.patched_device_source.as_deref(), Some(generated));
@@ -2893,27 +2883,23 @@ mod tests {
         let generated = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] = device_step(values[0])");
         let meta = source_include_recompile_fixture(
             &before,
-            vec![
-                json!({
-                    "kind": "kernel",
-                    "symbol": FIXTURE_SYMBOL,
-                    "sourcePath": FIXTURE_SOURCE_PATH,
-                    "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
-                    "mappingConfidence": "source_backed_partial"
-                }),
-            ],
+            vec![json!({
+                "kind": "kernel",
+                "symbol": FIXTURE_SYMBOL,
+                "sourcePath": FIXTURE_SOURCE_PATH,
+                "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                "mappingConfidence": "source_backed_partial"
+            })],
             &[FIXTURE_SYMBOL],
         );
 
-        let result = try_direct_device_body_patch(
-            &meta,
-            FIXTURE_SOURCE_PATH,
-            &next,
-            &generated,
-        );
+        let result = try_direct_device_body_patch(&meta, FIXTURE_SOURCE_PATH, &next, &generated);
 
         assert!(result.accepted, "{:?}", result.reason_codes);
-        assert_eq!(result.patched_device_source.as_deref(), Some(generated.as_str()));
+        assert_eq!(
+            result.patched_device_source.as_deref(),
+            Some(generated.as_str())
+        );
         assert_eq!(result.affected_symbols, vec![FIXTURE_SYMBOL.to_string()]);
         assert!(result
             .reason_codes
@@ -2955,12 +2941,7 @@ mod tests {
             &[FIXTURE_SYMBOL],
         );
 
-        let result = try_direct_device_body_patch(
-            &meta,
-            FIXTURE_SOURCE_PATH,
-            &next,
-            &generated,
-        );
+        let result = try_direct_device_body_patch(&meta, FIXTURE_SOURCE_PATH, &next, &generated);
 
         assert!(!result.accepted);
         assert!(result
@@ -3000,12 +2981,7 @@ mod tests {
             &[FIXTURE_SYMBOL, FIXTURE_FOREIGN_SYMBOL],
         );
 
-        let result = try_direct_device_body_patch(
-            &meta,
-            FIXTURE_SOURCE_PATH,
-            &next,
-            &generated,
-        );
+        let result = try_direct_device_body_patch(&meta, FIXTURE_SOURCE_PATH, &next, &generated);
 
         assert!(!result.accepted);
         assert!(result
@@ -3062,7 +3038,10 @@ GLOBAL_KERNEL_SIGNATURE(void) LiveKernel(RenderData data) {
 
         let regions = kernel_regions(source);
 
-        assert_eq!(regions.keys().cloned().collect::<Vec<_>>(), vec!["LiveKernel"]);
+        assert_eq!(
+            regions.keys().cloned().collect::<Vec<_>>(),
+            vec!["LiveKernel"]
+        );
     }
 
     #[test]
@@ -3851,10 +3830,19 @@ extern "C" __global__ void trace(float* x) {
     #[test]
     fn fast_path_logical_path_normalization_collapses_anchored_segments() {
         assert_eq!(normalize_path(r".\src\gpu\flow.hip"), "src/gpu/flow.hip");
-        assert_eq!(normalize_path("src/device/../gpu/flow.hip"), "src/gpu/flow.hip");
-        assert_eq!(normalize_path("/workspace/src/../gpu/flow.hip"), "/workspace/gpu/flow.hip");
+        assert_eq!(
+            normalize_path("src/device/../gpu/flow.hip"),
+            "src/gpu/flow.hip"
+        );
+        assert_eq!(
+            normalize_path("/workspace/src/../gpu/flow.hip"),
+            "/workspace/gpu/flow.hip"
+        );
         assert_eq!(normalize_path("../src/gpu/flow.hip"), "../src/gpu/flow.hip");
-        assert_eq!(normalize_path("../../src/./gpu/flow.hip"), "../../src/gpu/flow.hip");
+        assert_eq!(
+            normalize_path("../../src/./gpu/flow.hip"),
+            "../../src/gpu/flow.hip"
+        );
     }
 
     #[test]
