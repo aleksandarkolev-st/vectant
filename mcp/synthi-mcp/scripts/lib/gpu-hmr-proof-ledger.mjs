@@ -212,7 +212,17 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   const identityPid = eventProcessId(record.processIdentity);
   const loaderPid = eventProcessId(record.loaderEvent);
   const dispatchPid = eventProcessId(record.dispatchEvent);
+  const classification = asObject(record.classification);
+  const projectKind = firstText(classification.project_kind, classification.projectKind);
+  const editKind = firstText(classification.edit_kind, classification.editKind);
+  const route = firstText(classification.route);
 
+  if (!projectKind) addFailure(failures, 'classification_project_kind_missing');
+  if (!editKind) addFailure(failures, 'classification_edit_kind_missing');
+  if (!route) addFailure(failures, 'classification_route_missing');
+  if (projectKind === 'cpu_project') addFailure(failures, 'classification_cpu_project');
+  if (editKind === 'host_only') addFailure(failures, 'classification_host_only_edit');
+  if (route && route !== 'gpu_hmr') addFailure(failures, 'classification_route_not_gpu_hmr', { route });
   if (record.cpuHmrUsed) addFailure(failures, 'cpu_hmr_used');
   if (record.fullRebuildUsed) addFailure(failures, 'full_rebuild_used');
   if (record.processRestarted) addFailure(failures, 'process_restarted');

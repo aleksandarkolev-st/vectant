@@ -48,6 +48,7 @@
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
     "proof:adversarial-ledger:self-check": "node scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs",
+    "proof:acceptance-contract:self-check": "node scripts/gpu-hmr-acceptance-contract-self-check.mjs",
     "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
     "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
     "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
