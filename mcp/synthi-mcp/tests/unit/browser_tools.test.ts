@@ -239,6 +239,50 @@ describe("browser MCP tool surface", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("replays native drag workflows whose drop target is stored in event detail", async () => {
+    const url = "https://app.example.com/board";
+    const dropLocator = "page.getByRole(\"list\", { name: \"Done\" })";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Board", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      detail: {
+        drag_mode: true,
+        drag_class: "nativeHtmlDnd",
+        drop_locator: dropLocator,
+      },
+      element: { tag: "div", role: "listitem", name: "Revenue audit" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+
+    const action = vi.spyOn(browserPlaywrightAdapter, "action").mockResolvedValue({
+      ok: true,
+      action: "drag",
+      tab_id: "app",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "detail-drop-locator");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action).toHaveBeenCalledWith("app", "drag", expect.stringContaining("Revenue audit"), dropLocator);
+  });
+
   it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
     const response = await dispatchBrowserTool("synthi_browser_attach", {});
 

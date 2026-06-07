@@ -1227,7 +1227,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       }
       continue;
     }
-    const value = action === "navigate" ? event.url : event.value;
+    const value = replayValueForEvent(event, action);
     const validation = browserBroker.validateAction({
       lease_id: leaseId,
       action,
@@ -1314,6 +1314,12 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
 function actionForReplay(event: { kind: string; action?: BrowserActionKind }): BrowserActionKind | null {
   if (event.kind === "navigation") return "navigate";
   return event.action ?? null;
+}
+
+function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind): string | undefined {
+  if (action === "navigate") return event.url;
+  if (action === "drag") return event.value ?? stringOpt(event.detail?.["drop_locator"]);
+  return event.value;
 }
 
 function isFileDropEvent(event: BrowserTraceEvent): boolean {
