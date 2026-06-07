@@ -6,6 +6,7 @@ import {
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
   mcpFrameGateSatisfied,
+  mcpFrameGateSatisfiedByScreenshot,
 } from '../lib/gpu-hmr-visual-evidence.mjs';
 
 const deterministicSingleFrame = {
@@ -125,7 +126,19 @@ assert.ok(
 );
 
 assert.equal(mcpFrameGateSatisfied({ status: 'satisfied' }), true);
+assert.equal(mcpFrameGateSatisfied({
+  frame_gate: { status: 'satisfied' },
+  gpu_proof_validation: { satisfied: false },
+}), false);
 assert.equal(mcpFrameGateSatisfied({ frame_gate: { status: 'timeout' } }), false);
+assert.equal(mcpFrameGateSatisfiedByScreenshot({
+  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  gpu_proof_validation: { satisfied: true },
+}, { seq: 12, ts: 1200 }), true);
+assert.equal(mcpFrameGateSatisfiedByScreenshot({
+  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  gpu_proof_validation: { satisfied: true },
+}, { seq: 11, ts: 1199 }), false);
 
 const mcpDerived = deterministicVisualModeFromMcpEvidence({
   base: {
@@ -137,9 +150,12 @@ const mcpDerived = deterministicVisualModeFromMcpEvidence({
     fixed_swapchain_image_count: true,
     warmup_frames: 1,
   },
-  before: { width: 640, height: 480 },
-  after: { width: 640, height: 480 },
-  wait: { frame_gate: { status: 'satisfied' } },
+  before: { width: 640, height: 480, seq: 10, ts: 1000 },
+  after: { width: 640, height: 480, seq: 12, ts: 1200 },
+  wait: {
+    frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+    gpu_proof_validation: { satisfied: true },
+  },
 });
 const mcpDerivedEvaluation = evaluateGpuHmrDeterministicVisualMode(mcpDerived);
 assert.equal(mcpDerivedEvaluation.accepted, true);
@@ -157,8 +173,8 @@ const mcpMissingGate = evaluateGpuHmrDeterministicVisualMode(
       denoiser_not_applicable: true,
       fixed_swapchain_image_count: true,
     },
-    before: { width: 640, height: 480 },
-    after: { width: 640, height: 480 },
+    before: { width: 640, height: 480, seq: 10, ts: 1000 },
+    after: { width: 640, height: 480, seq: 11, ts: 1100 },
     wait: { frame_gate: { status: 'timeout' } },
   }),
 );
@@ -166,6 +182,58 @@ assert.equal(mcpMissingGate.accepted, false);
 assert.ok(
   mcpMissingGate.failedGates.some((gate) => gate.code === 'frame_capture_after_epoch_dispatch_unproven'),
   `expected frame_capture_after_epoch_dispatch_unproven, got ${mcpMissingGate.failedGates.map((g) => g.code).join(',')}`,
+);
+
+const mcpStaleScreenshot = evaluateGpuHmrDeterministicVisualMode(
+  deterministicVisualModeFromMcpEvidence({
+    base: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_not_applicable: true,
+      taa_not_applicable: true,
+      denoiser_not_applicable: true,
+      fixed_swapchain_image_count: true,
+    },
+    before: { width: 640, height: 480, seq: 10, ts: 1000 },
+    after: { width: 640, height: 480, seq: 11, ts: 1199 },
+    wait: {
+      frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+      gpu_proof_validation: { satisfied: true },
+    },
+  }),
+);
+assert.equal(mcpStaleScreenshot.accepted, false);
+assert.ok(
+  mcpStaleScreenshot.failedGates.some((gate) =>
+    gate.code === 'frame_capture_after_epoch_dispatch_unproven'
+  ),
+  `expected frame_capture_after_epoch_dispatch_unproven for stale screenshot, got ${mcpStaleScreenshot.failedGates.map((g) => g.code).join(',')}`,
+);
+
+const mcpFailedGpuProofValidation = evaluateGpuHmrDeterministicVisualMode(
+  deterministicVisualModeFromMcpEvidence({
+    base: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_not_applicable: true,
+      taa_not_applicable: true,
+      denoiser_not_applicable: true,
+      fixed_swapchain_image_count: true,
+    },
+    before: { width: 640, height: 480, seq: 10, ts: 1000 },
+    after: { width: 640, height: 480, seq: 12, ts: 1200 },
+    wait: {
+      frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+      gpu_proof_validation: { satisfied: false, reason: 'proof_state_below_required' },
+    },
+  }),
+);
+assert.equal(mcpFailedGpuProofValidation.accepted, false);
+assert.ok(
+  mcpFailedGpuProofValidation.failedGates.some((gate) =>
+    gate.code === 'frame_capture_after_epoch_dispatch_unproven'
+  ),
+  `expected frame_capture_after_epoch_dispatch_unproven for failed GPU proof validation, got ${mcpFailedGpuProofValidation.failedGates.map((g) => g.code).join(',')}`,
 );
 
 console.log(JSON.stringify({
@@ -178,5 +246,7 @@ console.log(JSON.stringify({
     'convergence_window_sample_rejection',
     'convergence_window_seed_rejection',
     'mcp_frame_gate_derived',
+    'mcp_failed_gpu_proof_validation_rejection',
+    'mcp_stale_screenshot_rejection',
   ],
 }, null, 2));

@@ -176,11 +176,60 @@ function screenshotDimension(shot, key) {
   return finiteNumberOrNull(shot?.[key] ?? meta[key]);
 }
 
-export function mcpFrameGateSatisfied(waitOrGate) {
-  const gate = isObject(waitOrGate?.frame_gate ?? waitOrGate?.frameGate)
+function screenshotFrameSeq(shot) {
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+    : {};
+  return finiteNumberOrNull(
+    shot?.seq
+    ?? shot?.frame_seq
+    ?? shot?.frameSeq
+    ?? meta.seq
+    ?? meta.frame_seq
+    ?? meta.frameSeq,
+  );
+}
+
+function screenshotTimestampMs(shot) {
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+    : {};
+  return finiteNumberOrNull(
+    shot?.ts
+    ?? shot?.timestamp_ms
+    ?? shot?.timestampMs
+    ?? meta.ts
+    ?? meta.timestamp_ms
+    ?? meta.timestampMs,
+  );
+}
+
+function mcpFrameGateObject(waitOrGate) {
+  return isObject(waitOrGate?.frame_gate ?? waitOrGate?.frameGate)
     ? (waitOrGate.frame_gate ?? waitOrGate.frameGate)
     : waitOrGate;
+}
+
+export function mcpFrameGateSatisfied(waitOrGate) {
+  const validation = isObject(waitOrGate?.gpu_proof_validation ?? waitOrGate?.gpuProofValidation)
+    ? (waitOrGate.gpu_proof_validation ?? waitOrGate.gpuProofValidation)
+    : null;
+  if (validation && validation.satisfied !== true) return false;
+  const gate = mcpFrameGateObject(waitOrGate);
   return isObject(gate) && gate.status === 'satisfied';
+}
+
+export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {
+  if (!mcpFrameGateSatisfied(waitOrGate)) return false;
+  const gate = mcpFrameGateObject(waitOrGate);
+  const gateSeq = finiteNumberOrNull(gate.frame_seq ?? gate.frameSeq);
+  const gateTs = finiteNumberOrNull(gate.ts_ms ?? gate.tsMs ?? gate.ts);
+  if (gateSeq === null && gateTs === null) return false;
+  const afterSeq = screenshotFrameSeq(afterScreenshot);
+  const afterTs = screenshotTimestampMs(afterScreenshot);
+  const seqOk = gateSeq === null || (afterSeq !== null && afterSeq >= gateSeq);
+  const tsOk = gateTs === null || (afterTs !== null && afterTs >= gateTs);
+  return seqOk && tsOk;
 }
 
 export function deterministicVisualModeFromMcpEvidence(input = {}) {
@@ -202,8 +251,7 @@ export function deterministicVisualModeFromMcpEvidence(input = {}) {
     && beforeHeight > 0
     && beforeWidth === afterWidth
     && beforeHeight === afterHeight;
-  const frameGate = evidence.frameGate ?? evidence.wait?.frame_gate ?? evidence.wait?.frameGate;
-  const frameBoundary = mcpFrameGateSatisfied(frameGate);
+  const frameBoundary = mcpFrameGateSatisfiedByScreenshot(evidence.wait ?? evidence, after);
   return normalizeGpuHmrDeterministicVisualMode({
     ...base,
     fixed_seed: firstBool(evidence.fixed_seed, evidence.fixedSeed, base.fixed_seed, base.fixedSeed),
