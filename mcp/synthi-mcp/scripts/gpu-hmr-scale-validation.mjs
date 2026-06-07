@@ -17,6 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -273,6 +274,7 @@ const report = {
   launch_indirection: {},
   warm_rebuild: {},
   runtime_policy: {},
+  adversarial_preflight: null,
   direct_device_fast_path: {},
   ai_delta_observations: [],
   phases: [],
@@ -1910,6 +1912,11 @@ async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReas
   return phase;
 }
 
+function preflightStatus(preflight) {
+  if (preflight?.skipped) return 'skip';
+  return preflight?.ok ? 'pass' : 'fail';
+}
+
 function configuredWaitRequiredGpuProofState(expectedModule = null) {
   if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
   return CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
@@ -3246,6 +3253,14 @@ async function writeReport() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  record(
+    'adversarial proof ledger preflight',
+    preflightStatus(report.adversarial_preflight),
+    `elapsed_ms=${report.adversarial_preflight.elapsedMs.toFixed(1)}`,
+  );
   if (!SUPPORTED_RENDER_FIXTURES.has(CFG.renderBackend)) {
     fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected ${[...SUPPORTED_RENDER_FIXTURES].join(', ')}`);
   }

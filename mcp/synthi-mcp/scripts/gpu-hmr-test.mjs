@@ -49,6 +49,7 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import {
   dockerContainerSnapshot,
   validationCommandMetadata,
@@ -167,11 +168,17 @@ const runtimeFullProofs = [];
 const gpuProofs = [];
 const visualArtifactPaths = [];
 const screenshots = [];
+let adversarialPreflight = null;
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
   log(l, `[${phase}] ${name}${detail ? ' — ' + detail : ''}`);
 }
+function preflightStatus(preflight) {
+  if (preflight?.skipped) return 'skip';
+  return preflight?.ok ? 'pass' : 'fail';
+}
+
 function recordArtifactTransportProof(phase, name, proofArtifactRecords, runtimeEvidence = null) {
   const proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords, runtimeEvidence);
   artifactTransportProofs.push({
@@ -4006,6 +4013,16 @@ async function main() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
 
+  adversarialPreflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  record(
+    'preflight',
+    'adversarial proof ledger preflight',
+    preflightStatus(adversarialPreflight),
+    `elapsed_ms=${adversarialPreflight.elapsedMs.toFixed(1)}`,
+  );
+
   const pre = await preflight();
   if (CFG.useMcpCompile) {
     try {
@@ -4210,6 +4227,7 @@ async function writeSummary() {
     gpu_vendor: CFG.vendor,
     gpu_arch: CFG.gpuArch ?? null,
     command: commandMetadata,
+    adversarial_preflight: adversarialPreflight,
     urls: {
       frontend: CFG.frontendUrl,
       collab: CFG.collabUrl,
