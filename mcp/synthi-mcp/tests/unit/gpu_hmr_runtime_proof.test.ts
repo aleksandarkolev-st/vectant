@@ -6020,6 +6020,17 @@ describe("GPU HMR runtime output proof classification", () => {
         acceptedAsVisualEvidence: true,
         visualQuality: "gpu-hmr-visual-rich",
       }],
+      deterministicVisualMode: {
+        fixed_seed: true,
+        frozen_camera: true,
+        temporal_accumulation_disabled: true,
+        taa_disabled: true,
+        denoiser_disabled: true,
+        fixed_resolution: true,
+        fixed_swapchain_image_count: true,
+        frame_capture_after_epoch_dispatch: true,
+        presentation_fence_or_frame_boundary: true,
+      },
       createdAt: "2026-05-28T00:00:00.000Z",
     });
 
@@ -6117,6 +6128,79 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("rejects accepted visual artifacts without deterministic visual mode proof", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualFrameObserved: true,
+      visualEvidenceRefs: ["artifacts/frame.png"],
+    });
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+      visualEvidenceRefs: ["artifacts/frame.png"],
+      visualEvidenceArtifacts: [{
+        path: "artifacts/frame.png",
+        contentHash: `sha256:${"4".repeat(64)}`,
+        acceptedAsVisualEvidence: true,
+        visualQuality: "gpu-hmr-visual-rich",
+      }],
+    });
+
+    expect(artifact.proofMaterial.visualEvidenceRequired).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "deterministic-visual-mode",
+          degraded_reason: "deterministic_visual_mode_missing",
+        }),
+      ]),
+    );
   });
 
   it("rejects explicit acceptance contracts that disagree with verified proof material", () => {

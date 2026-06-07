@@ -928,8 +928,28 @@ function acceptanceContractConsistencyLimitations(evaluation) {
   }));
 }
 
-function deterministicVisualModeLimitations(evaluation) {
-  if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
+function deterministicVisualModeLimitations(evaluation, { required = false } = {}) {
+  if (!objectOrNull(evaluation)) {
+    if (!required) return [];
+    return [{
+      stageId: 'deterministic-visual-mode',
+      stage_id: 'deterministic-visual-mode',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-deterministic-visual-mode-proven',
+      required_state: 'gpu-hmr-deterministic-visual-mode-proven',
+      observedState: 'missing',
+      observed_state: 'missing',
+      degradedState: 'gpu-hmr-deterministic-visual-mode-missing',
+      degraded_state: 'gpu-hmr-deterministic-visual-mode-missing',
+      degradedReason: 'deterministic_visual_mode_missing',
+      degraded_reason: 'deterministic_visual_mode_missing',
+      proofArtifactPath: null,
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    }];
+  }
+  if (evaluation.accepted === true) return [];
   return compactObjects(evaluation.failedGates).map((gate) => ({
     stageId: 'deterministic-visual-mode',
     stage_id: 'deterministic-visual-mode',
@@ -1098,10 +1118,17 @@ function visualArtifactQuality(artifact) {
   return firstString(artifact.visualQuality, artifact.visual_quality);
 }
 
-function visualProofArtifactLimitations({ outputProof, visualEvidenceRefs, visualEvidenceArtifacts }) {
+function visualProofArtifactLimitations({
+  outputProof,
+  visualEvidenceRefs,
+  visualEvidenceArtifacts,
+  visualEvidenceRequired,
+}) {
   const artifacts = compactObjects(visualEvidenceArtifacts);
   const refs = compactStringList(visualEvidenceRefs);
-  if (!outputProofRequiresVisualEvidence(outputProof, refs, artifacts)) return [];
+  if (visualEvidenceRequired !== true && !outputProofRequiresVisualEvidence(outputProof, refs, artifacts)) {
+    return [];
+  }
 
   const limitations = [];
   if (refs.length === 0 && artifacts.length === 0) {
@@ -1890,6 +1917,11 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const visualEvidenceArtifacts = compactObjects(input.visualEvidenceArtifacts);
+  const visualEvidenceRequired = outputProofRequiresVisualEvidence(
+    outputProof,
+    visualEvidenceRefs,
+    visualEvidenceArtifacts,
+  );
   const visualArtifactsByPath = visualArtifactMap(visualEvidenceArtifacts);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
@@ -1899,8 +1931,15 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...proofLimitations(stages, fullRuntimeProof),
     ...acceptanceContractLimitations(acceptanceContractEvaluation),
     ...acceptanceContractConsistencyLimitations(acceptanceContractConsistency),
-    ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation),
-    ...visualProofArtifactLimitations({ outputProof, visualEvidenceRefs, visualEvidenceArtifacts }),
+    ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation, {
+      required: visualEvidenceRequired,
+    }),
+    ...visualProofArtifactLimitations({
+      outputProof,
+      visualEvidenceRefs,
+      visualEvidenceArtifacts,
+      visualEvidenceRequired,
+    }),
     ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
     ...proofLedgerLimitations(proofLedgerQuery),
     ...targetProgressionGateLimitations(targetProgressionGates),
@@ -1953,6 +1992,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     acceptanceContractConsistency,
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    visualEvidenceRequired,
     derivedProofLedgerRecord,
     explicitProofLedgerRecord,
     proofLedgerSourceConsistency,
