@@ -678,6 +678,28 @@ function teachCaptureInitScript(bindingName: string): string {
       return attr(el, 'name') || element.label || element.placeholder || element.name || element.id || element.test_id || element.tag;
     }
 
+    function visibleEffectTexts() {
+      const selectors = ['[aria-live]', 'output', '[role="status"]', '#status', '.status'];
+      const seen = new Set();
+      const result = [];
+      for (const el of document.querySelectorAll(selectors.join(','))) {
+        if (!isElement(el) || el.closest('[data-synthi-workflow-toolbox]')) continue;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const value = text(el.textContent || '');
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        result.push(value);
+        if (result.length >= 5) break;
+      }
+      return result;
+    }
+
+    function changedEffectTexts(before) {
+      const previous = new Set(Array.isArray(before) ? before : []);
+      return visibleEffectTexts().filter((value) => !previous.has(value));
+    }
+
     function playwrightLocatorFor(el) {
       if (!isElement(el)) return '';
       const element = metadata(el);
@@ -716,6 +738,7 @@ function teachCaptureInitScript(bindingName: string): string {
     function emit(el, action, value, detail) {
       if (!window[bindingName] || !isElement(el)) return;
       const element = metadata(el);
+      const beforeEffects = visibleEffectTexts();
       const payload = {
         url: location.href,
         origin: location.origin,
@@ -731,8 +754,17 @@ function teachCaptureInitScript(bindingName: string): string {
       const last = lastSent.get(el);
       const now = Date.now();
       if (last && last.signature === signature && now - last.ts < 300) return;
-      lastSent.set(el, { signature, ts: now });
-      window[bindingName](payload).catch(() => {});
+      const send = () => {
+        const effects = changedEffectTexts(beforeEffects);
+        if (effects.length > 0) payload.detail.observed_effects = effects;
+        lastSent.set(el, { signature, ts: Date.now() });
+        window[bindingName](payload).catch(() => {});
+      };
+      if (['click', 'press', 'drag', 'select', 'check', 'uncheck'].includes(action)) {
+        setTimeout(send, 80);
+      } else {
+        send();
+      }
     }
 
     function clearPending(el) {

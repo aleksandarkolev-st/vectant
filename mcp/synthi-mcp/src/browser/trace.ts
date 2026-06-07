@@ -317,7 +317,13 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           ? event.detail["drop_locator"]
           : event.value;
         if (dropLocator) {
-          lines.push(`  await ${target}.dragTo(${locatorExpressionForEvent(event, dropLocator)});`);
+          const dropTarget = `dropTarget${targetSeq}`;
+          lines.push(`  const ${dropTarget} = ${locatorExpressionForEvent(event, dropLocator)};`);
+          lines.push(`  await ${target}.dragTo(${dropTarget});`);
+          const draggedText = draggedElementText(event);
+          if (draggedText) {
+            lines.push(`  await expect(${dropTarget}).toContainText(${JSON.stringify(draggedText)});`);
+          }
         } else {
           warnings.push(`event ${event.event_id} is a drag step without a durable drop target locator`);
         }
@@ -332,6 +338,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       case "select":
         lines.push(`  await ${target}.selectOption(${JSON.stringify(event.value ?? "")});`);
+        lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
         break;
       case "check":
         lines.push(`  await ${target}.check();`);
@@ -347,6 +354,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       default:
         warnings.push(`event ${event.event_id} has unsupported action ${event.action ?? "unknown"}`);
         break;
+    }
+    for (const effectText of observedEffectTexts(event)) {
+      lines.push(`  await expect(page.getByText(${JSON.stringify(effectText)}, { exact: true })).toBeVisible();`);
     }
   }
 
@@ -405,4 +415,27 @@ function isFileInputDrop(event: BrowserTraceEvent): boolean {
   const input = element as BrowserElementMetadata;
   return event.detail?.["file_input"] === true ||
     (input.tag?.toLowerCase() === "input" && input.type?.toLowerCase() === "file");
+}
+
+function observedEffectTexts(event: BrowserTraceEvent): string[] {
+  const raw = event.detail?.["observed_effects"];
+  const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const compact = value.trim().replace(/\s+/g, " ");
+    if (!compact || seen.has(compact)) continue;
+    seen.add(compact);
+    result.push(compact.slice(0, 240));
+  }
+  return result;
+}
+
+function draggedElementText(event: BrowserTraceEvent): string | null {
+  const element = event.detail?.["element"];
+  if (!element || typeof element !== "object") return null;
+  const metadata = element as BrowserElementMetadata;
+  const value = metadata.text ?? metadata.name ?? metadata.label ?? metadata.test_id;
+  return value && value.trim() ? value.trim().replace(/\s+/g, " ").slice(0, 160) : null;
 }

@@ -103,8 +103,74 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.code).toContain("await target1.hover();");
-    expect(generated.code).toContain("await target2.dragTo(page.getByRole(\"list\", { name: \"Done\" }));");
+    expect(generated.code).toContain("const dropTarget2 = page.getByRole(\"list\", { name: \"Done\" });");
+    expect(generated.code).toContain("await target2.dragTo(dropTarget2);");
+    expect(generated.code).toContain("await expect(dropTarget2).toContainText(\"Task\");");
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
+  });
+
+  it("asserts select values, drag effects, and captured live-region outcomes", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "select-segment",
+        event_seq: 1,
+        action: "select",
+        value: "enterprise",
+        detail: {
+          element: { role: "combobox", label: "Segment" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Segment\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "press-search",
+        event_seq: 2,
+        action: "press",
+        value: "Enter",
+        detail: {
+          observed_effects: ["Searched revenue"],
+          element: { role: "textbox", label: "Search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "drag-card",
+        event_seq: 3,
+        action: "drag",
+        value: "page.getByTestId(\"lane-done\")",
+        detail: {
+          drag_mode: true,
+          drag_class: "nativeHtmlDnd",
+          observed_effects: ["Moved Revenue audit to Done lane"],
+          element: { role: "listitem", name: "Revenue audit" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"card-revenue\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+      event({
+        event_id: "apply-dashboard",
+        event_seq: 4,
+        action: "click",
+        detail: {
+          observed_effects: ["Applied enterprise urgent; card done; search revenue"],
+          element: { role: "button", name: "Apply dashboard" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Apply dashboard\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("await target1.selectOption(\"enterprise\");");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(\"enterprise\");");
+    expect(generated.code).toContain("await expect(page.getByText(\"Searched revenue\", { exact: true })).toBeVisible();");
+    expect(generated.code).toContain("await expect(dropTarget3).toContainText(\"Revenue audit\");");
+    expect(generated.code).toContain("await expect(page.getByText(\"Moved Revenue audit to Done lane\", { exact: true })).toBeVisible();");
+    expect(generated.code).toContain("await expect(page.getByText(\"Applied enterprise urgent; card done; search revenue\", { exact: true })).toBeVisible();");
   });
 
   it("generates parameterized file drop replay without inventing file contents", () => {
