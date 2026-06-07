@@ -797,6 +797,8 @@ function labelForAction(action: BrowserActionKind, targetLabel: string): string 
       return `Hover over ${targetLabel}`;
     case "drag":
       return `Drag ${targetLabel}`;
+    case "scroll":
+      return `Scroll ${targetLabel}`;
     case "press":
       return `Press key on ${targetLabel}`;
     case "select":
@@ -827,6 +829,8 @@ function intentForAction(action: BrowserActionKind, targetLabel: string): string
       return `Reveal or inspect ${targetLabel}`;
     case "drag":
       return `Move ${targetLabel} with explicit drag mode`;
+    case "scroll":
+      return `Restore ${targetLabel} scroll position`;
     case "navigate":
       return `Reach ${targetLabel}`;
     case "wait":
@@ -842,6 +846,7 @@ function expectedEffectsFor(action: BrowserActionKind, targetLabel: string, muta
   if (action === "hover") return [`${targetLabel} reveal state is visible.`];
   if (action === "contextmenu") return [`${targetLabel} contextual actions are visible.`];
   if (action === "drag") return [`${targetLabel} drag target remains reachable.`];
+  if (action === "scroll") return [`${targetLabel} scroll position is restored.`];
   if (action === "navigate") return [`The browser reaches ${targetLabel}.`];
   return [`${targetLabel} remains visible and actionable.`];
 }

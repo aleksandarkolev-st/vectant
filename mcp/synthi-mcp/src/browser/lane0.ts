@@ -147,6 +147,8 @@ function intentFor(event: BrowserTraceEvent, target: string, groupLabel: string)
       return `Reveal or inspect ${target}`;
     case "drag":
       return `Drag ${target}`;
+    case "scroll":
+      return `Restore ${target} scroll position`;
     case "press":
       return `Press key for ${target}`;
     case "check":

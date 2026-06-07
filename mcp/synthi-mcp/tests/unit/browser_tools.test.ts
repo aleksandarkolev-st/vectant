@@ -102,7 +102,7 @@ describe("browser MCP tool surface", () => {
     expect(released?.structuredContent).toEqual({ ok: true, released: true });
   });
 
-  it("dispatches durable double-click and context-menu agent actions through Playwright", async () => {
+  it("dispatches durable pointer and scroll agent actions through Playwright", async () => {
     const url = "https://app.example.com/records";
     browserBroker.requestConsent(url);
     browserBroker.registerTabs([{ tab_id: "app", url, title: "Records", active: true }]);
@@ -126,9 +126,17 @@ describe("browser MCP tool surface", () => {
       action: "contextmenu",
       selector: "page.getByRole(\"row\", { name: \"Open record\" })",
     });
+    const scroll = await dispatchBrowserTool("synthi_browser_action", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      action: "scroll",
+      selector: "page.getByTestId(\"records-scroll\")",
+      value: "{\"top\":240,\"left\":0}",
+    });
 
     expect(doubleClicked?.isError).toBeUndefined();
     expect(contextMenu?.isError).toBeUndefined();
+    expect(scroll?.isError).toBeUndefined();
     expect(action).toHaveBeenNthCalledWith(
       1,
       "app",
@@ -142,6 +150,13 @@ describe("browser MCP tool surface", () => {
       "contextmenu",
       "page.getByRole(\"row\", { name: \"Open record\" })",
       undefined
+    );
+    expect(action).toHaveBeenNthCalledWith(
+      3,
+      "app",
+      "scroll",
+      "page.getByTestId(\"records-scroll\")",
+      "{\"top\":240,\"left\":0}"
     );
   });
 

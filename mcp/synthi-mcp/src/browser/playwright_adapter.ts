@@ -217,6 +217,9 @@ export class BrowserPlaywrightAdapter {
         if (!value) throw new Error("missing_drag_target");
         await this.resolveLocator(page, selector).dragTo(this.resolveLocator(page, value));
         break;
+      case "scroll":
+        await this.scrollLocator(page, selector, value);
+        break;
       case "fill":
         await this.resolveLocator(page, selector).fill(value ?? "");
         break;
@@ -439,6 +442,17 @@ export class BrowserPlaywrightAdapter {
     return page.locator(trimmed);
   }
 
+  private async scrollLocator(page: Page, selector: string | undefined, value: string | undefined): Promise<void> {
+    const position = parseScrollPosition(value);
+    await this.resolveLocator(page, selector).evaluate((element, target) => {
+      if (element === document.body || element === document.documentElement) {
+        window.scrollTo(target.left, target.top);
+        return;
+      }
+      element.scrollTo(target.left, target.top);
+    }, position);
+  }
+
   private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
     const bindingName = "__synthiRecordHumanAction";
     await page.exposeBinding(bindingName, (_source, payload: unknown) => {
@@ -566,12 +580,32 @@ function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function parseScrollPosition(value: string | undefined): { top: number; left: number } {
+  if (!value || value.trim().length === 0) return { top: 0, left: 0 };
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return { top: Math.max(0, Math.round(numeric)), left: 0 };
+  try {
+    const raw = JSON.parse(value) as Record<string, unknown>;
+    const top = numberOpt(raw["top"]) ?? numberOpt(raw["scroll_top"]) ?? 0;
+    const left = numberOpt(raw["left"]) ?? numberOpt(raw["scroll_left"]) ?? 0;
+    return {
+      top: Math.max(0, Math.round(top)),
+      left: Math.max(0, Math.round(left)),
+    };
+  } catch {
+    return { top: 0, left: 0 };
+  }
+}
+
 function teachCaptureInitScript(bindingName: string): string {
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
     if (window.__SYNTHI_TEACH_CAPTURE_INSTALLED__) return;
     window.__SYNTHI_TEACH_CAPTURE_INSTALLED__ = true;
     const pending = new WeakMap();
+    const scrollPending = new WeakMap();
+    const scrollPendingElements = new Set();
+    const scrollBeforeEffects = new WeakMap();
     const lastSent = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
     let activeDrag = null;
@@ -686,6 +720,31 @@ function teachCaptureInitScript(bindingName: string): string {
     function bbox(el) {
       const rect = el.getBoundingClientRect();
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    }
+
+    function scrollTargetFor(event) {
+      const target = event.target;
+      if (target === document || target === window || target === document.body || target === document.documentElement) {
+        return document.scrollingElement || document.documentElement;
+      }
+      if (isElement(target)) return target;
+      return document.scrollingElement || document.documentElement;
+    }
+
+    function scrollDetail(el) {
+      const viewport = el === document.scrollingElement || el === document.documentElement || el === document.body;
+      const top = viewport ? window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0 : el.scrollTop || 0;
+      const left = viewport ? window.scrollX || document.documentElement.scrollLeft || document.body.scrollLeft || 0 : el.scrollLeft || 0;
+      return {
+        scroll_event: true,
+        scroll_top: Math.max(0, Math.round(top)),
+        scroll_left: Math.max(0, Math.round(left)),
+        viewport_scroll: viewport,
+        scroll_height: Math.max(0, Math.round(el.scrollHeight || 0)),
+        scroll_width: Math.max(0, Math.round(el.scrollWidth || 0)),
+        client_height: Math.max(0, Math.round(el.clientHeight || window.innerHeight || 0)),
+        client_width: Math.max(0, Math.round(el.clientWidth || window.innerWidth || 0)),
+      };
     }
 
     function fieldName(el, element) {
@@ -803,8 +862,11 @@ function teachCaptureInitScript(bindingName: string): string {
 
     function emit(el, action, value, detail) {
       if (!window[bindingName] || !isElement(el)) return;
+      if (action !== 'scroll') flushPendingScrolls();
       const element = metadata(el);
-      const beforeEffects = visibleEffectTexts();
+      const rawDetail = Object.assign({}, detail || {});
+      const beforeEffects = Array.isArray(rawDetail.__before_effects) ? rawDetail.__before_effects : visibleEffectTexts();
+      delete rawDetail.__before_effects;
       const payload = {
         url: location.href,
         origin: location.origin,
@@ -813,9 +875,13 @@ function teachCaptureInitScript(bindingName: string): string {
         field_name: fieldName(el, element),
         element,
         bbox: bbox(el),
-        detail: Object.assign({ event_source: 'dom_listener' }, detail || {}),
+        detail: Object.assign({ event_source: 'dom_listener' }, rawDetail),
       };
-      const detailKey = payload.detail && typeof payload.detail.drop_locator === 'string' ? payload.detail.drop_locator : '';
+      const detailKey = payload.detail && typeof payload.detail.drop_locator === 'string'
+        ? payload.detail.drop_locator
+        : action === 'scroll'
+          ? String(payload.detail.scroll_top || 0) + '|' + String(payload.detail.scroll_left || 0)
+          : '';
       const signature = action + '|' + (payload.value || '') + '|' + detailKey + '|' + location.href;
       const last = lastSent.get(el);
       const now = Date.now();
@@ -830,6 +896,22 @@ function teachCaptureInitScript(bindingName: string): string {
         setTimeout(send, 0);
       } else {
         send();
+      }
+    }
+
+    function emitScroll(el) {
+      const beforeEffects = scrollBeforeEffects.get(el) || visibleEffectTexts();
+      scrollBeforeEffects.delete(el);
+      emit(el, 'scroll', undefined, Object.assign(scrollDetail(el), { __before_effects: beforeEffects }));
+    }
+
+    function flushPendingScrolls() {
+      for (const el of Array.from(scrollPendingElements)) {
+        const timer = scrollPending.get(el);
+        if (timer) clearTimeout(timer);
+        scrollPending.delete(el);
+        scrollPendingElements.delete(el);
+        if (isElement(el)) emitScroll(el);
       }
     }
 
@@ -861,6 +943,21 @@ function teachCaptureInitScript(bindingName: string): string {
       }
       const value = action === 'check' || action === 'uncheck' ? String(Boolean(el.checked)) : String(el.value || '');
       emit(el, action, value, { change_event: true });
+    }, true);
+
+    document.addEventListener('scroll', (event) => {
+      const el = scrollTargetFor(event);
+      if (!isElement(el)) return;
+      if (el.closest('[data-synthi-workflow-toolbox]')) return;
+      const previous = scrollPending.get(el);
+      if (previous) clearTimeout(previous);
+      if (!scrollPendingElements.has(el)) scrollBeforeEffects.set(el, visibleEffectTexts());
+      scrollPendingElements.add(el);
+      scrollPending.set(el, setTimeout(() => {
+        scrollPending.delete(el);
+        scrollPendingElements.delete(el);
+        emitScroll(el);
+      }, 200));
     }, true);
 
     document.addEventListener('keydown', (event) => {

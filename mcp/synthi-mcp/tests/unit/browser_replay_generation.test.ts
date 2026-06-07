@@ -193,6 +193,30 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Command palette opened\", { exact: true })).toBeVisible();");
   });
 
+  it("generates deterministic scroll position replay", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "scroll-region",
+        event_seq: 1,
+        action: "scroll",
+        detail: {
+          scroll_event: true,
+          scroll_top: 240,
+          scroll_left: 0,
+          observed_effects: ["Scrolled to approvals"],
+          element: { role: "region", name: "Scrollable approvals", test_id: "approval-scroll", source_id: "src_scroll" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"approval-scroll\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("element.scrollTo(position.left, position.top);");
+    expect(generated.code).toContain("}, {\"top\":240,\"left\":0});");
+    expect(generated.code).toContain("await expect(page.getByText(\"Scrolled to approvals\", { exact: true })).toBeVisible();");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({

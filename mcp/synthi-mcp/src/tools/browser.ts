@@ -164,6 +164,8 @@ function humanActionLabel(action: string): string {
       return "Pressed";
     case "drag":
       return "Dragged";
+    case "scroll":
+      return "Scrolled";
     case "hover":
       return "Hovered";
     case "navigate":
@@ -563,7 +565,7 @@ export const BROWSER_TOOLS = [
         tab_id: { type: "string" },
         action: { type: "string", enum: [...BROWSER_ACTION_KINDS] },
         selector: { type: "string", description: "A generated Playwright locator string or raw CSS selector." },
-        value: { type: "string", description: "Fill text, key name, select option, navigation URL, or drag target locator depending on action." },
+        value: { type: "string", description: "Fill text, key/chord name, select option, navigation URL, drag target locator, or JSON scroll position depending on action." },
       },
       required: ["lease_id", "action"],
     },
@@ -1328,6 +1330,10 @@ function actionForReplay(event: { kind: string; action?: BrowserActionKind }): B
 function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind): string | undefined {
   if (action === "navigate") return event.url;
   if (action === "drag") return event.value ?? stringOpt(event.detail?.["drop_locator"]);
+  if (action === "scroll") return JSON.stringify({
+    top: numberOpt(event.detail?.["scroll_top"]) ?? 0,
+    left: numberOpt(event.detail?.["scroll_left"]) ?? 0,
+  });
   return event.value;
 }
 

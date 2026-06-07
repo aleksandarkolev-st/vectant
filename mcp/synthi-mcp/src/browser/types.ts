@@ -14,6 +14,7 @@ export const BROWSER_ACTION_KINDS = [
   "fill",
   "hover",
   "drag",
+  "scroll",
   "press",
   "select",
   "check",

@@ -1077,6 +1077,52 @@ const CASES = [
     },
   },
   {
+    id: "scroll-region",
+    minSteps: 2,
+    expectedActions: ["scroll", "click"],
+    expectedReplayText: [
+      "Scrolled to approvals",
+      "Approved policy",
+    ],
+    expectedReplayCode: [
+      "element.scrollTo(position.left, position.top);",
+    ],
+    files: () => commonFiles({
+      title: "Scroll Region Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Scroll Region Workflow</h1>",
+        "      <section tabindex=\"0\" role=\"region\" aria-label=\"Scrollable approvals\" data-testid=\"approval-scroll\" data-synthi-source-id=\"scroll.region\">",
+        "        <div class=\"spacer\">Review queue starts here</div>",
+        "        <button type=\"button\" data-testid=\"approve-policy\" data-synthi-source-id=\"scroll.approve\">Approve policy</button>",
+        "      </section>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[data-testid='approval-scroll'] { width: 420px; height: 150px; overflow: auto; border: 1px solid #222; background: #fff; padding: 12px; }",
+        ".spacer { height: 260px; color: #555; }",
+      ],
+      script: [
+        "const scrollRegion = document.querySelector('[data-testid=\"approval-scroll\"]');",
+        "const status = document.querySelector('#status');",
+        "scrollRegion.addEventListener('scroll', () => {",
+        "  if (scrollRegion.scrollTop > 100) status.textContent = 'Scrolled to approvals';",
+        "});",
+        "document.querySelector('[data-testid=\"approve-policy\"]').addEventListener('click', () => {",
+        "  status.textContent = 'Approved policy';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByTestId("approval-scroll").evaluate((element) => element.scrollTo(0, 160));
+      await page.getByText("Scrolled to approvals").waitFor();
+      await page.getByRole("button", { name: "Approve policy" }).click();
+      await page.getByText("Approved policy").waitFor();
+    },
+  },
+  {
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],

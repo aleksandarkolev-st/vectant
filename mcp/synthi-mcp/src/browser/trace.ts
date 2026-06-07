@@ -337,6 +337,17 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         }
         break;
       }
+      case "scroll": {
+        const position = scrollPositionFor(event);
+        lines.push(`  await ${target}.evaluate((element, position) => {`);
+        lines.push("    if (element === document.body || element === document.documentElement) {");
+        lines.push("      window.scrollTo(position.left, position.top);");
+        lines.push("    } else {");
+        lines.push("      element.scrollTo(position.left, position.top);");
+        lines.push("    }");
+        lines.push(`  }, ${JSON.stringify(position)});`);
+        break;
+      }
       case "fill":
         lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
         lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
@@ -465,6 +476,20 @@ function fileDropEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
       : `SYNTHI_FILE_DROP_${ordinal}`;
   const normalized = explicit.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
   return normalized.length > 0 ? normalized : `SYNTHI_FILE_DROP_${ordinal}`;
+}
+
+function scrollPositionFor(event: BrowserTraceEvent): { top: number; left: number } {
+  const top = numericDetail(event, "scroll_top") ?? 0;
+  const left = numericDetail(event, "scroll_left") ?? 0;
+  return {
+    top: Math.max(0, Math.round(top)),
+    left: Math.max(0, Math.round(left)),
+  };
+}
+
+function numericDetail(event: BrowserTraceEvent, key: string): number | undefined {
+  const value = event.detail?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isFileInputDrop(event: BrowserTraceEvent): boolean {
