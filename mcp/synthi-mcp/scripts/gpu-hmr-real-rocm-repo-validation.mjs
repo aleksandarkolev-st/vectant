@@ -85,7 +85,9 @@ import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-c
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
-const PROFILE_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
+const PROFILE_DIR = existsSync(path.join(__dirname, 'profiles'))
+  ? path.join(__dirname, 'profiles')
+  : path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
 const REAL_ROCM_PROFILE_SCHEMA_VERSION = 'synthi.gpu.hmr.real_rocm_profile.v1';
 const DEFAULT_REAL_ROCM_PROFILE_PATH = path.join(PROFILE_DIR, 'real-rocm-saxpy.json');
 const DEFAULT_REAL_REPO_URL = 'https://github.com/ROCm/rocm-examples.git';
