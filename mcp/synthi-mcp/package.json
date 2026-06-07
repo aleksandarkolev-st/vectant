@@ -55,6 +55,7 @@
     "live:phase3": "node scripts/live-test-phase3.mjs",
     "live:browser": "node scripts/live-browser-smoke.mjs",
     "live:browser:workspace": "node scripts/live-browser-smoke.mjs --workspace",
+    "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:install": "npx playwright-core install chromium",
     "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs",
     "live:lease-contention": "node scripts/live-lease-contention.mjs"
