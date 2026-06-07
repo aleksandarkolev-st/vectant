@@ -62,6 +62,7 @@ import {
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
@@ -1250,6 +1251,7 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  adversarial_preflight: null,
   hiprt_runtime_probe: {
     enabled: CFG.hiprtRuntimeProbe,
     capture_worker_path: null,
@@ -7024,6 +7026,18 @@ async function writeResults() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  record(
+    'adversarial proof ledger preflight',
+    report.adversarial_preflight.skipped
+      ? 'skip'
+      : report.adversarial_preflight.ok
+        ? 'pass'
+        : 'fail',
+    `elapsed_ms=${report.adversarial_preflight.elapsedMs.toFixed(1)}`,
+  );
   await ensureRepo();
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);

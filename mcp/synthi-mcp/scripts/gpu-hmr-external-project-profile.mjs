@@ -13,6 +13,7 @@ import {
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import { visualEvidenceArtifactsFromFiles } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import { externalProjectTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 
@@ -1469,6 +1470,13 @@ async function main() {
     if (!mcpPreviewGpuProof.satisfied) process.exitCode = 1;
     return;
   }
+  const adversarialPreflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  console.log(JSON.stringify({
+    schemaVersion: 'synthi.gpu.hmr.external_project_profile.preflight.v1',
+    adversarialPreflight,
+  }, null, 2));
   await runProfile(profile);
 }
 
