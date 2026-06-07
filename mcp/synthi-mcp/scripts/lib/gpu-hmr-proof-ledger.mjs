@@ -554,6 +554,31 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
   const recomputed = records && records.length > 0
     ? evaluateGpuHmrProofLedger(records[records.length - 1])
     : evaluateGpuHmrProofLedger(input);
+  const consistencyFailures = [];
+  const topLevelProofId = firstText(ledger.proofId, ledger.proof_id);
+  if (records && records.length > 0 && topLevelProofId && topLevelProofId !== recomputed.proofId) {
+    consistencyFailures.push({
+      code: 'ledger_proof_id_mismatch',
+      suppliedProofId: topLevelProofId,
+      recomputedProofId: recomputed.proofId,
+    });
+  }
+  const topLevelSuccess = firstPresent(
+    [ledger, 'gpuHmrSuccess'],
+    [ledger, 'gpu_hmr_success'],
+  );
+  if (
+    records
+    && records.length > 0
+    && topLevelSuccess.present
+    && topLevelSuccess.value !== recomputed.gpuHmrSuccess
+  ) {
+    consistencyFailures.push({
+      code: 'ledger_success_flag_mismatch',
+      suppliedGpuHmrSuccess: topLevelSuccess.value,
+      recomputedGpuHmrSuccess: recomputed.gpuHmrSuccess,
+    });
+  }
   const suppliedQuery = asObject(ledger.query);
   if (suppliedQuery.schemaVersion === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
     const suppliedFailures = compactStringList(asObject(suppliedQuery).failedInvariants?.map?.((failure) => failure?.code));
@@ -573,9 +598,25 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
             suppliedGpuHmrSuccess: suppliedQuery.gpuHmrSuccess,
             recomputedGpuHmrSuccess: recomputed.gpuHmrSuccess,
           },
+          ...consistencyFailures,
         ],
       };
     }
+  } else if (Object.keys(suppliedQuery).length > 0) {
+    consistencyFailures.push({
+      code: 'supplied_ledger_query_schema_mismatch',
+      suppliedSchemaVersion: suppliedQuery.schemaVersion ?? suppliedQuery.schema_version ?? null,
+    });
+  }
+  if (consistencyFailures.length > 0) {
+    return {
+      ...recomputed,
+      gpuHmrSuccess: false,
+      failedInvariants: [
+        ...recomputed.failedInvariants,
+        ...consistencyFailures,
+      ],
+    };
   }
   return recomputed;
 }

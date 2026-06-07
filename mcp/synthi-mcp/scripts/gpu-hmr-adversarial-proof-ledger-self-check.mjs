@@ -500,6 +500,34 @@ assert.ok(
   `forged ledger query expected supplied_ledger_query_mismatch, got ${forgedQueryResult.failedInvariants.map((f) => f.code).join(',')}`,
 );
 
+const forgedSuccessFlagLedger = buildGpuHmrProofLedger(baselineRecord({ cpu_hmr_used: true }));
+forgedSuccessFlagLedger.gpuHmrSuccess = true;
+forgedSuccessFlagLedger.gpu_hmr_success = true;
+const forgedSuccessFlagResult = queryGpuHmrLedgerInvariants(forgedSuccessFlagLedger);
+assert.equal(forgedSuccessFlagResult.gpuHmrSuccess, false);
+assert.ok(
+  forgedSuccessFlagResult.failedInvariants.some((failure) => failure.code === 'ledger_success_flag_mismatch'),
+  `forged top-level success flag expected ledger_success_flag_mismatch, got ${forgedSuccessFlagResult.failedInvariants.map((f) => f.code).join(',')}`,
+);
+
+const forgedProofIdLedger = buildGpuHmrProofLedger(baselineRecord());
+forgedProofIdLedger.proofId = 'gpu-ledger-proof:sha256:forged';
+const forgedProofIdResult = queryGpuHmrLedgerInvariants(forgedProofIdLedger);
+assert.equal(forgedProofIdResult.gpuHmrSuccess, false);
+assert.ok(
+  forgedProofIdResult.failedInvariants.some((failure) => failure.code === 'ledger_proof_id_mismatch'),
+  `forged proof id expected ledger_proof_id_mismatch, got ${forgedProofIdResult.failedInvariants.map((f) => f.code).join(',')}`,
+);
+
+const unversionedQueryLedger = buildGpuHmrProofLedger(baselineRecord());
+unversionedQueryLedger.query = { gpuHmrSuccess: true, failedInvariants: [] };
+const unversionedQueryResult = queryGpuHmrLedgerInvariants(unversionedQueryLedger);
+assert.equal(unversionedQueryResult.gpuHmrSuccess, false);
+assert.ok(
+  unversionedQueryResult.failedInvariants.some((failure) => failure.code === 'supplied_ledger_query_schema_mismatch'),
+  `unversioned query expected supplied_ledger_query_schema_mismatch, got ${unversionedQueryResult.failedInvariants.map((f) => f.code).join(',')}`,
+);
+
 const rejectedArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   proofLedgerRecord: baselineRecord({ cpu_hmr_used: true }),
