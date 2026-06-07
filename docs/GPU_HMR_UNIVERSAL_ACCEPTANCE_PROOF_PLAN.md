@@ -555,6 +555,31 @@ visual_oracle_artifacts:
   visible_pixel_count:
 ```
 
+Pixel diffs are weak by themselves, especially for path tracing, temporal accumulation, TAA, denoisers, camera jitter, swapchain timing, and async presentation. Visual proof must therefore run in a deterministic validation mode whenever the backend can expose one.
+
+Required deterministic validation controls:
+
+```yaml
+deterministic_visual_mode:
+  fixed_seed:
+  frozen_camera:
+  temporal_accumulation_disabled:
+  taa_disabled:
+  denoiser_disabled:
+  fixed_resolution:
+  fixed_swapchain_image_count:
+  frame_capture_after_epoch_dispatch:
+  presentation_fence_or_frame_boundary:
+  warmup_frames:
+  convergence_window:
+    frame_start:
+    frame_end:
+    metric:
+      value: per_frame_delta | window_mean_delta | stable_histogram_delta | oracle_region_delta
+```
+
+For path tracing and temporally accumulated renderers, a single-frame diff is not enough unless the validation mode disables temporal behavior and fixes the random seed. If temporal behavior cannot be disabled, the proof must use a multi-frame convergence window and show that the post-epoch frames converge toward the expected changed output while the camera, seed policy, and scene state remain fixed.
+
 Expected visual direction is useful but not always available. Acceptable proof modes:
 
 ```text
@@ -563,7 +588,7 @@ or nonzero perceptual diff plus epoch-tagged dispatch trace
 or test-specific visual oracle
 ```
 
-Screenshot existence alone is not proof. Pixel diff alone is not enough when camera jitter, stale buffers, or old frame capture can explain the difference.
+Screenshot existence alone is not proof. Pixel diff alone is not enough when camera jitter, temporal accumulation, denoising, stale buffers, async presentation, or old frame capture can explain the difference.
 
 ## 10. Proof Ledger
 
@@ -652,7 +677,33 @@ Model provenance fields from section 2.1 must be included in the same ledger ent
 
 The matrix must include positive, negative, and ambiguous cases.
 
-Positive targets:
+Negative and adversarial cases must run before broad success cases. The first validation milestone is not "SAXPY passed"; it is "the system refuses fake GPU HMR."
+
+Phase 1 negative targets:
+
+- Host-only edit in GPU project.
+- Mixed host+GPU edit.
+- ABI-changing kernel edit.
+- Kernel argument added.
+- Kernel argument reordered.
+- Shader layout-changing edit.
+- Vulkan pipeline layout changed.
+- Unsupported embedded shader.
+- No readback path.
+- Process restart.
+- Full rebuild.
+- CPU fallback.
+- Compile success but no dispatch.
+- Dispatch success but no output change.
+- Visual frame is blank.
+- Same frame recaptured after edit.
+- Camera jitter creates fake visual diff.
+- Temporal accumulation creates nondeterministic diff.
+- Old artifact dispatched.
+- Readback from stale buffer.
+- Async presentation captures pre-epoch frame.
+
+Phase 2 positive targets:
 
 - HIP direct launch.
 - HIP module launch.
@@ -664,26 +715,10 @@ Positive targets:
 - Flow visual GPU path.
 - At least one larger engine-style repo.
 
-Negative targets:
-
-- Host-only edit in GPU project.
-- Mixed host+GPU edit.
-- ABI-changing kernel edit.
-- Shader layout-changing edit.
-- Unsupported embedded shader.
-- No readback path.
-- Process restart.
-- Full rebuild.
-- CPU fallback.
-- Compile success but no dispatch.
-- Dispatch success but no output change.
-- Visual frame is blank.
-- Old artifact dispatched.
-- Readback from stale buffer.
-
 Per-target required run modes:
 
 ```text
+adversarial refusal cases first
 cold split
 hot delta 1
 hot delta 2 with a different edit
@@ -719,35 +754,43 @@ Subagent E should explicitly try to create fake successes:
 
 ## 14. Implementation Order
 
-### Step 1: Model availability gate
+### Step 1: Adversarial refusal harness
+
+Build the negative validator before celebrating additional positive profiles. The harness must prove that fake GPU HMR is rejected when CPU HMR is used, the process restarts, a full rebuild is hidden, an old artifact dispatches, no output is produced after the new epoch, visual frames are blank or stale, or temporal/camera jitter explains the diff.
+
+### Step 2: Deterministic visual oracle modes
+
+Add fixed seed, frozen camera, temporal accumulation disablement, TAA/denoiser disablement where available, presentation-fence capture, and multi-frame convergence windows for path tracing and temporal renderers.
+
+### Step 3: Model availability gate
 
 Replace dead preview delta-model defaults with `gemini-3.1-flash-lite`, add provider model status fields, and fail loudly when a configured model is shutdown.
 
-### Step 2: Contract schema and classifier output
+### Step 4: Contract schema and classifier output
 
 Introduce the full acceptance contract schema, classification confidence, hard blockers, unsupported reasons, and CPU/GPU routing firewall.
 
-### Step 3: Proof ledger
+### Step 5: Proof ledger
 
 Emit immutable proof records and derive `gpu_hmr_success` from ledger invariants.
 
-### Step 4: ABI compatibility class
+### Step 6: ABI compatibility class
 
 Add ABI metadata extraction and classify edits as `compatible`, `additive`, `layout_changed`, or `unknown`.
 
-### Step 5: Runtime dispatch and oracle gates
+### Step 7: Runtime dispatch and oracle gates
 
 Require dispatch trace and oracle trace for GPU HMR acceptance. Move screenshot/readback artifacts into the ledger.
 
-### Step 6: Backend-specific compatibility
+### Step 8: Backend-specific compatibility
 
 Implement HIP/HIPRT first, then OpenCL, then WebGPU/Bevy, then Vulkan. Vulkan requires the strongest pipeline-layout and command-buffer proof.
 
-### Step 7: Hostile validation matrix
+### Step 9: Positive validation matrix expansion
 
-Add negative and ambiguous cases before broadening success claims.
+Only after the adversarial refusal harness passes should the matrix broaden success claims across HIP, HIPRT, OpenCL, WebGPU, Bevy, Flow, Vulkan, and larger engine-style projects.
 
-### Step 8: Timing normalization
+### Step 10: Timing normalization
 
 Unify all validation scripts under the monotonic metric schema.
 
@@ -763,18 +806,18 @@ GPU HMR is accepted only when:
 6. The runtime publishes a new epoch without process restart.
 7. A dispatch trace proves epoch N was used.
 8. Old epochs retire only after backend-specific stream, queue, or frame safety proof.
-9. A compute or visual oracle observes output produced after epoch N dispatch.
+9. A compute or deterministic visual oracle observes output produced after epoch N dispatch.
 10. CPU HMR, full rebuild, and process restart are explicitly false.
 11. All timings follow the same monotonic schema.
 12. Unknown projects fail with specific missing contract fields.
 
 ## 16. Highest-Priority Fixes
 
-1. Replace the dead delta model requirement.
-2. Add provider model availability and deprecation fields to provenance.
-3. Add ABI compatibility class to the contract.
-4. Add the proof ledger.
-5. Add negative validation cases.
-6. Make adapter synthesis fail loudly when launch boundaries are not interposable.
-7. Treat visual and readback proof as mandatory ledger artifacts, not validator logs.
-
+1. Build the adversarial refusal harness before broad positive validation.
+2. Add deterministic visual oracle modes and multi-frame convergence windows.
+3. Replace the dead delta model requirement.
+4. Add provider model availability and deprecation fields to provenance.
+5. Add ABI compatibility class to the contract.
+6. Add the proof ledger.
+7. Make adapter synthesis fail loudly when launch boundaries are not interposable.
+8. Treat visual and readback proof as mandatory ledger artifacts, not validator logs.
