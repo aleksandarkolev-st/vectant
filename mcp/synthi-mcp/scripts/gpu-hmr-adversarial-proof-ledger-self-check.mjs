@@ -47,6 +47,46 @@ function baselineModelProvenance(overrides = {}) {
   };
 }
 
+function baselineComputeOracleArtifacts(overrides = {}) {
+  return {
+    raw_readback_bin: 'memory://readback-after.bin',
+    readback_schema_json: 'memory://readback-schema.json',
+    checksum_before: HASH_A,
+    checksum_after: HASH_B,
+    deterministic_slice: {
+      offset: 0,
+      length: 64,
+      format: 'float32',
+    },
+    oracle_code_hash: HASH_C,
+    rendered_card_png: 'memory://compute-oracle-card.png',
+    producer: 'adversarial-ledger-self-check',
+    timestamp_after_dispatch: 400,
+    epoch: 'epoch-7',
+    ...overrides,
+  };
+}
+
+function baselineVisualOracleArtifacts(overrides = {}) {
+  return {
+    before_image: 'memory://visual-before.png',
+    after_image: 'memory://visual-after.png',
+    diff_image: 'memory://visual-diff.png',
+    blank_frame_rejection: true,
+    same_frame_rejection: true,
+    new_epoch_watermark_or_trace: 'dispatch-1:epoch-7',
+    camera_state_hash: HASH_C,
+    swapchain_size: [640, 480],
+    capture_backend: 'mcp_screenshot',
+    frame_number: 12,
+    timestamp_after_dispatch: 400,
+    perceptual_diff: 0.42,
+    changed_pixel_ratio: 0.25,
+    visible_pixel_count: 1024,
+    ...overrides,
+  };
+}
+
 function baselineRecord(overrides = {}) {
   return {
     project_id: 'adversarial-generic-project',
@@ -103,6 +143,9 @@ function baselineRecord(overrides = {}) {
     cpu_hmr_used: false,
     full_rebuild_used: false,
     process_restarted: false,
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts(),
+    },
     model_provenance: baselineModelProvenance(),
     ...overrides,
   };
@@ -130,6 +173,9 @@ function baselineVisualRecord(overrides = {}) {
       fixed_swapchain_image_count: true,
       frame_capture_after_epoch_dispatch: true,
       presentation_fence_or_frame_boundary: true,
+    },
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts(),
     },
     ...overrides,
   });
@@ -629,7 +675,44 @@ const cases = [
   ['output artifact missing', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'output_artifact_hash_missing'],
   ['output epoch missing', baselineRecord({ output_event: { kind: 'buffer_checksum', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'output_epoch_missing'],
   ['output timestamp missing', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true } }), 'output_timestamp_missing'],
+  ['missing compute oracle artifacts', (() => {
+    const record = baselineRecord();
+    delete record.oracle_artifacts;
+    return record;
+  })(), 'compute_oracle_artifacts_missing'],
+  ['incomplete compute oracle artifacts', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: {
+        ...baselineComputeOracleArtifacts(),
+        raw_readback_bin: null,
+      },
+    },
+  }), 'compute_oracle_artifacts_incomplete'],
+  ['unchanged compute oracle checksum', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts({ checksum_after: HASH_A }),
+    },
+  }), 'compute_oracle_checksum_unchanged'],
   ['visual without deterministic mode', baselineRecord({ output_event: { kind: 'render_target_hash', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'visual_output_without_deterministic_mode'],
+  ['missing visual oracle artifacts', baselineVisualRecord({ oracle_artifacts: {} }), 'visual_oracle_artifacts_missing'],
+  ['incomplete visual oracle artifacts', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: {
+        ...baselineVisualOracleArtifacts(),
+        diff_image: null,
+      },
+    },
+  }), 'visual_oracle_artifacts_incomplete'],
+  ['visual blank frame rejection not proven', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ blank_frame_rejection: false }),
+    },
+  }), 'visual_blank_frame_rejection_not_proven'],
+  ['visual same frame rejection not proven', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ same_frame_rejection: false }),
+    },
+  }), 'visual_same_frame_rejection_not_proven'],
   ['camera jitter visual diff', baselineVisualRecord({
     deterministic_visual_mode: {
       fixed_seed: true,

@@ -58,6 +58,25 @@ function modelProvenance() {
   };
 }
 
+function computeOracleArtifacts() {
+  return {
+    raw_readback_bin: 'memory://strict-readback-after.bin',
+    readback_schema_json: 'memory://strict-readback-schema.json',
+    checksum_before: HASH_A,
+    checksum_after: HASH_B,
+    deterministic_slice: {
+      offset: 0,
+      length: 64,
+      format: 'float32',
+    },
+    oracle_code_hash: HASH_C,
+    rendered_card_png: 'memory://strict-compute-oracle-card.png',
+    producer: 'strict-gates-self-check',
+    timestamp_after_dispatch: 400,
+    epoch: 'epoch-7',
+  };
+}
+
 function ledgerRecord(overrides = {}) {
   return {
     project_id: 'strict-generic-gpu-project',
@@ -114,6 +133,9 @@ function ledgerRecord(overrides = {}) {
     cpu_hmr_used: false,
     full_rebuild_used: false,
     process_restarted: false,
+    oracle_artifacts: {
+      compute_oracle_artifacts: computeOracleArtifacts(),
+    },
     model_provenance: modelProvenance(),
     ...overrides,
   };

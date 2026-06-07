@@ -948,18 +948,105 @@ function deterministicVisualModeLimitations(evaluation) {
   }));
 }
 
+const VISUAL_ORACLE_ARTIFACT_HINT_FIELDS = [
+  'before_image',
+  'beforeImage',
+  'after_image',
+  'afterImage',
+  'diff_image',
+  'diffImage',
+  'changed_pixel_ratio',
+  'changedPixelRatio',
+  'visible_pixel_count',
+  'visiblePixelCount',
+];
+
+const COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS = [
+  'raw_readback_bin',
+  'rawReadbackBin',
+  'readback_schema_json',
+  'readbackSchemaJson',
+  'checksum_before',
+  'checksumBefore',
+  'checksum_after',
+  'checksumAfter',
+  'deterministic_slice',
+  'deterministicSlice',
+];
+
+function objectHasAnyRecordedField(object, keys) {
+  const source = objectOrNull(object);
+  if (!source) return false;
+  return keys.some((key) => {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) return false;
+    const value = source[key];
+    if (typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    return value && typeof value === 'object' && Object.keys(value).length > 0;
+  });
+}
+
+function firstOracleArtifactObject(candidates, hintFields) {
+  for (const candidate of candidates) {
+    const object = objectOrNull(candidate);
+    if (object && objectHasAnyRecordedField(object, hintFields)) return object;
+  }
+  return null;
+}
+
 function visualOracleArtifactsFromOutputProof(outputProof) {
   const proof = objectOrNull(outputProof) ?? {};
   const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
-  return objectOrNull(proof.visualOracleArtifacts)
-    ?? objectOrNull(proof.visual_oracle_artifacts)
-    ?? objectOrNull(proof.oracleArtifacts)
-    ?? objectOrNull(proof.oracle_artifacts)
-    ?? objectOrNull(oracle.visualOracleArtifacts)
-    ?? objectOrNull(oracle.visual_oracle_artifacts)
-    ?? objectOrNull(oracle.oracleArtifacts)
-    ?? objectOrNull(oracle.oracle_artifacts)
-    ?? null;
+  const proofOracleArtifacts = objectOrNull(proof.oracleArtifacts) ?? objectOrNull(proof.oracle_artifacts) ?? {};
+  const nestedOracleArtifacts = objectOrNull(oracle.oracleArtifacts) ?? objectOrNull(oracle.oracle_artifacts) ?? {};
+  return firstOracleArtifactObject([
+    proof.visualOracleArtifacts,
+    proof.visual_oracle_artifacts,
+    proofOracleArtifacts.visualOracleArtifacts,
+    proofOracleArtifacts.visual_oracle_artifacts,
+    oracle.visualOracleArtifacts,
+    oracle.visual_oracle_artifacts,
+    nestedOracleArtifacts.visualOracleArtifacts,
+    nestedOracleArtifacts.visual_oracle_artifacts,
+    proofOracleArtifacts,
+    nestedOracleArtifacts,
+    proof,
+    oracle,
+  ], VISUAL_ORACLE_ARTIFACT_HINT_FIELDS);
+}
+
+function computeOracleArtifactsFromOutputProof(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
+  const proofOracleArtifacts = objectOrNull(proof.oracleArtifacts) ?? objectOrNull(proof.oracle_artifacts) ?? {};
+  const nestedOracleArtifacts = objectOrNull(oracle.oracleArtifacts) ?? objectOrNull(oracle.oracle_artifacts) ?? {};
+  return firstOracleArtifactObject([
+    proof.computeOracleArtifacts,
+    proof.compute_oracle_artifacts,
+    proofOracleArtifacts.computeOracleArtifacts,
+    proofOracleArtifacts.compute_oracle_artifacts,
+    oracle.computeOracleArtifacts,
+    oracle.compute_oracle_artifacts,
+    nestedOracleArtifacts.computeOracleArtifacts,
+    nestedOracleArtifacts.compute_oracle_artifacts,
+    proofOracleArtifacts,
+    nestedOracleArtifacts,
+    proof,
+    oracle,
+  ], COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS);
+}
+
+function oracleArtifactsFromOutputProof(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const direct = objectOrNull(proof.oracleArtifacts) ?? objectOrNull(proof.oracle_artifacts) ?? {};
+  const visual = visualOracleArtifactsFromOutputProof(proof);
+  const compute = computeOracleArtifactsFromOutputProof(proof);
+  const artifacts = { ...direct };
+  if (visual) artifacts.visual_oracle_artifacts = visual;
+  if (compute) artifacts.compute_oracle_artifacts = compute;
+  return artifacts;
 }
 
 function proofOutputKind(outputProof) {
@@ -1484,7 +1571,7 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
     },
     device_identity: input.deviceIdentity ?? input.device_identity ?? validationContext?.deviceIdentity ?? {},
     firewall_evidence: firewallEvidence ?? {},
-    oracle_artifacts: outputProof?.oracleArtifacts ?? outputProof?.oracle_artifacts ?? {},
+    oracle_artifacts: oracleArtifactsFromOutputProof(outputProof),
     deterministic_visual_mode:
       input.deterministicVisualMode
       ?? input.deterministic_visual_mode

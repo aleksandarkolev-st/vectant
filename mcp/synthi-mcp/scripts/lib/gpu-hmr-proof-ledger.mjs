@@ -156,6 +156,152 @@ function isVisualOutput(outputEvent) {
     || asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts).after_image;
 }
 
+const COMPUTE_ORACLE_ARTIFACT_FIELDS = [
+  ['raw_readback_bin', 'rawReadbackBin'],
+  ['readback_schema_json', 'readbackSchemaJson'],
+  ['checksum_before', 'checksumBefore'],
+  ['checksum_after', 'checksumAfter'],
+  ['deterministic_slice', 'deterministicSlice'],
+  ['oracle_code_hash', 'oracleCodeHash'],
+  ['rendered_card_png', 'renderedCardPng'],
+  ['producer', 'producer'],
+  ['timestamp_after_dispatch', 'timestampAfterDispatch'],
+  ['epoch', 'epoch'],
+];
+
+const VISUAL_ORACLE_ARTIFACT_FIELDS = [
+  ['before_image', 'beforeImage'],
+  ['after_image', 'afterImage'],
+  ['diff_image', 'diffImage'],
+  ['blank_frame_rejection', 'blankFrameRejection'],
+  ['same_frame_rejection', 'sameFrameRejection'],
+  ['new_epoch_watermark_or_trace', 'newEpochWatermarkOrTrace', 'epoch_trace', 'epochTrace'],
+  ['camera_state_hash', 'cameraStateHash'],
+  ['swapchain_size', 'swapchainSize'],
+  ['capture_backend', 'captureBackend'],
+  ['frame_number', 'frameNumber'],
+  ['timestamp_after_dispatch', 'timestampAfterDispatch'],
+  ['perceptual_diff', 'perceptualDiff'],
+  ['changed_pixel_ratio', 'changedPixelRatio'],
+  ['visible_pixel_count', 'visiblePixelCount'],
+];
+
+function nonEmptyObject(value) {
+  const object = asObject(value);
+  return Object.keys(object).length > 0 ? object : null;
+}
+
+function objectFieldValue(object, keys) {
+  const source = asObject(object);
+  for (const key of keys) {
+    if (hasOwnDeep(source, key)) return source[key];
+  }
+  return undefined;
+}
+
+function artifactValueRecorded(object, key) {
+  if (!hasOwnDeep(object, key)) return false;
+  const value = object[key];
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return false;
+}
+
+function artifactHasAnyField(object, fields) {
+  const source = asObject(object);
+  return fields.some((keys) => keys.some((key) => artifactValueRecorded(source, key)));
+}
+
+function firstArtifactObject(candidates, fields) {
+  for (const candidate of candidates) {
+    const object = nonEmptyObject(candidate);
+    if (object && artifactHasAnyField(object, fields)) return object;
+  }
+  return null;
+}
+
+function outputOracleObject(outputEvent) {
+  return asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+}
+
+function oracleArtifactsObject(recordOracleArtifacts, outputEvent) {
+  const ledgerArtifacts = asObject(recordOracleArtifacts);
+  const outputArtifacts = asObject(outputEvent.oracle_artifacts ?? outputEvent.oracleArtifacts);
+  const outputOracle = outputOracleObject(outputEvent);
+  const outputOracleArtifacts = asObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts);
+  return {
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracle,
+    outputOracleArtifacts,
+  };
+}
+
+function computeOracleArtifacts(recordOracleArtifacts, outputEvent) {
+  const {
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracle,
+    outputOracleArtifacts,
+  } = oracleArtifactsObject(recordOracleArtifacts, outputEvent);
+  return firstArtifactObject([
+    ledgerArtifacts.compute_oracle_artifacts,
+    ledgerArtifacts.computeOracleArtifacts,
+    outputArtifacts.compute_oracle_artifacts,
+    outputArtifacts.computeOracleArtifacts,
+    outputEvent.compute_oracle_artifacts,
+    outputEvent.computeOracleArtifacts,
+    outputOracle.compute_oracle_artifacts,
+    outputOracle.computeOracleArtifacts,
+    outputOracleArtifacts.compute_oracle_artifacts,
+    outputOracleArtifacts.computeOracleArtifacts,
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracleArtifacts,
+    outputOracle,
+  ], COMPUTE_ORACLE_ARTIFACT_FIELDS);
+}
+
+function visualOracleArtifacts(recordOracleArtifacts, outputEvent) {
+  const {
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracle,
+    outputOracleArtifacts,
+  } = oracleArtifactsObject(recordOracleArtifacts, outputEvent);
+  return firstArtifactObject([
+    ledgerArtifacts.visual_oracle_artifacts,
+    ledgerArtifacts.visualOracleArtifacts,
+    outputArtifacts.visual_oracle_artifacts,
+    outputArtifacts.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts.visual_oracle_artifacts,
+    outputOracleArtifacts.visualOracleArtifacts,
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracleArtifacts,
+    outputOracle,
+  ], VISUAL_ORACLE_ARTIFACT_FIELDS);
+}
+
+function missingArtifactFields(artifact, fields) {
+  const source = asObject(artifact);
+  return fields
+    .filter((keys) => !keys.some((key) => artifactValueRecorded(source, key)))
+    .map((keys) => keys[0]);
+}
+
+function artifactFieldText(artifact, ...keys) {
+  return firstText(...keys.map((key) => asObject(artifact)[key]));
+}
+
 function modelProvenanceRecords(modelProvenance) {
   const provenance = asObject(modelProvenance);
   if (Object.keys(provenance).length === 0) return [];
@@ -289,7 +435,12 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     fullRebuildUsedEvidencePresent: fullRebuildUsed.present,
     processRestarted: asBool(processRestarted.value),
     processRestartedEvidencePresent: processRestarted.present,
-    oracleArtifacts: asObject(record.oracle_artifacts ?? record.oracleArtifacts),
+    oracleArtifacts: asObject(
+      record.oracle_artifacts
+      ?? record.oracleArtifacts
+      ?? outputEvent.oracle_artifacts
+      ?? outputEvent.oracleArtifacts,
+    ),
     deterministicVisualMode: asObject(
       record.deterministic_visual_mode
       ?? record.deterministicVisualMode
@@ -489,6 +640,21 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     if (!retirementStatus) addFailure(failures, 'retirement_proof_missing');
   }
   if (isVisualOutput(record.outputEvent)) {
+    const artifacts = visualOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+    if (!artifacts) {
+      addFailure(failures, 'visual_oracle_artifacts_missing');
+    } else {
+      const missingFields = missingArtifactFields(artifacts, VISUAL_ORACLE_ARTIFACT_FIELDS);
+      if (missingFields.length > 0) {
+        addFailure(failures, 'visual_oracle_artifacts_incomplete', { missingFields });
+      }
+      if (objectFieldValue(artifacts, ['blank_frame_rejection', 'blankFrameRejection']) !== true) {
+        addFailure(failures, 'visual_blank_frame_rejection_not_proven');
+      }
+      if (objectFieldValue(artifacts, ['same_frame_rejection', 'sameFrameRejection']) !== true) {
+        addFailure(failures, 'visual_same_frame_rejection_not_proven');
+      }
+    }
     const deterministicVisualModeEvaluation =
       evaluateGpuHmrDeterministicVisualMode(record.deterministicVisualMode);
     if (deterministicVisualModeEvaluation.accepted !== true) {
@@ -497,6 +663,21 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       });
       for (const gate of deterministicVisualModeEvaluation.failedGates) {
         addFailure(failures, gate.code ?? 'deterministic_visual_mode_gate_failed');
+      }
+    }
+  } else {
+    const artifacts = computeOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+    if (!artifacts) {
+      addFailure(failures, 'compute_oracle_artifacts_missing');
+    } else {
+      const missingFields = missingArtifactFields(artifacts, COMPUTE_ORACLE_ARTIFACT_FIELDS);
+      if (missingFields.length > 0) {
+        addFailure(failures, 'compute_oracle_artifacts_incomplete', { missingFields });
+      }
+      const checksumBefore = artifactFieldText(artifacts, 'checksum_before', 'checksumBefore');
+      const checksumAfter = artifactFieldText(artifacts, 'checksum_after', 'checksumAfter');
+      if (checksumBefore && checksumAfter && checksumBefore === checksumAfter) {
+        addFailure(failures, 'compute_oracle_checksum_unchanged');
       }
     }
   }
