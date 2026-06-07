@@ -293,6 +293,45 @@ def _shutdown_model_error(requested_model: str, status: Mapping[str, Any]) -> Va
     )
 
 
+def _provider_status_metadata(status: Optional[Mapping[str, Any]], prefix: str = "") -> Dict[str, Any]:
+    status = status or {}
+    return {
+        f"{prefix}provider_model_status": status.get("provider_model_status"),
+        f"{prefix}provider_model_alias_resolved_to": status.get(
+            "provider_model_alias_resolved_to"
+        ),
+        f"{prefix}provider_shutdown_or_deprecation_detected": status.get(
+            "provider_shutdown_or_deprecation_detected"
+        ),
+        f"{prefix}provider_shutdown_date": status.get("provider_shutdown_date"),
+        f"{prefix}provider_recommended_replacement": status.get(
+            "provider_recommended_replacement"
+        ),
+        f"{prefix}model_availability_checked_at": status.get(
+            "model_availability_checked_at"
+        ),
+        f"{prefix}model_availability_source": status.get("model_availability_source"),
+        f"{prefix}model_availability_source_last_updated": status.get(
+            "model_availability_source_last_updated"
+        ),
+        f"{prefix}provider_live_model_list_checked": status.get(
+            "provider_live_model_list_checked"
+        ),
+        f"{prefix}provider_live_model_list_has_requested": status.get(
+            "provider_live_model_list_has_requested"
+        ),
+        f"{prefix}provider_live_model_list_error": status.get(
+            "provider_live_model_list_error"
+        ),
+        f"{prefix}provider_live_model_list_overrode_registry": status.get(
+            "provider_live_model_list_overrode_registry"
+        ),
+        f"{prefix}model_availability_check_time_ms": status.get(
+            "model_availability_check_time_ms"
+        ),
+    }
+
+
 def _is_model_not_found_error(err: BaseException) -> bool:
     not_found_type = getattr(google_api_exceptions, "NotFound", None) if google_api_exceptions else None
     return bool(not_found_type and isinstance(err, not_found_type))
@@ -433,6 +472,8 @@ class GeminiProvider(AiProvider):
             model_name = _normalize_model_name(model_name)
             fallback_used = False
             fallback_model: Optional[str] = None
+            fallback_status: Optional[Dict[str, Any]] = None
+            actual_provider_status: Mapping[str, Any] = provider_status
 
             # Metrics tracking
             start_time = time.time()
@@ -475,6 +516,7 @@ class GeminiProvider(AiProvider):
                         )
                         model_name = fallback_model
                         fallback_used = True
+                        actual_provider_status = fallback_status
                         combined = await generate_once(model_name)
                         total_tokens = _count_tokens(combined)
                         print(
@@ -532,31 +574,10 @@ class GeminiProvider(AiProvider):
                 "fallback_used": fallback_used,
                 "mode": mode_lower,
                 "request_mode": request_mode_value,
-                "provider_model_status": provider_status.get("provider_model_status"),
-                "provider_model_alias_resolved_to": provider_status.get("provider_model_alias_resolved_to"),
-                "provider_shutdown_or_deprecation_detected": provider_status.get(
-                    "provider_shutdown_or_deprecation_detected"
-                ),
-                "provider_shutdown_date": provider_status.get("provider_shutdown_date"),
-                "provider_recommended_replacement": provider_status.get(
-                    "provider_recommended_replacement"
-                ),
-                "model_availability_checked_at": provider_status.get("model_availability_checked_at"),
-                "model_availability_source": provider_status.get("model_availability_source"),
-                "model_availability_source_last_updated": provider_status.get(
-                    "model_availability_source_last_updated"
-                ),
-                "provider_live_model_list_checked": provider_status.get("provider_live_model_list_checked"),
-                "provider_live_model_list_has_requested": provider_status.get(
-                    "provider_live_model_list_has_requested"
-                ),
-                "provider_live_model_list_error": provider_status.get("provider_live_model_list_error"),
-                "provider_live_model_list_overrode_registry": provider_status.get(
-                    "provider_live_model_list_overrode_registry"
-                ),
-                "model_availability_check_time_ms": provider_status.get(
-                    "model_availability_check_time_ms"
-                ),
+                **_provider_status_metadata(provider_status),
+                **_provider_status_metadata(provider_status, "requested_"),
+                **_provider_status_metadata(actual_provider_status, "actual_"),
+                **_provider_status_metadata(fallback_status, "fallback_"),
                 "hard_infra_failure": False,
                 "latency_ms": total_latency_ms,
             }
@@ -580,31 +601,10 @@ class GeminiProvider(AiProvider):
                     mode_lower if "mode_lower" in locals() else "",
                     request_mode,
                 ),
-                "provider_model_status": provider_status.get("provider_model_status"),
-                "provider_model_alias_resolved_to": provider_status.get("provider_model_alias_resolved_to"),
-                "provider_shutdown_or_deprecation_detected": provider_status.get(
-                    "provider_shutdown_or_deprecation_detected"
-                ),
-                "provider_shutdown_date": provider_status.get("provider_shutdown_date"),
-                "provider_recommended_replacement": provider_status.get(
-                    "provider_recommended_replacement"
-                ),
-                "model_availability_checked_at": provider_status.get("model_availability_checked_at"),
-                "model_availability_source": provider_status.get("model_availability_source"),
-                "model_availability_source_last_updated": provider_status.get(
-                    "model_availability_source_last_updated"
-                ),
-                "provider_live_model_list_checked": provider_status.get("provider_live_model_list_checked"),
-                "provider_live_model_list_has_requested": provider_status.get(
-                    "provider_live_model_list_has_requested"
-                ),
-                "provider_live_model_list_error": provider_status.get("provider_live_model_list_error"),
-                "provider_live_model_list_overrode_registry": provider_status.get(
-                    "provider_live_model_list_overrode_registry"
-                ),
-                "model_availability_check_time_ms": provider_status.get(
-                    "model_availability_check_time_ms"
-                ),
+                **_provider_status_metadata(provider_status),
+                **_provider_status_metadata(provider_status, "requested_"),
+                **_provider_status_metadata(None, "actual_"),
+                **_provider_status_metadata(None, "fallback_"),
                 "hard_infra_failure": provider_status.get("provider_model_status") == "shutdown",
                 "error_type": type(e).__name__,
             }

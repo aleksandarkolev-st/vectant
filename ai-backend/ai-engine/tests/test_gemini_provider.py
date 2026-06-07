@@ -7,6 +7,7 @@ from llm.providers.gemini import (
     genai,
     _normalize_model_name,
     _provider_model_status,
+    _provider_status_metadata,
     _request_mode_name,
     _select_fallback_model_name,
 )
@@ -68,6 +69,17 @@ def test_provider_model_status_rejects_shutdown_preview():
     assert status["provider_recommended_replacement"] == "gemini-3.1-flash-lite"
     assert status["provider_shutdown_or_deprecation_detected"] is True
     assert status["model_availability_checked_at"]
+
+
+def test_provider_status_metadata_can_be_projected_for_actual_model():
+    status = _provider_model_status("gemini-3.5-flash", live_check=False)
+
+    projected = _provider_status_metadata(status, "actual_")
+
+    assert projected["actual_provider_model_status"] == "available"
+    assert projected["actual_provider_model_alias_resolved_to"] is None
+    assert projected["actual_provider_shutdown_or_deprecation_detected"] is False
+    assert projected["actual_model_availability_checked_at"]
 
 
 def test_provider_model_status_respects_private_alias(monkeypatch):
