@@ -321,7 +321,9 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   const outputTs = eventTimestamp(record.outputEvent);
   const identityPid = eventProcessId(record.processIdentity);
   const loaderPid = eventProcessId(record.loaderEvent);
+  const epochPublishPid = eventProcessId(record.epochPublishEvent);
   const dispatchPid = eventProcessId(record.dispatchEvent);
+  const outputPid = eventProcessId(record.outputEvent);
   const classification = asObject(record.classification);
   const projectKind = firstText(classification.project_kind, classification.projectKind);
   const editKind = firstText(classification.edit_kind, classification.editKind);
@@ -417,17 +419,31 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   }
   if (!identityPid) addFailure(failures, 'process_identity_missing');
   if (!loaderPid) addFailure(failures, 'loader_process_identity_missing');
+  if (!epochPublishPid) addFailure(failures, 'epoch_publish_process_identity_missing');
   if (!dispatchPid) addFailure(failures, 'dispatch_process_identity_missing');
+  if (!outputPid) addFailure(failures, 'output_process_identity_missing');
   if (identityPid && loaderPid && loaderPid !== identityPid) {
     addFailure(failures, 'loader_process_identity_mismatch', {
       expected: identityPid,
       actual: loaderPid,
     });
   }
+  if (identityPid && epochPublishPid && epochPublishPid !== identityPid) {
+    addFailure(failures, 'epoch_publish_process_identity_mismatch', {
+      expected: identityPid,
+      actual: epochPublishPid,
+    });
+  }
   if (identityPid && dispatchPid && dispatchPid !== identityPid) {
     addFailure(failures, 'dispatch_process_identity_mismatch', {
       expected: identityPid,
       actual: dispatchPid,
+    });
+  }
+  if (identityPid && outputPid && outputPid !== identityPid) {
+    addFailure(failures, 'output_process_identity_mismatch', {
+      expected: identityPid,
+      actual: outputPid,
     });
   }
   if (!record.deviceIdentity || Object.keys(record.deviceIdentity).length === 0) {

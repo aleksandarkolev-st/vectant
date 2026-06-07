@@ -1267,6 +1267,12 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
       id: firstString(epochProof?.eventId, epochProof?.event_id, publication.id, publication.event_id),
       artifact_hash: publishedArtifactHash,
       epoch,
+      process_id: firstString(
+        epochProof?.processId,
+        epochProof?.process_id,
+        publication.processId,
+        publication.process_id,
+      ),
       timestamp_monotonic_ns: publishTimestamp,
     },
     dispatch_event: {
@@ -1281,6 +1287,12 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
       kind: firstString(outputOracle.kind, outputProof?.kind, outputProof?.oracleKind),
       artifact_hash: outputArtifactHash,
       epoch: firstString(outputProof?.epoch, outputProof?.epoch_id, outputOracle.epoch, epoch),
+      process_id: firstString(
+        outputProof?.processId,
+        outputProof?.process_id,
+        outputOracle.processId,
+        outputOracle.process_id,
+      ),
       after_dispatch_id: firstString(
         outputProof?.afterDispatchId,
         outputProof?.after_dispatch_id,
