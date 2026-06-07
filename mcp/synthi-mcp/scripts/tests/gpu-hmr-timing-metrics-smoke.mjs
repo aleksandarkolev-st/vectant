@@ -10,6 +10,12 @@ import {
 const REQUIRED_KEYS = [
   'schemaVersion',
   'source',
+  'metricClock',
+  'metric_clock',
+  'metricScope',
+  'metric_scope',
+  'cacheState',
+  'cache_state',
   'profileId',
   'projectName',
   'proofMode',
@@ -32,8 +38,28 @@ const REQUIRED_KEYS = [
   'afterCaptureMs',
   'visualDiffMs',
   'teardownMs',
+  'normalizedTimings',
+  'normalized_timings',
   'visualEvidence',
   'phases',
+];
+
+const NORMALIZED_KEYS = [
+  'staticDiscoveryTimeMs',
+  'aiContractSynthesisTimeMs',
+  'modelAvailabilityCheckTimeMs',
+  'artifactHashTimeMs',
+  'adapterGenerationTimeMs',
+  'deviceCompileWallTimeMs',
+  'artifactLoadTimeMs',
+  'epochPublishTimeMs',
+  'dispatchTraceTimeMs',
+  'runtimeProbeTimeMs',
+  'oracleAnalysisTimeMs',
+  'triggerToVisibleTimeMs',
+  'screenshotCaptureTimeMs',
+  'dispatchToOutputProofTimeMs',
+  'totalValidatorWallTimeMs',
 ];
 
 function assertCommonShape(metrics) {
@@ -43,6 +69,11 @@ function assertCommonShape(metrics) {
   }
   assert.ok(Array.isArray(metrics.phases), 'phases must be an array');
   assert.equal(typeof metrics.visualEvidence, 'object');
+  assert.equal(typeof metrics.normalizedTimings, 'object');
+  assert.equal(typeof metrics.normalized_timings, 'object');
+  for (const key of NORMALIZED_KEYS) {
+    assert.ok(Object.prototype.hasOwnProperty.call(metrics.normalizedTimings, key), `missing normalized key ${key}`);
+  }
 }
 
 const external = externalProjectTimingMetrics({
@@ -53,6 +84,7 @@ const external = externalProjectTimingMetrics({
     buildMs: 100,
     runtimeReadyMs: 20,
     sourceWriteMs: 3,
+    afterCompileWallMs: 45,
     editToRuntimeSignalMs: 50,
     editToScreenshotMs: 400,
     visualDiffMs: 7,
@@ -77,6 +109,9 @@ assert.equal(external.hotReloadSignalMs, 50);
 assert.equal(external.beforeCaptureMs, 111);
 assert.equal(external.modelAvailabilityCheckMs, 2);
 assert.equal(external.modelProvenance.expectedDeltaModel, 'gemini-3.1-flash-lite');
+assert.equal(external.metricClock, 'wall_ms');
+assert.equal(external.normalizedTimings.deviceCompileWallTimeMs, 45);
+assert.equal(external.normalizedTimings.screenshotCaptureTimeMs, 333);
 
 const hiprt = hiprtWarmTimingMetrics({
   accepted: true,
@@ -113,6 +148,8 @@ assertCommonShape(hiprt);
 assert.equal(hiprt.sourceWriteMs, 15);
 assert.equal(hiprt.sameProcessLiveRecompileMs, 31);
 assert.equal(hiprt.modelAvailabilityCheckMs, 3);
+assert.equal(hiprt.normalizedTimings.deviceCompileWallTimeMs, 31);
+assert.equal(hiprt.normalizedTimings.adapterGenerationTimeMs, 300);
 
 const rocm = realRocmTimingMetrics({
   slug: 'rocm-saxpy',
@@ -140,6 +177,8 @@ assert.equal(rocm.setupBuildMs, 30);
 assert.equal(rocm.hotHmrCompileWallMs, 40);
 assert.equal(rocm.aiDeltaWallMs, 40);
 assert.equal(rocm.modelAvailabilityCheckMs, 4);
+assert.equal(rocm.normalizedTimings.deviceCompileWallTimeMs, 40);
+assert.equal(rocm.normalizedTimings.runtimeProbeTimeMs, 30);
 
 console.log(JSON.stringify({
   ok: true,

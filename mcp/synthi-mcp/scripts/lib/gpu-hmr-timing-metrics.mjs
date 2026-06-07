@@ -59,6 +59,62 @@ function screenshotElapsedMs(screenshots, label) {
   return finiteMs(shot?.elapsedMs);
 }
 
+function metricClock(report, timings) {
+  return report?.metricClock
+    ?? report?.metric_clock
+    ?? timings?.metricClock
+    ?? timings?.metric_clock
+    ?? 'wall_ms';
+}
+
+function metricScope(report, fallback) {
+  return report?.metricScope ?? report?.metric_scope ?? fallback;
+}
+
+function cacheState(report) {
+  return report?.cacheState ?? report?.cache_state ?? 'unknown';
+}
+
+function normalizedTimingFields(fields) {
+  const normalized = {
+    staticDiscoveryTimeMs: finiteMs(fields.staticDiscoveryTimeMs),
+    aiContractSynthesisTimeMs: finiteMs(fields.aiContractSynthesisTimeMs),
+    modelAvailabilityCheckTimeMs: finiteMs(fields.modelAvailabilityCheckTimeMs),
+    artifactHashTimeMs: finiteMs(fields.artifactHashTimeMs),
+    adapterGenerationTimeMs: finiteMs(fields.adapterGenerationTimeMs),
+    deviceCompileWallTimeMs: finiteMs(fields.deviceCompileWallTimeMs),
+    artifactLoadTimeMs: finiteMs(fields.artifactLoadTimeMs),
+    epochPublishTimeMs: finiteMs(fields.epochPublishTimeMs),
+    dispatchTraceTimeMs: finiteMs(fields.dispatchTraceTimeMs),
+    runtimeProbeTimeMs: finiteMs(fields.runtimeProbeTimeMs),
+    oracleAnalysisTimeMs: finiteMs(fields.oracleAnalysisTimeMs),
+    triggerToVisibleTimeMs: finiteMs(fields.triggerToVisibleTimeMs),
+    screenshotCaptureTimeMs: finiteMs(fields.screenshotCaptureTimeMs),
+    dispatchToOutputProofTimeMs: finiteMs(fields.dispatchToOutputProofTimeMs),
+    totalValidatorWallTimeMs: finiteMs(fields.totalValidatorWallTimeMs),
+  };
+  return {
+    ...normalized,
+    snake_case: {
+      static_discovery_time: normalized.staticDiscoveryTimeMs,
+      ai_contract_synthesis_time: normalized.aiContractSynthesisTimeMs,
+      model_availability_check_time: normalized.modelAvailabilityCheckTimeMs,
+      artifact_hash_time: normalized.artifactHashTimeMs,
+      adapter_generation_time: normalized.adapterGenerationTimeMs,
+      device_compile_wall_time: normalized.deviceCompileWallTimeMs,
+      artifact_load_time: normalized.artifactLoadTimeMs,
+      epoch_publish_time: normalized.epochPublishTimeMs,
+      dispatch_trace_time: normalized.dispatchTraceTimeMs,
+      runtime_probe_time: normalized.runtimeProbeTimeMs,
+      oracle_analysis_time: normalized.oracleAnalysisTimeMs,
+      trigger_to_visible_time: normalized.triggerToVisibleTimeMs,
+      screenshot_capture_time: normalized.screenshotCaptureTimeMs,
+      dispatch_to_output_proof_time: normalized.dispatchToOutputProofTimeMs,
+      total_validator_wall_time: normalized.totalValidatorWallTimeMs,
+    },
+  };
+}
+
 export function externalProjectTimingMetrics(report) {
   const timings = report?.timings ?? {};
   const screenshots = Array.isArray(report?.screenshots) ? report.screenshots : [];
@@ -75,10 +131,27 @@ export function externalProjectTimingMetrics(report) {
     report?.mcp?.modelProvenance,
     report?.mcp?.model_provenance,
   );
+  const modelAvailability = modelAvailabilityCheckMs(modelProvenance);
+  const normalizedTimings = normalizedTimingFields({
+    modelAvailabilityCheckTimeMs: modelAvailability,
+    adapterGenerationTimeMs: null,
+    deviceCompileWallTimeMs: hmrCompileWallMs,
+    runtimeProbeTimeMs: timings.runtimeReadyMs,
+    oracleAnalysisTimeMs: timings.visualDiffMs,
+    triggerToVisibleTimeMs: editToFirstVisualMs,
+    screenshotCaptureTimeMs: sumMs([beforeCaptureMs, afterCaptureMs]),
+    totalValidatorWallTimeMs: timings.totalMs,
+  });
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'external_project_profile',
+    metricClock: metricClock(report, timings),
+    metric_clock: metricClock(report, timings),
+    metricScope: metricScope(report, 'hot_delta_1'),
+    metric_scope: metricScope(report, 'hot_delta_1'),
+    cacheState: cacheState(report),
+    cache_state: cacheState(report),
     profileId: report?.profile?.id ?? null,
     projectName: report?.profile?.project?.name ?? null,
     proofMode: report?.proofMode ?? null,
@@ -89,7 +162,7 @@ export function externalProjectTimingMetrics(report) {
     runtimeReadyMs: finiteMs(timings.runtimeReadyMs),
     initialCompileWallMs: finiteMs(timings.beforeCompileWallMs),
     sourceWriteMs: finiteMs(timings.sourceWriteMs),
-    modelAvailabilityCheckMs: modelAvailabilityCheckMs(modelProvenance),
+    modelAvailabilityCheckMs: modelAvailability,
     modelProvenance,
     aiDeltaWallMs: report?.mcp?.modelProvenance?.expectedDeltaModel
       ? hmrCompileWallMs
@@ -103,6 +176,8 @@ export function externalProjectTimingMetrics(report) {
     afterCaptureMs,
     visualDiffMs: finiteMs(timings.visualDiffMs),
     teardownMs: finiteMs(timings.runtimeStopMs),
+    normalizedTimings,
+    normalized_timings: normalizedTimings.snake_case,
     visualEvidence: {
       screenshotCount: screenshots.length,
       changedPixelRatio: finiteMs(report?.visualDiff?.changedPixelRatio),
@@ -147,10 +222,29 @@ export function hiprtWarmTimingMetrics(proof) {
     proof?.runtime?.modelProvenance,
     proof?.runtime?.model_provenance,
   );
+  const modelAvailability = modelAvailabilityCheckMs(modelProvenance);
+  const normalizedTimings = normalizedTimingFields({
+    modelAvailabilityCheckTimeMs: modelAvailability,
+    adapterGenerationTimeMs: timings.sameProcessAdapterBuildMs,
+    deviceCompileWallTimeMs: timings.sameProcessLiveRecompileMs,
+    runtimeProbeTimeMs: beforeCaptureMs,
+    oracleAnalysisTimeMs: null,
+    triggerToVisibleTimeMs: changedRun.totalHostWallMs
+      ?? timings.changedHostWallMs
+      ?? timings.changedRunMs,
+    screenshotCaptureTimeMs: sumMs([beforeCaptureMs, afterCaptureMs]),
+    totalValidatorWallTimeMs: timings.totalWallMs,
+  });
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'hiprt_warm_runtime',
+    metricClock: metricClock(proof, timings),
+    metric_clock: metricClock(proof, timings),
+    metricScope: metricScope(proof, 'hot_delta_1'),
+    metric_scope: metricScope(proof, 'hot_delta_1'),
+    cacheState: cacheState(proof),
+    cache_state: cacheState(proof),
     profileId: proof?.profile?.id ?? proof?.runtimeProfile?.id ?? null,
     projectName: proof?.repo?.target ?? null,
     proofMode: timings.mode ?? proof?.mode ?? null,
@@ -161,7 +255,7 @@ export function hiprtWarmTimingMetrics(proof) {
     runtimeReadyMs: beforeCaptureMs,
     initialCompileWallMs: null,
     sourceWriteMs,
-    modelAvailabilityCheckMs: modelAvailabilityCheckMs(modelProvenance),
+    modelAvailabilityCheckMs: modelAvailability,
     modelProvenance,
     aiDeltaWallMs: null,
     hotHmrCompileWallMs: finiteMs(timings.sameProcessLiveRecompileMs),
@@ -176,6 +270,8 @@ export function hiprtWarmTimingMetrics(proof) {
     afterCaptureMs,
     visualDiffMs: null,
     teardownMs: null,
+    normalizedTimings,
+    normalized_timings: normalizedTimings.snake_case,
     visualEvidence: {
       screenshotCount: 2,
       changedPixelRatio: finiteMs(proof?.diff?.changedPixelRatioThreshold4),
@@ -235,37 +331,59 @@ export function realRocmTimingMetrics(report) {
     report?.evidence?.ai_model_provenance,
     report?.evidence?.model_provenance,
   );
+  const modelAvailability = modelAvailabilityCheckMs(modelProvenance);
+  const setupBuildMs = sumMs([
+    keyValueTiming(upstream?.timings, 'configure_ms'),
+    keyValueTiming(upstream?.timings, 'build_ms'),
+  ]);
+  const hotCompileMs = finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1));
+  const hotSignalMs = finiteMs(deltaCompile?.wait_hmr_elapsed_ms) ?? maxMs(waitWalls);
+  const normalizedTimings = normalizedTimingFields({
+    modelAvailabilityCheckTimeMs: modelAvailability,
+    adapterGenerationTimeMs: null,
+    deviceCompileWallTimeMs: hotCompileMs,
+    runtimeProbeTimeMs: keyValueTiming(upstream?.timings, 'run_ms'),
+    oracleAnalysisTimeMs: null,
+    triggerToVisibleTimeMs: null,
+    screenshotCaptureTimeMs: null,
+    totalValidatorWallTimeMs: report?.duration_ms,
+  });
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'real_rocm_validation',
+    metricClock: metricClock(report, report?.timings),
+    metric_clock: metricClock(report, report?.timings),
+    metricScope: metricScope(report, 'hot_delta_1'),
+    metric_scope: metricScope(report, 'hot_delta_1'),
+    cacheState: cacheState(report),
+    cache_state: cacheState(report),
     profileId: report?.slug ?? null,
     projectName: report?.target_name ?? null,
     proofMode: report?.hiprt_runtime_probe?.enabled ? 'real_rocm_hiprt_probe' : 'real_rocm',
     status: realRocmStatus(report),
     totalWallMs: finiteMs(report?.duration_ms),
-    setupBuildMs: sumMs([
-      keyValueTiming(upstream?.timings, 'configure_ms'),
-      keyValueTiming(upstream?.timings, 'build_ms'),
-    ]),
+    setupBuildMs,
     adapterBuildMs: null,
     runtimeReadyMs: keyValueTiming(upstream?.timings, 'run_ms'),
     initialCompileWallMs: finiteMs(firstCompile?.compile_wall_ms) ?? compileWalls[0] ?? null,
     sourceWriteMs: null,
-    modelAvailabilityCheckMs: modelAvailabilityCheckMs(modelProvenance),
+    modelAvailabilityCheckMs: modelAvailability,
     modelProvenance,
     aiDeltaWallMs: report?.evidence?.ai_call_counts?.gpu_delta > 0
-      ? finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1))
+      ? hotCompileMs
       : null,
-    hotHmrCompileWallMs: finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1)),
+    hotHmrCompileWallMs: hotCompileMs,
     sameProcessLiveRecompileMs: null,
     sameProcessTriggerWaitMs: null,
-    hotReloadSignalMs: finiteMs(deltaCompile?.wait_hmr_elapsed_ms) ?? maxMs(waitWalls),
+    hotReloadSignalMs: hotSignalMs,
     editToFirstVisualMs: null,
     beforeCaptureMs: null,
     afterCaptureMs: null,
     visualDiffMs: null,
     teardownMs: null,
+    normalizedTimings,
+    normalized_timings: normalizedTimings.snake_case,
     visualEvidence: {
       screenshotCount: screenshotPhases.length,
       acceptedScreenshotCount: screenshotPhases.filter((shot) =>
@@ -280,8 +398,8 @@ export function realRocmTimingMetrics(report) {
       ]), 'phases.upstream_gpu_build_run.timings'),
       phase('upstream_run', keyValueTiming(upstream?.timings, 'run_ms'), 'phases.upstream_gpu_build_run.timings'),
       phase('initial_compile', firstCompile?.compile_wall_ms ?? compileWalls[0], 'phases[].compile_wall_ms'),
-      phase('hot_hmr_compile', deltaCompile?.compile_wall_ms ?? maxMs(compileWalls.slice(1)), 'phases[].compile_wall_ms'),
-      phase('hot_reload_signal', deltaCompile?.wait_hmr_elapsed_ms ?? maxMs(waitWalls), 'phases[].wait_hmr_elapsed_ms|wait_call_wall_ms'),
+      phase('hot_hmr_compile', hotCompileMs, 'phases[].compile_wall_ms'),
+      phase('hot_reload_signal', hotSignalMs, 'phases[].wait_hmr_elapsed_ms|wait_call_wall_ms'),
     ],
   };
 }
