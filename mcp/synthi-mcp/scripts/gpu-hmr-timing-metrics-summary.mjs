@@ -20,6 +20,7 @@ function parseArgs(argv) {
     format: 'both',
     latestPerProfile: true,
     includeInvalidated: false,
+    selfCheck: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -34,6 +35,8 @@ function parseArgs(argv) {
       args.outputDir = path.resolve(argv[++i] ?? args.outputDir);
     } else if (arg === '--help') {
       args.help = true;
+    } else if (arg === '--self-check') {
+      args.selfCheck = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -44,7 +47,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'Usage: node scripts/gpu-hmr-timing-metrics-summary.mjs [--all] [--include-invalidated] [--format json|markdown|both] [--output-dir DIR]',
+    'Usage: node scripts/gpu-hmr-timing-metrics-summary.mjs [--all] [--include-invalidated] [--format json|markdown|both] [--output-dir DIR] [--self-check]',
     '',
     'Collects GPU HMR proof reports and writes a normalized timing schema for apples-to-apples comparison.',
   ].join('\n');
@@ -216,6 +219,15 @@ function compactRow(row) {
   const metrics = row.metrics ?? {};
   return {
     source: metrics.source ?? row.kind,
+    schemaVersion: metrics.schemaVersion,
+    metricClock: metrics.metricClock,
+    metricUnit: metrics.metricUnit,
+    metricScope: metrics.metricScope,
+    cacheState: metrics.cacheState,
+    startedMonotonicNs: metrics.clockEvidence?.startedMonotonicNs ?? metrics.startedMonotonicNs ?? null,
+    finishedMonotonicNs: metrics.clockEvidence?.finishedMonotonicNs ?? metrics.finishedMonotonicNs ?? null,
+    durationMonotonicNs: metrics.clockEvidence?.durationMonotonicNs ?? metrics.durationMonotonicNs ?? null,
+    durationMonotonicMs: metrics.clockEvidence?.durationMonotonicMs ?? metrics.durationMonotonicMs ?? null,
     profileId: metrics.profileId,
     projectName: metrics.projectName,
     proofMode: metrics.proofMode,
@@ -226,6 +238,7 @@ function compactRow(row) {
     runtimeReadyMs: metrics.runtimeReadyMs,
     initialCompileWallMs: metrics.initialCompileWallMs,
     sourceWriteMs: metrics.sourceWriteMs,
+    modelAvailabilityCheckMs: metrics.modelAvailabilityCheckMs,
     aiDeltaWallMs: metrics.aiDeltaWallMs,
     hotHmrCompileWallMs: metrics.hotHmrCompileWallMs,
     sameProcessLiveRecompileMs: metrics.sameProcessLiveRecompileMs,
@@ -240,6 +253,8 @@ function compactRow(row) {
     changedPixelRatio: metrics.visualEvidence?.changedPixelRatio ?? null,
     meanAbsDelta8bit: metrics.visualEvidence?.meanAbsDelta8bit ?? null,
     visualAccepted: metrics.visualEvidence?.accepted ?? null,
+    normalizedTimings: metrics.normalizedTimings ?? null,
+    clockEvidence: metrics.clockEvidence ?? null,
     updatedAt: row.updatedAt,
     filePath: path.relative(repoRoot, row.filePath),
   };
@@ -254,11 +269,16 @@ function markdownTable(rows) {
   const columns = [
     'source',
     'profileId',
+    'metricClock',
+    'metricScope',
+    'cacheState',
     'status',
     'totalWallMs',
+    'durationMonotonicMs',
     'setupBuildMs',
     'adapterBuildMs',
     'initialCompileWallMs',
+    'modelAvailabilityCheckMs',
     'aiDeltaWallMs',
     'hotHmrCompileWallMs',
     'sameProcessLiveRecompileMs',
@@ -283,10 +303,81 @@ function markdownTable(rows) {
   ].join('\n');
 }
 
+function assertSelfCheck(condition, message) {
+  if (!condition) throw new Error(`Timing metrics summary self-check failed: ${message}`);
+}
+
+function runSelfCheck() {
+  const row = compactRow({
+    kind: 'synthetic',
+    updatedAt: '2026-06-07T00:00:00.000Z',
+    filePath: path.join(repoRoot, 'tmp', 'synthetic-gpu-hmr-timing.json'),
+    metrics: {
+      schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+      source: 'external_project_profile',
+      metricClock: 'monotonic_ns',
+      metricUnit: 'ms',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      profileId: 'synthetic-gpu-profile',
+      status: 'pass',
+      totalWallMs: 600,
+      modelAvailabilityCheckMs: 2,
+      aiDeltaWallMs: 40,
+      hotHmrCompileWallMs: 40,
+      clockEvidence: {
+        metricClock: 'monotonic_ns',
+        metricUnit: 'ms',
+        startedMonotonicNs: '1000000000',
+        finishedMonotonicNs: '1600000000',
+        durationMonotonicNs: '600000000',
+        durationMonotonicMs: 600,
+      },
+      normalizedTimings: {
+        modelAvailabilityCheckTimeMs: 2,
+        deviceCompileWallTimeMs: 40,
+        totalValidatorWallTimeMs: 600,
+      },
+      visualEvidence: {
+        screenshotCount: 2,
+        changedPixelRatio: 0.25,
+        meanAbsDelta8bit: 12,
+        accepted: true,
+      },
+    },
+  });
+
+  assertSelfCheck(row.schemaVersion === GPU_HMR_TIMING_METRICS_SCHEMA_VERSION, 'schema version missing');
+  assertSelfCheck(row.metricClock === 'monotonic_ns', 'metric clock missing');
+  assertSelfCheck(row.metricUnit === 'ms', 'metric unit missing');
+  assertSelfCheck(row.metricScope === 'hot_delta_1', 'metric scope missing');
+  assertSelfCheck(row.cacheState === 'compiler_cache_warm', 'cache state missing');
+  assertSelfCheck(row.durationMonotonicNs === '600000000', 'duration monotonic ns missing');
+  assertSelfCheck(row.durationMonotonicMs === 600, 'duration monotonic ms missing');
+  assertSelfCheck(row.modelAvailabilityCheckMs === 2, 'model availability timing missing');
+  assertSelfCheck(row.normalizedTimings?.totalValidatorWallTimeMs === 600, 'normalized timings missing');
+  assertSelfCheck(row.clockEvidence?.durationMonotonicMs === 600, 'clock evidence missing');
+
+  const markdown = markdownTable([row]);
+  for (const column of ['metricClock', 'metricScope', 'cacheState', 'durationMonotonicMs', 'modelAvailabilityCheckMs']) {
+    assertSelfCheck(markdown.includes(column), `markdown missing ${column}`);
+  }
+
+  console.log(JSON.stringify({
+    ok: true,
+    schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+    checked: 'gpu-hmr-timing-metrics-summary',
+  }, null, 2));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(usage());
+    return;
+  }
+  if (args.selfCheck) {
+    runSelfCheck();
     return;
   }
   if (!['json', 'markdown', 'both'].includes(args.format)) {

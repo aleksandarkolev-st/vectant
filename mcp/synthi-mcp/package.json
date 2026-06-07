@@ -56,7 +56,7 @@
     "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
     "proof:timing-metrics": "node scripts/gpu-hmr-timing-metrics-summary.mjs",
     "proof:external-project:bevy": "node scripts/gpu-hmr-external-project-profile.mjs --profile mcp/synthi-mcp/scripts/profiles/bevy-wgsl-shader-material.json",
-    "proof:timing-metrics:self-check": "node scripts/tests/gpu-hmr-timing-metrics-smoke.mjs",
+    "proof:timing-metrics:self-check": "node scripts/tests/gpu-hmr-timing-metrics-smoke.mjs && node scripts/gpu-hmr-timing-metrics-summary.mjs --self-check",
     "proof:runtime-profile:hiprt": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-megakernel-direct-light-zero.json --mode same-process",
     "proof:runtime-profile:hiprt:camera-rays": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json --mode same-process",
     "proof:hiprt:warm": "node scripts/hiprt-light-math-warm-proof.mjs",
