@@ -987,6 +987,10 @@ fn record_output_oracle_event_with_metadata(
 ) {
     let generation = current_launch_generation();
     let runtime_session = runtime_session_id().to_string();
+    let after_dispatch_id = metadata
+        .after_dispatch_id
+        .clone()
+        .or_else(|| latest_dispatch_id_for_generation(generation, &runtime_session));
     {
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         guard.output_oracles.push(OutputOracleRecord {
@@ -1000,7 +1004,7 @@ fn record_output_oracle_event_with_metadata(
             output_target_id: metadata.output_target_id.clone(),
             readback_timestamp_ms: metadata.readback_timestamp_ms,
             artifact_id: metadata.artifact_id.clone(),
-            after_dispatch_id: metadata.after_dispatch_id.clone(),
+            after_dispatch_id: after_dispatch_id.clone(),
             visual_evidence_ref: metadata.visual_evidence_ref.clone(),
             probe_mode: metadata.probe_mode.clone(),
             probe_config_hash: metadata.probe_config_hash.clone(),
@@ -1040,7 +1044,7 @@ fn record_output_oracle_event_with_metadata(
     append_log_token(
         &mut line,
         "after_dispatch_id",
-        metadata.after_dispatch_id.as_deref(),
+        after_dispatch_id.as_deref(),
     );
     append_log_token(
         &mut line,
@@ -2605,6 +2609,63 @@ mod tests {
             Some("evidence:output-oracle:probe:buffer")
         );
         assert!(records[0].passed);
+    }
+
+    #[test]
+    fn output_oracle_records_latest_generation_dispatch_id() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls,
+        }));
+
+        let kernel = CString::new("oracle_linked").unwrap();
+        let dim = 1_u32;
+        let scalar = 42_u32;
+        let args = [SynthiGpuLaunchArg {
+            value_ptr: (&scalar as *const u32).cast(),
+            value_size: std::mem::size_of_val(&scalar),
+            value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
+        }];
+
+        assert!(synthi_gpu_launch_raw_arg_info(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            args.as_ptr(),
+            args.len(),
+        ));
+
+        let dispatch_id = launch_records_snapshot()[0]
+            .dispatch_id
+            .clone()
+            .expect("dispatch id");
+        let bytes = b"dispatch-linked output";
+        let expected_text = sha256_checksum_value(bytes);
+        let expected = CString::new(expected_text).unwrap();
+        let oracle_id = CString::new("probe.dispatch-linked").unwrap();
+
+        assert!(synthi_gpu_record_output_buffer_checksum(
+            oracle_id.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            expected.as_ptr(),
+        ));
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].after_dispatch_id.as_deref(),
+            Some(dispatch_id.as_str())
+        );
     }
 
     #[test]
