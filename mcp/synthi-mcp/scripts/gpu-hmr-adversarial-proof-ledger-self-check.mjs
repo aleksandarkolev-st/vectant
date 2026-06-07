@@ -108,6 +108,33 @@ function baselineRecord(overrides = {}) {
   };
 }
 
+function baselineVisualRecord(overrides = {}) {
+  return baselineRecord({
+    output_event: {
+      id: 'output-visual-1',
+      kind: 'render_target_hash',
+      epoch: 'epoch-7',
+      artifact_hash: HASH_B,
+      process_id: 'pid-1',
+      after_dispatch_id: 'dispatch-1',
+      passed: true,
+      timestamp_monotonic_ns: 400,
+    },
+    deterministic_visual_mode: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    },
+    ...overrides,
+  });
+}
+
 function baselineContract(overrides = {}) {
   return {
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
@@ -427,29 +454,7 @@ assert.equal(summary.gpu_hmr_success, true, JSON.stringify({
 assert.equal(summary.proof_states.proof_ledger.gpu_hmr_success, true);
 assert.equal(summary.proof_states.acceptance_contract.accepted, true);
 
-assertGpuHmrProofLedgerSuccess(baselineRecord({
-  output_event: {
-    id: 'output-visual-1',
-    kind: 'render_target_hash',
-    epoch: 'epoch-7',
-    artifact_hash: HASH_B,
-    process_id: 'pid-1',
-    after_dispatch_id: 'dispatch-1',
-    passed: true,
-    timestamp_monotonic_ns: 400,
-  },
-  deterministic_visual_mode: {
-    fixed_seed: true,
-    frozen_camera: true,
-    temporal_accumulation_disabled: true,
-    taa_disabled: true,
-    denoiser_disabled: true,
-    fixed_resolution: true,
-    fixed_swapchain_image_count: true,
-    frame_capture_after_epoch_dispatch: true,
-    presentation_fence_or_frame_boundary: true,
-  },
-}));
+assertGpuHmrProofLedgerSuccess(baselineVisualRecord());
 
 const cases = [
   ['missing cpu hmr absence evidence', (() => {
@@ -485,6 +490,89 @@ const cases = [
   ['output epoch missing', baselineRecord({ output_event: { kind: 'buffer_checksum', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'output_epoch_missing'],
   ['output timestamp missing', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true } }), 'output_timestamp_missing'],
   ['visual without deterministic mode', baselineRecord({ output_event: { kind: 'render_target_hash', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'visual_output_without_deterministic_mode'],
+  ['camera jitter visual diff', baselineVisualRecord({
+    deterministic_visual_mode: {
+      fixed_seed: true,
+      frozen_camera: false,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    },
+  }), 'frozen_camera_unproven'],
+  ['same frame recaptured after edit', baselineVisualRecord({
+    deterministic_visual_mode: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: false,
+      presentation_fence_or_frame_boundary: true,
+    },
+  }), 'frame_capture_after_epoch_dispatch_unproven'],
+  ['async presentation pre-epoch frame capture', baselineVisualRecord({
+    deterministic_visual_mode: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: false,
+    },
+  }), 'presentation_boundary_unproven'],
+  ['temporal convergence without sampled frames', baselineVisualRecord({
+    deterministic_visual_mode: {
+      seed_policy_fixed: true,
+      frozen_camera: true,
+      temporal_accumulation_present: true,
+      taa_present: true,
+      denoiser_present: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      convergence_window: {
+        frame_start: 3,
+        frame_end: 9,
+        metric: { value: 'window_mean_delta' },
+        metric_delta: 18.5,
+        convergence_proven: true,
+        evidence_refs: ['visual-window:post-epoch-frames'],
+      },
+    },
+  }), 'convergence_window_sample_evidence_missing'],
+  ['temporal convergence without fixed seed policy', baselineVisualRecord({
+    deterministic_visual_mode: {
+      frozen_camera: true,
+      temporal_accumulation_present: true,
+      taa_present: true,
+      denoiser_present: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      convergence_window: {
+        frame_start: 3,
+        frame_end: 4,
+        metric: { value: 'per_frame_delta' },
+        samples: [
+          { frame: 3, metric_value: 12.5, after_epoch_dispatch: true },
+          { frame: 4, metric_value: 14.0, after_epoch_dispatch: true },
+        ],
+        convergence_proven: true,
+        evidence_refs: ['visual-window:post-epoch-frames'],
+      },
+    },
+  }), 'seed_policy_unproven'],
   ['missing model provenance', (() => {
     const record = baselineRecord();
     delete record.model_provenance;
