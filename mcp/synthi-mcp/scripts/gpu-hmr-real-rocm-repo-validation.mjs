@@ -3435,6 +3435,86 @@ function runtimeIdentityChangeEvidence(runtimeIdentity = report.runtime_identity
   };
 }
 
+function runtimeProofStateAccepted(proof, state) {
+  return proof?.resultState === state && !proof?.degradedState;
+}
+
+function runtimeEvidenceRefsFromProofs(...proofs) {
+  return compactStringList(proofs.flatMap((proof) =>
+    Array.isArray(proof?.evidenceRefs) ? proof.evidenceRefs : []
+  ));
+}
+
+function deriveCpuGpuFirewallEvidence({
+  runtimeIdentityChanges,
+  runtimeHostPreservation,
+  runtimeDispatch,
+  runtimeOutputOracle,
+  runtimeOwnership,
+  hostRestartCount,
+}) {
+  const dispatchProven = runtimeProofStateAccepted(
+    report.dispatch_proof,
+    'gpu-hmr-dispatch-safe-proven',
+  );
+  const outputProven = runtimeProofStateAccepted(
+    report.output_proof,
+    'gpu-hmr-output-oracle-proven',
+  );
+  const hostPreservationProven = runtimeProofStateAccepted(
+    report.host_preservation_proof,
+    'gpu-hmr-host-preservation-proven',
+  );
+  const fissionProven = report.fission_proof?.fissionProven === true
+    && !report.fission_proof?.degradedState;
+  const identityMonitored = Number(runtimeIdentityChanges?.total_phases ?? 0) > 0
+    || report.docker?.worker?.available === true;
+  const processRestartObserved =
+    Number(hostRestartCount ?? 0) > 0
+    || Number(runtimeIdentityChanges?.changed_count ?? 0) > 0;
+  const evidenceRefs = runtimeEvidenceRefsFromProofs(
+    report.artifact_transport_proof,
+    report.epoch_swap_proof,
+    report.dispatch_proof,
+    report.output_proof,
+    report.host_preservation_proof,
+    report.fission_proof,
+  );
+  if (runtimeIdentityChanges?.evidence_refs) {
+    evidenceRefs.push(...runtimeIdentityChanges.evidence_refs);
+  }
+  if (runtimeDispatch?.evidence_refs) evidenceRefs.push(...runtimeDispatch.evidence_refs);
+  if (runtimeOutputOracle?.evidence_refs) evidenceRefs.push(...runtimeOutputOracle.evidence_refs);
+  const firewall = {
+    schemaVersion: 'synthi.gpu.hmr.cpu_gpu_firewall_evidence.v1',
+    source: 'real_rocm_runtime_proofs',
+    cpu_hmr_absence_basis: dispatchProven && outputProven
+      ? 'gpu_artifact_dispatch_and_output_oracle_proven'
+      : null,
+    full_rebuild_absence_basis: fissionProven && hostPreservationProven
+      ? 'fission_and_host_preservation_proven'
+      : null,
+    process_restart_absence_basis: identityMonitored && !processRestartObserved
+      ? 'worker_identity_monitoring'
+      : null,
+    process_restart_observed: processRestartObserved,
+    host_restart_count: hostRestartCount,
+    runtime_identity_changes: runtimeIdentityChanges,
+    runtime_ownership_summary: {
+      primary_replacement_count: runtimeOwnership?.primary_replacement_count ?? null,
+      scope_proven_count: runtimeOwnership?.scope_proven_count ?? null,
+    },
+    evidence_refs: compactStringList(evidenceRefs),
+  };
+  if (dispatchProven && outputProven) firewall.cpu_hmr_used = false;
+  if (fissionProven && hostPreservationProven) firewall.full_rebuild_used = false;
+  if (identityMonitored) firewall.process_restarted = processRestartObserved;
+  if (runtimeHostPreservation?.evidence) {
+    firewall.host_preservation_evidence = runtimeHostPreservation.evidence;
+  }
+  return firewall;
+}
+
 async function compileViaMcp(args, timeoutMs, phaseName) {
   const state = await ensureMcpAttached();
   const identityMonitor = await beginPhaseRuntimeIdentityMonitor(phaseName);
@@ -4431,6 +4511,131 @@ function uniqueLogFieldValues(lines, key, linePattern = null) {
     if (value && !values.includes(value)) values.push(value);
   }
   return values;
+}
+
+function plainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function modelRecordLooksStructured(value) {
+  const record = plainObject(value);
+  if (!record) return false;
+  return [
+    'provider',
+    'requested_model',
+    'requestedModel',
+    'provider_model_status',
+    'providerModelStatus',
+    'model_availability_checked_at',
+    'modelAvailabilityCheckedAt',
+    'actual_model',
+    'actualModel',
+    'request_mode',
+    'requestMode',
+  ].some((key) => Object.prototype.hasOwnProperty.call(record, key));
+}
+
+function modelRecordOrNull(value) {
+  return modelRecordLooksStructured(value) ? value : null;
+}
+
+function structuredModelProvenanceFromSidecar(sidecarArtifact = {}) {
+  const sidecar = plainObject(sidecarArtifact.parsed) ?? {};
+  const nested = plainObject(sidecar._synthi_model_provenance) ?? {};
+  const verifier = plainObject(sidecar.lastGpuAiDeltaVerifierReport) ?? {};
+  const verifierEvidence = plainObject(verifier.evidence) ?? {};
+  const split = modelRecordOrNull(sidecar.model_provenance)
+    ?? modelRecordOrNull(nested.split)
+    ?? null;
+  const lastGpuDelta = modelRecordOrNull(sidecar.lastGpuAiDeltaModelProvenance)
+    ?? modelRecordOrNull(nested.last_gpu_delta)
+    ?? modelRecordOrNull(nested.lastGpuDelta)
+    ?? modelRecordOrNull(verifierEvidence.modelProvenance)
+    ?? null;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.model_provenance.sidecar.v1',
+    evidence_source: sidecarArtifact.path ?? null,
+    evidence_available: sidecarArtifact.available === true,
+    evidence_parse_error: sidecarArtifact.parseError ?? null,
+    expected_gpu_split_model: CFG.gpuSplitModel,
+    expected_gpu_delta_model: CFG.gpuDeltaModel,
+    split,
+    last_gpu_delta: lastGpuDelta,
+    observed_records: [
+      ...(split ? ['split'] : []),
+      ...(lastGpuDelta ? ['last_gpu_delta'] : []),
+    ],
+    missing_records: [
+      ...(!split ? ['split'] : []),
+      ...(!lastGpuDelta ? ['last_gpu_delta'] : []),
+    ],
+  };
+}
+
+async function readWorkerWorkspaceJson(relativePath) {
+  const normalizedRelative = String(relativePath ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalizedRelative) {
+    return { available: false, path: null, reason: 'empty_relative_path' };
+  }
+  if (CFG.mcpTransport !== 'docker') {
+    return {
+      available: false,
+      path: normalizedRelative,
+      reason: `transport_${CFG.mcpTransport}_cannot_read_worker_workspace`,
+    };
+  }
+  const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const directPath = `${workspaceRoot}/${normalizedRelative}`;
+  const basename = path.posix.basename(normalizedRelative);
+  const startedAt = report.started_at;
+  const raw = await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      [
+        `direct=${shQuote(directPath)}`,
+        `basename=${shQuote(basename)}`,
+        `started_at=${shQuote(startedAt)}`,
+        'candidate=""',
+        '[ -f "$direct" ] && candidate="$direct"',
+        'if [ -z "$candidate" ]; then',
+        '  candidate=$(find /tmp /home/runner /synthi -name "$basename" -type f -newermt "$started_at" -printf "%T@\\t%p\\n" 2>/dev/null | sort -n | tail -1 | cut -f2- || true)',
+        'fi',
+        'if [ -z "$candidate" ]; then',
+        '  candidate=$(find /tmp /home/runner /synthi -name "$basename" -type f -printf "%T@\\t%p\\n" 2>/dev/null | sort -n | tail -1 | cut -f2- || true)',
+        'fi',
+        '[ -f "$candidate" ] || exit 0',
+        'printf "__SYNTHI_JSON_PATH__%s\\n" "$candidate"',
+        'cat "$candidate"',
+      ].join('\n'),
+    ],
+    30000,
+    false,
+  );
+  if (!raw) {
+    return { available: false, path: directPath, reason: 'worker_workspace_json_missing' };
+  }
+  const markerMatch = raw.match(/^__SYNTHI_JSON_PATH__(.*)\n/);
+  const workerPath = markerMatch?.[1]?.trim() || directPath;
+  const body = markerMatch ? raw.slice(markerMatch[0].length) : raw;
+  try {
+    return {
+      available: true,
+      path: workerPath,
+      parsed: JSON.parse(body),
+      raw_sha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+    };
+  } catch (err) {
+    return {
+      available: false,
+      path: workerPath,
+      parseError: err.message,
+      raw_sha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+    };
+  }
 }
 
 function normalizeSessionMarker(value) {
@@ -6522,6 +6727,45 @@ int main()
   })) {
     throw new Error('CMake metadata coverage self-check should reject unrelated sources');
   }
+  const structuredSidecarProvenance = structuredModelProvenanceFromSidecar({
+    available: true,
+    path: '/tmp/self-check/.synthi_split_meta.json',
+    parsed: {
+      model_provenance: {
+        provider: 'google_gemini',
+        requested_model: 'gemini-3.5-flash',
+        provider_model_status: 'available',
+        provider_model_alias_resolved_to: null,
+        provider_shutdown_or_deprecation_detected: false,
+        model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+        actual_model: 'gemini-3.5-flash',
+        fallback_model: null,
+        fallback_used: false,
+        request_mode: 'split',
+        hard_infra_failure: false,
+      },
+      lastGpuAiDeltaModelProvenance: {
+        provider: 'google_gemini',
+        requested_model: 'gemini-3.1-flash-lite',
+        provider_model_status: 'deprecated',
+        provider_model_alias_resolved_to: null,
+        provider_shutdown_or_deprecation_detected: true,
+        model_availability_checked_at: '2026-06-07T00:00:01.000Z',
+        actual_model: 'gemini-3.1-flash-lite',
+        fallback_model: null,
+        fallback_used: false,
+        request_mode: 'gpu_delta',
+        hard_infra_failure: false,
+      },
+    },
+  });
+  if (
+    structuredSidecarProvenance.split?.request_mode !== 'split'
+    || structuredSidecarProvenance.last_gpu_delta?.request_mode !== 'gpu_delta'
+    || structuredSidecarProvenance.missing_records.length !== 0
+  ) {
+    throw new Error('structured model provenance sidecar self-check failed');
+  }
   const visualSelfCheckRoot = path.join(REPO_ROOT, 'tmp');
   await mkdir(visualSelfCheckRoot, { recursive: true });
   const visualSelfCheckDir = await mkdtemp(path.join(visualSelfCheckRoot, 'visual-proof-self-check-'));
@@ -6678,6 +6922,8 @@ async function collectRuntimeEvidence() {
     aiLogs,
     /Calling API|mode=delta|mode=split|\[GpuDiffPatch\]|verifier rejected|POST \/refactor\/(?:split(?:\/verified|\/gpu)?|diff_patch(?:\/gpu)?|heal)/i,
   );
+  const splitSidecarArtifact = await readWorkerWorkspaceJson('.synthi_split_meta.json');
+  const structuredModelProvenance = structuredModelProvenanceFromSidecar(splitSidecarArtifact);
   const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
@@ -6749,12 +6995,23 @@ async function collectRuntimeEvidence() {
     ai_model_provenance: {
       expected_gpu_split_model: CFG.gpuSplitModel,
       expected_gpu_delta_model: CFG.gpuDeltaModel,
+      structured: structuredModelProvenance,
+      split: structuredModelProvenance.split,
+      last_gpu_delta: structuredModelProvenance.last_gpu_delta,
       observed_gpu_split_actual_models: uniqueLogFieldValues(aiEvidence, 'actual_model', /\[split\/gpu\]\s+accepted/i),
       observed_gpu_split_fallback_used: uniqueLogFieldValues(aiEvidence, 'fallback_used', /\[split\/gpu\]\s+accepted/i),
       observed_gpu_delta_models: uniqueLogFieldValues(aiEvidence, 'model', /\[GpuDiffPatch\]/i),
       observed_gpu_delta_actual_models: uniqueLogFieldValues(aiEvidence, 'actual_model', /\[GpuDiffPatch\]/i),
       observed_gpu_delta_fallback_used: uniqueLogFieldValues(aiEvidence, 'fallback_used', /\[GpuDiffPatch\]/i),
       forced_gpu_ai_delta: CFG.forceGpuAiDelta,
+    },
+    model_provenance: structuredModelProvenance,
+    split_sidecar_artifact: {
+      available: splitSidecarArtifact.available === true,
+      path: splitSidecarArtifact.path ?? null,
+      raw_sha256: splitSidecarArtifact.raw_sha256 ?? null,
+      parse_error: splitSidecarArtifact.parseError ?? null,
+      reason: splitSidecarArtifact.reason ?? null,
     },
     runner_policy_counts: {
       existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
@@ -6774,6 +7031,8 @@ async function collectRuntimeEvidence() {
     runtime_original_host_path: runtimeOriginalHostPath.evidence,
     runtime_identity_changes: runtimeIdentityChanges,
   };
+  report.modelProvenance = structuredModelProvenance;
+  report.model_provenance = structuredModelProvenance;
   report.evidence.ai_split_provenance = classifyFreshAiSplitProvenance({
     required: CFG.requireFreshAiSplit,
     model: CFG.gpuSplitModel,
@@ -6799,12 +7058,16 @@ async function collectRuntimeEvidence() {
     const observedDeltaModels = report.evidence.ai_model_provenance.observed_gpu_delta_models;
     const observedActualDeltaModels = report.evidence.ai_model_provenance.observed_gpu_delta_actual_models;
     const observedDeltaFallback = report.evidence.ai_model_provenance.observed_gpu_delta_fallback_used;
+    const structuredDelta = report.evidence.ai_model_provenance.last_gpu_delta;
     const deltaModelObserved = observedDeltaModels.includes(CFG.gpuDeltaModel);
     const actualDeltaModelObserved = observedActualDeltaModels.length > 0
       ? observedActualDeltaModels.includes(CFG.gpuDeltaModel)
-      : deltaModelObserved;
+      : deltaModelObserved
+        || structuredDelta?.actual_model === CFG.gpuDeltaModel
+        || structuredDelta?.requested_model === CFG.gpuDeltaModel;
     const deltaFallbackObserved = observedDeltaFallback.some((value) =>
-      /^(1|true|yes|on)$/i.test(String(value)));
+      /^(1|true|yes|on)$/i.test(String(value)))
+      || structuredDelta?.fallback_used === true;
     record(
       'forced GPU AI delta endpoint',
       gpuDeltaCalls > 0 ? 'pass' : 'fail',
@@ -6812,10 +7075,21 @@ async function collectRuntimeEvidence() {
     );
     record(
       'forced GPU AI delta model provenance',
-      deltaModelObserved && actualDeltaModelObserved && !deltaFallbackObserved ? 'pass' : 'fail',
-      `expected=${CFG.gpuDeltaModel} requested=${observedDeltaModels.join(',') || 'none'} actual=${observedActualDeltaModels.join(',') || 'none'} fallback=${observedDeltaFallback.join(',') || 'none'}`,
+      (deltaModelObserved || structuredDelta?.requested_model === CFG.gpuDeltaModel)
+        && actualDeltaModelObserved
+        && !deltaFallbackObserved
+        && structuredDelta
+        ? 'pass'
+        : 'fail',
+      `expected=${CFG.gpuDeltaModel} requested=${observedDeltaModels.join(',') || structuredDelta?.requested_model || 'none'} actual=${observedActualDeltaModels.join(',') || structuredDelta?.actual_model || 'none'} fallback=${observedDeltaFallback.join(',') || String(structuredDelta?.fallback_used ?? 'none')}`,
     );
-    if (gpuDeltaCalls <= 0 || !deltaModelObserved || !actualDeltaModelObserved || deltaFallbackObserved) {
+    if (
+      gpuDeltaCalls <= 0
+      || (!deltaModelObserved && structuredDelta?.requested_model !== CFG.gpuDeltaModel)
+      || !actualDeltaModelObserved
+      || deltaFallbackObserved
+      || !structuredDelta
+    ) {
       process.exitCode = 1;
     }
   }
@@ -7079,6 +7353,15 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
   });
+  report.firewall_evidence = deriveCpuGpuFirewallEvidence({
+    runtimeIdentityChanges,
+    runtimeHostPreservation,
+    runtimeDispatch,
+    runtimeOutputOracle,
+    runtimeOwnership,
+    hostRestartCount,
+  });
+  report.evidence.firewall_evidence = report.firewall_evidence;
   if (hiprtNativeDispatchProof || hiprtNativeOutputProof || hiprtNativeOriginalHostPathProof) {
     record(
       'HIPRT native runtime proof bridge',
@@ -7238,6 +7521,11 @@ async function writeResults() {
     command: report.command,
     docker: report.docker,
     containers: report.containers,
+    modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
+    firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
+    cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
+    full_rebuild_used: report.firewall_evidence?.full_rebuild_used,
+    process_restarted: report.firewall_evidence?.process_restarted,
     urls: {
       frontend: CFG.frontendUrl,
       collab: CFG.collabUrl,
@@ -7318,6 +7606,11 @@ async function writeResults() {
       fullRuntimeProof: report.full_runtime_proof,
       runtimeEvidence: report.evidence,
       validationContext,
+      modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
+      firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
+      cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
+      full_rebuild_used: report.firewall_evidence?.full_rebuild_used,
+      process_restarted: report.firewall_evidence?.process_restarted,
       targetProgressionLedger: report.target_progression_ledger,
       targetProgressionGates: report.target_progression_gates,
       label: 'real-rocm-runtime-proof',
