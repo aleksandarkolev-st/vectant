@@ -1,3 +1,6 @@
+import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
+import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
+
 export const GPU_HMR_STRICT_PROOF_GATES_SCHEMA_VERSION =
   'synthi.gpu_hmr.strict_proof_gates.v1';
 
@@ -13,6 +16,18 @@ function compactStrings(values) {
 
 function firstObject(...values) {
   return values.find((value) => isObject(value)) ?? null;
+}
+
+function sortedCodes(values) {
+  return compactStrings((Array.isArray(values) ? values : [])
+    .map((value) => value?.code ?? value))
+    .sort();
+}
+
+function sameCodes(a, b) {
+  const left = sortedCodes(a);
+  const right = sortedCodes(b);
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function gateRow(name, failures, successDetail) {
@@ -84,6 +99,14 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       artifact.proofLedgerQuery,
       artifact.proof_ledger_query,
     );
+    const proofLedger = firstObject(
+      artifact.proofLedger,
+      artifact.proof_ledger,
+    );
+    const acceptanceContract = firstObject(
+      artifact.acceptanceContract,
+      artifact.acceptance_contract,
+    );
     const acceptanceContractEvaluation = firstObject(
       artifact.acceptanceContractEvaluation,
       artifact.acceptance_contract_evaluation,
@@ -99,10 +122,44 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push('runtime_full_proof_not_proven');
     }
     if (!gpuHmrSuccess) failures.push('runtime_proof_artifact_gpu_hmr_success_false');
+    if (!proofLedger) {
+      failures.push('proof_ledger_missing');
+    } else {
+      const recomputedProofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+      if (recomputedProofLedgerQuery.gpuHmrSuccess !== true) {
+        failures.push('proof_ledger_recomputed_query_rejected');
+      }
+      if (
+        proofLedgerQuery
+        && (
+          proofLedgerQuery.gpuHmrSuccess !== recomputedProofLedgerQuery.gpuHmrSuccess
+          || !sameCodes(proofLedgerQuery.failedInvariants, recomputedProofLedgerQuery.failedInvariants)
+        )
+      ) {
+        failures.push('proof_ledger_query_mismatch');
+      }
+    }
     if (!proofLedgerQuery) {
       failures.push('proof_ledger_query_missing');
     } else if (proofLedgerQuery.gpuHmrSuccess !== true) {
       failures.push('proof_ledger_query_rejected');
+    }
+    if (!acceptanceContract) {
+      failures.push('acceptance_contract_missing');
+    } else {
+      const recomputedAcceptance = evaluateGpuHmrAcceptanceContract(acceptanceContract);
+      if (recomputedAcceptance.accepted !== true) {
+        failures.push('acceptance_contract_recomputed_rejected');
+      }
+      if (
+        acceptanceContractEvaluation
+        && (
+          acceptanceContractEvaluation.accepted !== recomputedAcceptance.accepted
+          || !sameCodes(acceptanceContractEvaluation.failedGates, recomputedAcceptance.failedGates)
+        )
+      ) {
+        failures.push('acceptance_contract_evaluation_mismatch');
+      }
     }
     if (!acceptanceContractEvaluation) {
       failures.push('acceptance_contract_evaluation_missing');
