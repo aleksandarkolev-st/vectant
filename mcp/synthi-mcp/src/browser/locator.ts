@@ -1,9 +1,9 @@
 import type { BrowserElementMetadata, LocatorCandidate } from "./types.js";
 
-const ROLE_CONFIDENCE = 0.98;
+const TEST_ID_CONFIDENCE = 0.99;
+const ROLE_CONFIDENCE = 0.96;
 const LABEL_CONFIDENCE = 0.94;
 const PLACEHOLDER_CONFIDENCE = 0.9;
-const TEST_ID_CONFIDENCE = 0.86;
 const TEXT_CONFIDENCE = 0.72;
 const CSS_CONFIDENCE = 0.58;
 const XPATH_CONFIDENCE = 0.35;

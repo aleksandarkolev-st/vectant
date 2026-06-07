@@ -341,10 +341,10 @@ describe("browser locator and script policy", () => {
     });
 
     expect(candidates.map((candidate) => candidate.kind)).toEqual([
+      "test_id",
       "role",
       "label",
       "placeholder",
-      "test_id",
       "text",
       "css",
       "xpath",
