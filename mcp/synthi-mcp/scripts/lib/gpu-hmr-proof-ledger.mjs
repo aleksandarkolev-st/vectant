@@ -54,6 +54,30 @@ function firstText(...values) {
   return null;
 }
 
+function enumText(value) {
+  if (typeof value === 'string') return text(value);
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return text(value.value);
+  }
+  return null;
+}
+
+function hasOwnDeep(object, key) {
+  return object && typeof object === 'object' && !Array.isArray(object) && hasOwn(object, key);
+}
+
+function valueRecorded(object, key) {
+  if (!hasOwnDeep(object, key)) return false;
+  const value = object[key];
+  if (value === null) return true;
+  if (typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return false;
+}
+
 function finiteNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -127,6 +151,64 @@ function isVisualOutput(outputEvent) {
     || kind.includes('frame')
     || kind.includes('pixel')
     || asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts).after_image;
+}
+
+function modelProvenanceRecords(modelProvenance) {
+  const provenance = asObject(modelProvenance);
+  if (Object.keys(provenance).length === 0) return [];
+  const nested = [
+    provenance.split,
+    provenance.gpu_split,
+    provenance.gpuSplit,
+    provenance.last_gpu_delta,
+    provenance.lastGpuDelta,
+    provenance.gpu_delta,
+    provenance.gpuDelta,
+    provenance.delta,
+  ].map(asObject).filter((record) => Object.keys(record).length > 0);
+  const directHasProviderFields = [
+    'requested_model',
+    'requestedModel',
+    'provider_model_status',
+    'providerModelStatus',
+    'actual_model',
+    'actualModel',
+    'request_mode',
+    'requestMode',
+  ].some((key) => hasOwnDeep(provenance, key));
+  return directHasProviderFields ? [provenance, ...nested] : nested;
+}
+
+function modelField(record, snakeKey, camelKey) {
+  return record[snakeKey] ?? record[camelKey];
+}
+
+function modelFieldRecorded(record, snakeKey, camelKey) {
+  return valueRecorded(record, snakeKey) || valueRecorded(record, camelKey);
+}
+
+function modelFieldText(record, snakeKey, camelKey) {
+  return firstText(modelField(record, snakeKey, camelKey));
+}
+
+function modelStatus(record) {
+  return enumText(modelField(record, 'provider_model_status', 'providerModelStatus'));
+}
+
+function modelHardInfraFailure(record) {
+  return modelField(record, 'hard_infra_failure', 'hardInfraFailure') === true;
+}
+
+function modelFallbackUsed(record) {
+  return modelField(record, 'fallback_used', 'fallbackUsed') === true;
+}
+
+function modelShutdownOrDeprecationDetected(record) {
+  return modelField(
+    record,
+    'provider_shutdown_or_deprecation_detected',
+    'providerShutdownOrDeprecationDetected',
+  ) === true;
 }
 
 export function normalizeGpuHmrProofLedgerRecord(input = {}) {
@@ -372,6 +454,58 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       for (const gate of deterministicVisualModeEvaluation.failedGates) {
         addFailure(failures, gate.code ?? 'deterministic_visual_mode_gate_failed');
       }
+    }
+  }
+  const modelRecords = modelProvenanceRecords(record.modelProvenance);
+  if (modelRecords.length === 0) {
+    addFailure(failures, 'model_provenance_missing');
+  }
+  for (const [index, model] of modelRecords.entries()) {
+    const prefix = `model_provenance_${index}`;
+    for (const [snakeKey, camelKey, code] of [
+      ['provider', 'provider', 'provider_missing'],
+      ['requested_model', 'requestedModel', 'requested_model_missing'],
+      ['provider_model_status', 'providerModelStatus', 'provider_model_status_missing'],
+      ['provider_model_alias_resolved_to', 'providerModelAliasResolvedTo', 'provider_model_alias_resolved_to_missing'],
+      ['provider_shutdown_or_deprecation_detected', 'providerShutdownOrDeprecationDetected',
+        'provider_shutdown_or_deprecation_detected_missing'],
+      ['model_availability_checked_at', 'modelAvailabilityCheckedAt', 'model_availability_checked_at_missing'],
+      ['actual_model', 'actualModel', 'actual_model_missing'],
+      ['fallback_model', 'fallbackModel', 'fallback_model_missing'],
+      ['fallback_used', 'fallbackUsed', 'fallback_used_missing'],
+      ['request_mode', 'requestMode', 'request_mode_missing'],
+      ['hard_infra_failure', 'hardInfraFailure', 'hard_infra_failure_missing'],
+    ]) {
+      if (!modelFieldRecorded(model, snakeKey, camelKey)) {
+        addFailure(failures, code, { record: prefix });
+      }
+    }
+    const status = modelStatus(model);
+    if (status === 'shutdown') {
+      addFailure(failures, 'model_provider_status_shutdown', {
+        record: prefix,
+        requested_model: modelFieldText(model, 'requested_model', 'requestedModel'),
+      });
+    } else if (!['available', 'deprecated', 'private_alias'].includes(status ?? '')) {
+      addFailure(failures, 'model_provider_status_not_accepted', {
+        record: prefix,
+        provider_model_status: status,
+      });
+    }
+    if (modelHardInfraFailure(model)) {
+      addFailure(failures, 'model_hard_infra_failure', { record: prefix });
+    }
+    if (
+      modelFieldText(model, 'request_mode', 'requestMode') === 'gpu_delta'
+      && modelFallbackUsed(model)
+    ) {
+      warnings.push({ code: 'gpu_delta_model_fallback_used', record: prefix });
+    }
+    if (
+      modelStatus(model) === 'deprecated'
+      && !modelShutdownOrDeprecationDetected(model)
+    ) {
+      addFailure(failures, 'model_deprecation_not_recorded', { record: prefix });
     }
   }
   return {

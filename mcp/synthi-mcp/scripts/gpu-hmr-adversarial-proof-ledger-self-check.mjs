@@ -15,6 +15,38 @@ const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const HASH_C = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
+function baselineModelProvenance(overrides = {}) {
+  return {
+    split: {
+      provider: 'google_gemini',
+      requested_model: 'gemini-3.5-flash',
+      provider_model_status: 'available',
+      provider_model_alias_resolved_to: null,
+      provider_shutdown_or_deprecation_detected: false,
+      model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      actual_model: 'gemini-3.5-flash',
+      fallback_model: null,
+      fallback_used: false,
+      request_mode: 'split',
+      hard_infra_failure: false,
+    },
+    last_gpu_delta: {
+      provider: 'google_gemini',
+      requested_model: 'gemini-3.1-flash-lite',
+      provider_model_status: 'deprecated',
+      provider_model_alias_resolved_to: null,
+      provider_shutdown_or_deprecation_detected: true,
+      model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      actual_model: 'gemini-3.1-flash-lite',
+      fallback_model: null,
+      fallback_used: false,
+      request_mode: 'gpu_delta',
+      hard_infra_failure: false,
+    },
+    ...overrides,
+  };
+}
+
 function baselineRecord(overrides = {}) {
   return {
     project_id: 'adversarial-generic-project',
@@ -70,6 +102,7 @@ function baselineRecord(overrides = {}) {
     cpu_hmr_used: false,
     full_rebuild_used: false,
     process_restarted: false,
+    model_provenance: baselineModelProvenance(),
     ...overrides,
   };
 }
@@ -321,6 +354,7 @@ const runtimeArtifact = buildValidationRuntimeProofArtifact({
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
+  modelProvenance: baselineModelProvenance(),
   ...baselineProofComponents(),
   acceptanceContract: baselineContract(),
   proofLedgerRecord: baselineRecord(),
@@ -407,6 +441,37 @@ const cases = [
   ['output epoch missing', baselineRecord({ output_event: { kind: 'buffer_checksum', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'output_epoch_missing'],
   ['output timestamp missing', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: true } }), 'output_timestamp_missing'],
   ['visual without deterministic mode', baselineRecord({ output_event: { kind: 'render_target_hash', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'visual_output_without_deterministic_mode'],
+  ['missing model provenance', (() => {
+    const record = baselineRecord();
+    delete record.model_provenance;
+    return record;
+  })(), 'model_provenance_missing'],
+  ['shutdown delta model provenance', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        provider: 'google_gemini',
+        requested_model: 'gemini-3.1-flash-lite-preview',
+        provider_model_status: 'shutdown',
+        provider_model_alias_resolved_to: null,
+        provider_shutdown_or_deprecation_detected: true,
+        model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+        actual_model: null,
+        fallback_model: null,
+        fallback_used: false,
+        request_mode: 'gpu_delta',
+        hard_infra_failure: true,
+      },
+    }),
+  }), 'model_provider_status_shutdown'],
+  ['missing model availability check time', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: (() => {
+        const model = { ...baselineModelProvenance().last_gpu_delta };
+        delete model.model_availability_checked_at;
+        return model;
+      })(),
+    }),
+  }), 'model_availability_checked_at_missing'],
   ['missing process identity', baselineRecord({ process_identity: {} }), 'process_identity_missing'],
   ['loader process identity missing', baselineRecord({ loader_event: { id: 'load-1', artifact_hash: HASH_B, timestamp_monotonic_ns: 100 } }), 'loader_process_identity_missing'],
   ['loader process mismatch', baselineRecord({ loader_event: { id: 'load-1', artifact_hash: HASH_B, process_id: 'pid-2', timestamp_monotonic_ns: 100 } }), 'loader_process_identity_mismatch'],
