@@ -74,7 +74,9 @@ use crate::hmr::gpu_driver_loader::{
 use crate::hmr::gpu_module_manager::{
     GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError,
 };
-use crate::hmr::gpu_proof::{sha256_hex_bytes, GpuHmrDegradedState};
+use crate::hmr::gpu_proof::{
+    sha256_hex_bytes, GpuHmrAcceptanceLedger, GpuHmrAcceptanceLedgerInput, GpuHmrDegradedState,
+};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
@@ -283,6 +285,9 @@ struct DeviceReloadOwnership {
     retired_module_count: usize,
     replaced_primary: bool,
     runtime_log_lines: Vec<String>,
+    hot_reload_acceptance_required: bool,
+    acceptance_ledger_success: bool,
+    acceptance_ledger_failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -762,6 +767,25 @@ fn run_runtime_output_oracle_profile(
         let _ = unsafe { (symbols.cu_mem_free)(*ptr) };
     }
     result.map(Some)
+}
+
+fn runtime_boundary_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix(&format!("{key}=")))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+fn runtime_output_oracle_line_passed(
+    line: &str,
+    active_generation: u64,
+    active_artifact_id: &str,
+) -> bool {
+    runtime_boundary_token(line, "status") == Some("pass")
+        && runtime_boundary_token(line, "generation")
+            .and_then(|value| value.parse::<u64>().ok())
+            == Some(active_generation)
+        && runtime_boundary_token(line, "artifact_id") == Some(active_artifact_id)
 }
 
 fn capsule_id_for_publication(
@@ -2008,6 +2032,9 @@ impl Adapter for GpuModuleAdapter {
                 });
             eprintln!("{publication_graph_line}");
             runtime_log_lines.push(publication_graph_line);
+            let mut output_oracle_artifact_id: Option<String> = None;
+            let mut output_oracle_passed = false;
+            let mut output_after_dispatch = false;
             if !first_device_load {
                 match run_runtime_output_oracle_profile(
                     &symbols,
@@ -2017,6 +2044,15 @@ impl Adapter for GpuModuleAdapter {
                     &new_artifact_id,
                 ) {
                     Ok(Some(line)) => {
+                        output_oracle_artifact_id =
+                            runtime_boundary_token(&line, "artifact_id").map(str::to_string);
+                        output_oracle_passed = runtime_output_oracle_line_passed(
+                            &line,
+                            active_generation,
+                            &new_artifact_id,
+                        );
+                        output_after_dispatch = output_oracle_artifact_id.as_deref()
+                            == Some(new_artifact_id.as_str());
                         eprintln!("{line}");
                         runtime_log_lines.push(line);
                     }
@@ -2032,6 +2068,10 @@ impl Adapter for GpuModuleAdapter {
                             new_artifact_id,
                             reason
                         );
+                        output_oracle_artifact_id =
+                            runtime_boundary_token(&line, "artifact_id").map(str::to_string);
+                        output_after_dispatch = output_oracle_artifact_id.as_deref()
+                            == Some(new_artifact_id.as_str());
                         eprintln!("{line}");
                         runtime_log_lines.push(line);
                     }
@@ -2084,6 +2124,42 @@ impl Adapter for GpuModuleAdapter {
                 eprintln!("{retired_graph_line}");
                 runtime_log_lines.push(retired_graph_line);
             }
+            let retirement_proven = retired_module_count == 0
+                || runtime_log_lines.iter().any(|line| {
+                    line.contains("dispatcher_epoch")
+                        && runtime_boundary_token(line, "event") == Some("retired")
+                        && runtime_boundary_token(line, "active_generation")
+                            .and_then(|value| value.parse::<u64>().ok())
+                            == Some(active_generation)
+                        && runtime_boundary_token(line, "old_generation_retired") == Some("true")
+                });
+            let acceptance_ledger = GpuHmrAcceptanceLedger::new(GpuHmrAcceptanceLedgerInput {
+                hot_reload: !first_device_load,
+                artifact_id_after: new_artifact_id.clone(),
+                loader_artifact_id: Some(new_artifact_id.clone()),
+                epoch_publish_artifact_id: Some(new_artifact_id.clone()),
+                dispatch_artifact_id: if output_after_dispatch {
+                    Some(new_artifact_id.clone())
+                } else {
+                    None
+                },
+                output_artifact_id: output_oracle_artifact_id,
+                output_oracle_passed,
+                output_after_dispatch,
+                retirement_proven,
+                cpu_hmr_used: false,
+                full_rebuild_used: false,
+                process_restarted: false,
+                process_id: Some(format!("pid:{}", std::process::id())),
+                device_identity: Some(format!(
+                    "{}:{}",
+                    self.config.vendor.as_str(),
+                    self.config.vendor.driver_library()
+                )),
+            });
+            let acceptance_line = acceptance_ledger.to_log_line();
+            eprintln!("{acceptance_line}");
+            runtime_log_lines.push(acceptance_line);
             self.active_generation_artifact_id = Some(new_artifact_id.clone());
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
@@ -2092,6 +2168,9 @@ impl Adapter for GpuModuleAdapter {
                 retired_module_count,
                 replaced_primary,
                 runtime_log_lines,
+                hot_reload_acceptance_required: !first_device_load,
+                acceptance_ledger_success: acceptance_ledger.gpu_hmr_success,
+                acceptance_ledger_failures: acceptance_ledger.failed_invariants,
             })
         })();
 
@@ -2123,11 +2202,22 @@ impl Adapter for GpuModuleAdapter {
                     .extend(ownership.runtime_log_lines.iter().cloned());
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
-                self.health = AdapterHealth::Healthy;
-                self.remember_device_abi(req);
-                AdapterReloadResult::Success {
-                    reload_ms: started.elapsed().as_millis() as u64,
-                    state_preserved: req.preserve_state,
+                if ownership.hot_reload_acceptance_required && !ownership.acceptance_ledger_success {
+                    self.health = AdapterHealth::Degraded;
+                    AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU HMR acceptance ledger rejected hot reload: {}",
+                            ownership.acceptance_ledger_failures.join(",")
+                        ),
+                        recoverable: false,
+                    }
+                } else {
+                    self.health = AdapterHealth::Healthy;
+                    self.remember_device_abi(req);
+                    AdapterReloadResult::Success {
+                        reload_ms: started.elapsed().as_millis() as u64,
+                        state_preserved: req.preserve_state,
+                    }
                 }
             }
             Err(error) => {
@@ -2403,6 +2493,60 @@ mod tests {
         }
     }
 
+    fn install_runtime_output_oracle_profile_for_tests() {
+        let output_bytes = vec![0_u8; 4 * std::mem::size_of::<f32>()];
+        let expected_sha256 = format!("sha256:{}", sha256_hex_bytes(&output_bytes));
+        let profile_path = std::env::temp_dir().join("synthi-gpu-hmr-test-output-oracle.json");
+        let profile = serde_json::json!({
+            "enabled": true,
+            "schemaVersion": "synthi.gpu_hmr.runtime_output_oracle_profile.v1",
+            "profileId": "test-vec-add-readback",
+            "oracleId": "test:vec_add:readback",
+            "expectedSha256": expected_sha256,
+            "producer": "gpu_module_adapter_test_stub",
+            "outputTargetId": "buffer:out",
+            "kernelName": "vec_add",
+            "grid": [1, 1, 1],
+            "block": [1, 1, 1],
+            "buffers": [
+                {
+                    "name": "out",
+                    "elementType": "f32",
+                    "count": 4,
+                    "initializer": { "kind": "fill", "value": 0.0 }
+                },
+                {
+                    "name": "lhs",
+                    "elementType": "f32",
+                    "count": 4,
+                    "initializer": { "kind": "iota", "start": 1.0 }
+                },
+                {
+                    "name": "rhs",
+                    "elementType": "f32",
+                    "count": 4,
+                    "initializer": { "kind": "iota", "start": 10.0 }
+                }
+            ],
+            "args": [
+                { "kind": "buffer", "name": "out" },
+                { "kind": "buffer", "name": "lhs" },
+                { "kind": "buffer", "name": "rhs" },
+                { "kind": "scalar_u32", "value": 4 }
+            ],
+            "outputBuffer": "out",
+            "probeMode": "deterministic_stub_readback",
+            "probeConfigHash": "sha256:test-stub-output-oracle",
+            "probeEvidenceRef": "gpu_module_adapter.rs:test_runtime_output_oracle_profile"
+        });
+        fs::write(
+            &profile_path,
+            serde_json::to_string_pretty(&profile).expect("serialize test oracle profile"),
+        )
+        .expect("write test oracle profile");
+        std::env::set_var("SYNTHI_GPU_HMR_RUNTIME_OUTPUT_ORACLE_PATH", profile_path);
+    }
+
     fn adapter_with_symbols(symbols: GpuDriverSymbolTable) -> GpuModuleAdapter {
         adapter_with_config_and_symbols(GpuModuleAdapterConfig::default(), symbols)
     }
@@ -2411,6 +2555,7 @@ mod tests {
         config: GpuModuleAdapterConfig,
         symbols: GpuDriverSymbolTable,
     ) -> GpuModuleAdapter {
+        install_runtime_output_oracle_profile_for_tests();
         let mut a = GpuModuleAdapter::new(config);
         a.phase = GpuPhase::Ready;
         a.health = AdapterHealth::Healthy;
@@ -2579,6 +2724,8 @@ mod tests {
 
     #[test]
     fn shutdown_clears_handles_and_phase() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         a.initialize().unwrap();
         a.kernel_table.insert("vec_add".into(), 0xdead_beef);
@@ -2697,6 +2844,8 @@ mod tests {
 
     #[test]
     fn shutdown_drops_driver_handle() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         a.initialize().unwrap();
         a.shutdown().unwrap();
@@ -2727,6 +2876,8 @@ mod tests {
 
     #[test]
     fn phase3_reload_loads_sidecar_and_emits_markers() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
@@ -2767,6 +2918,8 @@ mod tests {
 
     #[test]
     fn phase3_reload_reports_ram_artifact_when_byte_loader_is_selected() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
@@ -2796,6 +2949,8 @@ mod tests {
 
     #[test]
     fn phase3_reload_reports_filesystem_fallback_when_path_loader_is_selected() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
@@ -2831,6 +2986,8 @@ mod tests {
 
     #[test]
     fn phase3_epoch_publication_records_capsule_metadata() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
@@ -2896,7 +3053,9 @@ mod tests {
             graph
                 .pointer("/latestPublication/streamEpochCounters/none")
                 .and_then(serde_json::Value::as_u64),
-            Some(current_launch_generation())
+            graph
+                .pointer("/latestPublication/activeGeneration")
+                .and_then(serde_json::Value::as_u64)
         );
     }
 
@@ -2973,6 +3132,8 @@ mod tests {
 
     #[test]
     fn phase3_second_reload_unloads_retired_slot() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         first.write_all(b"fake-cubin-1").unwrap();
@@ -3086,6 +3247,8 @@ mod tests {
 
     #[test]
     fn phase3_reload_reports_abi_breaking_when_kernel_signature_changes() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         first.write_all(b"fake-cubin-1").unwrap();
@@ -3133,6 +3296,8 @@ mod tests {
 
     #[test]
     fn partial_reload_does_not_replace_full_device_abi() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         first.write_all(b"fake-cubin-1").unwrap();
@@ -3209,6 +3374,7 @@ mod tests {
         assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 0);
         launch_vec_add_on_stream(0x77);
 
+        let ctx_sync_before_oracle = CTX_SYNC_CALLS.load(Ordering::SeqCst);
         assert!(matches!(
             a.reload(&request_with_artifact_and_abi(
                 &second_path,
@@ -3217,7 +3383,10 @@ mod tests {
             )),
             AdapterReloadResult::Success { .. }
         ));
-        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            CTX_SYNC_CALLS.load(Ordering::SeqCst),
+            ctx_sync_before_oracle + 1
+        );
         assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
         let publish = a
@@ -3256,11 +3425,15 @@ mod tests {
             .capabilities
             .push("gpu_sidecar_partial_module".into());
         launch_vec_add_on_stream(0x88);
+        let ctx_sync_before_partial_oracle = CTX_SYNC_CALLS.load(Ordering::SeqCst);
         assert!(matches!(
             a.reload(&partial),
             AdapterReloadResult::Success { .. }
         ));
-        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            CTX_SYNC_CALLS.load(Ordering::SeqCst),
+            ctx_sync_before_partial_oracle + 1
+        );
         assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x88);
         reset_for_test();
@@ -3268,6 +3441,8 @@ mod tests {
 
     #[test]
     fn captured_context_is_bound_before_reload() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
@@ -3285,6 +3460,8 @@ mod tests {
 
     #[test]
     fn runtime_ownership_reports_resolved_unique_symbols() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
@@ -3312,6 +3489,8 @@ mod tests {
 
     #[test]
     fn phase3_reload_reports_mixed_plan_when_host_and_device_changed() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"fake-cubin").unwrap();
         let path = file.path().to_string_lossy().to_string();
