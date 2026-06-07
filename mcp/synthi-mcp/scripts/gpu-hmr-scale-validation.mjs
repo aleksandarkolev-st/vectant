@@ -27,6 +27,9 @@ import {
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  eventLogAppliedRecoveryAllowed,
+} from './lib/gpu-hmr-wait-contract.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2169,6 +2172,9 @@ async function currentHmrFromEventLog(
       && status === 'applied'
       && hmrModule(detail) !== expectedModule
     ) {
+      continue;
+    }
+    if (status === 'applied' && !eventLogAppliedRecoveryAllowed(waitArgs, waitContract)) {
       continue;
     }
     return {

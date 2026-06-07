@@ -65,6 +65,9 @@ import {
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  eventLogAppliedRecoveryAllowed,
+} from './lib/gpu-hmr-wait-contract.mjs';
 import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import {
   adversarialPreflightStrictGate,
@@ -3744,6 +3747,9 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
     if (previewId !== CFG.slug) continue;
     const status = hmrStatusFromEvent(entry);
     if (!['applied', 'rejected', 'compile-error', 'full-reload-required', 'discarded'].includes(status)) {
+      continue;
+    }
+    if (status === 'applied' && !eventLogAppliedRecoveryAllowed(waitArgs, waitContract)) {
       continue;
     }
     return {
