@@ -16,6 +16,7 @@ import {
 import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import { visualEvidenceArtifactsFromFiles } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import { externalProjectTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1253,12 +1254,18 @@ async function selfCheck() {
 async function runProfile(profile) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const dir = projectDir(profile);
+  const runStartedMonotonicNs = monotonicNowNs();
   const report = {
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
     profile,
     proofMode: profile.proofMode,
     startedAt: new Date().toISOString(),
-    timings: {},
+    metric_clock: 'monotonic_ns',
+    started_monotonic_ns: runStartedMonotonicNs,
+    timings: {
+      metric_clock: 'monotonic_ns',
+      started_monotonic_ns: runStartedMonotonicNs,
+    },
     screenshots: [],
     visualDiff: null,
     status: 'running',
@@ -1352,7 +1359,13 @@ async function runProfile(profile) {
       }
     }
     report.finishedAt = new Date().toISOString();
-    report.timings.totalMs = Date.parse(report.finishedAt) - Date.parse(report.startedAt);
+    const timingFields = monotonicTimingFields(runStartedMonotonicNs);
+    report.finished_monotonic_ns = timingFields.finished_monotonic_ns;
+    report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
+    report.duration_ms = timingFields.duration_ms;
+    report.timings.finished_monotonic_ns = timingFields.finished_monotonic_ns;
+    report.timings.duration_monotonic_ns = timingFields.duration_monotonic_ns;
+    report.timings.totalMs = timingFields.duration_ms;
     report.timingMetrics = externalProjectTimingMetrics(report);
     const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-report.json`);
     await fs.writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);

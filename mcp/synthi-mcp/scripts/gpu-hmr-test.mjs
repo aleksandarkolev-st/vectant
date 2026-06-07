@@ -93,11 +93,13 @@ import {
   analyzeGpuHmrImageEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const RUN_STARTED_AT = new Date();
 const RUN_STARTED_MS = Date.now();
+const RUN_STARTED_MONOTONIC_NS = monotonicNowNs();
 
 // ───────────────────────── config ─────────────────────────
 
@@ -4111,7 +4113,8 @@ async function writeSummary() {
   const failed = results.filter((r) => r.status === 'fail').length;
   const skipped = results.filter((r) => r.status === 'skip').length;
   const finishedAt = new Date().toISOString();
-  const durationMs = Date.now() - RUN_STARTED_MS;
+  const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
+  const durationMs = timingFields.duration_ms;
   const commandMetadata = validationCommandMetadata({
     envKeys: [
       'SYNTHI_GPU_HMR',
@@ -4145,8 +4148,12 @@ async function writeSummary() {
     gpu_vendor: CFG.vendor,
     gpu_arch: CFG.gpuArch ?? null,
     timings: {
+      metric_clock: 'monotonic_ns',
       started_at: RUN_STARTED_AT.toISOString(),
+      started_monotonic_ns: RUN_STARTED_MONOTONIC_NS,
       finished_at: finishedAt,
+      finished_monotonic_ns: timingFields.finished_monotonic_ns,
+      duration_monotonic_ns: timingFields.duration_monotonic_ns,
       duration_ms: durationMs,
     },
     result_counts: { total: results.length, passed, warned, failed, skipped },
@@ -4243,6 +4250,10 @@ async function writeSummary() {
     run_at: RUN_STARTED_AT.toISOString(),
     started_at: RUN_STARTED_AT.toISOString(),
     finished_at: finishedAt,
+    metric_clock: 'monotonic_ns',
+    started_monotonic_ns: RUN_STARTED_MONOTONIC_NS,
+    finished_monotonic_ns: timingFields.finished_monotonic_ns,
+    duration_monotonic_ns: timingFields.duration_monotonic_ns,
     duration_ms: durationMs,
     model: CFG.geminiModel,
     gpu_vendor: CFG.vendor,

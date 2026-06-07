@@ -16,6 +16,7 @@ import {
   parseHiprtRuntimeProbeAdaptationOutput,
 } from './lib/hiprt-runtime-probe-adapter.mjs';
 import { hiprtWarmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -1382,7 +1383,7 @@ function summarizeStrictProof(strict) {
 }
 
 async function main() {
-  const totalStartedAt = Date.now();
+  const totalStartedMonotonicNs = monotonicNowNs();
   await fs.mkdir(CFG.outputDir, { recursive: true });
   const strictProof = await findStrictProofJson();
   const strictSummary = summarizeStrictProof(strictProof);
@@ -1494,6 +1495,7 @@ async function main() {
       && diff.meanAbsDelta8bit >= CFG.minMeanAbsDelta8bit,
   };
   const accepted = Object.values(acceptance).every(Boolean);
+  const totalTimingFields = monotonicTimingFields(totalStartedMonotonicNs);
   const proof = {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug: CFG.slug,
@@ -1551,7 +1553,8 @@ async function main() {
       minMeanAbsDelta8bit: CFG.minMeanAbsDelta8bit,
     },
     timings: {
-      totalWallMs: Date.now() - totalStartedAt,
+      ...totalTimingFields,
+      totalWallMs: totalTimingFields.duration_ms,
       mode: CFG.mode,
       baselineReused: Boolean(reusableBaseline),
       sameProcessLiveRecompileMs: changedRun.liveRecompileMs ?? null,

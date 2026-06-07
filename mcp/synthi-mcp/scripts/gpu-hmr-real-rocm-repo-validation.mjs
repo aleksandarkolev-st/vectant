@@ -80,6 +80,7 @@ import {
   canContinueWithCachedMetadataAfterLifecycleFailure,
 } from './lib/real-rocm-upstream-lifecycle.mjs';
 import { realRocmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,6 +97,7 @@ const TARGET_PROGRESSION_PHASES = new Set([
 ]);
 const TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION =
   'synthi.real_rocm.target_progression_ledger.v1';
+const RUN_STARTED_MONOTONIC_NS = monotonicNowNs();
 const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
   'small-oracle',
   'partial-reload',
@@ -1336,7 +1338,11 @@ const report = {
   original_host_path_proof_required: CFG.requireOriginalHostPathProof,
   full_runtime_proof_required: CFG.requireFullRuntimeProof,
   started_at: new Date().toISOString(),
+  metric_clock: 'monotonic_ns',
+  started_monotonic_ns: RUN_STARTED_MONOTONIC_NS,
   finished_at: null,
+  finished_monotonic_ns: null,
+  duration_monotonic_ns: null,
   timingMetrics: null,
 };
 
@@ -6945,11 +6951,10 @@ async function dockerContainerSnapshot(containerName) {
 
 async function writeResults() {
   report.finished_at = new Date().toISOString();
-  const startedMs = Date.parse(report.started_at);
-  const finishedMs = Date.parse(report.finished_at);
-  report.duration_ms = Number.isFinite(startedMs) && Number.isFinite(finishedMs)
-    ? Math.max(0, finishedMs - startedMs)
-    : null;
+  const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
+  report.finished_monotonic_ns = timingFields.finished_monotonic_ns;
+  report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
+  report.duration_ms = timingFields.duration_ms;
   report.timingMetrics = realRocmTimingMetrics(report);
   const validationContext = {
     command: report.command,
@@ -6975,8 +6980,12 @@ async function writeResults() {
     render_preview_enabled: report.render_preview_enabled,
     fresh_ai_split_required: report.fresh_ai_split_required,
     timings: {
+      metric_clock: 'monotonic_ns',
       started_at: report.started_at,
+      started_monotonic_ns: report.started_monotonic_ns,
       finished_at: report.finished_at,
+      finished_monotonic_ns: report.finished_monotonic_ns,
+      duration_monotonic_ns: report.duration_monotonic_ns,
       duration_ms: report.duration_ms,
       timingMetrics: report.timingMetrics,
       phases: report.phases.map((phase) => ({
