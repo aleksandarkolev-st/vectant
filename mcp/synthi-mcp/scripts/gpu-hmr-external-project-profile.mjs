@@ -16,10 +16,15 @@ import { externalProjectTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, '../../..');
-const ARTIFACT_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects');
-const LOG_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects');
-const PROFILE_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
+const MCP_ROOT = path.resolve(__dirname, '..');
+const REPO_ROOT = process.env.SYNTHI_REPO_ROOT
+  ? path.resolve(process.env.SYNTHI_REPO_ROOT)
+  : existsSync(path.resolve(MCP_ROOT, '../..', 'mcp/synthi-mcp/scripts'))
+    ? path.resolve(MCP_ROOT, '../..')
+    : MCP_ROOT;
+const ARTIFACT_DIR = path.resolve(MCP_ROOT, '.gpu-hmr-test-artifacts/external-projects');
+const LOG_DIR = path.resolve(MCP_ROOT, '.gpu-hmr-test-logs/external-projects');
+const PROFILE_DIR = path.resolve(MCP_ROOT, 'scripts/profiles');
 const SCHEMA_VERSION = 'synthi.gpu.hmr.external_project_profile.v1';
 const PROOF_MODES = new Set(['external_runtime_screenshot', 'mcp_preview']);
 const DEFAULT_MCP_TIMEOUT_MS = 1_200_000;
