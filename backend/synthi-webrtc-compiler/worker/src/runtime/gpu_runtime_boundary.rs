@@ -1213,6 +1213,7 @@ pub extern "C" fn synthi_gpu_record_output_oracle_with_probe(
             probe_mode: cstr(probe_mode),
             probe_config_hash: cstr(probe_config_hash),
             probe_evidence_ref: cstr(probe_evidence_ref),
+            ..OutputOracleMetadata::default()
         },
     );
 }
