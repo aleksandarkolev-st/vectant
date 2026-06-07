@@ -11,7 +11,11 @@ import {
   evaluateGpuHmrAcceptanceContractConsistency,
   normalizeGpuHmrAcceptanceContract,
 } from './gpu-hmr-acceptance-contract.mjs';
-import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
+import {
+  analyzeGpuHmrImageEvidence,
+  evaluateGpuHmrDeterministicVisualMode,
+  screenshotQualifiesAsVisualEvidence,
+} from './gpu-hmr-visual-evidence.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -944,6 +948,167 @@ function deterministicVisualModeLimitations(evaluation) {
   }));
 }
 
+function visualOracleArtifactsFromOutputProof(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
+  return objectOrNull(proof.visualOracleArtifacts)
+    ?? objectOrNull(proof.visual_oracle_artifacts)
+    ?? objectOrNull(proof.oracleArtifacts)
+    ?? objectOrNull(proof.oracle_artifacts)
+    ?? objectOrNull(oracle.visualOracleArtifacts)
+    ?? objectOrNull(oracle.visual_oracle_artifacts)
+    ?? objectOrNull(oracle.oracleArtifacts)
+    ?? objectOrNull(oracle.oracle_artifacts)
+    ?? null;
+}
+
+function proofOutputKind(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
+  return String(firstString(
+    proof.kind,
+    proof.oracleKind,
+    proof.oracle_kind,
+    oracle.kind,
+    oracle.oracleKind,
+    oracle.oracle_kind,
+  ) ?? '').toLowerCase();
+}
+
+function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visualEvidenceArtifacts) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const kind = proofOutputKind(proof);
+  return proof.visualEvidenceRequired === true
+    || proof.visual_evidence_required === true
+    || proof.renderVisualEvidenceRequired === true
+    || proof.render_visual_evidence_required === true
+    || proof.visualFrameObserved === true
+    || proof.visual_frame_observed === true
+    || kind.includes('visual')
+    || kind.includes('render')
+    || kind.includes('frame')
+    || kind.includes('pixel')
+    || visualOracleArtifactsFromOutputProof(proof) !== null
+    || compactStringList(visualEvidenceRefs).length > 0
+    || compactObjects(visualEvidenceArtifacts).length > 0;
+}
+
+function visualArtifactPath(artifact) {
+  return firstString(artifact.path, artifact.filePath, artifact.file_path);
+}
+
+function visualArtifactHash(artifact) {
+  return firstString(artifact.contentHash, artifact.content_hash);
+}
+
+function visualArtifactAccepted(artifact) {
+  return artifact.acceptedAsVisualEvidence === true
+    || artifact.accepted_as_visual_evidence === true;
+}
+
+function visualArtifactQuality(artifact) {
+  return firstString(artifact.visualQuality, artifact.visual_quality);
+}
+
+function visualProofArtifactLimitations({ outputProof, visualEvidenceRefs, visualEvidenceArtifacts }) {
+  const artifacts = compactObjects(visualEvidenceArtifacts);
+  const refs = compactStringList(visualEvidenceRefs);
+  if (!outputProofRequiresVisualEvidence(outputProof, refs, artifacts)) return [];
+
+  const limitations = [];
+  if (refs.length === 0 && artifacts.length === 0) {
+    limitations.push({
+      degradedReason: 'visual_evidence_artifacts_missing',
+      observedState: 'missing',
+    });
+  }
+
+  for (const artifact of artifacts) {
+    const readError = firstString(artifact.readError, artifact.read_error);
+    const visualAnalysisError = firstString(
+      artifact.visualAnalysisError,
+      artifact.visual_analysis_error,
+    );
+    if (readError) {
+      limitations.push({
+        degradedReason: 'visual_artifact_read_error',
+        observedState: readError,
+        proofArtifactPath: visualArtifactPath(artifact),
+      });
+    }
+    if (visualAnalysisError) {
+      limitations.push({
+        degradedReason: 'visual_artifact_analysis_error',
+        observedState: visualAnalysisError,
+        proofArtifactPath: visualArtifactPath(artifact),
+      });
+    }
+    if (!visualArtifactAccepted(artifact)) {
+      limitations.push({
+        degradedReason: 'visual_artifact_not_accepted',
+        observedState: visualArtifactQuality(artifact) ?? 'gpu-hmr-visual-unaccepted',
+        proofArtifactPath: visualArtifactPath(artifact),
+      });
+    }
+  }
+
+  const acceptedArtifacts = artifacts.filter(visualArtifactAccepted);
+  if (acceptedArtifacts.length === 0) {
+    limitations.push({
+      degradedReason: 'accepted_visual_artifact_missing',
+      observedState: artifacts.length > 0 ? 'all_visual_artifacts_rejected' : 'missing',
+    });
+  }
+
+  const oracleArtifacts = visualOracleArtifactsFromOutputProof(outputProof);
+  const beforePath = firstString(oracleArtifacts?.before_image, oracleArtifacts?.beforeImage);
+  const afterPath = firstString(oracleArtifacts?.after_image, oracleArtifacts?.afterImage);
+  if (beforePath && afterPath) {
+    const artifactsByPath = new Map(artifacts.map((artifact) => [visualArtifactPath(artifact), artifact]));
+    const before = artifactsByPath.get(beforePath);
+    const after = artifactsByPath.get(afterPath);
+    if (!before || !after) {
+      limitations.push({
+        degradedReason: 'visual_before_after_artifacts_missing',
+        observedState: 'missing_before_or_after_image',
+      });
+    } else if (!visualArtifactAccepted(before) || !visualArtifactAccepted(after)) {
+      limitations.push({
+        degradedReason: 'visual_before_after_artifacts_not_accepted',
+        observedState: 'before_or_after_rejected',
+      });
+    } else {
+      const beforeHash = visualArtifactHash(before);
+      const afterHash = visualArtifactHash(after);
+      if (beforeHash && afterHash && beforeHash === afterHash) {
+        limitations.push({
+          degradedReason: 'visual_before_after_same_frame',
+          observedState: beforeHash,
+          proofArtifactPath: afterPath,
+        });
+      }
+    }
+  }
+
+  return limitations.map((limitation) => ({
+    stageId: 'visual-evidence',
+    stage_id: 'visual-evidence',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-visual-evidence-accepted',
+    required_state: 'gpu-hmr-visual-evidence-accepted',
+    observedState: limitation.observedState ?? null,
+    observed_state: limitation.observedState ?? null,
+    degradedState: 'gpu-hmr-visual-evidence-rejected',
+    degraded_state: 'gpu-hmr-visual-evidence-rejected',
+    degradedReason: limitation.degradedReason,
+    degraded_reason: limitation.degradedReason,
+    proofArtifactPath: limitation.proofArtifactPath ?? null,
+    proof_artifact_path: limitation.proofArtifactPath ?? null,
+    phase: null,
+    name: null,
+  }));
+}
+
 function proofLedgerLimitations(query) {
   if (!objectOrNull(query) || query.gpuHmrSuccess === true) return [];
   return compactObjects(query.failedInvariants).map((failure) => ({
@@ -1414,6 +1579,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...acceptanceContractLimitations(acceptanceContractEvaluation),
     ...acceptanceContractConsistencyLimitations(acceptanceContractConsistency),
     ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation),
+    ...visualProofArtifactLimitations({ outputProof, visualEvidenceRefs, visualEvidenceArtifacts }),
     ...proofLedgerLimitations(proofLedgerQuery),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
@@ -1569,9 +1735,16 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
   for (const artifactPath of compactStringList(paths)) {
     const existing = existingByPath.get(artifactPath) ?? {};
     let fileRecord = null;
+    let imageEvidence = null;
+    let visualAnalysisError = null;
     try {
       const bytes = await readFile(artifactPath);
       const digest = createHash('sha256').update(bytes).digest('hex');
+      try {
+        imageEvidence = await analyzeGpuHmrImageEvidence(artifactPath);
+      } catch (error) {
+        visualAnalysisError = error?.message ? String(error.message) : String(error);
+      }
       fileRecord = {
         path: artifactPath,
         bytes: bytes.length,
@@ -1588,9 +1761,36 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
         readError: error?.message ? String(error.message) : String(error),
       };
     }
+    const imageRecord = imageEvidence ? {
+      width: imageEvidence.width,
+      height: imageEvidence.height,
+      visiblePixels: imageEvidence.visible_pixels,
+      visible_pixels: imageEvidence.visible_pixels,
+      meanLuma: imageEvidence.mean_luma,
+      mean_luma: imageEvidence.mean_luma,
+      lumaStddev: imageEvidence.luma_stddev,
+      luma_stddev: imageEvidence.luma_stddev,
+      rgbSpanMean: imageEvidence.rgb_span_mean,
+      rgb_span_mean: imageEvidence.rgb_span_mean,
+      uniqueColorSampleCount: imageEvidence.unique_color_sample_count,
+      unique_color_sample_count: imageEvidence.unique_color_sample_count,
+      visualQuality: imageEvidence.visual_quality,
+      visual_quality: imageEvidence.visual_quality,
+      acceptedAsVisualEvidence: screenshotQualifiesAsVisualEvidence({
+        path: artifactPath,
+        ...imageEvidence,
+      }),
+      accepted_as_visual_evidence: screenshotQualifiesAsVisualEvidence({
+        path: artifactPath,
+        ...imageEvidence,
+      }),
+    } : {};
     records.push({
       ...existing,
       ...fileRecord,
+      ...imageRecord,
+      visualAnalysisError,
+      visual_analysis_error: visualAnalysisError,
       kind: 'visual-artifact',
       producerSubsystem: 'mcp.gpu_hmr_validation',
       summary: existing.summary ?? artifactPath,

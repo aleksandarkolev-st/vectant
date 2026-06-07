@@ -369,6 +369,40 @@ function baselineProofComponents() {
   };
 }
 
+function baselineVisualOutputProof(overrides = {}) {
+  return {
+    resultState: 'gpu-hmr-output-oracle-proven',
+    eventId: 'output-visual-1',
+    processId: 'pid-1',
+    epoch: 'epoch-7',
+    afterDispatchId: 'dispatch-1',
+    outputTimestamp: 400,
+    visualFrameObserved: true,
+    visualEvidenceRequired: true,
+    outputOracle: {
+      kind: 'render_target_hash',
+      artifactId: HASH_B,
+      processId: 'pid-1',
+      dispatchId: 'dispatch-1',
+      passed: true,
+      readbackTimestamp: 400,
+      deterministicVisualMode: {
+        fixed_seed: true,
+        frozen_camera: true,
+        temporal_accumulation_disabled: true,
+        taa_disabled: true,
+        denoiser_disabled: true,
+        fixed_resolution: true,
+        fixed_swapchain_image_count: true,
+        frame_capture_after_epoch_dispatch: true,
+        presentation_fence_or_frame_boundary: true,
+      },
+    },
+    evidenceRefs: ['runtime:visual-output-oracle'],
+    ...overrides,
+  };
+}
+
 function expectReject(name, record, expectedCode) {
   const result = evaluateGpuHmrProofLedger(record);
   assert.equal(result.gpuHmrSuccess, false, `${name} unexpectedly accepted`);
@@ -413,6 +447,106 @@ assert.equal(runtimeArtifact.proofLedger.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.acceptanceContractEvaluation.accepted, true);
+
+const rejectedBlankVisualArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-generic-project',
+  backend: 'hip',
+  gpuArch: 'gfx1201',
+  processId: 'pid-1',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
+  modelProvenance: baselineModelProvenance(),
+  ...baselineProofComponents(),
+  outputProof: baselineVisualOutputProof({
+    visualEvidenceRefs: ['memory://blank-frame.png'],
+  }),
+  acceptanceContract: baselineContract(),
+  fullRuntimeProof: baselineFullRuntimeProof(),
+  visualEvidenceRefs: ['memory://blank-frame.png'],
+  visualEvidenceArtifacts: [{
+    path: 'memory://blank-frame.png',
+    visual_quality: 'gpu-hmr-visual-blank',
+    accepted_as_visual_evidence: false,
+  }],
+});
+assert.equal(rejectedBlankVisualArtifact.gpuHmrSuccess, false);
+assert.ok(
+  rejectedBlankVisualArtifact.limitations.some((limitation) =>
+    limitation.stageId === 'visual-evidence'
+    && limitation.degradedReason === 'visual_artifact_not_accepted'
+  ),
+  `blank visual artifact expected visual_artifact_not_accepted, got ${rejectedBlankVisualArtifact.limitations.map((l) => l.degradedReason).join(',')}`,
+);
+
+const rejectedSameFrameVisualArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-generic-project',
+  backend: 'hip',
+  gpuArch: 'gfx1201',
+  processId: 'pid-1',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
+  modelProvenance: baselineModelProvenance(),
+  ...baselineProofComponents(),
+  outputProof: baselineVisualOutputProof({
+    visualEvidenceRefs: ['memory://before.png', 'memory://after.png'],
+    outputOracle: {
+      ...baselineVisualOutputProof().outputOracle,
+      visualOracleArtifacts: {
+        before_image: 'memory://before.png',
+        after_image: 'memory://after.png',
+      },
+    },
+  }),
+  acceptanceContract: baselineContract(),
+  fullRuntimeProof: baselineFullRuntimeProof(),
+  visualEvidenceRefs: ['memory://before.png', 'memory://after.png'],
+  visualEvidenceArtifacts: [
+    {
+      path: 'memory://before.png',
+      contentHash: HASH_B,
+      visual_quality: 'gpu-hmr-visual-varied-frame',
+      accepted_as_visual_evidence: true,
+    },
+    {
+      path: 'memory://after.png',
+      contentHash: HASH_B,
+      visual_quality: 'gpu-hmr-visual-varied-frame',
+      accepted_as_visual_evidence: true,
+    },
+  ],
+});
+assert.equal(rejectedSameFrameVisualArtifact.gpuHmrSuccess, false);
+assert.ok(
+  rejectedSameFrameVisualArtifact.limitations.some((limitation) =>
+    limitation.stageId === 'visual-evidence'
+    && limitation.degradedReason === 'visual_before_after_same_frame'
+  ),
+  `same-frame visual artifact expected visual_before_after_same_frame, got ${rejectedSameFrameVisualArtifact.limitations.map((l) => l.degradedReason).join(',')}`,
+);
 
 const summary = buildGpuHmrValidationProofSummary({
   workspaceSlug: 'adversarial-generic-project',
