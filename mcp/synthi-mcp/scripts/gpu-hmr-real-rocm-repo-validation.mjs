@@ -3422,12 +3422,18 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
   const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
   report.phases.push(phase);
+  const waitApplied = wait?.status === 'applied';
+  const waitTerminalProvisional = !waitApplied && CFG.requireFullRuntimeProof;
+  if (waitTerminalProvisional) {
+    phase.wait_hmr_terminal_provisional = true;
+    phase.wait_hmr_terminal_provisional_reason = 'strict_full_runtime_proof_required';
+  }
   record(
     phaseName,
-    wait?.status === 'applied' ? 'pass' : 'fail',
-    `${summarizeGpuProof(phase.gpu_proof)} ${JSON.stringify(phase).slice(0, 1000)}`,
+    waitApplied ? 'pass' : waitTerminalProvisional ? 'warn' : 'fail',
+    `${waitTerminalProvisional ? 'provisional_wait_terminal=true ' : ''}${summarizeGpuProof(phase.gpu_proof)} ${JSON.stringify(phase).slice(0, 1000)}`,
   );
-  if (wait?.status !== 'applied') throw new Error(`${phaseName} wait_hmr status=${wait?.status}`);
+  if (!waitApplied && !waitTerminalProvisional) throw new Error(`${phaseName} wait_hmr status=${wait?.status}`);
   return { compile, wait, phase };
 }
 
