@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import {
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
   evaluateGpuHmrAcceptanceContract,
   GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
@@ -45,6 +46,15 @@ function contract(overrides = {}) {
     reload_mechanism: 'generated_adapter',
     adapter_outcome: 'adapter_generated',
     reload_evidence_refs: ['runtime:module-load'],
+    firewall_evidence: {
+      route: 'gpu_device_sidecar_reload',
+      evidence_source: 'self-check:reload-boundary',
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: 100,
+      process_id_after: 100,
+    },
     dispatch_trace_required: true,
     oracle_trace_required: true,
     state_preservation_checks: {
@@ -347,6 +357,89 @@ expectReject('embedded Bevy shader asset', {
     asset_watched: true,
   },
 }, 'bevy_wgsl_shader_asset_not_file_loaded');
+
+const derivedWithoutFirewall = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  backend: 'hip',
+  projectId: 'generic-gpu-project',
+  editId: 'edit-derived',
+  gpuArch: 'gfx1201',
+  compiler: 'hipcc',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  sourceProofs: [{
+    resultState: 'gpu-hmr-symbol-bound',
+    evidenceRefs: ['static:hip-launch'],
+  }],
+  fissionProof: {
+    fissionProven: true,
+    selectedIslandContracts: [{
+      islandId: 'device-kernel',
+      sourcePaths: ['src/kernels.hip'],
+      targetSymbols: ['light_kernel'],
+      artifactKind: 'hsaco',
+      compileCommandHash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    }],
+  },
+  abiProof: {
+    resultState: 'gpu-hmr-abi-proven',
+    evidenceRefs: ['code-object:metadata'],
+    kernelAbiFingerprintHashes: [
+      'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    ],
+    acceptedExtractorSources: ['clang_ast'],
+  },
+  artifactTransportProof: {
+    resultState: 'gpu-hmr-artifact-transport-proven',
+    selectedArtifactIds: [AFTER],
+    evidenceRefs: ['runtime:module-load'],
+  },
+  epochProof: {
+    resultState: 'gpu-hmr-epoch-swap-proven',
+    published: true,
+    oldGenerationRetired: true,
+    streamOrderingProven: true,
+    retirementStrategy: 'stream_event',
+    streamIds: ['stream-1'],
+    evidenceRefs: ['runtime:stream-event'],
+    epochGenerationGraph: {
+      latestPublication: {
+        oldArtifactId: BEFORE,
+        newArtifactId: AFTER,
+      },
+    },
+  },
+  dispatchProof: {
+    resultState: 'gpu-hmr-dispatch-safe-proven',
+    selectedArtifactIds: [AFTER],
+    dispatchTableEntryIds: ['light_kernel:0x1'],
+    dispatchStreamIds: ['stream-1'],
+    argProvenanceRecords: [{
+      category: 'device_allocation',
+      allocationId: 'allocation-1',
+    }],
+  },
+  outputProof: {
+    resultState: 'gpu-hmr-output-oracle-proven',
+    outputOracle: {
+      artifactId: AFTER,
+      outputBufferReadback: {
+        schema_hash: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      },
+    },
+  },
+  hostPreservationProof: {
+    resultState: 'gpu-hmr-host-preservation-proven',
+    processId: 'pid-1',
+  },
+  fullRuntimeProof: {
+    fullRuntimeProven: true,
+  },
+});
+assert.ok(
+  derivedWithoutFirewall.classification.blocking_gaps.includes('route_classifier_not_verified'),
+  `derived contract unexpectedly lacked route firewall gap: ${derivedWithoutFirewall.classification.blocking_gaps.join(',')}`,
+);
+assert.equal(evaluateGpuHmrAcceptanceContract(derivedWithoutFirewall).accepted, false);
 
 console.log(JSON.stringify({
   ok: true,

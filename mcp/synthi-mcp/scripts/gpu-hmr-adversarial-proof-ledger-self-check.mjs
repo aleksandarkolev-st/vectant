@@ -145,6 +145,15 @@ function baselineContract(overrides = {}) {
     reload_mechanism: 'generated_adapter',
     adapter_outcome: 'adapter_generated',
     reload_evidence_refs: ['runtime:module-load'],
+    firewall_evidence: {
+      route: 'gpu_device_sidecar_reload',
+      evidence_source: 'adversarial-self-check:reload-boundary',
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: 100,
+      process_id_after: 100,
+    },
     dispatch_trace_required: true,
     oracle_trace_required: true,
     state_preservation_checks: {
@@ -354,6 +363,15 @@ const runtimeArtifact = buildValidationRuntimeProofArtifact({
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
   modelProvenance: baselineModelProvenance(),
   ...baselineProofComponents(),
   acceptanceContract: baselineContract(),
@@ -369,8 +387,26 @@ const summary = buildGpuHmrValidationProofSummary({
   workspaceSlug: 'adversarial-generic-project',
   proofLedger: acceptedLedger,
   acceptanceContract: baselineContract(),
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
   runtimeProofArtifactRecords: [{
     path: 'memory://runtime-proof-artifact.json',
+    firewallEvidence: {
+      route: 'gpu_device_sidecar_reload',
+      evidence_source: 'adversarial-self-check:reload-boundary',
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: 100,
+      process_id_after: 100,
+    },
     acceptanceContract: runtimeArtifact.acceptanceContract,
     acceptanceContractEvaluation: runtimeArtifact.acceptanceContractEvaluation,
     proofLedger: runtimeArtifact.proofLedger,
@@ -380,7 +416,10 @@ const summary = buildGpuHmrValidationProofSummary({
     gpuHmrSuccess: runtimeArtifact.gpuHmrSuccess,
   }],
 });
-assert.equal(summary.gpu_hmr_success, true);
+assert.equal(summary.gpu_hmr_success, true, JSON.stringify({
+  limitations: summary.limitations,
+  proofStates: summary.proof_states,
+}, null, 2));
 assert.equal(summary.proof_states.proof_ledger.gpu_hmr_success, true);
 assert.equal(summary.proof_states.acceptance_contract.accepted, true);
 

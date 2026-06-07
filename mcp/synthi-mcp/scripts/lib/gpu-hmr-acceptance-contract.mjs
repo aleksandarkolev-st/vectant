@@ -35,6 +35,13 @@ const RETIREMENT_PROOFS = new Set([
 ]);
 const COMPUTE_BACKENDS = new Set(['hip', 'opencl', 'cuda', 'sycl']);
 const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
+const GPU_FIREWALL_ROUTES = new Set([
+  'gpu_hmr',
+  'gpu_device_sidecar_reload',
+  'gpu_device_reload',
+  'gpu_runtime_epoch_reload',
+  'gpu_engine_asset_reload',
+]);
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -75,6 +82,13 @@ function sortedStringList(values) {
 
 function boolValue(value, fallback = false) {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function boolPresence(...values) {
+  for (const value of values) {
+    if (typeof value === 'boolean') return { present: true, value };
+  }
+  return { present: false, value: null };
 }
 
 function nonEmptyValue(value) {
@@ -243,6 +257,28 @@ function normalizeAdapterOutcome(value) {
   return enumValue(obj.value ?? obj.outcome, ADAPTER_OUTCOMES, 'adapter_impossible_requires_app_hook');
 }
 
+function normalizeFirewallEvidence(value = {}) {
+  const f = asObject(value);
+  const processIdBefore = f.process_id_before ?? f.processIdBefore ?? f.firewallProcessIdBefore;
+  const processIdAfter = f.process_id_after ?? f.processIdAfter ?? f.firewallProcessIdAfter;
+  return {
+    route: text(f.route ?? f.firewall_route ?? f.firewallRoute),
+    evidence_source: text(f.evidence_source ?? f.evidenceSource ?? f.source),
+    evidence_refs: compactStringList(f.evidence_refs ?? f.evidenceRefs),
+    cpu_hmr_used: typeof (f.cpu_hmr_used ?? f.cpuHmrUsed) === 'boolean'
+      ? (f.cpu_hmr_used ?? f.cpuHmrUsed)
+      : null,
+    full_rebuild_used: typeof (f.full_rebuild_used ?? f.fullRebuildUsed) === 'boolean'
+      ? (f.full_rebuild_used ?? f.fullRebuildUsed)
+      : null,
+    process_restarted: typeof (f.process_restarted ?? f.processRestarted) === 'boolean'
+      ? (f.process_restarted ?? f.processRestarted)
+      : null,
+    process_id_before: processIdBefore ?? null,
+    process_id_after: processIdAfter ?? null,
+  };
+}
+
 export function normalizeGpuHmrAcceptanceContract(input = {}) {
   const c = asObject(input);
   const classification = normalizeClassification(c.classification);
@@ -271,6 +307,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     reload_mechanism: normalizeReloadMechanism(c.reload_mechanism ?? c.reloadMechanism),
     adapter_outcome: normalizeAdapterOutcome(c.adapter_outcome ?? c.adapterOutcome),
     reload_evidence_refs: compactStringList(c.reload_evidence_refs ?? c.reloadEvidenceRefs),
+    firewall_evidence: normalizeFirewallEvidence(c.firewall_evidence ?? c.firewallEvidence),
     dispatch_trace_required: c.dispatch_trace_required !== false && c.dispatchTraceRequired !== false,
     oracle_trace_required: c.oracle_trace_required !== false && c.oracleTraceRequired !== false,
     state_preservation_checks: asObject(c.state_preservation_checks ?? c.statePreservationChecks),
@@ -295,6 +332,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     abi_compatibility_class: normalized.abi_compatibility_class,
     reload_mechanism: normalized.reload_mechanism,
     adapter_outcome: normalized.adapter_outcome,
+    firewall_evidence: normalized.firewall_evidence,
   }))}`;
   normalized.contract_id ??= `gpu-hmr-contract:${normalized.contract_hash}`;
   return normalized;
@@ -319,6 +357,22 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (c.edit_kind === 'host_only') addFailure(failures, 'host_only_edit_not_gpu_hmr');
   if (c.edit_kind === 'unknown') addFailure(failures, 'edit_kind_unknown');
   if (c.route !== 'gpu_hmr') addFailure(failures, 'route_not_gpu_hmr', { route: c.route });
+  if (c.route === 'gpu_hmr') {
+    const firewall = contract.firewall_evidence ?? {};
+    if (!GPU_FIREWALL_ROUTES.has(firewall.route)) {
+      addFailure(failures, 'route_classifier_not_verified', { firewall_route: firewall.route });
+    }
+    if (firewall.cpu_hmr_used !== false) addFailure(failures, 'cpu_hmr_absence_not_verified');
+    if (firewall.full_rebuild_used !== false) {
+      addFailure(failures, 'full_rebuild_absence_not_verified');
+    }
+    if (firewall.process_restarted !== false) {
+      addFailure(failures, 'process_restart_absence_not_verified');
+    }
+    if (!firewall.evidence_source && !firewall.evidence_refs?.length) {
+      addFailure(failures, 'firewall_evidence_source_missing');
+    }
+  }
   if (!contract.dispatch_trace_required) addFailure(failures, 'dispatch_trace_not_required');
   if (!contract.oracle_trace_required) addFailure(failures, 'oracle_trace_not_required');
   if (!contract.artifact_hash_before) addFailure(failures, 'artifact_hash_before_missing');
@@ -533,6 +587,7 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
   const state = normalized.state_preservation_checks ?? {};
   const epochPolicy = normalized.epoch_policy ?? {};
   const fission = normalized.fission_report ?? {};
+  const firewall = normalized.firewall_evidence ?? {};
   return {
     backend: normalized.backend,
     classification_project_kind: normalized.classification?.project_kind ?? null,
@@ -546,6 +601,12 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
     abi_compatibility_class: abi.value ?? null,
     reload_mechanism: normalized.reload_mechanism,
     adapter_outcome: normalized.adapter_outcome,
+    firewall_route: firewall.route ?? null,
+    firewall_cpu_hmr_used: firewall.cpu_hmr_used,
+    firewall_full_rebuild_used: firewall.full_rebuild_used,
+    firewall_process_restarted: firewall.process_restarted,
+    firewall_evidence_source: firewall.evidence_source ?? null,
+    firewall_evidence_refs: sortedStringList(firewall.evidence_refs),
     process_id: state.process_id ?? null,
     device_uuid: state.device_uuid ?? null,
     context_or_device_handle: state.context_or_device_handle ?? null,
@@ -852,6 +913,100 @@ function evidenceRefsFromProofs(...proofs) {
   ]));
 }
 
+function firewallProofFromVerifiedProofs({ input, validationContext }) {
+  const firewallEvidence = firstObject(
+    input.firewallEvidence,
+    input.firewall_evidence,
+    validationContext.firewallEvidence,
+    validationContext.firewall_evidence,
+  );
+  const classification = firstObject(input.classification, validationContext.classification);
+  const route = firstText(
+    firewallEvidence.route,
+    firewallEvidence.firewallRoute,
+    firewallEvidence.firewall_route,
+    input.firewallRoute,
+    input.firewall_route,
+    validationContext.firewallRoute,
+    validationContext.firewall_route,
+    classification.firewallRoute,
+    classification.firewall_route,
+  );
+  const cpuHmrUsed = boolPresence(
+    firewallEvidence.cpuHmrUsed,
+    firewallEvidence.cpu_hmr_used,
+    input.cpuHmrUsed,
+    input.cpu_hmr_used,
+    validationContext.cpuHmrUsed,
+    validationContext.cpu_hmr_used,
+  );
+  const fullRebuildUsed = boolPresence(
+    firewallEvidence.fullRebuildUsed,
+    firewallEvidence.full_rebuild_used,
+    input.fullRebuildUsed,
+    input.full_rebuild_used,
+    validationContext.fullRebuildUsed,
+    validationContext.full_rebuild_used,
+  );
+  const processRestarted = boolPresence(
+    firewallEvidence.processRestarted,
+    firewallEvidence.process_restarted,
+    input.processRestarted,
+    input.process_restarted,
+    validationContext.processRestarted,
+    validationContext.process_restarted,
+  );
+  const evidenceRefs = evidenceRefsFromProofs(firewallEvidence);
+  const evidenceSource = firstText(
+    firewallEvidence.evidenceSource,
+    firewallEvidence.evidence_source,
+    firewallEvidence.source,
+    input.firewallEvidenceSource,
+    input.firewall_evidence_source,
+    validationContext.firewallEvidenceSource,
+    validationContext.firewall_evidence_source,
+  );
+  const processIdBefore = firewallEvidence.processIdBefore
+    ?? firewallEvidence.process_id_before
+    ?? input.firewallProcessIdBefore
+    ?? input.firewall_process_id_before
+    ?? validationContext.firewallProcessIdBefore
+    ?? validationContext.firewall_process_id_before
+    ?? null;
+  const processIdAfter = firewallEvidence.processIdAfter
+    ?? firewallEvidence.process_id_after
+    ?? input.firewallProcessIdAfter
+    ?? input.firewall_process_id_after
+    ?? validationContext.firewallProcessIdAfter
+    ?? validationContext.firewall_process_id_after
+    ?? null;
+  const blockingGaps = [];
+  if (!GPU_FIREWALL_ROUTES.has(route)) blockingGaps.push('route_classifier_not_verified');
+  if (!cpuHmrUsed.present || cpuHmrUsed.value !== false) {
+    blockingGaps.push('cpu_hmr_absence_not_verified');
+  }
+  if (!fullRebuildUsed.present || fullRebuildUsed.value !== false) {
+    blockingGaps.push('full_rebuild_absence_not_verified');
+  }
+  if (!processRestarted.present || processRestarted.value !== false) {
+    blockingGaps.push('process_restart_absence_not_verified');
+  }
+  if (!evidenceSource && !evidenceRefs.length) {
+    blockingGaps.push('firewall_evidence_source_missing');
+  }
+  return {
+    route,
+    evidence_source: evidenceSource,
+    evidence_refs: evidenceRefs,
+    cpu_hmr_used: cpuHmrUsed.present ? cpuHmrUsed.value : null,
+    full_rebuild_used: fullRebuildUsed.present ? fullRebuildUsed.value : null,
+    process_restarted: processRestarted.present ? processRestarted.value : null,
+    process_id_before: processIdBefore,
+    process_id_after: processIdAfter,
+    blockingGaps,
+  };
+}
+
 function blockingGapsFromVerifiedProofs({
   backend,
   sourceProofs,
@@ -863,6 +1018,7 @@ function blockingGapsFromVerifiedProofs({
   outputProof,
   hostPreservationProof,
   fullRuntimeProof,
+  firewallProof,
   selectedIsland,
 }) {
   const gaps = [];
@@ -887,6 +1043,7 @@ function blockingGapsFromVerifiedProofs({
     gaps.push('host_preservation_not_verified');
   }
   if (fullRuntimeProof?.fullRuntimeProven !== true) gaps.push('full_runtime_not_verified');
+  gaps.push(...asArray(firewallProof?.blockingGaps));
   return compactStringList(gaps);
 }
 
@@ -903,6 +1060,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const outputProof = asObject(input.outputProof ?? input.output_proof);
   const hostPreservationProof = asObject(input.hostPreservationProof ?? input.host_preservation_proof);
   const fullRuntimeProof = asObject(input.fullRuntimeProof ?? input.full_runtime_proof);
+  const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
   const selectedIsland = selectedIslandContractFromProof(fissionProof);
   const backend = backendFromVerifiedContext(input, validationContext);
   const artifactHashAfter = artifactHashAfterFromProofs(
@@ -946,6 +1104,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     outputProof,
     hostPreservationProof,
     fullRuntimeProof,
+    firewallProof,
     selectedIsland,
   });
   const gpuRouteAccepted = blockingGaps.length === 0;
@@ -1005,6 +1164,16 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       ? 'adapter_generated'
       : 'adapter_impossible_requires_app_hook',
     reload_evidence_refs: compactStringList(artifactTransportProof.evidenceRefs ?? artifactTransportProof.evidence_refs),
+    firewall_evidence: {
+      route: firewallProof.route,
+      evidence_source: firewallProof.evidence_source,
+      evidence_refs: firewallProof.evidence_refs,
+      cpu_hmr_used: firewallProof.cpu_hmr_used,
+      full_rebuild_used: firewallProof.full_rebuild_used,
+      process_restarted: firewallProof.process_restarted,
+      process_id_before: firewallProof.process_id_before,
+      process_id_after: firewallProof.process_id_after,
+    },
     dispatch_trace_required: true,
     oracle_trace_required: true,
     state_preservation_checks: {
