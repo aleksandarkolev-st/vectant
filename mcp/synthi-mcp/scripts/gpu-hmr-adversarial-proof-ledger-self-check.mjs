@@ -129,15 +129,22 @@ function baselineTimingMetrics(overrides = {}) {
   };
 }
 
+function baselineClassification(overrides = {}) {
+  return {
+    project_kind: 'gpu_project',
+    edit_kind: 'gpu_artifact_edit',
+    route: 'gpu_hmr',
+    confidence: 0.95,
+    blocking_gaps: [],
+    ...overrides,
+  };
+}
+
 function baselineRecord(overrides = {}) {
   return {
     project_id: 'adversarial-generic-project',
     edit_id: 'gpu-artifact-edit',
-    classification: {
-      project_kind: 'gpu_project',
-      edit_kind: 'gpu_artifact_edit',
-      route: 'gpu_hmr',
-    },
+    classification: baselineClassification(),
     contract_hash: HASH_C,
     artifact_before_hash: HASH_A,
     artifact_after_hash: HASH_B,
@@ -237,13 +244,7 @@ function baselineContract(overrides = {}) {
     backend: 'hip',
     confidence: 0.95,
     evidence_refs: ['static:hip-launch', 'runtime:loader', 'runtime:dispatch'],
-    classification: {
-      project_kind: 'gpu_project',
-      edit_kind: 'gpu_artifact_edit',
-      route: 'gpu_hmr',
-      confidence: 0.95,
-      blocking_gaps: [],
-    },
+    classification: baselineClassification(),
     artifact_identity: {
       source_paths: ['src/kernels/generic.hip'],
       artifact_kind: 'hsaco',
@@ -554,6 +555,7 @@ const runtimeArtifact = buildValidationRuntimeProofArtifact({
   processId: 'pid-1',
   deviceUuid: 'device-1',
   contextHandle: 'hip-context-1',
+  classification: baselineClassification(),
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
@@ -586,6 +588,7 @@ const rejectedBlankVisualArtifact = buildValidationRuntimeProofArtifact({
   processId: 'pid-1',
   deviceUuid: 'device-1',
   contextHandle: 'hip-context-1',
+  classification: baselineClassification(),
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
@@ -630,6 +633,7 @@ const rejectedSameFrameVisualArtifact = buildValidationRuntimeProofArtifact({
   processId: 'pid-1',
   deviceUuid: 'device-1',
   contextHandle: 'hip-context-1',
+  classification: baselineClassification(),
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
@@ -710,6 +714,7 @@ const rejectedForgedExplicitLedgerArtifact = buildValidationRuntimeProofArtifact
   processId: 'pid-1',
   deviceUuid: 'device-1',
   contextHandle: 'hip-context-1',
+  classification: baselineClassification(),
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
@@ -744,7 +749,6 @@ assert.ok(
 const summary = buildGpuHmrValidationProofSummary({
   workspaceSlug: 'adversarial-generic-project',
   proofLedger: acceptedLedger,
-  acceptanceContract: baselineContract(),
   firewallEvidence: {
     route: 'gpu_device_sidecar_reload',
     evidence_source: 'adversarial-self-check:reload-boundary',
@@ -756,6 +760,7 @@ const summary = buildGpuHmrValidationProofSummary({
   },
   runtimeProofArtifactRecords: [{
     path: 'memory://runtime-proof-artifact.json',
+    classification: baselineClassification(),
     firewallEvidence: {
       route: 'gpu_device_sidecar_reload',
       evidence_source: 'adversarial-self-check:reload-boundary',
