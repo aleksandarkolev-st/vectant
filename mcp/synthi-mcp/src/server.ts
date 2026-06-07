@@ -102,7 +102,7 @@ const TOOLS = [
   {
     name: "synthi_screenshot",
     description:
-      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. Emits a `usage` event for every call.",
+      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms,after_frame_gate,frame_gate_timeout_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. after_frame_gate requires capture at or after a satisfied synthi_wait_hmr frame_gate. Emits a `usage` event for every call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -124,6 +124,21 @@ const TOOLS = [
         freshness_max_ms: {
           type: "number",
           description: "SLA: return frame_stale if latest frame's age exceeds this many ms.",
+        },
+        after_frame_gate: {
+          type: "object",
+          properties: {
+            status: { type: "string", enum: ["satisfied"] },
+            frame_seq: { type: "number" },
+            ts_ms: { type: "number" },
+          },
+          required: ["status"],
+          description:
+            "Satisfied frame_gate returned by synthi_wait_hmr. When provided, screenshot waits until the decoded frame seq/timestamp is at or after this gate before capturing.",
+        },
+        frame_gate_timeout_ms: {
+          type: "number",
+          description: "Maximum time to wait for after_frame_gate before returning frame_gate_timeout. Default 1200000.",
         },
       },
       required: [],

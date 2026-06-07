@@ -13,6 +13,10 @@ interface RawArgs {
   region?: unknown;
   max_dim?: unknown;
   freshness_max_ms?: unknown;
+  after_frame_gate?: unknown;
+  afterFrameGate?: unknown;
+  frame_gate_timeout_ms?: unknown;
+  frameGateTimeoutMs?: unknown;
 }
 
 interface BBox {
@@ -22,6 +26,23 @@ interface BBox {
   h: number;
 }
 
+interface FrameGateRequirement {
+  frameSeq?: number;
+  tsMs?: number;
+}
+
+interface FrameGateSatisfiedMeta {
+  status: "satisfied";
+  required_frame_seq?: number;
+  required_ts_ms?: number;
+  captured_frame_seq: number;
+  captured_ts_ms: number;
+  timeout_ms: number;
+}
+
+const DEFAULT_FRAME_GATE_TIMEOUT_MS = 20 * 60 * 1000;
+const FRAME_GATE_POLL_MS = 50;
+
 function parseBBox(v: unknown): BBox | "invalid" | undefined {
   if (v === undefined) return undefined;
   if (!v || typeof v !== "object") return "invalid";
@@ -30,6 +51,80 @@ function parseBBox(v: unknown): BBox | "invalid" | undefined {
       typeof o["w"] !== "number" || typeof o["h"] !== "number") return "invalid";
   if (o["w"]! <= 0 || o["h"]! <= 0) return "invalid";
   return { x: o["x"] as number, y: o["y"] as number, w: o["w"] as number, h: o["h"] as number };
+}
+
+function parseNonNegativeNumber(value: unknown): number | "invalid" | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "invalid";
+  return value;
+}
+
+function parseNonNegativeInteger(value: unknown): number | "invalid" | undefined {
+  const parsed = parseNonNegativeNumber(value);
+  if (parsed === undefined || parsed === "invalid") return parsed;
+  return Number.isInteger(parsed) ? parsed : "invalid";
+}
+
+function parseFrameGate(value: unknown): FrameGateRequirement | "invalid" | { unsatisfied: Record<string, unknown> } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object") return "invalid";
+  const gate = value as Record<string, unknown>;
+  const status = gate["status"];
+  if (status !== "satisfied") {
+    return {
+      unsatisfied: {
+        status: typeof status === "string" ? status : null,
+        reason: "after_frame_gate must come from a satisfied wait_hmr frame_gate",
+      },
+    };
+  }
+
+  const frameSeq = parseNonNegativeInteger(gate["frame_seq"] ?? gate["frameSeq"]);
+  if (frameSeq === "invalid") return "invalid";
+  const tsMs = parseNonNegativeNumber(gate["ts_ms"] ?? gate["tsMs"]);
+  if (tsMs === "invalid") return "invalid";
+  if (frameSeq === undefined && tsMs === undefined) return "invalid";
+
+  return {
+    ...(frameSeq !== undefined ? { frameSeq } : {}),
+    ...(tsMs !== undefined ? { tsMs } : {}),
+  };
+}
+
+function frameSatisfiesGate(frame: { seq: number; ts: number }, gate: FrameGateRequirement): boolean {
+  if (gate.frameSeq !== undefined && frame.seq < gate.frameSeq) return false;
+  if (gate.tsMs !== undefined && frame.ts < gate.tsMs) return false;
+  return true;
+}
+
+function frameGateMeta(
+  frame: { seq: number; ts: number },
+  gate: FrameGateRequirement,
+  timeoutMs: number
+): FrameGateSatisfiedMeta {
+  return {
+    status: "satisfied",
+    ...(gate.frameSeq !== undefined ? { required_frame_seq: gate.frameSeq } : {}),
+    ...(gate.tsMs !== undefined ? { required_ts_ms: gate.tsMs } : {}),
+    captured_frame_seq: frame.seq,
+    captured_ts_ms: frame.ts,
+    timeout_ms: timeoutMs,
+  };
+}
+
+async function waitForFrameGate(
+  getFrame: () => Promise<{ data: Buffer; width: number; height: number; dpr?: number; ts: number; seq: number }>,
+  gate: FrameGateRequirement,
+  timeoutMs: number
+): Promise<{ data: Buffer; width: number; height: number; dpr?: number; ts: number; seq: number } | null> {
+  const start = Date.now();
+  for (;;) {
+    const frame = await getFrame();
+    if (frameSatisfiesGate(frame, gate)) return frame;
+    if (Date.now() - start >= timeoutMs) return null;
+    const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(FRAME_GATE_POLL_MS, remaining)));
+  }
 }
 
 function readOnlyScreenshotDpr(dpr: unknown): { dpr: number; inferred: boolean } {
@@ -78,6 +173,31 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     freshnessMaxMs = a.freshness_max_ms;
   }
 
+  const afterFrameGateValue = a.after_frame_gate ?? a.afterFrameGate;
+  const afterFrameGate = parseFrameGate(afterFrameGateValue);
+  if (afterFrameGate === "invalid") {
+    return errorResponse("invalid_args", {
+      field: a.after_frame_gate !== undefined ? "after_frame_gate" : "afterFrameGate",
+      expected: "satisfied wait_hmr frame_gate with frame_seq and/or ts_ms",
+    });
+  }
+  if (afterFrameGate && "unsatisfied" in afterFrameGate) {
+    return errorResponse("frame_gate_unsatisfied", afterFrameGate.unsatisfied);
+  }
+
+  const frameGateTimeoutValue = a.frame_gate_timeout_ms ?? a.frameGateTimeoutMs;
+  let frameGateTimeoutMs = DEFAULT_FRAME_GATE_TIMEOUT_MS;
+  if (frameGateTimeoutValue !== undefined) {
+    const parsed = parseNonNegativeInteger(frameGateTimeoutValue);
+    if (parsed === "invalid" || parsed === undefined) {
+      return errorResponse("invalid_args", {
+        field: a.frame_gate_timeout_ms !== undefined ? "frame_gate_timeout_ms" : "frameGateTimeoutMs",
+        expected: "non-negative integer milliseconds",
+      });
+    }
+    frameGateTimeoutMs = parsed;
+  }
+
   try {
     const attached = session.require();
     // attach() returns as soon as the peer connection + data channels are
@@ -89,7 +209,21 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     if (!attached.frames.hasFrame()) {
       await attached.frames.waitForFirstFrame(10_000);
     }
-    const frame = await attached.frames.getFrame();
+    const frame = afterFrameGate
+      ? await waitForFrameGate(() => attached.frames.getFrame(), afterFrameGate, frameGateTimeoutMs)
+      : await attached.frames.getFrame();
+
+    if (!frame) {
+      const latest = await attached.frames.getFrame().catch(() => null);
+      return errorResponse("frame_gate_timeout", {
+        requested_frame_seq: afterFrameGate?.frameSeq ?? null,
+        requested_ts_ms: afterFrameGate?.tsMs ?? null,
+        timeout_ms: frameGateTimeoutMs,
+        latest_frame_seq: latest?.seq ?? null,
+        latest_ts_ms: latest?.ts ?? null,
+      });
+    }
+    const frameGate = afterFrameGate ? frameGateMeta(frame, afterFrameGate, frameGateTimeoutMs) : undefined;
 
     if (freshnessMaxMs !== undefined) {
       const now = Date.now();
@@ -166,6 +300,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         response_ts: responseTs,
         screenshot_age_ms: responseTs - frame.ts,
         dpr_inferred: screenshotDpr.inferred,
+        ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
         ...(resultMeta.crop !== undefined ? { cropped: true } : {}),
         ...(resultMeta.scaled === true ? { scaled: true } : {}),
       },
@@ -182,6 +317,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       dpr_inferred: screenshotDpr.inferred,
       viewport: { w: frame.width, h: frame.height, dpr: screenshotDpr.dpr },
       broker_frame: brokerFrame,
+      ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),
       mimeType: "image/png",

@@ -44,6 +44,34 @@ function installFakeSession(frame: {
   };
 }
 
+function installFakeFrameSequence(frames: Array<{
+  data: Buffer;
+  width: number;
+  height: number;
+  dpr?: number;
+  ts: number;
+  seq: number;
+}>): void {
+  let index = 0;
+  const first = frames[0]!;
+  const dpr = first.dpr ?? 1;
+  (session as unknown as { state: string }).state = "attached";
+  (session as unknown as { attached: unknown }).attached = {
+    sessionId: "fake-session",
+    signalingUrl: "ws://localhost:9000",
+    resolution: { width: first.width, height: first.height, dpr },
+    frames: {
+      getFrame: async () => {
+        const frame = frames[Math.min(index, frames.length - 1)]!;
+        index += 1;
+        return { ...frame, dpr: frame.dpr ?? dpr };
+      },
+      hasFrame: () => true,
+      dimensions: () => ({ width: first.width, height: first.height, dpr }),
+    },
+  };
+}
+
 describe("synthi_screenshot", () => {
   beforeEach(() => {
     session._resetForTests();
@@ -137,5 +165,79 @@ describe("synthi_screenshot", () => {
     const usage = eventLog.query({ kind: "usage" });
     expect(usage.length).toBe(1);
     expect((usage[0] as { metric: string }).metric).toBe("screenshot");
+  });
+
+  it("rejects an unsatisfied HMR frame gate", async () => {
+    const png = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: Date.now(), seq: 1 });
+
+    const res = await screenshotTool({
+      after_frame_gate: { status: "timeout", pipeline_budget_ms: 80 },
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error?: string }).error).toBe("frame_gate_unsatisfied");
+  });
+
+  it("waits until the decoded frame satisfies the HMR frame gate", async () => {
+    const before = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
+    const after = await solidPng(100, 100, { r: 40, g: 80, b: 120 });
+    installFakeFrameSequence([
+      { data: before, width: 100, height: 100, ts: 1_000, seq: 1 },
+      { data: after, width: 100, height: 100, ts: 1_200, seq: 2 },
+    ]);
+
+    const res = await screenshotTool({
+      after_frame_gate: { status: "satisfied", frame_seq: 2, ts_ms: 1_200 },
+      frame_gate_timeout_ms: 100,
+    });
+
+    expect(res.isError).toBeUndefined();
+    const meta = res.structuredContent as {
+      seq: number;
+      ts: number;
+      frame_gate?: {
+        status?: string;
+        required_frame_seq?: number;
+        required_ts_ms?: number;
+        captured_frame_seq?: number;
+        captured_ts_ms?: number;
+      };
+    };
+    expect(meta.seq).toBe(2);
+    expect(meta.ts).toBe(1_200);
+    expect(meta.frame_gate).toMatchObject({
+      status: "satisfied",
+      required_frame_seq: 2,
+      required_ts_ms: 1_200,
+      captured_frame_seq: 2,
+      captured_ts_ms: 1_200,
+    });
+  });
+
+  it("returns frame_gate_timeout instead of capturing a stale pre-gate frame", async () => {
+    const stale = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
+    installFakeFrameSequence([
+      { data: stale, width: 100, height: 100, ts: 1_000, seq: 1 },
+    ]);
+
+    const res = await screenshotTool({
+      after_frame_gate: { status: "satisfied", frame_seq: 2, ts_ms: 1_200 },
+      frame_gate_timeout_ms: 0,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      requested_frame_seq?: number;
+      requested_ts_ms?: number;
+      latest_frame_seq?: number;
+      latest_ts_ms?: number;
+    };
+    expect(body.error).toBe("frame_gate_timeout");
+    expect(body.requested_frame_seq).toBe(2);
+    expect(body.requested_ts_ms).toBe(1_200);
+    expect(body.latest_frame_seq).toBe(1);
+    expect(body.latest_ts_ms).toBe(1_000);
   });
 });
