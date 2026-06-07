@@ -18,6 +18,10 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
+import {
+  adversarialPreflightStrictGate,
+  strictProofGateFailures,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3256,11 +3260,17 @@ async function run() {
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
   });
+  const adversarialPreflightGate = adversarialPreflightStrictGate(report.adversarial_preflight);
+  report.adversarial_preflight_strict_gate = adversarialPreflightGate;
   record(
     'adversarial proof ledger preflight',
     preflightStatus(report.adversarial_preflight),
     `elapsed_ms=${report.adversarial_preflight.elapsedMs.toFixed(1)}`,
   );
+  record(adversarialPreflightGate.name, adversarialPreflightGate.status, adversarialPreflightGate.detail);
+  if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
+    fail(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
+  }
   if (!SUPPORTED_RENDER_FIXTURES.has(CFG.renderBackend)) {
     fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected ${[...SUPPORTED_RENDER_FIXTURES].join(', ')}`);
   }

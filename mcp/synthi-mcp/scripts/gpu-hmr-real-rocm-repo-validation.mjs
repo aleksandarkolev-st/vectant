@@ -64,6 +64,11 @@ import {
 } from './lib/gpu-hmr-visual-evidence.mjs';
 import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import {
+  adversarialPreflightStrictGate,
+  runtimeProofArtifactStrictGates,
+  strictProofGateFailures,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
 } from './lib/ai-split-provenance.mjs';
@@ -6891,6 +6896,7 @@ async function writeResults() {
       limitations: written.artifact.limitations,
       acceptanceContract: written.artifact.acceptanceContract,
       acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      acceptanceContractConsistency: written.artifact.acceptanceContractConsistency,
       deterministicVisualMode: written.artifact.deterministicVisualMode,
       deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
       proofLedger: written.artifact.proofLedger,
@@ -6901,6 +6907,18 @@ async function writeResults() {
   report.runtime_proof_artifact_paths = report.runtime_proof_artifact_path
     ? [report.runtime_proof_artifact_path]
     : [];
+  const runtimeProofArtifactStrictRows = runtimeProofArtifactStrictGates(
+    report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],
+    {
+      requireAtLeastOne: true,
+      namePrefix: 'strict real ROCm runtime proof artifact acceptance',
+    },
+  );
+  report.runtime_proof_artifact_strict_gates = runtimeProofArtifactStrictRows;
+  for (const gate of runtimeProofArtifactStrictRows) {
+    record(gate.name, gate.status, gate.detail);
+    if (gate.status === 'fail') process.exitCode = 1;
+  }
   report.target_progression_ledger_entry = buildTargetProgressionLedgerEntry({
     report,
     visualArtifactPaths,
@@ -7029,6 +7047,8 @@ async function run() {
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
   });
+  const adversarialPreflightGate = adversarialPreflightStrictGate(report.adversarial_preflight);
+  report.adversarial_preflight_strict_gate = adversarialPreflightGate;
   record(
     'adversarial proof ledger preflight',
     report.adversarial_preflight.skipped
@@ -7038,6 +7058,10 @@ async function run() {
         : 'fail',
     `elapsed_ms=${report.adversarial_preflight.elapsedMs.toFixed(1)}`,
   );
+  record(adversarialPreflightGate.name, adversarialPreflightGate.status, adversarialPreflightGate.detail);
+  if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
+    throw new Error(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
+  }
   await ensureRepo();
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);

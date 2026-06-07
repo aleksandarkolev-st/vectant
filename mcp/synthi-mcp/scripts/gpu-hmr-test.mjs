@@ -51,6 +51,11 @@ import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import {
+  adversarialPreflightStrictGate,
+  runtimeProofArtifactStrictGates,
+  strictProofGateFailures,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
   dockerContainerSnapshot,
   validationCommandMetadata,
 } from './lib/docker-validation-metadata.mjs';
@@ -169,6 +174,7 @@ const gpuProofs = [];
 const visualArtifactPaths = [];
 const screenshots = [];
 let adversarialPreflight = null;
+const strictProofGates = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
@@ -4016,12 +4022,18 @@ async function main() {
   adversarialPreflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
   });
+  const adversarialPreflightGate = adversarialPreflightStrictGate(adversarialPreflight);
+  strictProofGates.push(adversarialPreflightGate);
   record(
     'preflight',
     'adversarial proof ledger preflight',
     preflightStatus(adversarialPreflight),
     `elapsed_ms=${adversarialPreflight.elapsedMs.toFixed(1)}`,
   );
+  record('preflight', adversarialPreflightGate.name, adversarialPreflightGate.status, adversarialPreflightGate.detail);
+  if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
+    throw new Error(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
+  }
 
   const pre = await preflight();
   if (CFG.useMcpCompile) {
@@ -4187,12 +4199,21 @@ async function writeSummary() {
       limitations: written.artifact.limitations,
       acceptanceContract: written.artifact.acceptanceContract,
       acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      acceptanceContractConsistency: written.artifact.acceptanceContractConsistency,
       deterministicVisualMode: written.artifact.deterministicVisualMode,
       deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
       proofLedger: written.artifact.proofLedger,
       proofLedgerQuery: written.artifact.proofLedgerQuery,
       gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     });
+  }
+  const runtimeProofStrictRows = runtimeProofArtifactStrictGates(runtimeProofArtifactRecords, {
+    requireAtLeastOne: true,
+    namePrefix: 'strict live runtime proof artifact acceptance',
+  });
+  strictProofGates.push(...runtimeProofStrictRows);
+  for (const gate of runtimeProofStrictRows) {
+    record('summary', gate.name, gate.status, gate.detail);
   }
   const proofArtifactPaths = [...new Set(gpuProofs
     .map((proof) => proof.proofArtifactPath)
@@ -4262,6 +4283,7 @@ async function writeSummary() {
     runtime_full_proofs: runtimeFullProofs,
     runtime_proof_artifacts: runtimeProofArtifactRecords,
     runtime_proof_artifact_paths: runtimeProofArtifactPaths,
+    strict_proof_gates: strictProofGates,
     screenshots,
     visual_artifact_paths: validationProofSummary.visual_artifact_paths,
     visual_evidence_quality: validationProofSummary.visual_evidence_quality,
@@ -4282,7 +4304,8 @@ async function writeSummary() {
   console.log(`  Logs:      ${LOG_DIR}`);
   console.log(`  Results:   ${path.join(LOG_DIR, 'results.json')}`);
 
-  process.exitCode = failed > 0 ? 1 : 0;
+  const strictFailures = strictProofGateFailures(strictProofGates);
+  process.exitCode = failed > 0 || strictFailures.length > 0 ? 1 : 0;
 }
 
 async function selfCheck() {
