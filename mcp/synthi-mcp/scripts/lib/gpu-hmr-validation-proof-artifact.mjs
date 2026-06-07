@@ -5,6 +5,7 @@ import {
   buildGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
 } from './gpu-hmr-proof-ledger.mjs';
+import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -789,6 +790,27 @@ function targetProgressionGateLimitations(gates) {
     }));
 }
 
+function acceptanceContractLimitations(evaluation) {
+  if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
+  return compactObjects(evaluation.failedGates).map((gate) => ({
+    stageId: 'acceptance-contract',
+    stage_id: 'acceptance-contract',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-acceptance-contract-verified',
+    required_state: 'gpu-hmr-acceptance-contract-verified',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-acceptance-contract-rejected',
+    degraded_state: 'gpu-hmr-acceptance-contract-rejected',
+    degradedReason: gate.code ?? 'acceptance_contract_gate_failed',
+    degraded_reason: gate.code ?? 'acceptance_contract_gate_failed',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
 function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
@@ -922,6 +944,10 @@ function latestTimestamp(...values) {
 }
 
 function buildProofLedgerRecordFromInput(input, validationContext) {
+  const acceptanceContract = objectOrNull(input.acceptanceContract)
+    ?? objectOrNull(input.acceptance_contract)
+    ?? objectOrNull(validationContext?.acceptanceContract)
+    ?? objectOrNull(validationContext?.acceptance_contract);
   const explicit = objectOrNull(input.proofLedgerRecord)
     ?? objectOrNull(input.proof_ledger_record)
     ?? objectOrNull(input.proofLedger?.record)
@@ -1003,12 +1029,14 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
   return {
     project_id: input.workspaceSlug ?? validationContext?.workspaceSlug ?? validationContext?.workspace_slug ?? null,
     edit_id: input.sourceEditId ?? input.source_edit_id ?? validationContext?.sourceEditId ?? null,
-    classification: input.classification ?? validationContext?.classification ?? {},
+    classification: input.classification ?? validationContext?.classification ?? acceptanceContract?.classification ?? {},
     contract_hash: firstString(
       input.contractHash,
       input.contract_hash,
       validationContext?.contractHash,
       validationContext?.contract_hash,
+      acceptanceContract?.contract_hash,
+      acceptanceContract?.contractHash,
       fissionProof?.contractHash,
       fissionProof?.contract_hash,
     ),
@@ -1096,6 +1124,16 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
+  const acceptanceContract = objectOrNull(input.acceptanceContract)
+    ?? objectOrNull(input.acceptance_contract)
+    ?? objectOrNull(validationContext?.acceptanceContract)
+    ?? objectOrNull(validationContext?.acceptance_contract)
+    ?? null;
+  const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(
+    acceptanceContract ?? {
+      classification: input.classification ?? validationContext?.classification ?? {},
+    },
+  );
   const proofLedgerRecord = buildProofLedgerRecordFromInput(input, validationContext);
   const proofLedger = buildGpuHmrProofLedger(proofLedgerRecord);
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
@@ -1107,6 +1145,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     : [];
   const limitations = [
     ...proofLimitations(stages, fullRuntimeProof),
+    ...acceptanceContractLimitations(acceptanceContractEvaluation),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -1136,6 +1175,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    acceptanceContract,
+    acceptanceContractEvaluation,
     proofLedger,
     proofLedgerQuery,
     visualEvidenceArtifacts,
@@ -1155,6 +1196,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    acceptanceContract,
+    acceptanceContractEvaluation,
     proofLedger,
     proofLedgerQuery,
     visualEvidenceArtifacts,
@@ -1189,12 +1232,16 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_ledger: targetProgressionLedger,
     targetProgressionGates,
     target_progression_gates: targetProgressionGates,
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
+    acceptanceContractEvaluation,
+    acceptance_contract_evaluation: acceptanceContractEvaluation,
     proofLedger,
     proof_ledger: proofLedger,
     proofLedgerQuery,
     proof_ledger_query: proofLedgerQuery,
-    gpuHmrSuccess: proofLedgerQuery.gpuHmrSuccess === true,
-    gpu_hmr_success: proofLedgerQuery.gpuHmrSuccess === true,
+    gpuHmrSuccess: proofLedgerQuery.gpuHmrSuccess === true && acceptanceContractEvaluation.accepted === true,
+    gpu_hmr_success: proofLedgerQuery.gpuHmrSuccess === true && acceptanceContractEvaluation.accepted === true,
     validationContextHash,
     createdAt,
     proofMaterial,

@@ -6,6 +6,7 @@ import {
   buildGpuHmrProofLedger,
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
 } from './lib/gpu-hmr-proof-ledger.mjs';
+import { GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION } from './lib/gpu-hmr-acceptance-contract.mjs';
 import { buildValidationRuntimeProofArtifact } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import { buildGpuHmrValidationProofSummary } from './lib/gpu-hmr-validation-proof-summary.mjs';
 
@@ -72,6 +73,57 @@ function baselineRecord(overrides = {}) {
   };
 }
 
+function baselineContract(overrides = {}) {
+  return {
+    contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+    contract_hash: HASH_C,
+    project_id: 'adversarial-generic-project',
+    edit_id: 'gpu-artifact-edit',
+    backend: 'hip',
+    confidence: 0.95,
+    evidence_refs: ['static:hip-launch', 'runtime:loader', 'runtime:dispatch'],
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'gpu_hmr',
+      confidence: 0.95,
+      blocking_gaps: [],
+    },
+    artifact_identity: {
+      source_paths: ['src/kernels/generic.hip'],
+      artifact_kind: 'hsaco',
+      entry_points: ['generic_kernel'],
+      compile_target: 'gfx1201',
+      compiler: 'hipcc',
+      compiler_args_hash: HASH_C,
+    },
+    artifact_hash_before: HASH_A,
+    artifact_hash_after: HASH_B,
+    unaffected_artifacts_hash_unchanged: true,
+    abi_compatibility_class: {
+      value: 'compatible',
+      evidence_refs: ['code-object:metadata'],
+    },
+    reload_mechanism: 'generated_adapter',
+    adapter_outcome: 'adapter_generated',
+    reload_evidence_refs: ['runtime:module-load'],
+    dispatch_trace_required: true,
+    oracle_trace_required: true,
+    epoch_retirement_proof: {
+      value: 'stream_event_proven',
+      evidence_refs: ['runtime:stream-event'],
+    },
+    fission_report: {
+      selected_island: 'device-kernel',
+      full_device_fallback: false,
+      host_relinked: false,
+      process_restarted: false,
+      full_rebuild_used: false,
+    },
+    ...overrides,
+  };
+}
+
 function expectReject(name, record, expectedCode) {
   const result = evaluateGpuHmrProofLedger(record);
   assert.equal(result.gpuHmrSuccess, false, `${name} unexpectedly accepted`);
@@ -89,6 +141,7 @@ assert.equal(accepted.gpuHmrSuccess, true);
 const acceptedLedger = buildGpuHmrProofLedger(baselineRecord());
 const runtimeArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
+  acceptanceContract: baselineContract(),
   proofLedgerRecord: baselineRecord(),
   fullRuntimeProof: {
     resultState: 'gpu-hmr-full-runtime-proven',
@@ -99,12 +152,16 @@ const runtimeArtifact = buildValidationRuntimeProofArtifact({
 assert.equal(runtimeArtifact.proofLedger.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.gpuHmrSuccess, true);
+assert.equal(runtimeArtifact.acceptanceContractEvaluation.accepted, true);
 
 const summary = buildGpuHmrValidationProofSummary({
   workspaceSlug: 'adversarial-generic-project',
   proofLedger: acceptedLedger,
+  acceptanceContract: baselineContract(),
   runtimeProofArtifactRecords: [{
     path: 'memory://runtime-proof-artifact.json',
+    acceptanceContract: runtimeArtifact.acceptanceContract,
+    acceptanceContractEvaluation: runtimeArtifact.acceptanceContractEvaluation,
     proofLedger: runtimeArtifact.proofLedger,
     proofLedgerQuery: runtimeArtifact.proofLedgerQuery,
     gpuHmrSuccess: runtimeArtifact.gpuHmrSuccess,
@@ -112,6 +169,7 @@ const summary = buildGpuHmrValidationProofSummary({
 });
 assert.equal(summary.gpu_hmr_success, true);
 assert.equal(summary.proof_states.proof_ledger.gpu_hmr_success, true);
+assert.equal(summary.proof_states.acceptance_contract.accepted, true);
 
 assertGpuHmrProofLedgerSuccess(baselineRecord({
   output_event: {

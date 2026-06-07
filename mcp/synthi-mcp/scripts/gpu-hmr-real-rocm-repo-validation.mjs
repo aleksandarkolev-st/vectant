@@ -6800,6 +6800,8 @@ async function writeResults() {
       degradedReason: written.artifact.degradedReason,
       fullRuntimeProven: written.artifact.fullRuntimeProven,
       limitations: written.artifact.limitations,
+      acceptanceContract: written.artifact.acceptanceContract,
+      acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
       proofLedger: written.artifact.proofLedger,
       proofLedgerQuery: written.artifact.proofLedgerQuery,
       gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
