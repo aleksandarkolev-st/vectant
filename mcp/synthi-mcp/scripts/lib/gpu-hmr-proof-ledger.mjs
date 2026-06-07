@@ -213,7 +213,12 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   if (record.cpuHmrUsed) addFailure(failures, 'cpu_hmr_used');
   if (record.fullRebuildUsed) addFailure(failures, 'full_rebuild_used');
   if (record.processRestarted) addFailure(failures, 'process_restarted');
+  if (!record.contractHash) addFailure(failures, 'contract_hash_missing');
+  if (!record.artifactBeforeHash) addFailure(failures, 'artifact_before_hash_missing');
   if (!artifactAfterHash) addFailure(failures, 'artifact_after_hash_missing');
+  if (record.artifactBeforeHash && artifactAfterHash && record.artifactBeforeHash === artifactAfterHash) {
+    addFailure(failures, 'artifact_hash_unchanged');
+  }
   if (!loadedArtifactHash) {
     addFailure(failures, 'loader_artifact_hash_missing');
   } else if (artifactAfterHash && loadedArtifactHash !== artifactAfterHash) {
@@ -281,6 +286,20 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       actual: dispatchPid,
     });
   }
+  if (!record.deviceIdentity || Object.keys(record.deviceIdentity).length === 0) {
+    addFailure(failures, 'device_identity_missing');
+  }
+  if (!record.retirementEvent || Object.keys(record.retirementEvent).length === 0) {
+    addFailure(failures, 'retirement_event_missing');
+  } else {
+    const retirementStatus = firstText(
+      record.retirementEvent.status,
+      record.retirementEvent.proof,
+      record.retirementEvent.retirement_proof,
+      record.retirementEvent.retirementProof,
+    );
+    if (!retirementStatus) addFailure(failures, 'retirement_proof_missing');
+  }
   if (isVisualOutput(record.outputEvent)) {
     const deterministicVisualModeEvaluation =
       evaluateGpuHmrDeterministicVisualMode(record.deterministicVisualMode);
@@ -293,14 +312,6 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       }
     }
   }
-  if (!record.contractHash) warnings.push({ code: 'contract_hash_missing' });
-  if (!record.deviceIdentity || Object.keys(record.deviceIdentity).length === 0) {
-    warnings.push({ code: 'device_identity_missing' });
-  }
-  if (!record.retirementEvent || Object.keys(record.retirementEvent).length === 0) {
-    warnings.push({ code: 'retirement_event_missing' });
-  }
-
   return {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     proofId: record.proofId,

@@ -995,6 +995,8 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
     input.artifact_after_hash,
     input.changedGpuArtifactHash,
     input.changed_gpu_artifact_hash,
+    acceptanceContract?.artifact_hash_after,
+    acceptanceContract?.artifactHashAfter,
     proofArtifactId(outputProof),
     proofArtifactId(dispatchProof),
     proofArtifactId(epochProof, [
@@ -1009,6 +1011,8 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
   const artifactBeforeHash = firstArtifactId(
     input.artifactBeforeHash,
     input.artifact_before_hash,
+    acceptanceContract?.artifact_hash_before,
+    acceptanceContract?.artifactHashBefore,
     sourceProof?.artifactBeforeId,
     sourceProof?.artifact_before_id,
     sourceProof?.artifactBeforeHash,

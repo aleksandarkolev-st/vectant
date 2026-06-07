@@ -198,6 +198,9 @@ const cases = [
   ['cpu fallback', baselineRecord({ cpu_hmr_used: true }), 'cpu_hmr_used'],
   ['full rebuild', baselineRecord({ full_rebuild_used: true }), 'full_rebuild_used'],
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],
+  ['missing contract hash', baselineRecord({ contract_hash: null }), 'contract_hash_missing'],
+  ['missing artifact before hash', baselineRecord({ artifact_before_hash: null }), 'artifact_before_hash_missing'],
+  ['unchanged artifact hash', baselineRecord({ artifact_before_hash: HASH_B }), 'artifact_hash_unchanged'],
   ['artifact not loaded', baselineRecord({ loader_event: { artifact_hash: HASH_A, process_id: 'pid-1' } }), 'loader_artifact_hash_mismatch'],
   ['publish mismatched artifact', baselineRecord({ epoch_publish_event: { epoch: 'epoch-7', artifact_hash: HASH_A, process_id: 'pid-1' } }), 'epoch_publish_artifact_hash_mismatch'],
   ['old epoch dispatch', baselineRecord({ dispatch_event: { id: 'dispatch-1', epoch: 'epoch-6', artifact_hash: HASH_B, process_id: 'pid-1', timestamp_monotonic_ns: 300 } }), 'dispatch_epoch_mismatch'],
@@ -206,6 +209,9 @@ const cases = [
   ['output oracle failed', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: false, timestamp_monotonic_ns: 400 } }), 'output_oracle_not_passed'],
   ['visual without deterministic mode', baselineRecord({ output_event: { kind: 'render_target_hash', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'visual_output_without_deterministic_mode'],
   ['loader process mismatch', baselineRecord({ loader_event: { id: 'load-1', artifact_hash: HASH_B, process_id: 'pid-2', timestamp_monotonic_ns: 100 } }), 'loader_process_identity_mismatch'],
+  ['missing device identity', baselineRecord({ device_identity: {} }), 'device_identity_missing'],
+  ['missing retirement event', baselineRecord({ retirement_event: {} }), 'retirement_event_missing'],
+  ['missing retirement proof', baselineRecord({ retirement_event: { id: 'retire-1', epoch: 'epoch-6' } }), 'retirement_proof_missing'],
   ['host-only classification', baselineRecord({ classification: { project_kind: 'gpu_project', edit_kind: 'host_only', route: 'cpu_hmr_or_host_reload' } }), 'classification_host_only_edit'],
 ];
 

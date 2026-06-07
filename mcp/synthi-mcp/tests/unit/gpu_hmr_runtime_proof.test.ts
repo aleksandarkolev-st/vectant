@@ -55,6 +55,9 @@ import {
   evaluateGpuHmrDeterministicVisualMode,
 } from "../../scripts/lib/gpu-hmr-visual-evidence.mjs";
 import {
+  evaluateGpuHmrProofLedger,
+} from "../../scripts/lib/gpu-hmr-proof-ledger.mjs";
+import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
 } from "../../scripts/lib/ai-split-provenance.mjs";
@@ -5771,6 +5774,10 @@ describe("GPU HMR runtime output proof classification", () => {
           argv: ["node", "scripts/gpu-hmr-test.mjs"],
           env: { SYNTHI_GPU_VENDOR: "rocm" },
         },
+        deviceIdentity: {
+          device_uuid: "device:test",
+          backend: "hip",
+        },
         docker: {
           enabled: true,
           containers: {
@@ -6442,6 +6449,92 @@ describe("GPU HMR runtime output proof classification", () => {
         }),
       ])
     );
+  });
+
+  it("rejects GPU HMR ledger records missing required safety identity", () => {
+    const baseRecord = {
+      project_id: "workspace",
+      edit_id: "edit-1",
+      classification: {
+        project_kind: "gpu_project",
+        edit_kind: "gpu_artifact_edit",
+        route: "gpu_hmr",
+      },
+      contract_hash: `sha256:${TEST_PROOF_HASH}`,
+      artifact_before_hash: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
+      artifact_after_hash: TEST_ARTIFACT_ID,
+      loader_event: {
+        id: "load-1",
+        artifact_hash: TEST_ARTIFACT_ID,
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 100,
+      },
+      epoch_publish_event: {
+        id: "publish-1",
+        artifact_hash: TEST_ARTIFACT_ID,
+        epoch: "epoch-3",
+        timestamp_monotonic_ns: 200,
+      },
+      dispatch_event: {
+        id: "dispatch-1",
+        artifact_hash: TEST_ARTIFACT_ID,
+        epoch: "epoch-3",
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 300,
+      },
+      output_event: {
+        id: "output-1",
+        kind: "buffer_checksum",
+        artifact_hash: TEST_ARTIFACT_ID,
+        epoch: "epoch-3",
+        after_dispatch_id: "dispatch-1",
+        passed: true,
+        timestamp_monotonic_ns: 400,
+      },
+      retirement_event: {
+        id: "retire-1",
+        epoch: "epoch-2",
+        status: "retired",
+      },
+      process_identity: {
+        process_id: "pid-1",
+      },
+      device_identity: {
+        device_uuid: "device:test",
+      },
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+    };
+
+    expect(evaluateGpuHmrProofLedger(baseRecord).gpuHmrSuccess).toBe(true);
+
+    const cases = [
+      [{ ...baseRecord, contract_hash: null }, "contract_hash_missing"],
+      [{ ...baseRecord, artifact_before_hash: null }, "artifact_before_hash_missing"],
+      [
+        {
+          ...baseRecord,
+          artifact_before_hash: TEST_ARTIFACT_ID,
+        },
+        "artifact_hash_unchanged",
+      ],
+      [{ ...baseRecord, device_identity: {} }, "device_identity_missing"],
+      [{ ...baseRecord, retirement_event: {} }, "retirement_event_missing"],
+      [
+        {
+          ...baseRecord,
+          retirement_event: { id: "retire-1", epoch: "epoch-2" },
+        },
+        "retirement_proof_missing",
+      ],
+    ] as const;
+
+    for (const [record, expectedCode] of cases) {
+      const result = evaluateGpuHmrProofLedger(record);
+      expect(result.gpuHmrSuccess).toBe(false);
+      expect(result.failedInvariants.map((failure) => failure.code)).toContain(expectedCode);
+    }
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {
