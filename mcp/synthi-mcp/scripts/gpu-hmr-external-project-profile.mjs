@@ -12,6 +12,7 @@ import {
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import { visualEvidenceArtifactsFromFiles } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 import { externalProjectTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -916,6 +917,14 @@ function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
 async function compareImages(beforePath, afterPath, options = {}) {
   const before = sharp(beforePath).ensureAlpha();
   const after = sharp(afterPath).ensureAlpha();
@@ -959,6 +968,82 @@ async function compareImages(beforePath, afterPath, options = {}) {
     changedPixelRatio: changed / pixelCount,
     meanAbsDelta8bit: totalAbs / pixelCount,
     diffImagePath: options.diffPath ?? null,
+  };
+}
+
+function visualOraclePaths(report) {
+  return Array.from(new Set([
+    report.visualOracleArtifacts?.before_image,
+    report.visualOracleArtifacts?.after_image,
+    report.visualOracleArtifacts?.diff_image,
+    ...((Array.isArray(report.screenshots) ? report.screenshots : []).map((row) => row.path)),
+  ].filter((value) => typeof value === 'string' && value.trim())));
+}
+
+async function writeExternalVisualProofArtifact(profile, report) {
+  await fs.mkdir(LOG_DIR, { recursive: true });
+  const paths = visualOraclePaths(report);
+  if (paths.length === 0) {
+    throw new Error('external visual proof artifact requires persisted before/after/diff image paths');
+  }
+  const existing = (Array.isArray(report.screenshots) ? report.screenshots : [])
+    .filter((row) => row && typeof row === 'object' && typeof row.path === 'string')
+    .map((row) => ({
+      ...row,
+      visualQuality: row.visual_quality ?? row.visualQuality,
+      acceptedAsVisualEvidence:
+        row.accepted_as_visual_evidence ?? row.acceptedAsVisualEvidence ?? false,
+    }));
+  const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(paths, existing);
+  const acceptedVisualEvidenceArtifacts = visualEvidenceArtifacts
+    .filter((artifact) => artifact.acceptedAsVisualEvidence === true);
+  const material = {
+    schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+    profileId: profile.id,
+    proofMode: report.proofMode,
+    status: report.status,
+    createdAt: new Date().toISOString(),
+    visualOracleArtifacts: report.visualOracleArtifacts ?? null,
+    visualDiff: report.visualDiff ?? null,
+    deterministicVisualMode: report.deterministicVisualMode ?? null,
+    deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    mcp: report.mcp ? {
+      visualProofGate: report.mcp.visualProofGate ?? null,
+      before: report.mcp.before ? {
+        waitArgs: report.mcp.before.waitArgs ?? null,
+        waitStatus: report.mcp.before.waitStatus ?? null,
+        waitFrameGate: report.mcp.before.wait?.frame_gate ?? report.mcp.before.wait?.frameGate ?? null,
+        gpuProof: report.mcp.before.wait?.gpu_proof ?? null,
+        gpuProofValidation: report.mcp.before.wait?.gpu_proof_validation ?? null,
+      } : null,
+      after: report.mcp.after ? {
+        waitArgs: report.mcp.after.waitArgs ?? null,
+        waitStatus: report.mcp.after.waitStatus ?? null,
+        waitFrameGate: report.mcp.after.wait?.frame_gate ?? report.mcp.after.wait?.frameGate ?? null,
+        gpuProof: report.mcp.after.wait?.gpu_proof ?? null,
+        gpuProofValidation: report.mcp.after.wait?.gpu_proof_validation ?? null,
+      } : null,
+      modelProvenance: report.mcp.modelProvenance ?? null,
+    } : null,
+    visualEvidenceArtifacts,
+    acceptedVisualEvidenceArtifactCount: acceptedVisualEvidenceArtifacts.length,
+  };
+  const proofId = `external-visual-proof:${sha256(stableJson(material)).replace(/^sha256:/, '')}`;
+  const artifact = {
+    ...material,
+    proofId,
+  };
+  const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-visual-proof.json`);
+  await fs.writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    schemaVersion: artifact.schemaVersion,
+    proofId,
+    path: outPath,
+    visualEvidenceArtifactCount: visualEvidenceArtifacts.length,
+    acceptedVisualEvidenceArtifactCount: acceptedVisualEvidenceArtifacts.length,
+    contentHashes: visualEvidenceArtifacts
+      .map((artifact) => artifact.contentHash)
+      .filter(Boolean),
   };
 }
 
@@ -1006,6 +1091,101 @@ async function defaultPackagedProfilePath() {
   return first;
 }
 
+async function selfCheckVisualProofArtifact() {
+  await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+  const stamp = Date.now();
+  const beforePath = path.join(ARTIFACT_DIR, `self-check-before-${stamp}.png`);
+  const afterPath = path.join(ARTIFACT_DIR, `self-check-after-${stamp}.png`);
+  const diffPath = path.join(ARTIFACT_DIR, `self-check-diff-${stamp}.png`);
+  const beforeBytes = Buffer.from('external-visual-proof-before');
+  const afterBytes = Buffer.from('external-visual-proof-after');
+  const diffBytes = Buffer.from('external-visual-proof-diff');
+  await fs.writeFile(beforePath, beforeBytes);
+  await fs.writeFile(afterPath, afterBytes);
+  await fs.writeFile(diffPath, diffBytes);
+  const expectedHashes = [beforeBytes, afterBytes, diffBytes]
+    .map((bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
+    .sort();
+  const written = await writeExternalVisualProofArtifact({
+    id: 'external-visual-proof-self-check',
+  }, {
+    proofMode: 'mcp_preview',
+    status: 'pass',
+    screenshots: [
+      {
+        path: beforePath,
+        visual_quality: 'gpu-hmr-visual-varied-frame',
+        accepted_as_visual_evidence: true,
+      },
+      {
+        path: afterPath,
+        visual_quality: 'gpu-hmr-visual-varied-frame',
+        accepted_as_visual_evidence: true,
+      },
+    ],
+    visualOracleArtifacts: {
+      before_image: beforePath,
+      after_image: afterPath,
+      diff_image: diffPath,
+      frame_capture_after_epoch_dispatch: true,
+    },
+    visualDiff: {
+      changedPixelRatio: 0.5,
+      meanAbsDelta8bit: 16,
+    },
+    deterministicVisualMode: {
+      frozen_camera: true,
+      fixed_resolution: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      seed_policy_fixed: true,
+      temporal_accumulation_not_applicable: true,
+      taa_not_applicable: true,
+      denoiser_not_applicable: true,
+    },
+    deterministicVisualModeEvaluation: {
+      accepted: true,
+    },
+    mcp: {
+      visualProofGate: {
+        satisfied: true,
+      },
+      after: {
+        waitArgs: {
+          module: 'device',
+          requireGpuFullRuntimeProof: true,
+        },
+        waitStatus: 'applied',
+        wait: {
+          frame_gate: {
+            status: 'satisfied',
+          },
+          gpu_proof_validation: {
+            satisfied: true,
+          },
+        },
+      },
+    },
+  });
+  const artifact = JSON.parse(await fs.readFile(written.path, 'utf8'));
+  const observedHashes = (artifact.visualEvidenceArtifacts ?? [])
+    .map((row) => row.contentHash)
+    .filter(Boolean)
+    .sort();
+  const hashMatch = expectedHashes.every((hash) => observedHashes.includes(hash));
+  return {
+    ok:
+      written.schemaVersion === 'synthi.gpu.hmr.external_visual_proof_artifact.v1'
+      && typeof written.proofId === 'string'
+      && written.proofId.startsWith('external-visual-proof:')
+      && hashMatch,
+    path: written.path,
+    proofId: written.proofId,
+    expectedHashes,
+    observedHashes,
+  };
+}
+
 async function selfCheck() {
   const checks = [];
   const profilePaths = await discoverPackagedProfiles();
@@ -1045,6 +1225,12 @@ async function selfCheck() {
       deterministicVisualProfile,
     });
   }
+  const visualProofArtifact = await selfCheckVisualProofArtifact();
+  checks.push({
+    name: 'external-visual-proof-artifact-hashes-files',
+    ok: visualProofArtifact.ok,
+    visualProofArtifact,
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.self_check.v1',
@@ -1127,6 +1313,8 @@ async function runProfile(profile) {
     if (!accepted) {
       throw new Error(`visual diff below threshold: ${JSON.stringify(report.visualDiff)}`);
     }
+    report.visualProofArtifact = await writeExternalVisualProofArtifact(profile, report);
+    report.proofArtifactPaths = [report.visualProofArtifact.path];
   } catch (error) {
     failure = error;
     if (report.status === 'running') report.status = 'fail';
@@ -1245,6 +1433,8 @@ async function runMcpPreviewProfile(profile, dir, report) {
         deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation,
       }).slice(0, 2000)}`);
     }
+    report.visualProofArtifact = await writeExternalVisualProofArtifact(profile, report);
+    report.proofArtifactPaths = [report.visualProofArtifact.path];
   } finally {
     if (delta?.sourcePath && delta.original !== undefined) {
       await fs.writeFile(delta.sourcePath, delta.original).catch(() => {});
