@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-histogram",
+  "repo": {
+    "url": "https://github.com/ROCm/rocm-examples.git"
+  },
+  "target": {
+    "entryFile": "Applications/histogram/main.hip",
+    "deltaFile": "Applications/histogram/main.hip",
+    "targetName": "applications_histogram",
+    "buildSubdir": "Applications/histogram"
+  },
+  "sourceDelta": {
+    "before": "const int items_per_thread  = 1024;",
+    "after": "const int items_per_thread  = 512;"
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

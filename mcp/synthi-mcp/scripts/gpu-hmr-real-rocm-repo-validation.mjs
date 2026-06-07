@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // Real public ROCm repository validation for GPU HMR.
 //
-// Default target:
-//   https://github.com/ROCm/rocm-examples
-//   HIP-Basic/saxpy/main.hip
+// Default target profile:
+//   mcp/synthi-mcp/scripts/profiles/real-rocm-saxpy.json
 //
 // This script intentionally separates two claims:
 //   1. The upstream ROCm target builds and runs in the current worker.
@@ -79,6 +78,9 @@ import { realRocmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const PROFILE_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
+const REAL_ROCM_PROFILE_SCHEMA_VERSION = 'synthi.gpu.hmr.real_rocm_profile.v1';
+const DEFAULT_REAL_ROCM_PROFILE_PATH = path.join(PROFILE_DIR, 'real-rocm-saxpy.json');
 const DEFAULT_REAL_REPO_URL = 'https://github.com/ROCm/rocm-examples.git';
 const TARGET_PROGRESSION_PHASES = new Set([
   'small-oracle',
@@ -121,6 +123,180 @@ function cleanIdentifier(value) {
 function repoNameFromUrl(repoUrl) {
   const raw = String(repoUrl || DEFAULT_REAL_REPO_URL).split('/').filter(Boolean).at(-1) ?? 'repo';
   return cleanIdentifier(raw.replace(/\.git$/i, ''));
+}
+
+function objectOrEmpty(value, field) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected object`);
+  }
+  return value;
+}
+
+function optionalProfileString(value, field) {
+  if (value === undefined || value === null || String(value).trim() === '') return '';
+  if (typeof value !== 'string') {
+    throw new Error(`invalid real ROCm profile ${field}: expected string`);
+  }
+  return value.trim();
+}
+
+function requiredProfileString(value, field) {
+  const text = optionalProfileString(value, field);
+  if (!text) throw new Error(`invalid real ROCm profile ${field}: expected non-empty string`);
+  return text;
+}
+
+function optionalProfileBoolean(value, field) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'boolean') {
+    throw new Error(`invalid real ROCm profile ${field}: expected boolean`);
+  }
+  return value;
+}
+
+function optionalProfileNumber(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected finite number`);
+  }
+  return parsed;
+}
+
+function optionalProfileStringArray(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected array`);
+  }
+  return value.map((item, index) => requiredProfileString(item, `${field}[${index}]`));
+}
+
+function normalizeRealRocmProfile(rawProfile, source) {
+  const raw = objectOrEmpty(rawProfile, 'root');
+  const schemaVersion = raw.schemaVersion ?? REAL_ROCM_PROFILE_SCHEMA_VERSION;
+  if (schemaVersion !== REAL_ROCM_PROFILE_SCHEMA_VERSION) {
+    throw new Error(`unsupported real ROCm profile schemaVersion: ${schemaVersion}`);
+  }
+  const repo = objectOrEmpty(raw.repo, 'repo');
+  const target = objectOrEmpty(raw.target, 'target');
+  const sourceDelta = objectOrEmpty(raw.sourceDelta ?? raw.source_delta, 'sourceDelta');
+  const secondDelta = objectOrEmpty(sourceDelta.second ?? sourceDelta.secondDelta, 'sourceDelta.second');
+  const outputOracle = objectOrEmpty(raw.outputOracle ?? raw.output_oracle, 'outputOracle');
+  const preview = objectOrEmpty(raw.preview, 'preview');
+  return {
+    schemaVersion,
+    id: requiredProfileString(raw.id, 'id'),
+    source,
+    repo: {
+      url: optionalProfileString(repo.url, 'repo.url') || DEFAULT_REAL_REPO_URL,
+      name: optionalProfileString(repo.name, 'repo.name'),
+      commit: optionalProfileString(repo.commit, 'repo.commit'),
+      initSubmodules: optionalProfileBoolean(repo.initSubmodules, 'repo.initSubmodules'),
+    },
+    target: {
+      entryFile: requiredProfileString(target.entryFile, 'target.entryFile').replace(/\\/g, '/'),
+      deltaFile: optionalProfileString(target.deltaFile, 'target.deltaFile').replace(/\\/g, '/'),
+      targetName: requiredProfileString(target.targetName, 'target.targetName'),
+      buildSubdir: requiredProfileString(target.buildSubdir, 'target.buildSubdir').replace(/\\/g, '/'),
+      cmakeArgs: optionalProfileStringArray(target.cmakeArgs, 'target.cmakeArgs'),
+      cmakeConfigName: optionalProfileString(target.cmakeConfigName, 'target.cmakeConfigName'),
+      cmakeTargetType: optionalProfileString(target.cmakeTargetType, 'target.cmakeTargetType'),
+      cmakeTargetIdNamespace: optionalProfileString(target.cmakeTargetIdNamespace, 'target.cmakeTargetIdNamespace'),
+      upstreamRunCommand: optionalProfileString(target.upstreamRunCommand, 'target.upstreamRunCommand'),
+      buildUpstream: optionalProfileBoolean(target.buildUpstream, 'target.buildUpstream'),
+      runUpstream: optionalProfileBoolean(target.runUpstream, 'target.runUpstream'),
+    },
+    sourceDelta: {
+      before: requiredProfileString(sourceDelta.before, 'sourceDelta.before'),
+      after: requiredProfileString(sourceDelta.after, 'sourceDelta.after'),
+      second: {
+        file: optionalProfileString(secondDelta.file, 'sourceDelta.second.file').replace(/\\/g, '/'),
+        before: optionalProfileString(secondDelta.before, 'sourceDelta.second.before'),
+        after: optionalProfileString(secondDelta.after, 'sourceDelta.second.after'),
+      },
+      extraDeltas: Array.isArray(sourceDelta.extraDeltas) ? sourceDelta.extraDeltas : [],
+    },
+    outputOracle: {
+      profile: optionalProfileString(outputOracle.profile, 'outputOracle.profile'),
+      contract: outputOracle.contract && typeof outputOracle.contract === 'object' && !Array.isArray(outputOracle.contract)
+        ? outputOracle.contract
+        : null,
+    },
+    preview: {
+      renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
+      expectScreenshot: optionalProfileBoolean(preview.expectScreenshot, 'preview.expectScreenshot'),
+      width: optionalProfileNumber(preview.width, 'preview.width'),
+      height: optionalProfileNumber(preview.height, 'preview.height'),
+    },
+  };
+}
+
+function loadRealRocmProfile() {
+  const inline = process.env.SYNTHI_REAL_ROCM_PROFILE_JSON
+    ?? process.env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_JSON
+    ?? '';
+  if (String(inline).trim()) {
+    return normalizeRealRocmProfile(JSON.parse(inline), 'env:SYNTHI_REAL_ROCM_PROFILE_JSON');
+  }
+  const profilePath = process.env.SYNTHI_REAL_ROCM_PROFILE_PATH
+    ?? process.env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_PATH
+    ?? DEFAULT_REAL_ROCM_PROFILE_PATH;
+  const absolutePath = path.resolve(REPO_ROOT, profilePath);
+  return normalizeRealRocmProfile(
+    JSON.parse(readFileSync(absolutePath, 'utf8')),
+    path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/'),
+  );
+}
+
+async function discoverPackagedRealRocmProfiles() {
+  const entries = await readdir(PROFILE_DIR, { withFileTypes: true });
+  const profiles = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^real-rocm-.+\.json$/i.test(entry.name)) continue;
+    const absolutePath = path.join(PROFILE_DIR, entry.name);
+    const source = path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/');
+    const profile = normalizeRealRocmProfile(
+      JSON.parse(readFileSync(absolutePath, 'utf8')),
+      source,
+    );
+    profiles.push(profile);
+  }
+  profiles.sort((left, right) => left.id.localeCompare(right.id));
+  return profiles;
+}
+
+async function selfCheckRealRocmProfiles() {
+  const profiles = await discoverPackagedRealRocmProfiles();
+  if (profiles.length === 0) {
+    throw new Error(`no packaged real ROCm profiles found in ${PROFILE_DIR}`);
+  }
+  const seen = new Set();
+  for (const profile of profiles) {
+    if (seen.has(profile.id)) {
+      throw new Error(`duplicate real ROCm profile id: ${profile.id}`);
+    }
+    seen.add(profile.id);
+    if (profile.outputOracle.profile !== 'none' && profile.outputOracle.profile !== 'auto') {
+      const known = outputOracleProfilesByName().has(profile.outputOracle.profile.toLowerCase());
+      if (!known) {
+        throw new Error(`real ROCm profile ${profile.id} references unknown output oracle profile: ${profile.outputOracle.profile}`);
+      }
+    }
+    const localRepoPath = path.resolve(REPO_ROOT, `tmp/real-rocm/${repoNameFromUrl(profile.repo.url)}`);
+    if (existsSync(localRepoPath)) {
+      for (const requiredPath of [
+        profile.target.entryFile,
+        profile.target.deltaFile || profile.target.entryFile,
+        `${profile.target.buildSubdir}/CMakeLists.txt`,
+      ]) {
+        if (!existsSync(path.join(localRepoPath, requiredPath))) {
+          throw new Error(`real ROCm profile ${profile.id} references missing local path: ${requiredPath}`);
+        }
+      }
+    }
+  }
+  console.log(`real ROCm profile self-check passed profiles=${profiles.map((profile) => profile.id).join(',')}`);
 }
 
 function parseOutputOracleContract(raw) {
@@ -804,9 +980,12 @@ async function writeTargetProgressionLedgerArtifact(outputDir, { report, entry }
   };
 }
 
-const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
+const REAL_ROCM_PROFILE = loadRealRocmProfile();
+const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? REAL_ROCM_PROFILE.repo.url;
 const configuredRepoName = cleanIdentifier(
-  process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
+  process.env.SYNTHI_REAL_ROCM_REPO_NAME
+    ?? REAL_ROCM_PROFILE.repo.name
+    ?? repoNameFromUrl(configuredRepoUrl),
 );
 const configuredWorkspaceRoot =
   process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
@@ -818,29 +997,44 @@ const configuredExpectScreenshotExplicit =
   && String(process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT).trim() !== '';
 const configuredExpectScreenshotValue = configuredExpectScreenshotExplicit
   ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT', false)
-  : false;
+  : REAL_ROCM_PROFILE.preview.expectScreenshot ?? false;
 const configuredRenderPreview = booleanFromEnv(
   process.env,
   'SYNTHI_REAL_ROCM_RENDER_PREVIEW',
-  configuredExpectScreenshotValue,
+  REAL_ROCM_PROFILE.preview.renderPreview ?? configuredExpectScreenshotValue,
 );
 const configuredExpectScreenshot = booleanFromEnv(
   process.env,
   'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT',
   configuredRenderPreview,
 );
+const configuredCmakeArgs = process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON !== undefined
+  ? parseStringArrayEnv(
+    process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON,
+    'SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON',
+  )
+  : REAL_ROCM_PROFILE.target.cmakeArgs;
+const configuredOutputOracleJson = process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
+  ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
+  ?? (REAL_ROCM_PROFILE.outputOracle.contract
+    ? JSON.stringify(REAL_ROCM_PROFILE.outputOracle.contract)
+    : '');
 
 const CFG = {
   repoUrl: configuredRepoUrl,
   repoName: configuredRepoName,
   repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
-  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
-  initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0',
-  entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? 'HIP-Basic/saxpy/main.hip',
-  deltaFile: process.env.SYNTHI_REAL_ROCM_DELTA_FILE
+  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? REAL_ROCM_PROFILE.repo.commit ?? '',
+  initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== undefined
+    ? process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0'
+    : REAL_ROCM_PROFILE.repo.initSubmodules ?? true,
+  realRocmProfile: REAL_ROCM_PROFILE,
+  entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? REAL_ROCM_PROFILE.target.entryFile,
+  deltaFile: (process.env.SYNTHI_REAL_ROCM_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
-    ?? 'HIP-Basic/saxpy/main.hip',
-  targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? 'hip_saxpy',
+    ?? REAL_ROCM_PROFILE.target.deltaFile)
+    || REAL_ROCM_PROFILE.target.entryFile,
+  targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? REAL_ROCM_PROFILE.target.targetName,
   targetProgressionPhase: process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_PHASE ?? '',
   finalAcceptanceTarget: process.env.SYNTHI_REAL_ROCM_FINAL_ACCEPTANCE_TARGET ?? '',
   requireTargetProgression: booleanFromEnv(
@@ -852,7 +1046,7 @@ const CFG = {
     configuredTargetProgressionLedgerInput.raw,
   ),
   targetProgressionLedgerPath: configuredTargetProgressionLedgerInput.path,
-  buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
+  buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? REAL_ROCM_PROFILE.target.buildSubdir,
   workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
   workerTempDir: configuredWorkerTempDir,
   workspaceRoot: configuredWorkspaceRoot,
@@ -860,28 +1054,40 @@ const CFG = {
   seedCommitMessage:
     process.env.SYNTHI_REAL_ROCM_SEED_COMMIT_MESSAGE ??
     `real-rocm-validation: seed ${configuredRepoName} ${process.env.SYNTHI_REAL_ROCM_TARGET ?? 'target'}`,
-  cmakeConfigName: process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG ?? 'Release',
-  cmakeArgs: parseStringArrayEnv(
-    process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON,
-    'SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON',
-  ),
-  cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
-  cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
+  cmakeConfigName: (
+    process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG
+    ?? REAL_ROCM_PROFILE.target.cmakeConfigName
+  ) || 'Release',
+  cmakeArgs: configuredCmakeArgs,
+  cmakeTargetType: (
+    process.env.SYNTHI_REAL_ROCM_TARGET_TYPE
+    ?? REAL_ROCM_PROFILE.target.cmakeTargetType
+  ) || 'EXECUTABLE',
+  cmakeTargetIdNamespace: (
+    process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE
+    ?? REAL_ROCM_PROFILE.target.cmakeTargetIdNamespace
+  ) || 'real-rocm',
   buildMetadataDir: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR
     ? path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR)
     : '',
   gpuMode: process.env.SYNTHI_REAL_ROCM_GPU_MODE ?? 'rocm',
-  buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
-  runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
-  upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND ?? '',
+  buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== undefined
+    ? process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0'
+    : REAL_ROCM_PROFILE.target.buildUpstream ?? true,
+  runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== undefined
+    ? process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0'
+    : REAL_ROCM_PROFILE.target.runUpstream ?? true,
+  upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND
+    ?? REAL_ROCM_PROFILE.target.upstreamRunCommand
+    ?? '',
   upstreamDisplayMode: process.env.SYNTHI_REAL_ROCM_UPSTREAM_DISPLAY_MODE ?? 'auto',
   upstreamXdgRuntimeDir: process.env.SYNTHI_REAL_ROCM_UPSTREAM_XDG_RUNTIME_DIR ?? '',
   nativeLaunchObserver: process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER === '1',
   nativeLaunchObserverPath:
     process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
-  width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800),
-  height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600),
+  width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? REAL_ROCM_PROFILE.preview.width ?? 800),
+  height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? REAL_ROCM_PROFILE.preview.height ?? 600),
   hiprtRuntimeProbe:
     process.env.SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE !== undefined
       ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE', false)
@@ -898,17 +1104,26 @@ const CFG = {
   ),
   deltaBefore:
     process.env.SYNTHI_REAL_ROCM_DELTA_BEFORE ??
-    'd_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];',
+    REAL_ROCM_PROFILE.sourceDelta.before,
   deltaAfter:
     process.env.SYNTHI_REAL_ROCM_DELTA_AFTER ??
-    'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];',
-  secondDeltaFile: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE
+    REAL_ROCM_PROFILE.sourceDelta.after,
+  secondDeltaFile: (process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
-    ?? 'HIP-Basic/saxpy/main.hip',
-  secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
-  secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
-  extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
+    ?? REAL_ROCM_PROFILE.sourceDelta.second.file)
+    || REAL_ROCM_PROFILE.target.deltaFile
+    || REAL_ROCM_PROFILE.target.entryFile,
+  secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE
+    ?? REAL_ROCM_PROFILE.sourceDelta.second.before
+    ?? '',
+  secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER
+    ?? REAL_ROCM_PROFILE.sourceDelta.second.after
+    ?? '',
+  extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON
+    ?? (REAL_ROCM_PROFILE.sourceDelta.extraDeltas.length
+      ? JSON.stringify(REAL_ROCM_PROFILE.sourceDelta.extraDeltas)
+      : ''),
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
   compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
   compileTransport: (process.env.SYNTHI_REAL_ROCM_COMPILE_TRANSPORT ?? 'inline').toLowerCase(),
@@ -952,13 +1167,12 @@ const CFG = {
     false,
   ),
   outputOracleContract: parseOutputOracleContract(
-    process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
-      ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
-      ?? '',
+    configuredOutputOracleJson,
   ),
   outputOracleProfile: outputOracleProfileMode(
     process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE
       ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_PROFILE
+      ?? REAL_ROCM_PROFILE.outputOracle.profile
       ?? 'auto',
   ),
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
@@ -988,6 +1202,11 @@ const WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH =
 
 const report = {
   slug: CFG.slug,
+  real_rocm_profile: {
+    id: CFG.realRocmProfile.id,
+    schemaVersion: CFG.realRocmProfile.schemaVersion,
+    source: CFG.realRocmProfile.source,
+  },
   source_url: CFG.repoUrl,
   repo_path: CFG.repoPath,
   repo_commit: null,
@@ -4816,6 +5035,7 @@ function summarizeGpuProof(proof) {
 }
 
 async function selfCheckRuntimeDispatchEvidence() {
+  await selfCheckRealRocmProfiles();
   const visualRows = [
     { path: 'blank.png', width: 800, height: 600, visible_pixels: 0 },
     { path: 'tiny.png', width: 120, height: 90, visible_pixels: 10800 },

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-saxpy",
+  "repo": {
+    "url": "https://github.com/ROCm/rocm-examples.git"
+  },
+  "target": {
+    "entryFile": "HIP-Basic/saxpy/main.hip",
+    "deltaFile": "HIP-Basic/saxpy/main.hip",
+    "targetName": "hip_saxpy",
+    "buildSubdir": "HIP-Basic/saxpy"
+  },
+  "sourceDelta": {
+    "before": "d_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];",
+    "after": "d_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];"
+  },
+  "outputOracle": {
+    "profile": "hip.saxpy.readback-y.v1"
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}
