@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
+import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, compileWorkflowContract, planWorkflowReplay } from "../../src/browser/workflow.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
@@ -7,6 +8,7 @@ import { BROWSER_TOOL_NAMES, dispatchBrowserTool } from "../../src/tools/browser
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  sourceIdentityRegistry.resetForTests();
   eventLog._resetForTests();
 });
 
@@ -382,6 +384,63 @@ describe("browser workflow contract compiler", () => {
     }));
   });
 
+  it("does not count unregistered source identity tokens as linked", () => {
+    const workflow = compileWorkflowContract([
+      rawBaseEvent({
+        event_id: "open-details",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          element: { role: "button", name: "Open details", source_id: "src_unregistered" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.sourceIdentityCoverage).toEqual(expect.objectContaining({
+      linkedSteps: 0,
+      totalSteps: 1,
+      status: "missing",
+    }));
+    expect(workflow.contract.steps[0]?.sourcePlan).toEqual(expect.objectContaining({
+      status: "missing",
+      sourceId: "src_unregistered",
+      missingReason: "sourceTokenMissing",
+    }));
+    expect(workflow.contract.limitations).toContain("sourceIdentityMissing");
+  });
+
+  it("resolves registered source identity tokens into step metadata", () => {
+    registerSourceToken("src_registered", "src/components/DetailsButton.tsx");
+
+    const workflow = compileWorkflowContract([
+      rawBaseEvent({
+        event_id: "open-details",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          element: { role: "button", name: "Open details", source_id: "src_registered" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.sourceIdentityCoverage).toEqual(expect.objectContaining({
+      linkedSteps: 1,
+      totalSteps: 1,
+      status: "complete",
+    }));
+    expect(workflow.contract.steps[0]?.sourcePlan).toEqual(expect.objectContaining({
+      status: "linked",
+      sourceId: "src_registered",
+      workspaceId: "test-workspace",
+      filePath: "src/components/DetailsButton.tsx",
+      line: 1,
+      column: 1,
+      adapter: "unit-test",
+      transformVersion: "unit_source_identity_v1",
+    }));
+    expect(workflow.contract.limitations).not.toContain("sourceIdentityMissing");
+  });
+
   it("marks checkpoint-only authenticated workflows manual-only for publishing", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
@@ -478,6 +537,11 @@ describe("browser workflow contract compiler", () => {
 });
 
 function baseEvent(overrides: Partial<Parameters<typeof compileWorkflowContract>[0][number]>) {
+  registerSourceFromEvent(overrides);
+  return rawBaseEvent(overrides);
+}
+
+function rawBaseEvent(overrides: Partial<Parameters<typeof compileWorkflowContract>[0][number]>) {
   return {
     event_id: "evt",
     trace_id: "trace",
@@ -497,4 +561,22 @@ function baseEvent(overrides: Partial<Parameters<typeof compileWorkflowContract>
     ],
     ...overrides,
   };
+}
+
+function registerSourceFromEvent(event: Partial<Parameters<typeof compileWorkflowContract>[0][number]>): void {
+  const element = event.detail?.["element"];
+  if (!element || typeof element !== "object" || Array.isArray(element)) return;
+  const sourceId = (element as { source_id?: unknown }).source_id;
+  if (typeof sourceId !== "string" || sourceId.length === 0) return;
+  registerSourceToken(sourceId);
+}
+
+function registerSourceToken(token: string, filePath = `src/${token}.tsx`): void {
+  sourceIdentityRegistry.register({
+    workspaceId: "test-workspace",
+    filePath,
+    adapter: "unit-test",
+    transformVersion: "unit_source_identity_v1",
+    tokens: [{ token, file: filePath, tag: "button", line: 1, column: 1 }],
+  });
 }

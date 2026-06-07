@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
+import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  sourceIdentityRegistry.resetForTests();
 });
 
 describe("private browser workflow MCP tool manifest", () => {
@@ -173,6 +175,7 @@ describe("private browser workflow MCP tool manifest", () => {
     browserBroker.requestConsent(url);
     browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
     expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
     browserBroker.recordHumanAction({
       tab_id: "tab-a",
       url,
@@ -195,6 +198,7 @@ describe("private browser workflow MCP tool manifest", () => {
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
+  registerSourceFromEvent(overrides);
   return {
     event_id: "evt",
     trace_id: "trace",
@@ -207,4 +211,23 @@ function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
     kind: "human_action",
     ...overrides,
   };
+}
+
+function registerSourceFromEvent(event: Partial<BrowserTraceEvent>): void {
+  const element = event.detail?.["element"];
+  if (!element || typeof element !== "object" || Array.isArray(element)) return;
+  const sourceId = (element as { source_id?: unknown }).source_id;
+  if (typeof sourceId !== "string" || sourceId.length === 0) return;
+  registerSourceToken(sourceId);
+}
+
+function registerSourceToken(token: string): void {
+  const filePath = `src/${token}.tsx`;
+  sourceIdentityRegistry.register({
+    workspaceId: "manifest-tests",
+    filePath,
+    adapter: "unit-test",
+    transformVersion: "unit_source_identity_v1",
+    tokens: [{ token, file: filePath, tag: "button", line: 1, column: 1 }],
+  });
 }

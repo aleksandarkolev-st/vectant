@@ -1,4 +1,5 @@
 import { reduceLane0Windows, type Lane0StatusV7 } from "./lane0.js";
+import { sourceIdentityRegistry } from "./source_identity.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserTraceEvent, LocatorCandidate } from "./types.js";
 
 export type WorkflowStateV7 =
@@ -98,6 +99,13 @@ export interface WorkflowStepContractV7 {
   sourcePlan: {
     status: "linked" | "missing";
     sourceId?: string;
+    workspaceId?: string;
+    filePath?: string;
+    line?: number;
+    column?: number;
+    adapter?: string;
+    transformVersion?: string;
+    missingReason?: "sourceTokenMissing";
   };
   semanticPlan?: {
     reducerVersion: string;
@@ -637,8 +645,9 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   const parameterName = parameterNameForAction(event, element, ordinal, actionKind);
   const mutation = mutationFor(actionKind, targetLabel, event);
   const surfacePlan = surfacePlanFor(event, actionKind);
+  const sourcePlan = sourcePlanFor(element);
   const limitations: WorkflowLimitationV7[] = [];
-  if (!element?.source_id) limitations.push("sourceIdentityMissing");
+  if (sourcePlan.status === "missing") limitations.push("sourceIdentityMissing");
   if (!primary) limitations.push("unresolvedStep");
   if (primary && primary.confidence < 0.7) limitations.push("lowConfidenceLocator");
   if (event.redacted) limitations.push("redactedInputValue");
@@ -662,7 +671,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
       fallbacks,
       confidence,
     },
-    sourcePlan: element?.source_id ? { status: "linked", sourceId: element.source_id } : { status: "missing" },
+    sourcePlan,
     ...(event.semantic ? {
       semanticPlan: {
         reducerVersion: event.semantic.reducer_version,
@@ -677,6 +686,29 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
     expectedEffects: expectedEffectsFor(actionKind, targetLabel, mutation !== undefined),
     ...(mutation ? { mutation } : {}),
     limitations,
+  };
+}
+
+function sourcePlanFor(element?: BrowserElementMetadata): WorkflowStepContractV7["sourcePlan"] {
+  const sourceId = element?.source_id;
+  if (!sourceId) return { status: "missing" };
+  const resolved = sourceIdentityRegistry.lookup(sourceId);
+  if (!resolved) {
+    return {
+      status: "missing",
+      sourceId,
+      missingReason: "sourceTokenMissing",
+    };
+  }
+  return {
+    status: "linked",
+    sourceId,
+    workspaceId: resolved.workspace_id,
+    filePath: resolved.filePath,
+    line: resolved.line,
+    column: resolved.column,
+    adapter: resolved.adapter,
+    transformVersion: resolved.transform_version,
   };
 }
 
