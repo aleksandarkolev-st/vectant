@@ -1747,6 +1747,33 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       ?? outputProof?.outputOracle?.deterministicVisualMode
       ?? outputProof?.outputOracle?.deterministic_visual_mode
       ?? {},
+    metric_clock:
+      input.metricClock
+      ?? input.metric_clock
+      ?? validationContext?.metricClock
+      ?? validationContext?.metric_clock
+      ?? input.timings?.metricClock
+      ?? input.timings?.metric_clock
+      ?? validationContext?.timings?.metricClock
+      ?? validationContext?.timings?.metric_clock,
+    metric_scope:
+      input.metricScope
+      ?? input.metric_scope
+      ?? validationContext?.metricScope
+      ?? validationContext?.metric_scope
+      ?? input.timings?.metricScope
+      ?? input.timings?.metric_scope
+      ?? validationContext?.timings?.metricScope
+      ?? validationContext?.timings?.metric_scope,
+    cache_state:
+      input.cacheState
+      ?? input.cache_state
+      ?? validationContext?.cacheState
+      ?? validationContext?.cache_state
+      ?? input.timings?.cacheState
+      ?? input.timings?.cache_state
+      ?? validationContext?.timings?.cacheState
+      ?? validationContext?.timings?.cache_state,
     timings: input.timings ?? validationContext?.timings ?? {},
     model_provenance: input.modelProvenance ?? input.model_provenance ?? validationContext?.modelProvenance ?? {},
     evidence_refs: compactStringList([

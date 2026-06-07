@@ -88,6 +88,30 @@ function baselineVisualOracleArtifacts(overrides = {}) {
   };
 }
 
+function baselineTimingMetrics(overrides = {}) {
+  return {
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    static_discovery_time: 1,
+    ai_contract_synthesis_time: 2,
+    model_availability_check_time: 3,
+    artifact_hash_time: 4,
+    adapter_generation_time: 5,
+    device_compile_wall_time: 6,
+    artifact_load_time: 7,
+    epoch_publish_time: 8,
+    dispatch_trace_time: 9,
+    runtime_probe_time: 10,
+    oracle_analysis_time: 11,
+    trigger_to_visible_time: 12,
+    screenshot_capture_time: 13,
+    dispatch_to_output_proof_time: 14,
+    total_validator_wall_time: 15,
+    ...overrides,
+  };
+}
+
 function baselineRecord(overrides = {}) {
   return {
     project_id: 'adversarial-generic-project',
@@ -147,7 +171,12 @@ function baselineRecord(overrides = {}) {
     oracle_artifacts: {
       compute_oracle_artifacts: baselineComputeOracleArtifacts(),
     },
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    timings: baselineTimingMetrics(),
     model_provenance: baselineModelProvenance(),
+    evidence_refs: ['runtime:module-load', 'runtime:epoch-publish', 'runtime:dispatch', 'runtime:output-oracle'],
     ...overrides,
   };
 }
@@ -319,6 +348,15 @@ function baselineFullRuntimeProof() {
   };
 }
 
+function baselineRuntimeMetricInput() {
+  return {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    timings: baselineTimingMetrics(),
+  };
+}
+
 function baselineProofComponents() {
   return {
     sourceProofs: [{
@@ -486,6 +524,7 @@ const acceptedLedger = buildGpuHmrProofLedger(baselineRecord());
 const runtimeArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   sourceEditId: 'gpu-artifact-edit',
+  ...baselineRuntimeMetricInput(),
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -517,6 +556,7 @@ assert.equal(runtimeArtifact.acceptanceContractEvaluation.accepted, true);
 const rejectedBlankVisualArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   sourceEditId: 'gpu-artifact-edit',
+  ...baselineRuntimeMetricInput(),
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -560,6 +600,7 @@ assert.ok(
 const rejectedSameFrameVisualArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   sourceEditId: 'gpu-artifact-edit',
+  ...baselineRuntimeMetricInput(),
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -639,6 +680,7 @@ assert.equal(evaluateGpuHmrProofLedger(forgedDispatchLedgerRecord).gpuHmrSuccess
 const rejectedForgedExplicitLedgerArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   sourceEditId: 'gpu-artifact-edit',
+  ...baselineRuntimeMetricInput(),
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -742,6 +784,30 @@ const cases = [
   ['cpu fallback', baselineRecord({ cpu_hmr_used: true }), 'cpu_hmr_used'],
   ['full rebuild', baselineRecord({ full_rebuild_used: true }), 'full_rebuild_used'],
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],
+  ['missing project id', baselineRecord({ project_id: null }), 'project_id_missing'],
+  ['missing edit id', baselineRecord({ edit_id: null }), 'edit_id_missing'],
+  ['missing ledger evidence refs', baselineRecord({ evidence_refs: [] }), 'evidence_refs_missing'],
+  ['missing metric clock', baselineRecord({
+    metric_clock: null,
+    timings: baselineTimingMetrics({ metric_clock: null }),
+  }), 'metric_clock_missing'],
+  ['wall clock metric rejected', baselineRecord({
+    metric_clock: 'wall_ms',
+  }), 'metric_clock_not_monotonic_ns'],
+  ['missing metric scope', baselineRecord({
+    metric_scope: null,
+    timings: baselineTimingMetrics({ metric_scope: null }),
+  }), 'metric_scope_missing'],
+  ['unsupported metric scope', baselineRecord({ metric_scope: 'unknown' }), 'metric_scope_unsupported'],
+  ['missing cache state', baselineRecord({
+    cache_state: null,
+    timings: baselineTimingMetrics({ cache_state: null }),
+  }), 'cache_state_missing'],
+  ['unsupported cache state', baselineRecord({ cache_state: 'unknown' }), 'cache_state_unsupported'],
+  ['missing timings object', baselineRecord({ timings: {} }), 'timings_missing'],
+  ['missing device compile timing', baselineRecord({
+    timings: baselineTimingMetrics({ device_compile_wall_time: null }),
+  }), 'timing_device_compile_wall_time_missing'],
   ['missing split model provenance role', baselineRecord({
     model_provenance: {
       last_gpu_delta: baselineModelProvenance().last_gpu_delta,

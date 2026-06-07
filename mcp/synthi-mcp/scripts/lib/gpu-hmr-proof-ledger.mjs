@@ -5,6 +5,26 @@ export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.
 
 const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
 const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
+const METRIC_CLOCKS = new Set(['monotonic_ns']);
+const METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
+const CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
+const REQUIRED_TIMING_FIELDS = [
+  ['static_discovery_time', 'staticDiscoveryTime'],
+  ['ai_contract_synthesis_time', 'aiContractSynthesisTime'],
+  ['model_availability_check_time', 'modelAvailabilityCheckTime'],
+  ['artifact_hash_time', 'artifactHashTime'],
+  ['adapter_generation_time', 'adapterGenerationTime'],
+  ['device_compile_wall_time', 'deviceCompileWallTime'],
+  ['artifact_load_time', 'artifactLoadTime'],
+  ['epoch_publish_time', 'epochPublishTime'],
+  ['dispatch_trace_time', 'dispatchTraceTime'],
+  ['runtime_probe_time', 'runtimeProbeTime'],
+  ['oracle_analysis_time', 'oracleAnalysisTime'],
+  ['trigger_to_visible_time', 'triggerToVisibleTime'],
+  ['screenshot_capture_time', 'screenshotCaptureTime'],
+  ['dispatch_to_output_proof_time', 'dispatchToOutputProofTime'],
+  ['total_validator_wall_time', 'totalValidatorWallTime'],
+];
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -82,8 +102,44 @@ function valueRecorded(object, key) {
 }
 
 function finiteNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function finiteNonNegativeNumber(value) {
+  const n = finiteNumber(value);
+  return n !== null && n >= 0 ? n : null;
+}
+
+function timingObjectCandidates(timings) {
+  const t = asObject(timings);
+  return [
+    t,
+    asObject(t.normalized_timings),
+    asObject(t.normalizedTimings),
+    asObject(t.snake_case),
+    asObject(asObject(t.normalizedTimings).snake_case),
+  ];
+}
+
+function timingFieldValue(timings, snakeKey, camelKey) {
+  const candidates = timingObjectCandidates(timings);
+  for (const object of candidates) {
+    for (const key of [snakeKey, `${snakeKey}_ms`, camelKey, `${camelKey}Ms`]) {
+      if (!hasOwnDeep(object, key)) continue;
+      const value = finiteNonNegativeNumber(object[key]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+function collectTimingFieldValues(timings) {
+  return Object.fromEntries(REQUIRED_TIMING_FIELDS.map(([snakeKey, camelKey]) => [
+    snakeKey,
+    timingFieldValue(timings, snakeKey, camelKey),
+  ]));
 }
 
 function eventId(event) {
@@ -442,6 +498,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
   const processIdentity = asObject(record.process_identity ?? record.processIdentity);
   const deviceIdentity = asObject(record.device_identity ?? record.deviceIdentity);
   const firewallEvidence = asObject(record.firewall_evidence ?? record.firewallEvidence);
+  const timings = asObject(record.timings);
   const cpuHmrUsed = firstPresent(
     [record, 'cpu_hmr_used'],
     [record, 'cpuHmrUsed'],
@@ -495,7 +552,18 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
       ?? outputEvent.deterministic_visual_mode
       ?? outputEvent.deterministicVisualMode,
     ),
-    timings: asObject(record.timings),
+    metricClock: firstText(
+      record.metric_clock,
+      record.metricClock,
+      timings.metric_clock,
+      timings.metricClock,
+      asObject(timings.clock_evidence).metric_clock,
+      asObject(timings.clockEvidence).metricClock,
+    ),
+    metricScope: firstText(record.metric_scope, record.metricScope, timings.metric_scope, timings.metricScope),
+    cacheState: firstText(record.cache_state, record.cacheState, timings.cache_state, timings.cacheState),
+    timings,
+    timingFieldValues: collectTimingFieldValues(timings),
     modelProvenance: asObject(record.model_provenance ?? record.modelProvenance),
     evidenceRefs: compactStringList(record.evidence_refs ?? record.evidenceRefs),
   };
@@ -547,6 +615,33 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   const projectKind = firstText(classification.project_kind, classification.projectKind);
   const editKind = firstText(classification.edit_kind, classification.editKind);
   const route = firstText(classification.route);
+
+  if (!record.projectId) addFailure(failures, 'project_id_missing');
+  if (!record.editId) addFailure(failures, 'edit_id_missing');
+  if (record.evidenceRefs.length === 0) addFailure(failures, 'evidence_refs_missing');
+  if (!record.metricClock) {
+    addFailure(failures, 'metric_clock_missing');
+  } else if (!METRIC_CLOCKS.has(record.metricClock)) {
+    addFailure(failures, 'metric_clock_not_monotonic_ns', { metricClock: record.metricClock });
+  }
+  if (!record.metricScope) {
+    addFailure(failures, 'metric_scope_missing');
+  } else if (!METRIC_SCOPES.has(record.metricScope)) {
+    addFailure(failures, 'metric_scope_unsupported', { metricScope: record.metricScope });
+  }
+  if (!record.cacheState) {
+    addFailure(failures, 'cache_state_missing');
+  } else if (!CACHE_STATES.has(record.cacheState)) {
+    addFailure(failures, 'cache_state_unsupported', { cacheState: record.cacheState });
+  }
+  if (!record.timings || Object.keys(record.timings).length === 0) {
+    addFailure(failures, 'timings_missing');
+  }
+  for (const [snakeKey] of REQUIRED_TIMING_FIELDS) {
+    if (record.timingFieldValues[snakeKey] === null) {
+      addFailure(failures, `timing_${snakeKey}_missing`);
+    }
+  }
 
   if (!projectKind) {
     addFailure(failures, 'classification_project_kind_missing');
@@ -905,6 +1000,9 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       dispatchArtifactHash,
       outputDispatchId,
       outputPassed: record.outputEvent.passed === true,
+      metricClock: record.metricClock,
+      metricScope: record.metricScope,
+      cacheState: record.cacheState,
     },
   };
 }

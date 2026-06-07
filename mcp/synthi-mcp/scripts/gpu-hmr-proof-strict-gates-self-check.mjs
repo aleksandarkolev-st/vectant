@@ -78,6 +78,30 @@ function computeOracleArtifacts() {
   };
 }
 
+function timingMetrics(overrides = {}) {
+  return {
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    static_discovery_time: 1,
+    ai_contract_synthesis_time: 2,
+    model_availability_check_time: 3,
+    artifact_hash_time: 4,
+    adapter_generation_time: 5,
+    device_compile_wall_time: 6,
+    artifact_load_time: 7,
+    epoch_publish_time: 8,
+    dispatch_trace_time: 9,
+    runtime_probe_time: 10,
+    oracle_analysis_time: 11,
+    trigger_to_visible_time: 12,
+    screenshot_capture_time: 13,
+    dispatch_to_output_proof_time: 14,
+    total_validator_wall_time: 15,
+    ...overrides,
+  };
+}
+
 function ledgerRecord(overrides = {}) {
   return {
     project_id: 'strict-generic-gpu-project',
@@ -137,7 +161,12 @@ function ledgerRecord(overrides = {}) {
     oracle_artifacts: {
       compute_oracle_artifacts: computeOracleArtifacts(),
     },
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    timings: timingMetrics(),
     model_provenance: modelProvenance(),
+    evidence_refs: ['runtime:module-load', 'runtime:epoch-publish', 'runtime:dispatch', 'runtime:output-oracle'],
     ...overrides,
   };
 }
