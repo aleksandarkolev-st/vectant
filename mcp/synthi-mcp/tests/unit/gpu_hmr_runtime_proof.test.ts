@@ -6225,6 +6225,75 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("rejects runtime artifacts for backends without implemented contracts", () => {
+    for (const backend of ["cuda", "sycl"] as const) {
+      const dispatchProof = safeDispatchProof();
+      const sourceProof = acceptedSourceProof();
+      const fissionProof = acceptedFissionProof();
+      const abiProof = acceptedAbiProof();
+      const artifactTransportProof = acceptedArtifactTransportProof();
+      const epochProof = retiredEpochProof();
+      const outputProof = classifyGpuHmrOutputProof({
+        dispatchProof,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      });
+      const hostPreservationProof = preservedHostProof();
+      const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+      });
+
+      const artifact = buildValidationRuntimeProofArtifact({
+        workspaceSlug: "workspace",
+        backend,
+        gpuArch: backend === "cuda" ? "sm_90" : "amdgcn-amd-amdhsa",
+        compiler: backend === "cuda" ? "nvcc" : "clang++",
+        processId: "pid1",
+        deviceUuid: "device:test",
+        contextHandle: "gpu-context:test",
+        ...acceptedGpuRouteEvidence(),
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+        fullRuntimeProof,
+        validationContext: {
+          processId: "pid1",
+          deviceIdentity: {
+            device_uuid: "device:test",
+          },
+        },
+      });
+
+      expect(artifact.acceptanceContractEvaluation.accepted).toBe(false);
+      expect(artifact.gpuHmrSuccess).toBe(false);
+      expect(artifact.acceptanceContractEvaluation.failedGates.map((gate) => gate.code)).toContain(
+        "backend_specific_contract_not_implemented",
+      );
+      expect(artifact.limitations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage_id: "acceptance-contract",
+            degraded_reason: "backend_specific_contract_not_implemented",
+          }),
+        ]),
+      );
+    }
+  });
+
   it("does not mark runtime artifacts successful without full runtime proof", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
