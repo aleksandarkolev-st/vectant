@@ -189,6 +189,9 @@ async function runCase({ testCase, container, context, runner }) {
       exportBody.ok === true && typeof generated?.code === "string" && generated.code.includes("@playwright/test"),
       `locators=${generated?.used_locators?.length ?? 0}`
     );
+    const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
+    await writeFile(specPath, generated.code);
+    await writeJson(caseDir, "export.json", generated);
     if (Array.isArray(testCase.expectedReplayText) && testCase.expectedReplayText.length > 0) {
       const missingText = testCase.expectedReplayText.filter((text) => !String(generated?.code || "").includes(text));
       record(
@@ -198,9 +201,15 @@ async function runCase({ testCase, container, context, runner }) {
         missingText.length ? `missing=${missingText.join(" | ")}` : `assertions=${testCase.expectedReplayText.length}`
       );
     }
-    const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
-    await writeFile(specPath, generated.code);
-    await writeJson(caseDir, "export.json", generated);
+    if (Array.isArray(testCase.expectedReplayCode) && testCase.expectedReplayCode.length > 0) {
+      const missingCode = testCase.expectedReplayCode.filter((snippet) => !String(generated?.code || "").includes(snippet));
+      record(
+        testCase.id,
+        "export expected replay code",
+        missingCode.length === 0,
+        missingCode.length ? `missing=${missingCode.join(" | ")}` : `snippets=${testCase.expectedReplayCode.length}`
+      );
+    }
 
     const manifestBody = await clickWorkflowButton(idePage, /^Manifest$/);
     const manifest = manifestBody.result?.manifest;
@@ -872,8 +881,10 @@ const CASES = [
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],
     expectedReplayText: [
       "Searched revenue",
-      "Moved Revenue audit to Done lane",
       "Applied enterprise urgent; card done; search revenue",
+    ],
+    expectedReplayCode: [
+      "toContainText(\"Revenue audit\")",
     ],
     files: () => commonFiles({
       title: "Dashboard Interactions Workflow",
