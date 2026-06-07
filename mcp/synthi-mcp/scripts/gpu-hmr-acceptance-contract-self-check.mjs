@@ -107,6 +107,19 @@ expectReject('ai hints only', {
   evidence_refs: [],
   ai_hints: [{ backend: 'hip' }],
 }, 'ai_hints_without_verified_evidence');
+expectReject('ai-sourced ABI metadata', {
+  abi_metadata: {
+    kernel_abi_fingerprint_hashes: ['sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'],
+    extractor_sources: ['clang_ast'],
+    args: [{
+      name: 'output',
+      type: 'float*',
+      size: 8,
+      offset: 0,
+      source: 'ai_hint',
+    }],
+  },
+}, 'ai_hint_used_as_authoritative_contract_field');
 expectReject('layout change', {
   abi_compatibility_class: {
     value: 'layout_changed',

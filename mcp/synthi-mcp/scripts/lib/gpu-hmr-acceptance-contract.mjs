@@ -79,6 +79,61 @@ function nonEmptyValue(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+const AI_AUTHORITY_MARKERS = new Set([
+  'ai',
+  'ai_hint',
+  'ai_inference',
+  'llm',
+  'llm_hint',
+  'model_hint',
+]);
+
+const AUTHORITY_KEY_RE = /(^|_)(source|sources|provenance|authority|verified_by|verification|extractor_sources|metadata_sources)($|_)/i;
+
+function normalizedMarker(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function valueContainsAiAuthorityMarker(value) {
+  if (typeof value === 'string') return AI_AUTHORITY_MARKERS.has(normalizedMarker(value));
+  if (Array.isArray(value)) return value.some(valueContainsAiAuthorityMarker);
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(valueContainsAiAuthorityMarker);
+  }
+  return false;
+}
+
+function collectAiAuthorityMarkers(value, path = []) {
+  if (!value || typeof value !== 'object') return [];
+  const failures = [];
+  const visit = (node, nodePath) => {
+    if (nodePath[0] === 'ai_hints' || nodePath[0] === 'aiHints') return;
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => visit(item, [...nodePath, String(index)]));
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    for (const [key, child] of Object.entries(node)) {
+      const childPath = [...nodePath, key];
+      if (AUTHORITY_KEY_RE.test(key) && valueContainsAiAuthorityMarker(child)) {
+        failures.push({
+          path: childPath.join('.'),
+          value: child,
+        });
+      }
+      visit(child, childPath);
+    }
+  };
+  visit(value, path);
+  const seen = new Set();
+  return failures.filter((failure) => {
+    const key = `${failure.path}:${stableJson(failure.value)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function firstObject(...values) {
   for (const value of values) {
     const obj = asObject(value);
@@ -214,6 +269,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
 }
 
 export function evaluateGpuHmrAcceptanceContract(input = {}) {
+  const rawContract = asObject(input);
   const contract = normalizeGpuHmrAcceptanceContract(input);
   const failures = [];
   const warnings = [];
@@ -248,6 +304,9 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (!contract.evidence_refs.length) warnings.push({ code: 'contract_evidence_refs_missing' });
   if (contract.evidence_refs.length === 0 && contract.ai_hints.length > 0) {
     addFailure(failures, 'ai_hints_without_verified_evidence');
+  }
+  for (const marker of collectAiAuthorityMarkers(rawContract)) {
+    addFailure(failures, 'ai_hint_used_as_authoritative_contract_field', marker);
   }
   const abi = contract.abi_compatibility_class;
   if (!['compatible', 'additive'].includes(abi.value) && !abi.backend_specific_adapter_safety_proven) {
