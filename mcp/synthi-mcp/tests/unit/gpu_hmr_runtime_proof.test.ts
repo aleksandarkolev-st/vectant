@@ -5709,6 +5709,14 @@ describe("GPU HMR runtime output proof classification", () => {
 
     const artifact = buildValidationRuntimeProofArtifact({
       workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
       runtimeSessionIds: ["runtime-session:test"],
       sourceProofs: [sourceProof],
       fissionProof: acceptedFissionProof(),
@@ -5720,76 +5728,6 @@ describe("GPU HMR runtime output proof classification", () => {
       hostPreservationProof: preservedHostProof(),
       originalHostPathProof: attachedOriginalHostPathProof(),
       fullRuntimeProof,
-      acceptanceContract: {
-        contract_version: "synthi.gpu_hmr.contract.v1",
-        contract_hash: `sha256:${TEST_PROOF_HASH}`,
-        project_id: "workspace",
-        edit_id: "gpu-artifact-edit",
-        backend: "hip",
-        confidence: 0.95,
-        evidence_refs: [
-          ".synthi/gpu-hmr/proofs/source-proof.json",
-          "worker-log:artifact_transport:sha256:abc",
-          "worker-log:synthi_gpu_launch:runtime-session:test:shade",
-        ],
-        classification: {
-          project_kind: "gpu_project",
-          edit_kind: "gpu_artifact_edit",
-          route: "gpu_hmr",
-          confidence: 0.95,
-          blocking_gaps: [],
-        },
-        artifact_identity: {
-          source_paths: ["src/kernels/shade.hip"],
-          artifact_kind: "hsaco",
-          entry_points: ["shade"],
-          compile_target: "gfx1201",
-          compiler: "hipcc",
-          compiler_args_hash: `sha256:${TEST_PROOF_HASH}`,
-        },
-        artifact_hash_before: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
-        artifact_hash_after: TEST_ARTIFACT_ID,
-        unaffected_artifacts_hash_unchanged: true,
-        abi_compatibility_class: {
-          value: "compatible",
-          evidence_refs: ["evidence:abi:layout-compatible"],
-        },
-        abi_metadata: {
-          kernel_abi_fingerprint_hashes: [`sha256:${TEST_ABI_HASH}`],
-          extractor_sources: ["clang_ast"],
-        },
-        reload_mechanism: "generated_adapter",
-        adapter_outcome: "adapter_generated",
-        reload_evidence_refs: ["worker-log:artifact_transport:sha256:abc"],
-        dispatch_trace_required: true,
-        oracle_trace_required: true,
-        state_preservation_checks: {
-          process_id: "pid1",
-          device_uuid: "device:test",
-          context_or_device_handle: "hip-context:test",
-          queue_or_stream_handle: "stream:default",
-          persistent_gpu_allocations: ["allocation:test"],
-        },
-        epoch_policy: {
-          publish_mechanism: "runtime_epoch_publish",
-          dispatch_binding: "dispatch_table_epoch_binding",
-          retirement_mechanism: "stream_event",
-        },
-        epoch_retirement_proof: {
-          value: "stream_event_proven",
-          evidence_refs: ["evidence:epoch:abc"],
-        },
-        fission_report: {
-          selected_island: "fission-island:abc",
-          selected_reason: "verified_fission_contract",
-          artifact_hash_before: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
-          artifact_hash_after: TEST_ARTIFACT_ID,
-          full_device_fallback: false,
-          host_relinked: false,
-          process_restarted: false,
-          full_rebuild_used: false,
-        },
-      },
       runtimeEvidence: {
         hostIdentitySnapshots: {
           evidence_refs: ["worker-log:host_identity:renderer_state"],
@@ -5931,6 +5869,99 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("rejects explicit acceptance contracts that disagree with verified proof material", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+    const verifiedContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+    });
+    const forgedContract = {
+      ...verifiedContract,
+      artifact_identity: {
+        ...verifiedContract.artifact_identity,
+        source_paths: ["src/forged/not-the-verified-kernel.hip"],
+      },
+    };
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      acceptanceContract: forgedContract,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.acceptanceContractConsistency.accepted).toBe(false);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+          degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+          field: "source_paths",
+        }),
+      ]),
+    );
   });
 
   it("does not mark runtime artifacts successful without full runtime proof", () => {

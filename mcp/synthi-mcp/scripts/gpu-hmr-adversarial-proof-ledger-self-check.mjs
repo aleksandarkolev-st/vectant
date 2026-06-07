@@ -166,6 +166,107 @@ function baselineFullRuntimeProof() {
   };
 }
 
+function baselineProofComponents() {
+  return {
+    sourceProofs: [{
+      resultState: 'gpu-hmr-symbol-bound',
+      evidenceRefs: ['static:hip-launch'],
+      proofArtifactPaths: ['memory://source-proof.json'],
+    }],
+    fissionProof: {
+      fissionProven: true,
+      selectedIslandContracts: [{
+        islandId: 'device-kernel',
+        sourcePaths: ['src/kernels/generic.hip'],
+        artifactKind: 'hsaco',
+        targetSymbols: ['generic_kernel'],
+        compiler: 'hipcc',
+        compileCommandHash: HASH_C,
+        includeClosure: [],
+      }],
+      evidenceRefs: ['static:fission-contract'],
+    },
+    abiProof: {
+      resultState: 'gpu-hmr-abi-proven',
+      kernelAbiFingerprintHashes: [HASH_C],
+      acceptedExtractorSources: ['clang_ast'],
+      extractorProvenance: [{
+        kind: 'clang_ast',
+        evidenceId: 'static:clang-ast',
+      }],
+      evidenceRefs: ['code-object:metadata'],
+    },
+    artifactTransportProof: {
+      resultState: 'gpu-hmr-artifact-transport-proven',
+      ramTransportProven: true,
+      selectedArtifactIds: [HASH_B],
+      ramBlobIds: [HASH_B],
+      processId: 'pid-1',
+      eventId: 'load-1',
+      timestampMonotonicNs: 100,
+      evidenceRefs: ['runtime:module-load'],
+    },
+    epochProof: {
+      resultState: 'gpu-hmr-epoch-swap-proven',
+      published: true,
+      activeEpoch: 'epoch-7',
+      oldGenerationRetired: true,
+      streamOrderingProven: true,
+      retirementStrategy: 'stream_event',
+      streamIds: ['stream-1'],
+      eventId: 'publish-1',
+      retirementEventId: 'retire-1',
+      retirementFenceIds: ['runtime:stream-event'],
+      epochGenerationGraph: {
+        latestPublication: {
+          id: 'publish-1',
+          epoch: 'epoch-7',
+          oldArtifactId: HASH_A,
+          newArtifactId: HASH_B,
+          publishTimestamp: 200,
+        },
+      },
+      evidenceRefs: ['runtime:epoch-publish'],
+    },
+    dispatchProof: {
+      resultState: 'gpu-hmr-dispatch-safe-proven',
+      dispatchId: 'dispatch-1',
+      epoch: 'epoch-7',
+      selectedArtifactIds: [HASH_B],
+      runtimeArtifactIds: [HASH_B],
+      processId: 'pid-1',
+      dispatchTimestamp: 300,
+      dispatchStreamIds: ['stream-1'],
+      dispatchTableEntryIds: ['generic_kernel:epoch-7'],
+      argProvenanceRecords: [{
+        category: 'device_allocation',
+        allocationId: 'allocation-1',
+      }],
+      evidenceRefs: ['runtime:dispatch'],
+    },
+    outputProof: {
+      resultState: 'gpu-hmr-output-oracle-proven',
+      eventId: 'output-1',
+      epoch: 'epoch-7',
+      afterDispatchId: 'dispatch-1',
+      outputTimestamp: 400,
+      outputOracle: {
+        kind: 'buffer_checksum',
+        artifactId: HASH_B,
+        dispatchId: 'dispatch-1',
+        passed: true,
+        readbackTimestamp: 400,
+      },
+      evidenceRefs: ['runtime:output-oracle'],
+    },
+    hostPreservationProof: {
+      resultState: 'gpu-hmr-host-preservation-proven',
+      processId: 'pid-1',
+      evidenceRefs: ['runtime:host-preservation'],
+    },
+  };
+}
+
 function expectReject(name, record, expectedCode) {
   const result = evaluateGpuHmrProofLedger(record);
   assert.equal(result.gpuHmrSuccess, false, `${name} unexpectedly accepted`);
@@ -183,6 +284,15 @@ assert.equal(accepted.gpuHmrSuccess, true);
 const acceptedLedger = buildGpuHmrProofLedger(baselineRecord());
 const runtimeArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
+  backend: 'hip',
+  gpuArch: 'gfx1201',
+  processId: 'pid-1',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  ...baselineProofComponents(),
   acceptanceContract: baselineContract(),
   proofLedgerRecord: baselineRecord(),
   fullRuntimeProof: baselineFullRuntimeProof(),
