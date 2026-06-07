@@ -941,6 +941,17 @@ function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
+function hasOwn(object, key) {
+  return object && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function firstPresent(...entries) {
+  for (const [object, key] of entries) {
+    if (hasOwn(object, key)) return { present: true, value: object[key] };
+  }
+  return { present: false, value: undefined };
+}
+
 function firstString(...values) {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) return value.trim();
@@ -1098,6 +1109,35 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
     ?? objectOrNull(outputProof?.output_oracle)
     ?? {};
   const hostPreservationProof = objectOrNull(input.hostPreservationProof);
+  const firewallEvidence = objectOrNull(input.firewallEvidence)
+    ?? objectOrNull(input.firewall_evidence)
+    ?? objectOrNull(validationContext?.firewallEvidence)
+    ?? objectOrNull(validationContext?.firewall_evidence)
+    ?? null;
+  const cpuHmrUsed = firstPresent(
+    [input, 'cpuHmrUsed'],
+    [input, 'cpu_hmr_used'],
+    [validationContext, 'cpuHmrUsed'],
+    [validationContext, 'cpu_hmr_used'],
+    [firewallEvidence, 'cpuHmrUsed'],
+    [firewallEvidence, 'cpu_hmr_used'],
+  );
+  const fullRebuildUsed = firstPresent(
+    [input, 'fullRebuildUsed'],
+    [input, 'full_rebuild_used'],
+    [validationContext, 'fullRebuildUsed'],
+    [validationContext, 'full_rebuild_used'],
+    [firewallEvidence, 'fullRebuildUsed'],
+    [firewallEvidence, 'full_rebuild_used'],
+  );
+  const processRestarted = firstPresent(
+    [input, 'processRestarted'],
+    [input, 'process_restarted'],
+    [validationContext, 'processRestarted'],
+    [validationContext, 'process_restarted'],
+    [firewallEvidence, 'processRestarted'],
+    [firewallEvidence, 'process_restarted'],
+  );
   const publication = latestPublicationFromEpochProof(epochProof) ?? {};
   const artifactAfterHash = firstArtifactId(
     input.artifactAfterHash,
@@ -1164,7 +1204,7 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
   const dispatchArtifactHash = proofArtifactId(dispatchProof);
   const outputArtifactHash = proofArtifactId(outputProof);
 
-  return {
+  const record = {
     project_id: input.workspaceSlug ?? validationContext?.workspaceSlug ?? validationContext?.workspace_slug ?? null,
     edit_id: input.sourceEditId ?? input.source_edit_id ?? validationContext?.sourceEditId ?? null,
     classification: input.classification ?? validationContext?.classification ?? acceptanceContract?.classification ?? {},
@@ -1234,9 +1274,7 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
       ),
     },
     device_identity: input.deviceIdentity ?? input.device_identity ?? validationContext?.deviceIdentity ?? {},
-    cpu_hmr_used: input.cpuHmrUsed === true || input.cpu_hmr_used === true,
-    full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
-    process_restarted: input.processRestarted === true || input.process_restarted === true,
+    firewall_evidence: firewallEvidence ?? {},
     oracle_artifacts: outputProof?.oracleArtifacts ?? outputProof?.oracle_artifacts ?? {},
     deterministic_visual_mode:
       input.deterministicVisualMode
@@ -1258,6 +1296,10 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
       ...(Array.isArray(hostPreservationProof?.evidenceRefs) ? hostPreservationProof.evidenceRefs : []),
     ]),
   };
+  if (cpuHmrUsed.present) record.cpu_hmr_used = cpuHmrUsed.value === true;
+  if (fullRebuildUsed.present) record.full_rebuild_used = fullRebuildUsed.value === true;
+  if (processRestarted.present) record.process_restarted = processRestarted.value === true;
+  return record;
 }
 
 export function buildValidationRuntimeProofArtifact(input = {}) {

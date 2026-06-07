@@ -234,6 +234,21 @@ assertGpuHmrProofLedgerSuccess(baselineRecord({
 }));
 
 const cases = [
+  ['missing cpu hmr absence evidence', (() => {
+    const record = baselineRecord();
+    delete record.cpu_hmr_used;
+    return record;
+  })(), 'cpu_hmr_absence_evidence_missing'],
+  ['missing full rebuild absence evidence', (() => {
+    const record = baselineRecord();
+    delete record.full_rebuild_used;
+    return record;
+  })(), 'full_rebuild_absence_evidence_missing'],
+  ['missing process restart absence evidence', (() => {
+    const record = baselineRecord();
+    delete record.process_restarted;
+    return record;
+  })(), 'process_restart_absence_evidence_missing'],
   ['cpu fallback', baselineRecord({ cpu_hmr_used: true }), 'cpu_hmr_used'],
   ['full rebuild', baselineRecord({ full_rebuild_used: true }), 'full_rebuild_used'],
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],

@@ -6623,6 +6623,27 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evaluateGpuHmrProofLedger(baseRecord).gpuHmrSuccess).toBe(true);
 
     const cases = [
+      [
+        (() => {
+          const { cpu_hmr_used: _cpuHmrUsed, ...record } = baseRecord;
+          return record;
+        })(),
+        "cpu_hmr_absence_evidence_missing",
+      ],
+      [
+        (() => {
+          const { full_rebuild_used: _fullRebuildUsed, ...record } = baseRecord;
+          return record;
+        })(),
+        "full_rebuild_absence_evidence_missing",
+      ],
+      [
+        (() => {
+          const { process_restarted: _processRestarted, ...record } = baseRecord;
+          return record;
+        })(),
+        "process_restart_absence_evidence_missing",
+      ],
       [{ ...baseRecord, contract_hash: null }, "contract_hash_missing"],
       [{ ...baseRecord, artifact_before_hash: null }, "artifact_before_hash_missing"],
       [

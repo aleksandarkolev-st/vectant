@@ -23,6 +23,19 @@ function asBool(value) {
   return value === true;
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function firstPresent(...entries) {
+  for (const [object, key] of entries) {
+    if (object && typeof object === 'object' && hasOwn(object, key)) {
+      return { present: true, value: object[key] };
+    }
+  }
+  return { present: false, value: undefined };
+}
+
 function text(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -132,6 +145,25 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
   const retirementEvent = asObject(record.retirement_event ?? record.retirementEvent);
   const processIdentity = asObject(record.process_identity ?? record.processIdentity);
   const deviceIdentity = asObject(record.device_identity ?? record.deviceIdentity);
+  const firewallEvidence = asObject(record.firewall_evidence ?? record.firewallEvidence);
+  const cpuHmrUsed = firstPresent(
+    [record, 'cpu_hmr_used'],
+    [record, 'cpuHmrUsed'],
+    [firewallEvidence, 'cpu_hmr_used'],
+    [firewallEvidence, 'cpuHmrUsed'],
+  );
+  const fullRebuildUsed = firstPresent(
+    [record, 'full_rebuild_used'],
+    [record, 'fullRebuildUsed'],
+    [firewallEvidence, 'full_rebuild_used'],
+    [firewallEvidence, 'fullRebuildUsed'],
+  );
+  const processRestarted = firstPresent(
+    [record, 'process_restarted'],
+    [record, 'processRestarted'],
+    [firewallEvidence, 'process_restarted'],
+    [firewallEvidence, 'processRestarted'],
+  );
   const normalized = {
     schemaVersion: record.schemaVersion ?? record.schema_version ?? GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     proofId: firstText(record.proof_id, record.proofId),
@@ -148,9 +180,13 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     retirementEvent,
     processIdentity,
     deviceIdentity,
-    cpuHmrUsed: asBool(record.cpu_hmr_used ?? record.cpuHmrUsed),
-    fullRebuildUsed: asBool(record.full_rebuild_used ?? record.fullRebuildUsed),
-    processRestarted: asBool(record.process_restarted ?? record.processRestarted),
+    firewallEvidence,
+    cpuHmrUsed: asBool(cpuHmrUsed.value),
+    cpuHmrUsedEvidencePresent: cpuHmrUsed.present,
+    fullRebuildUsed: asBool(fullRebuildUsed.value),
+    fullRebuildUsedEvidencePresent: fullRebuildUsed.present,
+    processRestarted: asBool(processRestarted.value),
+    processRestartedEvidencePresent: processRestarted.present,
     oracleArtifacts: asObject(record.oracle_artifacts ?? record.oracleArtifacts),
     deterministicVisualMode: asObject(
       record.deterministic_visual_mode
@@ -175,6 +211,11 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     cpuHmrUsed: normalized.cpuHmrUsed,
     fullRebuildUsed: normalized.fullRebuildUsed,
     processRestarted: normalized.processRestarted,
+    firewallEvidence: {
+      cpuHmrUsedEvidencePresent: normalized.cpuHmrUsedEvidencePresent,
+      fullRebuildUsedEvidencePresent: normalized.fullRebuildUsedEvidencePresent,
+      processRestartedEvidencePresent: normalized.processRestartedEvidencePresent,
+    },
   }))}`;
   return normalized;
 }
@@ -210,6 +251,9 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   if (projectKind === 'cpu_project') addFailure(failures, 'classification_cpu_project');
   if (editKind === 'host_only') addFailure(failures, 'classification_host_only_edit');
   if (route && route !== 'gpu_hmr') addFailure(failures, 'classification_route_not_gpu_hmr', { route });
+  if (!record.cpuHmrUsedEvidencePresent) addFailure(failures, 'cpu_hmr_absence_evidence_missing');
+  if (!record.fullRebuildUsedEvidencePresent) addFailure(failures, 'full_rebuild_absence_evidence_missing');
+  if (!record.processRestartedEvidencePresent) addFailure(failures, 'process_restart_absence_evidence_missing');
   if (record.cpuHmrUsed) addFailure(failures, 'cpu_hmr_used');
   if (record.fullRebuildUsed) addFailure(failures, 'full_rebuild_used');
   if (record.processRestarted) addFailure(failures, 'process_restarted');
@@ -330,8 +374,11 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     record,
     invariantSummary: {
       cpuHmrUsed: record.cpuHmrUsed,
+      cpuHmrUsedEvidencePresent: record.cpuHmrUsedEvidencePresent,
       fullRebuildUsed: record.fullRebuildUsed,
+      fullRebuildUsedEvidencePresent: record.fullRebuildUsedEvidencePresent,
       processRestarted: record.processRestarted,
+      processRestartedEvidencePresent: record.processRestartedEvidencePresent,
       artifactAfterHash,
       loadedArtifactHash,
       publishedArtifactHash,
