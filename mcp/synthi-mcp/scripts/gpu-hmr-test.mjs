@@ -142,7 +142,13 @@ const CFG = {
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? 'synthi-ide-ai-engine-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? '') ? 'gemini_api' : 'agent_side'),
   useMcpCompile: (process.env.SYNTHI_GPU_USE_MCP ?? '1') !== '0',
@@ -699,6 +705,8 @@ async function startMcp() {
       SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
     };
     if (CFG.mcpPrometheusPort) mcpEnv.SYNTHI_PROMETHEUS_PORT = CFG.mcpPrometheusPort;
@@ -717,6 +725,8 @@ async function startMcp() {
       SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
     };
     if (CFG.mcpPrometheusPort) env.SYNTHI_PROMETHEUS_PORT = CFG.mcpPrometheusPort;
@@ -4449,6 +4459,8 @@ async function writeSummary() {
       'SYNTHI_GPU_VENDOR',
       'SYNTHI_GPU_ARCH',
       'SYNTHI_GEMINI_MODEL',
+      'SYNTHI_GPU_SPLIT_MODEL',
+      'SYNTHI_GPU_DELTA_MODEL',
       'MCP_TRANSPORT',
       'MCP_CONTAINER',
       'WORKER_CONTAINER',

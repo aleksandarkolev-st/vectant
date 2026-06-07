@@ -14,7 +14,8 @@
 //   SIGNALING_URL          ws://localhost:9000     (MCP → signaling)
 //   PROMETHEUS_PORT        9464                    (MCP /metrics)
 //   GOOGLE_API_KEY         (required)              (Gemini API key)
-//   SYNTHI_GEMINI_MODEL    gemini-3-flash-preview
+//   SYNTHI_GPU_SPLIT_MODEL gemini-3.5-flash
+//   SYNTHI_GPU_DELTA_MODEL gemini-3.1-flash-lite
 //   SLUG                   mcp-counter-<ts>        (per-run unique to avoid collisions)
 //   WORKSPACE_NAME         Synthi MCP Live Test
 //   HOST_ID                mcp-live-test
@@ -63,7 +64,13 @@ const CFG = {
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   prometheusPort: Number(process.env.PROMETHEUS_PORT ?? 9464),
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   slug: process.env.SLUG ?? `mcp-counter-${Date.now()}`,
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
   hostId: process.env.HOST_ID ?? 'mcp-live-test',
@@ -529,6 +536,8 @@ async function main() {
       SYNTHI_VISION_BACKEND: 'gemini_api',
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
       SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
       SYNTHI_STUN_URL: CFG.stunUrl,
@@ -546,6 +555,8 @@ async function main() {
       SYNTHI_VISION_BACKEND: 'gemini_api',
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
       SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
       SYNTHI_STUN_URL: CFG.stunUrl,

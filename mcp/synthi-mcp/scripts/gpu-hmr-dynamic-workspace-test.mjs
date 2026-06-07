@@ -45,7 +45,13 @@ const CFG = {
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -307,6 +313,8 @@ async function startMcp() {
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
       '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
       '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+      '-e', `SYNTHI_GPU_SPLIT_MODEL=${CFG.gpuSplitModel}`,
+      '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
       CFG.mcpContainer,
       'node',
       '/app/dist/index.js',
@@ -324,6 +332,8 @@ async function startMcp() {
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
         SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+        SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+        SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       },
     });
   }
