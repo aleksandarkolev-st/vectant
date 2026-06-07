@@ -52,6 +52,18 @@ function parseNonNegativeIntegerEnv(name, fallback) {
   return parsed;
 }
 
+function defaultGpuSplitModel() {
+  return process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash';
+}
+
+function defaultGpuDeltaModel() {
+  return process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite';
+}
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -69,7 +81,9 @@ const CFG = {
     .toLowerCase()
     .replace(/_/g, '-'),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? defaultGpuSplitModel(),
+  gpuSplitModel: defaultGpuSplitModel(),
+  gpuDeltaModel: defaultGpuDeltaModel(),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'vectant-ade-mcp-1',
   workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
@@ -95,6 +109,14 @@ const CFG = {
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
 };
+
+function mcpModelEnv() {
+  return {
+    SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+    SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+    SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
+  };
+}
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
@@ -255,6 +277,10 @@ const report = {
   slug: CFG.slug,
   repo_commit: '',
   model: CFG.geminiModel,
+  model_roles: {
+    gpu_split: CFG.gpuSplitModel,
+    gpu_delta: CFG.gpuDeltaModel,
+  },
   vendor: '',
   arch: '',
   render_backend: CFG.renderBackend,
@@ -566,6 +592,7 @@ let mcpState = null;
 async function startMcp() {
   if (mcpState?.client) return mcpState;
   let proc;
+  const modelEnv = mcpModelEnv();
   if (CFG.mcpTransport === 'docker') {
     proc = spawn('docker', [
       'exec',
@@ -575,7 +602,7 @@ async function startMcp() {
       '-e', `SYNTHI_VISION_BACKEND=${CFG.mcpVisionBackend}`,
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
       '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
-      '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+      ...Object.entries(modelEnv).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
       CFG.mcpContainer,
       'node',
       '/app/dist/index.js',
@@ -591,7 +618,7 @@ async function startMcp() {
         SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
-        SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+        ...modelEnv,
       },
     });
   }
@@ -3213,6 +3240,7 @@ async function writeReport() {
     `slug: ${report.slug}`,
     `repo_commit: ${report.repo_commit}`,
     `model: ${report.model}`,
+    `model_roles: ${JSON.stringify(report.model_roles)}`,
     `vendor: ${report.vendor}`,
     `arch: ${report.arch}`,
     `render_backend: ${report.render_backend}`,
@@ -3294,7 +3322,7 @@ async function run() {
   report.vendor = vendor;
   report.arch = arch;
   report.env = {
-    SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+    ...mcpModelEnv(),
     SYNTHI_GPU_VENDOR: process.env.SYNTHI_GPU_VENDOR ?? '',
     SYNTHI_GPU_ARCH: arch,
     SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
@@ -3315,6 +3343,14 @@ async function run() {
     'pass',
     `${vendor} arch=${arch} render_backend=${CFG.renderBackend} cmake_target_mode=${CFG.cmakeTargetMode} template_evidence=${CFG.templateEvidenceMode} hmr_delta_mode=${CFG.hmrDeltaMode} validation_profile=${CFG.validationProfile}`,
   );
+  record(
+    'gpu model role separation',
+    CFG.gpuSplitModel && CFG.gpuDeltaModel && CFG.gpuSplitModel !== CFG.gpuDeltaModel ? 'pass' : 'fail',
+    `split=${CFG.gpuSplitModel || 'unset'} delta=${CFG.gpuDeltaModel || 'unset'}`,
+  );
+  if (!CFG.gpuSplitModel || !CFG.gpuDeltaModel || CFG.gpuSplitModel === CFG.gpuDeltaModel) {
+    fail('GPU split and delta model roles must be configured separately');
+  }
 
   const project = buildScaleProject(vendor, arch, CFG.renderBackend, CFG.cmakeTargetMode);
   report.workspace_file_count = project.files.length;
@@ -3959,10 +3995,41 @@ async function run() {
   console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
 }
 
-run()
-  .catch(async (err) => {
-    record('fatal', 'fail', err.stack || err.message);
-    await writeReport().catch(() => {});
-    process.exitCode = 1;
-  })
-  .finally(() => stopMcp());
+function runSelfCheck() {
+  const modelEnv = mcpModelEnv();
+  const failures = [];
+  if (!CFG.gpuSplitModel) failures.push('gpu_split_model_missing');
+  if (!CFG.gpuDeltaModel) failures.push('gpu_delta_model_missing');
+  if (CFG.gpuSplitModel && CFG.gpuSplitModel === CFG.gpuDeltaModel) {
+    failures.push('gpu_model_roles_not_separated');
+  }
+  if (modelEnv.SYNTHI_GPU_SPLIT_MODEL !== CFG.gpuSplitModel) {
+    failures.push('mcp_split_model_env_mismatch');
+  }
+  if (modelEnv.SYNTHI_GPU_DELTA_MODEL !== CFG.gpuDeltaModel) {
+    failures.push('mcp_delta_model_env_mismatch');
+  }
+  if (report.model_roles.gpu_split !== CFG.gpuSplitModel || report.model_roles.gpu_delta !== CFG.gpuDeltaModel) {
+    failures.push('report_model_roles_mismatch');
+  }
+  const result = {
+    ok: failures.length === 0,
+    modelRoles: report.model_roles,
+    mcpModelEnv: modelEnv,
+    failures,
+  };
+  console.log(JSON.stringify(result, null, 2));
+  if (failures.length > 0) process.exitCode = 1;
+}
+
+if (process.argv.includes('--self-check')) {
+  runSelfCheck();
+} else {
+  run()
+    .catch(async (err) => {
+      record('fatal', 'fail', err.stack || err.message);
+      await writeReport().catch(() => {});
+      process.exitCode = 1;
+    })
+    .finally(() => stopMcp());
+}
