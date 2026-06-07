@@ -267,6 +267,121 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(true);
   });
 
+  it("rejects full runtime proof when delta model provenance is shutdown", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    record.model_provenance.gpu_delta = {
+      ...record.model_provenance.gpu_delta,
+      requested_model: "gemini-3.1-flash-lite-preview",
+      provider_model_status: "shutdown",
+      provider_recommended_replacement: "gemini-3.1-flash-lite",
+      hard_infra_failure: true,
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_rejected");
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "model_provider_status_shutdown"
+    );
+  });
+
+  it("rejects full runtime proof when delta model falls back", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    record.model_provenance.gpu_delta = {
+      ...record.model_provenance.gpu_delta,
+      actual_model: "gemini-3.5-flash",
+      fallback_model: "gemini-3.5-flash",
+      fallback_used: true,
+      actual_provider_model_status: "available",
+      actual_model_availability_checked_at: "2026-06-07T00:00:00.000Z",
+      fallback_provider_model_status: "available",
+      fallback_model_availability_checked_at: "2026-06-07T00:00:00.000Z",
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "gpu_delta_model_fallback_used"
+    );
+  });
+
+  it("rejects full runtime proof without compute oracle artifacts", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, unknown>;
+    delete record.oracle_artifacts;
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "compute_oracle_artifacts_missing"
+    );
+  });
+
+  it("rejects full runtime visual proof without deterministic visual mode", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, unknown>;
+    record.output_event = {
+      id: "output-1",
+      kind: "visual_frame",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      after_dispatch_id: "dispatch-1",
+      passed: true,
+      timestamp_monotonic_ns: 400,
+    };
+    record.oracle_artifacts = {
+      visual_oracle_artifacts: {
+        before_image: "memory://before.png",
+        after_image: "memory://after.png",
+        diff_image: "memory://diff.png",
+        blank_frame_rejection: true,
+        same_frame_rejection: true,
+        new_epoch_watermark_or_trace: "epoch-2 dispatch-1",
+        camera_state_hash: HASH_A,
+        swapchain_size: [640, 480],
+        capture_backend: "mcp",
+        frame_number: 8,
+        timestamp_after_dispatch: 400,
+        perceptual_diff: 2,
+        changed_pixel_ratio: 0.2,
+        visible_pixel_count: 1000,
+      },
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "visual_output_without_deterministic_mode"
+    );
+  });
+
   it("rejects full runtime proof telemetry without proof ledger", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",

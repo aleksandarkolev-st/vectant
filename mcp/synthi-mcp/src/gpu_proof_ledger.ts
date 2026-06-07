@@ -5,6 +5,13 @@ const GPU_ARTIFACT_EDIT_KINDS = new Set(["gpu_artifact_edit"]);
 const METRIC_CLOCKS = new Set(["monotonic_ns"]);
 const METRIC_SCOPES = new Set(["cold", "warm", "hot_delta_1", "hot_delta_2"]);
 const CACHE_STATES = new Set(["clean", "compiler_cache_warm", "pipeline_cache_warm"]);
+const MODEL_PROVIDER_STATUSES = new Set(["available", "deprecated", "private_alias"]);
+const CONVERGENCE_METRICS = new Set([
+  "per_frame_delta",
+  "window_mean_delta",
+  "stable_histogram_delta",
+  "oracle_region_delta",
+]);
 const REQUIRED_TIMING_FIELDS = [
   ["static_discovery_time", "staticDiscoveryTime"],
   ["ai_contract_synthesis_time", "aiContractSynthesisTime"],
@@ -21,6 +28,51 @@ const REQUIRED_TIMING_FIELDS = [
   ["screenshot_capture_time", "screenshotCaptureTime"],
   ["dispatch_to_output_proof_time", "dispatchToOutputProofTime"],
   ["total_validator_wall_time", "totalValidatorWallTime"],
+] as const;
+const COMPUTE_ORACLE_ARTIFACT_FIELDS = [
+  ["raw_readback_bin", "rawReadbackBin"],
+  ["readback_schema_json", "readbackSchemaJson"],
+  ["checksum_before", "checksumBefore"],
+  ["checksum_after", "checksumAfter"],
+  ["deterministic_slice", "deterministicSlice"],
+  ["oracle_code_hash", "oracleCodeHash"],
+  ["rendered_card_png", "renderedCardPng"],
+  ["producer", "producer"],
+  ["timestamp_after_dispatch", "timestampAfterDispatch"],
+  ["epoch", "epoch"],
+] as const;
+const VISUAL_ORACLE_ARTIFACT_FIELDS = [
+  ["before_image", "beforeImage"],
+  ["after_image", "afterImage"],
+  ["diff_image", "diffImage"],
+  ["blank_frame_rejection", "blankFrameRejection"],
+  ["same_frame_rejection", "sameFrameRejection"],
+  ["new_epoch_watermark_or_trace", "newEpochWatermarkOrTrace", "epoch_trace", "epochTrace"],
+  ["camera_state_hash", "cameraStateHash"],
+  ["swapchain_size", "swapchainSize"],
+  ["capture_backend", "captureBackend"],
+  ["frame_number", "frameNumber"],
+  ["timestamp_after_dispatch", "timestampAfterDispatch"],
+  ["perceptual_diff", "perceptualDiff"],
+  ["changed_pixel_ratio", "changedPixelRatio"],
+  ["visible_pixel_count", "visiblePixelCount"],
+] as const;
+const REQUIRED_MODEL_FIELDS = [
+  ["provider", "provider", "provider_missing"],
+  ["requested_model", "requestedModel", "requested_model_missing"],
+  ["provider_model_status", "providerModelStatus", "provider_model_status_missing"],
+  ["provider_model_alias_resolved_to", "providerModelAliasResolvedTo", "provider_model_alias_resolved_to_missing"],
+  [
+    "provider_shutdown_or_deprecation_detected",
+    "providerShutdownOrDeprecationDetected",
+    "provider_shutdown_or_deprecation_detected_missing",
+  ],
+  ["model_availability_checked_at", "modelAvailabilityCheckedAt", "model_availability_checked_at_missing"],
+  ["actual_model", "actualModel", "actual_model_missing"],
+  ["fallback_model", "fallbackModel", "fallback_model_missing"],
+  ["fallback_used", "fallbackUsed", "fallback_used_missing"],
+  ["request_mode", "requestMode", "request_mode_missing"],
+  ["hard_infra_failure", "hardInfraFailure", "hard_infra_failure_missing"],
 ] as const;
 
 export interface GpuHmrLedgerFailure {
@@ -63,6 +115,22 @@ function compactStringList(values: unknown): string[] {
   return [...new Set((Array.isArray(values) ? values : [])
     .map(text)
     .filter((value): value is string => value !== null))];
+}
+
+function hasOwnDeep(object: unknown, key: string): boolean {
+  return isObject(object) && hasOwn(object, key);
+}
+
+function valueRecorded(object: Record<string, unknown>, key: string): boolean {
+  if (!hasOwn(object, key)) return false;
+  const value = object[key];
+  if (value === null) return true;
+  if (typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isObject(value)) return Object.keys(value).length > 0;
+  return false;
 }
 
 function firstPresent(...entries: Array<[Record<string, unknown>, string]>): { present: boolean; value: unknown } {
@@ -134,6 +202,269 @@ function outputAfterDispatchId(outputEvent: Record<string, unknown>): string | n
   );
 }
 
+function outputKind(outputEvent: Record<string, unknown>): string {
+  return String(firstText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function isVisualOutput(outputEvent: Record<string, unknown>): boolean {
+  const kind = outputKind(outputEvent);
+  return kind.includes("visual")
+    || kind.includes("render")
+    || kind.includes("frame")
+    || kind.includes("pixel")
+    || hasOwnDeep(asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts), "after_image")
+    || hasOwnDeep(asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts), "afterImage");
+}
+
+function outputOracleObject(outputEvent: Record<string, unknown>): Record<string, unknown> {
+  return asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+}
+
+function artifactFieldRecorded(object: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.some((key) => valueRecorded(object, key));
+}
+
+function artifactHasAnyField(
+  object: Record<string, unknown>,
+  fields: ReadonlyArray<readonly string[]>
+): boolean {
+  return fields.some((keys) => artifactFieldRecorded(object, keys));
+}
+
+function firstArtifactObject(
+  candidates: unknown[],
+  fields: ReadonlyArray<readonly string[]>
+): Record<string, unknown> | null {
+  for (const candidate of candidates) {
+    const object = asObject(candidate);
+    if (Object.keys(object).length > 0 && artifactHasAnyField(object, fields)) {
+      return object;
+    }
+  }
+  return null;
+}
+
+function oracleArtifactSources(
+  recordOracleArtifacts: Record<string, unknown>,
+  outputEvent: Record<string, unknown>
+): {
+  ledgerArtifacts: Record<string, unknown>;
+  outputArtifacts: Record<string, unknown>;
+  outputOracle: Record<string, unknown>;
+  outputOracleArtifacts: Record<string, unknown>;
+} {
+  const outputArtifacts = asObject(outputEvent.oracle_artifacts ?? outputEvent.oracleArtifacts);
+  const outputOracle = outputOracleObject(outputEvent);
+  const outputOracleArtifacts = asObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts);
+  return {
+    ledgerArtifacts: recordOracleArtifacts,
+    outputArtifacts,
+    outputOracle,
+    outputOracleArtifacts,
+  };
+}
+
+function computeOracleArtifacts(
+  recordOracleArtifacts: Record<string, unknown>,
+  outputEvent: Record<string, unknown>
+): Record<string, unknown> | null {
+  const { ledgerArtifacts, outputArtifacts, outputOracle, outputOracleArtifacts } =
+    oracleArtifactSources(recordOracleArtifacts, outputEvent);
+  return firstArtifactObject([
+    ledgerArtifacts.compute_oracle_artifacts,
+    ledgerArtifacts.computeOracleArtifacts,
+    outputArtifacts.compute_oracle_artifacts,
+    outputArtifacts.computeOracleArtifacts,
+    outputEvent.compute_oracle_artifacts,
+    outputEvent.computeOracleArtifacts,
+    outputOracle.compute_oracle_artifacts,
+    outputOracle.computeOracleArtifacts,
+    outputOracleArtifacts.compute_oracle_artifacts,
+    outputOracleArtifacts.computeOracleArtifacts,
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracleArtifacts,
+    outputOracle,
+  ], COMPUTE_ORACLE_ARTIFACT_FIELDS);
+}
+
+function visualOracleArtifacts(
+  recordOracleArtifacts: Record<string, unknown>,
+  outputEvent: Record<string, unknown>
+): Record<string, unknown> | null {
+  const { ledgerArtifacts, outputArtifacts, outputOracle, outputOracleArtifacts } =
+    oracleArtifactSources(recordOracleArtifacts, outputEvent);
+  return firstArtifactObject([
+    ledgerArtifacts.visual_oracle_artifacts,
+    ledgerArtifacts.visualOracleArtifacts,
+    outputArtifacts.visual_oracle_artifacts,
+    outputArtifacts.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts.visual_oracle_artifacts,
+    outputOracleArtifacts.visualOracleArtifacts,
+    ledgerArtifacts,
+    outputArtifacts,
+    outputOracleArtifacts,
+    outputOracle,
+  ], VISUAL_ORACLE_ARTIFACT_FIELDS);
+}
+
+function missingArtifactFields(
+  artifact: Record<string, unknown>,
+  fields: ReadonlyArray<readonly string[]>
+): string[] {
+  return fields
+    .filter((keys) => !artifactFieldRecorded(artifact, keys))
+    .map((keys) => keys[0] ?? "unknown");
+}
+
+function objectFieldValue(object: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    if (hasOwn(object, key)) return object[key];
+  }
+  return undefined;
+}
+
+function artifactText(artifact: Record<string, unknown>, ...keys: string[]): string | null {
+  return firstText(...keys.map((key) => artifact[key]));
+}
+
+function artifactNumber(artifact: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = finiteNumber(artifact[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function artifactArray(artifact: Record<string, unknown>, ...keys: string[]): unknown[] {
+  for (const key of keys) {
+    const value = artifact[key];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function visualTraceCorrelates(trace: unknown, identifiers: unknown[]): boolean {
+  const normalizedTrace = text(trace);
+  if (!normalizedTrace) return false;
+  for (const identifier of compactStringList(identifiers)) {
+    if (normalizedTrace === identifier) return true;
+    if (identifier.length >= 6 && normalizedTrace.includes(identifier)) return true;
+  }
+  return false;
+}
+
+function boolField(object: Record<string, unknown>, ...keys: string[]): boolean | null {
+  for (const key of keys) {
+    if (typeof object[key] === "boolean") return object[key] as boolean;
+  }
+  return null;
+}
+
+function deterministicVisualFailures(modeInput: unknown): GpuHmrLedgerFailure[] {
+  const mode = asObject(modeInput);
+  const failures: GpuHmrLedgerFailure[] = [];
+  const fixedSeed =
+    mode.fixed_seed === true
+    || mode.seed_policy_fixed === true
+    || Boolean(text(mode.seed_policy_hash));
+  if (!fixedSeed) failures.push({ code: "seed_policy_unproven" });
+  if (mode.frozen_camera !== true && mode.camera_frozen !== true) {
+    failures.push({ code: "frozen_camera_unproven" });
+  }
+  if (mode.fixed_resolution !== true) failures.push({ code: "fixed_resolution_unproven" });
+  if (mode.frame_capture_after_epoch_dispatch !== true && mode.frameCaptureAfterEpochDispatch !== true) {
+    failures.push({ code: "frame_capture_after_epoch_dispatch_unproven" });
+  }
+  if (
+    mode.presentation_fence_or_frame_boundary !== true
+    && mode.presentationFenceOrFrameBoundary !== true
+    && mode.presentation_boundary_proven !== true
+    && mode.presentationBoundaryProven !== true
+  ) {
+    failures.push({ code: "presentation_boundary_unproven" });
+  }
+  if (mode.fixed_swapchain_image_count !== true && mode.fixedSwapchainImageCount !== true) {
+    failures.push({ code: "fixed_swapchain_image_count_unproven" });
+  }
+  const temporalDisabled =
+    mode.temporal_accumulation_disabled === true
+    || mode.temporalAccumulationDisabled === true
+    || mode.temporal_accumulation_present === false
+    || mode.temporalAccumulationPresent === false
+    || mode.temporal_accumulation_not_applicable === true
+    || mode.temporalAccumulationNotApplicable === true;
+  const taaSatisfied =
+    mode.taa_disabled === true
+    || mode.taaDisabled === true
+    || mode.taa_present === false
+    || mode.taaPresent === false
+    || mode.taa_not_applicable === true
+    || mode.taaNotApplicable === true;
+  const denoiserSatisfied =
+    mode.denoiser_disabled === true
+    || mode.denoiserDisabled === true
+    || mode.denoiser_present === false
+    || mode.denoiserPresent === false
+    || mode.denoiser_not_applicable === true
+    || mode.denoiserNotApplicable === true;
+  if (!taaSatisfied) failures.push({ code: "taa_control_unproven" });
+  if (!denoiserSatisfied) failures.push({ code: "denoiser_control_unproven" });
+  if (!temporalDisabled) {
+    const window = asObject(mode.convergence_window ?? mode.convergenceWindow);
+    const metric = text(asObject(window.metric).value ?? window.metric);
+    const frameStart = finiteNumber(window.frame_start ?? window.frameStart);
+    const frameEnd = finiteNumber(window.frame_end ?? window.frameEnd);
+    const samples = Array.isArray(window.samples) ? window.samples : [];
+    const frameHashes = compactStringList(window.frame_hashes ?? window.frameHashes);
+    const postEpochFrameHashes = compactStringList(
+      window.post_epoch_frame_hashes ?? window.postEpochFrameHashes
+    );
+    const sampleCount = finiteNumber(window.sample_count ?? window.sampleCount)
+      ?? (samples.length > 0 ? samples.length : null)
+      ?? (frameHashes.length > 0 ? frameHashes.length : null)
+      ?? (postEpochFrameHashes.length > 0 ? postEpochFrameHashes.length : null);
+    const hasMetricEvidence =
+      finiteNumber(window.metric_value ?? window.metricValue) !== null
+      || finiteNumber(
+        window.metric_delta
+        ?? window.metricDelta
+        ?? window.observed_delta
+        ?? window.observedDelta
+        ?? window.window_delta
+        ?? window.windowDelta
+        ?? window.mean_delta
+        ?? window.meanDelta
+      ) !== null
+      || samples.some((sample) => finiteNumber(asObject(sample).metric_value ?? asObject(sample).metricValue) !== null);
+    const evidenceRefs = compactStringList(window.evidence_refs ?? window.evidenceRefs);
+    const minFrames = Math.max(2, finiteNumber(window.min_frames ?? window.minFrames) ?? 2);
+    const convergenceAccepted =
+      frameStart !== null
+      && frameEnd !== null
+      && frameEnd >= frameStart
+      && metric !== null
+      && CONVERGENCE_METRICS.has(metric)
+      && (sampleCount ?? 0) >= minFrames
+      && hasMetricEvidence
+      && (window.convergence_proven === true || window.convergenceProven === true || window.proven === true)
+      && evidenceRefs.length > 0;
+    if (!convergenceAccepted) {
+      failures.push({ code: "temporal_visual_requires_convergence_window" });
+      if ((sampleCount ?? 0) < minFrames) {
+        failures.push({ code: "convergence_window_sample_evidence_missing" });
+      }
+    }
+  }
+  return failures;
+}
+
 function timingCandidates(timings: Record<string, unknown>, timingMetrics: Record<string, unknown>): Record<string, unknown>[] {
   const nested = asObject(timings.timing_metrics ?? timings.timingMetrics);
   return [
@@ -174,9 +505,60 @@ function modelEntries(modelProvenance: Record<string, unknown>): Array<[string, 
     .filter(([, value]) => isObject(value)) as Array<[string, Record<string, unknown>]>;
 }
 
+function modelField(record: Record<string, unknown>, snakeKey: string, camelKey: string): unknown {
+  return record[snakeKey] ?? record[camelKey];
+}
+
+function modelFieldRecorded(record: Record<string, unknown>, snakeKey: string, camelKey: string): boolean {
+  return valueRecorded(record, snakeKey) || valueRecorded(record, camelKey);
+}
+
+function modelFieldText(record: Record<string, unknown>, snakeKey: string, camelKey: string): string | null {
+  return firstText(modelField(record, snakeKey, camelKey));
+}
+
+function modelStatus(record: Record<string, unknown>): string | null {
+  return modelFieldText(record, "provider_model_status", "providerModelStatus");
+}
+
+function prefixedModelStatus(record: Record<string, unknown>, prefix: "actual" | "fallback"): string | null {
+  const pascal = `${prefix.charAt(0).toUpperCase()}${prefix.slice(1)}`;
+  return firstText(
+    modelField(record, `${prefix}_provider_model_status`, `${prefix}ProviderModelStatus`),
+    modelField(record, `${prefix}_model_provider_status`, `${pascal}ModelProviderStatus`)
+  );
+}
+
+function modelHardInfraFailure(record: Record<string, unknown>): boolean {
+  return modelField(record, "hard_infra_failure", "hardInfraFailure") === true;
+}
+
+function modelFallbackUsed(record: Record<string, unknown>): boolean {
+  return modelField(record, "fallback_used", "fallbackUsed") === true;
+}
+
+function modelShutdownOrDeprecationDetected(record: Record<string, unknown>): boolean {
+  return modelField(
+    record,
+    "provider_shutdown_or_deprecation_detected",
+    "providerShutdownOrDeprecationDetected"
+  ) === true;
+}
+
 function modelRequestMode(entry: [string, Record<string, unknown>]): string | null {
   const [key, record] = entry;
   return firstText(record.request_mode, record.requestMode, key);
+}
+
+function modelRoleIsSplit(entry: [string, Record<string, unknown>]): boolean {
+  const [key] = entry;
+  return ["split", "gpu_split", "gpuSplit"].includes(key) || modelRequestMode(entry) === "split";
+}
+
+function modelRoleIsGpuDelta(entry: [string, Record<string, unknown>]): boolean {
+  const [key] = entry;
+  return ["last_gpu_delta", "lastGpuDelta", "gpu_delta", "gpuDelta", "delta"].includes(key)
+    || modelRequestMode(entry) === "gpu_delta";
 }
 
 function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation {
@@ -190,6 +572,18 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const processIdentity = asObject(input.process_identity ?? input.processIdentity);
   const deviceIdentity = asObject(input.device_identity ?? input.deviceIdentity);
   const firewallEvidence = asObject(input.firewall_evidence ?? input.firewallEvidence);
+  const oracleArtifacts = asObject(
+    input.oracle_artifacts
+    ?? input.oracleArtifacts
+    ?? outputEvent.oracle_artifacts
+    ?? outputEvent.oracleArtifacts
+  );
+  const deterministicVisualMode = asObject(
+    input.deterministic_visual_mode
+    ?? input.deterministicVisualMode
+    ?? outputEvent.deterministic_visual_mode
+    ?? outputEvent.deterministicVisualMode
+  );
   const timings = asObject(input.timings);
   const timingMetrics = asObject(input.timing_metrics ?? input.timingMetrics ?? timings.timing_metrics ?? timings.timingMetrics);
   const modelProvenance = asObject(input.model_provenance ?? input.modelProvenance);
@@ -299,6 +693,98 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   else if (!firstText(retirementEvent.status, retirementEvent.proof, retirementEvent.retirement_proof, retirementEvent.retirementProof)) {
     failures.push({ code: "retirement_proof_missing" });
   }
+  const visualArtifacts = visualOracleArtifacts(oracleArtifacts, outputEvent);
+  if (isVisualOutput(outputEvent) || visualArtifacts !== null) {
+    if (visualArtifacts === null) {
+      failures.push({ code: "visual_oracle_artifacts_missing" });
+    } else {
+      const missingFields = missingArtifactFields(visualArtifacts, VISUAL_ORACLE_ARTIFACT_FIELDS);
+      if (missingFields.length > 0) {
+        failures.push({ code: "visual_oracle_artifacts_incomplete", missingFields });
+      }
+      if (objectFieldValue(visualArtifacts, ["blank_frame_rejection", "blankFrameRejection"]) !== true) {
+        failures.push({ code: "visual_blank_frame_rejection_not_proven" });
+      }
+      if (objectFieldValue(visualArtifacts, ["same_frame_rejection", "sameFrameRejection"]) !== true) {
+        failures.push({ code: "visual_same_frame_rejection_not_proven" });
+      }
+      const beforeImage = artifactText(visualArtifacts, "before_image", "beforeImage");
+      const afterImage = artifactText(visualArtifacts, "after_image", "afterImage");
+      const diffImage = artifactText(visualArtifacts, "diff_image", "diffImage");
+      if (beforeImage && afterImage && beforeImage === afterImage) {
+        failures.push({ code: "visual_before_after_same_artifact" });
+      }
+      if (diffImage && (diffImage === beforeImage || diffImage === afterImage)) {
+        failures.push({ code: "visual_diff_artifact_not_independent" });
+      }
+      const changedPixelRatio = artifactNumber(visualArtifacts, "changed_pixel_ratio", "changedPixelRatio");
+      if (changedPixelRatio !== null && changedPixelRatio <= 0) {
+        failures.push({ code: "visual_changed_pixel_ratio_zero" });
+      }
+      const perceptualDiff = artifactNumber(visualArtifacts, "perceptual_diff", "perceptualDiff");
+      if (perceptualDiff !== null && perceptualDiff <= 0) {
+        failures.push({ code: "visual_perceptual_diff_zero" });
+      }
+      const visiblePixelCount = artifactNumber(
+        visualArtifacts,
+        "visible_pixel_count",
+        "visiblePixelCount"
+      );
+      if (visiblePixelCount !== null && visiblePixelCount <= 0) {
+        failures.push({ code: "visual_visible_pixel_count_zero" });
+      }
+      const swapchainSize = artifactArray(visualArtifacts, "swapchain_size", "swapchainSize");
+      if (
+        swapchainSize.length !== 2
+        || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+      ) {
+        failures.push({ code: "visual_swapchain_size_invalid" });
+      }
+      const visualTimestamp = artifactNumber(
+        visualArtifacts,
+        "timestamp_after_dispatch",
+        "timestampAfterDispatch"
+      );
+      if (dispatchTs !== null && visualTimestamp !== null && visualTimestamp < dispatchTs) {
+        failures.push({ code: "visual_artifact_precedes_dispatch" });
+      }
+      const visualTrace = objectFieldValue(visualArtifacts, [
+        "new_epoch_watermark_or_trace",
+        "newEpochWatermarkOrTrace",
+        "epoch_trace",
+        "epochTrace",
+      ]);
+      if (!visualTraceCorrelates(visualTrace, [publishedEpoch, dispatchEpoch, artifactAfterHash, dispatchId])) {
+        failures.push({ code: "visual_epoch_trace_not_correlated" });
+      }
+    }
+    const deterministicFailures = deterministicVisualFailures(deterministicVisualMode);
+    if (deterministicFailures.length > 0) {
+      failures.push({ code: "visual_output_without_deterministic_mode" }, ...deterministicFailures);
+    }
+  } else {
+    const computeArtifacts = computeOracleArtifacts(oracleArtifacts, outputEvent);
+    if (computeArtifacts === null) {
+      failures.push({ code: "compute_oracle_artifacts_missing" });
+    } else {
+      const missingFields = missingArtifactFields(computeArtifacts, COMPUTE_ORACLE_ARTIFACT_FIELDS);
+      if (missingFields.length > 0) {
+        failures.push({ code: "compute_oracle_artifacts_incomplete", missingFields });
+      }
+      const checksumBefore = artifactText(computeArtifacts, "checksum_before", "checksumBefore");
+      const checksumAfter = artifactText(computeArtifacts, "checksum_after", "checksumAfter");
+      const outputChangeExpected =
+        objectFieldValue(computeArtifacts, [
+          "output_change_expected",
+          "outputChangeExpected",
+          "expected_output_change",
+          "expectedOutputChange",
+        ]) === true;
+      if (outputChangeExpected && checksumBefore && checksumAfter && checksumBefore === checksumAfter) {
+        failures.push({ code: "compute_oracle_checksum_unchanged" });
+      }
+    }
+  }
   if (!metricClock) failures.push({ code: "metric_clock_missing" });
   else if (!METRIC_CLOCKS.has(metricClock)) failures.push({ code: "metric_clock_not_monotonic_ns" });
   if (!metricScope) failures.push({ code: "metric_scope_missing" });
@@ -313,8 +799,70 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   }
   const models = modelEntries(modelProvenance);
   if (models.length === 0) failures.push({ code: "model_provenance_missing" });
-  if (!models.some((entry) => modelRequestMode(entry) === "split")) failures.push({ code: "model_provenance_split_missing" });
-  if (!models.some((entry) => modelRequestMode(entry) === "gpu_delta")) failures.push({ code: "model_provenance_gpu_delta_missing" });
+  if (!models.some(modelRoleIsSplit)) failures.push({ code: "model_provenance_split_missing" });
+  if (!models.some(modelRoleIsGpuDelta)) failures.push({ code: "model_provenance_gpu_delta_missing" });
+  for (const [index, entry] of models.entries()) {
+    const model = entry[1];
+    const prefix = `model_provenance_${index}`;
+    for (const [snakeKey, camelKey, code] of REQUIRED_MODEL_FIELDS) {
+      if (!modelFieldRecorded(model, snakeKey, camelKey)) {
+        failures.push({ code, record: prefix });
+      }
+    }
+    const status = modelStatus(model);
+    if (status === "shutdown") {
+      failures.push({
+        code: "model_provider_status_shutdown",
+        record: prefix,
+        requested_model: modelFieldText(model, "requested_model", "requestedModel"),
+      });
+    } else if (!MODEL_PROVIDER_STATUSES.has(status ?? "")) {
+      failures.push({
+        code: "model_provider_status_not_accepted",
+        record: prefix,
+        provider_model_status: status,
+      });
+    }
+    if (modelHardInfraFailure(model)) failures.push({ code: "model_hard_infra_failure", record: prefix });
+    if (modelRoleIsGpuDelta(models[index]!) && modelFallbackUsed(model)) {
+      failures.push({ code: "gpu_delta_model_fallback_used", record: prefix });
+    }
+    if (modelFallbackUsed(model)) {
+      for (const [snakeKey, camelKey, code] of [
+        ["actual_provider_model_status", "actualProviderModelStatus", "actual_provider_model_status_missing"],
+        ["actual_model_availability_checked_at", "actualModelAvailabilityCheckedAt", "actual_model_availability_checked_at_missing"],
+        ["fallback_provider_model_status", "fallbackProviderModelStatus", "fallback_provider_model_status_missing"],
+        ["fallback_model_availability_checked_at", "fallbackModelAvailabilityCheckedAt", "fallback_model_availability_checked_at_missing"],
+      ] as const) {
+        if (!modelFieldRecorded(model, snakeKey, camelKey)) {
+          failures.push({ code, record: prefix });
+        }
+      }
+      const actualStatus = prefixedModelStatus(model, "actual");
+      if (actualStatus === "shutdown") {
+        failures.push({ code: "actual_model_provider_status_shutdown", record: prefix });
+      } else if (!MODEL_PROVIDER_STATUSES.has(actualStatus ?? "")) {
+        failures.push({
+          code: "actual_provider_model_status_not_accepted",
+          record: prefix,
+          provider_model_status: actualStatus,
+        });
+      }
+      const fallbackStatus = prefixedModelStatus(model, "fallback");
+      if (fallbackStatus === "shutdown") {
+        failures.push({ code: "fallback_model_provider_status_shutdown", record: prefix });
+      } else if (!MODEL_PROVIDER_STATUSES.has(fallbackStatus ?? "")) {
+        failures.push({
+          code: "fallback_provider_model_status_not_accepted",
+          record: prefix,
+          provider_model_status: fallbackStatus,
+        });
+      }
+    }
+    if (status === "deprecated" && !modelShutdownOrDeprecationDetected(model)) {
+      failures.push({ code: "model_deprecation_not_recorded", record: prefix });
+    }
+  }
 
   return {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
