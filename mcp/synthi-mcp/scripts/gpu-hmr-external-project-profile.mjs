@@ -879,6 +879,10 @@ function frameGateSatisfied(wait) {
   return isObject(gate) && gate.status === 'satisfied';
 }
 
+function waitContractFromCompileResult(result) {
+  return result?.wait?.wait_contract ?? result?.wait?.waitContract ?? result?.waitArgs ?? null;
+}
+
 function deterministicVisualModeForMcp(profile, before, after, afterCompile) {
   const base = isObject(profile.visualProof.deterministicMode)
     ? profile.visualProof.deterministicMode
@@ -1011,6 +1015,7 @@ async function writeExternalVisualProofArtifact(profile, report) {
       visualProofGate: report.mcp.visualProofGate ?? null,
       before: report.mcp.before ? {
         waitArgs: report.mcp.before.waitArgs ?? null,
+        waitContract: waitContractFromCompileResult(report.mcp.before),
         waitStatus: report.mcp.before.waitStatus ?? null,
         waitFrameGate: report.mcp.before.wait?.frame_gate ?? report.mcp.before.wait?.frameGate ?? null,
         gpuProof: report.mcp.before.wait?.gpu_proof ?? null,
@@ -1018,6 +1023,7 @@ async function writeExternalVisualProofArtifact(profile, report) {
       } : null,
       after: report.mcp.after ? {
         waitArgs: report.mcp.after.waitArgs ?? null,
+        waitContract: waitContractFromCompileResult(report.mcp.after),
         waitStatus: report.mcp.after.waitStatus ?? null,
         waitFrameGate: report.mcp.after.wait?.frame_gate ?? report.mcp.after.wait?.frameGate ?? null,
         gpuProof: report.mcp.after.wait?.gpu_proof ?? null,
@@ -1128,6 +1134,11 @@ async function selfCheckVisualProofArtifact() {
       after_image: afterPath,
       diff_image: diffPath,
       frame_capture_after_epoch_dispatch: true,
+      wait_contract: {
+        module: 'device',
+        require_gpu_full_runtime_proof: true,
+        required_gpu_proof_state: 'gpu-hmr-full-runtime-proven',
+      },
     },
     visualDiff: {
       changedPixelRatio: 0.5,
@@ -1157,6 +1168,11 @@ async function selfCheckVisualProofArtifact() {
         },
         waitStatus: 'applied',
         wait: {
+          wait_contract: {
+            module: 'device',
+            require_gpu_full_runtime_proof: true,
+            required_gpu_proof_state: 'gpu-hmr-full-runtime-proven',
+          },
           frame_gate: {
             status: 'satisfied',
           },
@@ -1173,12 +1189,16 @@ async function selfCheckVisualProofArtifact() {
     .filter(Boolean)
     .sort();
   const hashMatch = expectedHashes.every((hash) => observedHashes.includes(hash));
+  const waitContractPersisted =
+    artifact.mcp?.after?.waitContract?.module === 'device'
+    && artifact.visualOracleArtifacts?.wait_contract?.module === 'device';
   return {
     ok:
       written.schemaVersion === 'synthi.gpu.hmr.external_visual_proof_artifact.v1'
       && typeof written.proofId === 'string'
       && written.proofId.startsWith('external-visual-proof:')
-      && hashMatch,
+      && hashMatch
+      && waitContractPersisted,
     path: written.path,
     proofId: written.proofId,
     expectedHashes,
@@ -1416,6 +1436,7 @@ async function runMcpPreviewProfile(profile, dir, report) {
       capture_backend: 'mcp:synthi_screenshot',
       frame_capture_after_epoch_dispatch: frameGateSatisfied(afterCompile.wait),
       wait_frame_gate: afterCompile.wait?.frame_gate ?? afterCompile.wait?.frameGate ?? null,
+      wait_contract: waitContractFromCompileResult(afterCompile),
     };
     report.deterministicVisualMode = deterministicVisualModeForMcp(profile, before, after, afterCompile);
     report.deterministicVisualModeEvaluation =

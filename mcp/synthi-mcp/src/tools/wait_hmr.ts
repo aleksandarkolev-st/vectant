@@ -143,6 +143,14 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     ? previewIdValue.trim()
     : undefined;
   const requiredProofState = requiredGpuProofState(a);
+  const waitContract = {
+    timeout_ms: timeoutMs,
+    module: module ?? null,
+    since_ts: sinceTs ?? null,
+    preview_id: previewId ?? null,
+    required_gpu_proof_state: requiredProofState,
+    require_gpu_full_runtime_proof: a.requireGpuFullRuntimeProof === true,
+  };
   let unsubscribePostApply: (() => void) | null = null;
 
   try {
@@ -231,6 +239,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             source: late.source,
             detail: late.detail ?? null,
             post_apply_terminal: true,
+            wait_contract: waitContract,
           }, latestGpuProof, requiredProofState);
         }
         if (outcome.kind === "terminal") {
@@ -267,6 +276,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             source: late.source,
             detail: late.detail ?? null,
             post_apply_terminal: true,
+            wait_contract: waitContract,
           }, latestGpuProof, requiredProofState);
         }
         frameGate = {
@@ -284,6 +294,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       hmrElapsedMs: result.elapsedMs,
       source: result.source,
       detail: result.detail ?? null,
+      wait_contract: waitContract,
       ...(result.observedAt !== undefined ? { hmrObservedAt: result.observedAt } : {}),
       ...(result.retained ? {
         terminal_recovered_from: "hmr_terminal_history",
