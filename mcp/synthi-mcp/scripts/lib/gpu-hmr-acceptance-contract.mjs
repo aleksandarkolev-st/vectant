@@ -4,6 +4,7 @@ export const GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION = 'synthi.gpu_hmr.contra
 
 const BACKENDS = new Set(['hip', 'hiprt', 'opencl', 'vulkan', 'webgpu', 'bevy_wgsl', 'cuda', 'sycl', 'unknown']);
 const PROJECT_KINDS = new Set(['cpu_project', 'gpu_project', 'mixed_project', 'unknown']);
+const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
 const EDIT_KINDS = new Set(['gpu_artifact_edit', 'host_only', 'mixed_host_gpu', 'build_system', 'config', 'unknown']);
 const ROUTES = new Set(['gpu_hmr', 'cpu_hmr_or_host_reload', 'full_rebuild_required', 'reject']);
 const ABI_CLASSES = new Set(['compatible', 'additive', 'layout_changed', 'unknown']);
@@ -375,8 +376,14 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (contract.backend === 'unknown') addFailure(failures, 'backend_unknown');
   if (c.project_kind === 'cpu_project') addFailure(failures, 'cpu_project_not_gpu_hmr');
   if (c.project_kind === 'unknown') addFailure(failures, 'project_kind_unknown');
+  if (!GPU_PROJECT_KINDS.has(c.project_kind)) {
+    addFailure(failures, 'project_kind_not_gpu_hmr', { project_kind: c.project_kind });
+  }
   if (c.edit_kind === 'host_only') addFailure(failures, 'host_only_edit_not_gpu_hmr');
   if (c.edit_kind === 'unknown') addFailure(failures, 'edit_kind_unknown');
+  if (c.edit_kind !== 'gpu_artifact_edit') {
+    addFailure(failures, 'edit_kind_not_gpu_artifact', { edit_kind: c.edit_kind });
+  }
   if (c.route !== 'gpu_hmr') addFailure(failures, 'route_not_gpu_hmr', { route: c.route });
   if (c.route === 'gpu_hmr') {
     const firewall = contract.firewall_evidence ?? {};
@@ -734,7 +741,43 @@ export function evaluateGpuHmrAcceptanceContractConsistency({
   };
 }
 
-function backendFromVerifiedContext(input, validationContext) {
+function backendEvidenceText({ input, validationContext, selectedIsland, dispatchProof, artifactTransportProof }) {
+  return [
+    input.backendEvidence,
+    input.backend_evidence,
+    input.gpuApi,
+    input.gpu_api,
+    input.launchApi,
+    input.launch_api,
+    validationContext.backendEvidence,
+    validationContext.backend_evidence,
+    validationContext.gpuApi,
+    validationContext.gpu_api,
+    validationContext.launchApi,
+    validationContext.launch_api,
+    validationContext.deviceIdentity?.backend,
+    validationContext.device_identity?.backend,
+    selectedIsland?.artifactKind,
+    selectedIsland?.artifact_kind,
+    selectedIsland?.compiler,
+    selectedIsland?.compilerName,
+    selectedIsland?.compiler_name,
+    selectedIsland?.launchApi,
+    selectedIsland?.launch_api,
+    dispatchProof?.launchApi,
+    dispatchProof?.launch_api,
+    artifactTransportProof?.loaderApi,
+    artifactTransportProof?.loader_api,
+    ...(asArray(dispatchProof?.dispatchEvidenceRefs)),
+    ...(asArray(dispatchProof?.dispatch_evidence_refs)),
+    ...(asArray(dispatchProof?.evidenceRefs)),
+    ...(asArray(dispatchProof?.evidence_refs)),
+    ...(asArray(artifactTransportProof?.evidenceRefs)),
+    ...(asArray(artifactTransportProof?.evidence_refs)),
+  ].map((value) => String(value ?? '').toLowerCase()).join(' ');
+}
+
+function backendFromVerifiedContext(input, validationContext, proofContext = {}) {
   const raw = firstText(
     input.backend,
     input.gpuBackend,
@@ -742,19 +785,46 @@ function backendFromVerifiedContext(input, validationContext) {
     validationContext.backend,
     validationContext.gpuBackend,
     validationContext.gpu_backend,
-    validationContext.gpu_vendor,
-    validationContext.gpuVendor,
-    input.gpuVendor,
-    input.gpu_vendor,
   )?.toLowerCase();
   if (!raw) return 'unknown';
-  if (raw === 'rocm' || raw === 'amd' || raw === 'hip') return 'hip';
+  if (raw === 'hip') return 'hip';
   if (raw === 'hiprt') return 'hiprt';
-  if (raw === 'cuda' || raw === 'nvidia') return 'cuda';
+  if (raw === 'cuda') return 'cuda';
   if (raw === 'opencl' || raw === 'vulkan' || raw === 'webgpu' || raw === 'bevy_wgsl' || raw === 'sycl') {
     return raw;
   }
+  if (raw === 'rocm' || raw === 'amd' || raw === 'nvidia') {
+    const evidence = backendEvidenceText({ input, validationContext, ...proofContext });
+    if (raw !== 'nvidia' && /\bhip(rt)?\b|hipmodule|hiplaunch|hipcc|hsaco|amdgpu|source[_-]?include|source[_-]?bridge/.test(evidence)) {
+      return evidence.includes('hiprt') ? 'hiprt' : 'hip';
+    }
+    if (raw === 'nvidia' && /\bcuda\b|cubin|nvcc|cuLaunchKernel/i.test(evidence)) return 'cuda';
+  }
   return 'unknown';
+}
+
+function rawClassificationFromVerifiedContext(input, validationContext) {
+  return firstObject(input.classification, validationContext.classification);
+}
+
+function verifiedClassificationGaps(rawClassification, normalizedClassification) {
+  const gaps = [];
+  if (Object.keys(rawClassification).length === 0) {
+    gaps.push('classification_not_verified');
+  }
+  if (!GPU_PROJECT_KINDS.has(normalizedClassification.project_kind)) {
+    gaps.push('classification_project_kind_not_gpu_hmr');
+  }
+  if (normalizedClassification.edit_kind !== 'gpu_artifact_edit') {
+    gaps.push('classification_edit_kind_not_gpu_artifact');
+  }
+  if (normalizedClassification.route !== 'gpu_hmr') {
+    gaps.push('classification_route_not_gpu_hmr');
+  }
+  if (!confidenceIsValid(normalizedClassification.confidence)) {
+    gaps.push('classification_confidence_missing');
+  }
+  return compactStringList(gaps);
 }
 
 function selectedIslandContractFromProof(fissionProof) {
@@ -841,6 +911,10 @@ function hipContractFromVerifiedProofs({
     ...(asArray(outputProof?.outputBuffers ?? outputProof?.output_buffers)),
     ...(asArray(outputOracle.outputBuffers ?? outputOracle.output_buffers)),
     ...(asArray(outputOracle.bufferIds ?? outputOracle.buffer_ids)),
+    outputOracle.outputTargetId,
+    outputOracle.output_target_id,
+    outputOracle.readbackTargetId,
+    outputOracle.readback_target_id,
   ]);
   return {
     kernel_name: firstText(
@@ -851,13 +925,25 @@ function hipContractFromVerifiedProofs({
       entryPoints[0],
     ),
     launch_api: firstText(dispatchProof?.launchApi, dispatchProof?.launch_api, selectedIsland?.launchApi),
-    grid_dim: dispatchProof?.gridDim ?? dispatchProof?.grid_dim ?? dispatchProof?.launchGridDim,
-    block_dim: dispatchProof?.blockDim ?? dispatchProof?.block_dim ?? dispatchProof?.launchBlockDim,
+    grid_dim:
+      dispatchProof?.gridDim
+      ?? dispatchProof?.grid_dim
+      ?? dispatchProof?.launchGridDim
+      ?? asArray(dispatchProof?.gridDimensions)[0]
+      ?? asArray(dispatchProof?.grid_dimensions)[0],
+    block_dim:
+      dispatchProof?.blockDim
+      ?? dispatchProof?.block_dim
+      ?? dispatchProof?.launchBlockDim
+      ?? asArray(dispatchProof?.blockDimensions)[0]
+      ?? asArray(dispatchProof?.block_dimensions)[0],
     shared_mem_bytes:
       dispatchProof?.sharedMemBytes
       ?? dispatchProof?.shared_mem_bytes
       ?? dispatchProof?.dynamicSharedMemoryBytes
-      ?? dispatchProof?.dynamic_shared_memory_bytes,
+      ?? dispatchProof?.dynamic_shared_memory_bytes
+      ?? asArray(dispatchProof?.sharedMemoryBytes)[0]
+      ?? asArray(dispatchProof?.shared_memory_bytes)[0],
     stream: firstText(
       dispatchProof?.stream,
       dispatchProof?.streamId,
@@ -871,6 +957,12 @@ function hipContractFromVerifiedProofs({
       abiProof?.code_object_metadata,
       abiProof?.amdgpuCodeObjectMetadata,
       abiProof?.amdgpu_code_object_metadata,
+      compactObject({
+        kernel_abi_fingerprint_hashes: compactStringList(abiProof?.kernelAbiFingerprintHashes),
+        constant_global_layout_hashes: compactStringList(abiProof?.constantGlobalLayoutHashes),
+        extractor_sources: compactStringList(abiProof?.acceptedExtractorSources),
+        extractor_provenance: asArray(abiProof?.extractorProvenance ?? abiProof?.extractor_provenance),
+      }),
     ),
     output_buffers: outputBuffers,
     readback_oracle: outputOracle,
@@ -1071,9 +1163,11 @@ function blockingGapsFromVerifiedProofs({
   fullRuntimeProof,
   firewallProof,
   selectedIsland,
+  classificationGaps = [],
 }) {
   const gaps = [];
   if (backend === 'unknown') gaps.push('backend_unknown');
+  gaps.push(...classificationGaps);
   if (!sourceProofs.some((proof) => proof?.resultState === 'gpu-hmr-symbol-bound')) {
     gaps.push('source_proof_not_verified');
   }
@@ -1111,9 +1205,15 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const outputProof = asObject(input.outputProof ?? input.output_proof);
   const hostPreservationProof = asObject(input.hostPreservationProof ?? input.host_preservation_proof);
   const fullRuntimeProof = asObject(input.fullRuntimeProof ?? input.full_runtime_proof);
+  const rawClassification = rawClassificationFromVerifiedContext(input, validationContext);
+  const verifiedClassification = normalizeClassification(rawClassification);
   const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
   const selectedIsland = selectedIslandContractFromProof(fissionProof);
-  const backend = backendFromVerifiedContext(input, validationContext);
+  const backend = backendFromVerifiedContext(input, validationContext, {
+    selectedIsland,
+    dispatchProof,
+    artifactTransportProof,
+  });
   const artifactHashAfter = artifactHashAfterFromProofs(
     input,
     artifactTransportProof,
@@ -1157,6 +1257,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     fullRuntimeProof,
     firewallProof,
     selectedIsland,
+    classificationGaps: verifiedClassificationGaps(rawClassification, verifiedClassification),
   });
   const gpuRouteAccepted = blockingGaps.length === 0;
   const artifactKind = selectedIslandKind(selectedIsland, backend);
@@ -1174,10 +1275,10 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     unsupported_reasons: gpuRouteAccepted ? [] : blockingGaps,
     failure_mode: gpuRouteAccepted ? 'reject' : 'gpu_hmr_unsupported',
     classification: {
-      project_kind: backend === 'unknown' ? 'unknown' : 'gpu_project',
-      edit_kind: sourcePaths.length > 0 || entryPoints.length > 0 ? 'gpu_artifact_edit' : 'unknown',
-      route: gpuRouteAccepted ? 'gpu_hmr' : 'reject',
-      confidence: gpuRouteAccepted ? 0.95 : 0.25,
+      project_kind: verifiedClassification.project_kind,
+      edit_kind: verifiedClassification.edit_kind,
+      route: verifiedClassification.route,
+      confidence: verifiedClassification.confidence,
       blocking_gaps: blockingGaps,
     },
     artifact_identity: {
@@ -1221,13 +1322,25 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
         dispatchProof.descriptor_or_binding_layout,
       ),
       workgroup_or_launch_shape: compactObject({
-        grid_dim: dispatchProof.gridDim ?? dispatchProof.grid_dim ?? dispatchProof.launchGridDim,
-        block_dim: dispatchProof.blockDim ?? dispatchProof.block_dim ?? dispatchProof.launchBlockDim,
+        grid_dim:
+          dispatchProof.gridDim
+          ?? dispatchProof.grid_dim
+          ?? dispatchProof.launchGridDim
+          ?? asArray(dispatchProof.gridDimensions)[0]
+          ?? asArray(dispatchProof.grid_dimensions)[0],
+        block_dim:
+          dispatchProof.blockDim
+          ?? dispatchProof.block_dim
+          ?? dispatchProof.launchBlockDim
+          ?? asArray(dispatchProof.blockDimensions)[0]
+          ?? asArray(dispatchProof.block_dimensions)[0],
         shared_mem_bytes:
           dispatchProof.sharedMemBytes
           ?? dispatchProof.shared_mem_bytes
           ?? dispatchProof.dynamicSharedMemoryBytes
-          ?? dispatchProof.dynamic_shared_memory_bytes,
+          ?? dispatchProof.dynamic_shared_memory_bytes
+          ?? asArray(dispatchProof.sharedMemoryBytes)[0]
+          ?? asArray(dispatchProof.shared_memory_bytes)[0],
         work_dim: dispatchProof.workDim ?? dispatchProof.work_dim,
         global_work_size: dispatchProof.globalWorkSize ?? dispatchProof.global_work_size,
         local_work_size: dispatchProof.localWorkSize ?? dispatchProof.local_work_size,
@@ -1340,7 +1453,14 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       selected_reason: fissionProof?.fissionProven === true ? 'verified_fission_contract' : null,
       changed_sources: sourcePaths,
       included_dependencies: uniqueObjectsByPath(selectedIsland.includeClosure ?? selectedIsland.include_closure),
-      excluded_host_sources: [],
+      excluded_host_sources: compactStringList(
+        selectedIsland.excludedHostSources
+        ?? selectedIsland.excluded_host_sources
+        ?? fissionProof.excludedHostSources
+        ?? fissionProof.excluded_host_sources
+        ?? input.excludedHostSources
+        ?? input.excluded_host_sources
+      ),
       artifact_hash_before: artifactHashBefore,
       artifact_hash_after: artifactHashAfter,
       abi_compatibility_class: abiProof?.resultState === 'gpu-hmr-abi-proven' ? 'compatible' : 'unknown',

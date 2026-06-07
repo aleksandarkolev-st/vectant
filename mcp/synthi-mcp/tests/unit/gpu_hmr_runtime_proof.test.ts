@@ -105,6 +105,108 @@ const TEST_ABI_HASH = "d".repeat(64);
 const TEST_DEPENDENCY_HASH = "e".repeat(64);
 const TEST_PROOF_HASH = "f".repeat(64);
 
+function acceptedGpuClassification() {
+  return {
+    project_kind: "gpu_project",
+    edit_kind: "gpu_artifact_edit",
+    route: "gpu_hmr",
+    confidence: 0.95,
+    blocking_gaps: [],
+  };
+}
+
+function acceptedGpuFirewallEvidence() {
+  return {
+    route: "gpu_device_sidecar_reload",
+    evidence_source: "test:verified-route-classifier",
+    evidence_refs: ["test:verified-route-classifier"],
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: "pid1",
+    process_id_after: "pid1",
+  };
+}
+
+function acceptedGpuRouteEvidence() {
+  return {
+    classification: acceptedGpuClassification(),
+    firewallEvidence: acceptedGpuFirewallEvidence(),
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  };
+}
+
+function acceptedTimingMetrics() {
+  return {
+    metric_clock: "monotonic_ns",
+    metric_scope: "hot_delta_1",
+    cache_state: "compiler_cache_warm",
+    static_discovery_time: 1_000_000,
+    ai_contract_synthesis_time: 2_000_000,
+    model_availability_check_time: 500_000,
+    artifact_hash_time: 300_000,
+    adapter_generation_time: 3_000_000,
+    device_compile_wall_time: 24_000_000,
+    artifact_load_time: 1_000_000,
+    epoch_publish_time: 500_000,
+    dispatch_trace_time: 700_000,
+    runtime_probe_time: 1_000_000,
+    oracle_analysis_time: 1_000_000,
+    trigger_to_visible_time: 34_000_000,
+    screenshot_capture_time: 0,
+    dispatch_to_output_proof_time: 2_000_000,
+    total_validator_wall_time: 71_000_000,
+  };
+}
+
+function acceptedModelProvenance() {
+  const checkedAt = "2026-06-07T00:00:00.000Z";
+  return {
+    split: {
+      provider: "google_gemini",
+      requested_model: "gemini-3.5-flash",
+      provider_model_status: "available",
+      provider_model_alias_resolved_to: "gemini-3.5-flash",
+      provider_shutdown_or_deprecation_detected: false,
+      model_availability_checked_at: checkedAt,
+      actual_model: "gemini-3.5-flash",
+      fallback_model: null,
+      fallback_used: false,
+      request_mode: "split",
+      hard_infra_failure: false,
+    },
+    gpu_delta: {
+      provider: "google_gemini",
+      requested_model: "gemini-3.1-flash-lite",
+      provider_model_status: "available",
+      provider_model_alias_resolved_to: "gemini-3.1-flash-lite",
+      provider_shutdown_or_deprecation_detected: false,
+      model_availability_checked_at: checkedAt,
+      actual_model: "gemini-3.1-flash-lite",
+      fallback_model: null,
+      fallback_used: false,
+      request_mode: "gpu_delta",
+      hard_infra_failure: false,
+    },
+  };
+}
+
+function acceptedStrictLedgerEvidence() {
+  const timings = acceptedTimingMetrics();
+  return {
+    sourceEditId: "edit-1",
+    metricClock: "monotonic_ns",
+    metricScope: "hot_delta_1",
+    cacheState: "compiler_cache_warm",
+    timings,
+    timingMetrics: timings,
+    modelProvenance: acceptedModelProvenance(),
+    evidenceRefs: ["test:strict-ledger"],
+  };
+}
+
 function epochCapsuleMetadata({
   oldHash = TEST_OLD_ARTIFACT_HASH,
   newHash = TEST_ARTIFACT_HASH,
@@ -224,6 +326,7 @@ function epochGenerationGraph({
 function retiredEpochProof() {
   return classifyGpuHmrEpochSwapProof({
     published: true,
+    processId: "pid1",
     runtimeSessionIds: ["runtime-session:test"],
     epochGenerationGraph: epochGenerationGraph(),
     dispatchTableHashObserved: true,
@@ -296,6 +399,8 @@ function deterministicOutputOracle({
   runtimeSession = "runtime-session:test",
   artifactId = TEST_ARTIFACT_ID,
   dispatchId = "dispatch:test:1",
+  processId = "pid1",
+  epoch = "3",
 } = {}) {
   return {
     oracleId: "oracle:required:test-output",
@@ -306,6 +411,8 @@ function deterministicOutputOracle({
     actual: "expected-sentinel",
     passed: true,
     outputTargetId: "output:sentinel",
+    processId,
+    epoch,
     readbackTimestamp: "1779980000000",
     runtimeSessionId: runtimeSession,
     artifactId,
@@ -315,6 +422,20 @@ function deterministicOutputOracle({
     probeConfigHash: `sha256:${"a".repeat(64)}`,
     probeEvidenceRefs: ["evidence:output-oracle:readback:abc"],
     evidenceRefs: ["evidence:output-oracle:readback:abc"],
+    oracleArtifacts: {
+      computeOracleArtifacts: {
+        raw_readback_bin: "artifacts/readback.bin",
+        readback_schema_json: "artifacts/readback.schema.json",
+        checksum_before: `sha256:${"1".repeat(64)}`,
+        checksum_after: `sha256:${"2".repeat(64)}`,
+        deterministic_slice: ["expected-sentinel"],
+        oracle_code_hash: `sha256:${"3".repeat(64)}`,
+        rendered_card_png: "artifacts/compute-proof.png",
+        producer: "deterministic_probe",
+        timestamp_after_dispatch: 1779980000000,
+        epoch,
+      },
+    },
   };
 }
 
@@ -396,6 +517,8 @@ function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
     targetSymbols: ["kernel_main"],
     exportedSymbolsExpected: ["kernel_main"],
     artifactKind: "source_include_bridge",
+    compilerName: "hipcc",
+    launchApi: "hipModuleLaunchKernel",
     includeClosure: [{ path: "src/gpu/kernel.hpp" }],
     dependencyClosureHash: "b".repeat(64),
     abiMembraneId: "abi-membrane:abc",
@@ -570,6 +693,9 @@ function acceptedArtifactTransportProof() {
   return {
     schemaVersion: "synthi.gpu.hmr.artifact_transport_proof.v1",
     resultState: "gpu-hmr-artifact-transport-proven",
+    eventId: "loader:test:1",
+    processId: "pid1",
+    timestampMonotonicNs: 1779979998500,
     transportEvidenceObserved: true,
     ramTransportProven: true,
     ramArtifactReferenceProvided: true,
@@ -5638,6 +5764,7 @@ describe("GPU HMR runtime output proof classification", () => {
       processId: "pid1",
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
       sourceProofs: [acceptedSourceProof()],
       fissionProof: acceptedFissionProof(),
       abiProof: acceptedAbiProof(),
@@ -5718,6 +5845,8 @@ describe("GPU HMR runtime output proof classification", () => {
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
       artifactHashAfter: TEST_OTHER_ARTIFACT_ID,
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
       sourceProofs: [sourceProof],
       fissionProof,
       abiProof,
@@ -5739,9 +5868,8 @@ describe("GPU HMR runtime output proof classification", () => {
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
       artifactHashAfter: TEST_OTHER_ARTIFACT_ID,
-      cpuHmrUsed: false,
-      fullRebuildUsed: false,
-      processRestarted: false,
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
       sourceProofs: [sourceProof],
       fissionProof,
       abiProof,
@@ -5796,9 +5924,8 @@ describe("GPU HMR runtime output proof classification", () => {
       processId: "pid1",
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
-      cpuHmrUsed: false,
-      fullRebuildUsed: false,
-      processRestarted: false,
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
       runtimeSessionIds: ["runtime-session:test"],
       sourceProofs: [sourceProof],
       fissionProof: acceptedFissionProof(),
@@ -5822,6 +5949,7 @@ describe("GPU HMR runtime output proof classification", () => {
         },
       },
       validationContext: {
+        processId: "pid1",
         command: {
           cwd: "/repo/mcp/synthi-mcp",
           argv: ["node", "scripts/gpu-hmr-test.mjs"],
@@ -5854,6 +5982,12 @@ describe("GPU HMR runtime output proof classification", () => {
         },
       },
       visualEvidenceRefs: ["artifacts/frame.png"],
+      visualEvidenceArtifacts: [{
+        path: "artifacts/frame.png",
+        contentHash: `sha256:${"4".repeat(64)}`,
+        acceptedAsVisualEvidence: true,
+        visualQuality: "gpu-hmr-visual-rich",
+      }],
       createdAt: "2026-05-28T00:00:00.000Z",
     });
 
@@ -5986,6 +6120,7 @@ describe("GPU HMR runtime output proof classification", () => {
       processId: "pid1",
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
       sourceProofs: [sourceProof],
       fissionProof,
       abiProof,
@@ -6011,9 +6146,7 @@ describe("GPU HMR runtime output proof classification", () => {
       processId: "pid1",
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
-      cpuHmrUsed: false,
-      fullRebuildUsed: false,
-      processRestarted: false,
+      ...acceptedGpuRouteEvidence(),
       sourceProofs: [sourceProof],
       fissionProof,
       abiProof,
@@ -6079,6 +6212,7 @@ describe("GPU HMR runtime output proof classification", () => {
       processId: "pid1",
       deviceUuid: "device:test",
       contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
       sourceProofs: [sourceProof],
       fissionProof,
       abiProof,
@@ -6092,6 +6226,8 @@ describe("GPU HMR runtime output proof classification", () => {
     const artifact = buildValidationRuntimeProofArtifact({
       workspaceSlug: "workspace",
       sourceProofs: [sourceProof],
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
       fissionProof,
       abiProof,
       artifactTransportProof,
@@ -6779,6 +6915,7 @@ describe("GPU HMR runtime output proof classification", () => {
   });
 
   it("rejects GPU HMR ledger records missing required safety identity", () => {
+    const strictLedgerEvidence = acceptedStrictLedgerEvidence();
     const baseRecord = {
       project_id: "workspace",
       edit_id: "edit-1",
@@ -6800,6 +6937,7 @@ describe("GPU HMR runtime output proof classification", () => {
         id: "publish-1",
         artifact_hash: TEST_ARTIFACT_ID,
         epoch: "epoch-3",
+        process_id: "pid-1",
         timestamp_monotonic_ns: 200,
       },
       dispatch_event: {
@@ -6816,6 +6954,7 @@ describe("GPU HMR runtime output proof classification", () => {
         epoch: "epoch-3",
         after_dispatch_id: "dispatch-1",
         passed: true,
+        process_id: "pid-1",
         timestamp_monotonic_ns: 400,
       },
       retirement_event: {
@@ -6832,6 +6971,18 @@ describe("GPU HMR runtime output proof classification", () => {
       cpu_hmr_used: false,
       full_rebuild_used: false,
       process_restarted: false,
+      metric_clock: strictLedgerEvidence.metricClock,
+      metric_scope: strictLedgerEvidence.metricScope,
+      cache_state: strictLedgerEvidence.cacheState,
+      timings: strictLedgerEvidence.timings,
+      timing_metrics: strictLedgerEvidence.timingMetrics,
+      model_provenance: strictLedgerEvidence.modelProvenance,
+      oracle_artifacts: {
+        compute_oracle_artifacts: deterministicOutputOracle({
+          epoch: "epoch-3",
+        }).oracleArtifacts.computeOracleArtifacts,
+      },
+      evidence_refs: strictLedgerEvidence.evidenceRefs,
     };
 
     expect(evaluateGpuHmrProofLedger(baseRecord).gpuHmrSuccess).toBe(true);

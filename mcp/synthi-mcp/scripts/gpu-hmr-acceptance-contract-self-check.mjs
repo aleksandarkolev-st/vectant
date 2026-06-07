@@ -443,7 +443,7 @@ expectReject('embedded Bevy shader asset', {
   },
 }, 'bevy_wgsl_shader_asset_not_file_loaded');
 
-const derivedWithoutFirewall = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+const derivedProofInput = {
   backend: 'hip',
   projectId: 'generic-gpu-project',
   editId: 'edit-derived',
@@ -519,12 +519,65 @@ const derivedWithoutFirewall = deriveGpuHmrAcceptanceContractFromVerifiedProofs(
   fullRuntimeProof: {
     fullRuntimeProven: true,
   },
-});
+};
+
+const derivedWithoutFirewall = deriveGpuHmrAcceptanceContractFromVerifiedProofs(derivedProofInput);
 assert.ok(
   derivedWithoutFirewall.classification.blocking_gaps.includes('route_classifier_not_verified'),
   `derived contract unexpectedly lacked route firewall gap: ${derivedWithoutFirewall.classification.blocking_gaps.join(',')}`,
 );
 assert.equal(evaluateGpuHmrAcceptanceContract(derivedWithoutFirewall).accepted, false);
+
+for (const [name, classification, expectedGate] of [
+  [
+    'host-only derived classification',
+    {
+      project_kind: 'gpu_project',
+      edit_kind: 'host_only',
+      route: 'cpu_hmr_or_host_reload',
+      confidence: 0.94,
+      blocking_gaps: [],
+    },
+    'host_only_edit_not_gpu_hmr',
+  ],
+  [
+    'mixed host+GPU derived classification',
+    {
+      project_kind: 'mixed_project',
+      edit_kind: 'mixed_host_gpu',
+      route: 'full_rebuild_required',
+      confidence: 0.88,
+      blocking_gaps: [],
+    },
+    'edit_kind_not_gpu_artifact',
+  ],
+]) {
+  const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+    ...derivedProofInput,
+    classification,
+    firewallEvidence: {
+      route: classification.route,
+      evidence_source: 'self-check:verified-route-classifier',
+      evidence_refs: ['self-check:verified-route-classifier'],
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: 'pid-1',
+      process_id_after: 'pid-1',
+    },
+  });
+  const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+  assert.equal(
+    derived.classification.edit_kind,
+    classification.edit_kind,
+    `${name} was rewritten to ${derived.classification.edit_kind}`,
+  );
+  assert.equal(evaluation.accepted, false, `${name} unexpectedly accepted`);
+  assert.ok(
+    evaluation.failedGates.some((gate) => gate.code === expectedGate),
+    `${name} expected ${expectedGate}, got ${evaluation.failedGates.map((gate) => gate.code).join(',')}`,
+  );
+}
 
 console.log(JSON.stringify({
   ok: true,
