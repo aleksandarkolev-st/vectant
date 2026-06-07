@@ -112,19 +112,29 @@ function finiteNonNegativeNumber(value) {
   return n !== null && n >= 0 ? n : null;
 }
 
-function timingObjectCandidates(timings) {
+function timingObjectCandidates(timings, timingMetrics = {}) {
   const t = asObject(timings);
+  const m = asObject(timingMetrics);
+  const nestedTimingMetrics = asObject(t.timing_metrics ?? t.timingMetrics);
   return [
     t,
+    m,
+    nestedTimingMetrics,
     asObject(t.normalized_timings),
     asObject(t.normalizedTimings),
+    asObject(m.normalized_timings),
+    asObject(m.normalizedTimings),
+    asObject(nestedTimingMetrics.normalized_timings),
+    asObject(nestedTimingMetrics.normalizedTimings),
     asObject(t.snake_case),
     asObject(asObject(t.normalizedTimings).snake_case),
+    asObject(asObject(m.normalizedTimings).snake_case),
+    asObject(asObject(nestedTimingMetrics.normalizedTimings).snake_case),
   ];
 }
 
-function timingFieldValue(timings, snakeKey, camelKey) {
-  const candidates = timingObjectCandidates(timings);
+function timingFieldValue(timings, timingMetrics, snakeKey, camelKey) {
+  const candidates = timingObjectCandidates(timings, timingMetrics);
   for (const object of candidates) {
     for (const key of [snakeKey, `${snakeKey}_ms`, camelKey, `${camelKey}Ms`]) {
       if (!hasOwnDeep(object, key)) continue;
@@ -135,10 +145,10 @@ function timingFieldValue(timings, snakeKey, camelKey) {
   return null;
 }
 
-function collectTimingFieldValues(timings) {
+function collectTimingFieldValues(timings, timingMetrics) {
   return Object.fromEntries(REQUIRED_TIMING_FIELDS.map(([snakeKey, camelKey]) => [
     snakeKey,
-    timingFieldValue(timings, snakeKey, camelKey),
+    timingFieldValue(timings, timingMetrics, snakeKey, camelKey),
   ]));
 }
 
@@ -499,6 +509,12 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
   const deviceIdentity = asObject(record.device_identity ?? record.deviceIdentity);
   const firewallEvidence = asObject(record.firewall_evidence ?? record.firewallEvidence);
   const timings = asObject(record.timings);
+  const timingMetrics = asObject(
+    record.timing_metrics
+    ?? record.timingMetrics
+    ?? timings.timing_metrics
+    ?? timings.timingMetrics,
+  );
   const cpuHmrUsed = firstPresent(
     [record, 'cpu_hmr_used'],
     [record, 'cpuHmrUsed'],
@@ -557,13 +573,32 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
       record.metricClock,
       timings.metric_clock,
       timings.metricClock,
+      timingMetrics.metric_clock,
+      timingMetrics.metricClock,
       asObject(timings.clock_evidence).metric_clock,
       asObject(timings.clockEvidence).metricClock,
+      asObject(timingMetrics.clock_evidence).metric_clock,
+      asObject(timingMetrics.clockEvidence).metricClock,
     ),
-    metricScope: firstText(record.metric_scope, record.metricScope, timings.metric_scope, timings.metricScope),
-    cacheState: firstText(record.cache_state, record.cacheState, timings.cache_state, timings.cacheState),
+    metricScope: firstText(
+      record.metric_scope,
+      record.metricScope,
+      timings.metric_scope,
+      timings.metricScope,
+      timingMetrics.metric_scope,
+      timingMetrics.metricScope,
+    ),
+    cacheState: firstText(
+      record.cache_state,
+      record.cacheState,
+      timings.cache_state,
+      timings.cacheState,
+      timingMetrics.cache_state,
+      timingMetrics.cacheState,
+    ),
     timings,
-    timingFieldValues: collectTimingFieldValues(timings),
+    timingMetrics,
+    timingFieldValues: collectTimingFieldValues(timings, timingMetrics),
     modelProvenance: asObject(record.model_provenance ?? record.modelProvenance),
     evidenceRefs: compactStringList(record.evidence_refs ?? record.evidenceRefs),
   };
@@ -634,7 +669,10 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   } else if (!CACHE_STATES.has(record.cacheState)) {
     addFailure(failures, 'cache_state_unsupported', { cacheState: record.cacheState });
   }
-  if (!record.timings || Object.keys(record.timings).length === 0) {
+  if (
+    (!record.timings || Object.keys(record.timings).length === 0)
+    && (!record.timingMetrics || Object.keys(record.timingMetrics).length === 0)
+  ) {
     addFailure(failures, 'timings_missing');
   }
   for (const [snakeKey] of REQUIRED_TIMING_FIELDS) {

@@ -1639,10 +1639,34 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
   ]);
   const dispatchArtifactHash = proofArtifactId(dispatchProof);
   const outputArtifactHash = proofArtifactId(outputProof);
+  const timingMetrics = objectOrNull(input.timingMetrics)
+    ?? objectOrNull(input.timing_metrics)
+    ?? objectOrNull(input.timings?.timingMetrics)
+    ?? objectOrNull(input.timings?.timing_metrics)
+    ?? objectOrNull(validationContext?.timingMetrics)
+    ?? objectOrNull(validationContext?.timing_metrics)
+    ?? objectOrNull(validationContext?.timings?.timingMetrics)
+    ?? objectOrNull(validationContext?.timings?.timing_metrics)
+    ?? null;
+  const ledgerTimings = objectOrNull(input.timings)
+    ?? objectOrNull(validationContext?.timings)
+    ?? timingMetrics
+    ?? {};
 
   const record = {
-    project_id: input.workspaceSlug ?? validationContext?.workspaceSlug ?? validationContext?.workspace_slug ?? null,
-    edit_id: input.sourceEditId ?? input.source_edit_id ?? validationContext?.sourceEditId ?? null,
+    project_id: input.workspaceSlug
+      ?? validationContext?.workspaceSlug
+      ?? validationContext?.workspace_slug
+      ?? acceptanceContract?.project_id
+      ?? acceptanceContract?.projectId
+      ?? null,
+    edit_id: input.sourceEditId
+      ?? input.source_edit_id
+      ?? validationContext?.sourceEditId
+      ?? validationContext?.source_edit_id
+      ?? acceptanceContract?.edit_id
+      ?? acceptanceContract?.editId
+      ?? null,
     classification: input.classification ?? validationContext?.classification ?? acceptanceContract?.classification ?? {},
     contract_hash: firstString(
       input.contractHash,
@@ -1752,31 +1776,38 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       ?? input.metric_clock
       ?? validationContext?.metricClock
       ?? validationContext?.metric_clock
-      ?? input.timings?.metricClock
-      ?? input.timings?.metric_clock
-      ?? validationContext?.timings?.metricClock
-      ?? validationContext?.timings?.metric_clock,
+      ?? timingMetrics?.metricClock
+      ?? timingMetrics?.metric_clock
+      ?? ledgerTimings?.metricClock
+      ?? ledgerTimings?.metric_clock,
     metric_scope:
       input.metricScope
       ?? input.metric_scope
       ?? validationContext?.metricScope
       ?? validationContext?.metric_scope
-      ?? input.timings?.metricScope
-      ?? input.timings?.metric_scope
-      ?? validationContext?.timings?.metricScope
-      ?? validationContext?.timings?.metric_scope,
+      ?? timingMetrics?.metricScope
+      ?? timingMetrics?.metric_scope
+      ?? ledgerTimings?.metricScope
+      ?? ledgerTimings?.metric_scope,
     cache_state:
       input.cacheState
       ?? input.cache_state
       ?? validationContext?.cacheState
       ?? validationContext?.cache_state
-      ?? input.timings?.cacheState
-      ?? input.timings?.cache_state
-      ?? validationContext?.timings?.cacheState
-      ?? validationContext?.timings?.cache_state,
-    timings: input.timings ?? validationContext?.timings ?? {},
+      ?? timingMetrics?.cacheState
+      ?? timingMetrics?.cache_state
+      ?? ledgerTimings?.cacheState
+      ?? ledgerTimings?.cache_state,
+    timings: ledgerTimings,
+    timing_metrics: timingMetrics ?? {},
     model_provenance: input.modelProvenance ?? input.model_provenance ?? validationContext?.modelProvenance ?? {},
     evidence_refs: compactStringList([
+      ...(Array.isArray(input.evidenceRefs) ? input.evidenceRefs : []),
+      ...(Array.isArray(input.evidence_refs) ? input.evidence_refs : []),
+      ...(Array.isArray(validationContext?.evidenceRefs) ? validationContext.evidenceRefs : []),
+      ...(Array.isArray(validationContext?.evidence_refs) ? validationContext.evidence_refs : []),
+      ...(Array.isArray(acceptanceContract?.evidence_refs) ? acceptanceContract.evidence_refs : []),
+      ...(Array.isArray(acceptanceContract?.evidenceRefs) ? acceptanceContract.evidenceRefs : []),
       ...(Array.isArray(artifactTransportProof?.evidenceRefs) ? artifactTransportProof.evidenceRefs : []),
       ...(Array.isArray(epochProof?.evidenceRefs) ? epochProof.evidenceRefs : []),
       ...(Array.isArray(dispatchProof?.evidenceRefs) ? dispatchProof.evidenceRefs : []),

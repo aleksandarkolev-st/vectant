@@ -14,6 +14,23 @@ import { buildGpuHmrValidationProofSummary } from './lib/gpu-hmr-validation-proo
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const HASH_C = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+const REQUIRED_TIMING_FIELDS = [
+  'static_discovery_time',
+  'ai_contract_synthesis_time',
+  'model_availability_check_time',
+  'artifact_hash_time',
+  'adapter_generation_time',
+  'device_compile_wall_time',
+  'artifact_load_time',
+  'epoch_publish_time',
+  'dispatch_trace_time',
+  'runtime_probe_time',
+  'oracle_analysis_time',
+  'trigger_to_visible_time',
+  'screenshot_capture_time',
+  'dispatch_to_output_proof_time',
+  'total_validator_wall_time',
+];
 
 function baselineModelProvenance(overrides = {}) {
   return {
@@ -518,6 +535,14 @@ function expectReject(name, record, expectedCode) {
 const accepted = assertGpuHmrProofLedgerSuccess(baselineRecord());
 assert.equal(accepted.schemaVersion, GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION);
 assert.equal(accepted.gpuHmrSuccess, true);
+assert.equal(assertGpuHmrProofLedgerSuccess(baselineRecord({
+  metric_clock: null,
+  metric_scope: null,
+  cache_state: null,
+  timings: {
+    timingMetrics: baselineTimingMetrics(),
+  },
+})).gpuHmrSuccess, true);
 
 const acceptedLedger = buildGpuHmrProofLedger(baselineRecord());
 const runtimeArtifact = buildValidationRuntimeProofArtifact({
@@ -804,9 +829,13 @@ const cases = [
   }), 'cache_state_missing'],
   ['unsupported cache state', baselineRecord({ cache_state: 'unknown' }), 'cache_state_unsupported'],
   ['missing timings object', baselineRecord({ timings: {} }), 'timings_missing'],
-  ['missing device compile timing', baselineRecord({
-    timings: baselineTimingMetrics({ device_compile_wall_time: null }),
-  }), 'timing_device_compile_wall_time_missing'],
+  ...REQUIRED_TIMING_FIELDS.map((field) => [
+    `missing ${field} timing`,
+    baselineRecord({
+      timings: baselineTimingMetrics({ [field]: null }),
+    }),
+    `timing_${field}_missing`,
+  ]),
   ['missing split model provenance role', baselineRecord({
     model_provenance: {
       last_gpu_delta: baselineModelProvenance().last_gpu_delta,
