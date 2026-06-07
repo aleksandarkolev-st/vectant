@@ -4227,6 +4227,18 @@ function runtimeSessionIdFromLine(line) {
   return match ? normalizeSessionMarker(match[1]) : null;
 }
 
+function processIdFromRuntimeSession(value) {
+  const session = String(value ?? '').trim();
+  const match = session.match(/^pid(\d+)(?:[-:]|$)/i);
+  return match ? `pid:${match[1]}` : null;
+}
+
+function processIdsFromRuntimeSessions(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(processIdFromRuntimeSession)
+    .filter((value) => typeof value === 'string' && value.trim()))];
+}
+
 function logField(line, key) {
   return String(line ?? '').match(new RegExp(String.raw`\b${key}=([^\s]+)`, 'i'))?.[1] ?? '';
 }
@@ -4376,8 +4388,11 @@ function runtimeDispatchEvidence(workerEvidence) {
     if (!record.runtimeSession || !record.kernelName) return null;
     return `worker-log:synthi_gpu_launch:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
   }).filter(Boolean))];
+  const processIds = processIdsFromRuntimeSessions(successRecords.map((record) => record.runtimeSession));
   return {
     success_count: dispatchSuccessCount,
+    process_id: processIds.length === 1 ? processIds[0] : null,
+    process_ids: processIds,
     success_lines: dispatchSuccessLines.slice(-20),
     success_records: successRecords.slice(-20),
     evidence_refs: dispatchEvidenceRefs,
@@ -4744,6 +4759,7 @@ function buildHiprtNativeDispatchProof({
   const runtimeSessionIds = [
     ...new Set(acceptedRecords.map((record) => record.runtimeSession).filter(Boolean)),
   ];
+  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const artifactId = preferredRuntimeArtifactId({ selectedArtifactIds, epochProof });
   const dispatchEvidenceRefs = acceptedRecords.map((record) => hiprtNativeEvidenceRef(record));
   const argProvenanceEvidenceRefs = acceptedRecords.map((record) =>
@@ -4761,6 +4777,7 @@ function buildHiprtNativeDispatchProof({
     sessionScoped: runtimeSessionIds.length > 0,
     runtimeSessionObserved: runtimeSessionIds.length > 0,
     runtimeSessionIds,
+    processId: processIds.length === 1 ? processIds[0] : null,
     runtimeSessionConsistent: runtimeSessionIds.length <= 1,
     argProvenanceObserved: true,
     argProvenanceComplete: true,
@@ -4809,6 +4826,9 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
   const contentHash = visualFrame.contentHash ?? visualFrame.content_hash;
   if (!/^sha256:[0-9a-f]{64}$/i.test(String(contentHash ?? ''))) return null;
   const artifactId = dispatchProof.runtimeArtifactIds?.[0] ?? dispatchProof.selectedArtifactIds?.[0] ?? null;
+  const processId = dispatchProof.processId
+    ?? processIdFromRuntimeSession(dispatchProof.runtimeSessionIds?.[0])
+    ?? null;
   const visualEvidenceRefs = [visualFrame.path].filter(Boolean);
   const oracleEvidenceRef = `validation:output-oracle:${contentHash}`;
   return {
@@ -4843,6 +4863,7 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
       outputTargetId: 'HIPRTPathTracer framebuffer',
       readbackTimestamp: Date.now(),
       runtimeSessionId: dispatchProof.runtimeSessionIds?.[0] ?? null,
+      processId,
       artifactId,
       probeContractComplete: true,
       probeContract: {
@@ -4857,6 +4878,7 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
     visualEvidenceComplete: visualEvidenceRefs.length > 0,
     visualEvidenceRefs,
     evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
+    processId,
     dispatchProof,
     artifactId,
     proofSource: 'hiprt-runtime-device-framebuffer',
@@ -5763,6 +5785,7 @@ int main()
     actual: 'sha256:abc',
     passed: true,
     runtimeSession: 'pid1',
+    processId: 'pid:1',
     outputTargetId: 'target:main',
     readbackTimestamp: 300,
     artifactId: activeEpochArtifactId,
@@ -5834,9 +5857,32 @@ int main()
     || !epochBoundOutputProof.outputOracle?.artifactMatchesActiveEpoch
     || selectedOnlyOutputProof.degradedReason !== 'output_oracle_artifact_mismatch'
     || selectedOnlyOutputProof.outputOracle?.artifactMatchesRuntime
+    || epochBoundOutputProof.processId !== 'pid:1'
+    || epochBoundOutputProof.outputOracle?.processId !== 'pid:1'
     || dispatchUnknownProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
   ) {
     throw new Error('runtime dispatch/output proof classifier failed');
+  }
+  const processBoundEpoch = epochSwapProofFromRuntimeEvidence([
+    `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid4242-123 publish_timestamp_ms=200 previous_generation=1 active_generation=2 old_artifact_id=none new_artifact_id=${activeEpochArtifactId} new_artifact_hash=sha256:${'2'.repeat(64)} capsule_id=capsule:sha256:${'5'.repeat(64)} fission_island_id=island:device abi_membrane_hash=sha256:${'6'.repeat(64)} dependency_closure_hash=sha256:${'7'.repeat(64)} proof_hash=sha256:${'8'.repeat(64)} changed_symbols=kernel function_handle_ids=handle:kernel stream_epoch_counters=stream0:2 dispatch_table_hash_before=0x1 dispatch_table_hash_after=0x2 dispatch_table_hash=0x2 changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=stream stream_ids=stream0 stream_ordering_proven=true retirement_fence_ids=fence0 retirement_strategy=epoch_fence delayed_unload_result=not_required drain_result=synced drain_elapsed_ms=0 drain_budget_ms=1`,
+  ]);
+  const processBoundOutputEvidence = runtimeOutputOracleEvidence([
+    `[gpu-runtime-boundary] output_oracle id=probe.process required_oracle_id=probe.process kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=2 runtime_session=pid4242-123 producer=runtime_probe output_target_id=target readback_timestamp=300 artifact_id=${activeEpochArtifactId} probe_mode=post_hmr_active_kernel_readback_checksum probe_config_hash=sha256:${'9'.repeat(64)} probe_evidence_ref=probe-ref`,
+  ]);
+  const processBoundTransportEvidence = runtimeArtifactTransportEvidence([
+    `[gpu-runtime-boundary] artifact_transport runtime_session=pid4242-123 generation=2 artifact_hash=sha256:${'2'.repeat(64)} artifact_bytes=16 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=${activeEpochArtifactId} ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok`,
+  ]);
+  const processBoundTransportProof = artifactTransportProofFromProofArtifacts(
+    [],
+    processBoundTransportEvidence,
+  );
+  if (
+    processBoundEpoch.proof.processId !== 'pid:4242'
+    || processBoundOutputEvidence.process_id !== 'pid:4242'
+    || processBoundOutputEvidence.output_oracle?.processId !== 'pid:4242'
+    || processBoundTransportProof.processId !== 'pid:4242'
+  ) {
+    throw new Error('runtime process identity propagation self-check failed');
   }
   const hostReplacedProof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: true,
@@ -6587,6 +6633,7 @@ async function collectRuntimeEvidence() {
     blockDimensions: runtimeDispatch.block_dimensions,
     sharedMemoryBytes: runtimeDispatch.shared_memory_bytes,
     dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
+    processId: runtimeDispatch.process_id,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
   const hiprtVisualFrame = hiprtNativeVisualFrame(freshVisualFrames);

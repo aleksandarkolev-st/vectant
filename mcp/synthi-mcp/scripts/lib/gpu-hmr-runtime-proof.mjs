@@ -1591,6 +1591,12 @@ export function classifyGpuHmrOutputProof(observation = {}) {
             : typeof rawOracle.session_id === 'string' && rawOracle.session_id.trim()
               ? rawOracle.session_id.trim()
               : null;
+  const oracleProcessId = stringField(
+    rawOracle.processId,
+    rawOracle.process_id,
+    observation.processId,
+    observation.process_id,
+  );
   const oracleArtifactId = typeof rawOracle.artifactId === 'string' && rawOracle.artifactId.trim()
     ? rawOracle.artifactId.trim()
     : typeof rawOracle.artifact_id === 'string' && rawOracle.artifact_id.trim()
@@ -1717,6 +1723,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     outputTargetId: oracleOutputTargetId,
     readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
     runtimeSessionId: oracleRuntimeSessionId,
+    processId: oracleProcessId,
     artifactId: oracleArtifactId,
     dispatchId: oracleDispatchId,
     afterDispatchId: oracleDispatchId,
@@ -1779,6 +1786,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedState: dispatchProof?.degradedState ?? 'gpu-hmr-dispatch-unobserved',
       degradedReason: dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
       outputOracle: { ...outputOracle, passed: false },
+      processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
       renderVisualEvidenceRequired,
@@ -1799,6 +1807,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
           ? 'visual_evidence_refs_missing'
           : 'visual_frame_not_observed',
         outputOracle,
+        processId: oracleProcessId,
         visualFrameObserved,
         visualEvidenceRequired,
         renderVisualEvidenceRequired,
@@ -1815,6 +1824,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       outputOracle,
+      processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
       renderVisualEvidenceRequired,
@@ -1875,6 +1885,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     degradedState,
     degradedReason,
     outputOracle: { ...outputOracle, passed: false },
+    processId: oracleProcessId,
     visualFrameObserved,
     visualEvidenceRequired,
     renderVisualEvidenceRequired,
@@ -2770,6 +2781,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false
     && runtimeSessionIds.length <= 1;
+  const processId = stringField(observation.processId, observation.process_id);
   const generationGraphObserved = epochGraph.observed;
   const generationGraphValid = epochGraph.valid;
   const generationGraphRuntimeSessionIds = epochGraph.runtimeSessionIds;
@@ -2865,6 +2877,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       published: true,
+      processId,
       runtimeSessionObserved: true,
       runtimeSessionIds,
       runtimeSessionConsistent: true,
@@ -2924,6 +2937,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       degradedState: 'gpu-hmr-epoch-retirement-pending',
       degradedReason: 'old_generation_retirement_not_completed',
       published: true,
+      processId,
       runtimeSessionObserved: true,
       runtimeSessionIds,
       runtimeSessionConsistent: true,
@@ -3001,6 +3015,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
                               ? 'epoch_delayed_unload_result_unverified'
                               : 'epoch_retirement_tracking_not_collected',
     published,
+    processId,
     runtimeSessionObserved,
     runtimeSessionIds,
     runtimeSessionConsistent,
@@ -3071,6 +3086,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const processId = stringField(observation.processId, observation.process_id);
   const identitySnapshotEvidenceRefs = Array.isArray(observation.identitySnapshotEvidenceRefs)
     ? observation.identitySnapshotEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
@@ -3096,6 +3112,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedState: 'gpu-hmr-host-replaced',
       degradedReason: 'host_runtime_replaced_or_restarted',
       identityChecksPassed: false,
+      processId,
       identitySnapshotObserved,
       identitySnapshotLineageObserved,
       requiredIdentityRolesObserved,
@@ -3128,6 +3145,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       identityChecksPassed: true,
+      processId,
       identitySnapshotObserved: true,
       identitySnapshotLineageObserved: true,
       requiredIdentityRolesObserved: true,
@@ -3165,6 +3183,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
                   : 'host_identity_checks_not_collected'
       : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
+    processId,
     identitySnapshotObserved,
     identitySnapshotLineageObserved,
     requiredIdentityRolesObserved,

@@ -1394,6 +1394,7 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
   let ramTransportProven = false;
   let degradedState = null;
   let degradedReason = null;
+  let processId = null;
 
   for (const record of Array.isArray(records) ? records : []) {
     const artifact = record?.artifact;
@@ -1494,6 +1495,12 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
         degradedReason = runtimeDegradedReason.trim();
       }
     }
+    if (!processId) {
+      const runtimeProcessId = runtimeEvidence.process_id ?? runtimeEvidence.processId ?? null;
+      if (typeof runtimeProcessId === 'string' && runtimeProcessId.trim()) {
+        processId = runtimeProcessId.trim();
+      }
+    }
   }
 
   return {
@@ -1510,6 +1517,7 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
     loaderTransports: uniqueStrings(loaderTransports),
     reloadRequestTransports: uniqueStrings(reloadRequestTransports),
     evidenceRefs: uniqueStrings(evidenceRefs),
+    processId,
     degradedState: ramTransportProven ? null : degradedState ?? 'gpu-hmr-ram-io-unavailable',
     degradedReason: ramTransportProven
       ? null
