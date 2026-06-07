@@ -279,7 +279,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     steps,
     successCriteria: successCriteriaFor(steps),
     lane0: lane0.status,
-    failureClasses: failureClassesFor(limitations, mutationSteps.length > 0),
+    failureClasses: failureClassesFor(limitations, mutationSteps.length > 0, authPlan),
     replayModes,
     limitations,
     counterfactualPlan: counterfactualPlanFor(firstMutationStepId, steps.length, limitations),
@@ -623,8 +623,11 @@ export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTra
   if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
   if (/canvas/i.test(message)) return "canvasUnreliable";
   if (/pointer drag|pointer-drag/i.test(message)) return "pointerDragUnreliable";
+  if (event?.action === "navigate" && /timeout|waiting|url|navigation/i.test(message)) return "routeChanged";
+  if (/net::|ERR_|network/i.test(message)) return "networkFailure";
+  if (/navigation|url/i.test(message)) return "routeChanged";
+  if (/hydration|hydrate|not ready|not mounted/i.test(message)) return "hydrationDelay";
   if (/timeout|waiting|visible|locator|selector|strict mode|No locator/i.test(message)) return "locatorDrift";
-  if (/navigation|url|net::|ERR_|network/i.test(message)) return "networkFailure";
   if (event?.action === "navigate") return "routeChanged";
   return "unknown";
 }
@@ -914,8 +917,16 @@ function successCriteriaFor(steps: WorkflowStepContractV7[]): WorkflowContractV7
   }];
 }
 
-function failureClassesFor(limitations: WorkflowLimitationV7[], hasMutation: boolean): FailureClassV7[] {
+function failureClassesFor(
+  limitations: WorkflowLimitationV7[],
+  hasMutation: boolean,
+  authPlan: WorkflowContractV7["authPlan"]
+): FailureClassV7[] {
   const classes = new Set<FailureClassV7>(["locatorDrift", "hydrationDelay", "routeChanged", "networkFailure", "unknown"]);
+  if (authPlan.required || authPlan.durability !== "noneRequired") {
+    classes.add("authMissing");
+    classes.add("authExpired");
+  }
   if (limitations.includes("sourceIdentityMissing")) classes.add("sourceIdentityMissing");
   if (limitations.includes("unresolvedStep")) classes.add("testDataMissing");
   if (limitations.includes("canvasCoordinateOnly")) classes.add("canvasUnreliable");

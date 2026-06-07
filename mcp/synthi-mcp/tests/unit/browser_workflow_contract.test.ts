@@ -463,6 +463,7 @@ describe("browser workflow contract compiler", () => {
       required: true,
       durability: "interactiveCheckpoint",
     }));
+    expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["authMissing", "authExpired"]));
     expect(workflow.card.state).toContain("Auth-ready");
     expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
       readiness: "manualOnly",
@@ -533,6 +534,12 @@ describe("browser workflow contract compiler", () => {
     expect(classifyWorkflowReplayFailure(new Error("canvas replay missing semantic bridge"))).toBe("canvasUnreliable");
     expect(classifyWorkflowReplayFailure(new Error("pointer drag calibration missing"))).toBe("pointerDragUnreliable");
     expect(classifyWorkflowReplayFailure(new Error("closed Shadow DOM not reachable"))).toBe("closedShadowDomBlocked");
+    expect(classifyWorkflowReplayFailure(new Error("Timeout 30000ms exceeded waiting for URL"), baseEvent({
+      action: "navigate",
+      kind: "navigation",
+    }))).toBe("routeChanged");
+    expect(classifyWorkflowReplayFailure(new Error("net::ERR_CONNECTION_REFUSED"))).toBe("networkFailure");
+    expect(classifyWorkflowReplayFailure(new Error("hydration boundary not ready"))).toBe("hydrationDelay");
   });
 });
 

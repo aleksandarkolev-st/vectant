@@ -350,6 +350,16 @@ describe("browser MCP tool surface", () => {
       ok: true,
       failure_class: "closedShadowDomBlocked",
       failed_step_id: "browser_evt_1",
+      workflow_id: expect.any(String),
+      failed_step: expect.objectContaining({
+        step_id: "browser_evt_1",
+        label: "Click recorded target",
+        action: "click",
+        locator_confidence: "none",
+        source_status: "missing",
+        limitations: expect.arrayContaining(["sourceIdentityMissing", "unresolvedStep"]),
+        suggested_next_tool: "synthi_browser_get_unresolved_steps",
+      }),
       suggested_next_action: expect.stringContaining("shadow bridge"),
     }));
 

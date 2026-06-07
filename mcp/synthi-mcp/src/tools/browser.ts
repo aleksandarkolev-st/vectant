@@ -4,7 +4,13 @@ import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../brow
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../browser/preview_target.js";
 import { browserPlaywrightAdapter, type BrowserWorkflowOverlayResponse } from "../browser/playwright_adapter.js";
-import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
+import {
+  classifyWorkflowReplayBlock,
+  classifyWorkflowReplayFailure,
+  normalizeReplayMode,
+  type WorkflowReplayModeV7,
+  type WorkflowStepContractV7,
+} from "../browser/workflow.js";
 import {
   detectBrowserProject,
   projectRunStatus,
@@ -509,6 +515,7 @@ export const BROWSER_TOOLS = [
           type: "string",
           description: "Failure class from a workflow contract or replay result.",
         },
+        workflow_id: { type: "string", description: "Optional saved workflow id used to resolve failed_step_id context." },
         failed_step_id: { type: "string" },
       },
       required: ["failure_class"],
@@ -1088,14 +1095,44 @@ function browserUnresolvedStepsTool(): ToolResponse {
 }
 
 function browserExplainFailureTool(args: unknown): ToolResponse {
-  const failureClass = requiredString(obj(args), "failure_class");
-  const failedStepId = stringOpt(obj(args)["failed_step_id"]);
+  const a = obj(args);
+  const failureClass = requiredString(a, "failure_class");
+  const failedStepId = stringOpt(a["failed_step_id"]);
+  const workflowId = stringOpt(a["workflow_id"]);
+  const artifact = failedStepId || workflowId ? browserBroker.workflowArtifact(workflowId) : null;
+  const failedStep = artifact?.ok && failedStepId
+    ? artifact.artifact.workflow.contract.steps.find((step) => step.stepId === failedStepId)
+    : undefined;
   return jsonResponse({
     ok: true,
     failure_class: failureClass,
     failed_step_id: failedStepId ?? null,
+    workflow_id: artifact?.ok ? artifact.artifact.workflow_id : workflowId ?? null,
+    ...(artifact && !artifact.ok ? { workflow_lookup_error: artifact.error } : {}),
+    ...(failedStep ? { failed_step: failureStepContext(failedStep) } : {}),
     ...failureExplanation(failureClass),
   });
+}
+
+function failureStepContext(step: WorkflowStepContractV7): Record<string, unknown> {
+  return {
+    step_id: step.stepId,
+    label: step.label,
+    action: step.action.kind,
+    locator_confidence: step.locatorPlan.confidence,
+    source_status: step.sourcePlan.status,
+    limitations: step.limitations,
+    suggested_next_tool: suggestedFailureTool(step),
+  };
+}
+
+function suggestedFailureTool(step: WorkflowStepContractV7): string {
+  if (step.sourcePlan.status === "missing") return "synthi_browser_get_unresolved_steps";
+  if (step.limitations.includes("mutationRequiresIsolation")) return "synthi_safety_get_mutation_plan";
+  if (step.limitations.includes("iframeNeedsFrameLocator") || step.limitations.includes("closedShadowDomBlocked")) {
+    return "synthi_browser_get_unresolved_steps";
+  }
+  return "synthi_browser_compile_workflow";
 }
 
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
