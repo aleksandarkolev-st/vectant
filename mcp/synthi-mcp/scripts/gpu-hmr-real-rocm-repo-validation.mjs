@@ -3850,6 +3850,151 @@ async function writeRuntimeOutputOracleVisualProof(runtimeOutputOracle) {
   return row;
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function outputOracleBaselineChecksum() {
+  return stringField(report.output_oracle_contract, ['baselineSha256', 'baseline_sha256'])
+    || stringField(report.output_oracle_runtime_profile, ['baselineSha256', 'baseline_sha256'])
+    || stringField(
+      report.output_oracle_adaptations?.at(-1),
+      ['baselineSha256', 'baseline_sha256'],
+    )
+    || null;
+}
+
+async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, options = {}) {
+  const oracle = runtimeOutputOracle?.output_oracle
+    ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
+    : null;
+  if (!oracle || runtimeOutputOracle.deterministic_oracle_passed !== true) return null;
+  const baselineChecksum = outputOracleBaselineChecksum();
+  const actualChecksum = String(oracle.actual ?? '').trim();
+  if (!baselineChecksum || !actualChecksum) return null;
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const base = `${CFG.slug}-${oracle.oracleId ?? 'runtime-output-oracle'}`
+    .replace(/[^A-Za-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 160);
+  const rawBytes = readbackSampleBytes(oracle) ?? digestBytes(actualChecksum);
+  const rawPath = path.join(ARTIFACT_DIR, `${base || CFG.slug}-compute-readback.bin`);
+  await writeFile(rawPath, rawBytes);
+  const schema = {
+    schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+    source: 'real_rocm_runtime_output_oracle',
+    encoding: oracle.readbackSampleHex ? 'runtime_sample_hex' : 'sha256_digest_bytes',
+    readbackSampleStride: oracle.readbackSampleStride ?? null,
+    readbackSampleSha256: oracle.readbackSampleSha256 ?? null,
+    outputTargetId: oracle.outputTargetId ?? null,
+    oracleId: oracle.oracleId ?? null,
+    artifactId: oracle.artifactId ?? null,
+    runtimeSession: oracle.runtimeSession ?? null,
+    generation: oracle.generation ?? null,
+    probeMode: oracle.probeMode ?? null,
+    probeConfigHash: oracle.probeConfigHash ?? null,
+    rawReadbackHash: `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`,
+  };
+  const schemaPath = path.join(ARTIFACT_DIR, `${base || CFG.slug}-compute-readback-schema.json`);
+  await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`);
+  const cardPath = options.proofCardPath
+    ?? report.compute_output_oracle_visual_evidence?.path
+    ?? null;
+  return {
+    raw_readback_bin: rawPath,
+    readback_schema_json: schemaPath,
+    checksum_before: baselineChecksum,
+    checksum_after: actualChecksum,
+    expected_output_change:
+      report.output_oracle_contract?.expectedOutputChange === true
+      || baselineChecksum !== actualChecksum,
+    deterministic_slice: {
+      offset: 0,
+      length: rawBytes.length,
+      source: oracle.readbackSampleHex ? 'runtime_readback_sample' : 'runtime_checksum_digest',
+    },
+    oracle_code_hash: oracle.probeConfigHash ?? `sha256:${createHash('sha256').update(stableJson(schema)).digest('hex')}`,
+    rendered_card_png: cardPath,
+    producer: oracle.producer ?? 'runtime_probe',
+    timestamp_after_dispatch: oracle.readbackTimestamp ?? null,
+    epoch: oracle.generation ? `generation:${oracle.generation}` : oracle.artifactId ?? null,
+  };
+}
+
+async function writeRuntimeVisualOracleArtifactsFromFrames(frames = [], afterFrame = null, options = {}) {
+  const acceptedFrames = (Array.isArray(frames) ? frames : [])
+    .filter((frame) =>
+      frame?.accepted_as_visual_evidence === true
+      && typeof frame?.path === 'string'
+      && frame.path.trim()
+    );
+  const after = afterFrame && typeof afterFrame.path === 'string'
+    ? afterFrame
+    : acceptedFrames.at(-1);
+  if (!after) return null;
+  const before = acceptedFrames.find((frame) => frame.path !== after.path);
+  if (!before) return null;
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const beforeRaw = await sharp(before.path).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const afterRaw = await sharp(after.path)
+    .resize(beforeRaw.info.width, beforeRaw.info.height, { fit: 'fill' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const diff = Buffer.allocUnsafe(beforeRaw.data.length);
+  let changed = 0;
+  let visible = 0;
+  let totalAbs = 0;
+  for (let i = 0; i < beforeRaw.data.length; i += 4) {
+    const alpha = Math.max(beforeRaw.data[i + 3], afterRaw.data[i + 3]);
+    if (alpha > 0) visible += 1;
+    const dr = Math.abs(afterRaw.data[i] - beforeRaw.data[i]);
+    const dg = Math.abs(afterRaw.data[i + 1] - beforeRaw.data[i + 1]);
+    const db = Math.abs(afterRaw.data[i + 2] - beforeRaw.data[i + 2]);
+    const da = Math.abs(afterRaw.data[i + 3] - beforeRaw.data[i + 3]);
+    const delta = dr + dg + db + da;
+    if (delta > 12) changed += 1;
+    totalAbs += delta;
+    diff[i] = Math.min(255, dr * 4);
+    diff[i + 1] = Math.min(255, dg * 4);
+    diff[i + 2] = Math.min(255, db * 4);
+    diff[i + 3] = 255;
+  }
+  const pixelCount = beforeRaw.info.width * beforeRaw.info.height;
+  const diffPath = path.join(
+    ARTIFACT_DIR,
+    `${CFG.slug}-${options.name ?? 'runtime-visual-oracle'}-diff.png`
+      .replace(/[^A-Za-z0-9_.-]+/g, '-'),
+  );
+  await sharp(diff, {
+    raw: {
+      width: beforeRaw.info.width,
+      height: beforeRaw.info.height,
+      channels: 4,
+    },
+  }).png().toFile(diffPath);
+  return {
+    before_image: before.path,
+    after_image: after.path,
+    diff_image: diffPath,
+    blank_frame_rejection: visible > 0,
+    same_frame_rejection: changed > 0,
+    new_epoch_watermark_or_trace: options.epochTrace ?? after.contentHash ?? after.content_hash ?? null,
+    camera_state_hash: options.cameraStateHash ?? null,
+    swapchain_size: [beforeRaw.info.width, beforeRaw.info.height],
+    capture_backend: options.captureBackend ?? 'mcp_synthi_screenshot',
+    frame_number: Number.isFinite(options.frameNumber) ? options.frameNumber : null,
+    timestamp_after_dispatch: options.timestampAfterDispatch ?? Date.now(),
+    perceptual_diff: pixelCount > 0 ? totalAbs / (pixelCount * 4 * 255) : 0,
+    changed_pixel_ratio: pixelCount > 0 ? changed / pixelCount : 0,
+    visible_pixel_count: visible,
+  };
+}
+
 function editSource(source, before, after, label) {
   if (!before || before === after) throw new Error(`${label} source delta must be non-empty and change the source`);
   if (!source.includes(before)) throw new Error(`${label} source delta did not match the selected file`);
@@ -3922,6 +4067,17 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
   const constants = parseSaxpySourceConstants(source);
   const multiplierPlan = saxpyMultiplierPlanAfterDelta(source, deltaAfter);
   if (!constants || multiplierPlan === null) return null;
+  const bytesForMultiplier = (multiplier) => {
+    const bytes = Buffer.allocUnsafe(constants.size * 4);
+    const yInitial = Math.fround(constants.yFill);
+    for (let index = 0; index < constants.size; index += 1) {
+      const xValue = Math.fround(constants.xStart + index);
+      const value = Math.fround(Math.fround(multiplier * xValue) + yInitial);
+      bytes.writeFloatLE(value, index * 4);
+    }
+    return bytes;
+  };
+  const baselineBytes = bytesForMultiplier(Math.fround(constants.a));
   const bytes = Buffer.allocUnsafe(constants.size * 4);
   const yInitial = Math.fround(constants.yFill);
   for (let index = 0; index < constants.size; index += 1) {
@@ -3929,6 +4085,7 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
     const value = Math.fround(Math.fround(multiplierPlan.effectiveMultiplier * xValue) + yInitial);
     bytes.writeFloatLE(value, index * 4);
   }
+  const baselineSha256 = `sha256:${createHash('sha256').update(baselineBytes).digest('hex')}`;
   const expectedSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const config = {
     schemaVersion: 'synthi.real_rocm.output_oracle_profile.saxpy_readback_y.v1',
@@ -3939,8 +4096,10 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
     xStart: constants.xStart,
     yInitial: constants.yFill,
     argumentMultiplier: multiplierPlan.argumentMultiplier,
+    baselineEffectiveMultiplier: Math.fround(constants.a),
     effectiveMultiplier: multiplierPlan.effectiveMultiplier,
     kernelDelta: multiplierPlan.kernelDelta,
+    baselineSha256,
     deltaAfterSha256: `sha256:${createHash('sha256').update(deltaAfter).digest('hex')}`,
     expectedSha256,
   };
@@ -3958,6 +4117,7 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
       enabled: true,
       profileId: 'hip.saxpy.readback-y.v1',
       oracleId: `oracle:real-rocm:saxpy-readback-y:${configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`,
+      baselineSha256,
       expectedSha256,
       producer: 'real_rocm_source_derived_output_profile',
       outputTargetId: `${sourceFile}:y`,
@@ -4143,6 +4303,8 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
     requiredOracleId: oracle.oracleId,
     kind: 'buffer_checksum',
     expected: oracle.expectedSha256,
+    baselineSha256: oracle.baselineSha256,
+    expectedOutputChange: oracle.baselineSha256 !== oracle.expectedSha256,
     producer: oracle.producer,
     outputTargetId: oracle.outputTargetId,
   };
@@ -4154,6 +4316,7 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
     kind: 'source_derived_buffer_checksum',
     file: CFG.deltaFile,
     oracleId: oracle.oracleId,
+    baselineSha256: oracle.baselineSha256,
     expectedSha256: oracle.expectedSha256,
     configHash: oracle.configHash,
     producer: oracle.producer,
@@ -6751,13 +6914,22 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime epoch swap evidence', 'warn', 'no dispatcher_epoch lines captured');
   }
+  let runtimeOutputOracleVisualRow = null;
+  let runtimeOutputOracleArtifacts = null;
   if (runtimeOutputOracle.total_count > 0) {
     record(
       'runtime output oracle evidence',
       runtimeOutputOracle.deterministic_oracle_passed ? 'pass' : 'warn',
       `records=${runtimeOutputOracle.total_count} matched=${runtimeOutputOracle.matched_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
     );
-    await writeRuntimeOutputOracleVisualProof(runtimeOutputOracle);
+    runtimeOutputOracleVisualRow = await writeRuntimeOutputOracleVisualProof(runtimeOutputOracle);
+    const computeOracleArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
+      runtimeOutputOracle,
+      { proofCardPath: runtimeOutputOracleVisualRow?.path },
+    );
+    runtimeOutputOracleArtifacts = computeOracleArtifacts
+      ? { compute_oracle_artifacts: computeOracleArtifacts }
+      : null;
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
   }
@@ -6867,6 +7039,7 @@ async function collectRuntimeEvidence() {
     deterministicOracleProvided: runtimeOutputOracle.deterministic_oracle_provided,
     deterministicOraclePassed: runtimeOutputOracle.deterministic_oracle_passed,
     outputOracle: runtimeOutputOracle.output_oracle ?? undefined,
+    oracleArtifacts: runtimeOutputOracleArtifacts ?? undefined,
     evidenceRefs: runtimeOutputOracle.evidence_refs,
     visualEvidenceRequired:
       CFG.renderPreview
