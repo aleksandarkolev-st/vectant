@@ -15,6 +15,7 @@ const line = [
   'producer=runtime_probe',
   'output_target_id=target:y',
   'artifact_id=artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  'after_dispatch_id=dispatch:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
   'readback_timestamp=1780000000000',
   'probe_mode=post_hmr_active_kernel_readback_checksum',
   'probe_config_hash=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
@@ -40,6 +41,10 @@ const evidence = runtimeOutputOracleEvidence([line], {
 assert.equal(evidence.matched_count, 1);
 assert.equal(evidence.deterministic_oracle_passed, true);
 assert.equal(evidence.output_oracle.readbackBytes, 8);
+assert.equal(
+  evidence.output_oracle.afterDispatchId,
+  'dispatch:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+);
 assert.equal(evidence.output_oracle.readbackSampleStride, 1);
 assert.equal(
   evidence.output_oracle.readbackSampleSha256,

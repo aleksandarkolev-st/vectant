@@ -859,6 +859,12 @@ function outputOracleRecord(line) {
       ?? fields.readback_elapsed_ms
       ?? null,
     artifactId: fields.artifact_id ?? fields.artifact ?? null,
+    afterDispatchId:
+      fields.after_dispatch_id
+      ?? fields.afterDispatchId
+      ?? fields.after_dispatch
+      ?? null,
+    dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
     visualEvidenceRef: fields.visual_evidence_ref ?? fields.visual_ref ?? null,
     probeMode: fields.probe_mode ?? fields.deterministic_probe_mode ?? null,
     probeConfigHash:
@@ -1060,6 +1066,8 @@ function dispatchBoundaryRecord(line) {
     line,
     runtimeSession: fields.runtime_session ?? null,
     dispatch: fields.dispatch ?? null,
+    dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
+    artifactId: fields.artifact_id ?? fields.artifact ?? null,
     dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
   };
 }
@@ -1891,6 +1899,10 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           outputTargetId: latest.outputTargetId,
           readbackTimestamp: latest.readbackTimestamp,
           artifactId: latest.artifactId,
+          afterDispatchId: latest.afterDispatchId ?? latest.dispatchId,
+          after_dispatch_id: latest.afterDispatchId ?? latest.dispatchId,
+          dispatchId: latest.dispatchId ?? latest.afterDispatchId,
+          dispatch_id: latest.dispatchId ?? latest.afterDispatchId,
           visualEvidenceRef: latest.visualEvidenceRef,
           probeMode: latest.probeMode,
           probeConfigHash: latest.probeConfigHash,

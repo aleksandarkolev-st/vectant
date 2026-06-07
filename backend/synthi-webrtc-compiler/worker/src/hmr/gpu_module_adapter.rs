@@ -51,7 +51,7 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -83,9 +83,11 @@ use crate::hmr::gpu_reload_orchestrator::{
 use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher_with_metadata,
-    launch_records_snapshot, managed_buffers_snapshot, record_hmr_runtime_identity_snapshot,
-    record_output_buffer_checksum_with_probe_bytes, runtime_session_id, GpuLaunchDispatcher,
-    GpuLaunchDispatcherMetadata, GpuLaunchRequest,
+    latest_dispatch_id_for_generation, launch_records_snapshot, managed_buffers_snapshot,
+    record_hmr_runtime_identity_snapshot, record_output_buffer_checksum_with_probe_bytes_after_dispatch,
+    runtime_session_id, synthi_gpu_launch_raw_arg_info, synthi_gpu_register_buffer,
+    GpuLaunchDispatcher, GpuLaunchDispatcherMetadata, GpuLaunchRequest, SynthiGpuLaunchArg,
+    SYNTHI_GPU_ARG_KIND_FLOATING, SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -493,6 +495,27 @@ impl RuntimeProbeArgStorage {
             Self::DevicePtr(value) => (value as *mut CuDevicePtr).cast::<c_void>(),
         }
     }
+
+    fn value_size(&self) -> usize {
+        match self {
+            Self::F32(_) => std::mem::size_of::<f32>(),
+            Self::U32(_) => std::mem::size_of::<u32>(),
+            Self::DevicePtr(_) => std::mem::size_of::<CuDevicePtr>(),
+        }
+    }
+
+    fn value_kind(&self) -> u32 {
+        match self {
+            Self::F32(_) => SYNTHI_GPU_ARG_KIND_FLOATING,
+            Self::U32(_) => SYNTHI_GPU_ARG_KIND_INTEGER,
+            Self::DevicePtr(_) => SYNTHI_GPU_ARG_KIND_POINTER,
+        }
+    }
+}
+
+fn runtime_probe_cstring(value: impl AsRef<str>) -> Result<CString, String> {
+    CString::new(value.as_ref().replace('\0', "_"))
+        .map_err(|error| format!("runtime output oracle string contains invalid nul: {error}"))
 }
 
 fn default_true() -> bool {
@@ -607,7 +630,7 @@ fn run_runtime_output_oracle_profile(
             profile.profile_id, kernel_name, active_generation
         )));
     }
-    let Some(function_handle) = dispatcher_kernels.get(kernel_name).copied() else {
+    let Some(_function_handle) = dispatcher_kernels.get(kernel_name).copied() else {
         return Err(format!(
             "runtime output oracle kernel {:?} is not resolved in active dispatch table",
             kernel_name
@@ -643,6 +666,18 @@ fn run_runtime_output_oracle_profile(
                     buffer.name
                 ));
             }
+            let semantic_name = runtime_probe_cstring(format!(
+                "runtime-output-oracle:{}:{}",
+                profile.profile_id, buffer.name
+            ))?;
+            let lifetime_hint = runtime_probe_cstring("runtime-output-oracle-probe")?;
+            synthi_gpu_register_buffer(
+                std::ptr::null_mut(),
+                (device_ptr as usize) as *mut c_void,
+                host_bytes.len(),
+                semantic_name.as_ptr(),
+                lifetime_hint.as_ptr(),
+            );
             device_buffers.insert(buffer.name.clone(), (device_ptr, host_bytes.len()));
         }
 
@@ -685,30 +720,41 @@ fn run_runtime_output_oracle_profile(
                 }
             }
         }
-        let mut arg_ptrs = arg_storage
+        let kernel_cstring = runtime_probe_cstring(kernel_name)?;
+        let grid = profile.grid;
+        let block = profile.block;
+        let arg_infos = arg_storage
             .iter_mut()
-            .map(RuntimeProbeArgStorage::as_mut_ptr)
+            .map(|storage| SynthiGpuLaunchArg {
+                value_ptr: storage.as_mut_ptr().cast_const(),
+                value_size: storage.value_size(),
+                value_kind: storage.value_kind(),
+            })
             .collect::<Vec<_>>();
-        let launch_code = unsafe {
-            (symbols.cu_launch_kernel)(
-                function_handle as CuFunction,
-                profile.grid[0],
-                profile.grid[1],
-                profile.grid[2],
-                profile.block[0],
-                profile.block[1],
-                profile.block[2],
-                0,
-                std::ptr::null_mut(),
-                arg_ptrs.as_mut_ptr(),
-                std::ptr::null_mut(),
-            )
-        };
-        if launch_code != 0 {
+        let launch_ok = synthi_gpu_launch_raw_arg_info(
+            std::ptr::null_mut(),
+            kernel_cstring.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            arg_infos.as_ptr(),
+            arg_infos.len(),
+        );
+        if !launch_ok {
             return Err(format!(
-                "runtime output oracle launch kernel={kernel_name:?} failed code={launch_code}"
+                "runtime output oracle launch kernel={kernel_name:?} was rejected by runtime boundary"
             ));
         }
+        let after_dispatch_id =
+            latest_dispatch_id_for_generation(active_generation, runtime_session_id())
+                .ok_or_else(|| {
+                    format!(
+                        "runtime output oracle launch kernel={kernel_name:?} did not publish dispatch identity"
+                    )
+                })?;
         let sync_code = unsafe { (symbols.cu_ctx_synchronize)() };
         if sync_code != 0 {
             return Err(format!(
@@ -738,20 +784,21 @@ fn run_runtime_output_oracle_profile(
                 profile.output_buffer
             ));
         }
-        let passed = record_output_buffer_checksum_with_probe_bytes(
+        let passed = record_output_buffer_checksum_with_probe_bytes_after_dispatch(
             &profile.oracle_id,
             &output,
             &profile.expected_sha256,
             &profile.producer,
             &profile.output_target_id,
             Some(active_artifact_id),
+            Some(&after_dispatch_id),
             None,
             &profile.probe_mode,
             &profile.probe_config_hash,
             &profile.probe_evidence_ref,
         );
         Ok(format!(
-            "[gpu-runtime-boundary] runtime_output_oracle_probe status={} profile={} schema={} kernel={} generation={} output_buffer={} bytes={} artifact_id={}",
+            "[gpu-runtime-boundary] runtime_output_oracle_probe status={} profile={} schema={} kernel={} generation={} output_buffer={} bytes={} artifact_id={} after_dispatch_id={}",
             if passed { "pass" } else { "fail" },
             profile.profile_id,
             log_optional_token(Some(&profile.schema_version)),
@@ -759,7 +806,8 @@ fn run_runtime_output_oracle_profile(
             active_generation,
             profile.output_buffer,
             output.len(),
-            active_artifact_id
+            active_artifact_id,
+            log_optional_token(Some(&after_dispatch_id))
         ))
     })();
 

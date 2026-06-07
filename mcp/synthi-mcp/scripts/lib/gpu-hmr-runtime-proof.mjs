@@ -2159,7 +2159,17 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const runtimeTouchedSymbolsMatch = observation.runtimeTouchedSymbolsMatch !== false;
   const runtimeArtifactMatchesSelected = observation.runtimeArtifactMatchesSelected === true;
   const selectedArtifactIds = contentAddressedArtifactIds(observation.selectedArtifactIds);
-  const runtimeArtifactIds = contentAddressedArtifactIds(observation.runtimeArtifactIds);
+  const runtimeArtifactIds = contentAddressedArtifactIds([
+    observation.runtimeArtifactId,
+    observation.runtime_artifact_id,
+    ...(Array.isArray(observation.runtimeArtifactIds) ? observation.runtimeArtifactIds : []),
+    ...(Array.isArray(observation.runtime_artifact_ids) ? observation.runtime_artifact_ids : []),
+  ]);
+  const runtimeArtifactId = contentAddressedArtifactIds([
+    observation.runtimeArtifactId,
+    observation.runtime_artifact_id,
+    runtimeArtifactIds.at(-1),
+  ])[0] ?? null;
   const dispatcherRegistrationIds = compactStringList(observation.dispatcherRegistrationIds);
   const dispatchTableEntryIds = compactStringList(observation.dispatchTableEntryIds);
   const dispatchTableHashes = compactStringList(observation.dispatchTableHashes);
@@ -2674,6 +2684,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     runtimeTouchedSymbolsMatch: true,
     runtimeArtifactMatchesSelected: true,
     selectedArtifactIds,
+    runtimeArtifactId,
     runtimeArtifactIds,
     dispatcherRegistrationIds,
     dispatchTableEntryIds,

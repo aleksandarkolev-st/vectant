@@ -4571,6 +4571,7 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const dispatchId = logField(line, 'dispatch_id');
     const streamId = logField(line, 'stream');
     const gridDimensions = logDim3Field(line, 'grid');
     const blockDimensions = logDim3Field(line, 'block');
@@ -4588,6 +4589,7 @@ function runtimeDispatchEvidence(workerEvidence) {
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
         : null,
+      dispatchId: dispatchId && dispatchId !== 'none' ? dispatchId : null,
       streamId: streamId && streamId !== 'none' ? streamId : null,
       gridDimensions,
       blockDimensions,
@@ -4603,6 +4605,7 @@ function runtimeDispatchEvidence(workerEvidence) {
     if (!record.runtimeSession || !record.kernelName) return null;
     return `worker-log:synthi_gpu_launch:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
   }).filter(Boolean))];
+  const latestSuccessRecord = successRecords.at(-1) ?? null;
   const processIds = processIdsFromRuntimeSessions(successRecords.map((record) => record.runtimeSession));
   return {
     success_count: dispatchSuccessCount,
@@ -4612,6 +4615,9 @@ function runtimeDispatchEvidence(workerEvidence) {
     success_records: successRecords.slice(-20),
     evidence_refs: dispatchEvidenceRefs,
     runtime_artifact_ids: [...new Set(successRecords.map((record) => record.artifactId).filter(Boolean))],
+    runtime_artifact_id: latestSuccessRecord?.artifactId ?? null,
+    dispatch_ids: [...new Set(successRecords.map((record) => record.dispatchId).filter(Boolean))],
+    dispatch_id: latestSuccessRecord?.dispatchId ?? null,
     dispatcher_registration_ids: [
       ...new Set(successRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
     ],
@@ -7009,6 +7015,7 @@ async function collectRuntimeEvidence() {
     replacementScopeProven: runtimeOwnership.scope_proven_count > 0,
     selectedArtifactIds,
     runtimeArtifactIds: runtimeDispatch.runtime_artifact_ids,
+    runtimeArtifactId: runtimeDispatch.runtime_artifact_id,
     dispatcherRegistrationIds: runtimeDispatch.dispatcher_registration_ids,
     dispatchTableEntryIds: runtimeDispatch.dispatch_table_entry_ids,
     dispatchTableHashes: runtimeDispatch.dispatch_table_hashes,
@@ -7017,6 +7024,7 @@ async function collectRuntimeEvidence() {
     blockDimensions: runtimeDispatch.block_dimensions,
     sharedMemoryBytes: runtimeDispatch.shared_memory_bytes,
     dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
+    dispatchId: runtimeDispatch.dispatch_id,
     processId: runtimeDispatch.process_id,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });

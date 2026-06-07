@@ -57,12 +57,12 @@ pub struct SynthiGpuLaunchArg {
     pub value_kind: u32,
 }
 
-const SYNTHI_GPU_ARG_KIND_UNKNOWN: u32 = 0;
-const SYNTHI_GPU_ARG_KIND_POINTER: u32 = 1;
-const SYNTHI_GPU_ARG_KIND_INTEGER: u32 = 2;
-const SYNTHI_GPU_ARG_KIND_FLOATING: u32 = 3;
-const SYNTHI_GPU_ARG_KIND_ENUM: u32 = 4;
-const SYNTHI_GPU_ARG_KIND_AGGREGATE: u32 = 5;
+pub const SYNTHI_GPU_ARG_KIND_UNKNOWN: u32 = 0;
+pub const SYNTHI_GPU_ARG_KIND_POINTER: u32 = 1;
+pub const SYNTHI_GPU_ARG_KIND_INTEGER: u32 = 2;
+pub const SYNTHI_GPU_ARG_KIND_FLOATING: u32 = 3;
+pub const SYNTHI_GPU_ARG_KIND_ENUM: u32 = 4;
+pub const SYNTHI_GPU_ARG_KIND_AGGREGATE: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRecord {
@@ -84,6 +84,7 @@ pub struct LaunchRecord {
     pub arg_provenance: Vec<LaunchArgProvenance>,
     pub arg_provenance_complete: bool,
     pub dispatched: bool,
+    pub dispatch_id: Option<String>,
     pub dispatch_timestamp_ms: Option<u128>,
     pub dispatch_error: Option<String>,
 }
@@ -109,6 +110,7 @@ pub struct OutputOracleRecord {
     pub output_target_id: Option<String>,
     pub readback_timestamp_ms: Option<u128>,
     pub artifact_id: Option<String>,
+    pub after_dispatch_id: Option<String>,
     pub visual_evidence_ref: Option<String>,
     pub probe_mode: Option<String>,
     pub probe_config_hash: Option<String>,
@@ -890,6 +892,22 @@ fn latest_runtime_dispatch_table_entry_id(
         .filter(|entry_id| !entry_id.trim().is_empty())
 }
 
+pub fn latest_dispatch_id_for_generation(
+    generation: u64,
+    runtime_session: &str,
+) -> Option<String> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard
+        .launches
+        .iter()
+        .rev()
+        .find(|record| {
+            record.active_generation == generation && record.runtime_session_id == runtime_session
+        })
+        .and_then(|record| record.dispatch_id.clone())
+        .filter(|dispatch_id| !dispatch_id.trim().is_empty())
+}
+
 fn record_output_oracle_event(
     oracle_id: String,
     kind: String,
@@ -914,6 +932,7 @@ struct OutputOracleMetadata {
     output_target_id: Option<String>,
     readback_timestamp_ms: Option<u128>,
     artifact_id: Option<String>,
+    after_dispatch_id: Option<String>,
     visual_evidence_ref: Option<String>,
     probe_mode: Option<String>,
     probe_config_hash: Option<String>,
@@ -981,6 +1000,7 @@ fn record_output_oracle_event_with_metadata(
             output_target_id: metadata.output_target_id.clone(),
             readback_timestamp_ms: metadata.readback_timestamp_ms,
             artifact_id: metadata.artifact_id.clone(),
+            after_dispatch_id: metadata.after_dispatch_id.clone(),
             visual_evidence_ref: metadata.visual_evidence_ref.clone(),
             probe_mode: metadata.probe_mode.clone(),
             probe_config_hash: metadata.probe_config_hash.clone(),
@@ -1017,6 +1037,11 @@ fn record_output_oracle_event_with_metadata(
         line.push_str(&readback_timestamp_ms.to_string());
     }
     append_log_token(&mut line, "artifact_id", metadata.artifact_id.as_deref());
+    append_log_token(
+        &mut line,
+        "after_dispatch_id",
+        metadata.after_dispatch_id.as_deref(),
+    );
     append_log_token(
         &mut line,
         "visual_evidence_ref",
@@ -1359,6 +1384,34 @@ pub fn record_output_buffer_checksum_with_probe_bytes(
     probe_config_hash: &str,
     probe_evidence_ref: &str,
 ) -> bool {
+    record_output_buffer_checksum_with_probe_bytes_after_dispatch(
+        oracle_id,
+        data,
+        expected_sha256,
+        producer,
+        output_target_id,
+        artifact_id,
+        None,
+        visual_evidence_ref,
+        probe_mode,
+        probe_config_hash,
+        probe_evidence_ref,
+    )
+}
+
+pub fn record_output_buffer_checksum_with_probe_bytes_after_dispatch(
+    oracle_id: &str,
+    data: &[u8],
+    expected_sha256: &str,
+    producer: &str,
+    output_target_id: &str,
+    artifact_id: Option<&str>,
+    after_dispatch_id: Option<&str>,
+    visual_evidence_ref: Option<&str>,
+    probe_mode: &str,
+    probe_config_hash: &str,
+    probe_evidence_ref: &str,
+) -> bool {
     let expected = normalize_checksum_value(expected_sha256.to_string());
     let actual = sha256_checksum_value(data);
     let passed = !expected.is_empty() && actual.eq_ignore_ascii_case(&expected);
@@ -1370,6 +1423,7 @@ pub fn record_output_buffer_checksum_with_probe_bytes(
         artifact_id: artifact_id.map(str::to_string).or_else(|| {
             dispatcher_metadata_snapshot().and_then(|metadata| metadata.artifact_id)
         }),
+        after_dispatch_id: after_dispatch_id.map(str::to_string),
         visual_evidence_ref: visual_evidence_ref.map(str::to_string),
         probe_mode: Some(probe_mode.to_string()),
         probe_config_hash: Some(probe_config_hash.to_string()),
@@ -1386,6 +1440,26 @@ pub fn record_output_buffer_checksum_with_probe_bytes(
         metadata,
     );
     passed
+}
+
+fn dispatch_id_for_launch(
+    runtime_session_id: &str,
+    active_generation: u64,
+    launch_index: usize,
+    kernel_name: &str,
+    dispatch_timestamp_ms: u128,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(runtime_session_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(active_generation.to_string().as_bytes());
+    hasher.update(b"|");
+    hasher.update(launch_index.to_string().as_bytes());
+    hasher.update(b"|");
+    hasher.update(kernel_name.as_bytes());
+    hasher.update(b"|");
+    hasher.update(dispatch_timestamp_ms.to_string().as_bytes());
+    format!("dispatch:sha256:{}", hex::encode(hasher.finalize()))
 }
 
 #[no_mangle]
@@ -1744,6 +1818,7 @@ fn synthi_gpu_launch_raw_impl(
             arg_provenance: arg_provenance.clone(),
             arg_provenance_complete,
             dispatched: false,
+            dispatch_id: None,
             dispatch_timestamp_ms: None,
             dispatch_error: None,
         });
@@ -1779,8 +1854,16 @@ fn synthi_gpu_launch_raw_impl(
     };
 
     let dispatch_timestamp_ms = epoch_millis_now();
+    let dispatch_id = dispatch_id_for_launch(
+        &runtime_session_id,
+        active_generation,
+        launch_index,
+        &kernel_name,
+        dispatch_timestamp_ms,
+    );
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     if let Some(record) = guard.launches.get_mut(launch_index) {
+        record.dispatch_id = Some(dispatch_id.clone());
         record.dispatch_timestamp_ms = Some(dispatch_timestamp_ms);
         match dispatch_result {
             Some(Ok(())) => {
@@ -1835,7 +1918,7 @@ fn synthi_gpu_launch_raw_impl(
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} error={}",
             kernel_name,
             grid,
             block,
@@ -1849,12 +1932,13 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
             dispatch_timestamp_ms,
+            log_token(&dispatch_id),
             log_safe(error)
         );
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={}",
             kernel_name,
             grid,
             block,
@@ -1867,7 +1951,8 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatcher_registration_id),
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
-            dispatch_timestamp_ms
+            dispatch_timestamp_ms,
+            log_token(&dispatch_id)
         );
     }
     let known_arg_count = arg_provenance
@@ -1881,12 +1966,13 @@ fn synthi_gpu_launch_raw_impl(
         "gpu-hmr-unknown-arg-provenance"
     };
     eprintln!(
-        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} complete={} known_args={} unknown_args={} degradedState={} details={}",
+        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} complete={} known_args={} unknown_args={} degradedState={} details={}",
         kernel_name,
         active_generation,
         runtime_session_id,
         log_token(&dispatch_table_entry_id),
         dispatch_timestamp_ms,
+        log_token(&dispatch_id),
         arg_provenance_complete,
         known_arg_count,
         unknown_arg_count,
