@@ -5,7 +5,10 @@ import {
   buildGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
 } from './gpu-hmr-proof-ledger.mjs';
-import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
+import {
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+} from './gpu-hmr-acceptance-contract.mjs';
 import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
@@ -1156,11 +1159,16 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
-  const acceptanceContract = objectOrNull(input.acceptanceContract)
+  const explicitAcceptanceContract = objectOrNull(input.acceptanceContract)
     ?? objectOrNull(input.acceptance_contract)
     ?? objectOrNull(validationContext?.acceptanceContract)
     ?? objectOrNull(validationContext?.acceptance_contract)
     ?? null;
+  const acceptanceContract = explicitAcceptanceContract
+    ?? deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      ...input,
+      validationContext,
+    });
   const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(
     acceptanceContract ?? {
       classification: input.classification ?? validationContext?.classification ?? {},

@@ -42,6 +42,10 @@ import {
   REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS,
 } from "../../scripts/lib/real-rocm-validation-command-env.mjs";
 import {
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+} from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
+import {
   buildValidationRuntimeProofArtifact,
 } from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
 import {
@@ -5590,6 +5594,76 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(true);
     expect(proof.componentStates.originalHostPathRequired).toBe(true);
     expect(proof.componentStates.originalHostPathProven).toBe(true);
+  });
+
+  it("derives GPU HMR acceptance contracts from verified proof fields only", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const accepted = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.contract.classification.route).toBe("gpu_hmr");
+    expect(accepted.contract.artifact_identity.source_paths).toEqual(["src/gpu/kernel.hpp"]);
+    expect(accepted.contract.artifact_identity.entry_points).toEqual(
+      expect.arrayContaining(["kernel_main", "shade"]),
+    );
+    expect(accepted.contract.abi_compatibility_class.value).toBe("compatible");
+
+    const rejected = evaluateGpuHmrAcceptanceContract(
+      deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+        projectId: "workspace",
+        editId: "edit-2",
+        backend: "hip",
+        sourceProofs: [acceptedSourceProof({ compileOnly: true })],
+        fissionProof: classifyGpuHmrFissionProof({ required: true }),
+      }),
+    );
+
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.contract.classification.route).toBe("reject");
+    expect(rejected.contract.classification.blocking_gaps).toEqual(
+      expect.arrayContaining([
+        "source_proof_not_verified",
+        "fission_not_verified",
+        "abi_not_verified",
+        "full_runtime_not_verified",
+      ]),
+    );
+    expect(rejected.failedGates.map((gate) => gate.code)).toContain(
+      "classification_blocking_gaps_present",
+    );
   });
 
   it("materializes runtime proof ladder as a structured validation artifact", () => {

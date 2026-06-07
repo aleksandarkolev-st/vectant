@@ -5,7 +5,10 @@ import {
   visualEvidenceRow,
 } from './gpu-hmr-visual-evidence.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
-import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
+import {
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+} from './gpu-hmr-acceptance-contract.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SUMMARY_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation-proof-summary.v1';
@@ -527,6 +530,13 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     validationContext.acceptance_contract,
     ...runtimeArtifactRecords.map(acceptanceContractFromRecord),
   ]);
+  const derivedAcceptanceContract = acceptanceContracts.length === 0
+    ? deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+        ...input,
+        validationContext,
+      })
+    : null;
+  if (derivedAcceptanceContract) acceptanceContracts.push(derivedAcceptanceContract);
   const explicitAcceptanceEvaluations = compactObjects([
     input.acceptanceContractEvaluation,
     input.acceptance_contract_evaluation,

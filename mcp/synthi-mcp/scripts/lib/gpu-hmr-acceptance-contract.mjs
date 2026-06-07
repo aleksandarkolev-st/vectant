@@ -71,6 +71,34 @@ function boolValue(value, fallback = false) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function firstObject(...values) {
+  for (const value of values) {
+    const obj = asObject(value);
+    if (Object.keys(obj).length > 0) return obj;
+  }
+  return {};
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const normalized = text(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function uniqueObjectsByPath(values) {
+  const seen = new Set();
+  return asArray(values)
+    .filter((value) => value && typeof value === 'object' && !Array.isArray(value))
+    .filter((value) => {
+      const key = text(value.path) ?? stableJson(value);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function addFailure(failures, code, detail = {}) {
   failures.push({ code, ...detail });
 }
@@ -246,4 +274,306 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     failedGates: failures,
     warnings,
   };
+}
+
+function backendFromVerifiedContext(input, validationContext) {
+  const raw = firstText(
+    input.backend,
+    input.gpuBackend,
+    input.gpu_backend,
+    validationContext.backend,
+    validationContext.gpuBackend,
+    validationContext.gpu_backend,
+    validationContext.gpu_vendor,
+    validationContext.gpuVendor,
+    input.gpuVendor,
+    input.gpu_vendor,
+  )?.toLowerCase();
+  if (!raw) return 'unknown';
+  if (raw === 'rocm' || raw === 'amd' || raw === 'hip') return 'hip';
+  if (raw === 'hiprt') return 'hiprt';
+  if (raw === 'cuda' || raw === 'nvidia') return 'cuda';
+  if (raw === 'opencl' || raw === 'vulkan' || raw === 'webgpu' || raw === 'bevy_wgsl' || raw === 'sycl') {
+    return raw;
+  }
+  return 'unknown';
+}
+
+function selectedIslandContractFromProof(fissionProof) {
+  const contracts = asArray(fissionProof?.selectedIslandContracts)
+    .filter((contract) => contract && typeof contract === 'object' && !Array.isArray(contract));
+  return contracts[0] ?? {};
+}
+
+function selectedIslandKind(contract, backend) {
+  const kind = firstText(contract.artifactKind, contract.artifact_kind)?.toLowerCase();
+  if (!kind) return 'unknown';
+  if (ARTIFACT_KINDS.has(kind)) return kind;
+  if ((backend === 'hip' || backend === 'hiprt') && /source[_-]?include|source[_-]?bridge/.test(kind)) {
+    return 'hip_source_bridge';
+  }
+  if (/spirv|spv/.test(kind)) return 'spirv';
+  if (/wgsl/.test(kind)) return 'wgsl';
+  if (/glsl/.test(kind)) return 'glsl';
+  if (/opencl/.test(kind)) return 'opencl_program';
+  if (/cubin/.test(kind)) return 'cuda_cubin';
+  if (/ptx/.test(kind)) return 'cuda_ptx';
+  if (/sycl/.test(kind)) return 'sycl_bundle';
+  if (/hsaco|code[_-]?object/.test(kind)) return 'hsaco';
+  return 'unknown';
+}
+
+function latestEpochPublication(epochProof) {
+  const graph = firstObject(
+    epochProof?.epochGenerationGraph,
+    epochProof?.epoch_generation_graph,
+    epochProof?.generationGraph,
+    epochProof?.generation_graph,
+  );
+  return firstObject(graph.latestPublication, graph.latest_publication);
+}
+
+function artifactHashAfterFromProofs(input, artifactTransportProof, epochProof, dispatchProof, outputProof) {
+  const publication = latestEpochPublication(epochProof);
+  return firstText(
+    input.artifactHashAfter,
+    input.artifact_hash_after,
+    input.changedGpuArtifactHash,
+    input.changed_gpu_artifact_hash,
+    ...asArray(artifactTransportProof?.selectedArtifactIds),
+    ...asArray(artifactTransportProof?.selected_artifact_ids),
+    ...asArray(artifactTransportProof?.ramBlobIds),
+    ...asArray(artifactTransportProof?.ram_blob_ids),
+    ...asArray(dispatchProof?.selectedArtifactIds),
+    ...asArray(dispatchProof?.selected_artifact_ids),
+    ...asArray(dispatchProof?.runtimeArtifactIds),
+    ...asArray(dispatchProof?.runtime_artifact_ids),
+    outputProof?.outputOracle?.artifactId,
+    outputProof?.outputOracle?.artifact_id,
+    publication.newArtifactId,
+    publication.new_artifact_id,
+    publication.newArtifactHash,
+    publication.new_artifact_hash,
+  );
+}
+
+function artifactHashBeforeFromProofs(input, epochProof) {
+  const publication = latestEpochPublication(epochProof);
+  return firstText(
+    input.artifactHashBefore,
+    input.artifact_hash_before,
+    publication.oldArtifactId,
+    publication.old_artifact_id,
+    publication.oldArtifactHash,
+    publication.old_artifact_hash,
+  );
+}
+
+function evidenceRefsFromProofs(...proofs) {
+  return compactStringList(proofs.flatMap((proof) => [
+    ...(asArray(proof?.evidenceRefs)),
+    ...(asArray(proof?.evidence_refs)),
+    ...(asArray(proof?.proofArtifactPaths)),
+    ...(asArray(proof?.proof_artifact_paths)),
+  ]));
+}
+
+function blockingGapsFromVerifiedProofs({
+  backend,
+  sourceProofs,
+  fissionProof,
+  abiProof,
+  artifactTransportProof,
+  epochProof,
+  dispatchProof,
+  outputProof,
+  hostPreservationProof,
+  fullRuntimeProof,
+  selectedIsland,
+}) {
+  const gaps = [];
+  if (backend === 'unknown') gaps.push('backend_unknown');
+  if (!sourceProofs.some((proof) => proof?.resultState === 'gpu-hmr-symbol-bound')) {
+    gaps.push('source_proof_not_verified');
+  }
+  if (fissionProof?.fissionProven !== true) gaps.push('fission_not_verified');
+  if (!selectedIsland?.sourcePaths?.length) gaps.push('selected_island_source_paths_missing');
+  if (!selectedIsland?.targetSymbols?.length && !selectedIsland?.exportedSymbolsExpected?.length) {
+    gaps.push('selected_island_entry_points_missing');
+  }
+  if (abiProof?.resultState !== 'gpu-hmr-abi-proven') gaps.push('abi_not_verified');
+  if (artifactTransportProof?.resultState !== 'gpu-hmr-artifact-transport-proven'
+    && artifactTransportProof?.ramTransportProven !== true) {
+    gaps.push('artifact_transport_not_verified');
+  }
+  if (epochProof?.resultState !== 'gpu-hmr-epoch-swap-proven') gaps.push('epoch_not_verified');
+  if (dispatchProof?.resultState !== 'gpu-hmr-dispatch-safe-proven') gaps.push('dispatch_not_verified');
+  if (outputProof?.resultState !== 'gpu-hmr-output-oracle-proven') gaps.push('output_oracle_not_verified');
+  if (hostPreservationProof?.resultState !== 'gpu-hmr-host-preservation-proven') {
+    gaps.push('host_preservation_not_verified');
+  }
+  if (fullRuntimeProof?.fullRuntimeProven !== true) gaps.push('full_runtime_not_verified');
+  return compactStringList(gaps);
+}
+
+export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
+  const validationContext = asObject(input.validationContext ?? input.validation_context);
+  const sourceProofs = asArray(input.sourceProofs ?? input.source_proofs ?? (
+    input.sourceProof ? [input.sourceProof] : []
+  )).filter((proof) => proof && typeof proof === 'object');
+  const fissionProof = asObject(input.fissionProof ?? input.fission_proof);
+  const abiProof = asObject(input.abiProof ?? input.abi_proof);
+  const artifactTransportProof = asObject(input.artifactTransportProof ?? input.artifact_transport_proof);
+  const epochProof = asObject(input.epochProof ?? input.epoch_proof ?? input.epochSwapProof ?? input.epoch_swap_proof);
+  const dispatchProof = asObject(input.dispatchProof ?? input.dispatch_proof);
+  const outputProof = asObject(input.outputProof ?? input.output_proof);
+  const hostPreservationProof = asObject(input.hostPreservationProof ?? input.host_preservation_proof);
+  const fullRuntimeProof = asObject(input.fullRuntimeProof ?? input.full_runtime_proof);
+  const selectedIsland = selectedIslandContractFromProof(fissionProof);
+  const backend = backendFromVerifiedContext(input, validationContext);
+  const artifactHashAfter = artifactHashAfterFromProofs(
+    input,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+  );
+  const artifactHashBefore = artifactHashBeforeFromProofs(input, epochProof);
+  const sourcePaths = compactStringList([
+    ...asArray(selectedIsland.sourcePaths),
+    ...asArray(selectedIsland.source_paths),
+  ]);
+  const entryPoints = compactStringList([
+    ...asArray(selectedIsland.targetSymbols),
+    ...asArray(selectedIsland.target_symbols),
+    ...asArray(selectedIsland.exportedSymbolsExpected),
+    ...asArray(selectedIsland.exported_symbols_expected),
+    ...asArray(dispatchProof.dispatchTableEntryIds).map((entry) => String(entry).split(':')[0]),
+    ...asArray(dispatchProof.dispatch_table_entry_ids).map((entry) => String(entry).split(':')[0]),
+  ]);
+  const evidenceRefs = evidenceRefsFromProofs(
+    ...sourceProofs,
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+  );
+  const blockingGaps = blockingGapsFromVerifiedProofs({
+    backend,
+    sourceProofs,
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+    fullRuntimeProof,
+    selectedIsland,
+  });
+  const gpuRouteAccepted = blockingGaps.length === 0;
+  const artifactKind = selectedIslandKind(selectedIsland, backend);
+  const fullDeviceFallback = /full[_-]?device|device[_-]?module/.test(
+    String(selectedIsland.artifactKind ?? selectedIsland.artifact_kind ?? ''),
+  );
+  const contract = normalizeGpuHmrAcceptanceContract({
+    contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+    project_id: firstText(input.projectId, input.project_id, input.workspaceSlug, validationContext.workspaceSlug),
+    edit_id: firstText(input.editId, input.edit_id, input.sourceEditId, validationContext.sourceEditId),
+    backend,
+    confidence: gpuRouteAccepted ? 0.95 : 0.25,
+    evidence_refs: evidenceRefs,
+    ai_hints: asArray(input.aiHints ?? input.ai_hints),
+    unsupported_reasons: gpuRouteAccepted ? [] : blockingGaps,
+    failure_mode: gpuRouteAccepted ? 'reject' : 'gpu_hmr_unsupported',
+    classification: {
+      project_kind: backend === 'unknown' ? 'unknown' : 'gpu_project',
+      edit_kind: sourcePaths.length > 0 || entryPoints.length > 0 ? 'gpu_artifact_edit' : 'unknown',
+      route: gpuRouteAccepted ? 'gpu_hmr' : 'reject',
+      confidence: gpuRouteAccepted ? 0.95 : 0.25,
+      blocking_gaps: blockingGaps,
+    },
+    artifact_identity: {
+      source_paths: sourcePaths,
+      artifact_kind: artifactKind,
+      entry_points: entryPoints,
+      compile_target: firstText(input.gpuArch, input.gpu_arch, validationContext.gpuArch, validationContext.gpu_arch),
+      compiler: firstText(selectedIsland.compiler, selectedIsland.compilerName, input.compiler),
+      compiler_args_hash: firstText(
+        selectedIsland.compileCommandHash,
+        selectedIsland.compile_command_hash,
+        selectedIsland.compileRecipeHash,
+        selectedIsland.compile_recipe_hash,
+      ),
+    },
+    artifact_hash_before: artifactHashBefore,
+    artifact_hash_after: artifactHashAfter,
+    unaffected_artifacts_hash_unchanged: fissionProof?.fissionProven === true && !fullDeviceFallback,
+    abi_compatibility_class: {
+      value: abiProof?.resultState === 'gpu-hmr-abi-proven' ? 'compatible' : 'unknown',
+      evidence_refs: compactStringList(abiProof.evidenceRefs ?? abiProof.evidence_refs),
+    },
+    abi_metadata: {
+      kernel_abi_fingerprint_hashes: compactStringList(abiProof.kernelAbiFingerprintHashes),
+      constant_global_layout_hashes: compactStringList(abiProof.constantGlobalLayoutHashes),
+      extractor_sources: compactStringList(abiProof.acceptedExtractorSources),
+    },
+    reload_mechanism: artifactTransportProof?.resultState === 'gpu-hmr-artifact-transport-proven'
+      || artifactTransportProof?.ramTransportProven === true
+      ? 'generated_adapter'
+      : 'unsupported',
+    adapter_outcome: artifactTransportProof?.resultState === 'gpu-hmr-artifact-transport-proven'
+      || artifactTransportProof?.ramTransportProven === true
+      ? 'adapter_generated'
+      : 'adapter_impossible_requires_app_hook',
+    reload_evidence_refs: compactStringList(artifactTransportProof.evidenceRefs ?? artifactTransportProof.evidence_refs),
+    dispatch_trace_required: true,
+    oracle_trace_required: true,
+    state_preservation_checks: {
+      process_id: firstText(hostPreservationProof.processId, hostPreservationProof.process_id),
+      device_uuid: firstText(input.deviceUuid, input.device_uuid, validationContext.deviceUuid),
+      context_or_device_handle: firstText(validationContext.contextHandle, validationContext.context_or_device_handle),
+      queue_or_stream_handle: firstText(dispatchProof.dispatchStreamIds?.[0], epochProof.streamIds?.[0]),
+      persistent_gpu_allocations: asArray(dispatchProof.argProvenanceRecords)
+        .filter((record) => record?.category === 'device_allocation')
+        .map((record) => record.allocationId ?? record.allocation_id)
+        .filter(Boolean),
+      engine_scene_handles: [],
+    },
+    epoch_policy: {
+      publish_mechanism: epochProof?.published === true ? 'runtime_epoch_publish' : null,
+      dispatch_binding: dispatchProof?.resultState === 'gpu-hmr-dispatch-safe-proven'
+        ? 'dispatch_table_epoch_binding'
+        : null,
+      retirement_mechanism: firstText(epochProof.retirementStrategy, epochProof.retirement_strategy),
+    },
+    epoch_retirement_proof: {
+      value: epochProof?.oldGenerationRetired === true && epochProof?.streamOrderingProven === true
+        ? 'stream_event_proven'
+        : 'unproven',
+      evidence_refs: compactStringList([
+        ...(asArray(epochProof.evidenceRefs)),
+        ...(asArray(epochProof.retirementFenceIds)),
+      ]),
+    },
+    fission_report: {
+      selected_island: firstText(selectedIsland.islandId, selectedIsland.island_id),
+      selected_reason: fissionProof?.fissionProven === true ? 'verified_fission_contract' : null,
+      changed_sources: sourcePaths,
+      included_dependencies: uniqueObjectsByPath(selectedIsland.includeClosure ?? selectedIsland.include_closure),
+      excluded_host_sources: [],
+      artifact_hash_before: artifactHashBefore,
+      artifact_hash_after: artifactHashAfter,
+      abi_compatibility_class: abiProof?.resultState === 'gpu-hmr-abi-proven' ? 'compatible' : 'unknown',
+      full_device_fallback: fullDeviceFallback,
+      host_relinked: input.hostRelinked === true || input.host_relinked === true,
+      process_restarted: input.processRestarted === true || input.process_restarted === true,
+      full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
+      evidence_refs: evidenceRefs,
+    },
+  });
+  return contract;
 }
