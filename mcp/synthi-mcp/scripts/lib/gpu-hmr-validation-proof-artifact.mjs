@@ -8,6 +8,7 @@ import {
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
   evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
   normalizeGpuHmrAcceptanceContract,
 } from './gpu-hmr-acceptance-contract.mjs';
 import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
@@ -896,106 +897,6 @@ function acceptanceContractLimitations(evaluation) {
   }));
 }
 
-function sortedStringList(values) {
-  return compactStringList(values).sort();
-}
-
-function comparableAcceptanceContractFields(contract) {
-  const normalized = normalizeGpuHmrAcceptanceContract(contract ?? {});
-  const artifact = normalized.artifact_identity ?? {};
-  const abi = normalized.abi_compatibility_class ?? {};
-  const state = normalized.state_preservation_checks ?? {};
-  const epochPolicy = normalized.epoch_policy ?? {};
-  const fission = normalized.fission_report ?? {};
-  return {
-    backend: normalized.backend,
-    classification_project_kind: normalized.classification?.project_kind ?? null,
-    classification_edit_kind: normalized.classification?.edit_kind ?? null,
-    classification_route: normalized.classification?.route ?? null,
-    artifact_kind: artifact.artifact_kind ?? null,
-    source_paths: sortedStringList(artifact.source_paths),
-    entry_points: sortedStringList(artifact.entry_points),
-    artifact_hash_before: normalized.artifact_hash_before ?? null,
-    artifact_hash_after: normalized.artifact_hash_after ?? null,
-    abi_compatibility_class: abi.value ?? null,
-    reload_mechanism: normalized.reload_mechanism,
-    adapter_outcome: normalized.adapter_outcome,
-    process_id: state.process_id ?? null,
-    device_uuid: state.device_uuid ?? null,
-    context_or_device_handle: state.context_or_device_handle ?? null,
-    queue_or_stream_handle: state.queue_or_stream_handle ?? null,
-    epoch_publish_mechanism: epochPolicy.publish_mechanism ?? null,
-    epoch_dispatch_binding: epochPolicy.dispatch_binding ?? null,
-    fission_selected_island: fission.selected_island ?? null,
-    fission_artifact_hash_before: fission.artifact_hash_before ?? null,
-    fission_artifact_hash_after: fission.artifact_hash_after ?? null,
-    fission_full_rebuild_used: fission.full_rebuild_used === true,
-    fission_process_restarted: fission.process_restarted === true,
-  };
-}
-
-function compareComparableContractFields(explicitFields, derivedFields) {
-  const mismatches = [];
-  for (const key of Object.keys(derivedFields)) {
-    const explicitValue = explicitFields[key];
-    const derivedValue = derivedFields[key];
-    if (stableJson(explicitValue) !== stableJson(derivedValue)) {
-      mismatches.push({
-        code: 'explicit_acceptance_contract_verified_field_mismatch',
-        field: key,
-        explicitValue,
-        explicit_value: explicitValue,
-        derivedValue,
-        derived_value: derivedValue,
-      });
-    }
-  }
-  return mismatches;
-}
-
-function acceptanceContractConsistencyEvaluation({
-  explicitContract,
-  derivedContract,
-  derivedEvaluation,
-}) {
-  if (!objectOrNull(explicitContract)) {
-    return {
-      accepted: true,
-      checked: false,
-      failedGates: [],
-      explicitFields: null,
-      derivedFields: null,
-    };
-  }
-  const failures = [];
-  if (!objectOrNull(derivedContract)) {
-    failures.push({ code: 'explicit_acceptance_contract_without_derived_contract' });
-  }
-  if (objectOrNull(derivedEvaluation) && derivedEvaluation.accepted !== true) {
-    failures.push({
-      code: 'explicit_acceptance_contract_not_backed_by_verified_proofs',
-      derivedFailedGates: compactObjects(derivedEvaluation.failedGates).map((gate) => gate.code ?? null),
-      derived_failed_gates: compactObjects(derivedEvaluation.failedGates).map((gate) => gate.code ?? null),
-    });
-  }
-  const explicitFields = objectOrNull(explicitContract)
-    ? comparableAcceptanceContractFields(explicitContract)
-    : null;
-  const derivedFields = objectOrNull(derivedContract)
-    ? comparableAcceptanceContractFields(derivedContract)
-    : null;
-  if (explicitFields && derivedFields) {
-    failures.push(...compareComparableContractFields(explicitFields, derivedFields));
-  }
-  return {
-    accepted: failures.length === 0,
-    checked: true,
-    failedGates: failures,
-    explicitFields,
-    derivedFields,
-  };
-}
-
 function acceptanceContractConsistencyLimitations(evaluation) {
   if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
   return compactObjects(evaluation.failedGates).map((gate) => ({
@@ -1466,7 +1367,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
       classification: input.classification ?? validationContext?.classification ?? {},
     },
   );
-  const acceptanceContractConsistency = acceptanceContractConsistencyEvaluation({
+  const acceptanceContractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
     explicitContract: explicitAcceptanceContract,
     derivedContract: derivedAcceptanceContract,
     derivedEvaluation: derivedAcceptanceContractEvaluation,
@@ -1516,6 +1417,20 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
   );
   const proofMaterial = {
+    workspaceSlug: input.workspaceSlug ?? null,
+    sourceEditId: input.sourceEditId ?? null,
+    backend: input.backend ?? null,
+    gpuBackend: input.gpuBackend ?? input.gpu_backend ?? null,
+    gpuVendor: input.gpuVendor ?? input.gpu_vendor ?? null,
+    gpuArch: input.gpuArch ?? input.gpu_arch ?? null,
+    processId: input.processId ?? input.process_id ?? null,
+    deviceUuid: input.deviceUuid ?? input.device_uuid ?? null,
+    contextHandle: input.contextHandle ?? input.context_handle ?? null,
+    contextOrDeviceHandle: input.contextOrDeviceHandle ?? input.context_or_device_handle ?? null,
+    cameraStateHash: input.cameraStateHash ?? input.camera_state_hash ?? null,
+    swapchainOrFramebufferIdentity:
+      input.swapchainOrFramebufferIdentity ?? input.swapchain_or_framebuffer_identity ?? null,
+    engineSceneHandles: input.engineSceneHandles ?? input.engine_scene_handles ?? null,
     fullRuntimeProof,
     sourceProofs: input.sourceProofs ?? (input.sourceProof ? [input.sourceProof] : []),
     fissionProof: input.fissionProof ?? null,

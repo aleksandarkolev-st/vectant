@@ -8,6 +8,7 @@ import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
   evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
 } from './gpu-hmr-acceptance-contract.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SUMMARY_SCHEMA_VERSION =
@@ -426,6 +427,52 @@ function acceptanceContractEvaluationFromRecord(record) {
   return null;
 }
 
+function derivedAcceptanceContractFromRecord(record, validationContext) {
+  if (!isObject(record)) return null;
+  const material = isObject(record.proofMaterial)
+    ? record.proofMaterial
+    : isObject(record.proof_material)
+      ? record.proof_material
+      : isObject(record.artifact?.proofMaterial)
+        ? record.artifact.proofMaterial
+        : isObject(record.artifact?.proof_material)
+          ? record.artifact.proof_material
+          : {};
+  const materialContext = isObject(material.validationContext)
+    ? material.validationContext
+    : isObject(material.validation_context)
+      ? material.validation_context
+      : validationContext;
+  return deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+    ...record,
+    ...material,
+    validationContext: materialContext,
+    workspaceSlug:
+      material.workspaceSlug
+      ?? material.workspace_slug
+      ?? record.workspaceSlug
+      ?? record.workspace_slug,
+    backend:
+      material.backend
+      ?? material.gpuBackend
+      ?? material.gpu_backend
+      ?? record.backend
+      ?? record.gpuBackend
+      ?? record.gpu_backend,
+  });
+}
+
+function acceptanceContractConsistencyFromRecord(record, validationContext) {
+  const explicitContract = acceptanceContractFromRecord(record);
+  const derivedContract = derivedAcceptanceContractFromRecord(record, validationContext);
+  const derivedEvaluation = evaluateGpuHmrAcceptanceContract(derivedContract ?? {});
+  return evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract,
+    derivedContract,
+    derivedEvaluation,
+  });
+}
+
 function deterministicVisualModeFromRecord(record) {
   if (!isObject(record)) return null;
   if (isObject(record.deterministicVisualMode)) return record.deterministicVisualMode;
@@ -465,6 +512,25 @@ function acceptanceContractLimitations(evaluations) {
       proof_artifact_path: null,
       phase: null,
       name: null,
+    })));
+}
+
+function acceptanceContractConsistencyLimitations(evaluations) {
+  return compactObjects(evaluations)
+    .filter((evaluation) => evaluation.accepted !== true)
+    .flatMap((evaluation) => compactObjects(evaluation.failedGates).map((gate) => ({
+      stage_id: 'acceptance-contract-consistency',
+      status: 'blocked',
+      required_state: 'gpu-hmr-acceptance-contract-backed-by-verified-proofs',
+      observed_state: null,
+      degraded_state: 'gpu-hmr-acceptance-contract-mismatch',
+      degraded_reason: gate.code ?? 'acceptance_contract_consistency_failed',
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+      field: gate.field ?? null,
+      explicit_value: gate.explicit_value ?? gate.explicitValue ?? null,
+      derived_value: gate.derived_value ?? gate.derivedValue ?? null,
     })));
 }
 
@@ -523,6 +589,17 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     ? proofLedgers.map((ledger) => queryGpuHmrLedgerInvariants(ledger))
     : suppliedProofLedgerQueries.map((query) => queryGpuHmrLedgerInvariants(query));
   const proofLedgerQuery = proofLedgerQueries[proofLedgerQueries.length - 1] ?? null;
+  const topLevelDerivedAcceptanceContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+    ...input,
+    validationContext,
+  });
+  const topLevelDerivedAcceptanceContractEvaluation =
+    evaluateGpuHmrAcceptanceContract(topLevelDerivedAcceptanceContract);
+  const runtimeDerivedAcceptanceContracts = runtimeArtifactRecords
+    .map((record) => derivedAcceptanceContractFromRecord(record, validationContext))
+    .filter(isObject);
+  const runtimeDerivedAcceptanceContractEvaluations = runtimeDerivedAcceptanceContracts
+    .map((contract) => evaluateGpuHmrAcceptanceContract(contract));
   const acceptanceContracts = compactObjects([
     input.acceptanceContract,
     input.acceptance_contract,
@@ -530,13 +607,31 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     validationContext.acceptance_contract,
     ...runtimeArtifactRecords.map(acceptanceContractFromRecord),
   ]);
-  const derivedAcceptanceContract = acceptanceContracts.length === 0
-    ? deriveGpuHmrAcceptanceContractFromVerifiedProofs({
-        ...input,
-        validationContext,
-      })
-    : null;
-  if (derivedAcceptanceContract) acceptanceContracts.push(derivedAcceptanceContract);
+  const derivedAcceptanceContract = runtimeDerivedAcceptanceContracts.at(-1)
+    ?? topLevelDerivedAcceptanceContract
+    ?? null;
+  const derivedAcceptanceContractEvaluation = runtimeDerivedAcceptanceContractEvaluations.at(-1)
+    ?? topLevelDerivedAcceptanceContractEvaluation
+    ?? null;
+  if (acceptanceContracts.length === 0 && derivedAcceptanceContract) {
+    acceptanceContracts.push(derivedAcceptanceContract);
+  }
+  const acceptanceContractConsistencyEvaluations = compactObjects([
+    input.acceptanceContract || input.acceptance_contract || validationContext.acceptanceContract
+      || validationContext.acceptance_contract
+      ? evaluateGpuHmrAcceptanceContractConsistency({
+          explicitContract: input.acceptanceContract
+            ?? input.acceptance_contract
+            ?? validationContext.acceptanceContract
+            ?? validationContext.acceptance_contract,
+          derivedContract: derivedAcceptanceContract,
+          derivedEvaluation: derivedAcceptanceContractEvaluation,
+        })
+      : null,
+    ...runtimeArtifactRecords.map((record) =>
+      acceptanceContractConsistencyFromRecord(record, validationContext)
+    ),
+  ]);
   const suppliedAcceptanceEvaluations = compactObjects([
     input.acceptanceContractEvaluation,
     input.acceptance_contract_evaluation,
@@ -613,6 +708,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
     ...acceptanceContractLimitations(acceptanceContractEvaluations),
+    ...acceptanceContractConsistencyLimitations(acceptanceContractConsistencyEvaluations),
     ...deterministicVisualModeLimitations(deterministicVisualModeEvaluations),
     ...proofLedgerLimitations(proofLedgerQueries),
     ...targetProgressionGateLimitations(input, validationContext),
@@ -712,6 +808,19 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
             contract_hash: acceptanceContractEvaluation.contract?.contract_hash ?? null,
         }
         : null,
+      acceptance_contract_consistency: acceptanceContractConsistencyEvaluations.length > 0
+        ? {
+            accepted: acceptanceContractConsistencyEvaluations.every((evaluation) =>
+              evaluation.accepted === true
+            ),
+            checked_count: acceptanceContractConsistencyEvaluations.filter((evaluation) =>
+              evaluation.checked === true
+            ).length,
+            failed_gate_count: acceptanceContractConsistencyEvaluations
+              .flatMap((evaluation) => compactObjects(evaluation.failedGates))
+              .length,
+          }
+        : null,
       deterministic_visual_mode: deterministicVisualModeEvaluation
         ? {
             accepted: deterministicVisualModeEvaluation.accepted === true,
@@ -738,6 +847,9 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     acceptance_contract: acceptanceContract,
     acceptance_contract_evaluation: acceptanceContractEvaluation,
     acceptance_contract_evaluations: acceptanceContractEvaluations,
+    derived_acceptance_contract: derivedAcceptanceContract,
+    derived_acceptance_contract_evaluation: derivedAcceptanceContractEvaluation,
+    acceptance_contract_consistency_evaluations: acceptanceContractConsistencyEvaluations,
     deterministic_visual_mode: deterministicVisualMode,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluations: deterministicVisualModeEvaluations,

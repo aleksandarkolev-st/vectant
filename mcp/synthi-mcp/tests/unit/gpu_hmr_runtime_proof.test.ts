@@ -6427,6 +6427,107 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summary.full_runtime_proven).toBe(false);
   });
 
+  it("recomputes acceptance contract consistency from runtime proof material in summaries", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+    const validArtifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+    const forgedContract = {
+      ...validArtifact.acceptanceContract,
+      artifact_identity: {
+        ...validArtifact.acceptanceContract.artifact_identity,
+        source_paths: ["src/forged/summary-kernel.hip"],
+      },
+    };
+    const forgedRecord = {
+      ...validArtifact,
+      path: "logs/runtime-proof.json",
+      acceptanceContract: forgedContract,
+      acceptance_contract: forgedContract,
+      acceptanceContractConsistency: {
+        accepted: true,
+        checked: true,
+        failedGates: [],
+      },
+      acceptance_contract_consistency: {
+        accepted: true,
+        checked: true,
+        failedGates: [],
+      },
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      limitations: [],
+    };
+
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      runtimeProofArtifactRecords: [forgedRecord],
+    });
+
+    expect(summary.gpu_hmr_success).toBe(false);
+    expect(summary.proof_states.acceptance_contract_consistency).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        checked_count: 1,
+      }),
+    );
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+          degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+          field: "source_paths",
+        }),
+      ]),
+    );
+  });
+
   it("summarizes flat Docker snapshots and separates blank screenshot attempts", () => {
     const summary = buildGpuHmrValidationProofSummary({
       workspaceSlug: "workspace",

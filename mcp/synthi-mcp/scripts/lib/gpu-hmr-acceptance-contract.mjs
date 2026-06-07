@@ -69,6 +69,10 @@ function compactStringList(values) {
   return [...new Set(asArray(values).map(text).filter(Boolean))];
 }
 
+function sortedStringList(values) {
+  return compactStringList(values).sort();
+}
+
 function boolValue(value, fallback = false) {
   return typeof value === 'boolean' ? value : fallback;
 }
@@ -391,6 +395,102 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     failureMode: failures.length === 0 ? null : contract.failure_mode,
     failedGates: failures,
     warnings,
+  };
+}
+
+export function comparableGpuHmrAcceptanceContractFields(contract) {
+  const normalized = normalizeGpuHmrAcceptanceContract(contract ?? {});
+  const artifact = normalized.artifact_identity ?? {};
+  const abi = normalized.abi_compatibility_class ?? {};
+  const state = normalized.state_preservation_checks ?? {};
+  const epochPolicy = normalized.epoch_policy ?? {};
+  const fission = normalized.fission_report ?? {};
+  return {
+    backend: normalized.backend,
+    classification_project_kind: normalized.classification?.project_kind ?? null,
+    classification_edit_kind: normalized.classification?.edit_kind ?? null,
+    classification_route: normalized.classification?.route ?? null,
+    artifact_kind: artifact.artifact_kind ?? null,
+    source_paths: sortedStringList(artifact.source_paths),
+    entry_points: sortedStringList(artifact.entry_points),
+    artifact_hash_before: normalized.artifact_hash_before ?? null,
+    artifact_hash_after: normalized.artifact_hash_after ?? null,
+    abi_compatibility_class: abi.value ?? null,
+    reload_mechanism: normalized.reload_mechanism,
+    adapter_outcome: normalized.adapter_outcome,
+    process_id: state.process_id ?? null,
+    device_uuid: state.device_uuid ?? null,
+    context_or_device_handle: state.context_or_device_handle ?? null,
+    queue_or_stream_handle: state.queue_or_stream_handle ?? null,
+    epoch_publish_mechanism: epochPolicy.publish_mechanism ?? null,
+    epoch_dispatch_binding: epochPolicy.dispatch_binding ?? null,
+    fission_selected_island: fission.selected_island ?? null,
+    fission_artifact_hash_before: fission.artifact_hash_before ?? null,
+    fission_artifact_hash_after: fission.artifact_hash_after ?? null,
+    fission_full_rebuild_used: fission.full_rebuild_used === true,
+    fission_process_restarted: fission.process_restarted === true,
+  };
+}
+
+function compareGpuHmrAcceptanceContractFields(explicitFields, derivedFields) {
+  const mismatches = [];
+  for (const key of Object.keys(derivedFields ?? {})) {
+    const explicitValue = explicitFields?.[key];
+    const derivedValue = derivedFields[key];
+    if (stableJson(explicitValue) !== stableJson(derivedValue)) {
+      mismatches.push({
+        code: 'explicit_acceptance_contract_verified_field_mismatch',
+        field: key,
+        explicitValue,
+        explicit_value: explicitValue,
+        derivedValue,
+        derived_value: derivedValue,
+      });
+    }
+  }
+  return mismatches;
+}
+
+export function evaluateGpuHmrAcceptanceContractConsistency({
+  explicitContract,
+  derivedContract,
+  derivedEvaluation,
+} = {}) {
+  if (!explicitContract || typeof explicitContract !== 'object' || Array.isArray(explicitContract)) {
+    return {
+      accepted: true,
+      checked: false,
+      failedGates: [],
+      explicitFields: null,
+      derivedFields: null,
+    };
+  }
+  const failures = [];
+  if (!derivedContract || typeof derivedContract !== 'object' || Array.isArray(derivedContract)) {
+    failures.push({ code: 'explicit_acceptance_contract_without_derived_contract' });
+  }
+  if (derivedEvaluation && typeof derivedEvaluation === 'object' && derivedEvaluation.accepted !== true) {
+    failures.push({
+      code: 'explicit_acceptance_contract_not_backed_by_verified_proofs',
+      derivedFailedGates: asArray(derivedEvaluation.failedGates).map((gate) => gate?.code ?? null),
+      derived_failed_gates: asArray(derivedEvaluation.failedGates).map((gate) => gate?.code ?? null),
+    });
+  }
+  const explicitFields = explicitContract && typeof explicitContract === 'object'
+    ? comparableGpuHmrAcceptanceContractFields(explicitContract)
+    : null;
+  const derivedFields = derivedContract && typeof derivedContract === 'object' && !Array.isArray(derivedContract)
+    ? comparableGpuHmrAcceptanceContractFields(derivedContract)
+    : null;
+  if (explicitFields && derivedFields) {
+    failures.push(...compareGpuHmrAcceptanceContractFields(explicitFields, derivedFields));
+  }
+  return {
+    accepted: failures.length === 0,
+    checked: true,
+    failedGates: failures,
+    explicitFields,
+    derivedFields,
   };
 }
 
