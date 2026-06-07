@@ -298,6 +298,7 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       actual: dispatchArtifactHash,
     });
   }
+  if (dispatchTs === null) addFailure(failures, 'dispatch_timestamp_missing');
   if (!outputDispatchId) {
     addFailure(failures, 'output_after_dispatch_id_missing');
   } else if (dispatchId && outputDispatchId !== dispatchId) {
@@ -308,25 +309,33 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   }
   if (record.outputEvent.passed !== true) addFailure(failures, 'output_oracle_not_passed');
   const outputArtifactHash = eventArtifactHash(record.outputEvent);
-  if (outputArtifactHash && artifactAfterHash && outputArtifactHash !== artifactAfterHash) {
+  if (!outputArtifactHash) {
+    addFailure(failures, 'output_artifact_hash_missing');
+  } else if (artifactAfterHash && outputArtifactHash !== artifactAfterHash) {
     addFailure(failures, 'output_artifact_hash_mismatch', {
       expected: artifactAfterHash,
       actual: outputArtifactHash,
     });
   }
   const outputEpoch = eventEpoch(record.outputEvent);
-  if (outputEpoch && publishedEpoch && outputEpoch !== publishedEpoch) {
+  if (!outputEpoch) {
+    addFailure(failures, 'output_epoch_missing');
+  } else if (publishedEpoch && outputEpoch !== publishedEpoch) {
     addFailure(failures, 'output_epoch_mismatch', {
       expected: publishedEpoch,
       actual: outputEpoch,
     });
   }
+  if (outputTs === null) addFailure(failures, 'output_timestamp_missing');
   if (dispatchTs !== null && outputTs !== null && outputTs < dispatchTs) {
     addFailure(failures, 'output_precedes_dispatch', {
       dispatchTimestamp: dispatchTs,
       outputTimestamp: outputTs,
     });
   }
+  if (!identityPid) addFailure(failures, 'process_identity_missing');
+  if (!loaderPid) addFailure(failures, 'loader_process_identity_missing');
+  if (!dispatchPid) addFailure(failures, 'dispatch_process_identity_missing');
   if (identityPid && loaderPid && loaderPid !== identityPid) {
     addFailure(failures, 'loader_process_identity_mismatch', {
       expected: identityPid,
