@@ -246,9 +246,15 @@ function safeDispatchProof({
   runtimeSession = "runtime-session:test",
   artifactId = TEST_ARTIFACT_ID,
   dispatchTimestamp = 1779979999000,
+  dispatchId = "dispatch:test:1",
+  processId = "pid1",
+  epoch = "3",
 } = {}) {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    dispatchId,
+    processId,
+    epoch,
     dispatchEvidenceRefs: dispatchEvidenceRefs(runtimeSession),
     sessionScoped: true,
     runtimeSessionIds: [runtimeSession],
@@ -289,6 +295,7 @@ function safeDispatchProof({
 function deterministicOutputOracle({
   runtimeSession = "runtime-session:test",
   artifactId = TEST_ARTIFACT_ID,
+  dispatchId = "dispatch:test:1",
 } = {}) {
   return {
     oracleId: "oracle:required:test-output",
@@ -302,6 +309,8 @@ function deterministicOutputOracle({
     readbackTimestamp: "1779980000000",
     runtimeSessionId: runtimeSession,
     artifactId,
+    dispatchId,
+    afterDispatchId: dispatchId,
     probeMode: "fixed_validation_probe",
     probeConfigHash: `sha256:${"a".repeat(64)}`,
     probeEvidenceRefs: ["evidence:output-oracle:readback:abc"],
@@ -5900,6 +5909,86 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("does not mark runtime artifacts successful without full runtime proof", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const provenFullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+    const acceptanceContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof: provenFullRuntimeProof,
+    });
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof: {
+        ...provenFullRuntimeProof,
+        resultState: "gpu-hmr-output-oracle-proven",
+        fullRuntimeProven: false,
+      },
+      acceptanceContract,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "full-runtime",
+          degraded_reason: "full_runtime_proof_not_proven",
+        }),
+      ]),
+    );
   });
 
   it("materializes native original-host diagnostics as runtime proof facets", () => {

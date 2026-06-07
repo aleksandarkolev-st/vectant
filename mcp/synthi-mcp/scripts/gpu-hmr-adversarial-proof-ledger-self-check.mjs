@@ -125,6 +125,28 @@ function baselineContract(overrides = {}) {
   };
 }
 
+function baselineFullRuntimeProof() {
+  return {
+    resultState: 'gpu-hmr-full-runtime-proven',
+    fullRuntimeProven: true,
+    stages: [
+      'fission-candidate-verification',
+      'compile',
+      'symbol-binding',
+      'abi',
+      'artifact-transport',
+      'epoch-swap',
+      'dispatch-safe',
+      'output',
+      'artifact-identity',
+      'host-preservation',
+    ].map((stageId) => ({
+      stageId,
+      status: 'passed',
+    })),
+  };
+}
+
 function expectReject(name, record, expectedCode) {
   const result = evaluateGpuHmrProofLedger(record);
   assert.equal(result.gpuHmrSuccess, false, `${name} unexpectedly accepted`);
@@ -144,11 +166,7 @@ const runtimeArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   acceptanceContract: baselineContract(),
   proofLedgerRecord: baselineRecord(),
-  fullRuntimeProof: {
-    resultState: 'gpu-hmr-full-runtime-proven',
-    fullRuntimeProven: true,
-    stages: [],
-  },
+  fullRuntimeProof: baselineFullRuntimeProof(),
 });
 assert.equal(runtimeArtifact.proofLedger.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);

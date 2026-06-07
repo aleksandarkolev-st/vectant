@@ -554,6 +554,86 @@ function proofLimitations(stages, fullRuntimeProof) {
   return limitations;
 }
 
+const REQUIRED_RUNTIME_STAGE_IDS = [
+  'fission-candidate-verification',
+  'compile',
+  'symbol-binding',
+  'abi',
+  'artifact-transport',
+  'epoch-swap',
+  'dispatch-safe',
+  'output',
+  'artifact-identity',
+  'host-preservation',
+];
+
+function fullRuntimeStructuralLimitations(stages, fullRuntimeProof) {
+  const limitations = [];
+  if (!fullRuntimeProof || typeof fullRuntimeProof !== 'object') {
+    limitations.push({
+      stageId: 'full-runtime',
+      stage_id: 'full-runtime',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      required_state: 'gpu-hmr-full-runtime-proven',
+      observedState: null,
+      observed_state: null,
+      degradedState: 'gpu-hmr-full-runtime-unverified',
+      degraded_state: 'gpu-hmr-full-runtime-unverified',
+      degradedReason: 'full_runtime_proof_missing',
+      degraded_reason: 'full_runtime_proof_missing',
+      proofArtifactPath: null,
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    });
+    return limitations;
+  }
+  if (fullRuntimeProof.fullRuntimeProven !== true) {
+    limitations.push({
+      stageId: 'full-runtime',
+      stage_id: 'full-runtime',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      required_state: 'gpu-hmr-full-runtime-proven',
+      observedState: fullRuntimeProof.resultState ?? null,
+      observed_state: fullRuntimeProof.resultState ?? null,
+      degradedState: fullRuntimeProof.degradedState ?? 'gpu-hmr-full-runtime-unverified',
+      degraded_state: fullRuntimeProof.degradedState ?? 'gpu-hmr-full-runtime-unverified',
+      degradedReason: fullRuntimeProof.degradedReason ?? 'full_runtime_proof_not_proven',
+      degraded_reason: fullRuntimeProof.degradedReason ?? 'full_runtime_proof_not_proven',
+      proofArtifactPath: null,
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    });
+  }
+  const stageById = new Map((Array.isArray(stages) ? stages : []).map((stage) => [stage.stageId, stage]));
+  for (const stageId of REQUIRED_RUNTIME_STAGE_IDS) {
+    const stage = stageById.get(stageId);
+    if (!stage || stage.status !== 'passed') {
+      limitations.push({
+        stageId: 'full-runtime',
+        stage_id: 'full-runtime',
+        status: 'blocked',
+        requiredState: 'gpu-hmr-full-runtime-proven',
+        required_state: 'gpu-hmr-full-runtime-proven',
+        observedState: stage?.observedState ?? null,
+        observed_state: stage?.observedState ?? null,
+        degradedState: stage?.degradedState ?? 'gpu-hmr-full-runtime-stage-missing',
+        degraded_state: stage?.degradedState ?? 'gpu-hmr-full-runtime-stage-missing',
+        degradedReason: stage ? `required_stage_not_passed:${stageId}` : `required_stage_missing:${stageId}`,
+        degraded_reason: stage ? `required_stage_not_passed:${stageId}` : `required_stage_missing:${stageId}`,
+        proofArtifactPath: stage?.proofArtifactPath ?? null,
+        proof_artifact_path: stage?.proof_artifact_path ?? null,
+        phase: stage?.phase ?? null,
+        name: stage?.name ?? null,
+      });
+    }
+  }
+  return limitations;
+}
+
 function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
   const fissionProof = input.fissionProof && typeof input.fissionProof === 'object'
     ? input.fissionProof
@@ -836,6 +916,27 @@ function deterministicVisualModeLimitations(evaluation) {
   }));
 }
 
+function proofLedgerLimitations(query) {
+  if (!objectOrNull(query) || query.gpuHmrSuccess === true) return [];
+  return compactObjects(query.failedInvariants).map((failure) => ({
+    stageId: 'proof-ledger',
+    stage_id: 'proof-ledger',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-ledger-invariants-proven',
+    required_state: 'gpu-hmr-ledger-invariants-proven',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-ledger-invariants-failed',
+    degraded_state: 'gpu-hmr-ledger-invariants-failed',
+    degradedReason: failure.code ?? 'proof_ledger_invariant_failed',
+    degraded_reason: failure.code ?? 'proof_ledger_invariant_failed',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
 function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
@@ -843,6 +944,14 @@ function objectOrNull(value) {
 function firstString(...values) {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function firstStringOrFiniteNumber(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (Number.isFinite(value)) return String(value);
   }
   return null;
 }
@@ -932,7 +1041,7 @@ function latestPublicationFromEpochProof(proof) {
 function epochIdFromProof(proof) {
   const p = objectOrNull(proof) ?? {};
   const publication = latestPublicationFromEpochProof(proof) ?? {};
-  return firstString(
+  return firstStringOrFiniteNumber(
     p.epoch,
     p.epoch_id,
     p.activeEpoch,
@@ -1200,9 +1309,11 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
     : [];
   const limitations = [
+    ...fullRuntimeStructuralLimitations(stages, fullRuntimeProof),
     ...proofLimitations(stages, fullRuntimeProof),
     ...acceptanceContractLimitations(acceptanceContractEvaluation),
     ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation),
+    ...proofLedgerLimitations(proofLedgerQuery),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -1266,6 +1377,17 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const validationContextHash = validationContext
     ? `sha256:${sha256Hex(stableJson(validationContext))}`
     : null;
+  const gpuHmrSuccess = fullRuntimeProof?.fullRuntimeProven === true
+    && stages.length > 0
+    && stages.every((stage) => stage.status === 'passed')
+    && limitations.length === 0
+    && proofLedgerQuery.gpuHmrSuccess === true
+    && acceptanceContractEvaluation.accepted === true
+    && (
+      deterministicVisualModeEvaluation
+        ? deterministicVisualModeEvaluation.accepted === true
+        : true
+    );
 
   return {
     schemaVersion: GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
@@ -1305,8 +1427,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     proof_ledger: proofLedger,
     proofLedgerQuery,
     proof_ledger_query: proofLedgerQuery,
-    gpuHmrSuccess: proofLedgerQuery.gpuHmrSuccess === true && acceptanceContractEvaluation.accepted === true,
-    gpu_hmr_success: proofLedgerQuery.gpuHmrSuccess === true && acceptanceContractEvaluation.accepted === true,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
     validationContextHash,
     createdAt,
     proofMaterial,
