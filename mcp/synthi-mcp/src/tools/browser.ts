@@ -23,7 +23,7 @@ browserPlaywrightAdapter.setWorkflowOverlayActionSink(async (request) => {
   return browserWorkflowOverlayAction(request);
 });
 
-async function browserWorkflowOverlayAction(input: {
+export async function browserWorkflowOverlayAction(input: {
   action: "state" | "observe" | "teach" | "stop";
   url?: string;
   tab_id: string;

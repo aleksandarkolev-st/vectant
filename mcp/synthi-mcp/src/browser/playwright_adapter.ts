@@ -425,7 +425,7 @@ export class BrowserPlaywrightAdapter {
   }
 
   private async installWorkflowOverlay(page: Page, tab_id: string): Promise<void> {
-    const bindingName = "__synthiWorkflowOverlayAction";
+    const bindingName = `__synthiWorkflowOverlayAction_${tab_id.replace(/[^a-zA-Z0-9_]/g, "_")}_${Date.now().toString(36)}`;
     await page.exposeBinding(bindingName, async (_source, payload: unknown) => {
       const request = workflowOverlayRequestOpt(payload);
       if (!request) return { ok: false, status: "error", error: "invalid_overlay_action" };
@@ -444,7 +444,7 @@ export class BrowserPlaywrightAdapter {
         };
       }
     }).catch(() => undefined);
-    const script = workflowOverlayInitScript(bindingName);
+    const script = workflowOverlayInitScript(bindingName, workflowOverlayBridgeUrl());
     await page.addInitScript(script).catch(() => undefined);
     await page.evaluate(script).catch(() => undefined);
   }
@@ -558,6 +558,7 @@ function teachCaptureInitScript(bindingName: string): string {
     const pending = new WeakMap();
     const lastSent = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
+    let activeDrag = null;
 
     function isElement(value) {
       return value instanceof Element;
@@ -675,6 +676,18 @@ function teachCaptureInitScript(bindingName: string): string {
       return attr(el, 'name') || element.label || element.placeholder || element.name || element.id || element.test_id || element.tag;
     }
 
+    function playwrightLocatorFor(el) {
+      if (!isElement(el)) return '';
+      const element = metadata(el);
+      if (element.test_id) return 'page.getByTestId(' + JSON.stringify(element.test_id) + ')';
+      if (element.role && element.name) return 'page.getByRole(' + JSON.stringify(element.role) + ', { name: ' + JSON.stringify(element.name) + ' })';
+      if (element.label) return 'page.getByLabel(' + JSON.stringify(element.label) + ')';
+      if (element.placeholder) return 'page.getByPlaceholder(' + JSON.stringify(element.placeholder) + ')';
+      if (element.text) return 'page.getByText(' + JSON.stringify(element.text) + ')';
+      if (element.css) return 'page.locator(' + JSON.stringify(element.css) + ')';
+      return '';
+    }
+
     function actionForChange(el) {
       const tag = el.tagName.toLowerCase();
       const type = attr(el, 'type').toLowerCase();
@@ -711,7 +724,8 @@ function teachCaptureInitScript(bindingName: string): string {
         bbox: bbox(el),
         detail: Object.assign({ event_source: 'dom_listener' }, detail || {}),
       };
-      const signature = action + '|' + (payload.value || '') + '|' + location.href;
+      const detailKey = payload.detail && typeof payload.detail.drop_locator === 'string' ? payload.detail.drop_locator : '';
+      const signature = action + '|' + (payload.value || '') + '|' + detailKey + '|' + location.href;
       const last = lastSent.get(el);
       const now = Date.now();
       if (last && last.signature === signature && now - last.ts < 300) return;
@@ -745,6 +759,17 @@ function teachCaptureInitScript(bindingName: string): string {
       emit(el, action, value, { change_event: true });
     }, true);
 
+    document.addEventListener('keydown', (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      const key = String(event.key || '');
+      if (!['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(key)) return;
+      const el = target.closest('input, textarea, select, button, a, [role="button"], [role="textbox"], [data-testid], [data-test]');
+      if (!isElement(el)) return;
+      emit(el, 'press', key, { key_event: true });
+    }, true);
+
     document.addEventListener('click', (event) => {
       const target = event.target;
       if (!isElement(target)) return;
@@ -753,17 +778,67 @@ function teachCaptureInitScript(bindingName: string): string {
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'click', undefined, { click_event: true });
     }, true);
+
+    document.addEventListener('dragstart', (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      const el = target.closest('[draggable="true"], [data-draggable], [data-testid], [data-test], [role="option"], [role="listitem"]');
+      if (!isElement(el)) return;
+      activeDrag = {
+        el,
+        started_at: Date.now(),
+        source_locator: playwrightLocatorFor(el),
+      };
+    }, true);
+
+    document.addEventListener('drop', (event) => {
+      const target = event.target;
+      if (!activeDrag || !isElement(activeDrag.el) || !isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      const dropTarget = target.closest('[data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
+      if (!isElement(dropTarget)) return;
+      const dropLocator = playwrightLocatorFor(dropTarget);
+      emit(activeDrag.el, 'drag', dropLocator || undefined, {
+        explicit_intent: true,
+        drag_mode: true,
+        drag_class: 'nativehtmldnd',
+        drag_event: true,
+        source_locator: activeDrag.source_locator,
+        drop_locator: dropLocator,
+        drop_element: metadata(dropTarget),
+        drag_duration_ms: Math.max(0, Date.now() - activeDrag.started_at),
+      });
+      activeDrag = null;
+    }, true);
+
+    document.addEventListener('dragend', () => {
+      activeDrag = null;
+    }, true);
   })();`;
 }
 
-function workflowOverlayInitScript(bindingName: string): string {
+function workflowOverlayBridgeUrl(): string {
+  const configured = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL"];
+  if (configured && configured.trim()) return configured.replace(/\/$/, "");
+  const port = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT"];
+  if (!port || !port.trim()) return "";
+  const host = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST"] || "127.0.0.1";
+  return `http://${host}:${port.trim()}`;
+}
+
+function workflowOverlayInitScript(bindingName: string, bridgeUrl: string): string {
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
-    if (window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__) return;
+    const bridgeUrl = ${JSON.stringify(bridgeUrl)};
+    if (window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ && window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName) return;
+    const existingHost = document.getElementById('synthi-workflow-toolbox-host');
+    if (existingHost) existingHost.remove();
     window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
 
     function shouldRender() {
-      if (!window[bindingName]) return false;
+      if (!window[bindingName] && !bridgeUrl) return false;
       if (!/^https?:$/.test(location.protocol)) return false;
       if (/^\\/workspace(\\/|$)/.test(location.pathname)) return false;
       return true;
@@ -827,12 +902,28 @@ function workflowOverlayInitScript(bindingName: string): string {
     }
 
     async function call(action) {
-      if (busy || !window[bindingName]) return;
+      if (busy) return;
       busy = true;
       observeButton.disabled = true;
       teachButton.disabled = true;
       try {
-        const result = await window[bindingName]({ action, url: location.href });
+        let result;
+        if (window[bindingName]) {
+          try {
+            result = await window[bindingName]({ action, url: location.href });
+          } catch (err) {
+            if (!bridgeUrl) throw err;
+          }
+        }
+        if (!result && bridgeUrl) {
+          const response = await fetch(bridgeUrl + '/browser-workflows/overlay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, url: location.href }),
+          });
+          result = await response.json();
+        }
+        if (!result) throw new Error('workflow overlay transport unavailable');
         setState(result || {});
       } catch (err) {
         setState({ ok: false, status: 'error', label: 'Error', detail: err && err.message ? err.message : String(err) });

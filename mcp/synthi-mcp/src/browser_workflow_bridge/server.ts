@@ -23,7 +23,7 @@ import { browserBroker } from "../browser/broker.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import type { WorkflowStepContractV7 } from "../browser/workflow.js";
 import { dispatchAuthTool } from "../tools/auth.js";
-import { dispatchBrowserTool } from "../tools/browser.js";
+import { browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
 import { dispatchSafetyTool } from "../tools/safety.js";
 import { dispatchSourceTool } from "../tools/source.js";
 import type { ToolResponse } from "../tools/shared.js";
@@ -53,6 +53,11 @@ interface BrowserWorkflowBridgeState {
   lastTool?: string;
   lastToolAt?: string;
   history: BridgeHistoryEntry[];
+}
+
+interface BrowserWorkflowOverlayBody {
+  action?: unknown;
+  url?: unknown;
 }
 
 const MAX_HISTORY = 8;
@@ -491,6 +496,33 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
 
     if (url === "/browser-workflows/state" && method === "GET") {
       writeJson(res, 200, { ok: true, state: buildBrowserWorkflowPanelState(bridgeState) });
+      return;
+    }
+
+    if (url === "/browser-workflows/overlay" && method === "POST") {
+      let body: BrowserWorkflowOverlayBody;
+      try {
+        body = await readJsonBody(req, 20_000);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 400, { ok: false, status: "error", label: "Overlay failed", error: "invalid_body", detail: msg });
+        return;
+      }
+      const action = body.action;
+      if (action !== "state" && action !== "observe" && action !== "teach" && action !== "stop") {
+        writeJson(res, 400, { ok: false, status: "error", label: "Overlay failed", error: "invalid_overlay_action" });
+        return;
+      }
+      const pageUrl = typeof body.url === "string" ? body.url : "";
+      const selected = browserBroker.selectedTab();
+      const tabId = action === "observe" ? "" : selected?.tab_id ?? "";
+      const result = await browserWorkflowOverlayAction({
+        action,
+        ...(pageUrl ? { url: pageUrl } : {}),
+        tab_id: tabId,
+        page_url: pageUrl,
+      });
+      writeJson(res, result.ok ? 200 : 400, result);
       return;
     }
 

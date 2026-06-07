@@ -87,6 +87,7 @@ async function main() {
   const browser = await chromium.connectOverCDP(CFG.cdpUrl);
   try {
     const context = browser.contexts()[0] ?? await browser.newContext();
+    await closeExistingPages(context);
 
     const selectedCases = CASES.filter((testCase) => CFG.cases.length === 0 || CFG.cases.includes(testCase.id));
     if (selectedCases.length === 0) {
@@ -165,6 +166,16 @@ async function runCase({ testCase, container, context, runner }) {
       compileBody.ok === true && contract?.steps?.length >= testCase.minSteps,
       `workflow=${contract?.workflowId || "missing"}`
     );
+    if (Array.isArray(testCase.expectedActions) && testCase.expectedActions.length > 0) {
+      const actionKinds = new Set((contract?.steps ?? []).map((step) => step?.action?.kind).filter(Boolean));
+      const missingActions = testCase.expectedActions.filter((action) => !actionKinds.has(action));
+      record(
+        testCase.id,
+        "compile expected actions",
+        missingActions.length === 0,
+        missingActions.length ? `missing=${missingActions.join(",")} actual=${[...actionKinds].join(",")}` : `actions=${[...actionKinds].join(",")}`
+      );
+    }
     await writeJson(caseDir, "contract.json", contract);
 
     const exportBody = await clickWorkflowButton(idePage, /^Export$/);
@@ -285,10 +296,20 @@ async function openWorkflowsPanel(context, workspaceUrl, slug) {
   const page = await context.newPage();
   await page.setViewportSize({ width: 1500, height: 1000 });
   await page.goto(workspaceUrl, { waitUntil: "domcontentloaded", timeout: CFG.timeoutMs });
-  await page.waitForSelector('button[aria-label="Workflows"]', { timeout: CFG.timeoutMs });
-  await page.locator('button[aria-label="Workflows"]').first().click();
-  await page.waitForSelector('[data-testid="agent-workflow-panel"]', { timeout: CFG.timeoutMs });
-  return page;
+  const workflowsButton = page.locator('button[aria-label="Workflows"]').first();
+  await workflowsButton.waitFor({ state: "visible", timeout: CFG.timeoutMs });
+  const deadline = Date.now() + CFG.timeoutMs;
+  while (Date.now() < deadline) {
+    await workflowsButton.click({ force: true });
+    await page.waitForTimeout(1000);
+    if (await page.locator('[data-testid="agent-workflow-panel"]').count().catch(() => 0) > 0) return page;
+  }
+  await page.screenshot({ path: path.join(artifactRoot, "workflows-panel-timeout.png"), fullPage: true }).catch(() => undefined);
+  throw new Error("workflows_panel_not_visible");
+}
+
+async function closeExistingPages(context) {
+  await Promise.all(context.pages().map((page) => page.close().catch(() => undefined)));
 }
 
 async function openPreviewPage(context, previewUrl) {
@@ -332,6 +353,7 @@ async function workflowOverlayState(page) {
       ok: host.getAttribute("data-synthi-workflow-status") !== "error",
       status: host.getAttribute("data-synthi-workflow-status") || "idle",
       label: host.shadowRoot?.querySelector(".label")?.textContent?.trim() || "",
+      detail: host.getAttribute("title") || "",
       observed: host.getAttribute("data-synthi-workflow-status") === "observed",
       recording: host.getAttribute("data-synthi-workflow-recording") === "true",
       stepCount: Number(host.getAttribute("data-synthi-workflow-steps") || 0),
@@ -607,7 +629,7 @@ function stripAnsi(value) {
   return String(value).replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function commonFiles({ title, body, script }) {
+function commonFiles({ title, body, script, styles = [] }) {
   return [
     {
       path: "package.json",
@@ -655,6 +677,7 @@ function commonFiles({ title, body, script }) {
         "button, a[role='button'] { width: max-content; min-height: 42px; border: 0; background: #222; color: white; padding: 10px 16px; font: inherit; cursor: pointer; text-decoration: none; }",
         "output, .status { min-height: 24px; color: #17663a; font-weight: 800; }",
         ".row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }",
+        ...styles,
         "",
       ].join("\n"),
     },
@@ -706,6 +729,7 @@ const CASES = [
   {
     id: "profile-form",
     minSteps: 2,
+    expectedActions: ["fill", "click"],
     files: () => commonFiles({
       title: "Profile Form Workflow",
       body: [
@@ -734,6 +758,7 @@ const CASES = [
   {
     id: "settings-controls",
     minSteps: 3,
+    expectedActions: ["check", "select", "click"],
     files: () => commonFiles({
       title: "Settings Controls Workflow",
       body: [
@@ -766,8 +791,93 @@ const CASES = [
     },
   },
   {
+    id: "dashboard-interactions",
+    minSteps: 6,
+    expectedActions: ["check", "select", "fill", "press", "drag", "click"],
+    files: () => commonFiles({
+      title: "Dashboard Interactions Workflow",
+      body: [
+        "    <main class=\"dashboard-shell\">",
+        "      <h1>Dashboard Interactions Workflow</h1>",
+        "      <label class=\"row\"><input id=\"urgent\" type=\"checkbox\" data-synthi-source-id=\"dashboard.urgent\"> Urgent only</label>",
+        "      <label for=\"segment\">Segment</label>",
+        "      <select id=\"segment\" aria-label=\"Segment\" data-synthi-source-id=\"dashboard.segment\">",
+        "        <option value=\"all\">All</option>",
+        "        <option value=\"enterprise\">Enterprise</option>",
+        "        <option value=\"self-serve\">Self serve</option>",
+        "      </select>",
+        "      <label for=\"query\">Search</label>",
+        "      <input id=\"query\" aria-label=\"Search\" data-synthi-source-id=\"dashboard.search\" placeholder=\"Search dashboards\">",
+        "      <section class=\"board\" aria-label=\"Dashboard board\">",
+        "        <div class=\"lane\" data-drop-target=\"todo\" data-testid=\"lane-todo\" aria-label=\"Todo lane\">",
+        "          <h2>Todo</h2>",
+        "          <div draggable=\"true\" class=\"card\" data-testid=\"card-revenue\" data-synthi-source-id=\"dashboard.card.revenue\">Revenue audit</div>",
+        "        </div>",
+        "        <div class=\"lane\" data-drop-target=\"done\" data-testid=\"lane-done\" aria-label=\"Done lane\">",
+        "          <h2>Done</h2>",
+        "        </div>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"apply-dashboard\" data-synthi-source-id=\"dashboard.apply\">Apply dashboard</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".dashboard-shell { width: min(920px, calc(100vw - 48px)); }",
+        ".board { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 14px; }",
+        ".lane { min-height: 148px; border: 1px solid #bbb; background: #fff; padding: 12px; display: grid; align-content: start; gap: 10px; }",
+        ".lane h2 { margin: 0; font-size: 18px; }",
+        ".card { width: max-content; border: 1px solid #222; background: #f1f1ed; padding: 10px 12px; cursor: grab; user-select: none; }",
+        ".card:active { cursor: grabbing; }",
+      ],
+      script: [
+        "const status = document.querySelector('#status');",
+        "const query = document.querySelector('#query');",
+        "const card = document.querySelector('[data-testid=\"card-revenue\"]');",
+        "const doneLane = document.querySelector('[data-testid=\"lane-done\"]');",
+        "query.addEventListener('keydown', (event) => {",
+        "  if (event.key === 'Enter') status.textContent = `Searched ${query.value}`;",
+        "});",
+        "card.addEventListener('dragstart', (event) => {",
+        "  event.dataTransfer.setData('text/plain', card.dataset.testid);",
+        "});",
+        "for (const lane of document.querySelectorAll('[data-drop-target]')) {",
+        "  lane.addEventListener('dragover', (event) => event.preventDefault());",
+        "  lane.addEventListener('drop', (event) => {",
+        "    event.preventDefault();",
+        "    const id = event.dataTransfer.getData('text/plain');",
+        "    const dragged = document.querySelector(`[data-testid=\"${id}\"]`);",
+        "    if (dragged) {",
+        "      lane.appendChild(dragged);",
+        "      status.textContent = `Moved ${dragged.textContent.trim()} to ${lane.getAttribute('aria-label')}`;",
+        "    }",
+        "  });",
+        "}",
+        "document.querySelector('[data-testid=\"apply-dashboard\"]').addEventListener('click', () => {",
+        "  const urgent = document.querySelector('#urgent').checked ? 'urgent' : 'all priorities';",
+        "  const segment = document.querySelector('#segment').value;",
+        "  const moved = doneLane.contains(card) ? 'done' : 'todo';",
+        "  status.textContent = `Applied ${segment} ${urgent}; card ${moved}; search ${query.value}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByLabel("Urgent only").check();
+      await page.getByLabel("Segment").selectOption("enterprise");
+      await page.getByLabel("Search").fill("revenue");
+      await page.waitForTimeout(450);
+      await page.getByLabel("Search").press("Enter");
+      await page.getByText("Searched revenue").waitFor();
+      await page.getByTestId("card-revenue").dragTo(page.getByTestId("lane-done"));
+      await page.getByText("Moved Revenue audit to Done lane").waitFor();
+      await page.getByRole("button", { name: "Apply dashboard" }).click();
+      await page.getByText("Applied enterprise urgent; card done; search revenue").waitFor();
+    },
+  },
+  {
     id: "review-queue",
     minSteps: 3,
+    expectedActions: ["click", "fill"],
     files: () => commonFiles({
       title: "Review Queue Workflow",
       body: [
