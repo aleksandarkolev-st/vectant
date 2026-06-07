@@ -212,6 +212,10 @@ function normalizeRealRocmProfile(rawProfile, source) {
       upstreamRunCommand: optionalProfileString(target.upstreamRunCommand, 'target.upstreamRunCommand'),
       buildUpstream: optionalProfileBoolean(target.buildUpstream, 'target.buildUpstream'),
       runUpstream: optionalProfileBoolean(target.runUpstream, 'target.runUpstream'),
+      nativeLaunchSymbols: optionalProfileStringArray(
+        target.nativeLaunchSymbols ?? target.native_launch_symbols,
+        'target.nativeLaunchSymbols',
+      ),
     },
     sourceDelta: {
       before: requiredProfileString(sourceDelta.before, 'sourceDelta.before'),
@@ -341,6 +345,7 @@ function parseOutputOracleContract(raw) {
       'sessionId',
       'session_id',
     ],
+    kernelSymbol: ['kernelSymbol', 'kernel_symbol', 'kernel', 'kernelName', 'kernel_name'],
   };
   for (const [canonical, fields] of Object.entries(aliases)) {
     for (const field of fields) {
@@ -359,6 +364,29 @@ function parseOutputOracleContract(raw) {
     );
   }
   return contract;
+}
+
+function parseNativeLaunchSymbols(raw, fallback = []) {
+  const explicit = String(raw ?? '').trim();
+  if (!explicit) return compactStringList(fallback);
+  let values;
+  if (explicit.startsWith('[')) {
+    try {
+      values = JSON.parse(explicit);
+    } catch (err) {
+      throw new Error(`invalid native launch symbol list JSON: ${err.message}`);
+    }
+    if (!Array.isArray(values)) {
+      throw new Error('invalid native launch symbol list: expected array or comma-separated string');
+    }
+  } else {
+    values = explicit.split(',');
+  }
+  const symbols = compactStringList(values.map((value) => String(value ?? '').trim()));
+  if (symbols.length === 0) {
+    throw new Error('invalid native launch symbol list: at least one non-empty symbol is required');
+  }
+  return symbols;
 }
 
 function outputOracleProfileMode(raw) {
@@ -1092,6 +1120,10 @@ const CFG = {
   nativeLaunchObserverPath:
     process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
+  nativeLaunchSymbols: parseNativeLaunchSymbols(
+    process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_SYMBOLS,
+    REAL_ROCM_PROFILE.target.nativeLaunchSymbols,
+  ),
   width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? REAL_ROCM_PROFILE.preview.width ?? 800),
   height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? REAL_ROCM_PROFILE.preview.height ?? 600),
   hiprtRuntimeProbe:
@@ -1261,6 +1293,7 @@ const report = {
     enabled: CFG.hiprtRuntimeProbe,
     capture_worker_path: null,
     capture_artifact_path: null,
+    native_launch_symbols: CFG.nativeLaunchSymbols,
     source_adaptations: [],
     source_adaptation_runs: [],
     visual_evidence: null,
@@ -4735,6 +4768,60 @@ function hiprtNativeEvidenceRef(record, kind = 'native_launch_observed') {
   return `worker-log:${kind}:${session}:${kernel}:${sequence}`;
 }
 
+function nativeLaunchTargetSymbols({
+  nativeLaunchSymbols = CFG.nativeLaunchSymbols,
+  outputOracleRuntimeProfile = report.output_oracle_runtime_profile,
+  outputOracleContract = report.output_oracle_contract,
+} = {}) {
+  const runtimeProfile = outputOracleRuntimeProfile && typeof outputOracleRuntimeProfile === 'object'
+    ? outputOracleRuntimeProfile
+    : {};
+  const runtimeProfileRuntime = runtimeProfile.runtime && typeof runtimeProfile.runtime === 'object'
+    ? runtimeProfile.runtime
+    : {};
+  const runtimeProfileReload =
+    runtimeProfileRuntime.reload && typeof runtimeProfileRuntime.reload === 'object'
+      ? runtimeProfileRuntime.reload
+      : {};
+  const contract = outputOracleContract && typeof outputOracleContract === 'object'
+    ? outputOracleContract
+    : {};
+  return compactStringList([
+    ...compactStringList(nativeLaunchSymbols),
+    runtimeProfile.kernelSymbol,
+    runtimeProfile.kernel_symbol,
+    runtimeProfile.kernelName,
+    runtimeProfile.kernel_name,
+    runtimeProfileRuntime.kernelSymbol,
+    runtimeProfileRuntime.kernel_symbol,
+    runtimeProfileRuntime.kernelName,
+    runtimeProfileRuntime.kernel_name,
+    runtimeProfileReload.kernelSymbol,
+    runtimeProfileReload.kernel_symbol,
+    runtimeProfileReload.kernelName,
+    runtimeProfileReload.kernel_name,
+    ...(Array.isArray(runtimeProfile.requiredKernels) ? runtimeProfile.requiredKernels : []),
+    ...(Array.isArray(runtimeProfile.required_kernels) ? runtimeProfile.required_kernels : []),
+    ...(Array.isArray(runtimeProfileRuntime.requiredKernels) ? runtimeProfileRuntime.requiredKernels : []),
+    ...(Array.isArray(runtimeProfileRuntime.required_kernels) ? runtimeProfileRuntime.required_kernels : []),
+    contract.kernelSymbol,
+    contract.kernel_symbol,
+    contract.kernelName,
+    contract.kernel_name,
+  ]);
+}
+
+function nativeLaunchRecordsForContract(records, targetSymbols) {
+  const normalizedTargets = new Set(
+    compactStringList(targetSymbols).map((symbol) => symbol.toLowerCase()),
+  );
+  if (normalizedTargets.size === 0) return records;
+  return records.filter((record) =>
+    typeof record?.kernelSymbol === 'string'
+    && normalizedTargets.has(record.kernelSymbol.trim().toLowerCase())
+  );
+}
+
 function buildHiprtNativeDispatchProof({
   runtimeNativeLaunchObservation,
   selectedArtifactIds,
@@ -4752,10 +4839,9 @@ function buildHiprtNativeDispatchProof({
       && record.kernelSymbol.trim()
     );
   if (records.length === 0) return null;
-  const preferred = records.filter((record) =>
-    /^(CameraRays|MegaKernel|GMoNComputeMedianOfMeans)$/i.test(record.kernelSymbol),
-  );
-  const acceptedRecords = preferred.length > 0 ? preferred : records;
+  const targetSymbols = nativeLaunchTargetSymbols();
+  const acceptedRecords = nativeLaunchRecordsForContract(records, targetSymbols);
+  if (acceptedRecords.length === 0) return null;
   const runtimeSessionIds = [
     ...new Set(acceptedRecords.map((record) => record.runtimeSession).filter(Boolean)),
   ];
@@ -4816,6 +4902,7 @@ function buildHiprtNativeDispatchProof({
     blockDimensions: [],
     sharedMemoryBytes: [],
     nativeLaunchObserved: true,
+    nativeLaunchTargetSymbols: targetSymbols,
     nativeLaunchRecords: acceptedRecords,
     proofSource: 'hiprt-native-launch-observer',
   };
@@ -5539,6 +5626,25 @@ async function selfCheckRuntimeDispatchEvidence() {
   const nativeOnlyObservation = runtimeNativeLaunchObservationEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
   );
+  const nativeOnlyTargetSymbols = nativeLaunchTargetSymbols({
+    nativeLaunchSymbols: [],
+    outputOracleRuntimeProfile: {
+      runtime: {
+        reload: {
+          kernelSymbol: 'kernel',
+        },
+      },
+    },
+    outputOracleContract: null,
+  });
+  const nativeOnlyAcceptedRecords = nativeLaunchRecordsForContract(
+    nativeOnlyObservation.records,
+    nativeOnlyTargetSymbols,
+  );
+  const nativeOnlyRejectedRecords = nativeLaunchRecordsForContract(
+    nativeOnlyObservation.records,
+    ['different_kernel'],
+  );
   const nativeOnlyDispatch = runtimeDispatchEvidence(nativeOnlyRuntimeEvidence.runtimeEvidence);
   const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
@@ -5625,6 +5731,9 @@ async function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyObservation.attempt_records[0]?.kernelSymbol !== 'kernel'
     || nativeOnlyObservation.records[0]?.functionPtr !== '0x1'
     || nativeOnlyObservation.records[0]?.kernelSymbol !== 'kernel'
+    || nativeOnlyTargetSymbols[0] !== 'kernel'
+    || nativeOnlyAcceptedRecords.length !== 1
+    || nativeOnlyRejectedRecords.length !== 0
     || nativeOnlyOriginalHost.evidence.native_launch_symbols[0] !== 'kernel'
     || nativeOnlyOriginalHost.evidence.native_launch_function_ptrs[0] !== '0x1'
     || nativeOnlyOriginalHost.evidence.native_launch_attempt_records[0]?.kernel_symbol !== 'kernel'
