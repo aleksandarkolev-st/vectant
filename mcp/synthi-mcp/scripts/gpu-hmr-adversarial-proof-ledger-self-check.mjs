@@ -140,6 +140,24 @@ function baselineContract(overrides = {}) {
       process_restarted: false,
       full_rebuild_used: false,
     },
+    hip_contract: {
+      kernel_name: 'generic_kernel',
+      launch_api: 'hipModuleLaunchKernel',
+      grid_dim: [64, 1, 1],
+      block_dim: [256, 1, 1],
+      shared_mem_bytes: 0,
+      stream: 'stream-1',
+      kernel_params: [{ name: 'output', kind: 'device_pointer' }],
+      code_object_metadata: {
+        source: 'amd_code_object_metadata',
+        args_hash: HASH_C,
+      },
+      output_buffers: ['allocation-1'],
+      readback_oracle: {
+        kind: 'buffer_checksum',
+        schema_hash: HASH_C,
+      },
+    },
     ...overrides,
   };
 }
@@ -190,6 +208,10 @@ function baselineProofComponents() {
       resultState: 'gpu-hmr-abi-proven',
       kernelAbiFingerprintHashes: [HASH_C],
       acceptedExtractorSources: ['clang_ast'],
+      codeObjectMetadata: {
+        source: 'amd_code_object_metadata',
+        args_hash: HASH_C,
+      },
       extractorProvenance: [{
         kind: 'clang_ast',
         evidenceId: 'static:clang-ast',
@@ -238,6 +260,12 @@ function baselineProofComponents() {
       dispatchTimestamp: 300,
       dispatchStreamIds: ['stream-1'],
       dispatchTableEntryIds: ['generic_kernel:epoch-7'],
+      kernelName: 'generic_kernel',
+      launchApi: 'hipModuleLaunchKernel',
+      gridDim: [64, 1, 1],
+      blockDim: [256, 1, 1],
+      sharedMemBytes: 0,
+      kernelParams: [{ name: 'output', kind: 'device_pointer' }],
       argProvenanceRecords: [{
         category: 'device_allocation',
         allocationId: 'allocation-1',
@@ -250,6 +278,7 @@ function baselineProofComponents() {
       epoch: 'epoch-7',
       afterDispatchId: 'dispatch-1',
       outputTimestamp: 400,
+      outputBuffers: ['allocation-1'],
       outputOracle: {
         kind: 'buffer_checksum',
         artifactId: HASH_B,

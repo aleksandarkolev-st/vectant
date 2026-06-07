@@ -83,6 +83,29 @@ function nonEmptyValue(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function fieldProven(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'boolean') return true;
+  return false;
+}
+
+function requireBackendField(failures, backend, contract, field) {
+  if (!fieldProven(contract[field])) {
+    addFailure(failures, `${backend}_${field}_missing`);
+  }
+}
+
+function backendContractValue(contract, field) {
+  return contract[field];
+}
+
+function boolBackendField(contract, field) {
+  return backendContractValue(contract, field) === true;
+}
+
 const AI_AUTHORITY_MARKERS = new Set([
   'ai',
   'ai_hint',
@@ -254,6 +277,11 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     epoch_policy: asObject(c.epoch_policy ?? c.epochPolicy),
     epoch_retirement_proof: asObject(c.epoch_retirement_proof ?? c.epochRetirementProof),
     fission_report: asObject(c.fission_report ?? c.fissionReport),
+    hip_contract: asObject(c.hip_contract ?? c.hipContract),
+    hiprt_contract: asObject(c.hiprt_contract ?? c.hiprtContract),
+    vulkan_contract: asObject(c.vulkan_contract ?? c.vulkanContract),
+    webgpu_contract: asObject(c.webgpu_contract ?? c.webgpuContract),
+    opencl_contract: asObject(c.opencl_contract ?? c.openclContract),
   };
   normalized.contract_hash ??= `sha256:${sha256Hex(stableJson({
     contract_version: normalized.contract_version,
@@ -385,6 +413,106 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   }
   if (contract.unsupported_reasons.length > 0) {
     addFailure(failures, 'unsupported_reasons_present', { unsupported_reasons: contract.unsupported_reasons });
+  }
+  if (contract.backend === 'hip') {
+    const hip = contract.hip_contract;
+    for (const field of [
+      'kernel_name',
+      'launch_api',
+      'grid_dim',
+      'block_dim',
+      'shared_mem_bytes',
+      'stream',
+      'kernel_params',
+      'code_object_metadata',
+      'output_buffers',
+      'readback_oracle',
+    ]) {
+      requireBackendField(failures, 'hip_contract', hip, field);
+    }
+  }
+  if (contract.backend === 'hiprt') {
+    const hiprt = contract.hiprt_contract;
+    for (const field of [
+      'kernel_entry',
+      'scene_or_bvh_handles',
+      'framebuffer_handle',
+      'material_or_geometry_buffers',
+      'camera_state_hash',
+      'same_process_reload_hook',
+      'visual_oracle',
+    ]) {
+      requireBackendField(failures, 'hiprt_contract', hiprt, field);
+    }
+  }
+  if (contract.backend === 'opencl') {
+    const opencl = contract.opencl_contract;
+    for (const field of [
+      'program_hash_before',
+      'program_hash_after',
+      'kernel_name',
+      'command_queue',
+      'work_dim',
+      'global_work_size',
+      'local_work_size',
+      'event_trace',
+      'output_buffer_readback',
+    ]) {
+      requireBackendField(failures, 'opencl_contract', opencl, field);
+    }
+  }
+  if (contract.backend === 'vulkan') {
+    const vulkan = contract.vulkan_contract;
+    for (const field of [
+      'shader_module_hash_before',
+      'shader_module_hash_after',
+      'entry_point',
+      'descriptor_set_layout_hash',
+      'pipeline_layout_hash',
+      'pipeline_state_hash',
+      'frame_used_new_pipeline_trace',
+    ]) {
+      requireBackendField(failures, 'vulkan_contract', vulkan, field);
+    }
+    const reRecordRequired = backendContractValue(vulkan, 'command_buffer_re_record_required');
+    if (!fieldProven(reRecordRequired) || reRecordRequired === 'unknown') {
+      addFailure(failures, 'vulkan_contract_command_buffer_re_record_requirement_unproven');
+    }
+    if (!boolBackendField(vulkan, 'command_buffer_re_record_proven')) {
+      addFailure(failures, 'vulkan_contract_command_buffer_re_record_proof_missing');
+    }
+  }
+  if (contract.backend === 'webgpu' || contract.backend === 'bevy_wgsl') {
+    const webgpu = contract.webgpu_contract;
+    for (const field of [
+      'wgsl_hash_before',
+      'wgsl_hash_after',
+      'shader_module_epoch',
+      'entry_points',
+      'bind_group_layout_hash',
+      'pipeline_layout_hash',
+      'vertex_buffer_layout_hash',
+      'color_target_state_hash',
+      'frame_used_new_pipeline_trace',
+    ]) {
+      requireBackendField(failures, 'webgpu_contract', webgpu, field);
+    }
+    const pipelineRecreateRequired = backendContractValue(webgpu, 'pipeline_recreate_required');
+    if (!fieldProven(pipelineRecreateRequired) || pipelineRecreateRequired === 'unknown') {
+      addFailure(failures, 'webgpu_contract_pipeline_recreate_requirement_unproven');
+    }
+    if (!boolBackendField(webgpu, 'pipeline_recreate_proven')) {
+      addFailure(failures, 'webgpu_contract_pipeline_recreate_proof_missing');
+    }
+    if (contract.backend === 'bevy_wgsl') {
+      const assetSource = firstText(webgpu.bevy_shader_asset_source, webgpu.asset_source);
+      if (assetSource !== 'file_loaded') {
+        addFailure(failures, 'bevy_wgsl_shader_asset_not_file_loaded', { asset_source: assetSource });
+      }
+      if (!boolBackendField(webgpu, 'asset_watched')) {
+        addFailure(failures, 'bevy_wgsl_shader_asset_watch_not_proven');
+      }
+    }
   }
 
   return {
@@ -585,6 +713,134 @@ function artifactHashBeforeFromProofs(input, epochProof) {
     input.artifactHashBefore,
     input.artifact_hash_before,
   );
+}
+
+function hipContractFromVerifiedProofs({
+  entryPoints,
+  dispatchProof,
+  abiProof,
+  outputProof,
+  selectedIsland,
+}) {
+  const outputOracle = firstObject(outputProof?.outputOracle, outputProof?.output_oracle);
+  const kernelParams = asArray(dispatchProof?.kernelParams ?? dispatchProof?.kernel_params);
+  const argProvenanceRecords = asArray(dispatchProof?.argProvenanceRecords ?? dispatchProof?.arg_provenance_records);
+  const outputBuffers = compactStringList([
+    ...(asArray(outputProof?.outputBuffers ?? outputProof?.output_buffers)),
+    ...(asArray(outputOracle.outputBuffers ?? outputOracle.output_buffers)),
+    ...(asArray(outputOracle.bufferIds ?? outputOracle.buffer_ids)),
+  ]);
+  return {
+    kernel_name: firstText(
+      dispatchProof?.kernelName,
+      dispatchProof?.kernel_name,
+      selectedIsland?.kernelName,
+      selectedIsland?.kernel_name,
+      entryPoints[0],
+    ),
+    launch_api: firstText(dispatchProof?.launchApi, dispatchProof?.launch_api, selectedIsland?.launchApi),
+    grid_dim: dispatchProof?.gridDim ?? dispatchProof?.grid_dim ?? dispatchProof?.launchGridDim,
+    block_dim: dispatchProof?.blockDim ?? dispatchProof?.block_dim ?? dispatchProof?.launchBlockDim,
+    shared_mem_bytes:
+      dispatchProof?.sharedMemBytes
+      ?? dispatchProof?.shared_mem_bytes
+      ?? dispatchProof?.dynamicSharedMemoryBytes
+      ?? dispatchProof?.dynamic_shared_memory_bytes,
+    stream: firstText(
+      dispatchProof?.stream,
+      dispatchProof?.streamId,
+      dispatchProof?.stream_id,
+      asArray(dispatchProof?.dispatchStreamIds)[0],
+      asArray(dispatchProof?.dispatch_stream_ids)[0],
+    ),
+    kernel_params: kernelParams.length ? kernelParams : argProvenanceRecords,
+    code_object_metadata: firstObject(
+      abiProof?.codeObjectMetadata,
+      abiProof?.code_object_metadata,
+      abiProof?.amdgpuCodeObjectMetadata,
+      abiProof?.amdgpu_code_object_metadata,
+    ),
+    output_buffers: outputBuffers,
+    readback_oracle: outputOracle,
+  };
+}
+
+function hiprtContractFromVerifiedProofs({
+  entryPoints,
+  input,
+  validationContext,
+  outputProof,
+}) {
+  return {
+    kernel_entry: firstText(input.kernelEntry, input.kernel_entry, entryPoints[0]),
+    scene_or_bvh_handles: compactStringList(input.sceneOrBvhHandles ?? input.scene_or_bvh_handles
+      ?? input.engineSceneHandles ?? input.engine_scene_handles),
+    framebuffer_handle: firstText(
+      input.framebufferHandle,
+      input.framebuffer_handle,
+      input.swapchainOrFramebufferIdentity,
+      input.swapchain_or_framebuffer_identity,
+      validationContext.swapchainOrFramebufferIdentity,
+      validationContext.swapchain_or_framebuffer_identity,
+    ),
+    material_or_geometry_buffers: compactStringList(input.materialOrGeometryBuffers ?? input.material_or_geometry_buffers),
+    camera_state_hash: firstText(input.cameraStateHash, input.camera_state_hash, validationContext.cameraStateHash),
+    same_process_reload_hook: firstText(input.sameProcessReloadHook, input.same_process_reload_hook),
+    visual_oracle: firstObject(outputProof?.visualOracle, outputProof?.visual_oracle, outputProof?.outputOracle),
+  };
+}
+
+function openclContractFromVerifiedProofs({ input, outputProof, artifactHashBefore, artifactHashAfter, entryPoints }) {
+  const outputOracle = firstObject(outputProof?.outputOracle, outputProof?.output_oracle);
+  return {
+    program_hash_before: artifactHashBefore,
+    program_hash_after: artifactHashAfter,
+    kernel_name: firstText(input.kernelName, input.kernel_name, entryPoints[0]),
+    command_queue: firstText(input.commandQueue, input.command_queue),
+    work_dim: input.workDim ?? input.work_dim,
+    global_work_size: input.globalWorkSize ?? input.global_work_size,
+    local_work_size: input.localWorkSize ?? input.local_work_size,
+    event_trace: input.eventTrace ?? input.event_trace,
+    output_buffer_readback: firstObject(outputProof?.outputBufferReadback, outputProof?.output_buffer_readback, outputOracle),
+  };
+}
+
+function vulkanContractFromVerifiedProofs({ input, artifactHashBefore, artifactHashAfter, entryPoints }) {
+  return {
+    shader_module_hash_before: firstText(input.shaderModuleHashBefore, input.shader_module_hash_before, artifactHashBefore),
+    shader_module_hash_after: firstText(input.shaderModuleHashAfter, input.shader_module_hash_after, artifactHashAfter),
+    entry_point: firstText(input.entryPoint, input.entry_point, entryPoints[0]),
+    descriptor_set_layout_hash: firstText(input.descriptorSetLayoutHash, input.descriptor_set_layout_hash),
+    pipeline_layout_hash: firstText(input.pipelineLayoutHash, input.pipeline_layout_hash),
+    pipeline_state_hash: firstText(input.pipelineStateHash, input.pipeline_state_hash),
+    command_buffer_re_record_required:
+      input.commandBufferReRecordRequired ?? input.command_buffer_re_record_required,
+    command_buffer_re_record_proven:
+      input.commandBufferReRecordProven ?? input.command_buffer_re_record_proven,
+    frame_used_new_pipeline_trace:
+      input.frameUsedNewPipelineTrace ?? input.frame_used_new_pipeline_trace,
+  };
+}
+
+function webgpuContractFromVerifiedProofs({ input, artifactHashBefore, artifactHashAfter, entryPoints, epochProof }) {
+  return {
+    wgsl_hash_before: firstText(input.wgslHashBefore, input.wgsl_hash_before, artifactHashBefore),
+    wgsl_hash_after: firstText(input.wgslHashAfter, input.wgsl_hash_after, artifactHashAfter),
+    shader_module_epoch: firstText(input.shaderModuleEpoch, input.shader_module_epoch, epochProof?.activeEpoch),
+    entry_points: compactStringList(input.entryPoints ?? input.entry_points ?? entryPoints),
+    bind_group_layout_hash: firstText(input.bindGroupLayoutHash, input.bind_group_layout_hash),
+    pipeline_layout_hash: firstText(input.pipelineLayoutHash, input.pipeline_layout_hash),
+    vertex_buffer_layout_hash: firstText(input.vertexBufferLayoutHash, input.vertex_buffer_layout_hash),
+    color_target_state_hash: firstText(input.colorTargetStateHash, input.color_target_state_hash),
+    pipeline_recreate_required:
+      input.pipelineRecreateRequired ?? input.pipeline_recreate_required,
+    pipeline_recreate_proven:
+      input.pipelineRecreateProven ?? input.pipeline_recreate_proven,
+    frame_used_new_pipeline_trace:
+      input.frameUsedNewPipelineTrace ?? input.frame_used_new_pipeline_trace,
+    bevy_shader_asset_source: firstText(input.bevyShaderAssetSource, input.bevy_shader_asset_source, input.assetSource),
+    asset_watched: input.assetWatched ?? input.asset_watched,
+  };
 }
 
 function evidenceRefsFromProofs(...proofs) {
@@ -825,6 +1081,39 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
       evidence_refs: evidenceRefs,
     },
+    hip_contract: hipContractFromVerifiedProofs({
+      entryPoints,
+      dispatchProof,
+      abiProof,
+      outputProof,
+      selectedIsland,
+    }),
+    hiprt_contract: hiprtContractFromVerifiedProofs({
+      entryPoints,
+      input,
+      validationContext,
+      outputProof,
+    }),
+    opencl_contract: openclContractFromVerifiedProofs({
+      input,
+      outputProof,
+      artifactHashBefore,
+      artifactHashAfter,
+      entryPoints,
+    }),
+    vulkan_contract: vulkanContractFromVerifiedProofs({
+      input,
+      artifactHashBefore,
+      artifactHashAfter,
+      entryPoints,
+    }),
+    webgpu_contract: webgpuContractFromVerifiedProofs({
+      input,
+      artifactHashBefore,
+      artifactHashAfter,
+      entryPoints,
+      epochProof,
+    }),
   });
   return contract;
 }

@@ -73,6 +73,24 @@ function contract(overrides = {}) {
       process_restarted: false,
       full_rebuild_used: false,
     },
+    hip_contract: {
+      kernel_name: 'light_kernel',
+      launch_api: 'hipModuleLaunchKernel',
+      grid_dim: [64, 1, 1],
+      block_dim: [256, 1, 1],
+      shared_mem_bytes: 0,
+      stream: 'stream-1',
+      kernel_params: [{ name: 'output', kind: 'device_pointer' }],
+      code_object_metadata: {
+        source: 'amd_code_object_metadata',
+        args_hash: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      },
+      output_buffers: ['allocation-1'],
+      readback_oracle: {
+        kind: 'raw_readback',
+        schema_hash: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      },
+    },
     ...overrides,
   };
 }
@@ -168,6 +186,167 @@ expectReject('full rebuild hidden in fission', {
     full_rebuild_used: true,
   },
 }, 'fission_full_rebuild_used');
+expectReject('missing HIP launch evidence', {
+  hip_contract: {
+    kernel_name: 'light_kernel',
+  },
+}, 'hip_contract_launch_api_missing');
+expectReject('missing HIPRT scene proof', {
+  backend: 'hiprt',
+  artifact_identity: {
+    source_paths: ['src/path_tracer.h'],
+    artifact_kind: 'hip_source_bridge',
+    entry_points: ['raygen_kernel'],
+    compile_target: 'gfx1201',
+    compiler: 'hipcc',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  state_preservation_checks: {
+    process_id: 'pid-1',
+    device_uuid: 'device-1',
+    context_or_device_handle: 'hip-context-1',
+    queue_or_stream_handle: 'stream-1',
+    engine_scene_handles: ['scene-1'],
+    camera_state_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    swapchain_or_framebuffer_identity: 'framebuffer-1',
+  },
+  hip_contract: {},
+  hiprt_contract: {
+    kernel_entry: 'raygen_kernel',
+  },
+}, 'hiprt_contract_scene_or_bvh_handles_missing');
+expectReject('missing OpenCL event proof', {
+  backend: 'opencl',
+  artifact_identity: {
+    source_paths: ['kernels/step.cl'],
+    artifact_kind: 'opencl_program',
+    entry_points: ['step_kernel'],
+    compile_target: 'opencl-device-1',
+    compiler: 'opencl-jit',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  hip_contract: {},
+  opencl_contract: {
+    program_hash_before: BEFORE,
+    program_hash_after: AFTER,
+    kernel_name: 'step_kernel',
+    command_queue: 'queue-1',
+    work_dim: 1,
+    global_work_size: [1024],
+    local_work_size: [64],
+  },
+}, 'opencl_contract_event_trace_missing');
+expectReject('missing Vulkan command-buffer proof', {
+  backend: 'vulkan',
+  artifact_identity: {
+    source_paths: ['shaders/lighting.comp'],
+    artifact_kind: 'spirv',
+    entry_points: ['main'],
+    compile_target: 'spirv1.6',
+    compiler: 'glslang',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  state_preservation_checks: {
+    process_id: 'pid-1',
+    device_uuid: 'device-1',
+    context_or_device_handle: 'vk-device-1',
+    queue_or_stream_handle: 'vk-queue-1',
+    camera_state_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    swapchain_or_framebuffer_identity: 'swapchain-1',
+  },
+  epoch_retirement_proof: {
+    value: 'frame_boundary_proven',
+    evidence_refs: ['runtime:vk-fence'],
+  },
+  hip_contract: {},
+  vulkan_contract: {
+    shader_module_hash_before: BEFORE,
+    shader_module_hash_after: AFTER,
+    entry_point: 'main',
+    descriptor_set_layout_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+    pipeline_layout_hash: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+    pipeline_state_hash: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+    frame_used_new_pipeline_trace: 'frame:42:pipeline:new',
+    command_buffer_re_record_required: true,
+  },
+}, 'vulkan_contract_command_buffer_re_record_proof_missing');
+expectReject('missing WebGPU pipeline proof', {
+  backend: 'webgpu',
+  artifact_identity: {
+    source_paths: ['shaders/particles.wgsl'],
+    artifact_kind: 'wgsl',
+    entry_points: ['vs_main', 'fs_main'],
+    compile_target: 'webgpu',
+    compiler: 'wgpu',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  state_preservation_checks: {
+    process_id: 'pid-1',
+    device_uuid: 'device-1',
+    context_or_device_handle: 'webgpu-device-1',
+    queue_or_stream_handle: 'webgpu-queue-1',
+    camera_state_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    swapchain_or_framebuffer_identity: 'canvas-1',
+  },
+  epoch_retirement_proof: {
+    value: 'frame_boundary_proven',
+    evidence_refs: ['runtime:present-fence'],
+  },
+  hip_contract: {},
+  webgpu_contract: {
+    wgsl_hash_before: BEFORE,
+    wgsl_hash_after: AFTER,
+    shader_module_epoch: 'epoch-2',
+    entry_points: ['vs_main', 'fs_main'],
+    bind_group_layout_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+    pipeline_layout_hash: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+    vertex_buffer_layout_hash: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+    color_target_state_hash: 'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+    frame_used_new_pipeline_trace: 'frame:17:pipeline:new',
+    pipeline_recreate_required: true,
+  },
+}, 'webgpu_contract_pipeline_recreate_proof_missing');
+expectReject('embedded Bevy shader asset', {
+  backend: 'bevy_wgsl',
+  artifact_identity: {
+    source_paths: ['src/material.rs'],
+    artifact_kind: 'wgsl',
+    entry_points: ['fragment'],
+    compile_target: 'wgpu',
+    compiler: 'bevy_asset_server',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  state_preservation_checks: {
+    process_id: 'pid-1',
+    device_uuid: 'device-1',
+    context_or_device_handle: 'wgpu-device-1',
+    queue_or_stream_handle: 'wgpu-queue-1',
+    camera_state_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    swapchain_or_framebuffer_identity: 'window-1',
+  },
+  epoch_retirement_proof: {
+    value: 'frame_boundary_proven',
+    evidence_refs: ['runtime:bevy-frame'],
+  },
+  reload_mechanism: 'engine_asset_reload',
+  adapter_outcome: 'adapter_not_needed_builtin_reload',
+  hip_contract: {},
+  webgpu_contract: {
+    wgsl_hash_before: BEFORE,
+    wgsl_hash_after: AFTER,
+    shader_module_epoch: 'epoch-2',
+    entry_points: ['fragment'],
+    bind_group_layout_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+    pipeline_layout_hash: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+    vertex_buffer_layout_hash: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+    color_target_state_hash: 'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+    frame_used_new_pipeline_trace: 'frame:17:pipeline:new',
+    pipeline_recreate_required: true,
+    pipeline_recreate_proven: true,
+    bevy_shader_asset_source: 'embedded',
+    asset_watched: true,
+  },
+}, 'bevy_wgsl_shader_asset_not_file_loaded');
 
 console.log(JSON.stringify({
   ok: true,
