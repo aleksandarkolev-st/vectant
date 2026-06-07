@@ -673,6 +673,40 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).toContain("workflow limitation: pointerDragUnreliable");
     expect(generated.warnings).toContain("workflow replay blocked by unsupported browser surface");
   });
+
+  it("emits calibrated mouse replay for pointer drags with source and drop locators", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "pointer-drag",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"list\", { name: \"Done\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          pointer_drag: true,
+          pointer_replay: "calibrated",
+          pointer_start_x_ratio: 0.5,
+          pointer_start_y_ratio: 0.5,
+          pointer_end_x_ratio: 0.5,
+          pointer_end_y_ratio: 0.5,
+          pointer_steps: 14,
+          drop_locator: "page.getByRole(\"list\", { name: \"Done\" })",
+          element: { role: "listitem", name: "Task", source_id: "src_task" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"listitem\", { name: \"Task\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).not.toContain("test.skip(true");
+    expect(generated.code).not.toContain(".dragTo(");
+    expect(generated.code).toContain("await page.mouse.down();");
+    expect(generated.code).toContain("await page.mouse.move(dropBox1.x + dropBox1.width * 0.5, dropBox1.y + dropBox1.height * 0.5, { steps: 14 });");
+    expect(generated.code).toContain("await page.mouse.up();");
+    expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

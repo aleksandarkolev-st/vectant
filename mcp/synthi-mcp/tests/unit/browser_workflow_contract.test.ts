@@ -475,11 +475,47 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps[0]?.surfacePlan.replay).toBe("durable");
     expect(workflow.contract.steps[1]?.surfacePlan.replay).toBe("parameterized");
     expect(workflow.contract.steps[2]?.limitations).toContain("pointerDragUnreliable");
+    expect(workflow.contract.steps[2]?.surfacePlan.replay).toBe("blocked");
     expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
       name: "upload_file",
       sourceStepId: "file-drop",
       valueShape: "filePath",
     }));
+  });
+
+  it("allows calibrated pointer drags as same-session replay without unblocking unknown pointer drags", () => {
+    const events = [
+      baseEvent({
+        event_id: "pointer-drag",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"list\", { name: \"Done\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          pointer_drag: true,
+          pointer_replay: "calibrated",
+          pointer_start_x_ratio: 0.5,
+          pointer_start_y_ratio: 0.5,
+          pointer_end_x_ratio: 0.5,
+          pointer_end_y_ratio: 0.5,
+          drop_locator: "page.getByRole(\"list\", { name: \"Done\" })",
+          element: { role: "listitem", name: "Task", source_id: "src_task" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"listitem\", { name: \"Task\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ];
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).not.toContain("pointerDragUnreliable");
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "pointerDrag",
+      replay: "sameSessionOnly",
+    }));
+    expect(replay.status).toBe("ready");
   });
 
   it("marks clean read-only workflows ready for a private MCP tool manifest", () => {

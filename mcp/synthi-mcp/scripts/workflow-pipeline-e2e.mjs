@@ -1041,6 +1041,87 @@ const CASES = [
     },
   },
   {
+    id: "pointer-sortable",
+    minSteps: 2,
+    expectedActions: ["drag", "click"],
+    expectedReplayText: [
+      "Moved Priority audit to Done lane",
+      "Applied done",
+    ],
+    expectedReplayCode: [
+      "await page.mouse.down();",
+      "await page.mouse.up();",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Pointer Sortable Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Pointer Sortable Workflow</h1>",
+        "      <section class=\"board\" aria-label=\"Workflow board\">",
+        "        <div class=\"lane\" data-drop-target=\"todo\" data-testid=\"lane-todo\" role=\"list\" aria-label=\"Todo lane\">",
+        "          <h2>Todo</h2>",
+        "          <div class=\"card\" role=\"option\" tabindex=\"0\" data-draggable=\"true\" data-testid=\"card-priority\" data-synthi-source-id=\"pointer.card.priority\">Priority audit</div>",
+        "        </div>",
+        "        <div class=\"lane\" data-drop-target=\"done\" data-testid=\"lane-done\" role=\"list\" aria-label=\"Done lane\">",
+        "          <h2>Done</h2>",
+        "        </div>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"apply-board\" data-synthi-source-id=\"pointer.apply\">Apply board</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".board { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 14px; width: min(720px, calc(100vw - 48px)); }",
+        ".lane { min-height: 168px; border: 1px solid #b9b9b2; background: #fff; padding: 12px; display: grid; align-content: start; gap: 10px; }",
+        ".lane h2 { margin: 0; font-size: 18px; }",
+        ".card { width: max-content; border: 1px solid #202020; background: #f1f1ed; padding: 10px 12px; cursor: grab; user-select: none; touch-action: none; }",
+        ".card.is-dragging { opacity: 0.72; cursor: grabbing; }",
+      ],
+      script: [
+        "const status = document.querySelector('#status');",
+        "const card = document.querySelector('[data-testid=\"card-priority\"]');",
+        "const doneLane = document.querySelector('[data-testid=\"lane-done\"]');",
+        "let dragging = null;",
+        "card.addEventListener('pointerdown', (event) => {",
+        "  if (event.button !== 0) return;",
+        "  dragging = card;",
+        "  card.classList.add('is-dragging');",
+        "});",
+        "document.addEventListener('pointerup', (event) => {",
+        "  if (!dragging) return;",
+        "  const target = document.elementFromPoint(event.clientX, event.clientY);",
+        "  const lane = target && target.closest ? target.closest('[data-drop-target]') : null;",
+        "  dragging.classList.remove('is-dragging');",
+        "  if (lane) {",
+        "    lane.appendChild(dragging);",
+        "    status.textContent = `Moved ${dragging.textContent.trim()} to ${lane.getAttribute('aria-label')}`;",
+        "  }",
+        "  dragging = null;",
+        "});",
+        "document.querySelector('[data-testid=\"apply-board\"]').addEventListener('click', () => {",
+        "  const moved = doneLane.contains(card) ? 'done' : 'todo';",
+        "  status.textContent = `Applied ${moved}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const card = page.getByTestId("card-priority");
+      const done = page.getByTestId("lane-done");
+      const cardBox = await card.boundingBox();
+      const doneBox = await done.boundingBox();
+      if (!cardBox || !doneBox) throw new Error("pointer-sortable target not visible");
+      await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(doneBox.x + doneBox.width / 2, doneBox.y + Math.min(doneBox.height - 16, 72), { steps: 12 });
+      await page.mouse.up();
+      await page.getByText("Moved Priority audit to Done lane").waitFor();
+      await page.getByRole("button", { name: "Apply board" }).click();
+      await page.getByText("Applied done").waitFor();
+    },
+  },
+  {
     id: "file-input-upload",
     minSteps: 2,
     expectedActions: ["drag", "click"],

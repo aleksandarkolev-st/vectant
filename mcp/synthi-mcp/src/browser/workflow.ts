@@ -411,6 +411,11 @@ function stringDetail(event: BrowserTraceEvent, key: string): string | undefined
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function numericDetail(event: BrowserTraceEvent, key: string): number | undefined {
+  const value = event.detail?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function counterfactualPlanFor(
   firstMutationStepId: string | undefined,
   stepCount: number,
@@ -1076,10 +1081,24 @@ function eventIsClosedShadowDomBlocked(event: BrowserTraceEvent): boolean {
 }
 
 function eventIsPointerDrag(event: BrowserTraceEvent): boolean {
+  if (eventHasCalibratedPointerReplay(event)) return false;
   const dragClass = dragClassFor(event);
   if (event.action === "drag" && dragClass !== "nativehtmldnd" && dragClass !== "filedrop" && dragClass !== "clipboarddrop") return true;
   return /pointersensor|unknowndrag|canvasdrag/.test(dragClass) ||
     event.detail?.["pointer_drag"] === true;
+}
+
+function eventHasCalibratedPointerReplay(event: BrowserTraceEvent): boolean {
+  if (event.action !== "drag") return false;
+  const dragClass = dragClassFor(event);
+  const isPointerClass = /pointersensor|pointerdrag|unknowndrag/.test(dragClass) || event.detail?.["pointer_drag"] === true;
+  if (!isPointerClass) return false;
+  if (event.detail?.["pointer_replay"] !== "calibrated" && event.detail?.["pointer_calibrated"] !== true) return false;
+  if (typeof event.detail?.["drop_locator"] !== "string" && typeof event.value !== "string") return false;
+  return numericDetail(event, "pointer_start_x_ratio") !== undefined &&
+    numericDetail(event, "pointer_start_y_ratio") !== undefined &&
+    numericDetail(event, "pointer_end_x_ratio") !== undefined &&
+    numericDetail(event, "pointer_end_y_ratio") !== undefined;
 }
 
 function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): WorkflowStepContractV7["surfacePlan"] {
@@ -1123,6 +1142,13 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
     };
   }
   if (action === "drag") {
+    if (eventHasCalibratedPointerReplay(event)) {
+      return {
+        kind: "pointerDrag",
+        replay: "sameSessionOnly",
+        notes: ["Pointer-sensor drag has calibrated source/drop locators and relative replay points for same-session validation."],
+      };
+    }
     if (dragClass === "nativehtmldnd") {
       return {
         kind: "nativeHtmlDrag",
@@ -1146,7 +1172,7 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
     }
     return {
       kind: "pointerDrag",
-      replay: "sameSessionOnly",
+      replay: "blocked",
       notes: ["Pointer-sensor drag is not high-confidence without calibration."],
     };
   }

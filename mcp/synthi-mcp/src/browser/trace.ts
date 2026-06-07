@@ -357,6 +357,41 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           warnings.push(`event ${event.event_id} is a clipboard drop step and requires caller-provided clipboard data`);
           break;
         }
+        if (isCalibratedPointerDrag(event)) {
+          const dropLocator = typeof event.detail?.["drop_locator"] === "string"
+            ? event.detail["drop_locator"]
+            : event.value;
+          if (!dropLocator) {
+            warnings.push(`event ${event.event_id} is a calibrated pointer drag without a durable drop target locator`);
+            break;
+          }
+          const dropTarget = `dropTarget${targetSeq}`;
+          const sourceBox = `sourceBox${targetSeq}`;
+          const dropBox = `dropBox${targetSeq}`;
+          const start = {
+            x: numericDetail(event, "pointer_start_x_ratio") ?? 0.5,
+            y: numericDetail(event, "pointer_start_y_ratio") ?? 0.5,
+          };
+          const end = {
+            x: numericDetail(event, "pointer_end_x_ratio") ?? 0.5,
+            y: numericDetail(event, "pointer_end_y_ratio") ?? 0.5,
+          };
+          const steps = Math.max(1, Math.min(60, Math.round(numericDetail(event, "pointer_steps") ?? 12)));
+          lines.push(`  const ${dropTarget} = await firstVisible(${locatorExpressionForEvent(event, dropLocator)});`);
+          lines.push(`  await expect(${dropTarget}).toBeVisible();`);
+          lines.push(`  const ${sourceBox} = await ${target}.boundingBox();`);
+          lines.push(`  const ${dropBox} = await ${dropTarget}.boundingBox();`);
+          lines.push(`  if (!${sourceBox} || !${dropBox}) throw new Error(${JSON.stringify(`calibrated pointer drag target not visible for ${event.event_id}`)});`);
+          lines.push(`  await page.mouse.move(${sourceBox}.x + ${sourceBox}.width * ${clampedRatioLiteral(start.x)}, ${sourceBox}.y + ${sourceBox}.height * ${clampedRatioLiteral(start.y)});`);
+          lines.push("  await page.mouse.down();");
+          lines.push(`  await page.mouse.move(${dropBox}.x + ${dropBox}.width * ${clampedRatioLiteral(end.x)}, ${dropBox}.y + ${dropBox}.height * ${clampedRatioLiteral(end.y)}, { steps: ${steps} });`);
+          lines.push("  await page.mouse.up();");
+          const draggedText = draggedElementText(event);
+          if (draggedText) {
+            lines.push(`  await expect(${dropTarget}).toContainText(${JSON.stringify(draggedText)});`);
+          }
+          break;
+        }
         const dropLocator = typeof event.detail?.["drop_locator"] === "string"
           ? event.detail["drop_locator"]
           : event.value;
@@ -588,6 +623,20 @@ function isKeyboardEditorFill(event: BrowserTraceEvent): boolean {
     event.detail?.["editor_replay_strategy"] === "keyboardInsert" ||
     element?.editor_replay_strategy === "keyboardInsert"
   );
+}
+
+function isCalibratedPointerDrag(event: BrowserTraceEvent): boolean {
+  if (event.action !== "drag") return false;
+  const dragClass = dragClassFor(event);
+  const isPointer = /pointersensor|pointerdrag|unknowndrag/.test(dragClass) || event.detail?.["pointer_drag"] === true;
+  if (!isPointer) return false;
+  if (event.detail?.["pointer_replay"] !== "calibrated" && event.detail?.["pointer_calibrated"] !== true) return false;
+  return Boolean(event.detail?.["drop_locator"] || event.value);
+}
+
+function clampedRatioLiteral(value: number): string {
+  const clamped = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+  return Number(clamped.toFixed(4)).toString();
 }
 
 function pushDownloadAction(

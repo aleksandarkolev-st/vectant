@@ -350,6 +350,70 @@ describe("browser MCP tool surface", () => {
     expect(action).toHaveBeenCalledWith("app", "drag", expect.stringContaining("Revenue audit"), dropLocator);
   });
 
+  it("replays calibrated pointer drags through the event-aware adapter path", async () => {
+    const url = "https://app.example.com/board";
+    const dropLocator = "page.getByRole(\"list\", { name: \"Done\" })";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Board", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      value: dropLocator,
+      detail: {
+        drag_mode: true,
+        drag_class: "pointerSensor",
+        pointer_drag: true,
+        pointer_replay: "calibrated",
+        pointer_start_x_ratio: 0.5,
+        pointer_start_y_ratio: 0.5,
+        pointer_end_x_ratio: 0.5,
+        pointer_end_y_ratio: 0.5,
+        pointer_steps: 12,
+        drop_locator: dropLocator,
+      },
+      element: { tag: "div", role: "listitem", name: "Revenue audit", source_id: "board.revenue" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "drag",
+      tab_id: "app",
+      url,
+      detail: { pointer_replay: "calibrated" },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "calibrated-pointer-drag");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({
+        action: "drag",
+        value: dropLocator,
+        detail: expect.objectContaining({
+          pointer_replay: "calibrated",
+          drop_locator: dropLocator,
+        }),
+      }),
+      "drag",
+      expect.stringContaining("Revenue audit"),
+      dropLocator
+    );
+  });
+
   it("replays annotated popup workflow actions through the adapter replay path", async () => {
     const url = "https://app.example.com/dashboard";
     browserBroker.requestConsent(url);

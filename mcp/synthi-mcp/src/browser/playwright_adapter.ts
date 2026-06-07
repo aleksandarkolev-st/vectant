@@ -304,6 +304,9 @@ export class BrowserPlaywrightAdapter {
     if (action === "fill" && isKeyboardEditorFillEvent(event)) {
       return await this.replayKeyboardEditorFillAction(tab_id, event, selector, value);
     }
+    if (action === "drag" && isCalibratedPointerDragEvent(event)) {
+      return await this.replayCalibratedPointerDragAction(tab_id, event, selector, value);
+    }
     if (isDownloadReplayEvent(event) && (action === "click" || action === "dblclick")) {
       return await this.replayDownloadAction(tab_id, event, action, selector);
     }
@@ -358,6 +361,47 @@ export class BrowserPlaywrightAdapter {
       tab_id,
       url: page.url(),
       detail: { editor_replay_strategy: "keyboardInsert", value_length: nextValue.length },
+    };
+  }
+
+  private async replayCalibratedPointerDragAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const source = this.resolveLocatorForEvent(page, event, selector);
+    const dropSelector = stringDetail(event, "drop_locator") ?? value ?? event.value;
+    if (!dropSelector) throw new Error("missing_calibrated_pointer_drop_locator");
+    const dropTarget = this.resolveLocatorForEvent(page, event, dropSelector);
+    const sourceBox = await source.boundingBox();
+    const dropBox = await dropTarget.boundingBox();
+    if (!sourceBox) throw new Error("calibrated_pointer_source_not_visible");
+    if (!dropBox) throw new Error("calibrated_pointer_drop_not_visible");
+    const start = pointFromBox(sourceBox, {
+      xRatio: numberDetail(event, "pointer_start_x_ratio") ?? 0.5,
+      yRatio: numberDetail(event, "pointer_start_y_ratio") ?? 0.5,
+    });
+    const end = pointFromBox(dropBox, {
+      xRatio: numberDetail(event, "pointer_end_x_ratio") ?? 0.5,
+      yRatio: numberDetail(event, "pointer_end_y_ratio") ?? 0.5,
+    });
+    const steps = clampInteger(numberDetail(event, "pointer_steps") ?? 12, 1, 60);
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps });
+    await page.mouse.up();
+    return {
+      ok: true,
+      action: "drag",
+      tab_id,
+      url: page.url(),
+      detail: {
+        pointer_replay: "calibrated",
+        drop_locator: dropSelector,
+        pointer_steps: steps,
+      },
     };
   }
 
@@ -1058,6 +1102,34 @@ function isKeyboardEditorFillEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isCalibratedPointerDragEvent(event: BrowserTraceEvent): boolean {
+  if (event.action !== "drag") return false;
+  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  if (!/pointersensor|pointerdrag|unknowndrag/.test(dragClass) && event.detail?.["pointer_drag"] !== true) return false;
+  if (event.detail?.["pointer_replay"] !== "calibrated" && event.detail?.["pointer_calibrated"] !== true) return false;
+  return Boolean(stringDetail(event, "drop_locator") ?? event.value);
+}
+
+function numberDetail(event: BrowserTraceEvent, key: string): number | undefined {
+  return numberOpt(event.detail?.[key]);
+}
+
+function pointFromBox(box: { x: number; y: number; width: number; height: number }, ratios: { xRatio: number; yRatio: number }): { x: number; y: number } {
+  return {
+    x: box.x + box.width * clampNumber(ratios.xRatio, 0, 1),
+    y: box.y + box.height * clampNumber(ratios.yRatio, 0, 1),
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(Number.isFinite(value) ? value : min)));
+}
+
 export function normalizeCapturedHumanActionAnnotation(
   payload: unknown,
   tab_id: string
@@ -1256,6 +1328,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const pendingActionSends = new Set();
     let latestDeferredActionBeforeEffects = [];
     let activeDrag = null;
+    let activePointerDrag = null;
+    let lastPointerDrag = null;
 
     function isElement(value) {
       return value instanceof Element;
@@ -1561,6 +1635,51 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
     }
 
+    function pointerReplayRect(el) {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    function pointRatio(rect, clientX, clientY) {
+      return {
+        x: rect.width > 0 ? Math.max(0, Math.min(1, (clientX - rect.x) / rect.width)) : 0.5,
+        y: rect.height > 0 ? Math.max(0, Math.min(1, (clientY - rect.y) / rect.height)) : 0.5,
+      };
+    }
+
+    function distanceBetween(leftX, leftY, rightX, rightY) {
+      const dx = rightX - leftX;
+      const dy = rightY - leftY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function pointerDraggableFor(target) {
+      if (!isElement(target)) return null;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return null;
+      if (isEditableTextTarget(target)) return null;
+      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="option"], [role="listitem"]');
+      if (!isElement(el)) return null;
+      if (isEditableTextTarget(el) || isRangeInput(el)) return null;
+      return el;
+    }
+
+    function pointerDropTargetAt(clientX, clientY) {
+      const target = document.elementFromPoint(clientX, clientY);
+      if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return null;
+      const dropTarget = target.closest('[data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
+      return isElement(dropTarget) ? dropTarget : null;
+    }
+
+    function shouldSuppressPointerDragClick(target) {
+      if (!lastPointerDrag || Date.now() - lastPointerDrag.ts > 700) return false;
+      return isElement(target) && (
+        target === lastPointerDrag.el ||
+        lastPointerDrag.el.contains(target) ||
+        target === lastPointerDrag.drop_target ||
+        (lastPointerDrag.drop_target && lastPointerDrag.drop_target.contains(target))
+      );
+    }
+
     function scrollTargetFor(event) {
       const target = event.target;
       if (target === document || target === window || target === document.body || target === document.documentElement) {
@@ -1862,6 +1981,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const target = event.target;
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      if (shouldSuppressPointerDragClick(target)) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'click', undefined, { click_event: true });
@@ -1898,6 +2018,71 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         alt_option_intent: true,
         modifier_key: 'Alt',
       });
+    }, true);
+
+    document.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      const el = pointerDraggableFor(event.target);
+      if (!el) return;
+      activePointerDrag = {
+        el,
+        pointer_id: event.pointerId,
+        started_at: Date.now(),
+        start_x: event.clientX,
+        start_y: event.clientY,
+        last_x: event.clientX,
+        last_y: event.clientY,
+        source_rect: pointerReplayRect(el),
+        source_locator: playwrightLocatorFor(el),
+        before_effects: visibleEffectTexts(),
+      };
+    }, true);
+
+    document.addEventListener('pointermove', (event) => {
+      if (!activePointerDrag || activePointerDrag.pointer_id !== event.pointerId) return;
+      activePointerDrag.last_x = event.clientX;
+      activePointerDrag.last_y = event.clientY;
+    }, true);
+
+    document.addEventListener('pointerup', (event) => {
+      if (!activePointerDrag || activePointerDrag.pointer_id !== event.pointerId) return;
+      const drag = activePointerDrag;
+      activePointerDrag = null;
+      if (!isElement(drag.el)) return;
+      const distance = distanceBetween(drag.start_x, drag.start_y, event.clientX, event.clientY);
+      if (distance < 8) return;
+      const dropTarget = pointerDropTargetAt(event.clientX, event.clientY);
+      if (!dropTarget || dropTarget === drag.el || drag.el.contains(dropTarget)) return;
+      const dropLocator = playwrightLocatorFor(dropTarget);
+      if (!dropLocator) return;
+      const startRatio = pointRatio(drag.source_rect, drag.start_x, drag.start_y);
+      const dropRect = pointerReplayRect(dropTarget);
+      const endRatio = pointRatio(dropRect, event.clientX, event.clientY);
+      lastPointerDrag = { el: drag.el, drop_target: dropTarget, ts: Date.now() };
+      emit(drag.el, 'drag', dropLocator, {
+        explicit_intent: true,
+        drag_mode: true,
+        drag_class: 'pointerSensor',
+        pointer_drag: true,
+        pointer_replay: 'calibrated',
+        pointer_calibrated: true,
+        pointer_start_x_ratio: startRatio.x,
+        pointer_start_y_ratio: startRatio.y,
+        pointer_end_x_ratio: endRatio.x,
+        pointer_end_y_ratio: endRatio.y,
+        pointer_steps: 12,
+        pointer_distance_px: Math.round(distance),
+        drag_event: true,
+        source_locator: drag.source_locator,
+        drop_locator: dropLocator,
+        drop_element: metadata(dropTarget),
+        drag_duration_ms: Math.max(0, Date.now() - drag.started_at),
+        __before_effects: drag.before_effects,
+      });
+    }, true);
+
+    document.addEventListener('pointercancel', (event) => {
+      if (activePointerDrag && activePointerDrag.pointer_id === event.pointerId) activePointerDrag = null;
     }, true);
 
     document.addEventListener('dragstart', (event) => {
