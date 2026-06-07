@@ -27,6 +27,8 @@ import {
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
 
+const WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
 // ────────────────────────────────────────────────────────
@@ -90,7 +92,12 @@ async function discoverWorkspacePreviewUrl(workspaceSlug) {
     const query = typeof workspaceSlug === 'string' && workspaceSlug.trim()
       ? `?workspace=${encodeURIComponent(workspaceSlug.trim())}`
       : '';
-    const res = await fetch(`${base}/ports${query}`, { cache: 'no-store' });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS);
+    const res = await fetch(`${base}/ports${query}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    }).finally(() => window.clearTimeout(timer));
     if (!res.ok) return null;
     const data = await res.json();
     const previews = Array.isArray(data?.previews)
@@ -364,7 +371,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
       workspace_url: currentUrl,
       ...(previewUrl ? { preview_url: previewUrl, preferred_url: previewUrl } : {}),
     });
-  }, [callWorkflowTool, workspaceUrl]);
+  }, [callWorkflowTool, ctx?.workspaceSlug, workspaceUrl]);
 
   const handleWorkflowAction = useCallback(async (detail) => {
     const action = detail?.action;
