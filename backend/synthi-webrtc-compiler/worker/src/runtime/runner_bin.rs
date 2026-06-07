@@ -191,7 +191,7 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
     decode_reload_capsule_metadata_token, Adapter, AdapterReloadRequest, AdapterReloadResult,
-    ReloadArtifactBlob, ReloadCapsuleMetadata,
+    ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
@@ -1683,6 +1683,7 @@ fn main() {
                             build_manifest: manifest,
                             artifact_blob,
                             capsule_metadata,
+                            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
                             preserve_state: true,
                             timeout_ms: 5000,
                         };

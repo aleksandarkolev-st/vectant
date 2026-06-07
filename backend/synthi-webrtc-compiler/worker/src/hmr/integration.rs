@@ -26,7 +26,7 @@ use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
 use crate::hmr::adapter_trait::{
     AdapterHealth, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
-    ReloadCapsuleMetadata,
+    ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
 use crate::hmr::build_manifest::BuildManifest;
@@ -468,6 +468,7 @@ impl HmrPipeline {
             build_manifest: manifest.clone(),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: Default::default(),
             preserve_state: matches!(
                 planner_output.reason.state_strategy,
                 StateStrategy::Preserve | StateStrategy::Migrate
@@ -664,6 +665,7 @@ impl HmrPipeline {
             build_manifest: manifest.clone(),
             artifact_blob,
             capsule_metadata,
+            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
             preserve_state: true,
             timeout_ms: 5000,
         };

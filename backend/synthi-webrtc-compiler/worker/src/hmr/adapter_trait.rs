@@ -48,6 +48,30 @@ pub struct ReloadCapsuleMetadata {
     pub proof_hash: Option<String>,
 }
 
+/// Evidence from the caller boundary that non-GPU reload routes were not used.
+///
+/// GPU adapters must consume this as evidence, not infer it locally. Missing
+/// values mean the caller did not prove the firewall invariant.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReloadFirewallEvidence {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cpu_hmr_used: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub full_rebuild_used: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub process_restarted: Option<bool>,
+}
+
+impl ReloadFirewallEvidence {
+    pub fn gpu_hmr_verified_absence() -> Self {
+        Self {
+            cpu_hmr_used: Some(false),
+            full_rebuild_used: Some(false),
+            process_restarted: Some(false),
+        }
+    }
+}
+
 const RELOAD_CAPSULE_METADATA_TOKEN_PREFIX: &str = "capsulev1_";
 
 fn non_empty_token(value: Option<String>) -> Option<String> {
@@ -107,6 +131,9 @@ pub struct AdapterReloadRequest {
     /// Optional capsule proof metadata for generation-published reloads.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub capsule_metadata: Option<ReloadCapsuleMetadata>,
+    /// Explicit firewall evidence supplied by the reload boundary.
+    #[serde(default)]
+    pub firewall_evidence: ReloadFirewallEvidence,
     /// Whether state preservation is requested.
     pub preserve_state: bool,
     /// Timeout for this reload (millis).

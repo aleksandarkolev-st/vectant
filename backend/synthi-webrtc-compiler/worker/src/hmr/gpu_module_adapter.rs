@@ -2147,9 +2147,9 @@ impl Adapter for GpuModuleAdapter {
                 output_oracle_passed,
                 output_after_dispatch,
                 retirement_proven,
-                cpu_hmr_used: false,
-                full_rebuild_used: false,
-                process_restarted: false,
+                cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
+                full_rebuild_used: req.firewall_evidence.full_rebuild_used,
+                process_restarted: req.firewall_evidence.process_restarted,
                 process_id: Some(format!("pid:{}", std::process::id())),
                 device_identity: Some(format!(
                     "{}:{}",
@@ -2269,7 +2269,7 @@ mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::AdapterFamily;
     use crate::hmr::adapter_trait::{
-        AdapterReloadRequest, ReloadArtifactBlob, ReloadCapsuleMetadata,
+        AdapterReloadRequest, ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
     };
     use crate::hmr::build_manifest::BuildManifest;
     use crate::hmr::gpu_driver_loader::{
@@ -2291,6 +2291,7 @@ mod tests {
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -2583,6 +2584,7 @@ mod tests {
             build_manifest: manifest,
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -3242,6 +3244,50 @@ mod tests {
                 .any(
                     |edge| edge.get("kind").and_then(serde_json::Value::as_str) == Some("retire")
                 )));
+        reset_for_test();
+    }
+
+    #[test]
+    fn phase3_hot_reload_rejects_missing_firewall_evidence() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut adapter = adapter_with_symbols(stub_symbols());
+
+        assert!(matches!(
+            adapter.reload(&request_with_artifact(
+                &first_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let mut second_request = request_with_artifact(&second_path, vec!["device.cu".into()]);
+        second_request.firewall_evidence = Default::default();
+        let result = adapter.reload(&second_request);
+
+        match result {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("GPU HMR acceptance ledger rejected hot reload"));
+                assert!(error.contains("cpu_hmr_absence_evidence_missing"));
+                assert!(error.contains("full_rebuild_absence_evidence_missing"));
+                assert!(error.contains("process_restart_absence_evidence_missing"));
+            }
+            other => panic!("expected missing firewall evidence rejection, got {other:?}"),
+        }
+        assert!(adapter.last_reload_log().iter().any(|line| {
+            line.contains("\"type\":\"gpu_hmr_acceptance_ledger\"")
+                && line.contains("\"gpuHmrSuccess\":false")
+                && line.contains("cpu_hmr_absence_evidence_missing")
+                && line.contains("full_rebuild_absence_evidence_missing")
+                && line.contains("process_restart_absence_evidence_missing")
+        }));
         reset_for_test();
     }
 

@@ -251,9 +251,9 @@ pub struct GpuHmrAcceptanceLedgerInput {
     pub output_oracle_passed: bool,
     pub output_after_dispatch: bool,
     pub retirement_proven: bool,
-    pub cpu_hmr_used: bool,
-    pub full_rebuild_used: bool,
-    pub process_restarted: bool,
+    pub cpu_hmr_used: Option<bool>,
+    pub full_rebuild_used: Option<bool>,
+    pub process_restarted: Option<bool>,
     pub process_id: Option<String>,
     pub device_identity: Option<String>,
 }
@@ -284,10 +284,16 @@ pub struct GpuHmrAcceptanceLedger {
     pub retirement_proven: bool,
     #[serde(rename = "cpuHmrUsed")]
     pub cpu_hmr_used: bool,
+    #[serde(rename = "cpuHmrAbsenceEvidencePresent")]
+    pub cpu_hmr_absence_evidence_present: bool,
     #[serde(rename = "fullRebuildUsed")]
     pub full_rebuild_used: bool,
+    #[serde(rename = "fullRebuildAbsenceEvidencePresent")]
+    pub full_rebuild_absence_evidence_present: bool,
     #[serde(rename = "processRestarted")]
     pub process_restarted: bool,
+    #[serde(rename = "processRestartAbsenceEvidencePresent")]
+    pub process_restart_absence_evidence_present: bool,
     #[serde(rename = "processId", skip_serializing_if = "Option::is_none")]
     pub process_id: Option<String>,
     #[serde(rename = "deviceIdentity", skip_serializing_if = "Option::is_none")]
@@ -304,14 +310,20 @@ impl GpuHmrAcceptanceLedger {
     pub fn new(input: GpuHmrAcceptanceLedgerInput) -> Self {
         let mut failed = Vec::new();
         if input.hot_reload {
-            if input.cpu_hmr_used {
-                failed.push("cpu_hmr_used".to_string());
+            match input.cpu_hmr_used {
+                Some(true) => failed.push("cpu_hmr_used".to_string()),
+                Some(false) => {}
+                None => failed.push("cpu_hmr_absence_evidence_missing".to_string()),
             }
-            if input.full_rebuild_used {
-                failed.push("full_rebuild_used".to_string());
+            match input.full_rebuild_used {
+                Some(true) => failed.push("full_rebuild_used".to_string()),
+                Some(false) => {}
+                None => failed.push("full_rebuild_absence_evidence_missing".to_string()),
             }
-            if input.process_restarted {
-                failed.push("process_restarted".to_string());
+            match input.process_restarted {
+                Some(true) => failed.push("process_restarted".to_string()),
+                Some(false) => {}
+                None => failed.push("process_restart_absence_evidence_missing".to_string()),
             }
             if input.artifact_id_after.trim().is_empty() {
                 failed.push("artifact_after_missing".to_string());
@@ -363,9 +375,12 @@ impl GpuHmrAcceptanceLedger {
             "outputOraclePassed": input.output_oracle_passed,
             "outputAfterDispatch": input.output_after_dispatch,
             "retirementProven": input.retirement_proven,
-            "cpuHmrUsed": input.cpu_hmr_used,
-            "fullRebuildUsed": input.full_rebuild_used,
-            "processRestarted": input.process_restarted,
+            "cpuHmrUsed": input.cpu_hmr_used.unwrap_or(false),
+            "cpuHmrAbsenceEvidencePresent": input.cpu_hmr_used.is_some(),
+            "fullRebuildUsed": input.full_rebuild_used.unwrap_or(false),
+            "fullRebuildAbsenceEvidencePresent": input.full_rebuild_used.is_some(),
+            "processRestarted": input.process_restarted.unwrap_or(false),
+            "processRestartAbsenceEvidencePresent": input.process_restarted.is_some(),
             "processId": input.process_id,
             "deviceIdentity": input.device_identity,
             "failedInvariants": failed,
@@ -390,8 +405,17 @@ impl GpuHmrAcceptanceLedger {
             output_after_dispatch: material["outputAfterDispatch"].as_bool().unwrap_or(false),
             retirement_proven: material["retirementProven"].as_bool().unwrap_or(false),
             cpu_hmr_used: material["cpuHmrUsed"].as_bool().unwrap_or(false),
+            cpu_hmr_absence_evidence_present: material["cpuHmrAbsenceEvidencePresent"]
+                .as_bool()
+                .unwrap_or(false),
             full_rebuild_used: material["fullRebuildUsed"].as_bool().unwrap_or(false),
+            full_rebuild_absence_evidence_present: material["fullRebuildAbsenceEvidencePresent"]
+                .as_bool()
+                .unwrap_or(false),
             process_restarted: material["processRestarted"].as_bool().unwrap_or(false),
+            process_restart_absence_evidence_present: material["processRestartAbsenceEvidencePresent"]
+                .as_bool()
+                .unwrap_or(false),
             process_id: material["processId"].as_str().map(str::to_string),
             device_identity: material["deviceIdentity"].as_str().map(str::to_string),
             failed_invariants: serde_json::from_value(material["failedInvariants"].clone())
@@ -419,8 +443,11 @@ impl GpuHmrAcceptanceLedger {
             "outputAfterDispatch": self.output_after_dispatch,
             "retirementProven": self.retirement_proven,
             "cpuHmrUsed": self.cpu_hmr_used,
+            "cpuHmrAbsenceEvidencePresent": self.cpu_hmr_absence_evidence_present,
             "fullRebuildUsed": self.full_rebuild_used,
+            "fullRebuildAbsenceEvidencePresent": self.full_rebuild_absence_evidence_present,
             "processRestarted": self.process_restarted,
+            "processRestartAbsenceEvidencePresent": self.process_restart_absence_evidence_present,
             "processId": self.process_id,
             "deviceIdentity": self.device_identity,
             "failedInvariants": self.failed_invariants,
@@ -753,9 +780,9 @@ mod tests {
             output_oracle_passed: true,
             output_after_dispatch: true,
             retirement_proven: true,
-            cpu_hmr_used: false,
-            full_rebuild_used: false,
-            process_restarted: false,
+            cpu_hmr_used: Some(false),
+            full_rebuild_used: Some(false),
+            process_restarted: Some(false),
             process_id: Some("pid:1".to_string()),
             device_identity: Some("device:test".to_string()),
         }
@@ -773,6 +800,28 @@ mod tests {
             GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION
         );
         assert_eq!(value["gpuHmrSuccess"], true);
+        assert_eq!(value["cpuHmrAbsenceEvidencePresent"], true);
+        assert_eq!(value["fullRebuildAbsenceEvidencePresent"], true);
+        assert_eq!(value["processRestartAbsenceEvidencePresent"], true);
+    }
+
+    #[test]
+    fn acceptance_ledger_rejects_missing_firewall_evidence() {
+        let mut input = accepted_ledger_input();
+        input.cpu_hmr_used = None;
+        input.full_rebuild_used = None;
+        input.process_restarted = None;
+        let ledger = GpuHmrAcceptanceLedger::new(input);
+        assert!(!ledger.gpu_hmr_success);
+        assert!(ledger
+            .failed_invariants
+            .contains(&"cpu_hmr_absence_evidence_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"full_rebuild_absence_evidence_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"process_restart_absence_evidence_missing".to_string()));
     }
 
     #[test]
