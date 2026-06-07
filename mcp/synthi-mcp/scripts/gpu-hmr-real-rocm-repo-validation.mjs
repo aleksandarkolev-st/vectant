@@ -767,13 +767,12 @@ function forcedGpuAiDeltaArtifactGateRows({ sourceProofs = [], fissionProof = nu
 function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
   return (Array.isArray(visualEvidenceFrames) ? visualEvidenceFrames : [])
     .filter((frame) => {
-      if (typeof frame === 'string') return frame.trim().length > 0;
+      if (typeof frame === 'string') return false;
       if (!frame || typeof frame !== 'object') return false;
       if (frame.accepted_as_visual_evidence === false) return false;
-      return frame.accepted_as_visual_evidence === true
-        || typeof frame.path === 'string'
-        || typeof frame.filePath === 'string'
-        || typeof frame.file_path === 'string';
+      const epochCorrelated = frame.frame_capture_after_epoch_dispatch === true
+        || frame.frameCaptureAfterEpochDispatch === true;
+      return frame.accepted_as_visual_evidence === true && epochCorrelated;
     })
     .length;
 }
@@ -3841,6 +3840,10 @@ function visualEvidenceFrames() {
   return report.screenshots.filter((shot) =>
     shot?.visualEvidenceSupplementalOnly !== true
     && shot?.visual_evidence_supplemental_only !== true
+    && (
+      shot?.frame_capture_after_epoch_dispatch === true
+      || shot?.frameCaptureAfterEpochDispatch === true
+    )
     && screenshotQualifiesAsVisualEvidence(shot)
   );
 }
@@ -6680,7 +6683,27 @@ int main()
     }),
     fullRuntimeProof: { fullRuntimeProven: true },
     visualEvidenceExpected: true,
-    visualEvidenceFrames: [{ path: 'fresh.png', accepted_as_visual_evidence: true }],
+    visualEvidenceFrames: [{
+      path: 'fresh.png',
+      accepted_as_visual_evidence: true,
+      frame_capture_after_epoch_dispatch: true,
+    }],
+    targetProgressionLedger: completeProgressionLedger,
+  });
+  const finalAcceptanceStaleVisualFails = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    visualEvidenceExpected: true,
+    visualEvidenceFrames: [{
+      path: 'stale.png',
+      accepted_as_visual_evidence: true,
+      frame_capture_after_epoch_dispatch: false,
+    }],
     targetProgressionLedger: completeProgressionLedger,
   });
   if (
@@ -6694,6 +6717,7 @@ int main()
     || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 5
     || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 4
     || finalAcceptanceVisualPasses.some((row) => row.status === 'fail')
+    || finalAcceptanceStaleVisualFails.filter((row) => row.status === 'fail').length !== 1
   ) {
     throw new Error('target progression gate self-check failed');
   }
