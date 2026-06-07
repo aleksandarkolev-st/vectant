@@ -1,3 +1,9 @@
+import {
+  embeddedGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+  type GpuHmrLedgerValidation,
+} from "./gpu_proof_ledger.js";
+
 export const GPU_HMR_PROOF_SCHEMA_VERSION = "synthi.gpu.hmr.proof.v1";
 
 export const GPU_HMR_PROOF_STATES = [
@@ -53,6 +59,7 @@ export interface GpuHmrProofValidation {
   degradedStateRankCap: number | null;
   satisfied: boolean;
   reason?: string;
+  proofLedgerValidation?: GpuHmrLedgerValidation | null;
 }
 
 export interface GpuHmrProofMatchOpts {
@@ -205,7 +212,7 @@ export function validateGpuHmrProofState(
   const degradedStateRankCap = gpuHmrDegradedStateRankCap(proof.degradedState);
   const effectiveResultRank =
     degradedStateRankCap === null ? resultRank : Math.min(resultRank, degradedStateRankCap);
-  const satisfied = effectiveResultRank >= requiredRank;
+  let satisfied = effectiveResultRank >= requiredRank;
   const reason =
     resultRank === 0
       ? "unknown_result_proof_state"
@@ -216,6 +223,37 @@ export function validateGpuHmrProofState(
           : !satisfied
             ? "degraded_state_blocks_required_proof"
             : undefined;
+  let proofLedgerValidation: GpuHmrLedgerValidation | null | undefined;
+  let ledgerReason: string | undefined;
+  if (requiredState === "gpu-hmr-full-runtime-proven" && reason === undefined) {
+    const ledger = embeddedGpuHmrProofLedger(proof.raw);
+    if (ledger === null) {
+      satisfied = false;
+      proofLedgerValidation = null;
+      ledgerReason = "proof_ledger_missing";
+    } else {
+      proofLedgerValidation = queryGpuHmrLedgerInvariants(ledger);
+      const proofIdIsLedgerId = proof.proofId?.startsWith("gpu-ledger-proof:") === true;
+      if (proofIdIsLedgerId && proof.proofId !== proofLedgerValidation.proofId) {
+        proofLedgerValidation = {
+          ...proofLedgerValidation,
+          gpuHmrSuccess: false,
+          failedInvariants: [
+            ...proofLedgerValidation.failedInvariants,
+            {
+              code: "telemetry_proof_id_ledger_mismatch",
+              telemetryProofId: proof.proofId,
+              ledgerProofId: proofLedgerValidation.proofId,
+            },
+          ],
+        };
+      }
+      if (!proofLedgerValidation.gpuHmrSuccess) {
+        satisfied = false;
+        ledgerReason = "proof_ledger_rejected";
+      }
+    }
+  }
 
   return {
     requiredState,
@@ -226,6 +264,7 @@ export function validateGpuHmrProofState(
     degradedState: proof.degradedState,
     degradedStateRankCap,
     satisfied,
-    ...(reason ? { reason } : {}),
+    ...(proofLedgerValidation !== undefined ? { proofLedgerValidation } : {}),
+    ...(reason ?? ledgerReason ? { reason: reason ?? ledgerReason } : {}),
   };
 }

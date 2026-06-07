@@ -9,12 +9,91 @@ import {
   type GpuHmrProofTelemetry,
 } from "../../src/gpu_proof.js";
 
+const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const HASH_C = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
 type FakeWaitOpts = {
   timeoutMs?: number;
   module?: string;
   sinceTs?: number;
   previewId?: string;
 };
+
+function timingMetrics() {
+  return {
+    metric_clock: "monotonic_ns",
+    metric_scope: "hot_delta_1",
+    cache_state: "compiler_cache_warm",
+    static_discovery_time: 1,
+    ai_contract_synthesis_time: 2,
+    model_availability_check_time: 3,
+    artifact_hash_time: 4,
+    adapter_generation_time: 5,
+    device_compile_wall_time: 6,
+    artifact_load_time: 7,
+    epoch_publish_time: 8,
+    dispatch_trace_time: 9,
+    runtime_probe_time: 10,
+    oracle_analysis_time: 11,
+    trigger_to_visible_time: 12,
+    screenshot_capture_time: 13,
+    dispatch_to_output_proof_time: 14,
+    total_validator_wall_time: 15,
+  };
+}
+
+function passingProofLedger() {
+  const record = {
+    proofId: "gpu-ledger-proof:wait-fixture",
+    project_id: "wait-generic-gpu-project",
+    edit_id: "gpu-edit",
+    classification: { project_kind: "gpu_project", edit_kind: "gpu_artifact_edit", route: "gpu_hmr" },
+    contract_hash: HASH_C,
+    artifact_before_hash: HASH_A,
+    artifact_after_hash: HASH_B,
+    loader_event: { id: "load-1", artifact_hash: HASH_B, process_id: "pid-1", timestamp_monotonic_ns: 100 },
+    epoch_publish_event: { id: "publish-1", epoch: "epoch-2", artifact_hash: HASH_B, process_id: "pid-1", timestamp_monotonic_ns: 200 },
+    dispatch_event: { id: "dispatch-1", epoch: "epoch-2", artifact_hash: HASH_B, process_id: "pid-1", timestamp_monotonic_ns: 300 },
+    output_event: {
+      id: "output-1",
+      kind: "buffer_checksum",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      after_dispatch_id: "dispatch-1",
+      passed: true,
+      timestamp_monotonic_ns: 400,
+    },
+    retirement_event: { id: "retire-1", epoch: "epoch-1", proof: "stream_event_proven" },
+    process_identity: { process_id: "pid-1" },
+    device_identity: { device_uuid: "device-1" },
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    metric_clock: "monotonic_ns",
+    metric_scope: "hot_delta_1",
+    cache_state: "compiler_cache_warm",
+    timings: timingMetrics(),
+    model_provenance: {
+      split: { request_mode: "split" },
+      gpu_delta: { request_mode: "gpu_delta" },
+    },
+    evidence_refs: ["runtime:load", "runtime:dispatch", "runtime:output"],
+  };
+  return {
+    schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
+    proofId: "gpu-ledger-proof:wait-fixture",
+    records: [record],
+    gpuHmrSuccess: true,
+    query: {
+      schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
+      proofId: "gpu-ledger-proof:wait-fixture",
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+  };
+}
 
 function installFakeAttached(
   waitForTerminal: (opts?: FakeWaitOpts) => Promise<{
@@ -202,6 +281,49 @@ describe("synthi_wait_hmr", () => {
     };
     expect(body.error).toBe("gpu_hmr_proof_insufficient");
     expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+  });
+
+  it("rejects full runtime proof telemetry without proof ledger", async () => {
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+      gpu_proof_ledger_validation?: unknown;
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_ledger_missing");
+    expect(body.gpu_proof_ledger_validation).toBeNull();
+  });
+
+  it("accepts full runtime proof only with recomputed ledger success", async () => {
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: passingProofLedger(),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      gpu_proof_validation?: { satisfied?: boolean };
+      gpu_proof_ledger_validation?: { gpuHmrSuccess?: boolean };
+    };
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
   });
 
   it("rejects a retained GPU proof that predates since_ts", async () => {

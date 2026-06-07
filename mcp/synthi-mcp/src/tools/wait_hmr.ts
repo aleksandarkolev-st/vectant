@@ -111,6 +111,9 @@ function responseWithGpuProofValidation(
 
   const validation = validateGpuHmrProofState(proof, requiredState);
   payload.gpu_proof_validation = validation;
+  if (validation.proofLedgerValidation !== undefined) {
+    payload.gpu_proof_ledger_validation = validation.proofLedgerValidation;
+  }
   if (!validation.satisfied) {
     return errorResponse("gpu_hmr_proof_insufficient", payload);
   }
