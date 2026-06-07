@@ -2440,6 +2440,15 @@ async function collectHiprtRuntimeProbeCapture() {
   const bytes = await readFile(localPath);
   const stats = await analyzeGpuHmrImageEvidence(bytes);
   const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const outputTargetId = runtimeOutputTargetId({
+    visualFrame: {
+      label: 'hiprt-runtime-framebuffer',
+      source: 'hiprt-runtime-device-framebuffer',
+      path: localPath,
+      outputKind: 'framebuffer',
+    },
+    outputKind: 'framebuffer',
+  });
   const row = visualEvidenceRow({
     label: 'hiprt-runtime-framebuffer',
     path: localPath,
@@ -2448,6 +2457,10 @@ async function collectHiprtRuntimeProbeCapture() {
     source: 'hiprt-runtime-device-framebuffer',
     contentHash,
     content_hash: contentHash,
+    outputTargetId,
+    output_target_id: outputTargetId,
+    outputKind: 'framebuffer',
+    output_kind: 'framebuffer',
   });
   report.screenshots.push(row);
   report.hiprt_runtime_probe.capture_artifact_path = localPath;
@@ -4767,6 +4780,88 @@ function hiprtNativeVisualFrame(frames = []) {
   ) ?? null;
 }
 
+function firstStringField(entry, names = []) {
+  if (!entry || typeof entry !== 'object') return null;
+  for (const name of names) {
+    const value = entry[name];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function stableOutputIdentityPart(value, fallback) {
+  const cleaned = String(value ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 128);
+  return cleaned || fallback;
+}
+
+function runtimeOutputTargetId({
+  outputOracleContract = report.output_oracle_contract,
+  outputOracleRuntimeProfile = report.output_oracle_runtime_profile,
+  visualFrame = null,
+  outputKind = 'framebuffer',
+} = {}) {
+  const runtimeProfile = outputOracleRuntimeProfile && typeof outputOracleRuntimeProfile === 'object'
+    ? outputOracleRuntimeProfile
+    : {};
+  const runtimeProfileRuntime = runtimeProfile.runtime && typeof runtimeProfile.runtime === 'object'
+    ? runtimeProfile.runtime
+    : {};
+  const contract = outputOracleContract && typeof outputOracleContract === 'object'
+    ? outputOracleContract
+    : {};
+  const explicit = firstStringField(contract, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]) ?? firstStringField(runtimeProfile, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]) ?? firstStringField(runtimeProfileRuntime, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]) ?? firstStringField(visualFrame, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]);
+  if (explicit) return explicit;
+
+  const adapterFamily = stableOutputIdentityPart(
+    report.real_rocm_profile?.adapter?.family
+      ?? report.real_rocm_profile?.runtime?.backend?.orochiApi
+      ?? report.real_rocm_profile?.runtime?.backend?.api
+      ?? (CFG.hiprtRuntimeProbe ? 'hiprt' : CFG.gpuMode),
+    'gpu',
+  );
+  const targetName = stableOutputIdentityPart(
+    runtimeProfileRuntime.targetName
+      ?? runtimeProfile.targetName
+      ?? CFG.targetName
+      ?? report.target_name,
+    'runtime-target',
+  );
+  const kind = stableOutputIdentityPart(
+    firstStringField(visualFrame, ['outputKind', 'output_kind', 'kind']) ?? outputKind,
+    'output',
+  );
+  return `${adapterFamily}:${targetName}:${kind}`;
+}
+
 function hiprtNativeEvidenceRef(record, kind = 'native_launch_observed') {
   const session = evidenceRefPart(record?.runtimeSession, 'native-session');
   const kernel = evidenceRefPart(record?.kernelSymbol, 'kernel');
@@ -4923,6 +5018,8 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
     ?? processIdFromRuntimeSession(dispatchProof.runtimeSessionIds?.[0])
     ?? null;
   const visualEvidenceRefs = [visualFrame.path].filter(Boolean);
+  const outputTargetId = runtimeOutputTargetId({ visualFrame, outputKind: 'framebuffer' });
+  if (!outputTargetId) return null;
   const oracleEvidenceRef = `validation:output-oracle:${contentHash}`;
   return {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
@@ -4953,7 +5050,7 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
       exactValueMatch: true,
       evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
       producer: 'hiprt-runtime-device-framebuffer',
-      outputTargetId: 'HIPRTPathTracer framebuffer',
+      outputTargetId,
       readbackTimestamp: Date.now(),
       runtimeSessionId: dispatchProof.runtimeSessionIds?.[0] ?? null,
       processId,
