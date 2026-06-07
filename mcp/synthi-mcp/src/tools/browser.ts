@@ -456,10 +456,11 @@ export const BROWSER_TOOLS = [
   },
   {
     name: "synthi_browser_generate_script",
-    description: "Generate Playwright test code from the broker trace, including locator confidence and fallback candidates.",
+    description: "Generate Playwright test code from the broker trace or a saved workflow_id, including locator confidence and fallback candidates.",
     inputSchema: {
       type: "object",
       properties: {
+        workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. When supplied, generation uses that immutable artifact." },
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], description: "Use prefixOnly or coldSession to stop before the first mutation boundary." },
       },
       required: [],
@@ -468,8 +469,14 @@ export const BROWSER_TOOLS = [
   {
     name: "synthi_browser_generate_private_tool_manifest",
     description:
-      "Generate a private app-specific MCP tool manifest from the taught workflow contract. Includes run modes, parameters, auth durability, mutation policy, blockers, and backing Synthi tools; never includes auth artifact values.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+      "Generate a private app-specific MCP tool manifest from the taught workflow contract or saved workflow_id. Includes run modes, parameters, auth durability, mutation policy, blockers, and backing Synthi tools; never includes auth artifact values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. When supplied, manifest generation uses that immutable artifact." },
+      },
+      required: [],
+    },
   },
   {
     name: "synthi_browser_run_workflow",
@@ -479,6 +486,7 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: {
         lease_id: { type: "string" },
+        workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. When supplied, replay uses that immutable artifact and never the current trace." },
         tab_id: { type: "string" },
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "coldSession" },
         parameters: {
@@ -668,7 +676,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_generate_script":
         return browserGenerateScriptTool(args);
       case "synthi_browser_generate_private_tool_manifest":
-        return browserGeneratePrivateToolManifestTool();
+        return browserGeneratePrivateToolManifestTool(args);
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
       case "synthi_browser_explain_failure":
@@ -961,15 +969,21 @@ function browserEndTeachTool(args: unknown): ToolResponse {
 }
 
 function browserGenerateScriptTool(args: unknown): ToolResponse {
-  const mode = normalizeReplayMode(obj(args)["mode"]);
-  return jsonResponse({ ok: true, ...browserBroker.generatedScript(mode) });
+  const a = obj(args);
+  const mode = normalizeReplayMode(a["mode"]);
+  const result = browserBroker.generatedScriptFor(stringOpt(a["workflow_id"]), mode);
+  if (!result.ok) return errorResponse(result.error, result.workflow_id ? { workflow_id: result.workflow_id } : undefined);
+  return jsonResponse({ ok: true, ...result.generated, workflow_id: result.artifact.workflow_id });
 }
 
-function browserGeneratePrivateToolManifestTool(): ToolResponse {
-  const workflow = browserBroker.compiledWorkflow();
-  const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
+  const workflowId = stringOpt(obj(args)["workflow_id"]);
+  const artifact = browserBroker.workflowArtifact(workflowId);
+  if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
+  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
   return jsonResponse({
     ok: manifest.status !== "blocked",
+    workflow_id: artifact.artifact.workflow_id,
     manifest,
   });
 }
@@ -1106,9 +1120,11 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const leaseId = requiredString(a, "lease_id");
   const mode = normalizeReplayMode(a["mode"] ?? "coldSession");
   const parameters = stringParameters(a["parameters"]);
-  const plan = browserBroker.workflowReplayPlan(mode);
+  const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
+  if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
+  const plan = replay.plan;
   if (plan.status === "blocked") {
-    return jsonResponse({ ok: false, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
+    return jsonResponse({ ok: false, workflow_id: replay.artifact.workflow_id, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
   }
 
   const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;
@@ -1216,6 +1232,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
 
   return jsonResponse({
     ok: true,
+    workflow_id: replay.artifact.workflow_id,
     replay: {
       ...plan,
       status: plan.status,

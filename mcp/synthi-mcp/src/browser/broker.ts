@@ -2,8 +2,14 @@ import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
 import { authCheckpointManager } from "./auth.js";
 import { lane0Status } from "./lane0.js";
-import { BrowserTraceRecorder, generatePlaywrightScript } from "./trace.js";
-import { compileWorkflowContract, planWorkflowReplay, type WorkflowReplayModeV7 } from "./workflow.js";
+import { BrowserTraceRecorder, generatePlaywrightScript, type GeneratedScript } from "./trace.js";
+import {
+  compileWorkflowContract,
+  planWorkflowReplay,
+  type CompiledWorkflowV7,
+  type WorkflowReplayModeV7,
+  type WorkflowReplayPlanV7,
+} from "./workflow.js";
 import { bridgeTokenMatches, normalizeOrigin, sameExactOrigin } from "./security.js";
 import type {
   BrowserActionKind,
@@ -61,6 +67,13 @@ export interface BrowserTeachQuestionAnswer {
   answered_at: number;
 }
 
+export interface BrowserWorkflowArtifact {
+  workflow_id: string;
+  workflow: CompiledWorkflowV7;
+  events: BrowserTraceEvent[];
+  saved_at: number;
+}
+
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
 
@@ -84,6 +97,7 @@ export class BrowserBroker {
   private queuedActions: BrowserActionInput[] = [];
   private runtime: BrowserRuntimeAttachment | null = null;
   private teachAnswers: BrowserTeachQuestionAnswer[] = [];
+  private workflows = new Map<string, BrowserWorkflowArtifact>();
 
   setRuntimeAttachment(runtime: Omit<BrowserRuntimeAttachment, "attached_at">): BrowserRuntimeAttachment {
     this.runtime = { ...runtime, attached_at: Date.now() };
@@ -395,16 +409,59 @@ export class BrowserBroker {
     return lane0Status(this.trace.snapshot());
   }
 
-  generatedScript(mode?: WorkflowReplayModeV7): ReturnType<typeof generatePlaywrightScript> {
-    return generatePlaywrightScript(this.trace.snapshot(), { mode });
+  generatedScript(mode?: WorkflowReplayModeV7): GeneratedScript {
+    const artifact = this.workflowArtifact();
+    if (!artifact.ok) return generatePlaywrightScript(this.trace.snapshot(), { mode });
+    return generatePlaywrightScript(artifact.artifact.events, { mode });
+  }
+
+  generatedScriptFor(
+    workflowId: string | undefined,
+    mode?: WorkflowReplayModeV7
+  ): { ok: true; generated: GeneratedScript; artifact: BrowserWorkflowArtifact } | { ok: false; error: string; workflow_id?: string } {
+    const artifact = this.workflowArtifact(workflowId);
+    if (!artifact.ok) return artifact;
+    return {
+      ok: true,
+      artifact: artifact.artifact,
+      generated: generatePlaywrightScript(artifact.artifact.events, { mode }),
+    };
   }
 
   compiledWorkflow(): ReturnType<typeof compileWorkflowContract> {
-    return compileWorkflowContract(this.trace.snapshot());
+    const artifact = this.workflowArtifact();
+    if (!artifact.ok) return compileWorkflowContract(this.trace.snapshot());
+    return artifact.artifact.workflow;
   }
 
   workflowReplayPlan(mode?: WorkflowReplayModeV7): ReturnType<typeof planWorkflowReplay> {
-    return planWorkflowReplay(this.trace.snapshot(), mode);
+    const artifact = this.workflowArtifact();
+    if (!artifact.ok) return planWorkflowReplay(this.trace.snapshot(), mode);
+    return planWorkflowReplay(artifact.artifact.events, mode);
+  }
+
+  workflowReplayPlanFor(
+    workflowId: string | undefined,
+    mode?: WorkflowReplayModeV7
+  ): { ok: true; plan: WorkflowReplayPlanV7; artifact: BrowserWorkflowArtifact } | { ok: false; error: string; workflow_id?: string } {
+    const artifact = this.workflowArtifact(workflowId);
+    if (!artifact.ok) return artifact;
+    return {
+      ok: true,
+      artifact: artifact.artifact,
+      plan: planWorkflowReplay(artifact.artifact.events, mode),
+    };
+  }
+
+  workflowArtifact(workflowId?: string): { ok: true; artifact: BrowserWorkflowArtifact } | { ok: false; error: string; workflow_id?: string } {
+    if (workflowId) {
+      const saved = this.workflows.get(workflowId);
+      if (saved) return { ok: true, artifact: cloneWorkflowArtifact(saved) };
+      const current = this.currentWorkflowArtifact();
+      if (current.workflow_id === workflowId) return { ok: true, artifact: current };
+      return { ok: false, error: "workflow_not_found", workflow_id: workflowId };
+    }
+    return { ok: true, artifact: this.currentWorkflowArtifact() };
   }
 
   validateBridgeMessage(message: BrowserBridgeMessage): { ok: true } | { ok: false; error: string } {
@@ -440,6 +497,26 @@ export class BrowserBroker {
     this.bridgeToken = undefined;
     this.runtime = null;
     this.teachAnswers = [];
+    this.workflows.clear();
+  }
+
+  private currentWorkflowArtifact(): BrowserWorkflowArtifact {
+    const events = this.trace.snapshot();
+    const workflow = compileWorkflowContract(events);
+    return this.saveWorkflowArtifact(events, workflow);
+  }
+
+  private saveWorkflowArtifact(events: BrowserTraceEvent[], workflow: CompiledWorkflowV7): BrowserWorkflowArtifact {
+    const artifact: BrowserWorkflowArtifact = {
+      workflow_id: workflow.contract.workflowId,
+      workflow,
+      events: events.map((event) => ({ ...event })),
+      saved_at: Date.now(),
+    };
+    if (workflow.card.stepCount > 0) {
+      this.workflows.set(artifact.workflow_id, cloneWorkflowArtifact(artifact));
+    }
+    return cloneWorkflowArtifact(artifact);
   }
 
   private hasOriginConsent(originOrUrl: string): boolean {
@@ -551,3 +628,12 @@ export class BrowserBroker {
 }
 
 export const browserBroker = new BrowserBroker();
+
+function cloneWorkflowArtifact(artifact: BrowserWorkflowArtifact): BrowserWorkflowArtifact {
+  return {
+    workflow_id: artifact.workflow_id,
+    workflow: artifact.workflow,
+    events: artifact.events.map((event) => ({ ...event })),
+    saved_at: artifact.saved_at,
+  };
+}

@@ -175,6 +175,70 @@ describe("browser MCP tool surface", () => {
     }));
   });
 
+  it("replays the requested saved workflow id instead of the current trace", async () => {
+    const url = "https://app.example.com/dashboard";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Dashboard", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open reports" },
+    }).ok).toBe(true);
+    const workflowA = browserBroker.compiledWorkflow().contract.workflowId;
+
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open billing" },
+    }).ok).toBe(true);
+    const workflowB = browserBroker.compiledWorkflow().contract.workflowId;
+    expect(workflowB).not.toBe(workflowA);
+
+    const action = vi.spyOn(browserPlaywrightAdapter, "action").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "workflow-id-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowA,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { workflow_id: string; replay: { steps_run: number } })).toEqual(
+      expect.objectContaining({
+        workflow_id: workflowA,
+        replay: expect.objectContaining({ steps_run: 1 }),
+      })
+    );
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action.mock.calls[0]?.[2]).toContain("Open reports");
+
+    const missing = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: "workflow_missing",
+      mode: "sameSession",
+    });
+    expect(missing?.isError).toBe(true);
+    expect(missing?.structuredContent).toEqual({
+      error: "workflow_not_found",
+      workflow_id: "workflow_missing",
+    });
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
   it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
     const response = await dispatchBrowserTool("synthi_browser_attach", {});
 
