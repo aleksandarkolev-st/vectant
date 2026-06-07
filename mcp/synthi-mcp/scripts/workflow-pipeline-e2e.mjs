@@ -992,6 +992,90 @@ const CASES = [
     },
   },
   {
+    id: "multi-select-controls",
+    minSteps: 4,
+    expectedActions: ["select", "check", "click"],
+    expectedReplayText: [
+      "Priority high",
+      "Applied qa,design via email at high",
+    ],
+    expectedReplayCode: [
+      "await target1.selectOption([\"qa\",\"design\"]);",
+      "await expect(target1).toHaveValues([\"qa\",\"design\"]);",
+      "page.getByRole(\"option\", { name: \"High priority\" })",
+      "toHaveAttribute('aria-selected', \"true\")",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Multi Select Controls Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Multi Select Controls Workflow</h1>",
+        "      <label for=\"teams\">Teams</label>",
+        "      <select id=\"teams\" aria-label=\"Teams\" multiple size=\"4\" data-synthi-source-id=\"multi.teams\">",
+        "        <option value=\"qa\">QA</option>",
+        "        <option value=\"design\">Design</option>",
+        "        <option value=\"support\">Support</option>",
+        "        <option value=\"ops\">Ops</option>",
+        "      </select>",
+        "      <fieldset>",
+        "        <legend>Channel</legend>",
+        "        <label><input type=\"radio\" name=\"channel\" value=\"email\" data-synthi-source-id=\"multi.channel.email\"> Email</label>",
+        "        <label><input type=\"radio\" name=\"channel\" value=\"slack\" data-synthi-source-id=\"multi.channel.slack\"> Slack</label>",
+        "      </fieldset>",
+        "      <div role=\"listbox\" aria-label=\"Priority\" class=\"listbox\">",
+        "        <div role=\"option\" tabindex=\"0\" aria-selected=\"false\" data-priority=\"low\" data-synthi-source-id=\"multi.priority.low\">Low priority</div>",
+        "        <div role=\"option\" tabindex=\"0\" aria-selected=\"false\" data-priority=\"high\" data-synthi-source-id=\"multi.priority.high\">High priority</div>",
+        "      </div>",
+        "      <button type=\"button\" data-testid=\"apply-routing\" data-synthi-source-id=\"multi.apply\">Apply routing</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "select { width: min(420px, calc(100vw - 48px)); min-height: 118px; }",
+        "fieldset { border: 1px solid #b9b9b2; width: min(420px, calc(100vw - 48px)); }",
+        ".listbox { width: min(420px, calc(100vw - 48px)); border: 1px solid #b9b9b2; background: #fff; display: grid; gap: 4px; padding: 6px; }",
+        "[role='option'] { padding: 8px 10px; cursor: pointer; }",
+        "[role='option'][aria-selected='true'] { background: #202020; color: #fff; }",
+      ],
+      script: [
+        "const status = document.querySelector('#status');",
+        "const teams = document.querySelector('#teams');",
+        "const options = Array.from(document.querySelectorAll('[role=\"option\"]'));",
+        "function selectedTeams() { return Array.from(teams.selectedOptions).map((option) => option.value).join(','); }",
+        "teams.addEventListener('change', () => {",
+        "  status.textContent = `Teams ${selectedTeams()}`;",
+        "});",
+        "for (const input of document.querySelectorAll('input[name=\"channel\"]')) {",
+        "  input.addEventListener('change', () => { status.textContent = `Channel ${input.value}`; });",
+        "}",
+        "for (const option of options) {",
+        "  option.addEventListener('click', () => {",
+        "    for (const other of options) other.setAttribute('aria-selected', 'false');",
+        "    option.setAttribute('aria-selected', 'true');",
+        "    status.textContent = `Priority ${option.dataset.priority}`;",
+        "  });",
+        "}",
+        "document.querySelector('[data-testid=\"apply-routing\"]').addEventListener('click', () => {",
+        "  const channel = document.querySelector('input[name=\"channel\"]:checked')?.value || 'none';",
+        "  const priority = document.querySelector('[role=\"option\"][aria-selected=\"true\"]')?.dataset.priority || 'none';",
+        "  status.textContent = `Applied ${selectedTeams()} via ${channel} at ${priority}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByLabel("Teams").selectOption(["qa", "design"]);
+      await page.getByText("Teams qa,design").waitFor();
+      await page.getByLabel("Email").check();
+      await page.locator("#status").getByText("Channel email", { exact: true }).waitFor();
+      await page.getByRole("option", { name: "High priority" }).click();
+      await page.locator("#status").getByText("Priority high", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Apply routing" }).click();
+      await page.locator("#status").getByText("Applied qa,design via email at high", { exact: true }).waitFor();
+    },
+  },
+  {
     id: "range-slider",
     minSteps: 2,
     expectedActions: ["fill", "click"],

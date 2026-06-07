@@ -273,7 +273,7 @@ export class BrowserPlaywrightAdapter {
         await resolveLocator(selector).press(value ?? "Enter");
         break;
       case "select":
-        await resolveLocator(selector).selectOption(value ?? "");
+        await resolveLocator(selector).selectOption(selectOptionsFromValue(value));
         break;
       case "check":
         await resolveLocator(selector).check();
@@ -1070,6 +1070,17 @@ async function setRangeLocatorValue(target: Locator, value: string): Promise<voi
   }, value);
 }
 
+function selectOptionsFromValue(value: string | undefined): string | string[] {
+  if (!value) return "";
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) return parsed;
+  } catch {
+    // Plain single-select values are not JSON.
+  }
+  return value;
+}
+
 function stringDetail(event: BrowserTraceEvent, key: string): string | undefined {
   const value = event.detail?.[key];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
@@ -1186,6 +1197,7 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
     "xpath",
     "type",
     "source_id",
+    "listbox_name",
     "editor_language",
     "editor_container_test_id",
     "editor_container_role",
@@ -1201,6 +1213,10 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
   const editorReplayStrategy = editorReplayStrategyOpt(raw["editor_replay_strategy"]);
   if (editorReplayStrategy) element.editor_replay_strategy = editorReplayStrategy;
   if (typeof raw["content_editable"] === "boolean") element.content_editable = raw["content_editable"];
+  if (typeof raw["selected"] === "boolean") element.selected = raw["selected"];
+  if (typeof raw["listbox_multiselect"] === "boolean") element.listbox_multiselect = raw["listbox_multiselect"];
+  const listboxSelectedValues = stringArrayOpt(raw["listbox_selected_values"]);
+  if (listboxSelectedValues) element.listbox_selected_values = listboxSelectedValues;
   return Object.keys(element).length ? element : undefined;
 }
 
@@ -1457,7 +1473,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const type = attr(el, 'type').toLowerCase();
       if (tag === 'button') return 'button';
       if (tag === 'a' && attr(el, 'href')) return 'link';
-      if (tag === 'select') return 'combobox';
+      if (tag === 'select') return el.multiple || Number(attr(el, 'size') || '0') > 1 ? 'listbox' : 'combobox';
       if (tag === 'textarea') return 'textbox';
       if (tag === 'input') {
         if (type === 'checkbox') return 'checkbox';
@@ -1512,6 +1528,28 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return '/' + parts.join('/');
     }
 
+    function listboxForOption(el) {
+      if (!isElement(el) || attr(el, 'role') !== 'option') return null;
+      const ownerId = attr(el, 'aria-owns') || attr(el, 'aria-controls');
+      if (ownerId) {
+        const owned = document.getElementById(ownerId);
+        if (owned && attr(owned, 'role') === 'listbox') return owned;
+      }
+      const listbox = el.closest('[role="listbox"]');
+      return isElement(listbox) ? listbox : null;
+    }
+
+    function optionValue(el) {
+      return attr(el, 'data-value') || attr(el, 'value') || attr(el, 'data-priority') || text(el.textContent || '');
+    }
+
+    function selectedOptionValues(listbox) {
+      if (!isElement(listbox)) return [];
+      return Array.from(listbox.querySelectorAll('[role="option"][aria-selected="true"]'))
+        .map((option) => optionValue(option))
+        .filter(Boolean);
+    }
+
     function metadata(el) {
       const tag = el.tagName.toLowerCase();
       const label = associatedLabel(el);
@@ -1522,6 +1560,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const type = attr(el, 'type');
       const editorContainer = editorContainerFor(el);
       const editorSurface = editorSurfaceFor(el, editorContainer);
+      const listbox = listboxForOption(el);
       return {
         tag,
         role: roleFor(el),
@@ -1537,6 +1576,10 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         type,
         source_id: attr(el, 'data-synthi-source-id'),
         content_editable: Boolean(el.isContentEditable || attr(el, 'contenteditable')),
+        selected: attr(el, 'aria-selected') === 'true' || Boolean(el.selected),
+        listbox_name: listbox ? attr(listbox, 'aria-label') || associatedLabel(listbox) || text(listbox.textContent || '') : '',
+        listbox_multiselect: listbox ? attr(listbox, 'aria-multiselectable') === 'true' : false,
+        listbox_selected_values: listbox ? selectedOptionValues(listbox) : [],
         editor_surface: editorSurface,
         editor_backing: editorBackingFor(el, editorSurface),
         editor_language: editorLanguageFor(el, editorContainer),
@@ -1659,6 +1702,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (isEditableTextTarget(target)) return null;
       const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="option"], [role="listitem"]');
       if (!isElement(el)) return null;
+      if (attr(el, 'role') === 'option' && el.closest('[role="listbox"]') && !attr(el, 'data-synthi-pointer-drag') && !attr(el, 'data-pointer-drag') && !attr(el, 'data-draggable') && !attr(el, 'aria-grabbed')) return null;
       if (isEditableTextTarget(el) || isRangeInput(el)) return null;
       return el;
     }
@@ -1820,6 +1864,40 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
     }
 
+    function selectedSelectValues(el) {
+      if (!el || el.tagName.toLowerCase() !== 'select') return [];
+      return Array.from(el.selectedOptions || []).map((option) => String(option.value || ''));
+    }
+
+    function selectedSelectLabels(el) {
+      if (!el || el.tagName.toLowerCase() !== 'select') return [];
+      return Array.from(el.selectedOptions || []).map((option) => text(option.textContent || option.label || option.value || '')).filter(Boolean);
+    }
+
+    function selectDetail(el) {
+      if (!el || el.tagName.toLowerCase() !== 'select') return {};
+      const values = selectedSelectValues(el);
+      return {
+        select_event: true,
+        multiple_select: Boolean(el.multiple),
+        select_values: values,
+        selected_option_labels: selectedSelectLabels(el),
+      };
+    }
+
+    function ariaOptionDetail(el) {
+      if (!isElement(el) || attr(el, 'role') !== 'option') return {};
+      const listbox = listboxForOption(el);
+      return {
+        option_select_event: true,
+        selected: attr(el, 'aria-selected') === 'true',
+        option_value: optionValue(el),
+        listbox_name: listbox ? attr(listbox, 'aria-label') || associatedLabel(listbox) || text(listbox.textContent || '') : '',
+        listbox_multiselect: listbox ? attr(listbox, 'aria-multiselectable') === 'true' : false,
+        listbox_selected_values: listbox ? selectedOptionValues(listbox) : [],
+      };
+    }
+
     function fileDropDetail(el, extra) {
       const inputFiles = el && el.files && typeof el.files.length === 'number' ? Array.from(el.files) : [];
       const dataTransferFiles = extra && extra.dataTransfer && extra.dataTransfer.files
@@ -1871,6 +1949,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const now = Date.now();
       if (last && last.signature === signature && now - last.ts < 300) return;
       const send = () => {
+        if (action === 'click') Object.assign(payload.detail, ariaOptionDetail(replayEl));
         const effects = changedEffectTexts(beforeEffects);
         if (effects.length > 0) payload.detail.observed_effects = effects;
         lastSent.set(el, { signature, ts: Date.now() });
@@ -1938,8 +2017,12 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         emit(el, 'drag', undefined, fileDropDetail(el, { change_event: true }));
         return;
       }
-      const value = action === 'check' || action === 'uncheck' ? String(Boolean(el.checked)) : String(el.value || '');
-      emit(el, action, value, { change_event: true });
+      const value = action === 'check' || action === 'uncheck'
+        ? String(Boolean(el.checked))
+        : action === 'select' && el.multiple
+          ? JSON.stringify(selectedSelectValues(el))
+          : String(el.value || '');
+      emit(el, action, value, Object.assign({ change_event: true }, action === 'select' ? selectDetail(el) : {}));
     }, true);
 
     document.addEventListener('scroll', (event) => {
@@ -1963,7 +2046,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const key = keyPressValue(event);
       if (!key) return;
-      const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="application"], [data-testid], [data-test], main, body');
+      const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="option"], [role="listbox"], [role="application"], [data-testid], [data-test], main, body');
       if (!isElement(el)) return;
       emit(el, 'press', key, {
         key_event: true,
@@ -1982,9 +2065,9 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (shouldSuppressPointerDragClick(target)) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [aria-selected], [data-testid], [data-test]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'click', undefined, { click_event: true });
+      emit(el, 'click', undefined, Object.assign({ click_event: true }, ariaOptionDetail(el)));
     }, true);
 
     document.addEventListener('dblclick', (event) => {

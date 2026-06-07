@@ -91,6 +91,10 @@ export interface BrowserElementMetadata {
   type?: string;
   source_id?: string;
   content_editable?: boolean;
+  selected?: boolean;
+  listbox_name?: string;
+  listbox_multiselect?: boolean;
+  listbox_selected_values?: string[];
   editor_surface?: "textarea" | "contenteditable" | "monaco" | "codemirror" | "unknownCodeEditor";
   editor_backing?: "textarea" | "contenteditable" | "hiddenTextarea" | "viewModel" | "unknown";
   editor_language?: string;

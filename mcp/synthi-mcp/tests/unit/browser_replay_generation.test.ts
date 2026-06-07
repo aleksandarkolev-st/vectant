@@ -707,6 +707,54 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await page.mouse.up();");
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
+
+  it("emits multi-value select replay for native multiple selects", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "teams",
+        event_seq: 1,
+        action: "select",
+        value: JSON.stringify(["qa", "design"]),
+        detail: {
+          multiple_select: true,
+          select_values: ["qa", "design"],
+          element: { tag: "select", role: "listbox", label: "Teams", source_id: "settings.teams" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"listbox\", { name: \"Teams\" })", confidence: 0.96, reason: "accessible_role_and_name" },
+          { kind: "label", locator: "page.getByLabel(\"Teams\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("page.getByRole(\"listbox\", { name: \"Teams\" })");
+    expect(generated.code).toContain("await target1.selectOption([\"qa\",\"design\"]);");
+    expect(generated.code).toContain("await expect(target1).toHaveValues([\"qa\",\"design\"]);");
+  });
+
+  it("asserts selected state for custom ARIA option clicks", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "priority",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          option_select_event: true,
+          selected: true,
+          option_value: "high",
+          listbox_name: "Priority",
+          listbox_selected_values: ["high"],
+          element: { tag: "div", role: "option", name: "High priority", source_id: "settings.priority.high" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"option\", { name: \"High priority\" })", confidence: 0.96, reason: "accessible_role_and_name" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("await target1.click();");
+    expect(generated.code).toContain("await expect(target1).toHaveAttribute('aria-selected', \"true\");");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

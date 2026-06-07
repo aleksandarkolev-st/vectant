@@ -1335,6 +1335,12 @@ function actionForReplay(event: { kind: string; action?: BrowserActionKind }): B
 function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind): string | undefined {
   if (action === "navigate") return event.url;
   if (action === "drag") return event.value ?? stringOpt(event.detail?.["drop_locator"]);
+  if (action === "select") {
+    const selectValues = stringArrayOpt(event.detail?.["select_values"]);
+    if (selectValues && (event.detail?.["multiple_select"] === true || selectValues.length > 1)) {
+      return JSON.stringify(selectValues);
+    }
+  }
   if (action === "scroll") return JSON.stringify({
     top: numberOpt(event.detail?.["scroll_top"]) ?? 0,
     left: numberOpt(event.detail?.["scroll_left"]) ?? 0,

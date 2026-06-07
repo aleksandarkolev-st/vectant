@@ -156,6 +156,84 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("normalizes native multi-select values on taught select events", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "select",
+      value: JSON.stringify(["qa", "design"]),
+      field_name: "Teams",
+      element: {
+        tag: "select",
+        role: "listbox",
+        label: "Teams",
+        source_id: "settings.teams",
+      },
+      detail: {
+        change_event: true,
+        select_event: true,
+        multiple_select: true,
+        select_values: ["qa", "design"],
+        selected_option_labels: ["QA", "Design"],
+      },
+    }, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      action: "select",
+      value: "[\"qa\",\"design\"]",
+      field_name: "Teams",
+      detail: expect.objectContaining({
+        multiple_select: true,
+        select_values: ["qa", "design"],
+        selected_option_labels: ["QA", "Design"],
+      }),
+    }));
+  });
+
+  it("normalizes ARIA option selection metadata", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "click",
+      field_name: "High priority",
+      element: {
+        tag: "div",
+        role: "option",
+        name: "High priority",
+        text: "High priority",
+        source_id: "settings.priority.high",
+        selected: true,
+        listbox_name: "Priority",
+        listbox_multiselect: false,
+        listbox_selected_values: ["high"],
+      },
+      detail: {
+        click_event: true,
+        option_select_event: true,
+        selected: true,
+        option_value: "high",
+        listbox_name: "Priority",
+        listbox_multiselect: false,
+        listbox_selected_values: ["high"],
+      },
+    }, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      action: "click",
+      element: expect.objectContaining({
+        role: "option",
+        selected: true,
+        listbox_name: "Priority",
+        listbox_selected_values: ["high"],
+      }),
+      detail: expect.objectContaining({
+        option_select_event: true,
+        option_value: "high",
+        listbox_selected_values: ["high"],
+      }),
+    }));
+  });
+
   it("rejects malformed hosted-browser DOM action payloads", () => {
     expect(normalizeCapturedHumanAction({ action: "click" }, "tab-a")).toBeNull();
     expect(normalizeCapturedHumanAction({

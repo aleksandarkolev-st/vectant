@@ -317,6 +317,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else {
           lines.push(`  await ${target}.click();`);
         }
+        pushOptionSelectionAssertion(lines, target, event);
         break;
       case "dblclick":
         if (isDownloadTrigger(event)) {
@@ -452,8 +453,14 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         }
         break;
       case "select":
-        lines.push(`  await ${target}.selectOption(${JSON.stringify(event.value ?? "")});`);
-        lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        if (isMultipleSelectEvent(event)) {
+          const values = selectValuesForEvent(event);
+          lines.push(`  await ${target}.selectOption(${JSON.stringify(values)});`);
+          lines.push(`  await expect(${target}).toHaveValues(${JSON.stringify(values)});`);
+        } else {
+          lines.push(`  await ${target}.selectOption(${JSON.stringify(event.value ?? "")});`);
+          lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        }
         break;
       case "check":
         lines.push(`  await ${target}.check();`);
@@ -625,6 +632,28 @@ function isKeyboardEditorFill(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isMultipleSelectEvent(event: BrowserTraceEvent): boolean {
+  if (event.action !== "select") return false;
+  if (event.detail?.["multiple_select"] === true) return true;
+  return selectValuesForEvent(event).length > 1;
+}
+
+function selectValuesForEvent(event: BrowserTraceEvent): string[] {
+  const rawValues = event.detail?.["select_values"];
+  if (Array.isArray(rawValues)) {
+    return rawValues.filter((value): value is string => typeof value === "string");
+  }
+  if (typeof event.value === "string") {
+    try {
+      const parsed = JSON.parse(event.value) as unknown;
+      if (Array.isArray(parsed)) return parsed.filter((value): value is string => typeof value === "string");
+    } catch {
+      return event.value ? [event.value] : [];
+    }
+  }
+  return event.value ? [event.value] : [];
+}
+
 function isCalibratedPointerDrag(event: BrowserTraceEvent): boolean {
   if (event.action !== "drag") return false;
   const dragClass = dragClassFor(event);
@@ -738,6 +767,21 @@ function pushPopupAction(
   if (popupTitle && !popupTitleRedacted) {
     lines.push(`  await expect(${popup}).toHaveTitle(${JSON.stringify(popupTitle)});`);
   }
+}
+
+function pushOptionSelectionAssertion(lines: string[], target: string, event: BrowserTraceEvent): void {
+  if (!isAriaOptionSelectionEvent(event)) return;
+  const selected = event.detail?.["selected"] !== false;
+  lines.push(`  await expect(${target}).toHaveAttribute('aria-selected', ${JSON.stringify(String(selected))});`);
+}
+
+function isAriaOptionSelectionEvent(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "click" && (
+    event.detail?.["option_select_event"] === true ||
+    element?.role === "option" ||
+    typeof event.detail?.["listbox_name"] === "string"
+  );
 }
 
 function numericDetail(event: BrowserTraceEvent, key: string): number | undefined {

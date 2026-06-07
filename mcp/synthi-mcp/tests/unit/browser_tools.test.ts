@@ -515,6 +515,61 @@ describe("browser MCP tool surface", () => {
     );
   });
 
+  it("replays native multi-select workflows with all selected values", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "select",
+      value: JSON.stringify(["qa", "design"]),
+      detail: {
+        multiple_select: true,
+        select_values: ["qa", "design"],
+        selected_option_labels: ["QA", "Design"],
+      },
+      element: { tag: "select", role: "combobox", label: "Teams", source_id: "settings.teams" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "select",
+      tab_id: "app",
+      url,
+      detail: { select_values: ["qa", "design"] },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "multi-select-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({
+        action: "select",
+        detail: expect.objectContaining({
+          multiple_select: true,
+          select_values: ["qa", "design"],
+        }),
+      }),
+      "select",
+      expect.stringContaining("Teams"),
+      "[\"qa\",\"design\"]"
+    );
+  });
+
   it("replays custom code editor fills through the event-aware adapter path", async () => {
     const url = "https://app.example.com/editor";
     browserBroker.requestConsent(url);
