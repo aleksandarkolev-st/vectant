@@ -380,6 +380,9 @@ export class BrowserPlaywrightAdapter {
       page.on("dialog", () => {
         // Keep this adapter from auto-dismissing user/runtime-owned dialogs.
       });
+      page.on("popup", (popup) => {
+        void this.handlePopup(page, popup, tab_id);
+      });
       page.on("download", (download) => {
         let origin: string;
         try {
@@ -431,6 +434,40 @@ export class BrowserPlaywrightAdapter {
       this.workflowOverlayInstalled.add(page);
       await this.installWorkflowOverlay(page, tab_id);
     }
+  }
+
+  private async handlePopup(opener: Page, popup: Page, opener_tab_id: string): Promise<void> {
+    const popup_tab_id = this.idForPage(popup);
+    this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
+    await this.instrumentPage(popup, popup_tab_id).catch(() => undefined);
+    await popup.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
+    let origin: string;
+    try {
+      origin = normalizeOrigin(opener.url()).origin;
+    } catch {
+      return;
+    }
+    const popupUrl = redactUrl(popup.url());
+    const popupTitle = redactText(await popup.title().catch(() => ""));
+    const detail: Record<string, unknown> = {
+      popup_event: true,
+      popup_url: popupUrl.url,
+      popup_url_redacted: popupUrl.redacted,
+      popup_title: popupTitle.text,
+      popup_title_redacted: popupTitle.redacted,
+      popup_tab_id,
+      opener_tab_id,
+    };
+    setTimeout(() => {
+      this.teachEventAnnotationSink?.({
+        tab_id: opener_tab_id,
+        url: opener.url(),
+        origin,
+        actions: ["click", "dblclick", "press"],
+        detail,
+        within_ms: 5000,
+      });
+    }, 250);
   }
 
   private pushEvent(

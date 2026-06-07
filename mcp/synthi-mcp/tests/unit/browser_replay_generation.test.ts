@@ -269,6 +269,35 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Confirmed policy\", { exact: true })).toBeVisible();");
   });
 
+  it("wraps popup-triggering clicks with a Playwright popup handler", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "open-docs",
+        event_seq: 1,
+        action: "click",
+        url: "https://app.example.com/settings",
+        origin: "https://app.example.com",
+        detail: {
+          popup_event: true,
+          popup_url: "https://app.example.com/help",
+          popup_title: "Workflow Help",
+          observed_effects: ["Help opened"],
+          element: { role: "button", name: "Open help", test_id: "open-help", source_id: "src_help" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"open-help\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("page.waitForEvent('popup')");
+    expect(generated.code).toContain("target1.click(),");
+    expect(generated.code).toContain("await popup1.waitForLoadState('domcontentloaded').catch(() => undefined);");
+    expect(generated.code).toContain("await expect(popup1).toHaveURL(`${baseUrl}/help`);");
+    expect(generated.code).toContain("await expect(popup1).toHaveTitle(\"Workflow Help\");");
+    expect(generated.code).toContain("await expect(page.getByText(\"Help opened\", { exact: true })).toBeVisible();");
+  });
+
   it("asserts contenteditable fill replay with text content", () => {
     const generated = generatePlaywrightScript([
       event({

@@ -1202,6 +1202,65 @@ const CASES = [
     },
   },
   {
+    id: "popup-help-window",
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Help opened",
+    ],
+    expectedReplayCode: [
+      "page.waitForEvent('popup')",
+      "await popup1.waitForLoadState('domcontentloaded').catch(() => undefined);",
+      "await expect(popup1).toHaveTitle(\"Workflow Help\");",
+    ],
+    files: () => [
+      ...commonFiles({
+        title: "Popup Help Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Popup Help Workflow</h1>",
+          "      <a href=\"/help.html\" target=\"_blank\" rel=\"noreferrer\" role=\"button\" data-testid=\"open-help\" data-synthi-source-id=\"popup.help\">Open help</a>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+        ].join("\n"),
+        script: [
+          "document.querySelector('[data-testid=\"open-help\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Help opened';",
+          "});",
+          "",
+        ].join("\n"),
+      }),
+      {
+        path: "help.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Workflow Help</title>",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Workflow Help</h1>",
+          "      <p>Help page opened in a new tab.</p>",
+          "    </main>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+    ],
+    teach: async (page) => {
+      const popupPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open help" }).click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState("domcontentloaded");
+      await popup.waitForURL(/help\.html/);
+      await page.getByText("Help opened").waitFor();
+    },
+  },
+  {
     id: "rich-text-editor",
     minSteps: 2,
     expectedActions: ["fill", "click"],

@@ -312,6 +312,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           pushDownloadAction(lines, target, "click", event, targetSeq);
         } else if (isDialogTrigger(event)) {
           pushDialogAction(lines, target, "click", event, targetSeq);
+        } else if (isPopupTrigger(event)) {
+          pushPopupAction(lines, target, "click", event, targetSeq, baseOrigin);
         } else {
           lines.push(`  await ${target}.click();`);
         }
@@ -321,6 +323,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           pushDownloadAction(lines, target, "dblclick", event, targetSeq);
         } else if (isDialogTrigger(event)) {
           pushDialogAction(lines, target, "dblclick", event, targetSeq);
+        } else if (isPopupTrigger(event)) {
+          pushPopupAction(lines, target, "dblclick", event, targetSeq, baseOrigin);
         } else {
           lines.push(`  await ${target}.dblclick();`);
         }
@@ -391,6 +395,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       case "press":
         if (isDialogTrigger(event)) {
           pushDialogAction(lines, target, "press", event, targetSeq, event.value ?? "Enter");
+        } else if (isPopupTrigger(event)) {
+          pushPopupAction(lines, target, "press", event, targetSeq, baseOrigin, event.value ?? "Enter");
         } else {
           lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
         }
@@ -486,16 +492,20 @@ function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
 }
 
 function gotoLine(url: string, baseOrigin: string | null): string {
-  if (!baseOrigin) return `  await page.goto(${JSON.stringify(url)});`;
+  return `  await page.goto(${urlExpression(url, baseOrigin)});`;
+}
+
+function urlExpression(url: string, baseOrigin: string | null): string {
+  if (!baseOrigin) return JSON.stringify(url);
   try {
     const parsed = new URL(url);
     if (parsed.origin === baseOrigin) {
-      return `  await page.goto(\`\${baseUrl}${parsed.pathname}${parsed.search}${parsed.hash}\`);`;
+      return `\`\${baseUrl}${parsed.pathname}${parsed.search}${parsed.hash}\``;
     }
   } catch {
     // Fall through to literal URL.
   }
-  return `  await page.goto(${JSON.stringify(url)});`;
+  return JSON.stringify(url);
 }
 
 function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string): string {
@@ -533,6 +543,10 @@ function isDownloadTrigger(event: BrowserTraceEvent): boolean {
 
 function isDialogTrigger(event: BrowserTraceEvent): boolean {
   return event.detail?.["dialog_event"] === true;
+}
+
+function isPopupTrigger(event: BrowserTraceEvent): boolean {
+  return event.detail?.["popup_event"] === true;
 }
 
 function isContentEditableFill(event: BrowserTraceEvent): boolean {
@@ -607,6 +621,37 @@ function pushDialogAction(
   lines.push(`  await ${dialogPromise};`);
   if (message && !messageRedacted) {
     lines.push(`  expect(${dialogMessage}).toContain(${JSON.stringify(message)});`);
+  }
+}
+
+function pushPopupAction(
+  lines: string[],
+  target: string,
+  method: "click" | "dblclick" | "press",
+  event: BrowserTraceEvent,
+  ordinal: number,
+  baseOrigin: string | null,
+  pressKey?: string
+): void {
+  const popup = `popup${ordinal}`;
+  lines.push(`  const [${popup}] = await Promise.all([`);
+  lines.push("    page.waitForEvent('popup'),");
+  if (method === "press") {
+    lines.push(`    ${target}.press(${JSON.stringify(pressKey ?? "Enter")}),`);
+  } else {
+    lines.push(`    ${target}.${method}(),`);
+  }
+  lines.push("  ]);");
+  lines.push(`  await ${popup}.waitForLoadState('domcontentloaded').catch(() => undefined);`);
+  const popupUrl = typeof event.detail?.["popup_url"] === "string" ? event.detail["popup_url"] : "";
+  const popupUrlRedacted = event.detail?.["popup_url_redacted"] === true;
+  if (popupUrl && !popupUrlRedacted) {
+    lines.push(`  await expect(${popup}).toHaveURL(${urlExpression(popupUrl, baseOrigin)});`);
+  }
+  const popupTitle = typeof event.detail?.["popup_title"] === "string" ? event.detail["popup_title"] : "";
+  const popupTitleRedacted = event.detail?.["popup_title_redacted"] === true;
+  if (popupTitle && !popupTitleRedacted) {
+    lines.push(`  await expect(${popup}).toHaveTitle(${JSON.stringify(popupTitle)});`);
   }
 }
 
