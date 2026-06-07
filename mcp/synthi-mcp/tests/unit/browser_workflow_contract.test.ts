@@ -229,6 +229,90 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.limitations).toContain("redactedInputValue");
   });
 
+  it("models clipboard paste as caller-supplied secret test data", () => {
+    const workflow = compileWorkflowContract([
+      {
+        event_id: "paste-key",
+        trace_id: "trace",
+        trace_version: 1,
+        event_seq: 1,
+        ts: 10,
+        tab_id: "tab",
+        origin: "https://app.example.com",
+        url: "https://app.example.com",
+        kind: "human_action",
+        action: "press",
+        value: "Control+V",
+        detail: {
+          field_name: "API token",
+          element: { label: "API token", role: "textbox" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"API token\")", confidence: 0.94, reason: "form_label" },
+        ],
+      },
+      {
+        event_id: "paste-token",
+        trace_id: "trace",
+        trace_version: 1,
+        event_seq: 2,
+        ts: 20,
+        tab_id: "tab",
+        origin: "https://app.example.com",
+        url: "https://app.example.com",
+        kind: "human_action",
+        action: "fill",
+        detail: {
+          field_name: "API token",
+          clipboard_event: true,
+          clipboard_mode: "paste",
+          paste_event: true,
+          paste_parameter: "API_TOKEN_PASTE",
+          pasted_text_length: 18,
+          pasted_text_redacted: true,
+          element: { label: "API token", role: "textbox" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"API token\")", confidence: 0.94, reason: "form_label" },
+        ],
+      },
+      {
+        event_id: "paste-fill-noise",
+        trace_id: "trace",
+        trace_version: 1,
+        event_seq: 3,
+        ts: 60,
+        tab_id: "tab",
+        origin: "https://app.example.com",
+        url: "https://app.example.com",
+        kind: "human_action",
+        action: "fill",
+        value: "super-secret",
+        detail: {
+          field_name: "API token",
+          input_debounced: true,
+          element: { label: "API token", role: "textbox" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"API token\")", confidence: 0.94, reason: "form_label" },
+        ],
+      },
+    ]);
+
+    expect(workflow.contract.steps).toHaveLength(1);
+    expect(workflow.contract.parameters[0]).toEqual(expect.objectContaining({
+      name: "api_token_paste",
+      valueShape: "secret",
+      required: true,
+      redacted: true,
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "clipboardPaste",
+      replay: "parameterized",
+    }));
+    expect(JSON.stringify(workflow.contract)).not.toContain("super-secret");
+  });
+
   it("surfaces cross-origin traces as limited instead of silently compiling them as durable", () => {
     const workflow = compileWorkflowContract([
       baseEvent({ event_id: "one", event_seq: 1, origin: "https://app.example.com", url: "https://app.example.com" }),

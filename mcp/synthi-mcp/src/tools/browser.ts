@@ -1249,6 +1249,61 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       }
       continue;
     }
+    if (isClipboardPasteEvent(event)) {
+      const pasteText = clipboardPasteTextFor(event, parameters);
+      if (pasteText === undefined) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: "testDataMissing",
+            error: `missing_clipboard_parameter:${clipboardPasteParameterName(event)}`,
+          },
+        });
+      }
+      const validation = browserBroker.validateAction({
+        lease_id: leaseId,
+        action,
+        tab_id: targetTabId,
+        selector,
+        value: pasteText,
+        url: event.url,
+      });
+      if (!validation.ok) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            error: validation.error,
+          },
+        });
+      }
+      try {
+        const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, pasteText);
+        rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
+        stepsRun += 1;
+      } catch (err) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyWorkflowReplayFailure(err, event),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      continue;
+    }
     const value = replayValueForEvent(event, action);
     const validation = browserBroker.validateAction({
       lease_id: leaseId,
@@ -1367,6 +1422,31 @@ function rememberReplayPopupTab(
 
 function isFileDropEvent(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && dragClassFor(event) === "filedrop";
+}
+
+function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["clipboard_event"] === true ||
+    event.detail?.["clipboard_mode"] === "paste" ||
+    event.detail?.["paste_event"] === true
+  );
+}
+
+function clipboardPasteTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  const parameterName = clipboardPasteParameterName(event);
+  return parameters[parameterName] ?? stringOpt(event.detail?.["fixture_text"]);
+}
+
+function clipboardPasteParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["paste_parameter"]) ?? stringOpt(event.detail?.["clipboard_parameter"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).placeholder) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
 }
 
 function fileDropPathFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {

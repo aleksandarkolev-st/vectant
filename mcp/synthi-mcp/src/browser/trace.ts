@@ -253,6 +253,39 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("    await target.dispatchEvent('drop', { dataTransfer });");
     lines.push("  }");
   }
+  if (events.some(isClipboardPasteEvent)) {
+    lines.push("  async function pasteText(page, target, text) {");
+    lines.push("    await target.click();");
+    lines.push("    let wroteClipboard = false;");
+    lines.push("    try {");
+    lines.push("      await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });");
+    lines.push("      wroteClipboard = await page.evaluate(async (value) => {");
+    lines.push("        try { await navigator.clipboard.writeText(value); return true; } catch { return false; }");
+    lines.push("      }, text);");
+    lines.push("    } catch {}");
+    lines.push("    if (wroteClipboard) {");
+    lines.push("      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V');");
+    lines.push("      return;");
+    lines.push("    }");
+    lines.push("    await target.evaluate((element, value) => {");
+    lines.push("      const dataTransfer = new DataTransfer();");
+    lines.push("      dataTransfer.setData('text/plain', value);");
+    lines.push("      let event;");
+    lines.push("      try { event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dataTransfer }); }");
+    lines.push("      catch { event = new Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(event, 'clipboardData', { value: dataTransfer }); }");
+    lines.push("      const notCanceled = element.dispatchEvent(event);");
+    lines.push("      if (!notCanceled) return;");
+    lines.push("      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {");
+    lines.push("        const start = element.selectionStart ?? element.value.length;");
+    lines.push("        const end = element.selectionEnd ?? start;");
+    lines.push("        element.setRangeText(value, start, end, 'end');");
+    lines.push("      } else if (element.isContentEditable || element.getAttribute('contenteditable')) {");
+    lines.push("        element.textContent = `${element.textContent ?? ''}${value}`;");
+    lines.push("      }");
+    lines.push("      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: value }));");
+    lines.push("    }, text);");
+    lines.push("  }");
+  }
   const used_locators: GeneratedScript["used_locators"] = [];
   const warnings: string[] = [];
   warnings.push(...contract.limitations.map((limitation) => `workflow limitation: ${limitation}`));
@@ -426,7 +459,20 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       }
       case "fill":
-        if (isRangeControlFill(event)) {
+        if (isClipboardPasteEvent(event)) {
+          const envName = clipboardPasteEnvNameFor(event, targetSeq);
+          const valueVar = `pasteText${targetSeq}`;
+          lines.push(`  const ${valueVar} = process.env[${JSON.stringify(envName)}];`);
+          lines.push(`  test.skip(!${valueVar}, ${JSON.stringify(`Set ${envName} for clipboard paste step ${event.event_id}.`)});`);
+          lines.push(`  if (!${valueVar}) throw new Error(${JSON.stringify(`missing clipboard paste text for ${event.event_id}`)});`);
+          lines.push(`  await pasteText(${pageVar}, ${target}, ${valueVar});`);
+          if (isContentEditableFill(event)) {
+            lines.push(`  await expect(${target}).toContainText(${valueVar});`);
+          } else {
+            lines.push(`  await expect(${target}).toHaveValue(${valueVar});`);
+          }
+          warnings.push(`event ${event.event_id} clipboard paste replay is parameterized by ${envName}`);
+        } else if (isRangeControlFill(event)) {
           lines.push(`  await ${target}.evaluate((element, value) => {`);
           lines.push("    if (!(element instanceof HTMLInputElement) || element.type !== 'range') throw new Error('target_not_range_input');");
           lines.push("    element.value = String(value);");
@@ -504,6 +550,13 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (previous && shouldDropClickAfterDblClick(previous, event)) {
       continue;
     }
+    if (previous && shouldDropPressBeforeClipboardPaste(previous, event)) {
+      result.pop();
+    }
+    const currentPrevious = result[result.length - 1];
+    if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
+      continue;
+    }
     while (event.action === "dblclick" && result.length > 0) {
       const prior = result[result.length - 1];
       if (!prior || !sameActionTarget(prior, event) || prior.action !== "click") break;
@@ -512,6 +565,39 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     result.push(event);
   }
   return result;
+}
+
+function shouldDropPressBeforeClipboardPaste(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "press" || !isClipboardPasteEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  if (!isPasteKeyChord(previous.value)) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = actionTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (!isClipboardPasteEvent(previous) || next.action !== "fill") return false;
+  if (isClipboardPasteEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = actionTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function isPasteKeyChord(value: string | undefined): boolean {
+  return value === "Control+V" || value === "Meta+V";
+}
+
+function sameOrNestedTargetKey(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
 }
 
 function shouldDropClickAfterDblClick(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
@@ -606,6 +692,16 @@ function fileDropEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
   return normalized.length > 0 ? normalized : `SYNTHI_FILE_DROP_${ordinal}`;
 }
 
+function clipboardPasteEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
+  const explicit = typeof event.detail?.["paste_parameter"] === "string"
+    ? event.detail["paste_parameter"]
+    : typeof event.detail?.["clipboard_parameter"] === "string"
+      ? event.detail["clipboard_parameter"]
+      : `SYNTHI_CLIPBOARD_PASTE_${ordinal}`;
+  const normalized = explicit.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized : `SYNTHI_CLIPBOARD_PASTE_${ordinal}`;
+}
+
 function scrollPositionFor(event: BrowserTraceEvent): { top: number; left: number } {
   const top = numericDetail(event, "scroll_top") ?? 0;
   const left = numericDetail(event, "scroll_left") ?? 0;
@@ -646,6 +742,14 @@ function isKeyboardEditorFill(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && (
     event.detail?.["editor_replay_strategy"] === "keyboardInsert" ||
     element?.editor_replay_strategy === "keyboardInsert"
+  );
+}
+
+function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["clipboard_event"] === true ||
+    event.detail?.["clipboard_mode"] === "paste" ||
+    event.detail?.["paste_event"] === true
   );
 }
 

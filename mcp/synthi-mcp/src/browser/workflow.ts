@@ -57,6 +57,7 @@ export type WorkflowSurfaceKindV7 =
   | "dom"
   | "nativeHtmlDrag"
   | "fileDrop"
+  | "clipboardPaste"
   | "clipboardDrop"
   | "pointerDrag"
   | "canvas"
@@ -324,7 +325,14 @@ function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (previous && shouldDropClickAfterDblClick(previous, event)) {
       continue;
     }
-    if (previous && shouldReplaceWithLatestFill(previous, event)) {
+    if (previous && shouldDropPressBeforeClipboardPaste(previous, event)) {
+      result.pop();
+    }
+    const currentPrevious = result[result.length - 1];
+    if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
+      continue;
+    }
+    if (currentPrevious && shouldReplaceWithLatestFill(currentPrevious, event)) {
       result[result.length - 1] = event;
       continue;
     }
@@ -336,6 +344,39 @@ function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     result.push(event);
   }
   return result;
+}
+
+function shouldDropPressBeforeClipboardPaste(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "press" || !isClipboardPasteEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  if (!isPasteKeyChord(previous.value)) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = fillTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (!isClipboardPasteEvent(previous) || next.action !== "fill") return false;
+  if (isClipboardPasteEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = fillTargetKey(previous);
+  const nextTarget = fillTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function isPasteKeyChord(value: string | undefined): boolean {
+  return value === "Control+V" || value === "Meta+V";
+}
+
+function sameOrNestedTargetKey(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
 }
 
 function shouldReplaceWithLatestFill(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
@@ -899,7 +940,7 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
       sourceStepId: step.stepId,
       valueShape: parameterValueShape(event),
       required: true,
-      redacted: event?.redacted === true,
+      redacted: event?.redacted === true || event?.detail?.["pasted_text_redacted"] === true,
     }];
   });
 }
@@ -911,6 +952,10 @@ function parameterNameForAction(
   actionKind: BrowserActionKind
 ): string | undefined {
   if (actionKind === "fill" || actionKind === "select") {
+    if (actionKind === "fill" && isClipboardPasteEvent(event)) {
+      const explicit = stringDetail(event, "paste_parameter") ?? stringDetail(event, "clipboard_parameter");
+      return slugIdentifier(explicit || element?.label || element?.name || element?.placeholder || element?.test_id || `paste_${ordinal}`);
+    }
     return event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal);
   }
   if (actionKind === "drag" && dragClassFor(event) === "filedrop") {
@@ -932,6 +977,7 @@ function parameterNameFor(event: BrowserTraceEvent, element: BrowserElementMetad
 
 function parameterValueShape(event: BrowserTraceEvent | undefined): WorkflowParameterV7["valueShape"] {
   if (event?.action === "drag" && dragClassFor(event) === "filedrop") return "filePath";
+  if (event && isClipboardPasteEvent(event)) return "secret";
   return valueShape(event?.value, event?.redacted === true);
 }
 
@@ -1220,6 +1266,13 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Pointer-sensor drag is not high-confidence without calibration."],
     };
   }
+  if (action === "fill" && isClipboardPasteEvent(event)) {
+    return {
+      kind: "clipboardPaste",
+      replay: "parameterized",
+      notes: ["Clipboard paste replay requires caller-provided text; pasted content is not stored in the taught trace."],
+    };
+  }
   const editorStrategy = editorReplayStrategyFor(event);
   if (editorStrategy) {
     return {
@@ -1256,6 +1309,14 @@ function hasClosedShadowBridge(event: BrowserTraceEvent): boolean {
   return event.detail?.["dev_shadow_bridge"] === true ||
     event.detail?.["shadow_bridge"] === "dev" ||
     event.detail?.["closed_shadow_bridge"] === true;
+}
+
+function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["clipboard_event"] === true ||
+    event.detail?.["clipboard_mode"] === "paste" ||
+    event.detail?.["paste_event"] === true
+  );
 }
 
 function dragClassFor(event: BrowserTraceEvent): string {

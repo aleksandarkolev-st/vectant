@@ -234,6 +234,38 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("redacts editable element text for clipboard paste capture", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "fill",
+      field_name: "Release notes",
+      element: {
+        tag: "div",
+        role: "textbox",
+        label: "Release notes",
+        text: "secret pasted note",
+        content_editable: true,
+        source_id: "notes.release",
+      },
+      detail: {
+        clipboard_event: true,
+        clipboard_mode: "paste",
+        paste_parameter: "RELEASE_NOTES_PASTE",
+        pasted_text_redacted: true,
+      },
+    }, "tab-a");
+
+    expect(event?.element).toEqual(expect.objectContaining({
+      tag: "div",
+      role: "textbox",
+      label: "Release notes",
+      content_editable: true,
+    }));
+    expect(event?.element?.text).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain("secret pasted note");
+  });
+
   it("rejects malformed hosted-browser DOM action payloads", () => {
     expect(normalizeCapturedHumanAction({ action: "click" }, "tab-a")).toBeNull();
     expect(normalizeCapturedHumanAction({

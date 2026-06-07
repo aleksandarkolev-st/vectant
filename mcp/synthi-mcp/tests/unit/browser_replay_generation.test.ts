@@ -568,6 +568,65 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
 
+  it("generates parameterized clipboard paste replay without storing pasted text", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "paste-key",
+        event_seq: 1,
+        ts: 10,
+        action: "press",
+        value: "Control+V",
+        detail: {
+          element: { tag: "input", role: "textbox", label: "API token", source_id: "src_token" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"API token\")", confidence: 0.96, reason: "label" },
+        ],
+      }),
+      event({
+        event_id: "paste-token",
+        event_seq: 2,
+        ts: 20,
+        action: "fill",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "paste",
+          paste_event: true,
+          paste_parameter: "API_TOKEN_PASTE",
+          pasted_text_length: 14,
+          pasted_text_redacted: true,
+          element: { tag: "input", role: "textbox", label: "API token", source_id: "src_token" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"API token\")", confidence: 0.96, reason: "label" },
+        ],
+      }),
+      event({
+        event_id: "paste-fill-noise",
+        event_seq: 3,
+        ts: 60,
+        action: "fill",
+        value: "secret-token",
+        detail: {
+          input_debounced: true,
+          element: { tag: "input", role: "textbox", label: "API token", source_id: "src_token" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"API token\")", confidence: 0.96, reason: "label" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("async function pasteText(page, target, text)");
+    expect(generated.code).toContain("const pasteText1 = process.env[\"API_TOKEN_PASTE\"];");
+    expect(generated.code).toContain("await pasteText(page, target1, pasteText1);");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(pasteText1);");
+    expect(generated.code).not.toContain("target1.press(\"Control+V\")");
+    expect(generated.code).not.toContain("target1.fill(\"secret-token\")");
+    expect(generated.code).not.toContain("secret-token");
+    expect(generated.warnings).toContain("event paste-token clipboard paste replay is parameterized by API_TOKEN_PASTE");
+  });
+
   it("uses setInputFiles for file input drop traces", () => {
     const generated = generatePlaywrightScript([
       event({

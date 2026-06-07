@@ -238,11 +238,14 @@ async function runCase({ testCase, container, context, runner }) {
     await idePage.bringToFront().catch(() => undefined);
     await idePage.screenshot({ path: path.join(caseDir, "after-validate-panel.png"), fullPage: true });
 
+    const replayParameters = typeof testCase.replayParameters === "function" ? await testCase.replayParameters({ caseDir }) : testCase.replayParameters || {};
+
     if (testCase.liveReplayMode) {
       const liveReplay = await runLiveWorkflowReplay({
         caseId: testCase.id,
         workflowId: contract?.workflowId,
         mode: testCase.liveReplayMode,
+        parameters: replayParameters,
       });
       await writeJson(caseDir, "live-replay.json", liveReplay);
       record(
@@ -312,7 +315,7 @@ async function registerSeedSourceIdentity(slug, files) {
   return total;
 }
 
-async function runLiveWorkflowReplay({ caseId, workflowId, mode }) {
+async function runLiveWorkflowReplay({ caseId, workflowId, mode, parameters = {} }) {
   if (!workflowId) return { ok: false, error: "missing_workflow_id" };
   const leaseBody = await workflowBridgeTool("synthi_browser_acquire_lease", {
     owner: "workflow-pipeline-e2e",
@@ -326,6 +329,7 @@ async function runLiveWorkflowReplay({ caseId, workflowId, mode }) {
       lease_id: leaseId,
       workflow_id: workflowId,
       mode,
+      parameters,
     });
     return runBody.result ?? runBody;
   } finally {
@@ -891,6 +895,114 @@ const CASES = [
       await page.getByLabel("Email").fill("ada@example.test");
       await page.getByRole("button", { name: "Save profile" }).click();
       await page.getByText("Saved ada@example.test").waitFor();
+    },
+  },
+  {
+    id: "clipboard-paste-textbox",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: [
+      "Paste event captured",
+      "Saved pasted token from clipboard event",
+    ],
+    expectedReplayCode: [
+      "async function pasteText(page, target, text)",
+      "process.env[\"API_TOKEN_PASTE\"]",
+      "await pasteText(page, target1, pasteText1);",
+      "await expect(target1).toHaveValue(pasteText1);",
+    ],
+    liveReplayMode: "sameSession",
+    replayParameters: { api_token_paste: "agent-provided-token-42" },
+    replayEnv: () => ({ API_TOKEN_PASTE: "agent-provided-token-42" }),
+    files: () => commonFiles({
+      title: "Clipboard Paste Textbox Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Clipboard Paste Textbox Workflow</h1>",
+        "      <label for=\"api-token\">API token</label>",
+        "      <input id=\"api-token\" aria-label=\"API token\" data-synthi-source-id=\"clipboard.token\" autocomplete=\"off\">",
+        "      <button type=\"button\" data-testid=\"save-token\" data-synthi-source-id=\"clipboard.save\">Save pasted token</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const input = document.querySelector('#api-token');",
+        "const status = document.querySelector('#status');",
+        "let lastPasteLength = 0;",
+        "input.addEventListener('paste', (event) => {",
+        "  lastPasteLength = (event.clipboardData && event.clipboardData.getData('text/plain') || '').length;",
+        "  status.textContent = lastPasteLength > 0 ? 'Paste event captured' : 'Paste event missing data';",
+        "});",
+        "document.querySelector('[data-testid=\"save-token\"]').addEventListener('click', () => {",
+        "  status.textContent = input.value.length === lastPasteLength && lastPasteLength > 0 ? 'Saved pasted token from clipboard event' : 'Clipboard paste mismatch';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const pasteText = "taught-token-42";
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+      await page.evaluate((value) => navigator.clipboard.writeText(value), pasteText);
+      await page.getByLabel("API token").click();
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
+      await page.getByText("Paste event captured").waitFor();
+      await page.getByRole("button", { name: "Save pasted token" }).click();
+      await page.getByText("Saved pasted token from clipboard event").waitFor();
+    },
+  },
+  {
+    id: "clipboard-paste-contenteditable",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: [
+      "Rich paste event captured",
+      "Saved rich clipboard note",
+    ],
+    expectedReplayCode: [
+      "async function pasteText(page, target, text)",
+      "process.env[\"RELEASE_NOTES_PASTE\"]",
+      "await pasteText(page, target1, pasteText1);",
+      "await expect(target1).toContainText(pasteText1);",
+    ],
+    liveReplayMode: "sameSession",
+    replayParameters: { release_notes_paste: "agent rich clipboard note" },
+    replayEnv: () => ({ RELEASE_NOTES_PASTE: "agent rich clipboard note" }),
+    files: () => commonFiles({
+      title: "Clipboard Paste Contenteditable Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Clipboard Paste Contenteditable Workflow</h1>",
+        "      <div contenteditable=\"true\" role=\"textbox\" aria-label=\"Release notes\" data-testid=\"release-notes\" data-synthi-source-id=\"clipboard.notes\"></div>",
+        "      <button type=\"button\" data-testid=\"save-notes\" data-synthi-source-id=\"clipboard.notes.save\">Save notes</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[contenteditable='true'] { min-height: 96px; border: 1px solid #222; background: #fff; padding: 12px; }",
+      ],
+      script: [
+        "const notes = document.querySelector('[data-testid=\"release-notes\"]');",
+        "const status = document.querySelector('#status');",
+        "let lastPasteLength = 0;",
+        "notes.addEventListener('paste', (event) => {",
+        "  lastPasteLength = (event.clipboardData && event.clipboardData.getData('text/plain') || '').length;",
+        "  status.textContent = lastPasteLength > 0 ? 'Rich paste event captured' : 'Rich paste event missing data';",
+        "});",
+        "document.querySelector('[data-testid=\"save-notes\"]').addEventListener('click', () => {",
+        "  status.textContent = notes.textContent.trim().length === lastPasteLength && lastPasteLength > 0 ? 'Saved rich clipboard note' : 'Rich clipboard paste mismatch';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const pasteText = "taught release note";
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+      await page.evaluate((value) => navigator.clipboard.writeText(value), pasteText);
+      await page.getByRole("textbox", { name: "Release notes" }).click();
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
+      await page.getByText("Rich paste event captured").waitFor();
+      await page.getByRole("button", { name: "Save notes" }).click();
+      await page.getByText("Saved rich clipboard note").waitFor();
     },
   },
   {

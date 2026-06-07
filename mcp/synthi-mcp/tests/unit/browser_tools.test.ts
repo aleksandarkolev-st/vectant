@@ -946,6 +946,73 @@ describe("browser MCP tool surface", () => {
       }),
     }));
   });
+
+  it("requires and forwards clipboard paste parameters for workflow replay", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "fill",
+      detail: {
+        clipboard_event: true,
+        clipboard_mode: "paste",
+        paste_event: true,
+        paste_parameter: "API_TOKEN_PASTE",
+      },
+      element: { tag: "input", role: "textbox", label: "API token", source_id: "s_token" },
+    }).ok).toBe(true);
+    const lease = browserBroker.acquireLease("agent", 5000, "test-clipboard-paste");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "app",
+      url,
+    });
+
+    const missing = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+    });
+
+    expect((missing?.structuredContent as {
+      ok: boolean;
+      replay: { status: string; failure_class: string; failed_step_id: string; error: string };
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        failure_class: "testDataMissing",
+        failed_step_id: "browser_evt_1",
+        error: "missing_clipboard_parameter:api_token_paste",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+      parameters: { api_token_paste: "agent-provided-token" },
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({ event_id: "browser_evt_1" }),
+      "fill",
+      expect.any(String),
+      "agent-provided-token"
+    );
+  });
 });
 
 function mockPreviewAdapter(previewUrl: string): void {

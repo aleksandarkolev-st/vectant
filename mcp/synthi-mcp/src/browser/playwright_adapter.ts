@@ -299,6 +299,9 @@ export class BrowserPlaywrightAdapter {
     selector?: string,
     value?: string
   ): Promise<BrowserActionResult> {
+    if (action === "fill" && isClipboardPasteEvent(event)) {
+      return await this.replayClipboardPasteAction(tab_id, event, selector, value);
+    }
     if (action === "fill" && isRangeControlEvent(event)) {
       return await this.replayRangeFillAction(tab_id, event, selector, value);
     }
@@ -362,6 +365,31 @@ export class BrowserPlaywrightAdapter {
       tab_id,
       url: page.url(),
       detail: { editor_replay_strategy: "keyboardInsert", value_length: nextValue.length },
+    };
+  }
+
+  private async replayClipboardPasteAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const text = value ?? event.value;
+    if (text === undefined) throw new Error(`missing_clipboard_parameter:${clipboardPasteParameterNameForEvent(event)}`);
+    await pasteTextIntoLocator(page, target, text);
+    return {
+      ok: true,
+      action: "fill",
+      tab_id,
+      url: page.url(),
+      detail: {
+        clipboard_event: true,
+        clipboard_mode: "paste",
+        paste_parameter: clipboardPasteParameterNameForEvent(event),
+        pasted_text_length: text.length,
+      },
     };
   }
 
@@ -913,7 +941,11 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   const frameId = stringOpt(raw["frame_id"]);
   if (frameId !== undefined) event.frame_id = frameId;
   const element = elementOpt(raw["element"]);
-  if (element !== undefined) event.element = element;
+  if (element !== undefined) {
+    event.element = isClipboardPasteDetail(event.detail)
+      ? redactClipboardPasteElementMetadata(element)
+      : element;
+  }
   const bbox = bboxOpt(raw["bbox"]);
   if (bbox !== undefined) event.bbox = bbox;
   return event;
@@ -1155,6 +1187,82 @@ function isKeyboardEditorFillEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["clipboard_event"] === true ||
+    event.detail?.["clipboard_mode"] === "paste" ||
+    event.detail?.["paste_event"] === true
+  );
+}
+
+function clipboardPasteParameterNameForEvent(event: BrowserTraceEvent): string {
+  const explicit = stringDetail(event, "paste_parameter") ?? stringDetail(event, "clipboard_parameter");
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object" && !Array.isArray(element)
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).placeholder) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
+}
+
+async function pasteTextIntoLocator(page: Page, target: Locator, text: string): Promise<void> {
+  await target.click();
+  await grantClipboardPermissions(page).catch(() => undefined);
+  const wroteClipboard = await page.evaluate(async (nextText) => {
+    try {
+      await navigator.clipboard.writeText(nextText);
+      return true;
+    } catch {
+      return false;
+    }
+  }, text).catch(() => false);
+  if (wroteClipboard) {
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
+    return;
+  }
+  await dispatchSyntheticPaste(target, text);
+}
+
+async function grantClipboardPermissions(page: Page): Promise<void> {
+  const url = page.url();
+  const origin = new URL(url).origin;
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+}
+
+async function dispatchSyntheticPaste(target: Locator, text: string): Promise<void> {
+  await target.evaluate((element, nextText) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData("text/plain", nextText);
+    let event: ClipboardEvent;
+    try {
+      event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dataTransfer,
+      });
+    } catch {
+      event = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(event, "clipboardData", { value: dataTransfer });
+    }
+    const notCanceled = element.dispatchEvent(event);
+    if (!notCanceled) return;
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const start = element.selectionStart ?? element.value.length;
+      const end = element.selectionEnd ?? start;
+      element.setRangeText(nextText, start, end, "end");
+    } else if ((element as HTMLElement).isContentEditable || element.getAttribute("contenteditable")) {
+      element.textContent = `${element.textContent ?? ""}${nextText}`;
+    }
+    element.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertFromPaste",
+      data: nextText,
+    }));
+  }, text);
+}
+
 function isCalibratedPointerDragEvent(event: BrowserTraceEvent): boolean {
   if (event.action !== "drag") return false;
   const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
@@ -1262,6 +1370,20 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
   return Object.keys(element).length ? element : undefined;
 }
 
+function isClipboardPasteDetail(detail: Record<string, unknown> | undefined): boolean {
+  return detail?.["clipboard_event"] === true ||
+    detail?.["clipboard_mode"] === "paste" ||
+    detail?.["paste_event"] === true;
+}
+
+function redactClipboardPasteElementMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
+  const redacted = { ...element };
+  if (redacted.content_editable === true || redacted.role === "textbox" || redacted.tag === "textarea" || redacted.tag === "input") {
+    delete redacted.text;
+  }
+  return redacted;
+}
+
 function bboxOpt(value: unknown): CapturedBrowserHumanAction["bbox"] | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
@@ -1353,6 +1475,16 @@ function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function slugIdentifier(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "value";
+}
+
 function parseScrollPosition(value: string | undefined): { top: number; left: number } {
   if (!value || value.trim().length === 0) return { top: 0, left: 0 };
   const numeric = Number(value);
@@ -1382,6 +1514,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const scrollPendingElements = new Set();
     const scrollBeforeEffects = new WeakMap();
     const lastSent = new WeakMap();
+    const pasteSuppressedUntil = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
     const pendingActionSends = new Set();
     let latestDeferredActionBeforeEffects = [];
@@ -1891,6 +2024,11 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return slug(fieldName(el, element) || 'file') + '_file';
     }
 
+    function pasteParameterFor(el) {
+      const element = metadata(el);
+      return slug(fieldName(el, element) || 'clipboard') + '_paste';
+    }
+
     function isRangeInput(el) {
       return el && el.tagName && el.tagName.toLowerCase() === 'input' && attr(el, 'type').toLowerCase() === 'range';
     }
@@ -1957,6 +2095,21 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         file_count: files.length,
         file_input: el.tagName.toLowerCase() === 'input' && attr(el, 'type').toLowerCase() === 'file',
       }, mimeTypes.length === 1 ? { mime_type: mimeTypes[0] } : {}, safeExtra);
+    }
+
+    function pasteDetail(el, event, beforeEffects) {
+      const clipboardText = event && event.clipboardData
+        ? String(event.clipboardData.getData('text/plain') || '')
+        : '';
+      return {
+        clipboard_event: true,
+        clipboard_mode: 'paste',
+        paste_event: true,
+        paste_parameter: pasteParameterFor(el),
+        pasted_text_length: clipboardText.length,
+        pasted_text_redacted: true,
+        __before_effects: beforeEffects,
+      };
     }
 
     function emit(el, action, value, detail) {
@@ -2041,6 +2194,11 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const el = event.target;
       if (!isElement(el) || (!editableTags.has(el.tagName.toLowerCase()) && !el.isContentEditable && !attr(el, 'contenteditable'))) return;
       if (!isEditableTextTarget(el)) return;
+      const suppressedUntil = pasteSuppressedUntil.get(el);
+      if (suppressedUntil && Date.now() < suppressedUntil) {
+        clearPending(el);
+        return;
+      }
       clearPending(el);
       pendingElements.add(el);
       pending.set(el, setTimeout(() => {
@@ -2050,9 +2208,28 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       }, 300));
     }, true);
 
+    document.addEventListener('paste', (event) => {
+      const target = event.target;
+      if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return;
+      const el = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-testid], [data-test]');
+      if (!isElement(el) || !isEditableTextTarget(el)) return;
+      const beforeEffects = visibleEffectTexts();
+      clearPending(el);
+      pasteSuppressedUntil.set(el, Date.now() + 1000);
+      setTimeout(() => {
+        clearPending(el);
+        emit(el, 'fill', undefined, pasteDetail(el, event, beforeEffects));
+      }, 0);
+    }, true);
+
     document.addEventListener('change', (event) => {
       const el = event.target;
       if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
+      const suppressedUntil = pasteSuppressedUntil.get(el);
+      if (suppressedUntil && Date.now() < suppressedUntil && isEditableTextTarget(el)) {
+        clearPending(el);
+        return;
+      }
       clearPending(el);
       const action = actionForChange(el);
       if (action === 'drag') {
@@ -2086,6 +2263,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const target = event.target;
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      if ((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'v' && isEditableTextTarget(target)) return;
       const key = keyPressValue(event);
       if (!key) return;
       const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="option"], [role="listbox"], [role="application"], [data-testid], [data-test], main, body');
