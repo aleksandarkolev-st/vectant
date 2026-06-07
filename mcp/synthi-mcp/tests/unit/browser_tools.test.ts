@@ -1,6 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
 import { browserBridgeServer } from "../../src/browser/bridge_server.js";
+import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
+import type { BrowserSnapshot, BrowserTab } from "../../src/browser/types.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserWorkflowOverlayAction, dispatchBrowserTool } from "../../src/tools/browser.js";
@@ -16,6 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await browserBridgeServer.stop();
   if (originalBrowserCdpUrl === undefined) {
     delete process.env["SYNTHI_BROWSER_CDP_URL"];
@@ -95,6 +98,81 @@ describe("browser MCP tool surface", () => {
     expect(response?.isError).toBe(true);
     expect((response?.structuredContent as { error: string }).error).toBe("browser_tool_failed");
     expect((response?.structuredContent as { message: string }).message).toBe("tab_not_authorized");
+  });
+
+  it("does not let agent preview observe self-grant screenshot consent", async () => {
+    const previewUrl = "http://localhost:5174/dashboard";
+    mockPreviewAdapter(previewUrl);
+
+    const response = await dispatchBrowserTool("synthi_browser_observe_preview", {
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      preview_url: previewUrl,
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "origin_consent_required",
+      required_tool_call: expect.objectContaining({ name: "synthi_browser_request_consent" }),
+    }));
+    expect(browserBroker.getConsent(previewUrl)[0]).toEqual(expect.objectContaining({
+      status: "unset",
+      screenshot: "unset",
+    }));
+  });
+
+  it("requires explicit screenshot consent for agent preview observe", async () => {
+    const previewUrl = "http://localhost:5174/dashboard";
+    mockPreviewAdapter(previewUrl);
+    browserBroker.requestConsent(previewUrl, "granted", "unit", {
+      screenshot: false,
+      diagnostics: false,
+    });
+
+    const response = await dispatchBrowserTool("synthi_browser_observe_preview", {
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      preview_url: previewUrl,
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "screenshot_consent_required",
+      required_tool_call: expect.objectContaining({ name: "synthi_browser_request_consent" }),
+    }));
+    expect(browserBroker.getConsent(previewUrl)[0]).toEqual(expect.objectContaining({
+      status: "granted",
+      screenshot: "denied",
+      diagnostics: "denied",
+    }));
+  });
+
+  it("lets hosted overlay observe grant exact-origin screenshot consent from a user gesture", async () => {
+    const previewUrl = "http://localhost:5174/dashboard";
+    mockPreviewAdapter(previewUrl);
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      adapter: "unit-test",
+    });
+
+    const state = await browserWorkflowOverlayAction({
+      action: "observe",
+      url: previewUrl,
+      tab_id: "",
+      page_url: previewUrl,
+    });
+
+    expect(state).toEqual(expect.objectContaining({
+      ok: true,
+      observed: true,
+      url: previewUrl,
+    }));
+    expect(browserBroker.getConsent(previewUrl)[0]).toEqual(expect.objectContaining({
+      status: "granted",
+      screenshot: "granted",
+      diagnostics: "denied",
+    }));
   });
 
   it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
@@ -338,3 +416,28 @@ describe("browser MCP tool surface", () => {
     }));
   });
 });
+
+function mockPreviewAdapter(previewUrl: string): void {
+  const tab: BrowserTab = {
+    tab_id: "preview",
+    url: previewUrl,
+    title: "Preview",
+    active: true,
+  };
+  const snapshot: BrowserSnapshot = {
+    tab_id: "preview",
+    url: previewUrl,
+    origin: new URL(previewUrl).origin,
+    title: "Preview",
+    screenshot_base64: Buffer.from("preview").toString("base64"),
+    dom: { title: "Preview" },
+  };
+  vi.spyOn(browserPlaywrightAdapter, "openOrNavigate").mockResolvedValue(tab);
+  vi.spyOn(browserPlaywrightAdapter, "open").mockResolvedValue(tab);
+  vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([
+    { tab_id: "workspace", url: "http://localhost:3000/workspace/workspace-a", title: "Workspace", active: false },
+    tab,
+  ]);
+  vi.spyOn(browserPlaywrightAdapter, "selectTab").mockResolvedValue(tab);
+  vi.spyOn(browserPlaywrightAdapter, "snapshot").mockResolvedValue(snapshot);
+}

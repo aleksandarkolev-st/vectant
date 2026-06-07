@@ -74,7 +74,7 @@ export async function browserWorkflowOverlayAction(input: {
       workspace_url: runtime.workspace_url ?? input.page_url,
       preferred_url: targetUrl,
       preview_url: targetUrl,
-    });
+    }, { userGesture: true });
     if (response.isError) return workflowOverlayError("Observe failed", response);
     return workflowOverlayStatus({ ok: true, label: "Observed" }, input.tab_id);
   }
@@ -773,7 +773,7 @@ async function browserListTabsTool(): Promise<ToolResponse> {
   return jsonResponse({ ok: true, tabs, hidden_tabs: allTabs.length - tabs.length });
 }
 
-async function browserObservePreviewTool(args: unknown): Promise<ToolResponse> {
+async function browserObservePreviewTool(args: unknown, options: { userGesture?: boolean } = {}): Promise<ToolResponse> {
   const a = obj(args);
   const input = {
     workspace_url: stringOpt(a["workspace_url"]),
@@ -815,10 +815,20 @@ async function browserObservePreviewTool(args: unknown): Promise<ToolResponse> {
     });
   }
 
-  browserBroker.requestConsent(target.tab.url, "granted", "workspace_preview_observe", {
-    screenshot: true,
-    diagnostics: true,
-  });
+  if (options.userGesture) {
+    browserBroker.requestConsent(target.tab.url, "granted", "workspace_preview_observe_user_gesture", {
+      screenshot: true,
+      diagnostics: false,
+    });
+  } else {
+    const consent = browserBroker.getConsent(target.tab.url)[0];
+    if (consent?.status !== "granted") {
+      return previewConsentError("origin_consent_required", target.tab.url);
+    }
+    if (consent.screenshot !== "granted") {
+      return previewConsentError("screenshot_consent_required", target.tab.url);
+    }
+  }
   const tabs = browserBroker.registerTabs(allTabs);
   const brokerTab = browserBroker.selectTab(target.tab.tab_id);
   if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: target.tab.tab_id });
@@ -838,6 +848,21 @@ async function browserObservePreviewTool(args: unknown): Promise<ToolResponse> {
     snapshot: gated.snapshot,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,
+  });
+}
+
+function previewConsentError(error: "origin_consent_required" | "screenshot_consent_required", url: string): ToolResponse {
+  return errorResponse(error, {
+    url,
+    required_tool_call: {
+      name: "synthi_browser_request_consent",
+      arguments: {
+        url,
+        status: "granted",
+        screenshot: true,
+        diagnostics: false,
+      },
+    },
   });
 }
 
