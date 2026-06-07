@@ -610,6 +610,38 @@ function acceptedFissionProof() {
   });
 }
 
+function acceptedBackendFissionProof({
+  artifactKind,
+  compilerName,
+  launchApi,
+  sourcePaths,
+  entryPoints,
+}: {
+  artifactKind: string;
+  compilerName: string;
+  launchApi: string;
+  sourcePaths: string[];
+  entryPoints: string[];
+}) {
+  return {
+    ...acceptedFissionProof(),
+    selectedIslandContracts: [{
+      ...acceptedSelectedIslandContract(),
+      artifactKind,
+      compilerName,
+      launchApi,
+      sourcePaths,
+      sourceSpans: sourcePaths.map((path) => ({
+        path,
+        startLine: 1,
+        endLine: 32,
+      })),
+      targetSymbols: entryPoints,
+      exportedSymbolsExpected: entryPoints,
+    }],
+  };
+}
+
 function acceptedFissionVerifierMetadata() {
   const metadata = {
     schemaVersion: "synthi.gpu.fission_verifier.v1",
@@ -6223,6 +6255,250 @@ describe("GPU HMR runtime output proof classification", () => {
         }),
       ]),
     );
+  });
+
+  it("rejects forged backend-specific contract fields for every implemented backend family", () => {
+    const backendCases = [
+      {
+        backend: "hiprt",
+        gpuArch: "gfx1201",
+        compiler: "hipcc",
+        artifactKind: "hip_source_bridge",
+        launchApi: "hipModuleLaunchKernel",
+        sourcePaths: ["src/ray/trace_scene.hip"],
+        entryPoints: ["trace_scene"],
+        backendInput: {
+          kernelEntry: "trace_scene",
+          sceneOrBvhHandles: ["scene:bvh:main"],
+          framebufferHandle: "framebuffer:main",
+          materialOrGeometryBuffers: ["buffer:materials", "buffer:geometry"],
+          cameraStateHash: `sha256:${"4".repeat(64)}`,
+          sameProcessReloadHook: "hiprt-runtime:reload-kernel",
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          hiprt_contract: {
+            ...contract.hiprt_contract,
+            camera_state_hash: `sha256:${"5".repeat(64)}`,
+          },
+        }),
+        expectedField: "hiprt_contract_camera_state_hash",
+      },
+      {
+        backend: "opencl",
+        gpuArch: "opencl-device:test",
+        compiler: "clang",
+        artifactKind: "opencl_program",
+        launchApi: "clEnqueueNDRangeKernel",
+        sourcePaths: ["src/kernels/scan.cl"],
+        entryPoints: ["scan_kernel"],
+        backendInput: {
+          kernelName: "scan_kernel",
+          commandQueue: "cl-command-queue:main",
+          workDim: 1,
+          globalWorkSize: [256],
+          localWorkSize: [64],
+          eventTrace: {
+            enqueue_event: "cl-event:epoch-3",
+            completed_after_epoch_dispatch: true,
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          opencl_contract: {
+            ...contract.opencl_contract,
+            command_queue: "cl-command-queue:forged",
+          },
+        }),
+        expectedField: "opencl_contract_command_queue",
+      },
+      {
+        backend: "vulkan",
+        gpuArch: "vulkan-device:test",
+        compiler: "glslc",
+        artifactKind: "spirv",
+        launchApi: "vkCmdDispatch",
+        sourcePaths: ["shaders/lighting.comp"],
+        entryPoints: ["main"],
+        backendInput: {
+          descriptorSetLayoutHash: `sha256:${"6".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"7".repeat(64)}`,
+          pipelineStateHash: `sha256:${"8".repeat(64)}`,
+          commandBufferReRecordRequired: true,
+          commandBufferReRecordProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            pipeline_epoch: "3",
+            command_buffer_re_recorded: true,
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          vulkan_contract: {
+            ...contract.vulkan_contract,
+            pipeline_layout_hash: `sha256:${"9".repeat(64)}`,
+          },
+        }),
+        expectedField: "vulkan_contract_pipeline_layout_hash",
+      },
+      {
+        backend: "webgpu",
+        gpuArch: "webgpu-adapter:test",
+        compiler: "naga",
+        artifactKind: "wgsl",
+        launchApi: "createRenderPipeline",
+        sourcePaths: ["assets/shaders/flow.wgsl"],
+        entryPoints: ["fs_main"],
+        backendInput: {
+          shaderModuleEpoch: "3",
+          bindGroupLayoutHash: `sha256:${"a".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"b".repeat(64)}`,
+          vertexBufferLayoutHash: `sha256:${"c".repeat(64)}`,
+          colorTargetStateHash: `sha256:${"d".repeat(64)}`,
+          pipelineRecreateRequired: true,
+          pipelineRecreateProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            shader_module_epoch: "3",
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          webgpu_contract: {
+            ...contract.webgpu_contract,
+            bind_group_layout_hash: `sha256:${"e".repeat(64)}`,
+          },
+        }),
+        expectedField: "webgpu_contract_bind_group_layout_hash",
+      },
+      {
+        backend: "bevy_wgsl",
+        gpuArch: "wgpu-adapter:test",
+        compiler: "bevy_asset_server",
+        artifactKind: "wgsl",
+        launchApi: "bevy_asset_reload",
+        sourcePaths: ["assets/shaders/custom_material.wgsl"],
+        entryPoints: ["fragment"],
+        backendInput: {
+          shaderModuleEpoch: "3",
+          bindGroupLayoutHash: `sha256:${"f".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"1".repeat(64)}`,
+          vertexBufferLayoutHash: `sha256:${"2".repeat(64)}`,
+          colorTargetStateHash: `sha256:${"3".repeat(64)}`,
+          pipelineRecreateRequired: true,
+          pipelineRecreateProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            shader_module_epoch: "3",
+            asset_reload_observed: true,
+          },
+          bevyShaderAssetSource: "file_loaded",
+          assetWatched: true,
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          webgpu_contract: {
+            ...contract.webgpu_contract,
+            pipeline_layout_hash: `sha256:${"4".repeat(64)}`,
+          },
+        }),
+        expectedField: "webgpu_contract_pipeline_layout_hash",
+      },
+    ] as const;
+
+    for (const testCase of backendCases) {
+      const dispatchProof = safeDispatchProof();
+      const sourceProof = acceptedSourceProof();
+      const fissionProof = acceptedBackendFissionProof({
+        artifactKind: testCase.artifactKind,
+        compilerName: testCase.compiler,
+        launchApi: testCase.launchApi,
+        sourcePaths: [...testCase.sourcePaths],
+        entryPoints: [...testCase.entryPoints],
+      });
+      const abiProof = acceptedAbiProof();
+      const artifactTransportProof = acceptedArtifactTransportProof();
+      const epochProof = retiredEpochProof();
+      const outputProof = classifyGpuHmrOutputProof({
+        dispatchProof,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      });
+      const hostPreservationProof = preservedHostProof();
+      const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+      });
+      const baseInput = {
+        workspaceSlug: "workspace",
+        sourceEditId: "edit-1",
+        editId: "edit-1",
+        backend: testCase.backend,
+        gpuArch: testCase.gpuArch,
+        compiler: testCase.compiler,
+        processId: "pid1",
+        deviceUuid: "device:test",
+        contextHandle: "gpu-context:test",
+        engineSceneHandles: ["scene:validation-main"],
+        cameraStateHash: `sha256:${"0".repeat(64)}`,
+        swapchainOrFramebufferIdentity: "surface:validation-main",
+        ...acceptedGpuRouteEvidence(),
+        ...testCase.backendInput,
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+        fullRuntimeProof,
+        validationContext: {
+          processId: "pid1",
+          deviceIdentity: {
+            device_uuid: "device:test",
+          },
+        },
+      };
+      const verifiedArtifact = buildValidationRuntimeProofArtifact(baseInput);
+      if (!verifiedArtifact.acceptanceContractEvaluation.accepted) {
+        throw new Error(
+          `${testCase.backend} verified contract fixture was rejected: ${
+            verifiedArtifact.acceptanceContractEvaluation.failedGates
+              .map((gate: any) => gate.code)
+              .join(",")
+          }`,
+        );
+      }
+      expect(verifiedArtifact.acceptanceContractEvaluation.accepted).toBe(true);
+      expect(verifiedArtifact.acceptanceContractConsistency.accepted).toBe(true);
+
+      const forgedArtifact = buildValidationRuntimeProofArtifact({
+        ...baseInput,
+        acceptanceContract: testCase.forge(verifiedArtifact.acceptanceContract),
+      });
+
+      expect(forgedArtifact.acceptanceContractEvaluation.accepted).toBe(true);
+      expect(forgedArtifact.acceptanceContractConsistency.accepted).toBe(false);
+      expect(forgedArtifact.gpuHmrSuccess).toBe(false);
+      expect(forgedArtifact.limitations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage_id: "acceptance-contract-consistency",
+            degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+            field: testCase.expectedField,
+          }),
+        ]),
+      );
+    }
   });
 
   it("rejects runtime artifacts for backends without implemented contracts", () => {
