@@ -4,6 +4,7 @@ import {
   evaluateGpuHmrProofLedger,
   assertGpuHmrProofLedgerSuccess,
   buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import { GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION } from './lib/gpu-hmr-acceptance-contract.mjs';
@@ -204,6 +205,7 @@ const cases = [
   ['artifact not loaded', baselineRecord({ loader_event: { artifact_hash: HASH_A, process_id: 'pid-1' } }), 'loader_artifact_hash_mismatch'],
   ['publish mismatched artifact', baselineRecord({ epoch_publish_event: { epoch: 'epoch-7', artifact_hash: HASH_A, process_id: 'pid-1' } }), 'epoch_publish_artifact_hash_mismatch'],
   ['old epoch dispatch', baselineRecord({ dispatch_event: { id: 'dispatch-1', epoch: 'epoch-6', artifact_hash: HASH_B, process_id: 'pid-1', timestamp_monotonic_ns: 300 } }), 'dispatch_epoch_mismatch'],
+  ['stale artifact dispatch', baselineRecord({ dispatch_event: { id: 'dispatch-1', epoch: 'epoch-7', artifact_hash: HASH_A, process_id: 'pid-1', timestamp_monotonic_ns: 300 } }), 'dispatch_artifact_hash_mismatch'],
   ['output from stale dispatch', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-old', passed: true, timestamp_monotonic_ns: 400 } }), 'output_after_dispatch_id_mismatch'],
   ['output before dispatch', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 250 } }), 'output_precedes_dispatch'],
   ['output oracle failed', baselineRecord({ output_event: { kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, after_dispatch_id: 'dispatch-1', passed: false, timestamp_monotonic_ns: 400 } }), 'output_oracle_not_passed'],
@@ -219,6 +221,19 @@ const rejected = cases.map(([name, record, expectedCode]) => {
   const result = expectReject(name, record, expectedCode);
   return { name, expectedCode, failedInvariants: result.failedInvariants.map((failure) => failure.code) };
 });
+
+const forgedLedger = buildGpuHmrProofLedger(baselineRecord({ cpu_hmr_used: true }));
+forgedLedger.query = {
+  ...forgedLedger.query,
+  gpuHmrSuccess: true,
+  failedInvariants: [],
+};
+const forgedQueryResult = queryGpuHmrLedgerInvariants(forgedLedger);
+assert.equal(forgedQueryResult.gpuHmrSuccess, false);
+assert.ok(
+  forgedQueryResult.failedInvariants.some((failure) => failure.code === 'supplied_ledger_query_mismatch'),
+  `forged ledger query expected supplied_ledger_query_mismatch, got ${forgedQueryResult.failedInvariants.map((f) => f.code).join(',')}`,
+);
 
 const rejectedArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',

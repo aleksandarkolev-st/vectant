@@ -56,6 +56,8 @@ import {
 } from "../../scripts/lib/gpu-hmr-visual-evidence.mjs";
 import {
   evaluateGpuHmrProofLedger,
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
 } from "../../scripts/lib/gpu-hmr-proof-ledger.mjs";
 import {
   classifyFreshAiSplitProvenance,
@@ -6528,6 +6530,16 @@ describe("GPU HMR runtime output proof classification", () => {
         },
         "retirement_proof_missing",
       ],
+      [
+        {
+          ...baseRecord,
+          dispatch_event: {
+            ...baseRecord.dispatch_event,
+            artifact_hash: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
+          },
+        },
+        "dispatch_artifact_hash_mismatch",
+      ],
     ] as const;
 
     for (const [record, expectedCode] of cases) {
@@ -6535,6 +6547,22 @@ describe("GPU HMR runtime output proof classification", () => {
       expect(result.gpuHmrSuccess).toBe(false);
       expect(result.failedInvariants.map((failure) => failure.code)).toContain(expectedCode);
     }
+
+    const rejectedRecord = {
+      ...baseRecord,
+      cpu_hmr_used: true,
+    };
+    const forgedLedger = buildGpuHmrProofLedger(rejectedRecord);
+    forgedLedger.query = {
+      ...forgedLedger.query,
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    };
+    const recomputed = queryGpuHmrLedgerInvariants(forgedLedger);
+    expect(recomputed.gpuHmrSuccess).toBe(false);
+    expect(recomputed.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining(["cpu_hmr_used", "supplied_ledger_query_mismatch"]),
+    );
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {

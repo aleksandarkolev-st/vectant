@@ -245,6 +245,15 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     });
   }
   if (!dispatchId) addFailure(failures, 'dispatch_id_missing');
+  const dispatchArtifactHash = eventArtifactHash(record.dispatchEvent);
+  if (!dispatchArtifactHash) {
+    addFailure(failures, 'dispatch_artifact_hash_missing');
+  } else if (artifactAfterHash && dispatchArtifactHash !== artifactAfterHash) {
+    addFailure(failures, 'dispatch_artifact_hash_mismatch', {
+      expected: artifactAfterHash,
+      actual: dispatchArtifactHash,
+    });
+  }
   if (!outputDispatchId) {
     addFailure(failures, 'output_after_dispatch_id_missing');
   } else if (dispatchId && outputDispatchId !== dispatchId) {
@@ -329,6 +338,7 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       publishedEpoch,
       dispatchEpoch,
       dispatchId,
+      dispatchArtifactHash,
       outputDispatchId,
       outputPassed: record.outputEvent.passed === true,
     },
@@ -350,14 +360,34 @@ export function buildGpuHmrProofLedger(input = {}) {
 
 export function queryGpuHmrLedgerInvariants(input = {}) {
   const ledger = asObject(input);
-  if (asObject(ledger.query).schemaVersion === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
-    return ledger.query;
-  }
   const records = Array.isArray(ledger.records) ? ledger.records : null;
-  if (records && records.length > 0) {
-    return evaluateGpuHmrProofLedger(records[records.length - 1]);
+  const recomputed = records && records.length > 0
+    ? evaluateGpuHmrProofLedger(records[records.length - 1])
+    : evaluateGpuHmrProofLedger(input);
+  const suppliedQuery = asObject(ledger.query);
+  if (suppliedQuery.schemaVersion === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
+    const suppliedFailures = compactStringList(asObject(suppliedQuery).failedInvariants?.map?.((failure) => failure?.code));
+    const recomputedFailures = compactStringList(recomputed.failedInvariants.map((failure) => failure.code));
+    const suppliedConsistent =
+      suppliedQuery.gpuHmrSuccess === recomputed.gpuHmrSuccess
+      && firstText(suppliedQuery.proofId, suppliedQuery.proof_id) === recomputed.proofId
+      && stableJson(suppliedFailures) === stableJson(recomputedFailures);
+    if (!suppliedConsistent) {
+      return {
+        ...recomputed,
+        gpuHmrSuccess: false,
+        failedInvariants: [
+          ...recomputed.failedInvariants,
+          {
+            code: 'supplied_ledger_query_mismatch',
+            suppliedGpuHmrSuccess: suppliedQuery.gpuHmrSuccess,
+            recomputedGpuHmrSuccess: recomputed.gpuHmrSuccess,
+          },
+        ],
+      };
+    }
   }
-  return evaluateGpuHmrProofLedger(input);
+  return recomputed;
 }
 
 export function assertGpuHmrProofLedgerSuccess(input = {}) {
