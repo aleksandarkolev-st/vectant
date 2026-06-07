@@ -658,6 +658,8 @@ impl HmrPipeline {
             let _ = fsm.apply(LifecycleEvent::BeginReload, now_ms);
         }
 
+        let firewall_process_id_before = std::process::id();
+        let firewall_process_id_after = std::process::id();
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
             module_id: manifest.slot_name(),
@@ -665,7 +667,11 @@ impl HmrPipeline {
             build_manifest: manifest.clone(),
             artifact_blob,
             capsule_metadata,
-            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
+            firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+                "hmr_integration:execute_gpu_device_reload",
+                firewall_process_id_before,
+                firewall_process_id_after,
+            ),
             preserve_state: true,
             timeout_ms: 5000,
         };

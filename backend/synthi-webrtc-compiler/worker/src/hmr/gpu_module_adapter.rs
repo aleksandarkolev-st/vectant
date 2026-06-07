@@ -2150,6 +2150,10 @@ impl Adapter for GpuModuleAdapter {
                 cpu_hmr_used: req.firewall_evidence.cpu_hmr_used,
                 full_rebuild_used: req.firewall_evidence.full_rebuild_used,
                 process_restarted: req.firewall_evidence.process_restarted,
+                firewall_route: req.firewall_evidence.route.clone(),
+                firewall_evidence_source: req.firewall_evidence.evidence_source.clone(),
+                firewall_process_id_before: req.firewall_evidence.process_id_before,
+                firewall_process_id_after: req.firewall_evidence.process_id_after,
                 process_id: Some(format!("pid:{}", std::process::id())),
                 device_identity: Some(format!(
                     "{}:{}",
@@ -2284,6 +2288,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     fn dummy_request() -> AdapterReloadRequest {
+        let pid = std::process::id();
         AdapterReloadRequest {
             reload_id: "test".into(),
             module_id: "device".into(),
@@ -2291,7 +2296,11 @@ mod tests {
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
             artifact_blob: None,
             capsule_metadata: None,
-            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
+            firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+                "gpu_module_adapter_test:dummy_request",
+                pid,
+                pid,
+            ),
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -2573,6 +2582,7 @@ mod tests {
         changed_files: Vec<String>,
         abi_version: &str,
     ) -> AdapterReloadRequest {
+        let pid = std::process::id();
         let mut manifest =
             BuildManifest::for_language("test-preview", "cuda").with_artifact(path, "test-hash");
         manifest.abi_version = abi_version.to_string();
@@ -2584,7 +2594,11 @@ mod tests {
             build_manifest: manifest,
             artifact_blob: None,
             capsule_metadata: None,
-            firewall_evidence: ReloadFirewallEvidence::gpu_hmr_verified_absence(),
+            firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+                "gpu_module_adapter_test:request_with_artifact",
+                pid,
+                pid,
+            ),
             preserve_state: true,
             timeout_ms: 5_000,
         }

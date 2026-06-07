@@ -254,6 +254,10 @@ pub struct GpuHmrAcceptanceLedgerInput {
     pub cpu_hmr_used: Option<bool>,
     pub full_rebuild_used: Option<bool>,
     pub process_restarted: Option<bool>,
+    pub firewall_route: Option<String>,
+    pub firewall_evidence_source: Option<String>,
+    pub firewall_process_id_before: Option<u32>,
+    pub firewall_process_id_after: Option<u32>,
     pub process_id: Option<String>,
     pub device_identity: Option<String>,
 }
@@ -294,6 +298,20 @@ pub struct GpuHmrAcceptanceLedger {
     pub process_restarted: bool,
     #[serde(rename = "processRestartAbsenceEvidencePresent")]
     pub process_restart_absence_evidence_present: bool,
+    #[serde(rename = "firewallRoute", skip_serializing_if = "Option::is_none")]
+    pub firewall_route: Option<String>,
+    #[serde(rename = "firewallEvidenceSource", skip_serializing_if = "Option::is_none")]
+    pub firewall_evidence_source: Option<String>,
+    #[serde(
+        rename = "firewallProcessIdBefore",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub firewall_process_id_before: Option<u32>,
+    #[serde(
+        rename = "firewallProcessIdAfter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub firewall_process_id_after: Option<u32>,
     #[serde(rename = "processId", skip_serializing_if = "Option::is_none")]
     pub process_id: Option<String>,
     #[serde(rename = "deviceIdentity", skip_serializing_if = "Option::is_none")]
@@ -324,6 +342,35 @@ impl GpuHmrAcceptanceLedger {
                 Some(true) => failed.push("process_restarted".to_string()),
                 Some(false) => {}
                 None => failed.push("process_restart_absence_evidence_missing".to_string()),
+            }
+            let firewall_route = input
+                .firewall_route
+                .as_deref()
+                .unwrap_or_default()
+                .trim();
+            if firewall_route.is_empty() {
+                failed.push("firewall_route_missing".to_string());
+            } else if firewall_route
+                != crate::hmr::adapter_trait::ReloadFirewallEvidence::GPU_DEVICE_SIDECAR_ROUTE
+            {
+                failed.push("firewall_route_not_gpu_device_sidecar".to_string());
+            }
+            if input
+                .firewall_evidence_source
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                failed.push("firewall_evidence_source_missing".to_string());
+            }
+            match (
+                input.firewall_process_id_before,
+                input.firewall_process_id_after,
+            ) {
+                (Some(before), Some(after)) if before == after => {}
+                (Some(_), Some(_)) => failed.push("process_restarted".to_string()),
+                _ => failed.push("firewall_process_boundary_missing".to_string()),
             }
             if input.artifact_id_after.trim().is_empty() {
                 failed.push("artifact_after_missing".to_string());
@@ -381,6 +428,10 @@ impl GpuHmrAcceptanceLedger {
             "fullRebuildAbsenceEvidencePresent": input.full_rebuild_used.is_some(),
             "processRestarted": input.process_restarted.unwrap_or(false),
             "processRestartAbsenceEvidencePresent": input.process_restarted.is_some(),
+            "firewallRoute": input.firewall_route,
+            "firewallEvidenceSource": input.firewall_evidence_source,
+            "firewallProcessIdBefore": input.firewall_process_id_before,
+            "firewallProcessIdAfter": input.firewall_process_id_after,
             "processId": input.process_id,
             "deviceIdentity": input.device_identity,
             "failedInvariants": failed,
@@ -416,6 +467,16 @@ impl GpuHmrAcceptanceLedger {
             process_restart_absence_evidence_present: material["processRestartAbsenceEvidencePresent"]
                 .as_bool()
                 .unwrap_or(false),
+            firewall_route: material["firewallRoute"].as_str().map(str::to_string),
+            firewall_evidence_source: material["firewallEvidenceSource"]
+                .as_str()
+                .map(str::to_string),
+            firewall_process_id_before: material["firewallProcessIdBefore"]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok()),
+            firewall_process_id_after: material["firewallProcessIdAfter"]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok()),
             process_id: material["processId"].as_str().map(str::to_string),
             device_identity: material["deviceIdentity"].as_str().map(str::to_string),
             failed_invariants: serde_json::from_value(material["failedInvariants"].clone())
@@ -448,6 +509,10 @@ impl GpuHmrAcceptanceLedger {
             "fullRebuildAbsenceEvidencePresent": self.full_rebuild_absence_evidence_present,
             "processRestarted": self.process_restarted,
             "processRestartAbsenceEvidencePresent": self.process_restart_absence_evidence_present,
+            "firewallRoute": self.firewall_route,
+            "firewallEvidenceSource": self.firewall_evidence_source,
+            "firewallProcessIdBefore": self.firewall_process_id_before,
+            "firewallProcessIdAfter": self.firewall_process_id_after,
             "processId": self.process_id,
             "deviceIdentity": self.device_identity,
             "failedInvariants": self.failed_invariants,
@@ -783,6 +848,13 @@ mod tests {
             cpu_hmr_used: Some(false),
             full_rebuild_used: Some(false),
             process_restarted: Some(false),
+            firewall_route: Some(
+                crate::hmr::adapter_trait::ReloadFirewallEvidence::GPU_DEVICE_SIDECAR_ROUTE
+                    .to_string(),
+            ),
+            firewall_evidence_source: Some("gpu_proof_test:accepted_ledger_input".to_string()),
+            firewall_process_id_before: Some(42),
+            firewall_process_id_after: Some(42),
             process_id: Some("pid:1".to_string()),
             device_identity: Some("device:test".to_string()),
         }
@@ -811,6 +883,10 @@ mod tests {
         input.cpu_hmr_used = None;
         input.full_rebuild_used = None;
         input.process_restarted = None;
+        input.firewall_route = None;
+        input.firewall_evidence_source = None;
+        input.firewall_process_id_before = None;
+        input.firewall_process_id_after = None;
         let ledger = GpuHmrAcceptanceLedger::new(input);
         assert!(!ledger.gpu_hmr_success);
         assert!(ledger
@@ -822,6 +898,37 @@ mod tests {
         assert!(ledger
             .failed_invariants
             .contains(&"process_restart_absence_evidence_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"firewall_route_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"firewall_evidence_source_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"firewall_process_boundary_missing".to_string()));
+    }
+
+    #[test]
+    fn acceptance_ledger_rejects_non_gpu_firewall_route() {
+        let mut input = accepted_ledger_input();
+        input.firewall_route = Some("cpu_hmr_or_host_reload".to_string());
+        let ledger = GpuHmrAcceptanceLedger::new(input);
+        assert!(!ledger.gpu_hmr_success);
+        assert!(ledger
+            .failed_invariants
+            .contains(&"firewall_route_not_gpu_device_sidecar".to_string()));
+    }
+
+    #[test]
+    fn acceptance_ledger_rejects_process_boundary_change() {
+        let mut input = accepted_ledger_input();
+        input.firewall_process_id_after = Some(43);
+        let ledger = GpuHmrAcceptanceLedger::new(input);
+        assert!(!ledger.gpu_hmr_success);
+        assert!(ledger
+            .failed_invariants
+            .contains(&"process_restarted".to_string()));
     }
 
     #[test]
