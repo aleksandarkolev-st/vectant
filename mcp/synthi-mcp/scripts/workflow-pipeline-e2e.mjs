@@ -127,37 +127,35 @@ async function runCase({ testCase, container, context, runner }) {
     const previewUrl = await waitForPreviewPort(run.slug, run.port);
     record(testCase.id, "detect actual running port", true, `port=${run.port} preview=${previewUrl}`);
 
+    previewPage = await openPreviewPage(context, previewUrl);
     idePage = await openWorkflowsPanel(context, workspaceUrl, slug);
     const attachBody = await clickWorkflowButton(idePage, /^(Attach|Reattach)$/);
     record(testCase.id, "click attach", attachBody.ok === true, attachBody.result?.runtime?.adapter || "");
 
-    const observeBody = await clickWorkflowButton(idePage, /^Observe$/);
-    const observedUrl = observeBody.result?.target?.url;
-    const observeDetail = observedUrl === previewUrl
-      ? `observed=${observedUrl || "missing"}`
-      : `observed=${observedUrl || "missing"} expected=${previewUrl} events=${JSON.stringify(observeBody.__workflowHarnessEvents || [])}`;
+    await waitForWorkflowOverlay(previewPage);
+    const observeState = await clickWorkflowOverlay(previewPage, "observe", previewUrl);
+    const observedUrl = observeState.url;
     record(
       testCase.id,
-      "click observe",
-      observeBody.ok === true && observedUrl === previewUrl,
-      observeDetail
+      "click overlay observe",
+      observeState.ok === true && observeState.observed === true && observedUrl === previewUrl,
+      `observed=${observedUrl || "missing"} status=${observeState.status || "missing"}`
     );
 
-    previewPage = await findPageByUrl(context, previewUrl);
     await previewPage.bringToFront().catch(() => undefined);
     await previewPage.screenshot({ path: path.join(caseDir, "observed-preview.png"), fullPage: true });
 
-    const beginBody = await clickWorkflowButton(idePage, /^Teach$/);
-    record(testCase.id, "click teach", beginBody.ok === true, beginBody.result?.teach?.active ? "recording" : "");
+    const beginState = await clickWorkflowOverlay(previewPage, "teach");
+    record(testCase.id, "click overlay teach", beginState.ok === true && beginState.recording === true, beginState.status || "");
 
     await previewPage.bringToFront().catch(() => undefined);
     await testCase.teach(previewPage);
     await previewPage.waitForTimeout(800);
     await previewPage.screenshot({ path: path.join(caseDir, "after-teach-actions.png"), fullPage: true });
 
-    const endBody = await clickWorkflowButton(idePage, /^Stop$/);
-    const taughtSteps = Number(endBody.state?.workflow?.stepCount || endBody.result?.card?.stepCount || 0);
-    record(testCase.id, "click stop", endBody.ok === true && taughtSteps >= testCase.minSteps, `steps=${taughtSteps}`);
+    const endState = await clickWorkflowOverlay(previewPage, "stop");
+    const taughtSteps = Number(endState.stepCount || 0);
+    record(testCase.id, "click overlay stop", endState.ok === true && taughtSteps >= testCase.minSteps, `steps=${taughtSteps}`);
 
     const compileBody = await clickWorkflowButton(idePage, /^Compile$/);
     const contract = compileBody.result?.workflow?.contract;
@@ -291,6 +289,55 @@ async function openWorkflowsPanel(context, workspaceUrl, slug) {
   await page.locator('button[aria-label="Workflows"]').first().click();
   await page.waitForSelector('[data-testid="agent-workflow-panel"]', { timeout: CFG.timeoutMs });
   return page;
+}
+
+async function openPreviewPage(context, previewUrl) {
+  for (const candidate of context.pages()) {
+    if (trimSlash(candidate.url()) === trimSlash(previewUrl)) {
+      await candidate.close().catch(() => undefined);
+    }
+  }
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(previewUrl, { waitUntil: "domcontentloaded", timeout: CFG.timeoutMs });
+  return page;
+}
+
+async function waitForWorkflowOverlay(page) {
+  await page.getByTestId("synthi-workflow-toolbox").waitFor({ state: "visible", timeout: CFG.timeoutMs });
+}
+
+async function clickWorkflowOverlay(page, action, expectedUrl = "") {
+  const testId = action === "observe" ? "synthi-workflow-observe" : "synthi-workflow-teach";
+  await waitForWorkflowOverlay(page);
+  const button = page.getByTestId(testId).first();
+  await expectButtonEnabled(page, button, `overlay:${action}`);
+  await button.click();
+  const deadline = Date.now() + CFG.timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await workflowOverlayState(page);
+    if (action === "observe" && state.observed && (!expectedUrl || trimSlash(state.url) === trimSlash(expectedUrl))) return state;
+    if (action === "teach" && state.status === "recording") return state;
+    if (action === "stop" && !state.recording && state.stepCount > 0) return state;
+    await sleep(250);
+  }
+  throw new Error(`overlay ${action} did not settle; state=${JSON.stringify(await workflowOverlayState(page))}`);
+}
+
+async function workflowOverlayState(page) {
+  return await page.evaluate(() => {
+    const host = document.querySelector('[data-synthi-workflow-toolbox]');
+    if (!host) return { ok: false, status: "missing", label: "Missing", observed: false, recording: false, stepCount: 0 };
+    return {
+      ok: host.getAttribute("data-synthi-workflow-status") !== "error",
+      status: host.getAttribute("data-synthi-workflow-status") || "idle",
+      label: host.shadowRoot?.querySelector(".label")?.textContent?.trim() || "",
+      observed: host.getAttribute("data-synthi-workflow-status") === "observed",
+      recording: host.getAttribute("data-synthi-workflow-recording") === "true",
+      stepCount: Number(host.getAttribute("data-synthi-workflow-steps") || 0),
+      url: host.getAttribute("data-synthi-workflow-url") || "",
+    };
+  });
 }
 
 async function clickWorkflowButton(page, labelPattern) {

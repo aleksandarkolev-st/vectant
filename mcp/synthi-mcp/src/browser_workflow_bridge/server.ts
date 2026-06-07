@@ -74,6 +74,19 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_workflow_publish_tool: "synthi_browser_generate_private_tool_manifest",
 };
 
+const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
+  "synthi_browser_attach_current_workspace",
+  "synthi_browser_observe_preview",
+  "synthi_browser_begin_teach",
+  "synthi_browser_end_teach",
+  "synthi_auth_get_tool_auth_readiness",
+  "synthi_source_get_mapping_status",
+  "synthi_browser_compile_workflow",
+  "synthi_safety_run_prefix_validation",
+  "synthi_browser_generate_script",
+  "synthi_browser_generate_private_tool_manifest",
+]);
+
 const REVIEW_LIMITATIONS = new Set([
   "unresolvedStep",
   "lowConfidenceLocator",
@@ -127,6 +140,7 @@ function normalizeToolName(toolName: string): string {
 }
 
 async function dispatchWorkflowTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
+  if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName)) return null;
   return (
     (await dispatchBrowserTool(toolName, args)) ??
     (await dispatchSafetyTool(toolName, args)) ??

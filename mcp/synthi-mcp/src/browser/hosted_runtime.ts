@@ -23,6 +23,7 @@ export interface HostedBrowserAttachDeps {
   attach(cdpUrl: string): Promise<BrowserTab[]>;
   listTabs(): Promise<BrowserTab[]>;
   open(url: string): Promise<BrowserTab>;
+  setWorkflowOverlayEnabled?(enabled: boolean): void;
 }
 
 export type HostedBrowserAttachResult = {
@@ -67,6 +68,7 @@ export async function attachHostedBrowserRuntime(
     return { ok: false, error: "hosted_runtime_not_configured", runtime: publicConfig(config) };
   }
 
+  deps.setWorkflowOverlayEnabled?.(true);
   let allTabs = await deps.attach(config.cdpUrl);
   let openedWorkspaceUrl: string | null = null;
   if (config.workspace_url && input.open_workspace !== false) {

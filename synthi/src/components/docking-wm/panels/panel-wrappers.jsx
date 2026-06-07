@@ -433,8 +433,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
           break;
         default:
-          await callWorkflowTool(action, detail?.payload || {});
-          break;
+          throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);
       }
     } catch (err) {
       setWorkflowState((prev) => stateWithBridgeError(err, prev));
@@ -448,6 +447,14 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     refreshWorkflowState({ signal: controller.signal });
     return () => controller.abort();
   }, [refreshWorkflowState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const interval = window.setInterval(() => {
+      if (!busyAction) refreshWorkflowState();
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, [busyAction, refreshWorkflowState]);
 
   const displayedWorkflowState = useMemo(() => {
     if (!busyAction) return workflowState;

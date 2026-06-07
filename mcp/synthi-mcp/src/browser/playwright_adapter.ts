@@ -43,6 +43,27 @@ export interface CapturedBrowserHumanAction {
 
 export type BrowserTeachEventSink = (event: CapturedBrowserHumanAction) => void;
 
+export interface BrowserWorkflowOverlayRequest {
+  action: "state" | "observe" | "teach" | "stop";
+  url?: string;
+}
+
+export type BrowserWorkflowOverlayResponse = {
+  ok: boolean;
+  status?: string;
+  label?: string;
+  detail?: string;
+  recording?: boolean;
+  observed?: boolean;
+  stepCount?: number;
+  url?: string;
+  error?: string;
+};
+
+export type BrowserWorkflowOverlayActionSink = (
+  request: BrowserWorkflowOverlayRequest & { tab_id: string; page_url: string }
+) => Promise<BrowserWorkflowOverlayResponse> | BrowserWorkflowOverlayResponse;
+
 export class BrowserPlaywrightAdapter {
   private browser: Browser | null = null;
   private cdpUrl: string | null = null;
@@ -50,12 +71,23 @@ export class BrowserPlaywrightAdapter {
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly pages = new Map<string, PageRecord>();
   private readonly instrumented = new WeakSet<Page>();
+  private readonly workflowOverlayInstalled = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
   private teachEventSink: BrowserTeachEventSink | null = null;
+  private workflowOverlayActionSink: BrowserWorkflowOverlayActionSink | null = null;
+  private workflowOverlayEnabled = false;
 
   setTeachEventSink(sink: BrowserTeachEventSink | null): void {
     this.teachEventSink = sink;
+  }
+
+  setWorkflowOverlayActionSink(sink: BrowserWorkflowOverlayActionSink | null): void {
+    this.workflowOverlayActionSink = sink;
+  }
+
+  setWorkflowOverlayEnabled(enabled: boolean): void {
+    this.workflowOverlayEnabled = enabled;
   }
 
   async attach(cdpUrl: string): Promise<BrowserTab[]> {
@@ -99,7 +131,9 @@ export class BrowserPlaywrightAdapter {
     const context = browser.contexts()[0] ?? await browser.newContext();
     const existingPage = context.pages().find((page) => page.url() === url);
     const page = existingPage ?? await context.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    if (page.url() !== url) {
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+    }
     await page.bringToFront();
     return this.describePage(page);
   }
@@ -192,6 +226,10 @@ export class BrowserPlaywrightAdapter {
       case "wait":
         await this.resolveLocator(page, selector).waitFor();
         break;
+      default: {
+        const neverAction: never = action;
+        throw new Error(`unsupported_browser_action:${String(neverAction)}`);
+      }
     }
     return { ok: true, action, tab_id, url: page.url() };
   }
@@ -242,6 +280,10 @@ export class BrowserPlaywrightAdapter {
       case "timeout":
         await page.waitForTimeout(timeout);
         break;
+      default: {
+        const neverCondition: never = input.condition;
+        throw new Error(`unsupported_wait_condition:${String(neverCondition)}`);
+      }
     }
     return { ok: true, tab_id: input.tab_id, condition: input.condition };
   }
@@ -262,6 +304,8 @@ export class BrowserPlaywrightAdapter {
     this.consoleEvents.clear();
     this.networkEvents.clear();
     this.teachEventSink = null;
+    this.workflowOverlayActionSink = null;
+    this.workflowOverlayEnabled = false;
   }
 
   private async describePage(page: Page): Promise<BrowserTab> {
@@ -286,28 +330,33 @@ export class BrowserPlaywrightAdapter {
   }
 
   private async instrumentPage(page: Page, tab_id: string): Promise<void> {
-    if (this.instrumented.has(page)) return;
-    this.instrumented.add(page);
-    page.on("console", (msg) => {
-      const redacted = redactText(msg.text());
-      this.pushEvent(this.consoleEvents, tab_id, {
-        kind: "console",
-        url: page.url(),
-        value: redacted.text,
-        redacted: redacted.redacted,
-        detail: { level: msg.type() },
+    if (!this.instrumented.has(page)) {
+      this.instrumented.add(page);
+      page.on("console", (msg) => {
+        const redacted = redactText(msg.text());
+        this.pushEvent(this.consoleEvents, tab_id, {
+          kind: "console",
+          url: page.url(),
+          value: redacted.text,
+          redacted: redacted.redacted,
+          detail: { level: msg.type() },
+        });
       });
-    });
-    page.on("request", (request) => {
-      const redacted = redactUrl(request.url());
-      this.pushEvent(this.networkEvents, tab_id, {
-        kind: "network",
-        url: redacted.url,
-        redacted: redacted.redacted,
-        detail: { method: request.method(), resource_type: request.resourceType() },
+      page.on("request", (request) => {
+        const redacted = redactUrl(request.url());
+        this.pushEvent(this.networkEvents, tab_id, {
+          kind: "network",
+          url: redacted.url,
+          redacted: redacted.redacted,
+          detail: { method: request.method(), resource_type: request.resourceType() },
+        });
       });
-    });
-    await this.installTeachCapture(page, tab_id);
+      await this.installTeachCapture(page, tab_id);
+    }
+    if (this.workflowOverlayEnabled && !this.workflowOverlayInstalled.has(page)) {
+      this.workflowOverlayInstalled.add(page);
+      await this.installWorkflowOverlay(page, tab_id);
+    }
   }
 
   private pushEvent(
@@ -375,6 +424,31 @@ export class BrowserPlaywrightAdapter {
     await page.evaluate(script).catch(() => undefined);
   }
 
+  private async installWorkflowOverlay(page: Page, tab_id: string): Promise<void> {
+    const bindingName = "__synthiWorkflowOverlayAction";
+    await page.exposeBinding(bindingName, async (_source, payload: unknown) => {
+      const request = workflowOverlayRequestOpt(payload);
+      if (!request) return { ok: false, status: "error", error: "invalid_overlay_action" };
+      if (!this.workflowOverlayActionSink) return { ok: false, status: "error", error: "workflow_overlay_unavailable" };
+      try {
+        return await this.workflowOverlayActionSink({
+          ...request,
+          tab_id,
+          page_url: page.url(),
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }).catch(() => undefined);
+    const script = workflowOverlayInitScript(bindingName);
+    await page.addInitScript(script).catch(() => undefined);
+    await page.evaluate(script).catch(() => undefined);
+  }
+
   private requireBrowser(): Browser {
     if (!this.browser) throw new Error("browser_not_attached");
     return this.browser;
@@ -430,6 +504,17 @@ function browserActionOpt(value: unknown): BrowserActionKind | undefined {
     "navigate",
     "wait",
   ].includes(value) ? value as BrowserActionKind : undefined;
+}
+
+function workflowOverlayRequestOpt(value: unknown): BrowserWorkflowOverlayRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const action = raw["action"];
+  if (action !== "state" && action !== "observe" && action !== "teach" && action !== "stop") return null;
+  return {
+    action,
+    ...(typeof raw["url"] === "string" && raw["url"].trim() ? { url: raw["url"].trim() } : {}),
+  };
 }
 
 function elementOpt(value: unknown): BrowserElementMetadata | undefined {
@@ -663,10 +748,104 @@ function teachCaptureInitScript(bindingName: string): string {
     document.addEventListener('click', (event) => {
       const target = event.target;
       if (!isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'click', undefined, { click_event: true });
     }, true);
+  })();`;
+}
+
+function workflowOverlayInitScript(bindingName: string): string {
+  return `(() => {
+    const bindingName = ${JSON.stringify(bindingName)};
+    if (window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__) return;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
+
+    function shouldRender() {
+      if (!window[bindingName]) return false;
+      if (!/^https?:$/.test(location.protocol)) return false;
+      if (/^\\/workspace(\\/|$)/.test(location.pathname)) return false;
+      return true;
+    }
+
+    if (!shouldRender()) return;
+
+    const host = document.createElement('div');
+    host.id = 'synthi-workflow-toolbox-host';
+    host.setAttribute('data-synthi-workflow-toolbox', 'true');
+    host.setAttribute('data-synthi-workflow-status', 'idle');
+    host.style.position = 'fixed';
+    host.style.right = '16px';
+    host.style.bottom = '16px';
+    host.style.zIndex = '2147483647';
+    host.style.pointerEvents = 'auto';
+    document.documentElement.appendChild(host);
+
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = [
+      '<style>',
+      ':host{all:initial}',
+      '.box{box-sizing:border-box;display:flex;align-items:center;gap:8px;min-height:40px;padding:7px;border:1px solid rgba(232,232,226,.16);border-radius:8px;background:rgba(22,22,24,.94);color:rgb(246,246,240);font:12px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.34)}',
+      '.status{display:flex;align-items:center;gap:6px;min-width:74px;padding:0 6px;color:rgba(246,246,240,.78);white-space:nowrap}',
+      '.dot{width:7px;height:7px;border-radius:50%;background:#8a8a82}',
+      '.box[data-state=observed] .dot{background:#4fbe73}',
+      '.box[data-state=recording] .dot{background:#d7a43b;box-shadow:0 0 0 4px rgba(215,164,59,.15)}',
+      '.box[data-state=error] .dot{background:#d85f5f}',
+      'button{appearance:none;height:28px;border:1px solid rgba(232,232,226,.16);border-radius:6px;background:rgba(255,255,250,.06);color:rgb(246,246,240);padding:0 9px;font:600 12px/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer}',
+      'button:hover:not(:disabled){background:rgba(255,255,250,.11)}',
+      'button:focus-visible{outline:2px solid rgba(127,112,176,.9);outline-offset:2px}',
+      'button:disabled{opacity:.52;cursor:not-allowed}',
+      '.teach[data-recording=true]{background:rgba(215,164,59,.18);border-color:rgba(215,164,59,.38)}',
+      '</style>',
+      '<div class="box" data-state="idle" data-testid="synthi-workflow-toolbox">',
+      '  <div class="status" aria-live="polite"><span class="dot"></span><span class="label">Ready</span></div>',
+      '  <button type="button" class="observe" data-testid="synthi-workflow-observe">Observe</button>',
+      '  <button type="button" class="teach" data-recording="false" data-testid="synthi-workflow-teach">Teach</button>',
+      '</div>',
+    ].join('');
+
+    const box = root.querySelector('.box');
+    const label = root.querySelector('.label');
+    const observeButton = root.querySelector('.observe');
+    const teachButton = root.querySelector('.teach');
+    let recording = false;
+    let busy = false;
+
+    function setState(next) {
+      const status = next && next.status ? String(next.status) : next && next.recording ? 'recording' : next && next.observed ? 'observed' : 'idle';
+      recording = Boolean(next && next.recording);
+      box.dataset.state = status;
+      host.dataset.synthiWorkflowStatus = status;
+      host.dataset.synthiWorkflowRecording = recording ? 'true' : 'false';
+      host.dataset.synthiWorkflowSteps = String(next && Number.isFinite(Number(next.stepCount)) ? Number(next.stepCount) : 0);
+      host.dataset.synthiWorkflowUrl = next && next.url ? String(next.url) : '';
+      label.textContent = next && next.label ? String(next.label) : recording ? 'Recording' : status === 'observed' ? 'Observed' : status === 'error' ? 'Error' : 'Ready';
+      teachButton.textContent = recording ? 'Stop' : 'Teach';
+      teachButton.dataset.recording = recording ? 'true' : 'false';
+      if (next && next.detail) host.title = String(next.detail);
+    }
+
+    async function call(action) {
+      if (busy || !window[bindingName]) return;
+      busy = true;
+      observeButton.disabled = true;
+      teachButton.disabled = true;
+      try {
+        const result = await window[bindingName]({ action, url: location.href });
+        setState(result || {});
+      } catch (err) {
+        setState({ ok: false, status: 'error', label: 'Error', detail: err && err.message ? err.message : String(err) });
+      } finally {
+        busy = false;
+        observeButton.disabled = false;
+        teachButton.disabled = false;
+      }
+    }
+
+    observeButton.addEventListener('click', () => call('observe'));
+    teachButton.addEventListener('click', () => call(recording ? 'stop' : 'teach'));
+    call('state');
   })();`;
 }
 

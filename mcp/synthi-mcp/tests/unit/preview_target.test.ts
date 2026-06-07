@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveBrowserPreviewTarget } from "../../src/browser/preview_target.js";
+import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../../src/browser/preview_target.js";
 import type { BrowserTab } from "../../src/browser/types.js";
 
 const tabs: BrowserTab[] = [
@@ -81,5 +81,17 @@ describe("browser preview target selection", () => {
       ok: false,
       error: "preview_target_not_found",
     }));
+  });
+
+  it("allows overlay observe on loopback preview pages for loopback workspaces", () => {
+    expect(isBrowserPreviewUrlAllowed("http://localhost:5174/", {
+      workspace_url: "http://localhost:3000/workspace/demo",
+    }, {})).toBe(true);
+  });
+
+  it("does not let overlay observe self-authorize arbitrary hosted pages", () => {
+    expect(isBrowserPreviewUrlAllowed("https://example.com/", {
+      workspace_url: "https://app.synthi.example/workspace/demo",
+    }, {})).toBe(false);
   });
 });

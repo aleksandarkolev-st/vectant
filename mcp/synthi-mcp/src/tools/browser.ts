@@ -2,8 +2,8 @@ import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
-import { resolveBrowserPreviewTarget } from "../browser/preview_target.js";
-import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
+import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../browser/preview_target.js";
+import { browserPlaywrightAdapter, type BrowserWorkflowOverlayResponse } from "../browser/playwright_adapter.js";
 import { classifyWorkflowReplayBlock, classifyWorkflowReplayFailure, normalizeReplayMode, type WorkflowReplayModeV7 } from "../browser/workflow.js";
 import {
   detectBrowserProject,
@@ -18,6 +18,122 @@ import { errorFromException, errorResponse, jsonResponse, type ToolResponse } fr
 browserPlaywrightAdapter.setTeachEventSink((event) => {
   browserBroker.recordHumanAction(event);
 });
+
+browserPlaywrightAdapter.setWorkflowOverlayActionSink(async (request) => {
+  return browserWorkflowOverlayAction(request);
+});
+
+async function browserWorkflowOverlayAction(input: {
+  action: "state" | "observe" | "teach" | "stop";
+  url?: string;
+  tab_id: string;
+  page_url: string;
+}): Promise<BrowserWorkflowOverlayResponse> {
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind !== "hosted") {
+    return {
+      ok: false,
+      status: "error",
+      label: "Hosted only",
+      detail: "Workflow controls are available in the Synthi-hosted browser runtime.",
+      recording: false,
+      observed: false,
+      stepCount: 0,
+    };
+  }
+
+  if (input.action === "state") return workflowOverlayStatus({ ok: true }, input.tab_id);
+
+  if (input.action === "observe") {
+    const targetUrl = httpUrlOpt(input.url ?? input.page_url);
+    if (!targetUrl) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Observe failed",
+        detail: "The current page is not an HTTP preview URL.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "invalid_preview_url",
+      };
+    }
+    if (!isBrowserPreviewUrlAllowed(targetUrl, { workspace_url: runtime.workspace_url ?? undefined })) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Observe blocked",
+        detail: "The current page does not match this workspace's preview policy.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "preview_target_not_allowed",
+      };
+    }
+    const response = await browserObservePreviewTool({
+      workspace_url: runtime.workspace_url ?? input.page_url,
+      preferred_url: targetUrl,
+      preview_url: targetUrl,
+    });
+    if (response.isError) return workflowOverlayError("Observe failed", response);
+    return workflowOverlayStatus({ ok: true, label: "Observed" }, input.tab_id);
+  }
+
+  if (input.action === "teach") {
+    const response = browserBeginTeachTool({
+      tab_id: input.tab_id,
+      goal: `Teach workflow for ${runtime.workspace_id || "current workspace"}`,
+    });
+    if (response.isError) return workflowOverlayError("Teach failed", response);
+    return workflowOverlayStatus({ ok: true, label: "Recording" }, input.tab_id);
+  }
+
+  const response = browserEndTeachTool({ reason: "overlay_stopped" });
+  if (response.isError) return workflowOverlayError("Stop failed", response);
+  return workflowOverlayStatus({ ok: true, label: "Stopped" }, input.tab_id);
+}
+
+function workflowOverlayStatus(base: Partial<BrowserWorkflowOverlayResponse> = {}, tabId?: string): BrowserWorkflowOverlayResponse {
+  const teach = browserBroker.teachState();
+  const selected = browserBroker.selectedTab();
+  const workflow = browserBroker.compiledWorkflow();
+  const selectedMatchesOverlay = Boolean(selected && (!tabId || selected.tab_id === tabId));
+  const consent = selectedMatchesOverlay && selected ? browserBroker.getConsent(selected.url)[0] : undefined;
+  const observed = Boolean(selectedMatchesOverlay && selected && consent?.status === "granted" && consent.screenshot === "granted");
+  const recording = teach.active && (!tabId || teach.tab_id === tabId);
+  return {
+    ok: base.ok ?? true,
+    status: recording ? "recording" : observed ? "observed" : "idle",
+    label: base.label ?? (recording ? "Recording" : observed ? "Observed" : "Ready"),
+    detail: base.detail ?? (recording
+      ? "Events are being captured for this workflow."
+      : observed && selected
+      ? `Selected ${selected.title || selected.url || "preview"}.`
+      : "Use Observe before teaching a workflow."),
+    recording,
+    observed,
+    stepCount: workflow.card.stepCount,
+    ...(observed && selected?.url ? { url: selected.url } : {}),
+  };
+}
+
+function workflowOverlayError(label: string, response: ToolResponse): BrowserWorkflowOverlayResponse {
+  const payload = response.structuredContent ?? {};
+  const detail =
+    typeof payload["error"] === "string" ? payload["error"] :
+    typeof payload["message"] === "string" ? payload["message"] :
+    label;
+  return {
+    ok: false,
+    status: "error",
+    label,
+    detail,
+    recording: browserBroker.teachState().active,
+    observed: false,
+    stepCount: browserBroker.compiledWorkflow().card.stepCount,
+    error: detail,
+  };
+}
 
 export const BROWSER_TOOL_NAMES = [
   "synthi_browser_attach_current_workspace",
@@ -567,6 +683,7 @@ async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const cdpUrl = stringOpt(a["cdp_url"]) ?? process.env["SYNTHI_BROWSER_CDP_URL"];
   if (!cdpUrl) return errorResponse("browser_cdp_url_required", { env: "SYNTHI_BROWSER_CDP_URL", arg: "cdp_url" });
+  browserPlaywrightAdapter.setWorkflowOverlayEnabled(false);
   const bridge = await browserBridgeServer.start({
     token: stringOpt(a["bridge_token"]),
     host: stringOpt(a["bridge_host"]),
@@ -1041,6 +1158,7 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const action = requiredString(a, "action");
+  if (!isBrowserActionKind(action)) return errorResponse("unsupported_browser_action", { action });
   const value = stringOpt(a["value"]);
   const targetUrl = action === "navigate" && value ? value : tab.url;
   const validation = browserBroker.validateAction({
@@ -1119,9 +1237,11 @@ function slugIdentifier(value: string): string {
 async function browserWaitTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
+  const condition = requiredString(a, "condition");
+  if (!isBrowserWaitCondition(condition)) return errorResponse("unsupported_wait_condition", { condition });
   const result = await browserPlaywrightAdapter.wait({
     tab_id: tab.tab_id,
-    condition: requiredString(a, "condition") as "selector" | "url" | "load" | "networkidle" | "timeout",
+    condition,
     selector: stringOpt(a["selector"]),
     url_pattern: stringOpt(a["url_pattern"]),
     timeout_ms: numberOpt(a["timeout_ms"]),
@@ -1210,6 +1330,27 @@ function stringArrayOpt(value: unknown): string[] | undefined {
 
 function boolOpt(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function isBrowserActionKind(value: string): value is BrowserActionKind {
+  return [
+    "click",
+    "fill",
+    "hover",
+    "drag",
+    "press",
+    "select",
+    "check",
+    "uncheck",
+    "navigate",
+    "wait",
+  ].includes(value);
+}
+
+type BrowserWaitCondition = "selector" | "url" | "load" | "networkidle" | "timeout";
+
+function isBrowserWaitCondition(value: string): value is BrowserWaitCondition {
+  return ["selector", "url", "load", "networkidle", "timeout"].includes(value);
 }
 
 function failureExplanation(failureClass: string): { explanation: string; suggested_next_action: string } {
