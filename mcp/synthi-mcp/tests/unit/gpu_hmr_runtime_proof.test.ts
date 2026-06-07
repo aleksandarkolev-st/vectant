@@ -6177,6 +6177,52 @@ describe("GPU HMR runtime output proof classification", () => {
         }),
       ]),
     );
+
+    const forgedBackendContract = {
+      ...verifiedContract,
+      hip_contract: {
+        ...verifiedContract.hip_contract,
+        kernel_name: "forged_kernel",
+      },
+    };
+    const backendForgedArtifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      acceptanceContract: forgedBackendContract,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(backendForgedArtifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(backendForgedArtifact.acceptanceContractConsistency.accepted).toBe(false);
+    expect(backendForgedArtifact.gpuHmrSuccess).toBe(false);
+    expect(backendForgedArtifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+          degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+          field: "hip_contract_kernel_name",
+        }),
+      ]),
+    );
   });
 
   it("does not mark runtime artifacts successful without full runtime proof", () => {

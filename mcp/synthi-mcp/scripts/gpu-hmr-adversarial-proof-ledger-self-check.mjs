@@ -337,7 +337,10 @@ function baselineContract(overrides = {}) {
       output_buffers: ['allocation-1'],
       readback_oracle: {
         kind: 'buffer_checksum',
-        schema_hash: HASH_C,
+        artifactId: HASH_B,
+        processId: 'pid-1',
+        dispatchId: 'dispatch-1',
+        readbackTimestamp: 400,
       },
     },
     ...overrides,

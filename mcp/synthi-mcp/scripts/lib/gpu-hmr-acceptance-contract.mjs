@@ -44,6 +44,110 @@ const GPU_FIREWALL_ROUTES = new Set([
   'gpu_engine_asset_reload',
 ]);
 
+const BACKEND_CONTRACT_COMPARABLE_FIELDS = {
+  hip: {
+    contractKey: 'hip_contract',
+    prefix: 'hip_contract',
+    fields: [
+      'kernel_name',
+      'launch_api',
+      'grid_dim',
+      'block_dim',
+      'shared_mem_bytes',
+      'stream',
+      'kernel_params',
+      'code_object_metadata',
+      'output_buffers',
+      'readback_oracle',
+    ],
+    unorderedListFields: new Set(['output_buffers']),
+  },
+  hiprt: {
+    contractKey: 'hiprt_contract',
+    prefix: 'hiprt_contract',
+    fields: [
+      'kernel_entry',
+      'scene_or_bvh_handles',
+      'framebuffer_handle',
+      'material_or_geometry_buffers',
+      'camera_state_hash',
+      'same_process_reload_hook',
+      'visual_oracle',
+    ],
+    unorderedListFields: new Set(['scene_or_bvh_handles', 'material_or_geometry_buffers']),
+  },
+  opencl: {
+    contractKey: 'opencl_contract',
+    prefix: 'opencl_contract',
+    fields: [
+      'program_hash_before',
+      'program_hash_after',
+      'kernel_name',
+      'command_queue',
+      'work_dim',
+      'global_work_size',
+      'local_work_size',
+      'event_trace',
+      'output_buffer_readback',
+    ],
+    unorderedListFields: new Set(),
+  },
+  vulkan: {
+    contractKey: 'vulkan_contract',
+    prefix: 'vulkan_contract',
+    fields: [
+      'shader_module_hash_before',
+      'shader_module_hash_after',
+      'entry_point',
+      'descriptor_set_layout_hash',
+      'pipeline_layout_hash',
+      'pipeline_state_hash',
+      'command_buffer_re_record_required',
+      'command_buffer_re_record_proven',
+      'frame_used_new_pipeline_trace',
+    ],
+    unorderedListFields: new Set(),
+  },
+  webgpu: {
+    contractKey: 'webgpu_contract',
+    prefix: 'webgpu_contract',
+    fields: [
+      'wgsl_hash_before',
+      'wgsl_hash_after',
+      'shader_module_epoch',
+      'entry_points',
+      'bind_group_layout_hash',
+      'pipeline_layout_hash',
+      'vertex_buffer_layout_hash',
+      'color_target_state_hash',
+      'pipeline_recreate_required',
+      'pipeline_recreate_proven',
+      'frame_used_new_pipeline_trace',
+    ],
+    unorderedListFields: new Set(['entry_points']),
+  },
+  bevy_wgsl: {
+    contractKey: 'webgpu_contract',
+    prefix: 'webgpu_contract',
+    fields: [
+      'wgsl_hash_before',
+      'wgsl_hash_after',
+      'shader_module_epoch',
+      'entry_points',
+      'bind_group_layout_hash',
+      'pipeline_layout_hash',
+      'vertex_buffer_layout_hash',
+      'color_target_state_hash',
+      'pipeline_recreate_required',
+      'pipeline_recreate_proven',
+      'frame_used_new_pipeline_trace',
+      'bevy_shader_asset_source',
+      'asset_watched',
+    ],
+    unorderedListFields: new Set(['entry_points']),
+  },
+};
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -199,6 +303,30 @@ function compactObject(value = {}) {
   return Object.fromEntries(
     Object.entries(asObject(value)).filter(([, entryValue]) => fieldProven(entryValue)),
   );
+}
+
+function comparableBackendContractValue(value, { unorderedList = false } = {}) {
+  if (unorderedList) return sortedStringList(value);
+  if (Array.isArray(value)) return value.map((entry) => (
+    entry && typeof entry === 'object' && !Array.isArray(entry)
+      ? compactObject(entry)
+      : entry
+  ));
+  if (value && typeof value === 'object') return compactObject(value);
+  return value ?? null;
+}
+
+function comparableBackendContractFields(normalized) {
+  const spec = BACKEND_CONTRACT_COMPARABLE_FIELDS[normalized?.backend];
+  if (!spec) return {};
+  const backendContract = asObject(normalized[spec.contractKey]);
+  const fields = {};
+  for (const field of spec.fields) {
+    fields[`${spec.prefix}_${field}`] = comparableBackendContractValue(backendContract[field], {
+      unorderedList: spec.unorderedListFields.has(field),
+    });
+  }
+  return fields;
 }
 
 function firstText(...values) {
@@ -676,6 +804,7 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
     fission_artifact_hash_after: fission.artifact_hash_after ?? null,
     fission_full_rebuild_used: fission.full_rebuild_used === true,
     fission_process_restarted: fission.process_restarted === true,
+    ...comparableBackendContractFields(normalized),
   };
 }
 
