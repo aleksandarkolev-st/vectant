@@ -9,8 +9,9 @@
  *
  * Opt-in via SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT in the stdio process, or run
  * the standalone entrypoint for local manual testing. Binds to 127.0.0.1 by
- * default; override with SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST. A shared-secret
- * header check (SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN) is optional.
+ * default; override with SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST. No-token mode is
+ * limited to loopback development; non-loopback bridges must use
+ * SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN.
  *
  * Endpoints:
  *   GET  /healthz                     -> "ok"
@@ -166,6 +167,43 @@ function structuredPayload(response: ToolResponse): Record<string, unknown> {
   } catch {
     return { raw: text };
   }
+}
+
+function authorizeBridgeRequest(
+  req: http.IncomingMessage,
+  opts: BrowserWorkflowBridgeOptions,
+  host: string
+): { ok: true } | { ok: false; status: number; error: string } {
+  if (opts.token) {
+    const supplied = stringHeader(req.headers["x-synthi-workflow-token"]);
+    return supplied === opts.token ? { ok: true } : { ok: false, status: 401, error: "unauthorized" };
+  }
+
+  if (!isLoopbackHost(host)) {
+    return { ok: false, status: 401, error: "workflow_bridge_token_required" };
+  }
+
+  const origin = stringHeader(req.headers.origin);
+  if (!origin) return { ok: true };
+  return isLoopbackOrigin(origin) ? { ok: true } : { ok: false, status: 403, error: "origin_not_allowed" };
+}
+
+function stringHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function isLoopbackOrigin(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return isLoopbackHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function requestUrlFromArgs(args: unknown): string | undefined {
@@ -480,18 +518,18 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
       return;
     }
 
-    if (opts.token !== undefined) {
-      const supplied = req.headers["x-synthi-workflow-token"];
-      if (supplied !== opts.token) {
-        writeJson(res, 401, { error: "unauthorized" });
-        return;
-      }
-    }
-
     if (url === "/healthz" && method === "GET") {
       res.writeHead(200, { "Content-Type": "text/plain", ...CORS_HEADERS });
       res.end("ok\n");
       return;
+    }
+
+    if (url.startsWith("/browser-workflows/")) {
+      const auth = authorizeBridgeRequest(req, opts, host);
+      if (!auth.ok) {
+        writeJson(res, auth.status, { error: auth.error });
+        return;
+      }
     }
 
     if (url === "/browser-workflows/state" && method === "GET") {

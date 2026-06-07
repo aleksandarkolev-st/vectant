@@ -66,6 +66,53 @@ describe("browser workflow bridge", () => {
     expect(withHeader.status).toBe(200);
   });
 
+  it("rejects cross-site browser origins when the local bridge has no token", async () => {
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    const tool = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ tool: "synthi_browser_compile_workflow", arguments: {} }),
+    });
+    expect(tool.status).toBe(403);
+    expect(await tool.json()).toEqual({ error: "origin_not_allowed" });
+
+    const overlay = await fetch(`${baseUrl(bridge)}/browser-workflows/overlay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ action: "state" }),
+    });
+    expect(overlay.status).toBe(403);
+    expect(await overlay.json()).toEqual({ error: "origin_not_allowed" });
+  });
+
+  it("allows no-token workflow requests from loopback browser origins", async () => {
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    const res = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:3000" },
+      body: JSON.stringify({ tool: "synthi_browser_compile_workflow", arguments: {} }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; tool: string };
+    expect(body).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_browser_compile_workflow",
+    }));
+  });
+
+  it("requires a token when the workflow bridge is not loopback-bound", async () => {
+    bridge = startBrowserWorkflowBridge({ port: 0, host: "0.0.0.0" });
+    await bridge.ready;
+
+    const res = await fetch(`${baseUrl(bridge)}/browser-workflows/state`);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "workflow_bridge_token_required" });
+  });
+
   it("returns panel-safe state without screenshots or local desktop assumptions", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url, "granted", "unit", { screenshot: true, diagnostics: true });

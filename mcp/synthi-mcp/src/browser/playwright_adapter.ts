@@ -446,7 +446,7 @@ export class BrowserPlaywrightAdapter {
         };
       }
     }).catch(() => undefined);
-    const script = workflowOverlayInitScript(bindingName, workflowOverlayBridgeUrl());
+    const script = workflowOverlayInitScript(bindingName, workflowOverlayBridgeUrl(), workflowOverlayBridgeToken());
     await page.addInitScript(script).catch(() => undefined);
     await page.evaluate(script).catch(() => undefined);
   }
@@ -829,10 +829,16 @@ function workflowOverlayBridgeUrl(): string {
   return `http://${host}:${port.trim()}`;
 }
 
-function workflowOverlayInitScript(bindingName: string, bridgeUrl: string): string {
+function workflowOverlayBridgeToken(): string {
+  const token = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN"];
+  return token && token.trim() ? token.trim() : "";
+}
+
+function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridgeToken: string): string {
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
     const bridgeUrl = ${JSON.stringify(bridgeUrl)};
+    const bridgeToken = ${JSON.stringify(bridgeToken)};
     if (window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ && window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName) return;
     const existingHost = document.getElementById('synthi-workflow-toolbox-host');
     if (existingHost) existingHost.remove();
@@ -938,9 +944,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string): stri
           }
         }
         if (!result && bridgeUrl) {
+          const headers = { 'Content-Type': 'application/json' };
+          if (bridgeToken) headers['X-Synthi-Workflow-Token'] = bridgeToken;
           const response = await fetch(bridgeUrl + '/browser-workflows/overlay', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({ action, url: location.href }),
           });
           result = await response.json();
