@@ -459,7 +459,6 @@ function baselineProofComponents() {
         artifactId: HASH_B,
         processId: 'pid-1',
         dispatchId: 'dispatch-1',
-        passed: true,
         readbackTimestamp: 400,
       },
       evidenceRefs: ['runtime:output-oracle'],

@@ -1706,7 +1706,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
         outputOracle.dispatch_id,
       ),
       timestamp_monotonic_ns: outputTimestamp,
-      passed: outputProof?.resultState === 'gpu-hmr-output-proven' || outputOracle.passed === true,
+      passed: outputProof?.resultState === 'gpu-hmr-output-oracle-proven' || outputOracle.passed === true,
     },
     retirement_event: {
       id: firstString(epochProof?.retirementEventId, epochProof?.retirement_event_id),
