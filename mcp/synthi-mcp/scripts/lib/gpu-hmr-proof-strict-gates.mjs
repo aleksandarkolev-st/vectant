@@ -115,6 +115,10 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       artifact.acceptanceContractConsistency,
       artifact.acceptance_contract_consistency,
     );
+    const proofLedgerSourceConsistency = firstObject(
+      artifact.proofLedgerSourceConsistency,
+      artifact.proof_ledger_source_consistency,
+    );
     const gpuHmrSuccess = artifact.gpuHmrSuccess === true
       || artifact.gpu_hmr_success === true;
 
@@ -170,6 +174,11 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push('acceptance_contract_consistency_missing');
     } else if (acceptanceContractConsistency.accepted !== true) {
       failures.push('acceptance_contract_consistency_rejected');
+    }
+    if (!proofLedgerSourceConsistency) {
+      failures.push('proof_ledger_source_consistency_missing');
+    } else if (proofLedgerSourceConsistency.accepted !== true) {
+      failures.push('proof_ledger_source_consistency_rejected');
     }
   }
   return gateRow(

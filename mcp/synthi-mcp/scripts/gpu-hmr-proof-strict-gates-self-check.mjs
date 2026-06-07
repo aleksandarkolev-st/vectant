@@ -249,6 +249,11 @@ function runtimeArtifact(overrides = {}) {
     gpuHmrSuccess: true,
     proofLedger,
     proofLedgerQuery: proofLedger.query,
+    proofLedgerSourceConsistency: {
+      accepted: true,
+      mode: 'self_check_static_fixture',
+      failures: [],
+    },
     acceptanceContract: contract,
     acceptanceContractEvaluation: contractEvaluation,
     acceptanceContractConsistency: { accepted: true },
@@ -324,6 +329,24 @@ assert.match(
 assert.match(
   runtimeProofArtifactStrictGate({ ...passingArtifact, acceptanceContractConsistency: null }).detail,
   /acceptance_contract_consistency_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const artifact = { ...passingArtifact };
+    delete artifact.proofLedgerSourceConsistency;
+    return artifact;
+  })()).detail,
+  /proof_ledger_source_consistency_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    proofLedgerSourceConsistency: {
+      accepted: false,
+      failures: [{ code: 'proof_ledger_source_dispatch_event_id_mismatch' }],
+    },
+  }).detail,
+  /proof_ledger_source_consistency_rejected/,
 );
 assert.match(
   runtimeProofArtifactStrictGates([], { requireAtLeastOne: true })[0].detail,

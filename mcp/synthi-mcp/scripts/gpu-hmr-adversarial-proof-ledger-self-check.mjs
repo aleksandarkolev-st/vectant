@@ -595,6 +595,64 @@ assert.ok(
   `same-frame visual artifact expected visual_before_after_same_frame, got ${rejectedSameFrameVisualArtifact.limitations.map((l) => l.degradedReason).join(',')}`,
 );
 
+const forgedDispatchLedgerRecord = baselineRecord({
+  dispatch_event: {
+    id: 'dispatch-forged',
+    epoch: 'epoch-7',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    timestamp_monotonic_ns: 300,
+  },
+  output_event: {
+    id: 'output-1',
+    kind: 'buffer_checksum',
+    epoch: 'epoch-7',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    after_dispatch_id: 'dispatch-forged',
+    passed: true,
+    timestamp_monotonic_ns: 400,
+  },
+});
+assert.equal(evaluateGpuHmrProofLedger(forgedDispatchLedgerRecord).gpuHmrSuccess, true);
+const rejectedForgedExplicitLedgerArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-generic-project',
+  backend: 'hip',
+  gpuArch: 'gfx1201',
+  processId: 'pid-1',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
+  modelProvenance: baselineModelProvenance(),
+  ...baselineProofComponents(),
+  acceptanceContract: baselineContract(),
+  proofLedgerRecord: forgedDispatchLedgerRecord,
+  fullRuntimeProof: baselineFullRuntimeProof(),
+});
+assert.equal(rejectedForgedExplicitLedgerArtifact.gpuHmrSuccess, false);
+assert.equal(
+  rejectedForgedExplicitLedgerArtifact.proofLedgerSourceConsistency.accepted,
+  false,
+);
+assert.ok(
+  rejectedForgedExplicitLedgerArtifact.limitations.some((limitation) =>
+    limitation.stageId === 'proof-ledger-source-consistency'
+    && limitation.degradedReason === 'proof_ledger_source_dispatch_event_id_mismatch'
+  ),
+  `forged explicit ledger expected dispatch_event_id_mismatch, got ${rejectedForgedExplicitLedgerArtifact.limitations.map((l) => l.degradedReason).join(',')}`,
+);
+
 const summary = buildGpuHmrValidationProofSummary({
   workspaceSlug: 'adversarial-generic-project',
   proofLedger: acceptedLedger,

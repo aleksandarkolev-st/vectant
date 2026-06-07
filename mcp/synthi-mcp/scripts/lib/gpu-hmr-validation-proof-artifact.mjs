@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   buildGpuHmrProofLedger,
+  normalizeGpuHmrProofLedgerRecord,
   queryGpuHmrLedgerInvariants,
 } from './gpu-hmr-proof-ledger.mjs';
 import {
@@ -1368,16 +1369,167 @@ function latestTimestamp(...values) {
   return timestamps.length ? Math.max(...timestamps) : null;
 }
 
-function buildProofLedgerRecordFromInput(input, validationContext) {
+function explicitProofLedgerRecordFromInput(input = {}) {
+  return objectOrNull(input.proofLedgerRecord)
+    ?? objectOrNull(input.proof_ledger_record)
+    ?? objectOrNull(input.proofLedger?.record)
+    ?? objectOrNull(input.proof_ledger?.record)
+    ?? null;
+}
+
+function hasLedgerPath(object, pathParts) {
+  let current = object;
+  for (const part of pathParts) {
+    if (!objectOrNull(current) || !hasOwn(current, part)) return false;
+    current = current[part];
+  }
+  return true;
+}
+
+function ledgerPathValue(object, pathParts) {
+  let current = object;
+  for (const part of pathParts) {
+    if (!objectOrNull(current) || !hasOwn(current, part)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function ledgerFirstPathValue(record, paths) {
+  for (const pathParts of paths) {
+    if (hasLedgerPath(record, pathParts)) {
+      const value = ledgerPathValue(record, pathParts);
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+  }
+  return undefined;
+}
+
+function proofLedgerSourceConsistencyFailureCode(label, suffix) {
+  return `proof_ledger_source_${String(label).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}_${suffix}`;
+}
+
+function canonicalProofLedgerComparableValue(label, value) {
+  if (
+    value !== undefined
+    && value !== null
+    && /(?:^|_)artifact_(?:after_|before_)?hash$|artifact_hash$/.test(label)
+    && typeof value === 'string'
+  ) {
+    return firstArtifactId(value) ?? value;
+  }
+  return value;
+}
+
+function compareProofLedgerField(failures, label, explicitRecord, derivedRecord, paths) {
+  const explicitValue = canonicalProofLedgerComparableValue(
+    label,
+    ledgerFirstPathValue(explicitRecord, paths),
+  );
+  const derivedValue = canonicalProofLedgerComparableValue(
+    label,
+    ledgerFirstPathValue(derivedRecord, paths),
+  );
+  if (explicitValue === undefined) return;
+  if (derivedValue === undefined) {
+    failures.push({
+      code: proofLedgerSourceConsistencyFailureCode(label, 'unverified'),
+      field: label,
+      explicit: explicitValue,
+      derived: null,
+    });
+    return;
+  }
+  if (stableJson(explicitValue) !== stableJson(derivedValue)) {
+    failures.push({
+      code: proofLedgerSourceConsistencyFailureCode(label, 'mismatch'),
+      field: label,
+      explicit: explicitValue,
+      derived: derivedValue,
+    });
+  }
+}
+
+function evaluateProofLedgerSourceConsistency(explicitRecord, derivedRecord) {
+  if (!explicitRecord) {
+    return {
+      accepted: true,
+      mode: 'derived_only',
+      failures: [],
+    };
+  }
+  const normalizedExplicit = normalizeGpuHmrProofLedgerRecord(explicitRecord);
+  const normalizedDerived = normalizeGpuHmrProofLedgerRecord(derivedRecord ?? {});
+  const failures = [];
+  const fieldSpecs = [
+    ['classification_project_kind', [['classification', 'project_kind'], ['classification', 'projectKind']]],
+    ['classification_edit_kind', [['classification', 'edit_kind'], ['classification', 'editKind']]],
+    ['classification_route', [['classification', 'route']]],
+    ['contract_hash', [['contractHash']]],
+    ['artifact_before_hash', [['artifactBeforeHash']]],
+    ['artifact_after_hash', [['artifactAfterHash']]],
+    ['loader_event_id', [['loaderEvent', 'id']]],
+    ['loader_event_artifact_hash', [['loaderEvent', 'artifact_hash'], ['loaderEvent', 'artifactHash']]],
+    ['loader_event_process_id', [['loaderEvent', 'process_id'], ['loaderEvent', 'processId']]],
+    ['epoch_publish_event_id', [['epochPublishEvent', 'id']]],
+    ['epoch_publish_event_artifact_hash', [['epochPublishEvent', 'artifact_hash'], ['epochPublishEvent', 'artifactHash']]],
+    ['epoch_publish_event_epoch', [['epochPublishEvent', 'epoch']]],
+    ['epoch_publish_event_process_id', [['epochPublishEvent', 'process_id'], ['epochPublishEvent', 'processId']]],
+    ['dispatch_event_id', [['dispatchEvent', 'id']]],
+    ['dispatch_event_artifact_hash', [['dispatchEvent', 'artifact_hash'], ['dispatchEvent', 'artifactHash']]],
+    ['dispatch_event_epoch', [['dispatchEvent', 'epoch']]],
+    ['dispatch_event_process_id', [['dispatchEvent', 'process_id'], ['dispatchEvent', 'processId']]],
+    ['output_event_after_dispatch_id', [['outputEvent', 'after_dispatch_id'], ['outputEvent', 'afterDispatchId']]],
+    ['output_event_artifact_hash', [['outputEvent', 'artifact_hash'], ['outputEvent', 'artifactHash']]],
+    ['output_event_epoch', [['outputEvent', 'epoch']]],
+    ['output_event_process_id', [['outputEvent', 'process_id'], ['outputEvent', 'processId']]],
+    ['output_event_passed', [['outputEvent', 'passed']]],
+    ['process_identity_process_id', [['processIdentity', 'process_id'], ['processIdentity', 'processId']]],
+    ['device_identity_device_uuid', [['deviceIdentity', 'device_uuid'], ['deviceIdentity', 'deviceUuid']]],
+    ['cpu_hmr_used', [['cpuHmrUsed']]],
+    ['full_rebuild_used', [['fullRebuildUsed']]],
+    ['process_restarted', [['processRestarted']]],
+  ];
+  for (const [label, paths] of fieldSpecs) {
+    compareProofLedgerField(failures, label, normalizedExplicit, normalizedDerived, paths);
+  }
+  return {
+    accepted: failures.length === 0,
+    mode: 'explicit_vs_derived',
+    failures,
+    explicitProofId: normalizedExplicit.proofId,
+    derivedProofId: normalizedDerived.proofId,
+  };
+}
+
+function proofLedgerSourceConsistencyLimitations(consistency) {
+  if (!objectOrNull(consistency) || consistency.accepted === true) return [];
+  return compactObjects(consistency.failures).map((failure) => ({
+    stageId: 'proof-ledger-source-consistency',
+    stage_id: 'proof-ledger-source-consistency',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-ledger-source-consistent',
+    required_state: 'gpu-hmr-ledger-source-consistent',
+    observedState: failure.field ?? null,
+    observed_state: failure.field ?? null,
+    degradedState: 'gpu-hmr-ledger-source-inconsistent',
+    degraded_state: 'gpu-hmr-ledger-source-inconsistent',
+    degradedReason: failure.code ?? 'proof_ledger_source_inconsistent',
+    degraded_reason: failure.code ?? 'proof_ledger_source_inconsistent',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function buildProofLedgerRecordFromInput(input, validationContext, options = {}) {
   const acceptanceContract = objectOrNull(input.acceptanceContract)
     ?? objectOrNull(input.acceptance_contract)
     ?? objectOrNull(validationContext?.acceptanceContract)
     ?? objectOrNull(validationContext?.acceptance_contract);
-  const explicit = objectOrNull(input.proofLedgerRecord)
-    ?? objectOrNull(input.proof_ledger_record)
-    ?? objectOrNull(input.proofLedger?.record)
-    ?? objectOrNull(input.proof_ledger?.record);
-  if (explicit) return explicit;
+  const explicit = explicitProofLedgerRecordFromInput(input);
+  if (explicit && options.allowExplicit !== false) return explicit;
 
   const sourceProof = compactObjects(input.sourceProofs)[0] ?? objectOrNull(input.sourceProof);
   const fissionProof = objectOrNull(input.fissionProof);
@@ -1569,7 +1721,20 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
         validationContext?.process_id,
       ),
     },
-    device_identity: input.deviceIdentity ?? input.device_identity ?? validationContext?.deviceIdentity ?? {},
+    device_identity: input.deviceIdentity
+      ?? input.device_identity
+      ?? validationContext?.deviceIdentity
+      ?? validationContext?.device_identity
+      ?? (firstString(input.deviceUuid, input.device_uuid, validationContext?.deviceUuid, validationContext?.device_uuid)
+        ? {
+            device_uuid: firstString(
+              input.deviceUuid,
+              input.device_uuid,
+              validationContext?.deviceUuid,
+              validationContext?.device_uuid,
+            ),
+          }
+        : {}),
     firewall_evidence: firewallEvidence ?? {},
     oracle_artifacts: oracleArtifactsFromOutputProof(outputProof),
     deterministic_visual_mode:
@@ -1648,10 +1813,21 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const deterministicVisualModeEvaluation = deterministicVisualMode
     ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
     : null;
-  const proofLedgerRecord = buildProofLedgerRecordFromInput({
+  const proofLedgerRecordInput = {
     ...input,
     acceptanceContract,
-  }, validationContext);
+  };
+  const explicitProofLedgerRecord = explicitProofLedgerRecordFromInput(proofLedgerRecordInput);
+  const derivedProofLedgerRecord = buildProofLedgerRecordFromInput(
+    proofLedgerRecordInput,
+    validationContext,
+    { allowExplicit: false },
+  );
+  const proofLedgerSourceConsistency = evaluateProofLedgerSourceConsistency(
+    explicitProofLedgerRecord,
+    derivedProofLedgerRecord,
+  );
+  const proofLedgerRecord = explicitProofLedgerRecord ?? derivedProofLedgerRecord;
   const proofLedger = buildGpuHmrProofLedger(proofLedgerRecord);
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
@@ -1667,6 +1843,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...acceptanceContractConsistencyLimitations(acceptanceContractConsistency),
     ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation),
     ...visualProofArtifactLimitations({ outputProof, visualEvidenceRefs, visualEvidenceArtifacts }),
+    ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
     ...proofLedgerLimitations(proofLedgerQuery),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
@@ -1718,6 +1895,9 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     acceptanceContractConsistency,
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    derivedProofLedgerRecord,
+    explicitProofLedgerRecord,
+    proofLedgerSourceConsistency,
     proofLedger,
     proofLedgerQuery,
     visualEvidenceArtifacts,
@@ -1744,6 +1924,9 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     acceptanceContractConsistency,
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    derivedProofLedgerRecord,
+    explicitProofLedgerRecord,
+    proofLedgerSourceConsistency,
     proofLedger,
     proofLedgerQuery,
     visualEvidenceArtifacts,
@@ -1808,6 +1991,12 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     proof_ledger: proofLedger,
     proofLedgerQuery,
     proof_ledger_query: proofLedgerQuery,
+    derivedProofLedgerRecord,
+    derived_proof_ledger_record: derivedProofLedgerRecord,
+    explicitProofLedgerRecord,
+    explicit_proof_ledger_record: explicitProofLedgerRecord,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
     gpuHmrSuccess,
     gpu_hmr_success: gpuHmrSuccess,
     validationContextHash,
