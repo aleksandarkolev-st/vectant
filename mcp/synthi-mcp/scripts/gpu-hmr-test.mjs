@@ -48,6 +48,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
 import {
@@ -2330,6 +2331,228 @@ async function writeRuntimeOutputOracleEvidenceArtifact(input) {
   };
 }
 
+function sha256Value(value) {
+  return `sha256:${createHash('sha256').update(stableJson(value)).digest('hex')}`;
+}
+
+function bytesSha256(bytes) {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function xmlEscape(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
+function numericVectorBuffer(values) {
+  const normalized = Array.isArray(values)
+    ? values.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+    : [];
+  if (normalized.length === 0) return Buffer.from(stableJson(values ?? null));
+  const bytes = Buffer.allocUnsafe(normalized.length * 4);
+  normalized.forEach((value, index) => bytes.writeFloatLE(value, index * 4));
+  return bytes;
+}
+
+async function writeOracleCardPng(filePath, lines) {
+  const textLines = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line ?? '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const height = Math.max(140, 44 + textLines.length * 22);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="${height}" viewBox="0 0 720 ${height}">
+    <rect width="720" height="${height}" fill="#071018"/>
+    <rect x="16" y="16" width="688" height="${height - 32}" rx="0" fill="#0f1b24" stroke="#2d5362"/>
+    <text x="32" y="44" font-family="Consolas, monospace" font-size="18" fill="#bff7ff">GPU HMR output oracle</text>
+    ${textLines.map((line, index) => `<text x="32" y="${76 + index * 22}" font-family="Consolas, monospace" font-size="14" fill="#e6edf3">${xmlEscape(line)}</text>`).join('')}
+  </svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(filePath);
+}
+
+async function writeComputeOracleArtifacts({
+  phase,
+  name,
+  previousOutput,
+  currentOutput,
+  expectedOutput,
+  outputEvidence,
+  readbackTimestamp,
+  epoch,
+  producer,
+  outputChangeExpected,
+  deterministicSlice,
+}) {
+  await mkdir(OUTPUT_ORACLE_ARTIFACT_DIR, { recursive: true });
+  const base = `${safeArtifactToken(CFG.slug)}-${safeArtifactToken(phase)}-${safeArtifactToken(name)}`;
+  const currentBytes = numericVectorBuffer(currentOutput);
+  const rawPath = path.join(OUTPUT_ORACLE_ARTIFACT_DIR, `${base}-readback.bin`);
+  await writeFile(rawPath, currentBytes);
+  const schema = {
+    schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+    encoding: Array.isArray(currentOutput) ? 'float32_le_vector' : 'stable_json_utf8',
+    elementCount: Array.isArray(currentOutput) ? currentOutput.length : null,
+    expectedOutput: expectedOutput ?? null,
+    outputChangeExpected: outputChangeExpected === true,
+    rawReadbackHash: bytesSha256(currentBytes),
+    evidenceId: outputEvidence?.evidenceId ?? null,
+  };
+  const schemaPath = path.join(OUTPUT_ORACLE_ARTIFACT_DIR, `${base}-schema.json`);
+  await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`);
+  const cardPath = path.join(OUTPUT_ORACLE_ARTIFACT_DIR, `${base}-card.png`);
+  await writeOracleCardPng(cardPath, [
+    `phase=${phase} name=${name}`,
+    `producer=${producer ?? 'runtime_readback'}`,
+    `before=${sha256Value(previousOutput ?? null).slice(0, 24)}`,
+    `after=${sha256Value(currentOutput ?? null).slice(0, 24)}`,
+    `raw=${bytesSha256(currentBytes).slice(0, 24)}`,
+    `evidence=${outputEvidence?.evidenceId ?? 'none'}`,
+  ]);
+  return {
+    raw_readback_bin: rawPath,
+    readback_schema_json: schemaPath,
+    checksum_before: sha256Value(previousOutput ?? null),
+    checksum_after: sha256Value(currentOutput ?? null),
+    expected_output_change: outputChangeExpected === true,
+    deterministic_slice: deterministicSlice ?? {
+      offset: 0,
+      length: Array.isArray(currentOutput) ? currentOutput.length : 1,
+      source: 'runtime_readback',
+    },
+    oracle_code_hash: outputEvidence?.artifact?.contentHash ?? outputEvidence?.artifact?.content_hash ?? null,
+    rendered_card_png: cardPath,
+    producer: producer ?? 'runtime_readback',
+    timestamp_after_dispatch: readbackTimestamp ?? null,
+    epoch: epoch ?? null,
+  };
+}
+
+async function writeVisualOracleArtifacts({
+  phase,
+  name,
+  beforeImage,
+  afterImage,
+  timestampAfterDispatch,
+  epochTrace,
+  cameraStateHash,
+  captureBackend,
+  frameNumber,
+}) {
+  if (!beforeImage || !afterImage) return null;
+  await mkdir(OUTPUT_ORACLE_ARTIFACT_DIR, { recursive: true });
+  const beforeRaw = await sharp(beforeImage).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const afterRaw = await sharp(afterImage)
+    .resize(beforeRaw.info.width, beforeRaw.info.height, { fit: 'fill' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const diff = Buffer.allocUnsafe(beforeRaw.data.length);
+  let changed = 0;
+  let visible = 0;
+  let totalAbs = 0;
+  for (let i = 0; i < beforeRaw.data.length; i += 4) {
+    const alpha = Math.max(beforeRaw.data[i + 3], afterRaw.data[i + 3]);
+    if (alpha > 0) visible += 1;
+    const dr = Math.abs(afterRaw.data[i] - beforeRaw.data[i]);
+    const dg = Math.abs(afterRaw.data[i + 1] - beforeRaw.data[i + 1]);
+    const db = Math.abs(afterRaw.data[i + 2] - beforeRaw.data[i + 2]);
+    const da = Math.abs(afterRaw.data[i + 3] - beforeRaw.data[i + 3]);
+    const delta = dr + dg + db + da;
+    if (delta > 12) changed += 1;
+    totalAbs += delta;
+    diff[i] = Math.min(255, dr * 4);
+    diff[i + 1] = Math.min(255, dg * 4);
+    diff[i + 2] = Math.min(255, db * 4);
+    diff[i + 3] = 255;
+  }
+  const pixelCount = beforeRaw.info.width * beforeRaw.info.height;
+  const changedPixelRatio = pixelCount > 0 ? changed / pixelCount : 0;
+  const perceptualDiff = pixelCount > 0 ? totalAbs / (pixelCount * 4 * 255) : 0;
+  const diffPath = path.join(
+    OUTPUT_ORACLE_ARTIFACT_DIR,
+    `${safeArtifactToken(CFG.slug)}-${safeArtifactToken(phase)}-${safeArtifactToken(name)}-visual-diff.png`,
+  );
+  await sharp(diff, {
+    raw: {
+      width: beforeRaw.info.width,
+      height: beforeRaw.info.height,
+      channels: 4,
+    },
+  }).png().toFile(diffPath);
+  return {
+    before_image: beforeImage,
+    after_image: afterImage,
+    diff_image: diffPath,
+    blank_frame_rejection: visible > 0,
+    same_frame_rejection: changedPixelRatio > 0,
+    new_epoch_watermark_or_trace: epochTrace ?? null,
+    camera_state_hash: cameraStateHash ?? null,
+    swapchain_size: [beforeRaw.info.width, beforeRaw.info.height],
+    capture_backend: captureBackend ?? 'mcp_synthi_screenshot',
+    frame_number: Number.isFinite(frameNumber) ? frameNumber : null,
+    timestamp_after_dispatch: timestampAfterDispatch ?? null,
+    perceptual_diff: perceptualDiff,
+    changed_pixel_ratio: changedPixelRatio,
+    visible_pixel_count: visible,
+  };
+}
+
+function flowDeterministicVisualMode() {
+  return {
+    fixed_seed: true,
+    frozen_camera: true,
+    temporal_accumulation_disabled: true,
+    taa_disabled: true,
+    denoiser_disabled: true,
+    fixed_resolution: true,
+    fixed_swapchain_image_count: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+  };
+}
+
+function flowCameraStateHash() {
+  return sha256Value({
+    fixture: 'flow',
+    camera: 'fixed-orthographic',
+    resolution: [800, 600],
+    center: [400, 300],
+  });
+}
+
+function frameNumberFromRuntimeSnippet(snippet) {
+  const parsed = Number(String(snippet ?? '').match(/\bframe=(\d+)\b/)?.[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function epochLabelFromDispatchProof(dispatchProof, fallbackArtifactId = null) {
+  const epochProof = dispatchProof?.epochProof && typeof dispatchProof.epochProof === 'object'
+    ? dispatchProof.epochProof
+    : dispatchProof?.epoch_proof && typeof dispatchProof.epoch_proof === 'object'
+      ? dispatchProof.epoch_proof
+      : null;
+  const publication = epochProof?.latestPublication && typeof epochProof.latestPublication === 'object'
+    ? epochProof.latestPublication
+    : epochProof?.latest_publication && typeof epochProof.latest_publication === 'object'
+      ? epochProof.latest_publication
+      : null;
+  const activeGeneration = Number(
+    epochProof?.activeGeneration
+    ?? epochProof?.active_generation
+    ?? publication?.activeGeneration
+    ?? publication?.active_generation,
+  );
+  if (Number.isInteger(activeGeneration) && activeGeneration >= 0) {
+    return `generation:${activeGeneration}`;
+  }
+  const dispatchId = String(dispatchProof?.dispatchId ?? dispatchProof?.dispatch_id ?? '').trim();
+  if (dispatchId) return `dispatch:${dispatchId}`;
+  return fallbackArtifactId ?? null;
+}
+
 function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
 }
@@ -2908,8 +3131,10 @@ async function recordVectorReadbackOutputProof({
   dispatchProof,
   fissionProof,
   sourceContent,
+  previousExpectedReadback,
   expectedReadback,
   sample,
+  outputChangeExpected = true,
 }) {
   const actual = Array.isArray(sample?.values) ? sample.values.slice(0, expectedReadback.length) : null;
   const passed = readbackMatches(actual, expectedReadback);
@@ -2953,6 +3178,23 @@ async function recordVectorReadbackOutputProof({
     probeConfigHash: probeContract.configHash,
     rawEvidence: sample?.raw,
   });
+  const computeOracleArtifacts = await writeComputeOracleArtifacts({
+    phase,
+    name,
+    previousOutput: previousExpectedReadback ?? null,
+    currentOutput: actual,
+    expectedOutput: expectedReadback,
+    outputEvidence,
+    readbackTimestamp,
+    epoch: epochLabelFromDispatchProof(dispatchProof, artifactId),
+    producer: 'runtime_readback',
+    outputChangeExpected,
+    deterministicSlice: {
+      offset: 0,
+      length: Array.isArray(actual) ? actual.length : expectedReadback.length,
+      source: 'gui_readback',
+    },
+  });
   return recordRuntimeOutputProof(phase, `${name} output proof`, {
     dispatchProof,
     deterministicOutputObserved: Boolean(sample),
@@ -2976,6 +3218,9 @@ async function recordVectorReadbackOutputProof({
       probeEvidenceRefs: outputEvidence.refs,
       evidenceRefs: outputEvidence.refs,
     },
+    oracleArtifacts: {
+      compute_oracle_artifacts: computeOracleArtifacts,
+    },
     visualFrameObserved: false,
     visualEvidenceRequired: false,
   });
@@ -2987,7 +3232,9 @@ async function recordVectorRuntimeProofLadder({
   checkpoint,
   hmr,
   sourceContent,
+  previousExpectedReadback,
   expectedReadback,
+  outputChangeExpected,
   dispatchName,
   readbackName,
 }) {
@@ -3073,8 +3320,10 @@ async function recordVectorRuntimeProofLadder({
     dispatchProof,
     fissionProof,
     sourceContent,
+    previousExpectedReadback,
     expectedReadback,
     sample: readbackSample,
+    outputChangeExpected,
   });
   const epochProof = await runtimeEpochSwapProofSince(checkpoint, 5000, runtimeProofLogBytes);
   const hostProofWithEvidence = await runtimeHostPreservationProofSince(
@@ -3378,6 +3627,23 @@ async function phaseFlow(ctx) {
     rawEvidence: inwardTrend.snippet,
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
+  const inwardComputeOracleArtifacts = await writeComputeOracleArtifacts({
+    phase: 'FLOW',
+    name: 'inward output proof',
+    previousOutput: null,
+    currentOutput: inwardTrend.matched ? 'inward' : null,
+    expectedOutput: 'inward',
+    outputEvidence: inwardOutputEvidence,
+    readbackTimestamp: inwardReadbackTimestamp,
+    epoch: epochLabelFromDispatchProof(inwardDispatchProof, inwardArtifactId),
+    producer: 'runtime_readback',
+    outputChangeExpected: false,
+    deterministicSlice: {
+      offset: 0,
+      length: 1,
+      source: 'worker-log-runtime-readback',
+    },
+  });
   const inwardOutputProof = recordRuntimeOutputProof('FLOW', 'inward output proof', {
     dispatchProof: inwardDispatchProof,
     deterministicOutputObserved: inwardTrend.matched,
@@ -3399,6 +3665,9 @@ async function phaseFlow(ctx) {
       probeConfigHash: inwardProbeContract.configHash,
       probeEvidenceRefs: inwardOutputEvidence.refs,
       evidenceRefs: inwardOutputEvidence.refs,
+    },
+    oracleArtifacts: {
+      compute_oracle_artifacts: inwardComputeOracleArtifacts,
     },
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRequired: true,
@@ -3553,6 +3822,40 @@ async function phaseFlow(ctx) {
     rawEvidence: trend.snippet,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
+  const outwardComputeOracleArtifacts = await writeComputeOracleArtifacts({
+    phase: 'FLOW',
+    name: 'outward output proof',
+    previousOutput: 'inward',
+    currentOutput: trend.matched ? 'outward' : null,
+    expectedOutput: 'outward',
+    outputEvidence: outwardOutputEvidence,
+    readbackTimestamp: outwardReadbackTimestamp,
+    epoch: epochLabelFromDispatchProof(outwardDispatchProof, outwardArtifactId),
+    producer: 'runtime_readback',
+    outputChangeExpected: true,
+    deterministicSlice: {
+      offset: 0,
+      length: 1,
+      source: 'worker-log-runtime-readback',
+    },
+  });
+  const outwardVisualOracleArtifacts = inwardScreenshot && outwardScreenshot
+    ? await writeVisualOracleArtifacts({
+        phase: 'FLOW',
+        name: 'outward output proof',
+        beforeImage: inwardScreenshot,
+        afterImage: outwardScreenshot,
+        timestampAfterDispatch: outwardReadbackTimestamp,
+        epochTrace: `${outwardDispatchProof?.dispatchId ?? 'dispatch'}:${outwardArtifactId ?? 'artifact'}`,
+        cameraStateHash: flowCameraStateHash(),
+        captureBackend: 'mcp_synthi_screenshot',
+        frameNumber: frameNumberFromRuntimeSnippet(trend.snippet),
+      })
+    : null;
+  const outwardOracleArtifacts = {
+    compute_oracle_artifacts: outwardComputeOracleArtifacts,
+    ...(outwardVisualOracleArtifacts ? { visual_oracle_artifacts: outwardVisualOracleArtifacts } : {}),
+  };
   const outwardOutputProof = recordRuntimeOutputProof('FLOW', 'outward output proof', {
     dispatchProof: outwardDispatchProof,
     deterministicOutputObserved: trend.matched,
@@ -3575,6 +3878,8 @@ async function phaseFlow(ctx) {
       probeEvidenceRefs: outwardOutputEvidence.refs,
       evidenceRefs: outwardOutputEvidence.refs,
     },
+    oracleArtifacts: outwardOracleArtifacts,
+    deterministicVisualMode: outwardVisualOracleArtifacts ? flowDeterministicVisualMode() : undefined,
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRequired: true,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
@@ -3700,7 +4005,9 @@ async function phaseP1(ctx) {
       checkpoint: preTail,
       hmr: compile.hmr,
       sourceContent: DEVICE_CU_PHASE1_EDIT,
+      previousExpectedReadback: VECTOR_ADD_READBACK,
       expectedReadback: VECTOR_MUL_READBACK,
+      outputChangeExpected: true,
       dispatchName: 'post-edit GPU dispatch ok',
       readbackName: 'post-edit numeric GPU readback',
     });
@@ -3841,7 +4148,9 @@ async function phaseP2(ctx) {
         checkpoint: fastLogStart,
         hmr: fast.hmr,
         sourceContent: DEVICE_CU_PHASE2_FAST,
+        previousExpectedReadback: VECTOR_MUL_READBACK,
         expectedReadback: VECTOR_MUL_READBACK,
+        outputChangeExpected: false,
         dispatchName: 'fast-swap GPU dispatch ok',
         readbackName: 'fast-swap numeric GPU readback',
       });

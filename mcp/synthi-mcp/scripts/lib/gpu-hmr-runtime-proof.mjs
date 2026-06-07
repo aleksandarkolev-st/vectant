@@ -1531,6 +1531,18 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const rawOracle = observation.outputOracle && typeof observation.outputOracle === 'object'
     ? observation.outputOracle
     : {};
+  const oracleArtifacts = objectField(
+    observation.oracleArtifacts,
+    observation.oracle_artifacts,
+    rawOracle.oracleArtifacts,
+    rawOracle.oracle_artifacts,
+  );
+  const deterministicVisualMode = objectField(
+    observation.deterministicVisualMode,
+    observation.deterministic_visual_mode,
+    rawOracle.deterministicVisualMode,
+    rawOracle.deterministic_visual_mode,
+  );
   const hasExpected = Object.prototype.hasOwnProperty.call(rawOracle, 'expected');
   const hasActual = Object.prototype.hasOwnProperty.call(rawOracle, 'actual');
   const oracleId = stringField(
@@ -1786,6 +1798,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedState: dispatchProof?.degradedState ?? 'gpu-hmr-dispatch-unobserved',
       degradedReason: dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
       outputOracle: { ...outputOracle, passed: false },
+      oracleArtifacts,
+      oracle_artifacts: oracleArtifacts,
+      deterministicVisualMode,
+      deterministic_visual_mode: deterministicVisualMode,
       processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
@@ -1807,6 +1823,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
           ? 'visual_evidence_refs_missing'
           : 'visual_frame_not_observed',
         outputOracle,
+        oracleArtifacts,
+        oracle_artifacts: oracleArtifacts,
+        deterministicVisualMode,
+        deterministic_visual_mode: deterministicVisualMode,
         processId: oracleProcessId,
         visualFrameObserved,
         visualEvidenceRequired,
@@ -1824,6 +1844,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       outputOracle,
+      oracleArtifacts,
+      oracle_artifacts: oracleArtifacts,
+      deterministicVisualMode,
+      deterministic_visual_mode: deterministicVisualMode,
       processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
@@ -1885,6 +1909,10 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     degradedState,
     degradedReason,
     outputOracle: { ...outputOracle, passed: false },
+    oracleArtifacts,
+    oracle_artifacts: oracleArtifacts,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
     processId: oracleProcessId,
     visualFrameObserved,
     visualEvidenceRequired,

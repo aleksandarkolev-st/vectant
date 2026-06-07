@@ -53,6 +53,7 @@ function baselineComputeOracleArtifacts(overrides = {}) {
     readback_schema_json: 'memory://readback-schema.json',
     checksum_before: HASH_A,
     checksum_after: HASH_B,
+    expected_output_change: true,
     deterministic_slice: {
       offset: 0,
       length: 64,

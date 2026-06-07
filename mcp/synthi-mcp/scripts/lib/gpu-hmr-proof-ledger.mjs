@@ -639,8 +639,9 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     );
     if (!retirementStatus) addFailure(failures, 'retirement_proof_missing');
   }
-  if (isVisualOutput(record.outputEvent)) {
-    const artifacts = visualOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+  const visualArtifacts = visualOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+  if (isVisualOutput(record.outputEvent) || visualArtifacts) {
+    const artifacts = visualArtifacts;
     if (!artifacts) {
       addFailure(failures, 'visual_oracle_artifacts_missing');
     } else {
@@ -676,7 +677,13 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       }
       const checksumBefore = artifactFieldText(artifacts, 'checksum_before', 'checksumBefore');
       const checksumAfter = artifactFieldText(artifacts, 'checksum_after', 'checksumAfter');
-      if (checksumBefore && checksumAfter && checksumBefore === checksumAfter) {
+      const outputChangeExpected = objectFieldValue(artifacts, [
+        'output_change_expected',
+        'outputChangeExpected',
+        'expected_output_change',
+        'expectedOutputChange',
+      ]) === true;
+      if (outputChangeExpected && checksumBefore && checksumAfter && checksumBefore === checksumAfter) {
         addFailure(failures, 'compute_oracle_checksum_unchanged');
       }
     }
