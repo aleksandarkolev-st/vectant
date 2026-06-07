@@ -186,6 +186,15 @@ async function runCase({ testCase, container, context, runner }) {
       exportBody.ok === true && typeof generated?.code === "string" && generated.code.includes("@playwright/test"),
       `locators=${generated?.used_locators?.length ?? 0}`
     );
+    if (Array.isArray(testCase.expectedReplayText) && testCase.expectedReplayText.length > 0) {
+      const missingText = testCase.expectedReplayText.filter((text) => !String(generated?.code || "").includes(text));
+      record(
+        testCase.id,
+        "export expected assertions",
+        missingText.length === 0,
+        missingText.length ? `missing=${missingText.join(" | ")}` : `assertions=${testCase.expectedReplayText.length}`
+      );
+    }
     const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
     await writeFile(specPath, generated.code);
     await writeJson(caseDir, "export.json", generated);
@@ -209,6 +218,8 @@ async function runCase({ testCase, container, context, runner }) {
       `status=${validation?.status || "missing"}`
     );
     await writeJson(caseDir, "validation.json", validation);
+    await idePage.bringToFront().catch(() => undefined);
+    await idePage.screenshot({ path: path.join(caseDir, "after-validate-panel.png"), fullPage: true });
 
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
@@ -794,6 +805,11 @@ const CASES = [
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],
+    expectedReplayText: [
+      "Searched revenue",
+      "Moved Revenue audit to Done lane",
+      "Applied enterprise urgent; card done; search revenue",
+    ],
     files: () => commonFiles({
       title: "Dashboard Interactions Workflow",
       body: [
