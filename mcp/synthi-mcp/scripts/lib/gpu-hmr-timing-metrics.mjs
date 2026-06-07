@@ -56,6 +56,7 @@ function firstObject(...values) {
 function modelAvailabilityCheckMs(modelProvenance) {
   const direct = finiteMs(modelProvenance?.modelAvailabilityCheckMs)
     ?? finiteMs(modelProvenance?.model_availability_check_time)
+    ?? finiteMs(modelProvenance?.model_availability_check_time_ms)
     ?? finiteMs(modelProvenance?.modelAvailabilityCheckTimeMs);
   if (direct !== null) return direct;
   const nested = firstObject(

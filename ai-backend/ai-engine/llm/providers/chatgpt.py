@@ -5,7 +5,7 @@ from typing import Any, Mapping, Optional, Sequence, Dict
 from openai import AsyncOpenAI
 
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt, build_split_mode_prompt
-from .base import AiProvider
+from .base import AiProvider, provider_model_provenance
 
 
 def _get_metrics_collector():
@@ -46,12 +46,20 @@ class ChatGPTProvider(AiProvider):
         api_key: Optional[str] = None,
         request_mode: Optional[str] = None,
     ) -> str:
+        model_name = model or self.model_name
+        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
         if not api_key and not os.getenv("OPENAI_API_KEY"):
+            self.last_call_metadata = provider_model_provenance(
+                provider=self.name,
+                requested_model=model_name,
+                actual_model=None,
+                mode=mode_lower,
+                request_mode=request_mode,
+                error_type="missing_api_key",
+            )
             return "LLM disabled: set OPENAI_API_KEY or provide api_key to enable suggestions."
 
         # Prefer explicit mode flag. Support 'fullfile', 'patch', and 'explain' modes.
-        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
-        
         if mode_lower == 'fullfile':
             full_prompt = build_fullfile_prompt(code, lang, prompt or '', files=files, focus=focus)
         elif mode_lower == 'patch':
@@ -73,8 +81,7 @@ class ChatGPTProvider(AiProvider):
 
         try:
             client = self._get_client(api_key)
-            model_name = model or self.model_name
-            
+
             # Metrics tracking
             start_time = time.time()
             first_token_time = None
@@ -128,7 +135,23 @@ class ChatGPTProvider(AiProvider):
                 )
             
             if not combined:
+                self.last_call_metadata = provider_model_provenance(
+                    provider=self.name,
+                    requested_model=model_name,
+                    actual_model=model_name,
+                    mode=mode_lower,
+                    request_mode=request_mode,
+                    latency_ms=total_latency_ms,
+                )
                 return "No suggestion returned."
+            self.last_call_metadata = provider_model_provenance(
+                provider=self.name,
+                requested_model=model_name,
+                actual_model=model_name,
+                mode=mode_lower,
+                request_mode=request_mode,
+                latency_ms=total_latency_ms,
+            )
             return combined
 
         except Exception as e:
@@ -143,6 +166,15 @@ class ChatGPTProvider(AiProvider):
                     is_timeout=is_timeout,
                     error_type=type(e).__name__,
                 )
+            self.last_call_metadata = provider_model_provenance(
+                provider=self.name,
+                requested_model=model_name,
+                actual_model=None,
+                mode=mode_lower,
+                request_mode=request_mode,
+                latency_ms=(time.time() - start_time) * 1000 if 'start_time' in dir() else None,
+                error_type=type(e).__name__,
+            )
             return f"LLM error: {type(e).__name__}: {e}"
 
     def __repr__(self) -> str:

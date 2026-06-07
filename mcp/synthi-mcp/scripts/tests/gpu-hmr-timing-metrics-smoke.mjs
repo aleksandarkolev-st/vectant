@@ -156,7 +156,7 @@ const hiprt = hiprtWarmTimingMetrics({
     split: {
       requested_model: 'gemini-3.5-flash',
       provider_model_status: 'available',
-      model_availability_check_time: 3,
+      model_availability_check_time_ms: 3,
     },
   },
   diff: { changedPixelRatioThreshold4: 0.4, meanAbsDelta8bit: 30 },
