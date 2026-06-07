@@ -111,8 +111,14 @@ function previewScore(
   }
 ): number {
   let score = 0;
-  if (policy.preferredUrl && entry.url.href === policy.preferredUrl.href) score += 1000;
-  if (policy.previewUrl && entry.url.href === policy.previewUrl.href) score += 900;
+  if (policy.preferredUrl) {
+    if (sameUrl(entry.url, policy.preferredUrl)) score += 1200;
+    else if (urlWithinBase(entry.url, policy.preferredUrl)) score += 1100;
+  }
+  if (policy.previewUrl) {
+    if (sameUrl(entry.url, policy.previewUrl)) score += 1000;
+    else if (urlWithinBase(entry.url, policy.previewUrl)) score += 950;
+  }
   if (policy.exactOrigins.has(entry.origin)) score += 700;
   if (policy.suffixes.some((suffix) => hostMatchesSuffix(entry.url.hostname, suffix))) score += 500;
   if (policy.workspaceIsLoopback && isLoopbackHost(entry.url.hostname)) score += 300;
@@ -132,8 +138,10 @@ function previewReason(
     previewUrl: URL | null;
   }
 ): string {
-  if (policy.preferredUrl && entry.url.href === policy.preferredUrl.href) return "preferred_url";
-  if (policy.previewUrl && entry.url.href === policy.previewUrl.href) return "workspace_preview_url";
+  if (policy.preferredUrl && sameUrl(entry.url, policy.preferredUrl)) return "preferred_url";
+  if (policy.preferredUrl && urlWithinBase(entry.url, policy.preferredUrl)) return "preferred_url_path";
+  if (policy.previewUrl && sameUrl(entry.url, policy.previewUrl)) return "workspace_preview_url";
+  if (policy.previewUrl && urlWithinBase(entry.url, policy.previewUrl)) return "workspace_preview_url_path";
   if (policy.exactOrigins.has(entry.origin)) return "allowed_preview_origin";
   if (policy.suffixes.some((suffix) => hostMatchesSuffix(entry.url.hostname, suffix))) return "allowed_preview_host_suffix";
   if (policy.workspaceIsLoopback && isLoopbackHost(entry.url.hostname)) return "loopback_workspace_preview";
@@ -147,6 +155,30 @@ function parseUrl(value: unknown): URL | null {
   } catch {
     return null;
   }
+}
+
+function sameUrl(a: URL, b: URL): boolean {
+  return canonicalUrl(a) === canonicalUrl(b);
+}
+
+function canonicalUrl(url: URL): string {
+  const copy = new URL(url.href);
+  copy.hash = "";
+  copy.pathname = normalizeTrailingSlash(copy.pathname);
+  return copy.href;
+}
+
+function urlWithinBase(entry: URL, base: URL): boolean {
+  if (entry.origin !== base.origin) return false;
+  const basePath = normalizeTrailingSlash(base.pathname);
+  if (!basePath || basePath === "/") return false;
+  const entryPath = normalizeTrailingSlash(entry.pathname);
+  return entryPath === basePath || entryPath.startsWith(`${basePath}/`);
+}
+
+function normalizeTrailingSlash(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith("/")) return pathname.slice(0, -1);
+  return pathname;
 }
 
 function splitEnvList(value: unknown): string[] {

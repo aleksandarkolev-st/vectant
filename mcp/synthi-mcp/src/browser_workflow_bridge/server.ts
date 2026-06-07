@@ -56,6 +56,7 @@ interface BrowserWorkflowBridgeState {
 }
 
 const MAX_HISTORY = 8;
+const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -165,13 +166,92 @@ function defaultWorkspaceUrl(args: unknown): string | undefined {
   );
 }
 
-function enrichToolArgs(toolName: string, args: unknown): Record<string, unknown> {
+async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<string, unknown>> {
   const base = objectArgs(args);
   if (toolName === "synthi_auth_get_tool_auth_readiness" && !stringOpt(base["url"])) {
     const url = defaultWorkspaceUrl(base);
     if (url) return { ...base, url };
   }
+  if (
+    toolName === "synthi_browser_observe_preview" &&
+    !stringOpt(base["preferred_url"]) &&
+    !stringOpt(base["preview_url"])
+  ) {
+    const previewUrl = await discoverWorkspacePreviewUrl(base);
+    if (previewUrl) {
+      return { ...base, preferred_url: previewUrl, preview_url: previewUrl };
+    }
+  }
   return base;
+}
+
+async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<string | undefined> {
+  const slug = workspaceSlugFromArgs(args);
+  if (!slug) return undefined;
+  const collabUrl = resolveCollabServerUrl();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${collabUrl}/ports?workspace=${encodeURIComponent(slug)}`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json() as Record<string, unknown>;
+    const preview = previewUrlFromPortsPayload(payload, collabUrl);
+    return preview ?? undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function workspaceSlugFromArgs(args: Record<string, unknown>): string | undefined {
+  const direct = stringOpt(args["workspace_id"]) ?? stringOpt(args["workspace"]);
+  if (direct) return direct;
+  const workspaceUrl = stringOpt(args["workspace_url"]) ?? defaultWorkspaceUrl(args);
+  if (!workspaceUrl) return undefined;
+  try {
+    const parsed = new URL(workspaceUrl);
+    const match = parsed.pathname.match(/\/workspace\/([^/?#]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveCollabServerUrl(): string {
+  const configured =
+    stringOpt(process.env["SYNTHI_COLLAB_SERVER_URL"]) ??
+    stringOpt(process.env["COLLAB_SERVER_URL"]) ??
+    stringOpt(process.env["NEXT_PUBLIC_COLLAB_SERVER_URL"]);
+  return (configured ?? "http://localhost:1234").replace(/\/$/, "");
+}
+
+function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl: string): string | null {
+  const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
+  for (const item of previews) {
+    if (!item || typeof item !== "object") continue;
+    const url = stringOpt((item as Record<string, unknown>)["url"]);
+    const resolved = resolvePreviewUrl(url, collabUrl);
+    if (resolved) return resolved;
+  }
+  const activePorts = Array.isArray(payload["activePorts"]) ? payload["activePorts"] : [];
+  const ports = activePorts
+    .map((port) => Number(port))
+    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
+    .sort((a, b) => a - b);
+  return ports[0] ? resolvePreviewUrl(`/port/${ports[0]}/`, collabUrl) : null;
+}
+
+function resolvePreviewUrl(url: string | undefined, collabUrl: string): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url, `${collabUrl}/`);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function updateBridgeState(
@@ -183,6 +263,13 @@ function updateBridgeState(
   const now = new Date().toISOString();
   state.lastTool = toolName;
   state.lastToolAt = now;
+  if (ok && toolName === "synthi_browser_attach_current_workspace") {
+    state.lastObserveAt = undefined;
+    state.compiledAt = undefined;
+    state.scriptGeneratedAt = undefined;
+    state.manifestGeneratedAt = undefined;
+    state.history = [];
+  }
   if (ok && toolName === "synthi_browser_begin_teach") {
     state.compiledAt = undefined;
     state.scriptGeneratedAt = undefined;
@@ -410,7 +497,7 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
 
       const requestedTool = body.tool;
       const tool = normalizeToolName(requestedTool);
-      const args = enrichToolArgs(tool, body.arguments);
+      const args = await enrichToolArgs(tool, body.arguments);
       const result = await dispatchWorkflowTool(tool, args);
       if (!result) {
         writeJson(res, 404, {

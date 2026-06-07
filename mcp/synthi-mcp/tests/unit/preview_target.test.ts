@@ -36,6 +36,39 @@ describe("browser preview target selection", () => {
     expect(result.reason).toBe("workspace_preview_url");
   });
 
+  it("prefers the supplied proxied preview path over stale tabs on the same proxy origin", () => {
+    const result = resolveBrowserPreviewTarget([
+      { tab_id: "workspace", url: "http://localhost:3000/workspace/demo", title: "Workspace", active: false },
+      { tab_id: "stale", url: "http://localhost:1234/port/5173/", title: "Old preview", active: true },
+      { tab_id: "current", url: "http://localhost:1234/port/36021/", title: "Current preview", active: false },
+    ], {
+      workspace_url: "http://localhost:3000/workspace/demo",
+      preview_url: "http://localhost:1234/port/36021/",
+      preferred_url: "http://localhost:1234/port/36021/",
+    }, {});
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected preview target");
+    expect(result.tab.tab_id).toBe("current");
+    expect(result.reason).toBe("preferred_url");
+  });
+
+  it("keeps the selected proxied preview when the app navigates below the preview path", () => {
+    const result = resolveBrowserPreviewTarget([
+      { tab_id: "workspace", url: "http://localhost:3000/workspace/demo", title: "Workspace", active: false },
+      { tab_id: "stale", url: "http://localhost:1234/port/5173/settings", title: "Old preview", active: true },
+      { tab_id: "current", url: "http://localhost:1234/port/36021/dashboard", title: "Current preview", active: false },
+    ], {
+      workspace_url: "http://localhost:3000/workspace/demo",
+      preview_url: "http://localhost:1234/port/36021/",
+    }, {});
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected preview target");
+    expect(result.tab.tab_id).toBe("current");
+    expect(result.reason).toBe("workspace_preview_url_path");
+  });
+
   it("does not auto-select arbitrary third-party tabs", () => {
     const result = resolveBrowserPreviewTarget([
       { tab_id: "workspace", url: "https://app.synthi.example/workspace/demo", title: "Workspace", active: true },
