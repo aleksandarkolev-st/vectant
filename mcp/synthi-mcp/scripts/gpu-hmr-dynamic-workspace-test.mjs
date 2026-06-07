@@ -753,6 +753,44 @@ function sourceFiles(vendor, paths, manifest) {
   ];
 }
 
+function cleanRel(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+}
+
+function manifestRoleForPath(manifest, filePath) {
+  const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
+    ? manifest.module_files
+    : {};
+  const normalizedPath = cleanRel(filePath);
+  for (const [role, rolePath] of Object.entries(moduleFiles)) {
+    if (cleanRel(rolePath) === normalizedPath) return role;
+  }
+  return null;
+}
+
+function waitContractForCompile({ manifest, primaryPath, compile, timeoutMs }) {
+  const role = manifestRoleForPath(manifest, primaryPath);
+  const isGpuDeviceEdit = role === 'device' || (
+    manifest?.gpu && /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(primaryPath)
+  );
+  const module = process.env.SYNTHI_GPU_HMR_WAIT_MODULE
+    ?? (isGpuDeviceEdit ? 'device' : role ?? undefined);
+  const waitArgs = {
+    timeoutMs,
+    ...(Number.isFinite(compile?.dispatched_at)
+      ? { since_ts: compile.dispatched_at }
+      : {}),
+    ...(module ? { module } : {}),
+  };
+  const requiredState = process.env.SYNTHI_GPU_HMR_REQUIRED_PROOF_STATE;
+  if (requiredState && requiredState.trim()) {
+    waitArgs.requiredGpuProofState = requiredState.trim();
+  } else if (isGpuDeviceEdit && process.env.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF !== '0') {
+    waitArgs.requireGpuFullRuntimeProof = true;
+  }
+  return { waitArgs, role, isGpuDeviceEdit };
+}
+
 async function seedWorkspace(vendor, arch) {
   const paths = makePaths(vendor);
   const manifest = manifestFor(vendor, paths, arch);
@@ -795,9 +833,24 @@ async function compileViaMcp(ctx, primaryPath, content) {
   });
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 400)}`);
   const waitTimeout = Math.min(CFG.hmrTimeoutMs, CFG.hmrWaitTimeoutMs);
-  const hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: waitTimeout }, waitTimeout + 5000)
+  const waitContract = waitContractForCompile({
+    manifest: ctx.manifest,
+    primaryPath,
+    compile,
+    timeoutMs: waitTimeout,
+  });
+  const hmr = await state.client.toolCall('synthi_wait_hmr', waitContract.waitArgs, waitTimeout + 5000)
     .catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  return { compile, hmr };
+  record('mcp wait_hmr proof gate', hmr?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+    role: waitContract.role,
+    module: waitContract.waitArgs.module ?? null,
+    since_ts: waitContract.waitArgs.since_ts ?? null,
+    requireGpuFullRuntimeProof: waitContract.waitArgs.requireGpuFullRuntimeProof === true,
+    requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
+    status: hmr?.status ?? null,
+    frame_gate: hmr?.frame_gate ?? null,
+  }));
+  return { compile, hmr, waitContract };
 }
 
 async function run() {

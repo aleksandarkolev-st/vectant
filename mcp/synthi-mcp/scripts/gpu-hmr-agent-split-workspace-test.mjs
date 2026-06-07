@@ -762,16 +762,62 @@ async function compileViaMcp(args, timeoutMs) {
   const state = await ensureMcpAttached();
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
+  const waitContract = waitContractForCompile({ args, compile, timeoutMs });
   const wait = await state.client.toolCall(
     'synthi_wait_hmr',
-    { timeoutMs },
+    waitContract.waitArgs,
     timeoutMs + 5000,
   ).catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  return { compile, wait };
+  record('mcp wait_hmr proof gate', wait?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+    role: waitContract.role,
+    module: waitContract.waitArgs.module ?? null,
+    since_ts: waitContract.waitArgs.since_ts ?? null,
+    requireGpuFullRuntimeProof: waitContract.waitArgs.requireGpuFullRuntimeProof === true,
+    requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
+    status: wait?.status ?? null,
+    frame_gate: wait?.frame_gate ?? null,
+  }));
+  return { compile, wait, waitContract };
 }
 
 function cleanRel(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+}
+
+function manifestRoleForPath(manifest, filePath) {
+  const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
+    ? manifest.module_files
+    : {};
+  const normalizedPath = cleanRel(filePath);
+  for (const [role, rolePath] of Object.entries(moduleFiles)) {
+    if (cleanRel(rolePath) === normalizedPath) return role;
+  }
+  return null;
+}
+
+function waitContractForCompile({ args, compile, timeoutMs }) {
+  const manifest = args?.compile_manifest;
+  const filename = cleanRel(args?.filename);
+  const role = manifestRoleForPath(manifest, filename);
+  const isGpuDeviceEdit = role === 'device' || (
+    manifest?.gpu && /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(filename)
+  );
+  const module = process.env.SYNTHI_GPU_HMR_WAIT_MODULE
+    ?? (isGpuDeviceEdit ? 'device' : role ?? undefined);
+  const waitArgs = {
+    timeoutMs,
+    ...(Number.isFinite(compile?.dispatched_at)
+      ? { since_ts: compile.dispatched_at }
+      : {}),
+    ...(module ? { module } : {}),
+  };
+  const requiredState = process.env.SYNTHI_GPU_HMR_REQUIRED_PROOF_STATE;
+  if (requiredState && requiredState.trim()) {
+    waitArgs.requiredGpuProofState = requiredState.trim();
+  } else if (isGpuDeviceEdit && process.env.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF !== '0') {
+    waitArgs.requireGpuFullRuntimeProof = true;
+  }
+  return { waitArgs, role, isGpuDeviceEdit };
 }
 
 function manifestRolePaths(manifest, vendor) {
