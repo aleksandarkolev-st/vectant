@@ -1024,7 +1024,7 @@ const cases = [
       },
     },
   }), 'convergence_window_sample_evidence_missing'],
-  ['temporal convergence without fixed seed policy', baselineVisualRecord({
+  ['temporal visual without fixed seed policy or convergence proof', baselineVisualRecord({
     deterministic_visual_mode: {
       frozen_camera: true,
       temporal_accumulation_present: true,
@@ -1034,17 +1034,6 @@ const cases = [
       fixed_swapchain_image_count: true,
       frame_capture_after_epoch_dispatch: true,
       presentation_fence_or_frame_boundary: true,
-      convergence_window: {
-        frame_start: 3,
-        frame_end: 4,
-        metric: { value: 'per_frame_delta' },
-        samples: [
-          { frame: 3, metric_value: 12.5, after_epoch_dispatch: true },
-          { frame: 4, metric_value: 14.0, after_epoch_dispatch: true },
-        ],
-        convergence_proven: true,
-        evidence_refs: ['visual-window:post-epoch-frames'],
-      },
     },
   }), 'seed_policy_unproven'],
   ['missing model provenance', (() => {

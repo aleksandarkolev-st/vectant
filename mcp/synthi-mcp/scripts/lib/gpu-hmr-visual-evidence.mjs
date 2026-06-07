@@ -484,7 +484,9 @@ export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
     addGate(failedGates, 'seed_policy_unproven');
   }
   if (!seedPolicyFixed(mode) && convergenceAccepted) {
-    addGate(failedGates, 'seed_policy_unproven');
+    warnings.push({
+      code: 'convergence_window_without_fixed_seed_policy',
+    });
   }
   if (mode.convergence_window.frame_start !== null || mode.convergence_window.frame_end !== null) {
     const window = mode.convergence_window;

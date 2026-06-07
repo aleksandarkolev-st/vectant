@@ -6883,6 +6883,10 @@ describe("GPU HMR runtime output proof classification", () => {
         metric: {
           value: "window_mean_delta",
         },
+        sample_count: 9,
+        metric_delta: 0.42,
+        convergence_proven: true,
+        evidence_refs: ["mcp:visual-window:post-epoch-frames"],
       },
     });
 
