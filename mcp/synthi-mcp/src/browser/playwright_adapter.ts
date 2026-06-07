@@ -56,6 +56,8 @@ export type BrowserWorkflowOverlayResponse = {
   recording?: boolean;
   observed?: boolean;
   stepCount?: number;
+  lastAction?: string;
+  lastTarget?: string;
   url?: string;
   error?: string;
 };
@@ -861,9 +863,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string): stri
     root.innerHTML = [
       '<style>',
       ':host{all:initial}',
-      '.box{box-sizing:border-box;display:flex;align-items:center;gap:8px;min-height:40px;padding:7px;border:1px solid rgba(232,232,226,.16);border-radius:8px;background:rgba(22,22,24,.94);color:rgb(246,246,240);font:12px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.34)}',
-      '.status{display:flex;align-items:center;gap:6px;min-width:74px;padding:0 6px;color:rgba(246,246,240,.78);white-space:nowrap}',
+      '.box{box-sizing:border-box;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;min-height:44px;width:min(330px,calc(100vw - 32px));padding:8px;border:1px solid rgba(232,232,226,.16);border-radius:8px;background:rgba(22,22,24,.94);color:rgb(246,246,240);font:12px/1.25 Inter,ui-sans-serif,system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.34)}',
+      '.status{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:6px;min-width:0;padding:0 4px;color:rgba(246,246,240,.78)}',
       '.dot{width:7px;height:7px;border-radius:50%;background:#8a8a82}',
+      '.label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgb(246,246,240);font-weight:700}',
+      '.meta{grid-column:1/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(246,246,240,.62);font:11px/1.25 Inter,ui-sans-serif,system-ui,sans-serif}',
       '.box[data-state=observed] .dot{background:#4fbe73}',
       '.box[data-state=recording] .dot{background:#d7a43b;box-shadow:0 0 0 4px rgba(215,164,59,.15)}',
       '.box[data-state=error] .dot{background:#d85f5f}',
@@ -877,11 +881,13 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string): stri
       '  <div class="status" aria-live="polite"><span class="dot"></span><span class="label">Ready</span></div>',
       '  <button type="button" class="observe" data-testid="synthi-workflow-observe">Observe</button>',
       '  <button type="button" class="teach" data-recording="false" data-testid="synthi-workflow-teach">Teach</button>',
+      '  <div class="meta" data-testid="synthi-workflow-meta">0 steps</div>',
       '</div>',
     ].join('');
 
     const box = root.querySelector('.box');
     const label = root.querySelector('.label');
+    const meta = root.querySelector('.meta');
     const observeButton = root.querySelector('.observe');
     const teachButton = root.querySelector('.teach');
     let recording = false;
@@ -893,12 +899,28 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string): stri
       box.dataset.state = status;
       host.dataset.synthiWorkflowStatus = status;
       host.dataset.synthiWorkflowRecording = recording ? 'true' : 'false';
-      host.dataset.synthiWorkflowSteps = String(next && Number.isFinite(Number(next.stepCount)) ? Number(next.stepCount) : 0);
+      const steps = next && Number.isFinite(Number(next.stepCount)) ? Number(next.stepCount) : 0;
+      host.dataset.synthiWorkflowSteps = String(steps);
       host.dataset.synthiWorkflowUrl = next && next.url ? String(next.url) : '';
+      host.dataset.synthiWorkflowLastAction = next && next.lastAction ? String(next.lastAction) : '';
+      host.dataset.synthiWorkflowLastTarget = next && next.lastTarget ? String(next.lastTarget) : '';
       label.textContent = next && next.label ? String(next.label) : recording ? 'Recording' : status === 'observed' ? 'Observed' : status === 'error' ? 'Error' : 'Ready';
       teachButton.textContent = recording ? 'Stop' : 'Teach';
       teachButton.dataset.recording = recording ? 'true' : 'false';
-      if (next && next.detail) host.title = String(next.detail);
+      const urlDetail = shortUrl(next && next.url ? String(next.url) : location.href);
+      const last = next && next.lastAction ? String(next.lastAction) + (next.lastTarget ? ' ' + String(next.lastTarget) : '') : '';
+      meta.textContent = (steps === 1 ? '1 step' : String(steps) + ' steps') + ' - ' + (last || urlDetail || 'No actions yet');
+      host.title = [next && next.detail ? String(next.detail) : '', urlDetail, last].filter(Boolean).join('\\n');
+    }
+
+    function shortUrl(value) {
+      try {
+        const parsed = new URL(value);
+        const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
+        return parsed.host + path;
+      } catch {
+        return '';
+      }
     }
 
     async function call(action) {

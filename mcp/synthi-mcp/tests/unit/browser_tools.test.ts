@@ -3,7 +3,7 @@ import { browserBroker } from "../../src/browser/broker.js";
 import { browserBridgeServer } from "../../src/browser/bridge_server.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
-import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, dispatchBrowserTool } from "../../src/tools/browser.js";
+import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserWorkflowOverlayAction, dispatchBrowserTool } from "../../src/tools/browser.js";
 
 const originalBrowserCdpUrl = process.env["SYNTHI_BROWSER_CDP_URL"];
 const originalHostedBrowserCdpUrl = process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
@@ -253,6 +253,49 @@ describe("browser MCP tool surface", () => {
       card: expect.objectContaining({ title: "Save settings", stepCount: 1 }),
       replay: expect.objectContaining({ first_mutation_step_id: "browser_evt_1" }),
     }));
+  });
+
+  it("summarizes hosted toolbox state without exposing taught values", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "https://workspace.example.test/workspace/workspace-a",
+      adapter: "unit-test",
+    });
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Settings", active: true }]);
+    browserBroker.selectTab("app");
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "do-not-expose",
+      field_name: "API token",
+      element: { tag: "input", role: "textbox", label: "API token", source_id: "s_token" },
+    }).ok).toBe(true);
+
+    const state = await browserWorkflowOverlayAction({
+      action: "state",
+      tab_id: "app",
+      page_url: url,
+    });
+
+    expect(state).toEqual(expect.objectContaining({
+      ok: true,
+      status: "recording",
+      label: "Recording",
+      recording: true,
+      observed: true,
+      stepCount: 1,
+      lastAction: "Filled",
+      lastTarget: "API token",
+      url,
+    }));
+    expect(JSON.stringify(state)).not.toContain("do-not-expose");
   });
 
   it("requires file path parameters before replaying taught file drops", async () => {

@@ -97,6 +97,7 @@ function workflowOverlayStatus(base: Partial<BrowserWorkflowOverlayResponse> = {
   const teach = browserBroker.teachState();
   const selected = browserBroker.selectedTab();
   const workflow = browserBroker.compiledWorkflow();
+  const lastAction = lastWorkflowAction(browserBroker.traceSnapshot(), tabId);
   const selectedMatchesOverlay = Boolean(selected && (!tabId || selected.tab_id === tabId));
   const consent = selectedMatchesOverlay && selected ? browserBroker.getConsent(selected.url)[0] : undefined;
   const observed = Boolean(selectedMatchesOverlay && selected && consent?.status === "granted" && consent.screenshot === "granted");
@@ -113,8 +114,63 @@ function workflowOverlayStatus(base: Partial<BrowserWorkflowOverlayResponse> = {
     recording,
     observed,
     stepCount: workflow.card.stepCount,
+    ...(lastAction ? { lastAction: lastAction.action, lastTarget: lastAction.target } : {}),
     ...(observed && selected?.url ? { url: selected.url } : {}),
   };
+}
+
+function lastWorkflowAction(trace: BrowserTraceEvent[], tabId?: string): { action: string; target: string } | null {
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const event = trace[index];
+    if (!event || (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation")) continue;
+    if (tabId && event.tab_id !== tabId) continue;
+    const action = event.action ?? (event.kind === "navigation" ? "navigate" : event.kind);
+    return {
+      action: humanActionLabel(action),
+      target: boundedTargetLabel(event),
+    };
+  }
+  return null;
+}
+
+function humanActionLabel(action: string): string {
+  switch (action) {
+    case "fill":
+      return "Filled";
+    case "click":
+      return "Clicked";
+    case "check":
+      return "Checked";
+    case "uncheck":
+      return "Unchecked";
+    case "select":
+      return "Selected";
+    case "press":
+      return "Pressed";
+    case "drag":
+      return "Dragged";
+    case "hover":
+      return "Hovered";
+    case "navigate":
+      return "Opened";
+    default:
+      return action.slice(0, 1).toUpperCase() + action.slice(1);
+  }
+}
+
+function boundedTargetLabel(event: BrowserTraceEvent): string {
+  const element = event.detail?.["element"];
+  const elementRecord = element && typeof element === "object" && !Array.isArray(element) ? element as Record<string, unknown> : {};
+  const candidate = [
+    stringOpt(event.detail?.["field_name"]),
+    stringOpt(elementRecord["label"]),
+    stringOpt(elementRecord["name"]),
+    stringOpt(elementRecord["placeholder"]),
+    stringOpt(elementRecord["test_id"]),
+    stringOpt(elementRecord["id"]),
+    stringOpt(event.selector),
+  ].find((value) => value && value.length > 0);
+  return candidate ? candidate.replace(/\s+/g, " ").slice(0, 64) : "target";
 }
 
 function workflowOverlayError(label: string, response: ToolResponse): BrowserWorkflowOverlayResponse {
