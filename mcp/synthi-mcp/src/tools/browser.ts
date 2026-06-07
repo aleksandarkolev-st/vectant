@@ -30,6 +30,10 @@ browserPlaywrightAdapter.setTeachEventSink((event) => {
   browserBroker.recordHumanAction(event);
 });
 
+browserPlaywrightAdapter.setTeachEventAnnotationSink((event) => {
+  browserBroker.annotateLatestHumanAction(event);
+});
+
 browserPlaywrightAdapter.setWorkflowOverlayActionSink(async (request) => {
   return browserWorkflowOverlayAction(request);
 });

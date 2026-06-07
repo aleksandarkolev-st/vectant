@@ -1123,6 +1123,47 @@ const CASES = [
     },
   },
   {
+    id: "download-link",
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Download requested",
+    ],
+    expectedReplayCode: [
+      "page.waitForEvent('download')",
+      "suggestedFilename()).toBe(\"report.csv\")",
+    ],
+    files: () => [
+      ...commonFiles({
+        title: "Download Link Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Download Link Workflow</h1>",
+          "      <a href=\"/report.csv\" download=\"report.csv\" role=\"button\" data-testid=\"download-report\" data-synthi-source-id=\"download.report\">Download report</a>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+        ].join("\n"),
+        script: [
+          "document.querySelector('[data-testid=\"download-report\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Download requested';",
+          "});",
+          "",
+        ].join("\n"),
+      }),
+      {
+        path: "report.csv",
+        encoding: "utf8",
+        content: "name,total\\nAda,42\\n",
+      },
+    ],
+    teach: async (page) => {
+      const downloadPromise = page.waitForEvent("download");
+      await page.getByRole("button", { name: "Download report" }).click();
+      await downloadPromise;
+      await page.getByText("Download requested").waitFor();
+    },
+  },
+  {
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],

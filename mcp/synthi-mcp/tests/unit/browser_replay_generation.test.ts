@@ -217,6 +217,29 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Scrolled to approvals\", { exact: true })).toBeVisible();");
   });
 
+  it("wraps download-triggering clicks with a Playwright download wait", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "download-report",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          download_event: true,
+          suggested_filename: "report.csv",
+          suggested_filename_redacted: false,
+          element: { role: "link", name: "Download report", test_id: "download-report", source_id: "src_download" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"download-report\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("page.waitForEvent('download')");
+    expect(generated.code).toContain("target1.click()");
+    expect(generated.code).toContain("expect(download1.suggestedFilename()).toBe(\"report.csv\");");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({

@@ -106,6 +106,26 @@ export class BrowserTraceRecorder {
     return this.events.map((event) => ({ ...event }));
   }
 
+  annotateLatestAction(input: {
+    tab_id: string;
+    actions?: BrowserActionKind[];
+    detail: Record<string, unknown>;
+    within_ms?: number;
+  }): BrowserTraceEvent | null {
+    const now = Date.now();
+    const actions = input.actions ? new Set<BrowserActionKind>(input.actions) : null;
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      const event = this.events[index];
+      if (!event || (event.kind !== "human_action" && event.kind !== "agent_action")) continue;
+      if (event.tab_id !== input.tab_id) continue;
+      if (actions && (!event.action || !actions.has(event.action))) continue;
+      if (input.within_ms !== undefined && now - event.ts > input.within_ms) return null;
+      event.detail = { ...(event.detail ?? {}), ...input.detail };
+      return { ...event };
+    }
+    return null;
+  }
+
   clear(): void {
     this.events = [];
     this.counter = 0;
@@ -288,10 +308,18 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     }
     switch (event.action) {
       case "click":
-        lines.push(`  await ${target}.click();`);
+        if (isDownloadTrigger(event)) {
+          pushDownloadAction(lines, target, "click", event, targetSeq);
+        } else {
+          lines.push(`  await ${target}.click();`);
+        }
         break;
       case "dblclick":
-        lines.push(`  await ${target}.dblclick();`);
+        if (isDownloadTrigger(event)) {
+          pushDownloadAction(lines, target, "dblclick", event, targetSeq);
+        } else {
+          lines.push(`  await ${target}.dblclick();`);
+        }
         break;
       case "contextmenu":
         lines.push(`  await ${target}.click({ button: 'right' });`);
@@ -485,6 +513,29 @@ function scrollPositionFor(event: BrowserTraceEvent): { top: number; left: numbe
     top: Math.max(0, Math.round(top)),
     left: Math.max(0, Math.round(left)),
   };
+}
+
+function isDownloadTrigger(event: BrowserTraceEvent): boolean {
+  return event.detail?.["download_event"] === true;
+}
+
+function pushDownloadAction(
+  lines: string[],
+  target: string,
+  method: "click" | "dblclick",
+  event: BrowserTraceEvent,
+  ordinal: number
+): void {
+  const download = `download${ordinal}`;
+  lines.push(`  const [${download}] = await Promise.all([`);
+  lines.push("    page.waitForEvent('download'),");
+  lines.push(`    ${target}.${method}(),`);
+  lines.push("  ]);");
+  const filename = typeof event.detail?.["suggested_filename"] === "string" ? event.detail["suggested_filename"] : "";
+  const redacted = event.detail?.["suggested_filename_redacted"] === true;
+  if (filename && !redacted) {
+    lines.push(`  expect(${download}.suggestedFilename()).toBe(${JSON.stringify(filename)});`);
+  }
 }
 
 function numericDetail(event: BrowserTraceEvent, key: string): number | undefined {

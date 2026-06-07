@@ -44,6 +44,15 @@ export interface CapturedBrowserHumanAction {
 
 export type BrowserTeachEventSink = (event: CapturedBrowserHumanAction) => void;
 
+export type BrowserTeachEventAnnotationSink = (event: {
+  tab_id: string;
+  url: string;
+  origin: string;
+  actions?: BrowserActionKind[];
+  detail: Record<string, unknown>;
+  within_ms?: number;
+}) => void;
+
 export interface BrowserWorkflowOverlayRequest {
   action: "state" | "observe" | "teach" | "stop";
   url?: string;
@@ -78,11 +87,16 @@ export class BrowserPlaywrightAdapter {
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
   private teachEventSink: BrowserTeachEventSink | null = null;
+  private teachEventAnnotationSink: BrowserTeachEventAnnotationSink | null = null;
   private workflowOverlayActionSink: BrowserWorkflowOverlayActionSink | null = null;
   private workflowOverlayEnabled = false;
 
   setTeachEventSink(sink: BrowserTeachEventSink | null): void {
     this.teachEventSink = sink;
+  }
+
+  setTeachEventAnnotationSink(sink: BrowserTeachEventAnnotationSink | null): void {
+    this.teachEventAnnotationSink = sink;
   }
 
   setWorkflowOverlayActionSink(sink: BrowserWorkflowOverlayActionSink | null): void {
@@ -362,6 +376,33 @@ export class BrowserPlaywrightAdapter {
           redacted: redacted.redacted,
           detail: { method: request.method(), resource_type: request.resourceType() },
         });
+      });
+      page.on("download", (download) => {
+        let origin: string;
+        try {
+          origin = normalizeOrigin(page.url()).origin;
+        } catch {
+          return;
+        }
+        const redactedUrl = redactUrl(download.url());
+        const suggested = redactText(download.suggestedFilename());
+        const detail: Record<string, unknown> = {
+          download_event: true,
+          download_url: redactedUrl.url,
+          suggested_filename: suggested.text,
+          download_url_redacted: redactedUrl.redacted,
+          suggested_filename_redacted: suggested.redacted,
+        };
+        setTimeout(() => {
+          this.teachEventAnnotationSink?.({
+            tab_id,
+            url: page.url(),
+            origin,
+            actions: ["click", "dblclick"],
+            detail,
+            within_ms: 5000,
+          });
+        }, 250);
       });
       page.on("framenavigated", (frame) => {
         if (frame !== page.mainFrame()) return;

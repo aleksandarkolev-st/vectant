@@ -350,6 +350,32 @@ export class BrowserBroker {
     return { ok: true, event, lease_conflict };
   }
 
+  annotateLatestHumanAction(input: {
+    tab_id: string;
+    url: string;
+    origin: string;
+    actions?: BrowserActionKind[];
+    detail: Record<string, unknown>;
+    within_ms?: number;
+  }): { ok: true; event: BrowserTraceEvent | null } | { ok: false; error: string } {
+    const gate = this.requireTeach(input.tab_id, input.url);
+    if (!gate.ok) return gate;
+    const normalized = this.normalizeSelectionOrigin({
+      tab_id: input.tab_id,
+      url: input.url,
+      origin: input.origin,
+    });
+    if (!normalized.ok) return normalized;
+    const event = this.trace.annotateLatestAction({
+      tab_id: input.tab_id,
+      actions: input.actions,
+      detail: input.detail,
+      within_ms: input.within_ms,
+    });
+    if (event) eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event } });
+    return { ok: true, event };
+  }
+
   snapshot(input: BrowserBrokerSnapshotInput): { ok: true; snapshot: BrowserSnapshot } | { ok: false; error: string } {
     const origin = normalizeOrigin(input.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };

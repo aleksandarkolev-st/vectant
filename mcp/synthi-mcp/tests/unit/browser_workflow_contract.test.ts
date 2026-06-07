@@ -163,6 +163,38 @@ describe("browser workflow contract compiler", () => {
     expect(replay.events.map((event) => event.action)).toEqual(["dblclick", "contextmenu"]);
   });
 
+  it("annotates the latest taught click with download metadata", () => {
+    const url = "https://app.example.com/reports";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "link", name: "Download report", test_id: "download-report" },
+    }).ok).toBe(true);
+
+    const annotated = browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      actions: ["click"],
+      detail: {
+        download_event: true,
+        suggested_filename: "report.csv",
+      },
+      within_ms: 5000,
+    });
+
+    expect(annotated.ok).toBe(true);
+    expect(browserBroker.traceSnapshot()[0]?.detail).toEqual(expect.objectContaining({
+      download_event: true,
+      suggested_filename: "report.csv",
+    }));
+  });
+
   it("marks redacted inputs as secret parameters without leaking values", () => {
     const workflow = compileWorkflowContract([
       {
