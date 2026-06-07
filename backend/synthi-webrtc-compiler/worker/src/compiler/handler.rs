@@ -749,6 +749,13 @@ fn launch_indirection_report(result: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn model_provenance_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_model_provenance")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -7286,6 +7293,7 @@ fn gpu_ai_delta_acceptance_report(
     reason_codes: &[String],
     touched_roles: &[String],
     fission_candidate: Option<&serde_json::Value>,
+    model_provenance: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let fission_proposal = gpu_ai_delta_fission_proposal(fission_candidate);
     let mut report = serde_json::json!({
@@ -7298,6 +7306,7 @@ fn gpu_ai_delta_acceptance_report(
         "generatedRole": generated_path,
         "evidence": {
             "touchedGeneratedRoles": touched_roles,
+            "modelProvenance": model_provenance.cloned().unwrap_or(serde_json::Value::Null),
             "fissionCandidateProposal": {
                 "present": fission_proposal.is_some(),
                 "authority": "non_authoritative",
@@ -8704,6 +8713,7 @@ pub async fn handle_compile_request(
             let mapping_report = device_mapping_report(&result);
             let source_report = source_context_report(&result);
             let launch_report = launch_indirection_report(&result);
+            let model_provenance = model_provenance_report(&result);
             let mut meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
@@ -8715,6 +8725,7 @@ pub async fn handle_compile_request(
                 "device_mapping_report": mapping_report,
                 "source_context_report": source_report,
                 "launch_indirection_report": launch_report,
+                "model_provenance": model_provenance,
             });
             let baseline_count = upsert_compile_request_source_baselines(&mut meta, &req);
             eprintln!(
@@ -10018,11 +10029,20 @@ pub async fn handle_compile_request(
                                 &reason_codes,
                                 &touched_roles,
                                 ai_delta.fission_candidate.as_ref(),
+                                ai_delta.model_provenance.as_ref(),
                             );
+                            let delta_model_provenance = ai_delta
+                                .model_provenance
+                                .clone()
+                                .unwrap_or(serde_json::Value::Null);
                             meta.insert("lastReloadPlanReport".to_string(), plan_report.clone());
                             meta.insert(
                                 "lastGpuAiDeltaVerifierReport".to_string(),
                                 ai_delta_verifier_report,
+                            );
+                            meta.insert(
+                                "lastGpuAiDeltaModelProvenance".to_string(),
+                                delta_model_provenance.clone(),
                             );
                             meta.insert(
                                 "patchTier".to_string(),
@@ -10089,6 +10109,10 @@ pub async fn handle_compile_request(
                                 "device": { "content": final_device, "filename": generated_device_path },
                                 "_synthi_manifest": sidecar_manifest_json.clone(),
                                 "_synthi_reload_plan": plan_report,
+                                "_synthi_model_provenance": {
+                                    "split": sidecar_meta.get("model_provenance").cloned().unwrap_or(serde_json::Value::Null),
+                                    "last_gpu_delta": delta_model_provenance,
+                                },
                             });
                             if let (Some(obj), Some(partial)) =
                                 (split_payload.as_object_mut(), partial_device_payload)
@@ -18202,6 +18226,7 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             &reasons,
             &touched_roles,
             Some(&ai_candidate),
+            None,
         );
 
         let candidate = report

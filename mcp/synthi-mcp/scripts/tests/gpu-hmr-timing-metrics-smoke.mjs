@@ -20,6 +20,8 @@ const REQUIRED_KEYS = [
   'runtimeReadyMs',
   'initialCompileWallMs',
   'sourceWriteMs',
+  'modelAvailabilityCheckMs',
+  'modelProvenance',
   'aiDeltaWallMs',
   'hotHmrCompileWallMs',
   'sameProcessLiveRecompileMs',
@@ -57,6 +59,13 @@ const external = externalProjectTimingMetrics({
     runtimeStopMs: 9,
     totalMs: 600,
   },
+  mcp: {
+    modelProvenance: {
+      expectedSplitModel: 'gemini-3.5-flash',
+      expectedDeltaModel: 'gemini-3.1-flash-lite',
+      modelAvailabilityCheckMs: 2,
+    },
+  },
   screenshots: [
     { label: 'before', elapsedMs: 111 },
     { label: 'after', elapsedMs: 222 },
@@ -66,6 +75,8 @@ const external = externalProjectTimingMetrics({
 assertCommonShape(external);
 assert.equal(external.hotReloadSignalMs, 50);
 assert.equal(external.beforeCaptureMs, 111);
+assert.equal(external.modelAvailabilityCheckMs, 2);
+assert.equal(external.modelProvenance.expectedDeltaModel, 'gemini-3.1-flash-lite');
 
 const hiprt = hiprtWarmTimingMetrics({
   accepted: true,
@@ -89,11 +100,19 @@ const hiprt = hiprtWarmTimingMetrics({
     baseline: { hostWallMs: 100 },
     changed: { hostWallMs: 120, triggerTouchMs: 1, totalHostWallMs: 180 },
   },
+  modelProvenance: {
+    split: {
+      requested_model: 'gemini-3.5-flash',
+      provider_model_status: 'available',
+      model_availability_check_time: 3,
+    },
+  },
   diff: { changedPixelRatioThreshold4: 0.4, meanAbsDelta8bit: 30 },
 });
 assertCommonShape(hiprt);
 assert.equal(hiprt.sourceWriteMs, 15);
 assert.equal(hiprt.sameProcessLiveRecompileMs, 31);
+assert.equal(hiprt.modelAvailabilityCheckMs, 3);
 
 const rocm = realRocmTimingMetrics({
   slug: 'rocm-saxpy',
@@ -104,13 +123,23 @@ const rocm = realRocmTimingMetrics({
     { name: 'first split/HMR', compile_wall_ms: 400, wait_hmr_elapsed_ms: 50, wait_call_wall_ms: 55 },
     { name: 'gpu delta HMR', compile_wall_ms: 40, wait_hmr_elapsed_ms: 8, wait_call_wall_ms: 10 },
   ],
-  evidence: { ai_call_counts: { gpu_delta: 1 } },
+  evidence: {
+    ai_call_counts: { gpu_delta: 1 },
+    ai_model_provenance: {
+      gpu_delta: {
+        requested_model: 'gemini-3.1-flash-lite',
+        provider_model_status: 'deprecated',
+        modelAvailabilityCheckTimeMs: 4,
+      },
+    },
+  },
   screenshots: [{ accepted_as_visual_evidence: true }],
 });
 assertCommonShape(rocm);
 assert.equal(rocm.setupBuildMs, 30);
 assert.equal(rocm.hotHmrCompileWallMs, 40);
 assert.equal(rocm.aiDeltaWallMs, 40);
+assert.equal(rocm.modelAvailabilityCheckMs, 4);
 
 console.log(JSON.stringify({
   ok: true,

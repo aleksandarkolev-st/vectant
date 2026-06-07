@@ -31,6 +31,27 @@ function phase(name, wallMs, source = null) {
   };
 }
 
+function firstObject(...values) {
+  for (const value of values) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  }
+  return null;
+}
+
+function modelAvailabilityCheckMs(modelProvenance) {
+  const direct = finiteMs(modelProvenance?.modelAvailabilityCheckMs)
+    ?? finiteMs(modelProvenance?.model_availability_check_time)
+    ?? finiteMs(modelProvenance?.modelAvailabilityCheckTimeMs);
+  if (direct !== null) return direct;
+  const nested = firstObject(
+    modelProvenance?.split,
+    modelProvenance?.gpu_split,
+    modelProvenance?.last_gpu_delta,
+    modelProvenance?.gpu_delta,
+  );
+  return nested ? modelAvailabilityCheckMs(nested) : null;
+}
+
 function screenshotElapsedMs(screenshots, label) {
   const shot = Array.isArray(screenshots)
     ? screenshots.find((item) => item?.label === label)
@@ -48,6 +69,12 @@ export function externalProjectTimingMetrics(report) {
   const hotReloadSignalMs = finiteMs(timings.editToRuntimeSignalMs)
     ?? finiteMs(timings.editToMcpHmrMs);
   const editToFirstVisualMs = finiteMs(timings.editToScreenshotMs);
+  const modelProvenance = firstObject(
+    report?.modelProvenance,
+    report?.model_provenance,
+    report?.mcp?.modelProvenance,
+    report?.mcp?.model_provenance,
+  );
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
@@ -62,6 +89,8 @@ export function externalProjectTimingMetrics(report) {
     runtimeReadyMs: finiteMs(timings.runtimeReadyMs),
     initialCompileWallMs: finiteMs(timings.beforeCompileWallMs),
     sourceWriteMs: finiteMs(timings.sourceWriteMs),
+    modelAvailabilityCheckMs: modelAvailabilityCheckMs(modelProvenance),
+    modelProvenance,
     aiDeltaWallMs: report?.mcp?.modelProvenance?.expectedDeltaModel
       ? hmrCompileWallMs
       : null,
@@ -112,6 +141,12 @@ export function hiprtWarmTimingMetrics(proof) {
   const afterCaptureMs = finiteMs(changedRun.hostWallMs)
     ?? finiteMs(timings.changedHostWallMs)
     ?? finiteMs(timings.changedRunMs);
+  const modelProvenance = firstObject(
+    proof?.modelProvenance,
+    proof?.model_provenance,
+    proof?.runtime?.modelProvenance,
+    proof?.runtime?.model_provenance,
+  );
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
@@ -126,6 +161,8 @@ export function hiprtWarmTimingMetrics(proof) {
     runtimeReadyMs: beforeCaptureMs,
     initialCompileWallMs: null,
     sourceWriteMs,
+    modelAvailabilityCheckMs: modelAvailabilityCheckMs(modelProvenance),
+    modelProvenance,
     aiDeltaWallMs: null,
     hotHmrCompileWallMs: finiteMs(timings.sameProcessLiveRecompileMs),
     sameProcessLiveRecompileMs: finiteMs(timings.sameProcessLiveRecompileMs),
@@ -192,6 +229,12 @@ export function realRocmTimingMetrics(report) {
   const screenshotPhases = Array.isArray(report?.screenshots) ? report.screenshots : [];
   const compileWalls = phases.map((item) => finiteMs(item?.compile_wall_ms)).filter((value) => value !== null);
   const waitWalls = phases.map((item) => finiteMs(item?.wait_call_wall_ms)).filter((value) => value !== null);
+  const modelProvenance = firstObject(
+    report?.modelProvenance,
+    report?.model_provenance,
+    report?.evidence?.ai_model_provenance,
+    report?.evidence?.model_provenance,
+  );
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
@@ -209,6 +252,8 @@ export function realRocmTimingMetrics(report) {
     runtimeReadyMs: keyValueTiming(upstream?.timings, 'run_ms'),
     initialCompileWallMs: finiteMs(firstCompile?.compile_wall_ms) ?? compileWalls[0] ?? null,
     sourceWriteMs: null,
+    modelAvailabilityCheckMs: modelAvailabilityCheckMs(modelProvenance),
+    modelProvenance,
     aiDeltaWallMs: report?.evidence?.ai_call_counts?.gpu_delta > 0
       ? finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1))
       : null,

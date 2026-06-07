@@ -2649,6 +2649,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "actual_model": split_actual_model,
         "model_fallback_used": split_fallback_used,
         "provider_model": split_provider_model,
+        "model_provenance": split_provider_model,
         "model_role": "gpu_split",
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,
@@ -2715,6 +2716,7 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
                     "actual_model": actual_model,
                     "model_fallback_used": fallback_used,
                     "provider_model": provider_model,
+                    "model_provenance": provider_model,
                     "model_role": "gpu_delta",
                 }
 
@@ -2736,6 +2738,8 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
                 "failures": last_failures,
                 "elapsed_seconds": elapsed,
                 "model": selected_model,
+                "provider_model": getattr(provider, "last_call_metadata", {}) or {},
+                "model_provenance": getattr(provider, "last_call_metadata", {}) or {},
                 "model_role": "gpu_delta",
             },
         )
@@ -2745,7 +2749,17 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
         raise HTTPException(status_code=400, detail=f"Failed to parse GPU patch response: {e}")
     except Exception as e:
         print(f"[GpuDiffPatch] Error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        provider_model = getattr(provider, "last_call_metadata", {}) or {}
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": str(e),
+                "provider_model": provider_model,
+                "model_provenance": provider_model,
+                "model": selected_model,
+                "model_role": "gpu_delta",
+            },
+        )
 
 
 @app.post("/refactor/heal/gpu")
