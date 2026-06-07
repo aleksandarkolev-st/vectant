@@ -6,6 +6,21 @@ function finiteMs(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+function finiteNsString(value) {
+  if (value === undefined || value === null || value === '') return null;
+  try {
+    const ns = BigInt(String(value));
+    return ns >= 0n ? ns.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function nsToMs(value) {
+  const ns = finiteNsString(value);
+  return ns === null ? null : Number(BigInt(ns)) / 1_000_000;
+}
+
 function sumMs(values) {
   let total = 0;
   let seen = false;
@@ -60,11 +75,12 @@ function screenshotElapsedMs(screenshots, label) {
 }
 
 function metricClock(report, timings) {
-  return report?.metricClock
+  const explicit = report?.metricClock
     ?? report?.metric_clock
     ?? timings?.metricClock
-    ?? timings?.metric_clock
-    ?? 'wall_ms';
+    ?? timings?.metric_clock;
+  if (explicit) return explicit;
+  return monotonicDurationNs(report, timings) !== null ? 'monotonic_ns' : 'wall_ms';
 }
 
 function metricScope(report, fallback) {
@@ -73,6 +89,51 @@ function metricScope(report, fallback) {
 
 function cacheState(report) {
   return report?.cacheState ?? report?.cache_state ?? 'unknown';
+}
+
+function monotonicDurationNs(report, timings) {
+  return finiteNsString(
+    report?.durationMonotonicNs
+    ?? report?.duration_monotonic_ns
+    ?? timings?.durationMonotonicNs
+    ?? timings?.duration_monotonic_ns,
+  );
+}
+
+function monotonicStartNs(report, timings) {
+  return finiteNsString(
+    report?.startedMonotonicNs
+    ?? report?.started_monotonic_ns
+    ?? timings?.startedMonotonicNs
+    ?? timings?.started_monotonic_ns,
+  );
+}
+
+function monotonicFinishedNs(report, timings) {
+  return finiteNsString(
+    report?.finishedMonotonicNs
+    ?? report?.finished_monotonic_ns
+    ?? timings?.finishedMonotonicNs
+    ?? timings?.finished_monotonic_ns,
+  );
+}
+
+function timingClockEvidence(report, timings) {
+  const durationNs = monotonicDurationNs(report, timings);
+  return {
+    metric_clock: metricClock(report, timings),
+    metricClock: metricClock(report, timings),
+    metric_unit: 'ms',
+    metricUnit: 'ms',
+    started_monotonic_ns: monotonicStartNs(report, timings),
+    startedMonotonicNs: monotonicStartNs(report, timings),
+    finished_monotonic_ns: monotonicFinishedNs(report, timings),
+    finishedMonotonicNs: monotonicFinishedNs(report, timings),
+    duration_monotonic_ns: durationNs,
+    durationMonotonicNs: durationNs,
+    duration_monotonic_ms: nsToMs(durationNs),
+    durationMonotonicMs: nsToMs(durationNs),
+  };
 }
 
 function normalizedTimingFields(fields) {
@@ -117,6 +178,7 @@ function normalizedTimingFields(fields) {
 
 export function externalProjectTimingMetrics(report) {
   const timings = report?.timings ?? {};
+  const clockEvidence = timingClockEvidence(report, timings);
   const screenshots = Array.isArray(report?.screenshots) ? report.screenshots : [];
   const beforeCaptureMs = screenshotElapsedMs(screenshots, 'before');
   const afterCaptureMs = screenshotElapsedMs(screenshots, 'after');
@@ -140,14 +202,16 @@ export function externalProjectTimingMetrics(report) {
     oracleAnalysisTimeMs: timings.visualDiffMs,
     triggerToVisibleTimeMs: editToFirstVisualMs,
     screenshotCaptureTimeMs: sumMs([beforeCaptureMs, afterCaptureMs]),
-    totalValidatorWallTimeMs: timings.totalMs,
+    totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? timings.totalMs,
   });
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'external_project_profile',
-    metricClock: metricClock(report, timings),
-    metric_clock: metricClock(report, timings),
+    metricClock: clockEvidence.metricClock,
+    metric_clock: clockEvidence.metric_clock,
+    metricUnit: clockEvidence.metricUnit,
+    metric_unit: clockEvidence.metric_unit,
     metricScope: metricScope(report, 'hot_delta_1'),
     metric_scope: metricScope(report, 'hot_delta_1'),
     cacheState: cacheState(report),
@@ -156,7 +220,7 @@ export function externalProjectTimingMetrics(report) {
     projectName: report?.profile?.project?.name ?? null,
     proofMode: report?.proofMode ?? null,
     status: report?.status ?? null,
-    totalWallMs: finiteMs(timings.totalMs),
+    totalWallMs: clockEvidence.durationMonotonicMs ?? finiteMs(timings.totalMs),
     setupBuildMs: finiteMs(timings.buildMs),
     adapterBuildMs: null,
     runtimeReadyMs: finiteMs(timings.runtimeReadyMs),
@@ -178,6 +242,8 @@ export function externalProjectTimingMetrics(report) {
     teardownMs: finiteMs(timings.runtimeStopMs),
     normalizedTimings,
     normalized_timings: normalizedTimings.snake_case,
+    clockEvidence,
+    clock_evidence: clockEvidence,
     visualEvidence: {
       screenshotCount: screenshots.length,
       changedPixelRatio: finiteMs(report?.visualDiff?.changedPixelRatio),
@@ -202,6 +268,7 @@ export function externalProjectTimingMetrics(report) {
 
 export function hiprtWarmTimingMetrics(proof) {
   const timings = proof?.timings ?? {};
+  const clockEvidence = timingClockEvidence(proof, timings);
   const sourceWrites = proof?.sourceWrites ?? {};
   const changedRun = proof?.runtime?.changed ?? {};
   const baselineRun = proof?.runtime?.baseline ?? {};
@@ -233,14 +300,16 @@ export function hiprtWarmTimingMetrics(proof) {
       ?? timings.changedHostWallMs
       ?? timings.changedRunMs,
     screenshotCaptureTimeMs: sumMs([beforeCaptureMs, afterCaptureMs]),
-    totalValidatorWallTimeMs: timings.totalWallMs,
+    totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? timings.totalWallMs,
   });
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'hiprt_warm_runtime',
-    metricClock: metricClock(proof, timings),
-    metric_clock: metricClock(proof, timings),
+    metricClock: clockEvidence.metricClock,
+    metric_clock: clockEvidence.metric_clock,
+    metricUnit: clockEvidence.metricUnit,
+    metric_unit: clockEvidence.metric_unit,
     metricScope: metricScope(proof, 'hot_delta_1'),
     metric_scope: metricScope(proof, 'hot_delta_1'),
     cacheState: cacheState(proof),
@@ -249,7 +318,7 @@ export function hiprtWarmTimingMetrics(proof) {
     projectName: proof?.repo?.target ?? null,
     proofMode: timings.mode ?? proof?.mode ?? null,
     status: proof?.accepted === true ? 'pass' : 'fail',
-    totalWallMs: finiteMs(timings.totalWallMs),
+    totalWallMs: clockEvidence.durationMonotonicMs ?? finiteMs(timings.totalWallMs),
     setupBuildMs: finiteMs(timings.sameProcessAdapterBuildMs),
     adapterBuildMs: finiteMs(timings.sameProcessAdapterBuildMs),
     runtimeReadyMs: beforeCaptureMs,
@@ -272,6 +341,8 @@ export function hiprtWarmTimingMetrics(proof) {
     teardownMs: null,
     normalizedTimings,
     normalized_timings: normalizedTimings.snake_case,
+    clockEvidence,
+    clock_evidence: clockEvidence,
     visualEvidence: {
       screenshotCount: 2,
       changedPixelRatio: finiteMs(proof?.diff?.changedPixelRatioThreshold4),
@@ -318,6 +389,8 @@ function realRocmStatus(report) {
 }
 
 export function realRocmTimingMetrics(report) {
+  const reportTimings = report?.timings ?? {};
+  const clockEvidence = timingClockEvidence(report, reportTimings);
   const phases = Array.isArray(report?.phases) ? report.phases : [];
   const upstream = phases.find((item) => item?.name === 'upstream_gpu_build_run');
   const firstCompile = phases.find((item) => item?.name === 'first split/HMR');
@@ -346,14 +419,16 @@ export function realRocmTimingMetrics(report) {
     oracleAnalysisTimeMs: null,
     triggerToVisibleTimeMs: null,
     screenshotCaptureTimeMs: null,
-    totalValidatorWallTimeMs: report?.duration_ms,
+    totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? report?.duration_ms,
   });
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'real_rocm_validation',
-    metricClock: metricClock(report, report?.timings),
-    metric_clock: metricClock(report, report?.timings),
+    metricClock: clockEvidence.metricClock,
+    metric_clock: clockEvidence.metric_clock,
+    metricUnit: clockEvidence.metricUnit,
+    metric_unit: clockEvidence.metric_unit,
     metricScope: metricScope(report, 'hot_delta_1'),
     metric_scope: metricScope(report, 'hot_delta_1'),
     cacheState: cacheState(report),
@@ -362,7 +437,7 @@ export function realRocmTimingMetrics(report) {
     projectName: report?.target_name ?? null,
     proofMode: report?.hiprt_runtime_probe?.enabled ? 'real_rocm_hiprt_probe' : 'real_rocm',
     status: realRocmStatus(report),
-    totalWallMs: finiteMs(report?.duration_ms),
+    totalWallMs: clockEvidence.durationMonotonicMs ?? finiteMs(report?.duration_ms),
     setupBuildMs,
     adapterBuildMs: null,
     runtimeReadyMs: keyValueTiming(upstream?.timings, 'run_ms'),
@@ -384,6 +459,8 @@ export function realRocmTimingMetrics(report) {
     teardownMs: null,
     normalizedTimings,
     normalized_timings: normalizedTimings.snake_case,
+    clockEvidence,
+    clock_evidence: clockEvidence,
     visualEvidence: {
       screenshotCount: screenshotPhases.length,
       acceptedScreenshotCount: screenshotPhases.filter((shot) =>

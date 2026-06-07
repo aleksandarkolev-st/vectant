@@ -12,6 +12,8 @@ const REQUIRED_KEYS = [
   'source',
   'metricClock',
   'metric_clock',
+  'metricUnit',
+  'metric_unit',
   'metricScope',
   'metric_scope',
   'cacheState',
@@ -40,6 +42,8 @@ const REQUIRED_KEYS = [
   'teardownMs',
   'normalizedTimings',
   'normalized_timings',
+  'clockEvidence',
+  'clock_evidence',
   'visualEvidence',
   'phases',
 ];
@@ -71,6 +75,9 @@ function assertCommonShape(metrics) {
   assert.equal(typeof metrics.visualEvidence, 'object');
   assert.equal(typeof metrics.normalizedTimings, 'object');
   assert.equal(typeof metrics.normalized_timings, 'object');
+  assert.equal(typeof metrics.clockEvidence, 'object');
+  assert.equal(metrics.metricUnit, 'ms');
+  assert.equal(metrics.metric_unit, 'ms');
   for (const key of NORMALIZED_KEYS) {
     assert.ok(Object.prototype.hasOwnProperty.call(metrics.normalizedTimings, key), `missing normalized key ${key}`);
   }
@@ -81,6 +88,10 @@ const external = externalProjectTimingMetrics({
   proofMode: 'external_runtime_screenshot',
   status: 'pass',
   timings: {
+    metric_clock: 'monotonic_ns',
+    started_monotonic_ns: '1000000000',
+    finished_monotonic_ns: '1600000000',
+    duration_monotonic_ns: '600000000',
     buildMs: 100,
     runtimeReadyMs: 20,
     sourceWriteMs: 3,
@@ -109,9 +120,11 @@ assert.equal(external.hotReloadSignalMs, 50);
 assert.equal(external.beforeCaptureMs, 111);
 assert.equal(external.modelAvailabilityCheckMs, 2);
 assert.equal(external.modelProvenance.expectedDeltaModel, 'gemini-3.1-flash-lite');
-assert.equal(external.metricClock, 'wall_ms');
+assert.equal(external.metricClock, 'monotonic_ns');
+assert.equal(external.clockEvidence.durationMonotonicMs, 600);
 assert.equal(external.normalizedTimings.deviceCompileWallTimeMs, 45);
 assert.equal(external.normalizedTimings.screenshotCaptureTimeMs, 333);
+assert.equal(external.normalizedTimings.totalValidatorWallTimeMs, 600);
 
 const hiprt = hiprtWarmTimingMetrics({
   accepted: true,
@@ -119,6 +132,10 @@ const hiprt = hiprtWarmTimingMetrics({
   profile: { id: 'hiprt-megakernel-direct-light-zero' },
   repo: { target: 'HIPRTPathTracer' },
   timings: {
+    metric_clock: 'monotonic_ns',
+    started_monotonic_ns: '2000000000',
+    finished_monotonic_ns: '3000000000',
+    duration_monotonic_ns: '1000000000',
     totalWallMs: 1000,
     sameProcessAdapterBuildMs: 300,
     sameProcessLiveRecompileMs: 31,
@@ -150,10 +167,15 @@ assert.equal(hiprt.sameProcessLiveRecompileMs, 31);
 assert.equal(hiprt.modelAvailabilityCheckMs, 3);
 assert.equal(hiprt.normalizedTimings.deviceCompileWallTimeMs, 31);
 assert.equal(hiprt.normalizedTimings.adapterGenerationTimeMs, 300);
+assert.equal(hiprt.normalizedTimings.totalValidatorWallTimeMs, 1000);
 
 const rocm = realRocmTimingMetrics({
   slug: 'rocm-saxpy',
   target_name: 'saxpy',
+  metric_clock: 'monotonic_ns',
+  started_monotonic_ns: '4000000000',
+  finished_monotonic_ns: '6000000000',
+  duration_monotonic_ns: '2000000000',
   duration_ms: 2000,
   phases: [
     { name: 'upstream_gpu_build_run', timings: 'configure_ms=10\nbuild_ms=20\nrun_ms=30\n' },
@@ -179,6 +201,7 @@ assert.equal(rocm.aiDeltaWallMs, 40);
 assert.equal(rocm.modelAvailabilityCheckMs, 4);
 assert.equal(rocm.normalizedTimings.deviceCompileWallTimeMs, 40);
 assert.equal(rocm.normalizedTimings.runtimeProbeTimeMs, 30);
+assert.equal(rocm.normalizedTimings.totalValidatorWallTimeMs, 2000);
 
 console.log(JSON.stringify({
   ok: true,
