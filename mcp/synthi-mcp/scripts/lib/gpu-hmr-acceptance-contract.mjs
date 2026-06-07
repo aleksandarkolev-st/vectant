@@ -441,6 +441,9 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   const epochPolicy = contract.epoch_policy;
   if (!nonEmptyValue(epochPolicy.publish_mechanism)) addFailure(failures, 'epoch_publish_mechanism_missing');
   if (!nonEmptyValue(epochPolicy.dispatch_binding)) addFailure(failures, 'epoch_dispatch_binding_missing');
+  if (!nonEmptyValue(epochPolicy.retirement_mechanism)) {
+    addFailure(failures, 'epoch_retirement_mechanism_missing');
+  }
   const retirementValue = enumValue(contract.epoch_retirement_proof.value, RETIREMENT_PROOFS, 'unproven');
   if (retirementValue === 'unproven') addFailure(failures, 'epoch_retirement_unproven');
   const fission = contract.fission_report;
@@ -613,6 +616,7 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
     queue_or_stream_handle: state.queue_or_stream_handle ?? null,
     epoch_publish_mechanism: epochPolicy.publish_mechanism ?? null,
     epoch_dispatch_binding: epochPolicy.dispatch_binding ?? null,
+    epoch_retirement_mechanism: epochPolicy.retirement_mechanism ?? null,
     fission_selected_island: fission.selected_island ?? null,
     fission_artifact_hash_before: fission.artifact_hash_before ?? null,
     fission_artifact_hash_after: fission.artifact_hash_after ?? null,

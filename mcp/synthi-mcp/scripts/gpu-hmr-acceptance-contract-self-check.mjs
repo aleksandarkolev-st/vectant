@@ -177,6 +177,12 @@ expectReject('missing state preservation', {
 expectReject('missing epoch policy', {
   epoch_policy: {},
 }, 'epoch_publish_mechanism_missing');
+expectReject('missing epoch retirement mechanism', {
+  epoch_policy: {
+    publish_mechanism: 'runtime_epoch_publish',
+    dispatch_binding: 'dispatch_table_epoch_binding',
+  },
+}, 'epoch_retirement_mechanism_missing');
 expectReject('missing fission selected reason', {
   fission_report: {
     selected_island: 'device-kernel',
