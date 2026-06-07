@@ -36,7 +36,7 @@ from typing import Any, Callable
 # ─────────────────────────────────────────────────────────────────────────────
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MODEL = os.environ.get("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+MODEL = os.environ.get("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite")
 TIMEOUT_SEC = 300.0
 PROMPT_TEMPERATURE = 0.2
 PROMPT_MAX_OUTPUT_TOKENS = 16384

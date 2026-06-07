@@ -1189,7 +1189,7 @@ const CFG = {
     ?? 'gemini-3.5-flash',
   gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
     ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
-    ?? 'gemini-3.1-flash-lite-preview',
+    ?? 'gemini-3.1-flash-lite',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS === '1',
 };
 

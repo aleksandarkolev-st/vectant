@@ -24,5 +24,6 @@ class AiProvider(ABC):
         mode: str = None,
         files: Optional[Sequence[Mapping[str, Any]]] = None,
         focus: Optional[str] = None,
+        request_mode: Optional[str] = None,
     ) -> str:
         pass

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import os
 import re
 import time
@@ -135,6 +136,107 @@ def _select_fallback_model_name(requested: str, models: Sequence[Any]) -> Option
     return max(candidates, key=rank)
 
 
+_MODEL_AVAILABILITY_SOURCE = "https://ai.google.dev/gemini-api/docs/deprecations"
+_MODEL_AVAILABILITY_SOURCE_LAST_UPDATED = "2026-06-01"
+_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+_MODEL_STATUS_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "gemini-3.5-flash": {
+        "provider_model_status": "available",
+        "provider_shutdown_date": None,
+        "provider_recommended_replacement": None,
+    },
+    "gemini-3.1-flash-lite": {
+        "provider_model_status": "deprecated",
+        "provider_shutdown_date": "2027-05-07",
+        "provider_recommended_replacement": None,
+    },
+    "gemini-3.1-flash-lite-preview": {
+        "provider_model_status": "shutdown",
+        "provider_shutdown_date": "2026-05-25",
+        "provider_recommended_replacement": "gemini-3.1-flash-lite",
+    },
+}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _private_model_aliases() -> Dict[str, str]:
+    raw = os.getenv("SYNTHI_GEMINI_PRIVATE_MODEL_ALIASES", "")
+    aliases: Dict[str, str] = {}
+    for entry in raw.split(","):
+        item = entry.strip()
+        if not item:
+            continue
+        if "=" in item:
+            key, value = item.split("=", 1)
+        elif ":" in item:
+            key, value = item.split(":", 1)
+        else:
+            key = value = item
+        normalized_key = _normalize_model_name(key).lower()
+        normalized_value = _normalize_model_name(value)
+        if normalized_key and normalized_value:
+            aliases[normalized_key] = normalized_value
+    return aliases
+
+
+def _provider_model_status(requested: str) -> Dict[str, Any]:
+    normalized = _normalize_model_name(requested)
+    normalized_lower = normalized.lower()
+    base = dict(
+        _MODEL_STATUS_REGISTRY.get(
+            normalized_lower,
+            {
+                "provider_model_status": "unknown",
+                "provider_shutdown_date": None,
+                "provider_recommended_replacement": None,
+            },
+        )
+    )
+    base.update(
+        {
+            "model_availability_checked_at": _utc_now_iso(),
+            "model_availability_source": _MODEL_AVAILABILITY_SOURCE,
+            "model_availability_source_last_updated": _MODEL_AVAILABILITY_SOURCE_LAST_UPDATED,
+            "provider_model_alias_resolved_to": None,
+        }
+    )
+
+    private_alias = _private_model_aliases().get(normalized_lower)
+    if private_alias:
+        base["provider_model_status"] = "private_alias"
+        base["provider_model_alias_resolved_to"] = private_alias
+
+    base["provider_shutdown_or_deprecation_detected"] = bool(
+        normalized_lower in _MODEL_STATUS_REGISTRY
+        and _MODEL_STATUS_REGISTRY[normalized_lower]["provider_model_status"]
+        in {"deprecated", "shutdown"}
+    )
+    return base
+
+
+def _request_mode_name(mode_lower: str, request_mode: Optional[str]) -> str:
+    if request_mode:
+        return request_mode
+    if mode_lower == "split":
+        return "split"
+    if mode_lower == "delta":
+        return "delta"
+    return mode_lower or "unknown"
+
+
+def _shutdown_model_error(requested_model: str, status: Mapping[str, Any]) -> ValueError:
+    replacement = status.get("provider_recommended_replacement")
+    suffix = f"; use {replacement}" if replacement else ""
+    return ValueError(
+        f"Requested Gemini model {requested_model!r} is shutdown according to "
+        f"{_MODEL_AVAILABILITY_SOURCE} (shutdown_date="
+        f"{status.get('provider_shutdown_date')}){suffix}."
+    )
+
+
 def _is_model_not_found_error(err: BaseException) -> bool:
     not_found_type = getattr(google_api_exceptions, "NotFound", None) if google_api_exceptions else None
     return bool(not_found_type and isinstance(err, not_found_type))
@@ -145,7 +247,7 @@ class GeminiProvider(AiProvider):
 
     def __init__(self) -> None:
         super().__init__(name="gemini")
-        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", _DEFAULT_GEMINI_MODEL)
         self.last_call_metadata: Dict[str, Any] = {}
         # Keep generation parameters centralized so they can be passed into each stream request.
         self.generation_config = genai.GenerationConfig(
@@ -153,7 +255,7 @@ class GeminiProvider(AiProvider):
             top_p=0.8,
             top_k=40,
             # Increase output allowance to support larger returned patches or full-file outputs.
-            # Note: input/context window size is determined by the model selection (e.g. gemini-3.1-flash-lite-preview).
+            # Note: input/context window size is determined by the model selection (e.g. gemini-3.1-flash-lite).
             max_output_tokens=131072,
         )
 
@@ -218,6 +320,7 @@ class GeminiProvider(AiProvider):
         focus: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        request_mode: Optional[str] = None,
     ) -> str:
         if not api_key and not os.getenv("GEMINI_API_KEY"):
             raise ValueError("LLM disabled: set GEMINI_API_KEY or provide api_key to enable suggestions.")
@@ -262,8 +365,18 @@ class GeminiProvider(AiProvider):
 
         try:
             requested_model = model or self.model_name
-            model_name = requested_model
+            provider_status = _provider_model_status(requested_model)
+            request_mode_value = _request_mode_name(mode_lower, request_mode)
+            hard_infra_failure = provider_status.get("provider_model_status") == "shutdown"
+            if hard_infra_failure:
+                raise _shutdown_model_error(requested_model, provider_status)
+            model_name = (
+                provider_status.get("provider_model_alias_resolved_to")
+                or requested_model
+            )
+            model_name = _normalize_model_name(model_name)
             fallback_used = False
+            fallback_model: Optional[str] = None
 
             # Metrics tracking
             start_time = time.time()
@@ -297,6 +410,9 @@ class GeminiProvider(AiProvider):
                 if _is_model_not_found_error(err):
                     fallback_model = self._fallback_model_name(api_key, model_name)
                     if fallback_model:
+                        fallback_status = _provider_model_status(fallback_model)
+                        if fallback_status.get("provider_model_status") == "shutdown":
+                            raise _shutdown_model_error(fallback_model, fallback_status)
                         print(
                             "[Gemini] Requested model was not found; "
                             f"retrying with discovered fallback model={fallback_model}"
@@ -356,19 +472,62 @@ class GeminiProvider(AiProvider):
                 "provider": self.name,
                 "requested_model": requested_model,
                 "actual_model": model_name,
+                "fallback_model": fallback_model,
                 "fallback_used": fallback_used,
                 "mode": mode_lower,
+                "request_mode": request_mode_value,
+                "provider_model_status": provider_status.get("provider_model_status"),
+                "provider_model_alias_resolved_to": provider_status.get("provider_model_alias_resolved_to"),
+                "provider_shutdown_or_deprecation_detected": provider_status.get(
+                    "provider_shutdown_or_deprecation_detected"
+                ),
+                "provider_shutdown_date": provider_status.get("provider_shutdown_date"),
+                "provider_recommended_replacement": provider_status.get(
+                    "provider_recommended_replacement"
+                ),
+                "model_availability_checked_at": provider_status.get("model_availability_checked_at"),
+                "model_availability_source": provider_status.get("model_availability_source"),
+                "model_availability_source_last_updated": provider_status.get(
+                    "model_availability_source_last_updated"
+                ),
+                "hard_infra_failure": False,
                 "latency_ms": total_latency_ms,
             }
             return combined
 
         except Exception as e:
+            requested_model = model or self.model_name
+            provider_status = (
+                provider_status
+                if "provider_status" in locals()
+                else _provider_model_status(requested_model)
+            )
             self.last_call_metadata = {
                 "provider": self.name,
-                "requested_model": model or self.model_name,
+                "requested_model": requested_model,
                 "actual_model": None,
+                "fallback_model": None,
                 "fallback_used": False,
                 "mode": mode_lower if 'mode_lower' in locals() else None,
+                "request_mode": _request_mode_name(
+                    mode_lower if "mode_lower" in locals() else "",
+                    request_mode,
+                ),
+                "provider_model_status": provider_status.get("provider_model_status"),
+                "provider_model_alias_resolved_to": provider_status.get("provider_model_alias_resolved_to"),
+                "provider_shutdown_or_deprecation_detected": provider_status.get(
+                    "provider_shutdown_or_deprecation_detected"
+                ),
+                "provider_shutdown_date": provider_status.get("provider_shutdown_date"),
+                "provider_recommended_replacement": provider_status.get(
+                    "provider_recommended_replacement"
+                ),
+                "model_availability_checked_at": provider_status.get("model_availability_checked_at"),
+                "model_availability_source": provider_status.get("model_availability_source"),
+                "model_availability_source_last_updated": provider_status.get(
+                    "model_availability_source_last_updated"
+                ),
+                "hard_infra_failure": provider_status.get("provider_model_status") == "shutdown",
                 "error_type": type(e).__name__,
             }
             # Record error metrics

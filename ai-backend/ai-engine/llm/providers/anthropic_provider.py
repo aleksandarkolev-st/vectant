@@ -47,6 +47,7 @@ class AnthropicProvider(AiProvider):
         focus: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        request_mode: Optional[str] = None,
     ) -> str:
         client = self._get_client(api_key)
         target = model or self.model_name

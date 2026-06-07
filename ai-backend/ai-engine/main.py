@@ -1484,8 +1484,14 @@ async def refactor_split(req: AnalyzeAiRequest):
             focus=req.focus,
             # Split needs stronger reasoning — 88K prompt, structured
             # JSON output, must not drift. Pro model by default.
-            model=req.model or "gemini-3.1-flash-lite-preview",
+            model=(
+                req.model
+                or os.getenv("SYNTHI_GPU_SPLIT_MODEL")
+                or os.getenv("SYNTHI_GEMINI_MODEL")
+                or "gemini-3.5-flash"
+            ),
             api_key=req.api_key,
+            request_mode="split",
         )
         print(f"--- AI SPLIT OUTPUT START ---\n{ai_suggestion}\n--- AI SPLIT OUTPUT END ---")
     except Exception as e:
@@ -1748,8 +1754,14 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             focus=req.focus,
             # Universal split with 4-file output + build manifest needs
             # stronger reasoning; pro by default. Override via req.model.
-            model=req.model or "gemini-3.1-flash-lite-preview",
+            model=(
+                req.model
+                or os.getenv("SYNTHI_GPU_SPLIT_MODEL")
+                or os.getenv("SYNTHI_GEMINI_MODEL")
+                or "gemini-3.5-flash"
+            ),
             api_key=req.api_key,
+            request_mode="split",
         )
 
         latency_ms = (time.time() - start_time) * 1000
@@ -2264,7 +2276,7 @@ async def refactor_diff_patch(req: DiffPatchRequest):
     if provider_name == "openai":
         default_model = os.getenv("SYNTHI_OPENAI_MODEL", "qwen2.5-coder:7b")
     else:
-        default_model = "gemini-3.1-flash-lite-preview"
+        default_model = "gemini-3.1-flash-lite"
 
     try:
         ai_response = await provider.ask_llm(
@@ -2274,6 +2286,7 @@ async def refactor_diff_patch(req: DiffPatchRequest):
             mode="delta",
             model=req.model or default_model,
             api_key=req.api_key,
+            request_mode="delta",
         )
 
         print(f"[DiffPatch] AI response:\n{ai_response[:500]}")
@@ -2661,7 +2674,7 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
         else (
             os.getenv("SYNTHI_GPU_DELTA_MODEL")
             or os.getenv("SYNTHI_GEMINI_DELTA_MODEL")
-            or "gemini-3.1-flash-lite-preview"
+            or "gemini-3.1-flash-lite"
         )
     )
     selected_model = req.model or default_model
@@ -2677,6 +2690,7 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
                 mode="delta",
                 model=selected_model,
                 api_key=req.api_key,
+                request_mode="gpu_delta",
             )
             parsed = _parse_gpu_diff_response(ai_response)
             failures = _gpu_diff_patch_anchor_failures(req, parsed["edits"])
@@ -2746,8 +2760,9 @@ async def refactor_heal_gpu(req: GpuHealRequest):
             "cpp",
             None,
             mode="delta",
-            model=req.model or "gemini-3.1-flash-lite-preview",
+            model=req.model or "gemini-3.1-flash-lite",
             api_key=req.api_key,
+            request_mode="heal",
         )
         parsed = _parse_gpu_heal_response(ai_response, req)
         elapsed = time.time() - start_time
@@ -2766,7 +2781,7 @@ async def refactor_heal_gpu(req: GpuHealRequest):
 
 
 # NOTE: /classify/edit endpoint + ClassifyEditRequest were removed.
-# The endpoint ran an AI call (gemini-3.1-flash-lite-preview) to tell the
+# The endpoint ran an AI call (gemini-3.1-flash-lite) to tell the
 # Rust worker which module (core/gui/shared) a diff hunk belonged to.
 # In practice it was costing ~4s per edit (network latency + Google API
 # TTFT + Python SDK overhead), which exceeded the time saved by using a
@@ -2893,7 +2908,8 @@ async def refactor_heal(req: HealRequest):
                 "cpp",
                 None,
                 mode="delta",
-                model="gemini-3.1-flash-lite-preview",
+                model="gemini-3.1-flash-lite",
+                request_mode="heal",
             )
 
             # Strip markdown fences if present
@@ -3026,8 +3042,9 @@ async def refactor_heal_manifest(req: HealManifestRequest):
             # Pro model — manifest heal needs strong library knowledge
             # and the output is small (~50-200 tokens of JSON), so
             # latency cost is bounded.
-            model=req.model or "gemini-3.1-flash-lite-preview",
+            model=req.model or "gemini-3.1-flash-lite",
             api_key=req.api_key,
+            request_mode="heal",
         )
     except Exception as e:
         print(f"[ManifestHeal] AI call failed: {e}")
@@ -3613,6 +3630,7 @@ Output ONLY the JSON object. No prose, no markdown fences, no comments.
             lang='plaintext',
             prompt=prompt,
             mode='rule_translate',
+            request_mode='contract_hint',
         )
     except ValueError as e:
         # No API key configured — return a helpful 503 instead of 500.

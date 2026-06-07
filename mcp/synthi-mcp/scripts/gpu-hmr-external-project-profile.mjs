@@ -627,7 +627,7 @@ function mcpConfig(profile) {
       || 'vectant-ade-mcp-1',
     googleApiKey: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || previewEnv.GOOGLE_API_KEY || '',
     splitModel: process.env.SYNTHI_GPU_SPLIT_MODEL || previewEnv.SYNTHI_GPU_SPLIT_MODEL || 'gemini-3.5-flash',
-    deltaModel: process.env.SYNTHI_GPU_DELTA_MODEL || previewEnv.SYNTHI_GPU_DELTA_MODEL || 'gemini-3.1-flash-lite-preview',
+    deltaModel: process.env.SYNTHI_GPU_DELTA_MODEL || previewEnv.SYNTHI_GPU_DELTA_MODEL || 'gemini-3.1-flash-lite',
     requestTimeoutMs: Number(process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_REQUEST_TIMEOUT_MS) || DEFAULT_MCP_TIMEOUT_MS,
     attachTimeoutMs: Number(process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_ATTACH_TIMEOUT_MS) || DEFAULT_MCP_TIMEOUT_MS,
   };

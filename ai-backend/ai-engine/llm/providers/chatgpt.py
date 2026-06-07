@@ -44,6 +44,7 @@ class ChatGPTProvider(AiProvider):
         focus: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        request_mode: Optional[str] = None,
     ) -> str:
         if not api_key and not os.getenv("OPENAI_API_KEY"):
             return "LLM disabled: set OPENAI_API_KEY or provide api_key to enable suggestions."
