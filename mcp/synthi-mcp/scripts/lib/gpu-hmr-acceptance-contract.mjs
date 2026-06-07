@@ -33,6 +33,8 @@ const RETIREMENT_PROOFS = new Set([
   'no_retirement_required',
   'unproven',
 ]);
+const COMPUTE_BACKENDS = new Set(['hip', 'opencl', 'cuda', 'sycl']);
+const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -69,6 +71,12 @@ function compactStringList(values) {
 
 function boolValue(value, fallback = false) {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function nonEmptyValue(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function firstObject(...values) {
@@ -246,14 +254,65 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     addFailure(failures, 'abi_compatibility_not_proven', { abi: abi.value });
   }
   if (!abi.evidence_refs.length) addFailure(failures, 'abi_evidence_refs_missing');
+  const abiMetadata = contract.abi_metadata;
+  if (
+    ['compatible', 'additive'].includes(abi.value)
+    && !nonEmptyValue(abiMetadata.args)
+    && !nonEmptyValue(abiMetadata.kernel_abi_fingerprint_hashes)
+    && !nonEmptyValue(abiMetadata.descriptor_or_binding_layout)
+  ) {
+    addFailure(failures, 'abi_metadata_missing');
+  }
+  if (
+    ['compatible', 'additive'].includes(abi.value)
+    && !nonEmptyValue(abiMetadata.extractor_sources)
+    && !nonEmptyValue(abiMetadata.extractor_provenance)
+    && !nonEmptyValue(abiMetadata.metadata_sources)
+  ) {
+    addFailure(failures, 'abi_metadata_extractor_provenance_missing');
+  }
   if (contract.reload_mechanism === 'unsupported') addFailure(failures, 'reload_mechanism_unsupported');
   if (contract.adapter_outcome === 'adapter_impossible_requires_app_hook') {
     addFailure(failures, 'adapter_impossible_requires_app_hook');
   }
   if (!contract.reload_evidence_refs.length) addFailure(failures, 'reload_evidence_refs_missing');
+  const state = contract.state_preservation_checks;
+  if (!nonEmptyValue(state.process_id)) addFailure(failures, 'state_process_id_missing');
+  if (!nonEmptyValue(state.device_uuid)) addFailure(failures, 'state_device_uuid_missing');
+  if (!nonEmptyValue(state.context_or_device_handle)) addFailure(failures, 'state_context_or_device_handle_missing');
+  if (!nonEmptyValue(state.queue_or_stream_handle)) addFailure(failures, 'state_queue_or_stream_handle_missing');
+  if (COMPUTE_BACKENDS.has(contract.backend) && !nonEmptyValue(state.persistent_gpu_allocations)) {
+    addFailure(failures, 'state_persistent_gpu_allocations_missing');
+  }
+  if (VISUAL_OR_ENGINE_BACKENDS.has(contract.backend)) {
+    if (!nonEmptyValue(state.camera_state_hash)) addFailure(failures, 'state_camera_hash_missing');
+    if (!nonEmptyValue(state.swapchain_or_framebuffer_identity)) {
+      addFailure(failures, 'state_swapchain_or_framebuffer_identity_missing');
+    }
+  }
+  if (contract.backend === 'hiprt' && !nonEmptyValue(state.engine_scene_handles)) {
+    addFailure(failures, 'state_engine_scene_handles_missing');
+  }
+  const epochPolicy = contract.epoch_policy;
+  if (!nonEmptyValue(epochPolicy.publish_mechanism)) addFailure(failures, 'epoch_publish_mechanism_missing');
+  if (!nonEmptyValue(epochPolicy.dispatch_binding)) addFailure(failures, 'epoch_dispatch_binding_missing');
   const retirementValue = enumValue(contract.epoch_retirement_proof.value, RETIREMENT_PROOFS, 'unproven');
   if (retirementValue === 'unproven') addFailure(failures, 'epoch_retirement_unproven');
   const fission = contract.fission_report;
+  if (!nonEmptyValue(fission.selected_island)) addFailure(failures, 'fission_selected_island_missing');
+  if (!nonEmptyValue(fission.selected_reason)) addFailure(failures, 'fission_selected_reason_missing');
+  if (fission.artifact_hash_before && fission.artifact_hash_before !== contract.artifact_hash_before) {
+    addFailure(failures, 'fission_artifact_before_hash_mismatch', {
+      expected: contract.artifact_hash_before,
+      actual: fission.artifact_hash_before,
+    });
+  }
+  if (fission.artifact_hash_after && fission.artifact_hash_after !== contract.artifact_hash_after) {
+    addFailure(failures, 'fission_artifact_after_hash_mismatch', {
+      expected: contract.artifact_hash_after,
+      actual: fission.artifact_hash_after,
+    });
+  }
   if (fission.full_device_fallback === true) addFailure(failures, 'fission_full_device_fallback_used');
   if (fission.host_relinked === true) addFailure(failures, 'fission_host_relinked');
   if (fission.process_restarted === true) addFailure(failures, 'fission_process_restarted');
@@ -520,6 +579,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       kernel_abi_fingerprint_hashes: compactStringList(abiProof.kernelAbiFingerprintHashes),
       constant_global_layout_hashes: compactStringList(abiProof.constantGlobalLayoutHashes),
       extractor_sources: compactStringList(abiProof.acceptedExtractorSources),
+      extractor_provenance: asArray(abiProof.extractorProvenance ?? abiProof.extractor_provenance),
     },
     reload_mechanism: artifactTransportProof?.resultState === 'gpu-hmr-artifact-transport-proven'
       || artifactTransportProof?.ramTransportProven === true
@@ -533,15 +593,47 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     dispatch_trace_required: true,
     oracle_trace_required: true,
     state_preservation_checks: {
-      process_id: firstText(hostPreservationProof.processId, hostPreservationProof.process_id),
-      device_uuid: firstText(input.deviceUuid, input.device_uuid, validationContext.deviceUuid),
-      context_or_device_handle: firstText(validationContext.contextHandle, validationContext.context_or_device_handle),
+      process_id: firstText(
+        hostPreservationProof.processId,
+        hostPreservationProof.process_id,
+        input.processId,
+        input.process_id,
+        validationContext.processId,
+        validationContext.process_id,
+      ),
+      device_uuid: firstText(
+        input.deviceUuid,
+        input.device_uuid,
+        validationContext.deviceUuid,
+        validationContext.device_uuid,
+        validationContext.deviceIdentity?.device_uuid,
+        validationContext.deviceIdentity?.deviceUuid,
+        validationContext.device_identity?.device_uuid,
+        validationContext.device_identity?.deviceUuid,
+      ),
+      context_or_device_handle: firstText(
+        input.contextHandle,
+        input.context_handle,
+        input.contextOrDeviceHandle,
+        input.context_or_device_handle,
+        validationContext.contextHandle,
+        validationContext.context_handle,
+        validationContext.contextOrDeviceHandle,
+        validationContext.context_or_device_handle,
+      ),
       queue_or_stream_handle: firstText(dispatchProof.dispatchStreamIds?.[0], epochProof.streamIds?.[0]),
       persistent_gpu_allocations: asArray(dispatchProof.argProvenanceRecords)
         .filter((record) => record?.category === 'device_allocation')
         .map((record) => record.allocationId ?? record.allocation_id)
         .filter(Boolean),
-      engine_scene_handles: [],
+      engine_scene_handles: compactStringList(input.engineSceneHandles ?? input.engine_scene_handles),
+      camera_state_hash: firstText(input.cameraStateHash, input.camera_state_hash, validationContext.cameraStateHash),
+      swapchain_or_framebuffer_identity: firstText(
+        input.swapchainOrFramebufferIdentity,
+        input.swapchain_or_framebuffer_identity,
+        validationContext.swapchainOrFramebufferIdentity,
+        validationContext.swapchain_or_framebuffer_identity,
+      ),
     },
     epoch_policy: {
       publish_mechanism: epochProof?.published === true ? 'runtime_epoch_publish' : null,

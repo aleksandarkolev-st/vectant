@@ -38,17 +38,36 @@ function contract(overrides = {}) {
       value: 'compatible',
       evidence_refs: ['code-object:metadata'],
     },
+    abi_metadata: {
+      kernel_abi_fingerprint_hashes: ['sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'],
+      extractor_sources: ['clang_ast'],
+    },
     reload_mechanism: 'generated_adapter',
     adapter_outcome: 'adapter_generated',
     reload_evidence_refs: ['runtime:module-load'],
     dispatch_trace_required: true,
     oracle_trace_required: true,
+    state_preservation_checks: {
+      process_id: 'pid-1',
+      device_uuid: 'device-1',
+      context_or_device_handle: 'hip-context-1',
+      queue_or_stream_handle: 'stream-1',
+      persistent_gpu_allocations: ['allocation-1'],
+    },
+    epoch_policy: {
+      publish_mechanism: 'runtime_epoch_publish',
+      dispatch_binding: 'dispatch_table_epoch_binding',
+      retirement_mechanism: 'stream_event',
+    },
     epoch_retirement_proof: {
       value: 'stream_event_proven',
       evidence_refs: ['runtime:stream-event'],
     },
     fission_report: {
       selected_island: 'device-kernel',
+      selected_reason: 'verified_fission_contract',
+      artifact_hash_before: BEFORE,
+      artifact_hash_after: AFTER,
       full_device_fallback: false,
       host_relinked: false,
       process_restarted: false,
@@ -100,12 +119,36 @@ expectReject('unknown ABI', {
     evidence_refs: ['code-object:metadata'],
   },
 }, 'abi_compatibility_not_proven');
+expectReject('metadata-only ABI label', {
+  abi_metadata: {},
+}, 'abi_metadata_missing');
 expectReject('missing reload hook', {
   reload_mechanism: 'unsupported',
 }, 'reload_mechanism_unsupported');
+expectReject('missing state preservation', {
+  state_preservation_checks: {
+    device_uuid: 'device-1',
+    context_or_device_handle: 'hip-context-1',
+    queue_or_stream_handle: 'stream-1',
+    persistent_gpu_allocations: ['allocation-1'],
+  },
+}, 'state_process_id_missing');
+expectReject('missing epoch policy', {
+  epoch_policy: {},
+}, 'epoch_publish_mechanism_missing');
+expectReject('missing fission selected reason', {
+  fission_report: {
+    selected_island: 'device-kernel',
+    full_device_fallback: false,
+    host_relinked: false,
+    process_restarted: false,
+    full_rebuild_used: false,
+  },
+}, 'fission_selected_reason_missing');
 expectReject('full rebuild hidden in fission', {
   fission_report: {
     selected_island: 'device-kernel',
+    selected_reason: 'verified_fission_contract',
     full_device_fallback: false,
     host_relinked: false,
     process_restarted: false,
