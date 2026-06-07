@@ -331,6 +331,30 @@ expectReject('missing OpenCL event proof', {
     local_work_size: [64],
   },
 }, 'opencl_contract_event_trace_missing');
+expectReject('CUDA backend contract not implemented', {
+  backend: 'cuda',
+  artifact_identity: {
+    source_paths: ['kernels/step.cu'],
+    artifact_kind: 'cuda_ptx',
+    entry_points: ['step_kernel'],
+    compile_target: 'sm_90',
+    compiler: 'nvcc',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  hip_contract: {},
+}, 'backend_specific_contract_not_implemented');
+expectReject('SYCL backend contract not implemented', {
+  backend: 'sycl',
+  artifact_identity: {
+    source_paths: ['kernels/step.cpp'],
+    artifact_kind: 'sycl_bundle',
+    entry_points: ['step_kernel'],
+    compile_target: 'amdgcn-amd-amdhsa',
+    compiler: 'clang++',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  hip_contract: {},
+}, 'backend_specific_contract_not_implemented');
 expectReject('missing Vulkan command-buffer proof', {
   backend: 'vulkan',
   artifact_identity: {

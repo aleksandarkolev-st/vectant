@@ -502,6 +502,9 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (!confidenceIsValid(contract.confidence)) addFailure(failures, 'contract_confidence_missing');
   if (!confidenceIsValid(c.confidence)) addFailure(failures, 'classification_confidence_missing');
   if (contract.backend === 'unknown') addFailure(failures, 'backend_unknown');
+  if (contract.backend !== 'unknown' && !BACKEND_CONTRACT_COMPARABLE_FIELDS[contract.backend]) {
+    addFailure(failures, 'backend_specific_contract_not_implemented', { backend: contract.backend });
+  }
   if (c.project_kind === 'cpu_project') addFailure(failures, 'cpu_project_not_gpu_hmr');
   if (c.project_kind === 'unknown') addFailure(failures, 'project_kind_unknown');
   if (!GPU_PROJECT_KINDS.has(c.project_kind)) {
