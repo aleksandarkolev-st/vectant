@@ -748,10 +748,13 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const fullRuntimeProven = directFullRuntimeProven
     ?? runtimeArtifactsFullRuntimeProven
     ?? (fullRuntimeStates.length > 0 && fullRuntimeStates.every((state) => state.full_runtime_proven === true));
+  const acceptanceContractConsistencyAccepted = acceptanceContractConsistencyEvaluations.length > 0
+    && acceptanceContractConsistencyEvaluations.every((evaluation) => evaluation.accepted === true);
   const gpuHmrSuccess = fullRuntimeProven === true
     && limitations.length === 0
     && proofLedgerQuery?.gpuHmrSuccess === true
     && acceptanceContractEvaluation?.accepted === true
+    && acceptanceContractConsistencyAccepted
     && (
       deterministicVisualModeEvaluation
         ? deterministicVisualModeEvaluation.accepted === true
