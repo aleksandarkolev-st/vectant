@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeCapturedHumanAction,
+  normalizeCapturedHumanActionAnnotation,
   resolveCdpConnectTimeoutMs,
 } from "../../src/browser/playwright_adapter.js";
 
@@ -54,5 +55,39 @@ describe("browser Playwright teach capture", () => {
       origin: "https://app.example.com",
       action: "not-real",
     }, "tab-a")).toBeNull();
+  });
+
+  it("normalizes and redacts hosted-browser action annotations", () => {
+    const event = normalizeCapturedHumanActionAnnotation({
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      actions: ["click", "not-real"],
+      within_ms: 5000,
+      detail: {
+        dialog_event: true,
+        dialog_type: "confirm",
+        dialog_message: "Approve policy?",
+        dialog_prompt_value: "secret typed prompt",
+        dialog_accepted: true,
+        observed_effects: ["Confirmed policy"],
+      },
+    }, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      tab_id: "tab-a",
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      detail: expect.objectContaining({
+        dialog_event: true,
+        dialog_type: "confirm",
+        dialog_message: "Approve policy?",
+        dialog_prompt_value: "[REDACTED]",
+        dialog_prompt_value_redacted: true,
+        dialog_accepted: true,
+        observed_effects: ["Confirmed policy"],
+      }),
+    }));
   });
 });

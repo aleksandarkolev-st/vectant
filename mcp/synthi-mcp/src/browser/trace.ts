@@ -310,6 +310,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       case "click":
         if (isDownloadTrigger(event)) {
           pushDownloadAction(lines, target, "click", event, targetSeq);
+        } else if (isDialogTrigger(event)) {
+          pushDialogAction(lines, target, "click", event, targetSeq);
         } else {
           lines.push(`  await ${target}.click();`);
         }
@@ -317,6 +319,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       case "dblclick":
         if (isDownloadTrigger(event)) {
           pushDownloadAction(lines, target, "dblclick", event, targetSeq);
+        } else if (isDialogTrigger(event)) {
+          pushDialogAction(lines, target, "dblclick", event, targetSeq);
         } else {
           lines.push(`  await ${target}.dblclick();`);
         }
@@ -385,7 +389,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         }
         break;
       case "press":
-        lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
+        if (isDialogTrigger(event)) {
+          pushDialogAction(lines, target, "press", event, targetSeq, event.value ?? "Enter");
+        } else {
+          lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
+        }
         break;
       case "select":
         lines.push(`  await ${target}.selectOption(${JSON.stringify(event.value ?? "")});`);
@@ -523,6 +531,10 @@ function isDownloadTrigger(event: BrowserTraceEvent): boolean {
   return event.detail?.["download_event"] === true;
 }
 
+function isDialogTrigger(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true;
+}
+
 function isContentEditableFill(event: BrowserTraceEvent): boolean {
   const element = elementForEvent(event);
   return event.action === "fill" && element?.content_editable === true;
@@ -544,6 +556,57 @@ function pushDownloadAction(
   const redacted = event.detail?.["suggested_filename_redacted"] === true;
   if (filename && !redacted) {
     lines.push(`  expect(${download}.suggestedFilename()).toBe(${JSON.stringify(filename)});`);
+  }
+}
+
+function pushDialogAction(
+  lines: string[],
+  target: string,
+  method: "click" | "dblclick" | "press",
+  event: BrowserTraceEvent,
+  ordinal: number,
+  pressKey?: string
+): void {
+  const message = typeof event.detail?.["dialog_message"] === "string" ? event.detail["dialog_message"] : "";
+  const messageRedacted = event.detail?.["dialog_message_redacted"] === true;
+  const type = typeof event.detail?.["dialog_type"] === "string" ? event.detail["dialog_type"] : "alert";
+  const accepted = event.detail?.["dialog_accepted"] !== false;
+  const promptValue = typeof event.detail?.["dialog_prompt_value"] === "string" ? event.detail["dialog_prompt_value"] : "";
+  const promptRedacted = event.detail?.["dialog_prompt_value_redacted"] === true;
+  const dialogPromise = `dialog${ordinal}Promise`;
+  const dialogMessage = `dialog${ordinal}Message`;
+  lines.push(`  let ${dialogMessage} = "";`);
+  lines.push(`  const ${dialogPromise} = new Promise((resolve, reject) => {`);
+  lines.push("    page.once('dialog', async (dialog) => {");
+  lines.push("      try {");
+  lines.push(`        expect(dialog.type()).toBe(${JSON.stringify(type)});`);
+  if (message && !messageRedacted) {
+    lines.push(`        expect(dialog.message()).toContain(${JSON.stringify(message)});`);
+  }
+  lines.push(`        ${dialogMessage} = dialog.message();`);
+  if (accepted) {
+    if (type === "prompt" && promptValue && !promptRedacted) {
+      lines.push(`        await dialog.accept(${JSON.stringify(promptValue)});`);
+    } else {
+      lines.push("        await dialog.accept();");
+    }
+  } else {
+    lines.push("        await dialog.dismiss();");
+  }
+  lines.push("        resolve(undefined);");
+  lines.push("      } catch (err) {");
+  lines.push("        reject(err);");
+  lines.push("      }");
+  lines.push("    });");
+  lines.push("  });");
+  if (method === "press") {
+    lines.push(`  await ${target}.press(${JSON.stringify(pressKey ?? "Enter")});`);
+  } else {
+    lines.push(`  await ${target}.${method}();`);
+  }
+  lines.push(`  await ${dialogPromise};`);
+  if (message && !messageRedacted) {
+    lines.push(`  expect(${dialogMessage}).toContain(${JSON.stringify(message)});`);
   }
 }
 

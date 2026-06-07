@@ -377,6 +377,9 @@ export class BrowserPlaywrightAdapter {
           detail: { method: request.method(), resource_type: request.resourceType() },
         });
       });
+      page.on("dialog", () => {
+        // Keep this adapter from auto-dismissing user/runtime-owned dialogs.
+      });
       page.on("download", (download) => {
         let origin: string;
         try {
@@ -496,12 +499,18 @@ export class BrowserPlaywrightAdapter {
 
   private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
     const bindingName = "__synthiRecordHumanAction";
+    const annotationBindingName = "__synthiAnnotateHumanAction";
     await page.exposeBinding(bindingName, (_source, payload: unknown) => {
       const event = normalizeCapturedHumanAction(payload, tab_id);
       if (!event) return;
       this.teachEventSink?.(event);
     }).catch(() => undefined);
-    const script = teachCaptureInitScript(bindingName);
+    await page.exposeBinding(annotationBindingName, (_source, payload: unknown) => {
+      const event = normalizeCapturedHumanActionAnnotation(payload, tab_id);
+      if (!event) return;
+      this.teachEventAnnotationSink?.(event);
+    }).catch(() => undefined);
+    const script = teachCaptureInitScript(bindingName, annotationBindingName);
     await page.addInitScript(script).catch(() => undefined);
     await page.evaluate(script).catch(() => undefined);
   }
@@ -573,6 +582,29 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   return event;
 }
 
+export function normalizeCapturedHumanActionAnnotation(
+  payload: unknown,
+  tab_id: string
+): Parameters<NonNullable<BrowserTeachEventAnnotationSink>>[0] | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const raw = payload as Record<string, unknown>;
+  const url = stringOpt(raw["url"]);
+  const origin = stringOpt(raw["origin"]);
+  if (!url || !origin) return null;
+  const actions = stringArrayOpt(raw["actions"])?.filter((action): action is BrowserActionKind =>
+    (BROWSER_ACTION_KINDS as readonly string[]).includes(action)
+  );
+  const detail = sanitizeAnnotationDetail(recordOpt(raw["detail"]) ?? {});
+  return {
+    tab_id,
+    url,
+    origin,
+    ...(actions && actions.length > 0 ? { actions } : {}),
+    detail,
+    within_ms: numberOpt(raw["within_ms"]),
+  };
+}
+
 function browserActionOpt(value: unknown): BrowserActionKind | undefined {
   return typeof value === "string" && (BROWSER_ACTION_KINDS as readonly string[]).includes(value) ? value as BrowserActionKind : undefined;
 }
@@ -614,6 +646,46 @@ function recordOpt(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function stringArrayOpt(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, unknown> {
+  const detail: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "string") {
+      if (key === "dialog_message" || key === "dialog_default_value") {
+        const redacted = redactText(value);
+        detail[key] = redacted.text;
+        if (redacted.redacted) detail[`${key}_redacted`] = true;
+      } else if (key === "dialog_prompt_value") {
+        detail[key] = "[REDACTED]";
+        detail[`${key}_redacted`] = true;
+      } else {
+        detail[key] = value;
+      }
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      detail[key] = value;
+    } else if (key === "observed_effects" && Array.isArray(value)) {
+      const effects: string[] = [];
+      let redacted = false;
+      for (const item of value) {
+        if (typeof item !== "string") continue;
+        const effect = redactText(item);
+        const text = effect.text.trim();
+        if (text.length === 0) continue;
+        effects.push(text);
+        redacted = redacted || effect.redacted;
+        if (effects.length >= 6) break;
+      }
+      if (effects.length > 0) detail[key] = effects;
+      if (redacted) detail[`${key}_redacted`] = true;
+    }
+  }
+  return detail;
+}
+
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -639,9 +711,10 @@ function parseScrollPosition(value: string | undefined): { top: number; left: nu
   }
 }
 
-function teachCaptureInitScript(bindingName: string): string {
+function teachCaptureInitScript(bindingName: string, annotationBindingName: string): string {
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
+    const annotationBindingName = ${JSON.stringify(annotationBindingName)};
     if (window.__SYNTHI_TEACH_CAPTURE_INSTALLED__) return;
     window.__SYNTHI_TEACH_CAPTURE_INSTALLED__ = true;
     const pending = new WeakMap();
@@ -651,6 +724,8 @@ function teachCaptureInitScript(bindingName: string): string {
     const scrollBeforeEffects = new WeakMap();
     const lastSent = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
+    const pendingActionSends = new Set();
+    let latestDeferredActionBeforeEffects = [];
     let activeDrag = null;
 
     function isElement(value) {
@@ -664,6 +739,104 @@ function teachCaptureInitScript(bindingName: string): string {
     function attr(el, name) {
       return text(el.getAttribute(name) || '');
     }
+
+    function annotateLatest(actions, detail, withinMs) {
+      if (!window[annotationBindingName]) return;
+      window[annotationBindingName]({
+        url: location.href,
+        origin: location.origin,
+        actions,
+        detail,
+        within_ms: withinMs || 5000,
+      }).catch(() => {});
+    }
+
+    function enqueueActionSend(send, beforeEffects) {
+      const entry = {
+        send,
+        beforeEffects: Array.isArray(beforeEffects) ? beforeEffects : [],
+        timer: null,
+        sent: false,
+      };
+      entry.timer = setTimeout(() => {
+        pendingActionSends.delete(entry);
+        entry.timer = null;
+        if (entry.sent) return;
+        entry.sent = true;
+        latestDeferredActionBeforeEffects = entry.beforeEffects;
+        entry.send();
+      }, 0);
+      pendingActionSends.add(entry);
+    }
+
+    function flushPendingActionSends() {
+      let latestBeforeEffects = null;
+      for (const entry of Array.from(pendingActionSends)) {
+        if (entry.timer) clearTimeout(entry.timer);
+        pendingActionSends.delete(entry);
+        if (entry.sent) continue;
+        entry.sent = true;
+        if (Array.isArray(entry.beforeEffects)) latestBeforeEffects = entry.beforeEffects;
+        entry.send();
+      }
+      if (latestBeforeEffects) latestDeferredActionBeforeEffects = latestBeforeEffects;
+      return latestBeforeEffects || latestDeferredActionBeforeEffects;
+    }
+
+    function dialogObservedEffects(beforeEffects) {
+      const effects = changedEffectTexts(Array.isArray(beforeEffects) ? beforeEffects : []);
+      return effects.length > 0 ? { observed_effects: effects } : {};
+    }
+
+    function annotateDialogTrigger(detail, beforeEffects) {
+      setTimeout(() => {
+        annotateLatest(['click', 'dblclick', 'press'], Object.assign({}, detail, dialogObservedEffects(beforeEffects)), 5000);
+      }, 0);
+    }
+
+    function installDialogCapture() {
+      if (window.__SYNTHI_DIALOG_CAPTURE_INSTALLED__) return;
+      window.__SYNTHI_DIALOG_CAPTURE_INSTALLED__ = true;
+      const nativeAlert = window.alert.bind(window);
+      const nativeConfirm = window.confirm.bind(window);
+      const nativePrompt = window.prompt.bind(window);
+      window.alert = (message) => {
+        const beforeEffects = flushPendingActionSends();
+        nativeAlert(message);
+        annotateDialogTrigger({
+          dialog_event: true,
+          dialog_type: 'alert',
+          dialog_message: text(String(message || '')),
+          dialog_accepted: true,
+        }, beforeEffects);
+      };
+      window.confirm = (message) => {
+        const beforeEffects = flushPendingActionSends();
+        const accepted = nativeConfirm(message);
+        annotateDialogTrigger({
+          dialog_event: true,
+          dialog_type: 'confirm',
+          dialog_message: text(String(message || '')),
+          dialog_accepted: Boolean(accepted),
+        }, beforeEffects);
+        return accepted;
+      };
+      window.prompt = (message, defaultValue) => {
+        const beforeEffects = flushPendingActionSends();
+        const value = nativePrompt(message, defaultValue);
+        annotateDialogTrigger({
+          dialog_event: true,
+          dialog_type: 'prompt',
+          dialog_message: text(String(message || '')),
+          dialog_default_value: text(String(defaultValue || '')),
+          dialog_accepted: value !== null,
+          dialog_prompt_value: value === null ? '' : String(value),
+        }, beforeEffects);
+        return value;
+      };
+    }
+
+    installDialogCapture();
 
     function associatedLabel(el) {
       if (el.id) {
@@ -944,7 +1117,7 @@ function teachCaptureInitScript(bindingName: string): string {
         window[bindingName](payload).catch(() => {});
       };
       if (['click', 'dblclick', 'contextmenu', 'press', 'drag', 'select', 'check', 'uncheck'].includes(action)) {
-        setTimeout(send, 0);
+        enqueueActionSend(send, beforeEffects);
       } else {
         send();
       }

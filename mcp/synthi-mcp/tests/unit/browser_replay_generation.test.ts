@@ -240,6 +240,35 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("expect(download1.suggestedFilename()).toBe(\"report.csv\");");
   });
 
+  it("wraps dialog-triggering clicks with a Playwright dialog handler", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "confirm-approve",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          dialog_event: true,
+          dialog_type: "confirm",
+          dialog_message: "Approve policy?",
+          dialog_accepted: true,
+          observed_effects: ["Confirmed policy"],
+          element: { role: "button", name: "Confirm policy", test_id: "confirm-policy", source_id: "src_confirm" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"confirm-policy\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("page.once('dialog'");
+    expect(generated.code).toContain("expect(dialog.type()).toBe(\"confirm\")");
+    expect(generated.code).toContain("expect(dialog.message()).toContain(\"Approve policy?\")");
+    expect(generated.code).toContain("await dialog.accept();");
+    expect(generated.code).toContain("await target1.click();");
+    expect(generated.code).toContain("await dialog1Promise;");
+    expect(generated.code).toContain("await expect(page.getByText(\"Confirmed policy\", { exact: true })).toBeVisible();");
+  });
+
   it("asserts contenteditable fill replay with text content", () => {
     const generated = generatePlaywrightScript([
       event({

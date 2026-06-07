@@ -1164,6 +1164,44 @@ const CASES = [
     },
   },
   {
+    id: "native-confirm-dialog",
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Confirmed policy",
+    ],
+    expectedReplayCode: [
+      "page.once('dialog'",
+      "await dialog.accept();",
+      "expect(dialog.message()).toContain(\"Approve policy?\")",
+    ],
+    files: () => commonFiles({
+      title: "Native Confirm Dialog Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Native Confirm Dialog Workflow</h1>",
+        "      <button type=\"button\" data-testid=\"confirm-policy\" data-synthi-source-id=\"dialog.confirm\">Confirm policy</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "document.querySelector('[data-testid=\"confirm-policy\"]').addEventListener('click', () => {",
+        "  if (window.confirm('Approve policy?')) {",
+        "    document.querySelector('#status').textContent = 'Confirmed policy';",
+        "  } else {",
+        "    document.querySelector('#status').textContent = 'Canceled policy';",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      page.once("dialog", (dialog) => dialog.accept());
+      await page.getByRole("button", { name: "Confirm policy" }).click();
+      await page.getByText("Confirmed policy").waitFor();
+    },
+  },
+  {
     id: "rich-text-editor",
     minSteps: 2,
     expectedActions: ["fill", "click"],
