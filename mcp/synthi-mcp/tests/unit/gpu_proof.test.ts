@@ -128,6 +128,48 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
+    proofId: "gpu-runtime-proof:fixture",
+    resultState: "gpu-hmr-full-runtime-proven",
+    fullRuntimeProven: true,
+    gpuHmrSuccess: true,
+    stageResults: [
+      { stageId: "fission-candidate-verification", status: "passed" },
+      { stageId: "compile", status: "passed" },
+      { stageId: "symbol-binding", status: "passed" },
+      { stageId: "abi", status: "passed" },
+      { stageId: "artifact-transport", status: "passed" },
+      { stageId: "epoch-swap", status: "passed" },
+      { stageId: "dispatch-safe", status: "passed" },
+      { stageId: "output", status: "passed" },
+      { stageId: "artifact-identity", status: "passed" },
+      { stageId: "host-preservation", status: "passed" },
+    ],
+    limitations: [],
+    proofLedger: ledger,
+    proofLedgerQuery: ledger.query,
+    acceptanceContract: {
+      contract_version: "synthi.gpu_hmr.contract.v1",
+      contract_hash: HASH_C,
+    },
+    acceptanceContractEvaluation: {
+      accepted: true,
+      failedGates: [],
+    },
+    acceptanceContractConsistency: {
+      accepted: true,
+      failedGates: [],
+    },
+    proofLedgerSourceConsistency: {
+      accepted: true,
+      failedGates: [],
+    },
+    ...overrides,
+  };
+}
+
 describe("GPU HMR proof-state validation", () => {
   it("parses worker proof-state status telemetry", () => {
     const proof = classifyGpuHmrProofMessage({
@@ -254,7 +296,23 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.effectiveResultRank).toBe(0);
   });
 
-  it("requires ledger-backed success for full runtime proof validation", () => {
+  it("requires ledger-backed runtime artifact success for full runtime proof validation", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(true);
+    expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(true);
+    expect(validation.runtimeProofArtifactValidation?.accepted).toBe(true);
+  });
+
+  it("rejects ledger-only full runtime proof telemetry", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
       resultState: "gpu-hmr-full-runtime-proven",
@@ -263,8 +321,12 @@ describe("GPU HMR proof-state validation", () => {
 
     const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
 
-    expect(validation.satisfied).toBe(true);
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_missing");
     expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(true);
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_proof_artifact_missing"
+    );
   });
 
   it("rejects full runtime proof when delta model provenance is shutdown", () => {

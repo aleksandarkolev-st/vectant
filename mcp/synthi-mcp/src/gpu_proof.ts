@@ -60,6 +60,14 @@ export interface GpuHmrProofValidation {
   satisfied: boolean;
   reason?: string;
   proofLedgerValidation?: GpuHmrLedgerValidation | null;
+  runtimeProofArtifactValidation?: GpuHmrRuntimeProofArtifactValidation | null;
+}
+
+export interface GpuHmrRuntimeProofArtifactValidation {
+  present: boolean;
+  accepted: boolean;
+  source: string | null;
+  failedGates: Array<{ code: string }>;
 }
 
 export interface GpuHmrProofMatchOpts {
@@ -103,6 +111,170 @@ function nestedString(raw: Record<string, unknown>, key: string): string | null 
     }
   }
   return null;
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function objectField(raw: Record<string, unknown>, ...keys: string[]): Record<string, unknown> | null {
+  for (const key of keys) {
+    const obj = objectOrNull(raw[key]);
+    if (obj !== null) return obj;
+  }
+  return null;
+}
+
+function boolField(raw: Record<string, unknown> | null, ...keys: string[]): boolean | null {
+  if (raw === null) return null;
+  for (const key of keys) {
+    if (typeof raw[key] === "boolean") return raw[key] as boolean;
+  }
+  return null;
+}
+
+function arrayField(raw: Record<string, unknown> | null, ...keys: string[]): unknown[] | null {
+  if (raw === null) return null;
+  for (const key of keys) {
+    if (Array.isArray(raw[key])) return raw[key] as unknown[];
+  }
+  return null;
+}
+
+const RUNTIME_PROOF_ARTIFACT_KEYS = [
+  "runtimeProofArtifact",
+  "runtime_proof_artifact",
+  "validationRuntimeProofArtifact",
+  "validation_runtime_proof_artifact",
+  "gpuHmrRuntimeProofArtifact",
+  "gpu_hmr_runtime_proof_artifact",
+  "gpuRuntimeProofArtifact",
+  "gpu_runtime_proof_artifact",
+] as const;
+
+function runtimeProofArtifactCandidate(
+  raw: Record<string, unknown>
+): { source: string; artifact: Record<string, unknown> } | null {
+  for (const key of RUNTIME_PROOF_ARTIFACT_KEYS) {
+    const artifact = objectOrNull(raw[key]);
+    if (artifact !== null) return { source: key, artifact };
+  }
+  for (const nestedKey of ["data", "detail"]) {
+    const nested = objectOrNull(raw[nestedKey]);
+    if (nested === null) continue;
+    const nestedCandidate = runtimeProofArtifactCandidate(nested);
+    if (nestedCandidate !== null) {
+      return {
+        source: `${nestedKey}.${nestedCandidate.source}`,
+        artifact: nestedCandidate.artifact,
+      };
+    }
+  }
+  if (
+    objectOrNull(raw.acceptanceContract ?? raw.acceptance_contract) !== null
+    || objectOrNull(raw.acceptanceContractEvaluation ?? raw.acceptance_contract_evaluation) !== null
+    || objectOrNull(raw.proofLedgerQuery ?? raw.proof_ledger_query) !== null
+    || boolField(raw, "gpuHmrSuccess", "gpu_hmr_success") !== null
+  ) {
+    return { source: "telemetry", artifact: raw };
+  }
+  return null;
+}
+
+function validateRuntimeProofArtifactAcceptance(
+  raw: Record<string, unknown>
+): GpuHmrRuntimeProofArtifactValidation {
+  const candidate = runtimeProofArtifactCandidate(raw);
+  if (candidate === null) {
+    return {
+      present: false,
+      accepted: false,
+      source: null,
+      failedGates: [{ code: "runtime_proof_artifact_missing" }],
+    };
+  }
+
+  const artifact = candidate.artifact;
+  const failures: Array<{ code: string }> = [];
+  const proofLedger = objectField(artifact, "proofLedger", "proof_ledger");
+  const proofLedgerQuery = objectField(artifact, "proofLedgerQuery", "proof_ledger_query");
+  const acceptanceContract = objectField(artifact, "acceptanceContract", "acceptance_contract");
+  const acceptanceContractEvaluation = objectField(
+    artifact,
+    "acceptanceContractEvaluation",
+    "acceptance_contract_evaluation"
+  );
+  const acceptanceContractConsistency = objectField(
+    artifact,
+    "acceptanceContractConsistency",
+    "acceptance_contract_consistency"
+  );
+  const proofLedgerSourceConsistency = objectField(
+    artifact,
+    "proofLedgerSourceConsistency",
+    "proof_ledger_source_consistency"
+  );
+  const deterministicVisualModeEvaluation = objectField(
+    artifact,
+    "deterministicVisualModeEvaluation",
+    "deterministic_visual_mode_evaluation"
+  );
+  const stageResults = arrayField(artifact, "stageResults", "stage_results");
+  const limitations = arrayField(artifact, "limitations");
+
+  if (boolField(artifact, "fullRuntimeProven", "full_runtime_proven") !== true) {
+    failures.push({ code: "runtime_full_proof_not_proven" });
+  }
+  if (boolField(artifact, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
+    failures.push({ code: "runtime_proof_artifact_gpu_hmr_success_false" });
+  }
+  if (stageResults === null || stageResults.length === 0) {
+    failures.push({ code: "runtime_proof_artifact_stage_results_missing" });
+  } else if (stageResults.some((stage) => objectOrNull(stage)?.status !== "passed")) {
+    failures.push({ code: "runtime_proof_artifact_stage_failed" });
+  }
+  if (limitations === null) {
+    failures.push({ code: "runtime_proof_artifact_limitations_missing" });
+  } else if (limitations.length > 0) {
+    failures.push({ code: "runtime_proof_artifact_limitations_present" });
+  }
+  if (proofLedger === null) failures.push({ code: "proof_ledger_missing" });
+  if (proofLedgerQuery === null) {
+    failures.push({ code: "proof_ledger_query_missing" });
+  } else if (boolField(proofLedgerQuery, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
+    failures.push({ code: "proof_ledger_query_rejected" });
+  }
+  if (acceptanceContract === null) failures.push({ code: "acceptance_contract_missing" });
+  if (acceptanceContractEvaluation === null) {
+    failures.push({ code: "acceptance_contract_evaluation_missing" });
+  } else if (boolField(acceptanceContractEvaluation, "accepted") !== true) {
+    failures.push({ code: "acceptance_contract_rejected" });
+  }
+  if (acceptanceContractConsistency === null) {
+    failures.push({ code: "acceptance_contract_consistency_missing" });
+  } else if (boolField(acceptanceContractConsistency, "accepted") !== true) {
+    failures.push({ code: "acceptance_contract_consistency_rejected" });
+  }
+  if (proofLedgerSourceConsistency === null) {
+    failures.push({ code: "proof_ledger_source_consistency_missing" });
+  } else if (boolField(proofLedgerSourceConsistency, "accepted") !== true) {
+    failures.push({ code: "proof_ledger_source_consistency_rejected" });
+  }
+  if (
+    deterministicVisualModeEvaluation !== null
+    && boolField(deterministicVisualModeEvaluation, "accepted") !== true
+  ) {
+    failures.push({ code: "deterministic_visual_mode_rejected" });
+  }
+
+  return {
+    present: true,
+    accepted: failures.length === 0,
+    source: candidate.source,
+    failedGates: failures,
+  };
 }
 
 export function gpuHmrProofModule(proof: GpuHmrProofTelemetry | null): string | null {
@@ -224,7 +396,9 @@ export function validateGpuHmrProofState(
             ? "degraded_state_blocks_required_proof"
             : undefined;
   let proofLedgerValidation: GpuHmrLedgerValidation | null | undefined;
+  let runtimeProofArtifactValidation: GpuHmrRuntimeProofArtifactValidation | null | undefined;
   let ledgerReason: string | undefined;
+  let runtimeArtifactReason: string | undefined;
   if (requiredState === "gpu-hmr-full-runtime-proven" && reason === undefined) {
     const ledger = embeddedGpuHmrProofLedger(proof.raw);
     if (ledger === null) {
@@ -253,6 +427,15 @@ export function validateGpuHmrProofState(
         ledgerReason = "proof_ledger_rejected";
       }
     }
+    if (ledgerReason === undefined) {
+      runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(proof.raw);
+      if (!runtimeProofArtifactValidation.accepted) {
+        satisfied = false;
+        runtimeArtifactReason = runtimeProofArtifactValidation.present
+          ? "runtime_proof_artifact_rejected"
+          : "runtime_proof_artifact_missing";
+      }
+    }
   }
 
   return {
@@ -265,6 +448,9 @@ export function validateGpuHmrProofState(
     degradedStateRankCap,
     satisfied,
     ...(proofLedgerValidation !== undefined ? { proofLedgerValidation } : {}),
-    ...(reason ?? ledgerReason ? { reason: reason ?? ledgerReason } : {}),
+    ...(runtimeProofArtifactValidation !== undefined ? { runtimeProofArtifactValidation } : {}),
+    ...(reason ?? ledgerReason ?? runtimeArtifactReason
+      ? { reason: reason ?? ledgerReason ?? runtimeArtifactReason }
+      : {}),
   };
 }

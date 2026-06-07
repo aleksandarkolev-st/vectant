@@ -133,6 +133,47 @@ function passingProofLedger() {
   };
 }
 
+function passingRuntimeProofArtifact(ledger = passingProofLedger()) {
+  return {
+    schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
+    proofId: "gpu-runtime-proof:wait-fixture",
+    resultState: "gpu-hmr-full-runtime-proven",
+    fullRuntimeProven: true,
+    gpuHmrSuccess: true,
+    stageResults: [
+      { stageId: "fission-candidate-verification", status: "passed" },
+      { stageId: "compile", status: "passed" },
+      { stageId: "symbol-binding", status: "passed" },
+      { stageId: "abi", status: "passed" },
+      { stageId: "artifact-transport", status: "passed" },
+      { stageId: "epoch-swap", status: "passed" },
+      { stageId: "dispatch-safe", status: "passed" },
+      { stageId: "output", status: "passed" },
+      { stageId: "artifact-identity", status: "passed" },
+      { stageId: "host-preservation", status: "passed" },
+    ],
+    limitations: [],
+    proofLedger: ledger,
+    proofLedgerQuery: ledger.query,
+    acceptanceContract: {
+      contract_version: "synthi.gpu_hmr.contract.v1",
+      contract_hash: HASH_C,
+    },
+    acceptanceContractEvaluation: {
+      accepted: true,
+      failedGates: [],
+    },
+    acceptanceContractConsistency: {
+      accepted: true,
+      failedGates: [],
+    },
+    proofLedgerSourceConsistency: {
+      accepted: true,
+      failedGates: [],
+    },
+  };
+}
+
 function installFakeAttached(
   waitForTerminal: (opts?: FakeWaitOpts) => Promise<{
     status: "applied";
@@ -343,12 +384,14 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_ledger_validation).toBeNull();
   });
 
-  it("accepts full runtime proof only with recomputed ledger success", async () => {
+  it("accepts full runtime proof only with recomputed ledger and runtime artifact success", async () => {
+    const ledger = passingProofLedger();
     const fake = installFakeAttached(async () => {
       fake.feedHmr({
         status: "gpu-proof-state",
         resultState: "gpu-hmr-full-runtime-proven",
-        proofLedger: passingProofLedger(),
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
       });
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
     });
@@ -357,11 +400,15 @@ describe("synthi_wait_hmr", () => {
 
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as {
-      gpu_proof_validation?: { satisfied?: boolean };
+      gpu_proof_validation?: {
+        satisfied?: boolean;
+        runtimeProofArtifactValidation?: { accepted?: boolean };
+      };
       gpu_proof_ledger_validation?: { gpuHmrSuccess?: boolean };
     };
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
     expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
   });
 
   it("rejects a retained GPU proof that predates since_ts", async () => {
