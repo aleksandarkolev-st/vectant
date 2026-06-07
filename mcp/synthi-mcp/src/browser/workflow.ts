@@ -97,7 +97,7 @@ export interface WorkflowStepContractV7 {
     confidence: "high" | "medium" | "low" | "none";
   };
   sourcePlan: {
-    status: "linked" | "missing";
+    status: "linked" | "missing" | "notRequired";
     sourceId?: string;
     workspaceId?: string;
     filePath?: string;
@@ -248,7 +248,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
     .map((step) => ({ stepId: step.stepId, ...step.mutation! }));
   const limitations = workflowLimitations(ordered, steps, appOrigin, mutationSteps.length > 0);
   const replayBlocked = actionEvents.length === 0 || replayBlockingWarnings(limitations).length > 0;
-  const linkedSteps = steps.filter((step) => step.sourcePlan.status === "linked").length;
+  const linkedSteps = steps.filter((step) => step.sourcePlan.status !== "missing").length;
   const sourceStatus = linkedSteps === 0 ? "missing" : linkedSteps === steps.length ? "complete" : "partial";
   const firstMutationStepId = mutationSteps[0]?.stepId;
   const name = workflowName(steps);
@@ -648,10 +648,10 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   const parameterName = parameterNameForAction(event, element, ordinal, actionKind);
   const mutation = mutationFor(actionKind, targetLabel, event);
   const surfacePlan = surfacePlanFor(event, actionKind);
-  const sourcePlan = sourcePlanFor(element);
+  const sourcePlan = actionKind === "navigate" ? { status: "notRequired" as const } : sourcePlanFor(element);
   const limitations: WorkflowLimitationV7[] = [];
   if (sourcePlan.status === "missing") limitations.push("sourceIdentityMissing");
-  if (!primary) limitations.push("unresolvedStep");
+  if (!primary && actionKind !== "navigate") limitations.push("unresolvedStep");
   if (primary && primary.confidence < 0.7) limitations.push("lowConfidenceLocator");
   if (event.redacted) limitations.push("redactedInputValue");
   if (mutation) limitations.push("mutationRequiresIsolation");
@@ -881,7 +881,7 @@ function workflowLimitations(
 ): WorkflowLimitationV7[] {
   const limitations = new Set<WorkflowLimitationV7>();
   if (steps.some((step) => step.sourcePlan.status === "missing")) limitations.add("sourceIdentityMissing");
-  if (steps.some((step) => step.locatorPlan.confidence === "none")) limitations.add("unresolvedStep");
+  if (steps.some((step) => step.action.kind !== "navigate" && step.locatorPlan.confidence === "none")) limitations.add("unresolvedStep");
   if (steps.some((step) => step.locatorPlan.confidence === "low")) limitations.add("lowConfidenceLocator");
   if (steps.some((step) => step.limitations.includes("redactedInputValue"))) limitations.add("redactedInputValue");
   if (steps.some((step) => step.limitations.includes("iframeNeedsFrameLocator"))) limitations.add("iframeNeedsFrameLocator");

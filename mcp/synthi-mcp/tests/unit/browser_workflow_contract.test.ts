@@ -441,6 +441,37 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.limitations).not.toContain("sourceIdentityMissing");
   });
 
+  it("does not require source identity for route navigation steps", () => {
+    const events = [
+      rawBaseEvent({
+        event_id: "route",
+        event_seq: 1,
+        kind: "navigation",
+        action: "navigate",
+        url: "https://app.example.com/review#queue",
+        locator_candidates: [],
+        detail: { navigation_event: true },
+      }),
+    ];
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.steps[0]).toEqual(expect.objectContaining({
+      label: "Open /review",
+      sourcePlan: { status: "notRequired" },
+      limitations: [],
+    }));
+    expect(workflow.contract.sourceIdentityCoverage).toEqual(expect.objectContaining({
+      linkedSteps: 1,
+      totalSteps: 1,
+      status: "complete",
+    }));
+    expect(workflow.contract.limitations).not.toContain("sourceIdentityMissing");
+    expect(workflow.contract.limitations).not.toContain("unresolvedStep");
+    expect(replay.status).toBe("ready");
+    expect(replay.events).toHaveLength(1);
+  });
+
   it("marks checkpoint-only authenticated workflows manual-only for publishing", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

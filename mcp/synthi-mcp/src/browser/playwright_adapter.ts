@@ -353,6 +353,24 @@ export class BrowserPlaywrightAdapter {
           detail: { method: request.method(), resource_type: request.resourceType() },
         });
       });
+      page.on("framenavigated", (frame) => {
+        if (frame !== page.mainFrame()) return;
+        const url = frame.url();
+        if (!/^https?:\/\//i.test(url)) return;
+        let origin: string;
+        try {
+          origin = normalizeOrigin(url).origin;
+        } catch {
+          return;
+        }
+        this.teachEventSink?.({
+          tab_id,
+          url,
+          origin,
+          action: "navigate",
+          detail: { event_source: "page_lifecycle", navigation_event: true },
+        });
+      });
       await this.installTeachCapture(page, tab_id);
     }
     if (this.workflowOverlayEnabled && !this.workflowOverlayInstalled.has(page)) {
@@ -716,6 +734,7 @@ function teachCaptureInitScript(bindingName: string): string {
       const tag = el.tagName.toLowerCase();
       const type = attr(el, 'type').toLowerCase();
       if (tag === 'select') return 'select';
+      if (tag === 'input' && type === 'file') return 'drag';
       if (tag === 'input' && type === 'checkbox') return el.checked ? 'check' : 'uncheck';
       if (tag === 'input' && type === 'radio') return 'check';
       return 'fill';
@@ -735,6 +754,38 @@ function teachCaptureInitScript(bindingName: string): string {
       if (isEditableTextTarget(el)) return true;
       if (tag === 'input' && ['checkbox', 'radio'].includes(type)) return true;
       return tag === 'select';
+    }
+
+    function slug(value) {
+      return text(value)
+        .toLowerCase()
+        .replace(/['"]/g, '')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'file';
+    }
+
+    function fileParameterFor(el) {
+      const element = metadata(el);
+      return slug(fieldName(el, element) || 'file') + '_file';
+    }
+
+    function fileDropDetail(el, extra) {
+      const inputFiles = el && el.files && typeof el.files.length === 'number' ? Array.from(el.files) : [];
+      const dataTransferFiles = extra && extra.dataTransfer && extra.dataTransfer.files
+        ? Array.from(extra.dataTransfer.files)
+        : [];
+      const files = inputFiles.length > 0 ? inputFiles : dataTransferFiles;
+      const mimeTypes = Array.from(new Set(files.map((file) => text(file && file.type ? file.type : '')).filter(Boolean)));
+      const safeExtra = Object.assign({}, extra || {});
+      delete safeExtra.dataTransfer;
+      return Object.assign({
+        explicit_intent: true,
+        drag_mode: true,
+        drag_class: 'fileDrop',
+        file_parameter: fileParameterFor(el),
+        file_count: files.length,
+        file_input: el.tagName.toLowerCase() === 'input' && attr(el, 'type').toLowerCase() === 'file',
+      }, mimeTypes.length === 1 ? { mime_type: mimeTypes[0] } : {}, safeExtra);
     }
 
     function emit(el, action, value, detail) {
@@ -763,7 +814,7 @@ function teachCaptureInitScript(bindingName: string): string {
         window[bindingName](payload).catch(() => {});
       };
       if (['click', 'press', 'drag'].includes(action)) {
-        setTimeout(send, 80);
+        setTimeout(send, 0);
       } else {
         send();
       }
@@ -791,6 +842,10 @@ function teachCaptureInitScript(bindingName: string): string {
       if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
       clearPending(el);
       const action = actionForChange(el);
+      if (action === 'drag') {
+        emit(el, 'drag', undefined, fileDropDetail(el, { change_event: true }));
+        return;
+      }
       const value = action === 'check' || action === 'uncheck' ? String(Boolean(el.checked)) : String(el.value || '');
       emit(el, action, value, { change_event: true });
     }, true);
@@ -815,6 +870,21 @@ function teachCaptureInitScript(bindingName: string): string {
       emit(el, 'click', undefined, { click_event: true });
     }, true);
 
+    document.addEventListener('pointerover', (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      if (!event.altKey) return;
+      const el = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
+      if (!isElement(el)) return;
+      emit(el, 'hover', undefined, {
+        hover_event: true,
+        explicit_intent: true,
+        alt_option_intent: true,
+        modifier_key: 'Alt',
+      });
+    }, true);
+
     document.addEventListener('dragstart', (event) => {
       const target = event.target;
       if (!isElement(target)) return;
@@ -830,10 +900,21 @@ function teachCaptureInitScript(bindingName: string): string {
 
     document.addEventListener('drop', (event) => {
       const target = event.target;
-      if (!activeDrag || !isElement(activeDrag.el) || !isElement(target)) return;
+      if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const dropTarget = target.closest('[data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
       if (!isElement(dropTarget)) return;
+      const droppedFiles = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0;
+      if (droppedFiles && (!activeDrag || !isElement(activeDrag.el))) {
+        emit(dropTarget, 'drag', undefined, fileDropDetail(dropTarget, {
+          drop_event: true,
+          file_input: false,
+          dataTransfer: event.dataTransfer,
+        }));
+        activeDrag = null;
+        return;
+      }
+      if (!activeDrag || !isElement(activeDrag.el)) return;
       const dropLocator = playwrightLocatorFor(dropTarget);
       emit(activeDrag.el, 'drag', dropLocator || undefined, {
         explicit_intent: true,

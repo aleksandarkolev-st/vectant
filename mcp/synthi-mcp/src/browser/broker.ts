@@ -271,14 +271,36 @@ export class BrowserBroker {
   }
 
   handleOriginChange(tab_id: string, nextUrl: string): void {
-    const origin = normalizeOrigin(nextUrl).origin;
+    let origin: string;
+    try {
+      origin = normalizeOrigin(nextUrl).origin;
+    } catch {
+      return;
+    }
     const tab = this.tabs.get(tab_id);
+    const previousUrl = tab?.url;
     if (tab) {
       this.tabs.set(tab_id, { ...tab, url: nextUrl });
     }
-    if (this.teachMode.active && this.teachMode.tab_id === tab_id && this.teachMode.origin !== origin) {
+    if (!this.teachMode.active || this.teachMode.tab_id !== tab_id) return;
+    if (this.teachMode.origin !== origin) {
       this.stopTeachMode(this.hasOriginConsent(origin) ? "origin_changed" : "unapproved_origin_change");
+      return;
     }
+    if (!this.hasOriginConsent(origin)) {
+      this.stopTeachMode("unapproved_origin_change");
+      return;
+    }
+    if (previousUrl === nextUrl) return;
+    const event = this.trace.recordNavigation({
+      tab_id,
+      url: nextUrl,
+      origin,
+      action: "navigate",
+      detail: { event_source: "page_lifecycle", navigation_event: true },
+      security: this.securityForUrl(nextUrl),
+    });
+    eventLog.push({ kind: "browser", action: "navigation", payload: { event } });
   }
 
   recordSelection(selection: BrowserSelection): { ok: true; event: BrowserTraceEvent } | { ok: false; error: string } {

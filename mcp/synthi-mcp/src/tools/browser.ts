@@ -22,6 +22,10 @@ import { eventLog } from "../events/index.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
+  if (event.action === "navigate") {
+    browserBroker.handleOriginChange(event.tab_id, event.url);
+    return;
+  }
   browserBroker.recordHumanAction(event);
 });
 

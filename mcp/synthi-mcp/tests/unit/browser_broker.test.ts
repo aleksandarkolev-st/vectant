@@ -250,6 +250,31 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("records same-origin navigation and stops before denied-origin leaks", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/start", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    browserBroker.handleOriginChange("app", "https://app.example.com/reports?tab=open");
+    browserBroker.handleOriginChange("app", "https://denied.example.com/private");
+
+    const trace = browserBroker.traceSnapshot();
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toEqual(expect.objectContaining({
+      kind: "navigation",
+      action: "navigate",
+      url: "https://app.example.com/reports?tab=open",
+      origin: "https://app.example.com",
+      detail: expect.objectContaining({ navigation_event: true }),
+    }));
+    expect(browserBroker.teachState()).toEqual({
+      active: false,
+      tab_id: null,
+      origin: null,
+    });
+    expect(JSON.stringify(trace)).not.toContain("denied.example.com");
+  });
+
   it("assigns broker-owned trace order, version, and security metadata", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);

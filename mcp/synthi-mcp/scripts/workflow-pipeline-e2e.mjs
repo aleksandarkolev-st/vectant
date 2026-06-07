@@ -153,7 +153,7 @@ async function runCase({ testCase, container, context, runner }) {
     record(testCase.id, "click overlay teach", beginState.ok === true && beginState.recording === true, beginState.status || "");
 
     await previewPage.bringToFront().catch(() => undefined);
-    await testCase.teach(previewPage);
+    await testCase.teach(previewPage, { caseDir });
     await previewPage.waitForTimeout(800);
     await previewPage.screenshot({ path: path.join(caseDir, "after-teach-actions.png"), fullPage: true });
 
@@ -233,7 +233,8 @@ async function runCase({ testCase, container, context, runner }) {
     await idePage.bringToFront().catch(() => undefined);
     await idePage.screenshot({ path: path.join(caseDir, "after-validate-panel.png"), fullPage: true });
 
-    const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id });
+    const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir }) : {};
+    const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
   } finally {
     if (previewPage && !previewPage.isClosed()) {
@@ -546,7 +547,7 @@ async function findPageByUrl(context, url) {
   throw new Error(`preview page not found: ${url}`);
 }
 
-async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId }) {
+async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId, env = {} }) {
   const specTarget = path.join(runner.root, `${caseId}.spec.mjs`);
   await writeFile(specTarget, await readFile(specPath, "utf8"));
   const executablePath = chromium.executablePath();
@@ -560,6 +561,7 @@ async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, ca
     cwd: runner.root,
     env: {
       ...process.env,
+      ...env,
       PLAYWRIGHT_BASE_URL: new URL(previewUrl).origin,
       PLAYWRIGHT_CHROMIUM_EXECUTABLE: executablePath,
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
@@ -842,14 +844,15 @@ const CASES = [
   },
   {
     id: "settings-controls",
-    minSteps: 3,
-    expectedActions: ["check", "select", "click"],
+    minSteps: 4,
+    expectedActions: ["check", "uncheck", "select", "click"],
     files: () => commonFiles({
       title: "Settings Controls Workflow",
       body: [
         "    <main>",
         "      <h1>Settings Controls Workflow</h1>",
         "      <label class=\"row\"><input id=\"notify\" type=\"checkbox\" data-synthi-source-id=\"settings.notify\"> Enable notifications</label>",
+        "      <label class=\"row\"><input id=\"beta\" type=\"checkbox\" checked data-synthi-source-id=\"settings.beta\"> Beta access</label>",
         "      <label for=\"theme\">Theme</label>",
         "      <select id=\"theme\" aria-label=\"Theme\" data-synthi-source-id=\"settings.theme\">",
         "        <option value=\"light\">Light</option>",
@@ -862,17 +865,112 @@ const CASES = [
       script: [
         "document.querySelector('[data-testid=\"apply-settings\"]').addEventListener('click', () => {",
         "  const notify = document.querySelector('#notify').checked ? 'enabled' : 'disabled';",
+        "  const beta = document.querySelector('#beta').checked ? 'beta on' : 'beta off';",
         "  const theme = document.querySelector('#theme').value;",
-        "  document.querySelector('#status').textContent = `Applied ${theme} with notifications ${notify}`;",
+        "  document.querySelector('#status').textContent = `Applied ${theme} with notifications ${notify} and ${beta}`;",
         "});",
         "",
       ].join("\n"),
     }),
     teach: async (page) => {
       await page.getByLabel("Enable notifications").check();
+      await page.getByLabel("Beta access").uncheck();
       await page.getByLabel("Theme").selectOption("dark");
       await page.getByRole("button", { name: "Apply settings" }).click();
-      await page.getByText("Applied dark with notifications enabled").waitFor();
+      await page.getByText("Applied dark with notifications enabled and beta off").waitFor();
+    },
+  },
+  {
+    id: "file-input-upload",
+    minSteps: 2,
+    expectedActions: ["drag", "click"],
+    expectedReplayText: [
+      "Uploaded 1 file",
+      "Submitted 1 file",
+    ],
+    expectedReplayCode: [
+      "process.env[\"UPLOAD_EVIDENCE_FILE\"]",
+      "setInputFiles(filePath",
+    ],
+    files: () => commonFiles({
+      title: "File Input Upload Workflow",
+      body: [
+        "    <main>",
+        "      <h1>File Input Upload Workflow</h1>",
+        "      <label for=\"evidence\">Upload evidence</label>",
+        "      <input id=\"evidence\" type=\"file\" aria-label=\"Upload evidence\" data-synthi-source-id=\"upload.evidence\">",
+        "      <button type=\"button\" data-testid=\"submit-upload\" data-synthi-source-id=\"upload.submit\">Submit upload</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const input = document.querySelector('#evidence');",
+        "const status = document.querySelector('#status');",
+        "input.addEventListener('change', () => {",
+        "  status.textContent = `Uploaded ${input.files.length} file`;",
+        "});",
+        "document.querySelector('[data-testid=\"submit-upload\"]').addEventListener('click', () => {",
+        "  status.textContent = `Submitted ${input.files.length} file`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    replayEnv: async ({ caseDir }) => {
+      const fixturePath = path.join(caseDir, "upload-evidence.txt");
+      await writeFile(fixturePath, "workflow upload fixture\n");
+      return { UPLOAD_EVIDENCE_FILE: fixturePath };
+    },
+    teach: async (page, { caseDir }) => {
+      const fixturePath = path.join(caseDir, "upload-evidence.txt");
+      await writeFile(fixturePath, "workflow upload fixture\n");
+      await page.getByLabel("Upload evidence").setInputFiles(fixturePath);
+      await page.getByText("Uploaded 1 file").waitFor();
+      await page.getByRole("button", { name: "Submit upload" }).click();
+      await page.getByText("Submitted 1 file").waitFor();
+    },
+  },
+  {
+    id: "hover-menu",
+    minSteps: 2,
+    expectedActions: ["hover", "click"],
+    expectedReplayText: [
+      "Archived report",
+    ],
+    expectedReplayCode: [
+      "await target1.hover();",
+    ],
+    files: () => commonFiles({
+      title: "Hover Menu Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Hover Menu Workflow</h1>",
+        "      <button type=\"button\" id=\"more\" data-testid=\"more-actions\" data-synthi-source-id=\"hover.more\">More actions</button>",
+        "      <div id=\"menu\" role=\"menu\" hidden>",
+        "        <button type=\"button\" role=\"menuitem\" data-testid=\"archive-report\" data-synthi-source-id=\"hover.archive\">Archive report</button>",
+        "      </div>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "#menu { margin-top: 12px; }",
+      ],
+      script: [
+        "const menu = document.querySelector('#menu');",
+        "document.querySelector('[data-testid=\"more-actions\"]').addEventListener('pointerover', () => {",
+        "  menu.hidden = false;",
+        "});",
+        "document.querySelector('[data-testid=\"archive-report\"]').addEventListener('click', () => {",
+        "  document.querySelector('#status').textContent = 'Archived report';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.keyboard.down("Alt");
+      await page.getByRole("button", { name: "More actions" }).hover();
+      await page.keyboard.up("Alt");
+      await page.getByRole("menuitem", { name: "Archive report" }).click();
+      await page.getByText("Archived report").waitFor();
     },
   },
   {
