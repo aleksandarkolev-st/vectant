@@ -720,6 +720,30 @@ const cases = [
   ['cpu fallback', baselineRecord({ cpu_hmr_used: true }), 'cpu_hmr_used'],
   ['full rebuild', baselineRecord({ full_rebuild_used: true }), 'full_rebuild_used'],
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],
+  ['missing split model provenance role', baselineRecord({
+    model_provenance: {
+      last_gpu_delta: baselineModelProvenance().last_gpu_delta,
+    },
+  }), 'model_provenance_split_missing'],
+  ['missing gpu delta model provenance role', baselineRecord({
+    model_provenance: {
+      split: baselineModelProvenance().split,
+    },
+  }), 'model_provenance_gpu_delta_missing'],
+  ['gpu delta model fallback used', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        actual_model: 'gemini-3.5-flash',
+        fallback_model: 'gemini-3.5-flash',
+        fallback_used: true,
+        actual_provider_model_status: 'available',
+        actual_model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+        fallback_provider_model_status: 'available',
+        fallback_model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      },
+    }),
+  }), 'gpu_delta_model_fallback_used'],
   ['missing contract hash', baselineRecord({ contract_hash: null }), 'contract_hash_missing'],
   ['missing artifact before hash', baselineRecord({ artifact_before_hash: null }), 'artifact_before_hash_missing'],
   ['unchanged artifact hash', baselineRecord({ artifact_before_hash: HASH_B }), 'artifact_hash_unchanged'],

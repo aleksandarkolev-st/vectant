@@ -330,19 +330,21 @@ function visualTraceCorrelates(trace, identifiers) {
   return false;
 }
 
-function modelProvenanceRecords(modelProvenance) {
+function modelProvenanceEntries(modelProvenance) {
   const provenance = asObject(modelProvenance);
   if (Object.keys(provenance).length === 0) return [];
   const nested = [
-    provenance.split,
-    provenance.gpu_split,
-    provenance.gpuSplit,
-    provenance.last_gpu_delta,
-    provenance.lastGpuDelta,
-    provenance.gpu_delta,
-    provenance.gpuDelta,
-    provenance.delta,
-  ].map(asObject).filter((record) => Object.keys(record).length > 0);
+    ['split', provenance.split],
+    ['gpu_split', provenance.gpu_split],
+    ['gpuSplit', provenance.gpuSplit],
+    ['last_gpu_delta', provenance.last_gpu_delta],
+    ['lastGpuDelta', provenance.lastGpuDelta],
+    ['gpu_delta', provenance.gpu_delta],
+    ['gpuDelta', provenance.gpuDelta],
+    ['delta', provenance.delta],
+  ]
+    .map(([role, value]) => ({ role, record: asObject(value) }))
+    .filter((entry) => Object.keys(entry.record).length > 0);
   const directHasProviderFields = [
     'requested_model',
     'requestedModel',
@@ -353,7 +355,11 @@ function modelProvenanceRecords(modelProvenance) {
     'request_mode',
     'requestMode',
   ].some((key) => hasOwnDeep(provenance, key));
-  return directHasProviderFields ? [provenance, ...nested] : nested;
+  return directHasProviderFields ? [{ role: 'direct', record: provenance }, ...nested] : nested;
+}
+
+function modelProvenanceRecords(modelProvenance) {
+  return modelProvenanceEntries(modelProvenance).map((entry) => entry.record);
 }
 
 function modelField(record, snakeKey, camelKey) {
@@ -403,6 +409,20 @@ function modelShutdownOrDeprecationDetected(record) {
     'provider_shutdown_or_deprecation_detected',
     'providerShutdownOrDeprecationDetected',
   ) === true;
+}
+
+function modelRequestMode(record) {
+  return modelFieldText(record, 'request_mode', 'requestMode');
+}
+
+function modelRoleIsSplit(entry) {
+  return ['split', 'gpu_split', 'gpuSplit'].includes(entry.role)
+    || modelRequestMode(entry.record) === 'split';
+}
+
+function modelRoleIsGpuDelta(entry) {
+  return ['last_gpu_delta', 'lastGpuDelta', 'gpu_delta', 'gpuDelta', 'delta'].includes(entry.role)
+    || modelRequestMode(entry.record) === 'gpu_delta';
 }
 
 export function normalizeGpuHmrProofLedgerRecord(input = {}) {
@@ -774,9 +794,16 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       }
     }
   }
-  const modelRecords = modelProvenanceRecords(record.modelProvenance);
-  if (modelRecords.length === 0) {
+  const modelEntries = modelProvenanceEntries(record.modelProvenance);
+  const modelRecords = modelEntries.map((entry) => entry.record);
+  if (modelEntries.length === 0) {
     addFailure(failures, 'model_provenance_missing');
+  }
+  if (!modelEntries.some(modelRoleIsSplit)) {
+    addFailure(failures, 'model_provenance_split_missing');
+  }
+  if (!modelEntries.some(modelRoleIsGpuDelta)) {
+    addFailure(failures, 'model_provenance_gpu_delta_missing');
   }
   for (const [index, model] of modelRecords.entries()) {
     const prefix = `model_provenance_${index}`;
@@ -813,11 +840,8 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     if (modelHardInfraFailure(model)) {
       addFailure(failures, 'model_hard_infra_failure', { record: prefix });
     }
-    if (
-      modelFieldText(model, 'request_mode', 'requestMode') === 'gpu_delta'
-      && modelFallbackUsed(model)
-    ) {
-      warnings.push({ code: 'gpu_delta_model_fallback_used', record: prefix });
+    if (modelRoleIsGpuDelta(modelEntries[index]) && modelFallbackUsed(model)) {
+      addFailure(failures, 'gpu_delta_model_fallback_used', { record: prefix });
     }
     if (modelFallbackUsed(model)) {
       for (const [snakeKey, camelKey, code] of [
