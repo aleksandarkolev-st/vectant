@@ -454,36 +454,36 @@ function latestEpochPublication(epochProof) {
 function artifactHashAfterFromProofs(input, artifactTransportProof, epochProof, dispatchProof, outputProof) {
   const publication = latestEpochPublication(epochProof);
   return firstText(
-    input.artifactHashAfter,
-    input.artifact_hash_after,
-    input.changedGpuArtifactHash,
-    input.changed_gpu_artifact_hash,
-    ...asArray(artifactTransportProof?.selectedArtifactIds),
-    ...asArray(artifactTransportProof?.selected_artifact_ids),
-    ...asArray(artifactTransportProof?.ramBlobIds),
-    ...asArray(artifactTransportProof?.ram_blob_ids),
+    outputProof?.outputOracle?.artifactId,
+    outputProof?.outputOracle?.artifact_id,
     ...asArray(dispatchProof?.selectedArtifactIds),
     ...asArray(dispatchProof?.selected_artifact_ids),
     ...asArray(dispatchProof?.runtimeArtifactIds),
     ...asArray(dispatchProof?.runtime_artifact_ids),
-    outputProof?.outputOracle?.artifactId,
-    outputProof?.outputOracle?.artifact_id,
     publication.newArtifactId,
     publication.new_artifact_id,
     publication.newArtifactHash,
     publication.new_artifact_hash,
+    ...asArray(artifactTransportProof?.selectedArtifactIds),
+    ...asArray(artifactTransportProof?.selected_artifact_ids),
+    ...asArray(artifactTransportProof?.ramBlobIds),
+    ...asArray(artifactTransportProof?.ram_blob_ids),
+    input.artifactHashAfter,
+    input.artifact_hash_after,
+    input.changedGpuArtifactHash,
+    input.changed_gpu_artifact_hash,
   );
 }
 
 function artifactHashBeforeFromProofs(input, epochProof) {
   const publication = latestEpochPublication(epochProof);
   return firstText(
-    input.artifactHashBefore,
-    input.artifact_hash_before,
     publication.oldArtifactId,
     publication.old_artifact_id,
     publication.oldArtifactHash,
     publication.old_artifact_hash,
+    input.artifactHashBefore,
+    input.artifact_hash_before,
   );
 }
 

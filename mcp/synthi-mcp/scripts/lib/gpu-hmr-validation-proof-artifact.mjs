@@ -1267,12 +1267,6 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
   );
   const publication = latestPublicationFromEpochProof(epochProof) ?? {};
   const artifactAfterHash = firstArtifactId(
-    input.artifactAfterHash,
-    input.artifact_after_hash,
-    input.changedGpuArtifactHash,
-    input.changed_gpu_artifact_hash,
-    acceptanceContract?.artifact_hash_after,
-    acceptanceContract?.artifactHashAfter,
     proofArtifactId(outputProof),
     proofArtifactId(dispatchProof),
     proofArtifactId(epochProof, [
@@ -1283,16 +1277,26 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
     ]),
     proofArtifactId(artifactTransportProof),
     proofArtifactId(sourceProof),
+    acceptanceContract?.artifact_hash_after,
+    acceptanceContract?.artifactHashAfter,
+    input.artifactAfterHash,
+    input.artifact_after_hash,
+    input.changedGpuArtifactHash,
+    input.changed_gpu_artifact_hash,
   );
   const artifactBeforeHash = firstArtifactId(
-    input.artifactBeforeHash,
-    input.artifact_before_hash,
-    acceptanceContract?.artifact_hash_before,
-    acceptanceContract?.artifactHashBefore,
+    publication.oldArtifactId,
+    publication.old_artifact_id,
+    publication.oldArtifactHash,
+    publication.old_artifact_hash,
     sourceProof?.artifactBeforeId,
     sourceProof?.artifact_before_id,
     sourceProof?.artifactBeforeHash,
     sourceProof?.artifact_before_hash,
+    acceptanceContract?.artifact_hash_before,
+    acceptanceContract?.artifactHashBefore,
+    input.artifactBeforeHash,
+    input.artifact_before_hash,
   );
   const epoch = epochIdFromProof(epochProof);
   const dispatchId = firstString(
