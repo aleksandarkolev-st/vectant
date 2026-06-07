@@ -36,6 +36,7 @@ assert.ok(
 
 const convergenceWindow = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  seed_policy_fixed: true,
   frozen_camera: true,
   fixed_resolution: true,
   fixed_swapchain_image_count: true,
@@ -48,10 +49,70 @@ const convergenceWindow = evaluateGpuHmrDeterministicVisualMode({
     frame_start: 3,
     frame_end: 9,
     metric: { value: 'window_mean_delta' },
+    sample_count: 7,
+    metric_delta: 12.5,
+    convergence_proven: true,
+    evidence_refs: ['visual-window:post-epoch-frames'],
   },
 });
 assert.equal(convergenceWindow.accepted, true);
 assert.equal(convergenceWindow.proofMode, 'convergence_window');
+
+const convergenceWindowWithoutSamples = evaluateGpuHmrDeterministicVisualMode({
+  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  seed_policy_fixed: true,
+  frozen_camera: true,
+  fixed_resolution: true,
+  fixed_swapchain_image_count: true,
+  frame_capture_after_epoch_dispatch: true,
+  presentation_fence_or_frame_boundary: true,
+  temporal_accumulation_present: true,
+  taa_present: true,
+  denoiser_present: true,
+  convergence_window: {
+    frame_start: 3,
+    frame_end: 9,
+    metric: { value: 'window_mean_delta' },
+    metric_delta: 12.5,
+    convergence_proven: true,
+    evidence_refs: ['visual-window:post-epoch-frames'],
+  },
+});
+assert.equal(convergenceWindowWithoutSamples.accepted, false);
+assert.ok(
+  convergenceWindowWithoutSamples.failedGates.some((gate) =>
+    gate.code === 'convergence_window_sample_evidence_missing'
+  ),
+  `expected convergence_window_sample_evidence_missing, got ${convergenceWindowWithoutSamples.failedGates.map((g) => g.code).join(',')}`,
+);
+
+const convergenceWindowWithoutSeed = evaluateGpuHmrDeterministicVisualMode({
+  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  frozen_camera: true,
+  fixed_resolution: true,
+  fixed_swapchain_image_count: true,
+  frame_capture_after_epoch_dispatch: true,
+  presentation_fence_or_frame_boundary: true,
+  temporal_accumulation_present: true,
+  taa_present: true,
+  denoiser_present: true,
+  convergence_window: {
+    frame_start: 3,
+    frame_end: 4,
+    metric: { value: 'per_frame_delta' },
+    samples: [
+      { frame: 3, metric_value: 10.0, after_epoch_dispatch: true },
+      { frame: 4, metric_value: 12.0, after_epoch_dispatch: true },
+    ],
+    convergence_proven: true,
+    evidence_refs: ['visual-window:post-epoch-frames'],
+  },
+});
+assert.equal(convergenceWindowWithoutSeed.accepted, false);
+assert.ok(
+  convergenceWindowWithoutSeed.failedGates.some((gate) => gate.code === 'seed_policy_unproven'),
+  `expected seed_policy_unproven, got ${convergenceWindowWithoutSeed.failedGates.map((g) => g.code).join(',')}`,
+);
 
 const missingPresentationFence = evaluateGpuHmrDeterministicVisualMode({
   ...deterministicSingleFrame,
@@ -114,6 +175,8 @@ console.log(JSON.stringify({
     'single_frame_deterministic',
     'swapchain_rejection',
     'convergence_window',
+    'convergence_window_sample_rejection',
+    'convergence_window_seed_rejection',
     'mcp_frame_gate_derived',
   ],
 }, null, 2));

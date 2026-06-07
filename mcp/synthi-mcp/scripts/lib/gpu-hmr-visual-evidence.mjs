@@ -44,6 +44,36 @@ function firstBool(...values) {
   return null;
 }
 
+function compactStringList(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(textOrNull)
+    .filter(Boolean))];
+}
+
+function normalizeFrameHashes(...values) {
+  return compactStringList(values.flatMap((value) => (
+    Array.isArray(value) ? value : []
+  )));
+}
+
+function normalizeConvergenceSamples(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((sample) => isObject(sample))
+    .map((sample) => ({
+      frame: finiteNumberOrNull(sample.frame ?? sample.frame_index ?? sample.frameIndex),
+      epoch: textOrNull(sample.epoch ?? sample.epoch_id ?? sample.epochId),
+      metric_value: finiteNumberOrNull(
+        sample.metric_value ?? sample.metricValue ?? sample.value,
+      ),
+      artifact_hash: textOrNull(
+        sample.artifact_hash ?? sample.artifactHash ?? sample.frame_hash ?? sample.frameHash,
+      ),
+      after_epoch_dispatch: boolOrNull(
+        sample.after_epoch_dispatch ?? sample.afterEpochDispatch,
+      ),
+    }));
+}
+
 function addGate(failedGates, code, detail = {}) {
   failedGates.push({ code, ...detail });
 }
@@ -53,6 +83,24 @@ function normalizeConvergenceWindow(value = {}) {
   const metricValue = textOrNull(window.metric?.value ?? window.metric);
   const frameStart = finiteNumberOrNull(window.frame_start ?? window.frameStart);
   const frameEnd = finiteNumberOrNull(window.frame_end ?? window.frameEnd);
+  const samples = normalizeConvergenceSamples(window.samples);
+  const frameHashes = normalizeFrameHashes(
+    window.frame_hashes,
+    window.frameHashes,
+    window.post_epoch_frame_hashes,
+    window.postEpochFrameHashes,
+  );
+  const preEpochFrameHashes = normalizeFrameHashes(
+    window.pre_epoch_frame_hashes,
+    window.preEpochFrameHashes,
+  );
+  const postEpochFrameHashes = normalizeFrameHashes(
+    window.post_epoch_frame_hashes,
+    window.postEpochFrameHashes,
+  );
+  const sampleCount = finiteNumberOrNull(window.sample_count ?? window.sampleCount)
+    ?? (samples.length > 0 ? samples.length : null)
+    ?? (frameHashes.length > 0 ? frameHashes.length : null);
   return {
     frame_start: frameStart,
     frame_end: frameEnd,
@@ -60,6 +108,30 @@ function normalizeConvergenceWindow(value = {}) {
     min_frames:
       finiteNumberOrNull(window.min_frames ?? window.minFrames)
       ?? (frameStart !== null && frameEnd !== null ? Math.max(0, frameEnd - frameStart + 1) : null),
+    sample_count: sampleCount,
+    samples,
+    frame_hashes: frameHashes,
+    pre_epoch_frame_hashes: preEpochFrameHashes,
+    post_epoch_frame_hashes: postEpochFrameHashes,
+    metric_value: finiteNumberOrNull(window.metric_value ?? window.metricValue),
+    metric_delta: finiteNumberOrNull(
+      window.metric_delta
+      ?? window.metricDelta
+      ?? window.observed_delta
+      ?? window.observedDelta
+      ?? window.window_delta
+      ?? window.windowDelta
+      ?? window.mean_delta
+      ?? window.meanDelta,
+    ),
+    threshold: finiteNumberOrNull(window.threshold ?? window.delta_threshold ?? window.deltaThreshold),
+    convergence_proven: boolOrNull(
+      window.convergence_proven
+      ?? window.convergenceProven
+      ?? window.proven,
+    ),
+    evidence_refs: compactStringList(window.evidence_refs ?? window.evidenceRefs),
+    producer_subsystem: textOrNull(window.producer_subsystem ?? window.producerSubsystem),
   };
 }
 
@@ -77,10 +149,24 @@ function seedPolicyFixed(mode) {
 
 function convergenceWindowAccepted(window) {
   const metric = window.metric?.value ?? null;
-  return window.frame_start !== null
+  const frameRangeValid = window.frame_start !== null
     && window.frame_end !== null
-    && window.frame_end >= window.frame_start
-    && CONVERGENCE_METRICS.has(metric);
+    && window.frame_end >= window.frame_start;
+  if (!frameRangeValid || !CONVERGENCE_METRICS.has(metric)) return false;
+  const requiredSamples = Math.max(2, finiteNumberOrNull(window.min_frames) ?? 2);
+  const observedSamples = finiteNumberOrNull(window.sample_count) ?? 0;
+  const hasSampleEvidence = observedSamples >= requiredSamples
+    || window.samples.length >= requiredSamples
+    || window.frame_hashes.length >= requiredSamples
+    || window.post_epoch_frame_hashes.length >= requiredSamples;
+  const hasMetricEvidence =
+    window.metric_value !== null
+    || window.metric_delta !== null
+    || window.samples.some((sample) => sample.metric_value !== null);
+  return hasSampleEvidence
+    && hasMetricEvidence
+    && window.convergence_proven === true
+    && window.evidence_refs.length > 0;
 }
 
 function screenshotDimension(shot, key) {
@@ -292,14 +378,48 @@ export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
   if (!seedPolicyFixed(mode) && !convergenceAccepted) {
     addGate(failedGates, 'seed_policy_unproven');
   }
+  if (!seedPolicyFixed(mode) && convergenceAccepted) {
+    addGate(failedGates, 'seed_policy_unproven');
+  }
+  if (mode.convergence_window.frame_start !== null || mode.convergence_window.frame_end !== null) {
+    const window = mode.convergence_window;
+    const requiredSamples = Math.max(2, finiteNumberOrNull(window.min_frames) ?? 2);
+    const observedSamples = finiteNumberOrNull(window.sample_count) ?? 0;
+    if (window.metric?.value && !CONVERGENCE_METRICS.has(window.metric.value)) {
+      addGate(failedGates, 'convergence_window_metric_unsupported', {
+        metric: window.metric.value,
+      });
+    }
+    if (
+      observedSamples < requiredSamples
+      && window.samples.length < requiredSamples
+      && window.frame_hashes.length < requiredSamples
+      && window.post_epoch_frame_hashes.length < requiredSamples
+    ) {
+      addGate(failedGates, 'convergence_window_sample_evidence_missing', {
+        requiredSamples,
+        observedSamples,
+      });
+    }
+    if (
+      window.metric_value === null
+      && window.metric_delta === null
+      && !window.samples.some((sample) => sample.metric_value !== null)
+    ) {
+      addGate(failedGates, 'convergence_window_metric_evidence_missing');
+    }
+    if (window.convergence_proven !== true) {
+      addGate(failedGates, 'convergence_window_proof_missing');
+    }
+    if (window.evidence_refs.length === 0) {
+      addGate(failedGates, 'convergence_window_evidence_refs_missing');
+    }
+  }
   if (!temporalControlled && !convergenceAccepted) {
     addGate(failedGates, 'temporal_visual_requires_convergence_window');
   }
   if (!taaControlled && !convergenceAccepted) addGate(failedGates, 'taa_control_unproven');
   if (!denoiserControlled && !convergenceAccepted) addGate(failedGates, 'denoiser_control_unproven');
-  if (!temporalControlled && convergenceAccepted && !seedPolicyFixed(mode)) {
-    warnings.push({ code: 'convergence_window_without_fixed_seed_policy' });
-  }
 
   return {
     schemaVersion: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
