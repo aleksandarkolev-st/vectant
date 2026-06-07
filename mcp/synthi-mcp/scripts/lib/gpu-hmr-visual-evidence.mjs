@@ -15,6 +15,7 @@ const CONVERGENCE_METRICS = new Set([
 
 export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
+export const DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS = 20 * 60 * 1000;
 
 function numeric(value) {
   return Number.isFinite(value) ? value : null;
@@ -217,6 +218,62 @@ export function mcpFrameGateSatisfied(waitOrGate) {
   if (validation && validation.satisfied !== true) return false;
   const gate = mcpFrameGateObject(waitOrGate);
   return isObject(gate) && gate.status === 'satisfied';
+}
+
+export function mcpFrameGateForScreenshot(waitOrGate) {
+  if (!mcpFrameGateSatisfied(waitOrGate)) return null;
+  const gate = mcpFrameGateObject(waitOrGate);
+  const frameSeq = finiteNumberOrNull(gate.frame_seq ?? gate.frameSeq);
+  const tsMs = finiteNumberOrNull(gate.ts_ms ?? gate.tsMs ?? gate.ts);
+  if (frameSeq === null && tsMs === null) return null;
+  return {
+    status: 'satisfied',
+    ...(frameSeq !== null ? { frame_seq: frameSeq } : {}),
+    ...(tsMs !== null ? { ts_ms: tsMs } : {}),
+  };
+}
+
+export function mcpScreenshotArgsForFrameGate(waitOrGate, options = {}) {
+  const opts = isObject(options) ? options : {};
+  const args = {
+    ...(isObject(opts.baseArgs) ? opts.baseArgs : {}),
+  };
+  const freshnessMaxMs = finiteNumberOrNull(
+    opts.freshness_max_ms ?? opts.freshnessMaxMs,
+  );
+  if (freshnessMaxMs !== null) args.freshness_max_ms = freshnessMaxMs;
+  const gate = mcpFrameGateForScreenshot(waitOrGate);
+  if (!gate) return args;
+  args.after_frame_gate = gate;
+  args.frame_gate_timeout_ms =
+    finiteNumberOrNull(opts.frame_gate_timeout_ms ?? opts.frameGateTimeoutMs)
+    ?? DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS;
+  return args;
+}
+
+export function mcpScreenshotMetadataFromToolResult(result) {
+  if (!isObject(result)) return null;
+  if (
+    result.seq !== undefined
+    || result.ts !== undefined
+    || result.frame_seq !== undefined
+    || result.frameSeq !== undefined
+    || result.w !== undefined
+    || result.h !== undefined
+    || result.width !== undefined
+    || result.height !== undefined
+  ) {
+    return result;
+  }
+  return isObject(result.json)
+    ? result.json
+    : isObject(result.meta)
+      ? result.meta
+      : isObject(result.metadata)
+        ? result.metadata
+        : isObject(result.structuredContent)
+          ? result.structuredContent
+          : null;
 }
 
 export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {

@@ -92,6 +92,9 @@ import {
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
 import {
   analyzeGpuHmrImageEvidence,
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
 import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
@@ -124,6 +127,7 @@ const CFG = {
   hipFakeRuntime: process.env.SYNTHI_GPU_HIP_FAKE_RUNTIME === '1',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
   hmrWaitTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 5000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_GPU_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   requireGpuFullRuntimeProof: process.env.SYNTHI_GPU_REQUIRE_FULL_RUNTIME_PROOF !== '0',
   hmrRequiredGpuProofState: (process.env.SYNTHI_GPU_REQUIRED_GPU_PROOF_STATE
     ?? process.env.SYNTHI_GPU_HMR_REQUIRED_GPU_PROOF_STATE
@@ -1688,7 +1692,7 @@ async function postCompile({ ctx, slug, files, manifest }) {
   return postCompileViaAiEngine({ slug, files, manifest });
 }
 
-async function captureMcpScreenshot(label) {
+async function captureMcpScreenshot(label, waitEvidence = null) {
   if (!CFG.useMcpCompile) {
     record('FLOW', `${label} screenshot`, 'skip', 'MCP compile disabled');
     return null;
@@ -1698,21 +1702,34 @@ async function captureMcpScreenshot(label) {
     let lastShot = null;
     for (let attempt = 1; attempt <= 8; ++attempt) {
       await sleep(attempt === 1 ? 900 : 650);
+      const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+        baseArgs: { max_dim: 640 },
+        freshnessMaxMs: 5000,
+        frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+      });
       const shot = await state.client.toolCall(
         'synthi_screenshot',
-        { max_dim: 640, freshness_max_ms: 5000 },
-        20000,
+        screenshotArgs,
+        Math.max(20000, CFG.frameGateTimeoutMs + 5000),
       );
       lastShot = shot;
       if (shot?.data) {
         const bytes = Buffer.from(shot.data, 'base64');
         const stats = await analyzeGpuHmrImageEvidence(bytes);
+        const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
         const row = visualEvidenceRow({
           label,
           path: path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`),
           ...stats,
           bytes: bytes.length,
           attempt,
+          screenshot_metadata: screenshotMetadata,
+          wait_frame_gate: waitEvidence?.frame_gate ?? waitEvidence?.frameGate ?? null,
+          frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+            ...screenshotMetadata,
+            seq: Number(screenshotMetadata?.seq || 0),
+            ts: Number(screenshotMetadata?.ts || 0),
+          }),
         });
         if (row.accepted_as_visual_evidence) {
           await writeFile(row.path, bytes);
@@ -3595,7 +3612,7 @@ async function phaseFlow(ctx) {
     inwardTrend.matched ? 'pass' : 'warn',
     inwardTrend.snippet || 'inward trend not observed before timeout');
 
-  const inwardScreenshot = await captureMcpScreenshot('flow-inward');
+  const inwardScreenshot = await captureMcpScreenshot('flow-inward', baseline.hmr);
   const inwardReadbackTimestamp = Date.now();
   const inwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const inwardRuntimeSessionId = inwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
@@ -3790,7 +3807,7 @@ async function phaseFlow(ctx) {
     trend.matched ? 'pass' : 'warn',
     trend.snippet || 'outward trend not observed before timeout');
 
-  const outwardScreenshot = await captureMcpScreenshot('flow-outward');
+  const outwardScreenshot = await captureMcpScreenshot('flow-outward', flip.hmr);
   const outwardReadbackTimestamp = Date.now();
   const outwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const outwardRuntimeSessionId = outwardDispatchProof?.runtimeSessionIds?.[0] ?? null;

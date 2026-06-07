@@ -10,6 +10,9 @@ import {
   analyzeGpuHmrImageEvidence,
   deterministicVisualModeFromMcpEvidence,
   evaluateGpuHmrDeterministicVisualMode,
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
@@ -139,6 +142,12 @@ function normalizeMcpPreview(rawPreview, field, proofMode) {
       rawPreview.screenshotRetryDelayMs,
       `${field}.screenshotRetryDelayMs`,
       1500,
+      0,
+    ),
+    frameGateTimeoutMs: numberAtLeast(
+      rawPreview.frameGateTimeoutMs,
+      `${field}.frameGateTimeoutMs`,
+      DEFAULT_MCP_TIMEOUT_MS,
       0,
     ),
     hmrModule: optionalString(rawPreview.hmrModule ?? rawPreview.module, `${field}.hmrModule`) ?? 'device',
@@ -832,15 +841,19 @@ function mcpModelProvenance(cfg, ...compileResults) {
   };
 }
 
-async function captureMcpPreviewScreenshot(client, profile, label) {
+async function captureMcpPreviewScreenshot(client, profile, label, waitEvidence = null) {
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
   let last = null;
   let lastError = null;
   for (let attempt = 1; attempt <= profile.mcpPreview.screenshotAttempts; attempt += 1) {
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+      freshnessMaxMs: profile.mcpPreview.screenshotFreshnessMaxMs,
+      frameGateTimeoutMs: profile.mcpPreview.frameGateTimeoutMs,
+    });
     const shot = await client.toolCall(
       'synthi_screenshot',
-      { freshness_max_ms: profile.mcpPreview.screenshotFreshnessMaxMs },
-      60_000,
+      screenshotArgs,
+      Math.max(60_000, profile.mcpPreview.frameGateTimeoutMs + 5000),
     ).catch((error) => {
       lastError = error;
       return null;
@@ -851,6 +864,7 @@ async function captureMcpPreviewScreenshot(client, profile, label) {
       const outPath = path.join(ARTIFACT_DIR, `${profile.id}-mcp-${label}-${Date.now()}${suffix}.png`);
       await fs.writeFile(outPath, bytes);
       const stats = await analyzeGpuHmrImageEvidence(bytes);
+      const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
       const row = visualEvidenceRow({
         label,
         path: outPath,
@@ -858,11 +872,13 @@ async function captureMcpPreviewScreenshot(client, profile, label) {
         attempt,
         capture_backend: 'mcp:synthi_screenshot',
         captured_at_ms: Date.now(),
-        screenshot_metadata: isObject(shot.meta)
-          ? shot.meta
-          : isObject(shot.metadata)
-            ? shot.metadata
-            : null,
+        screenshot_metadata: screenshotMetadata,
+        wait_frame_gate: waitEvidence?.frame_gate ?? waitEvidence?.frameGate ?? null,
+        frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+          ...screenshotMetadata,
+          seq: Number(screenshotMetadata?.seq || 0),
+          ts: Number(screenshotMetadata?.ts || 0),
+        }),
         ...stats,
       });
       if (screenshotQualifiesAsVisualEvidence(row)) return row;
@@ -1399,7 +1415,7 @@ async function runMcpPreviewProfile(profile, dir, report) {
     const beforeCompile = await compileViaMcp(mcp.client, profile, dir, 'before');
     report.timings.beforeCompileWallMs = beforeCompile.compileWallMs;
     report.mcp.before = beforeCompile;
-    const before = await captureMcpPreviewScreenshot(mcp.client, profile, 'before');
+    const before = await captureMcpPreviewScreenshot(mcp.client, profile, 'before', beforeCompile.wait);
     report.screenshots.push(before);
     if (beforeCompile.waitStatus !== 'applied') {
       throw new Error(`before wait_hmr status=${beforeCompile.waitStatus}; screenshot=${before.path}`);
@@ -1418,7 +1434,7 @@ async function runMcpPreviewProfile(profile, dir, report) {
     if (!report.mcp.modelProvenance.observedSplitModelMatched || !report.mcp.modelProvenance.observedDeltaModelMatched) {
       throw new Error(`MCP observed model provenance did not match configured pins: ${JSON.stringify(report.mcp.modelProvenance)}`);
     }
-    const after = await captureMcpPreviewScreenshot(mcp.client, profile, 'after');
+    const after = await captureMcpPreviewScreenshot(mcp.client, profile, 'after', afterCompile.wait);
     report.timings.editToScreenshotMs = Date.now() - editStart;
     report.screenshots.push(after);
     if (afterCompile.waitStatus !== 'applied') {
@@ -1435,7 +1451,7 @@ async function runMcpPreviewProfile(profile, dir, report) {
       blank_frame_rejection: report.screenshots.every((row) => row.accepted_as_visual_evidence === true),
       same_frame_rejection: report.visualDiff.changedPixelRatio > 0,
       capture_backend: 'mcp:synthi_screenshot',
-      frame_capture_after_epoch_dispatch: frameGateSatisfied(afterCompile.wait),
+      frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(afterCompile.wait, after),
       wait_frame_gate: afterCompile.wait?.frame_gate ?? afterCompile.wait?.frameGate ?? null,
       wait_contract: waitContractFromCompileResult(afterCompile),
     };

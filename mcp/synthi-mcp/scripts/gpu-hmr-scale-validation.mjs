@@ -22,6 +22,11 @@ import {
   adversarialPreflightStrictGate,
   strictProofGateFailures,
 } from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -103,6 +108,7 @@ const CFG = {
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_SCALE_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   targetWorkspaceFileCount: parseNonNegativeIntegerEnv('SYNTHI_SCALE_TARGET_FILE_COUNT', 0),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
@@ -2230,20 +2236,26 @@ function collectWorkerMarkers(text) {
   return [...new Set(out)];
 }
 
-async function captureScreenshot(label, compareTo = null) {
+async function captureScreenshot(label, compareTo = null, options = {}) {
   const state = await ensureMcpAttached();
   const safe = label.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
   let lastRow = null;
+  const waitEvidence = options.wait ?? options.waitEvidence ?? null;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+      freshnessMaxMs: CFG.screenshotFreshnessMaxMs,
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    });
     const shot = await state.client.toolCallRaw(
       'synthi_screenshot',
-      { freshness_max_ms: CFG.screenshotFreshnessMaxMs },
-      30000,
+      screenshotArgs,
+      Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
     if (!image?.data) throw new Error(`synthi_screenshot returned no image for ${label}`);
     const input = Buffer.from(image.data, 'base64');
+    const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
     const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
     const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${safe}${suffix}.png`);
     await writeFile(outPath, input);
@@ -2256,7 +2268,15 @@ async function captureScreenshot(label, compareTo = null) {
       mean_luma: analysis.mean_luma,
       captured_after_phase: label,
       attempt,
-      seq: Number(shot.json?.seq || 0),
+      seq: Number(screenshotMetadata?.seq || 0),
+      ts: Number(screenshotMetadata?.ts || 0),
+      wait_frame_gate: waitEvidence?.frame_gate ?? waitEvidence?.frameGate ?? null,
+      screenshot_metadata: screenshotMetadata,
+      frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+        ...screenshotMetadata,
+        seq: Number(screenshotMetadata?.seq || 0),
+        ts: Number(screenshotMetadata?.ts || 0),
+      }),
     };
     if (compareTo) {
       row.differs_from_first = await screenshotsDiffer(compareTo.path, outPath);
@@ -3568,7 +3588,9 @@ async function run() {
   if (!hotSwap.matched) throw new Error('device-only GPU HMR evidence missing');
 
   await sleep(1000);
-  const secondShot = await captureScreenshot('post-hmr', firstShot);
+  const secondShot = await captureScreenshot('post-hmr', firstShot, {
+    wait: deviceDeltaResult.wait,
+  });
   if (!secondShot.differs_from_first) {
     throw new Error('post-HMR screenshot did not differ materially from first screenshot');
   }
@@ -3594,7 +3616,7 @@ async function run() {
     await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.templateHeaderPath, content: editedHeader }] });
     await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: bounded template warm rebuild' });
     const warmCheckpoint = await workerCheckpoint();
-    await compileTemplateWarmRebuild(project, editedHeader, editedDevice, vendor, warmCheckpoint);
+    const warmRebuildResult = await compileTemplateWarmRebuild(project, editedHeader, editedDevice, vendor, warmCheckpoint);
     record('template header warm rebuild compile via MCP', 'pass', project.templateHeaderPath);
     await assertNoGeneratedSplitWorkspaceArtifacts(split);
 
@@ -3632,7 +3654,9 @@ async function run() {
     if (warmAiMarker) throw new Error(`warm rebuild unexpectedly invoked AI: ${warmAiMarker[0]}`);
 
     await sleep(1000);
-    const warmShot = await captureScreenshot('post-warm-rebuild', secondShot);
+    const warmShot = await captureScreenshot('post-warm-rebuild', secondShot, {
+      wait: warmRebuildResult.wait,
+    });
     if (!warmShot.differs_from_first) {
       throw new Error('post-warm-rebuild screenshot did not differ materially from post-HMR screenshot');
     }

@@ -59,6 +59,9 @@ import {
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
 import {
   analyzeGpuHmrImageEvidence,
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
@@ -1192,6 +1195,7 @@ const CFG = {
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   expectScreenshot: configuredExpectScreenshot,
   renderPreview: configuredRenderPreview,
   requireFreshAiSplit:
@@ -3759,12 +3763,20 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
   return null;
 }
 
-async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}) {
+async function captureScreenshot(label, { required = CFG.expectScreenshot, wait = null } = {}) {
   if (!mcpState?.client) return null;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   let lastRow = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const shot = await mcpState.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: CFG.screenshotFreshnessMaxMs }, 30000).catch((e) => ({ error: e.message }));
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(wait, {
+      freshnessMaxMs: CFG.screenshotFreshnessMaxMs,
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    });
+    const shot = await mcpState.client.toolCallRaw(
+      'synthi_screenshot',
+      screenshotArgs,
+      Math.max(30000, CFG.frameGateTimeoutMs + 5000),
+    ).catch((e) => ({ error: e.message }));
     const content = Array.isArray(shot?.content) ? shot.content : [];
     const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
     if (imageBlock?.data) {
@@ -3773,7 +3785,21 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}
       const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
       const stats = await analyzeGpuHmrImageEvidence(bytes);
-      const row = visualEvidenceRow({ label, path: outPath, ...stats, bytes: bytes.length, attempt });
+      const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
+      const row = visualEvidenceRow({
+        label,
+        path: outPath,
+        ...stats,
+        bytes: bytes.length,
+        attempt,
+        screenshot_metadata: screenshotMetadata,
+        wait_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
+        frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(wait, {
+          ...screenshotMetadata,
+          seq: Number(screenshotMetadata?.seq || 0),
+          ts: Number(screenshotMetadata?.ts || 0),
+        }),
+      });
       report.screenshots.push(row);
       const ok = screenshotQualifiesAsVisualEvidence(row);
       if (ok) {
@@ -7840,7 +7866,7 @@ async function run() {
   await createWorkspace();
   await writeFilesBatch(files);
 
-  await compileViaMcp({
+  const firstCompileResult = await compileViaMcp({
     language: 'cpp',
     filename: CFG.entryFile,
     source: primary.content,
@@ -7856,7 +7882,7 @@ async function run() {
     width: CFG.width,
     height: CFG.height,
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
-  await captureScreenshot('first-compile', { required: false });
+  await captureScreenshot('first-compile', { required: false, wait: firstCompileResult.wait });
 
   const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
   const hmrAdditionalFiles = buildCompileProjection(
@@ -7872,7 +7898,7 @@ async function run() {
     { 'x-user-id': CFG.hostId },
   );
   updateFileContent(CFG.deltaFile, edited);
-  await compileViaMcp({
+  const hmrCompileResult = await compileViaMcp({
     language: 'cpp',
     filename: CFG.deltaFile,
     source: edited,
@@ -7889,7 +7915,7 @@ async function run() {
     width: CFG.width,
     height: CFG.height,
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
-  await captureScreenshot('post-hmr', { required: CFG.expectScreenshot });
+  await captureScreenshot('post-hmr', { required: CFG.expectScreenshot, wait: hmrCompileResult.wait });
 
   for (let index = 0; index < extraDeltas.length; index += 1) {
     const delta = extraDeltas[index];
@@ -7915,7 +7941,7 @@ async function run() {
       { 'x-user-id': CFG.hostId },
     );
     updateFileContent(delta.file, editedSource);
-    await compileViaMcp({
+    const extraCompileResult = await compileViaMcp({
       language: 'cpp',
       filename: delta.file,
       source: editedSource,
@@ -7932,7 +7958,7 @@ async function run() {
       width: CFG.width,
       height: CFG.height,
     }, CFG.hmrTimeoutMs, phaseName);
-    await captureScreenshot(screenshotLabel, { required: CFG.expectScreenshot });
+    await captureScreenshot(screenshotLabel, { required: CFG.expectScreenshot, wait: extraCompileResult.wait });
   }
 }
 

@@ -18,6 +18,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import {
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +43,7 @@ const CFG = {
   mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 240000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_GPU_AGENT_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   workerLogPath: process.env.WORKER_LOG_PATH
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
@@ -936,7 +942,7 @@ async function compileGeneratedDevice(split, editedDevice) {
   }, CFG.hotSwapTimeoutMs);
 }
 
-async function assertMcpScreenshot() {
+async function assertMcpScreenshot(waitEvidence = null) {
   const state = await ensureMcpAttached();
   const analyzeImage = async (data) => {
     if (!data) return { bytes: 0, visiblePixels: 0, meanLuma: 0 };
@@ -962,19 +968,29 @@ async function assertMcpScreenshot() {
     return { bytes, visiblePixels, meanLuma: lumaTotal / pixels };
   };
   const capture = async () => {
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+      freshnessMaxMs: 15000,
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    });
     const shot = await state.client.toolCallRaw(
       'synthi_screenshot',
-      { freshness_max_ms: 15000 },
-      30000,
+      screenshotArgs,
+      Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
-    const meta = shot.json || {};
+    const meta = mcpScreenshotMetadataFromToolResult(shot) || {};
     const analysis = await analyzeImage(image?.data);
     return {
       meta,
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
       seq: Number(meta.seq || 0),
+      ts: Number(meta.ts || 0),
+      frameCaptureAfterEpochDispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+        ...meta,
+        seq: Number(meta.seq || 0),
+        ts: Number(meta.ts || 0),
+      }),
       ...analysis,
     };
   };
@@ -1000,13 +1016,14 @@ async function assertMcpScreenshot() {
     second.height === first.height &&
     second.bytes > 512 &&
     second.visiblePixels > 500 &&
-    second.seq > first.seq;
+    second.seq > first.seq &&
+    (!waitEvidence || second.frameCaptureAfterEpochDispatch === true);
   record(
     'mcp screenshot after hmr',
     ok ? 'pass' : 'fail',
     ok
-      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`
-      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`,
+      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`
+      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`,
   );
   if (!ok) throw new Error('MCP screenshot after HMR did not return a valid frame');
 }
@@ -1084,7 +1101,7 @@ async function run() {
 
   const editedDevice = flipDeviceDirection(split.files[split.roles.device]);
   const secondStart = await workerCheckpoint();
-  await compileGeneratedDevice(split, editedDevice);
+  const generatedDeviceResult = await compileGeneratedDevice(split, editedDevice);
   record('device edit compile via MCP', 'pass', split.roles.device);
 
   const sawSplitEdit = await awaitWorkerLogRegex(
@@ -1101,7 +1118,7 @@ async function run() {
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
-  await assertMcpScreenshot();
+  await assertMcpScreenshot(generatedDeviceResult.wait);
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});

@@ -5,8 +5,12 @@ import {
   deterministicVisualModeAccepted,
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
   mcpFrameGateSatisfied,
   mcpFrameGateSatisfiedByScreenshot,
+  mcpFrameGateForScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
 } from '../lib/gpu-hmr-visual-evidence.mjs';
 
 const deterministicSingleFrame = {
@@ -139,6 +143,34 @@ assert.equal(mcpFrameGateSatisfiedByScreenshot({
   frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
   gpu_proof_validation: { satisfied: true },
 }, { seq: 11, ts: 1199 }), false);
+assert.deepEqual(mcpFrameGateForScreenshot({
+  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200, extra: 'ignored' },
+  gpu_proof_validation: { satisfied: true },
+}), { status: 'satisfied', frame_seq: 12, ts_ms: 1200 });
+assert.equal(mcpFrameGateForScreenshot({
+  frame_gate: { status: 'event_log_recovered', frame_seq: 12, ts_ms: 1200 },
+  gpu_proof_validation: { satisfied: true },
+}), null);
+assert.deepEqual(mcpScreenshotArgsForFrameGate({
+  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  gpu_proof_validation: { satisfied: true },
+}, { freshnessMaxMs: 5000 }), {
+  freshness_max_ms: 5000,
+  after_frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  frame_gate_timeout_ms: DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
+});
+assert.deepEqual(mcpScreenshotArgsForFrameGate({
+  frame_gate: { status: 'timeout' },
+}, { freshnessMaxMs: 5000, frameGateTimeoutMs: 10 }), {
+  freshness_max_ms: 5000,
+});
+assert.deepEqual(mcpScreenshotMetadataFromToolResult({ json: { seq: 1 } }), { seq: 1 });
+assert.deepEqual(mcpScreenshotMetadataFromToolResult({ meta: { seq: 2 } }), { seq: 2 });
+assert.deepEqual(mcpScreenshotMetadataFromToolResult({ seq: 3, ts: 3000, data: 'base64' }), {
+  seq: 3,
+  ts: 3000,
+  data: 'base64',
+});
 
 const mcpDerived = deterministicVisualModeFromMcpEvidence({
   base: {
@@ -246,6 +278,7 @@ console.log(JSON.stringify({
     'convergence_window_sample_rejection',
     'convergence_window_seed_rejection',
     'mcp_frame_gate_derived',
+    'mcp_screenshot_args_derived',
     'mcp_failed_gpu_proof_validation_rejection',
     'mcp_stale_screenshot_rejection',
   ],

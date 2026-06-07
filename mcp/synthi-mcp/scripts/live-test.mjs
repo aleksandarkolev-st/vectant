@@ -50,6 +50,9 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import {
+  mcpScreenshotArgsForFrameGate,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,6 +71,7 @@ const CFG = {
   fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/button/main.cpp'),
   frontendPrecompiled: (process.env.FRONTEND_PRECOMPILED ?? 'false').toLowerCase() === 'true',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_LIVE_TEST_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   syncToGcs: 'true',
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
@@ -921,7 +925,9 @@ async function main() {
 
     // K2. post-edit screenshot + pHash
     log('info', 'synthi_screenshot (post-edit)');
-    const shot2 = await client.toolCall('synthi_screenshot', {});
+    const shot2 = await client.toolCall('synthi_screenshot', mcpScreenshotArgsForFrameGate(hmr, {
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    }));
     if (!shot2?.data) fail('post-edit synthi_screenshot returned no data');
     const shot2Path = path.join(ARTIFACT_DIR, 'post-edit.png');
     await writeFile(shot2Path, Buffer.from(shot2.data, 'base64'));
