@@ -41,6 +41,15 @@
   },
   "visualProof": {
     "claim": "Changing a Three.js WebGL example source file materially changes the GPU-rendered lava shader scene served by the project dev server.",
+    "deterministicMode": {
+      "seed_policy_fixed": true,
+      "frozen_camera": true,
+      "temporal_accumulation_not_applicable": true,
+      "taa_not_applicable": true,
+      "denoiser_not_applicable": true,
+      "frame_capture_after_epoch_dispatch": true,
+      "presentation_fence_or_frame_boundary": true
+    },
     "screenshot": {
       "command": "node \"{repoRoot}/mcp/synthi-mcp/scripts/tools/chrome-screenshot.mjs\" --url \"http://127.0.0.1:8080/examples/webgl_shader_lava.html\" --output \"{output}\" --width 1280 --height 720 --delay-ms 2500"
     },

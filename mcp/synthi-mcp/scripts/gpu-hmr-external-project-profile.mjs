@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
   analyzeGpuHmrImageEvidence,
+  evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
@@ -55,6 +56,12 @@ function stringRecord(value, field) {
 
 function jsonObject(value, field) {
   if (value === undefined || value === null) return {};
+  if (!isObject(value)) throw new Error(`external project profile ${field} must be an object`);
+  return { ...value };
+}
+
+function optionalJsonObject(value, field) {
+  if (value === undefined || value === null) return null;
   if (!isObject(value)) throw new Error(`external project profile ${field} must be an object`);
   return { ...value };
 }
@@ -186,6 +193,10 @@ function normalizeProfile(rawProfile) {
       claim: nonEmptyString(
         visual.claim ?? 'An external GPU/runtime source edit materially changes visible output.',
         'visualProof.claim',
+      ),
+      deterministicMode: optionalJsonObject(
+        visual.deterministicMode ?? visual.deterministic_mode,
+        'visualProof.deterministicMode',
       ),
       screenshot: {
         command: proofMode === 'external_runtime_screenshot'
@@ -836,6 +847,13 @@ async function captureMcpPreviewScreenshot(client, profile, label) {
         path: outPath,
         bytes: bytes.length,
         attempt,
+        capture_backend: 'mcp:synthi_screenshot',
+        captured_at_ms: Date.now(),
+        screenshot_metadata: isObject(shot.meta)
+          ? shot.meta
+          : isObject(shot.metadata)
+            ? shot.metadata
+            : null,
         ...stats,
       });
       if (screenshotQualifiesAsVisualEvidence(row)) return row;
@@ -850,11 +868,50 @@ async function captureMcpPreviewScreenshot(client, profile, label) {
   throw new Error(`synthi_screenshot did not return image data for ${label}${suffix}`);
 }
 
+function frameGateSatisfied(wait) {
+  const gate = wait?.frame_gate ?? wait?.frameGate;
+  return isObject(gate) && gate.status === 'satisfied';
+}
+
+function deterministicVisualModeForMcp(profile, before, after, afterCompile) {
+  const base = isObject(profile.visualProof.deterministicMode)
+    ? profile.visualProof.deterministicMode
+    : {};
+  const sameResolution = Number(before?.width) > 0
+    && Number(before?.height) > 0
+    && Number(before?.width) === Number(after?.width)
+    && Number(before?.height) === Number(after?.height);
+  const frameGate = frameGateSatisfied(afterCompile?.wait);
+  return {
+    ...base,
+    fixed_resolution: sameResolution === true ? true : base.fixed_resolution,
+    frame_capture_after_epoch_dispatch: frameGate === true
+      ? true
+      : base.frame_capture_after_epoch_dispatch,
+    presentation_fence_or_frame_boundary: frameGate === true
+      ? true
+      : base.presentation_fence_or_frame_boundary,
+  };
+}
+
+function deterministicVisualModeForExternal(profile, before, after) {
+  if (!isObject(profile.visualProof.deterministicMode)) return null;
+  const base = profile.visualProof.deterministicMode;
+  const sameResolution = Number(before?.width) > 0
+    && Number(before?.height) > 0
+    && Number(before?.width) === Number(after?.width)
+    && Number(before?.height) === Number(after?.height);
+  return {
+    ...base,
+    fixed_resolution: sameResolution === true ? true : base.fixed_resolution,
+  };
+}
+
 function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-async function compareImages(beforePath, afterPath) {
+async function compareImages(beforePath, afterPath, options = {}) {
   const before = sharp(beforePath).ensureAlpha();
   const after = sharp(afterPath).ensureAlpha();
   const beforeMeta = await before.metadata();
@@ -864,6 +921,7 @@ async function compareImages(beforePath, afterPath) {
   }
   const left = await before.raw().toBuffer();
   const right = await after.raw().toBuffer();
+  const diff = options.diffPath ? Buffer.alloc(left.length) : null;
   let changed = 0;
   let totalAbs = 0;
   const pixelCount = beforeMeta.width * beforeMeta.height;
@@ -874,12 +932,28 @@ async function compareImages(beforePath, afterPath) {
     const sum = dr + dg + db;
     if (sum > 8) changed += 1;
     totalAbs += sum / 3;
+    if (diff) {
+      diff[i] = dr;
+      diff[i + 1] = dg;
+      diff[i + 2] = db;
+      diff[i + 3] = 255;
+    }
+  }
+  if (diff && options.diffPath) {
+    await sharp(diff, {
+      raw: {
+        width: beforeMeta.width,
+        height: beforeMeta.height,
+        channels: 4,
+      },
+    }).png().toFile(options.diffPath);
   }
   return {
     width: beforeMeta.width,
     height: beforeMeta.height,
     changedPixelRatio: changed / pixelCount,
     meanAbsDelta8bit: totalAbs / pixelCount,
+    diffImagePath: options.diffPath ?? null,
   };
 }
 
@@ -937,6 +1011,12 @@ async function selfCheck() {
     const mcpPreviewComplete = profile.proofMode !== 'mcp_preview'
       || Boolean(profile.mcpPreview?.language && profile.mcpPreview?.entryFile);
     const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
+    const deterministicVisualProfile = evaluateGpuHmrDeterministicVisualMode({
+      ...(profile.visualProof.deterministicMode ?? {}),
+      fixed_resolution: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    });
     const runtimeCommandComplete = profile.proofMode === 'mcp_preview'
       || Boolean(profile.runtime.run?.command);
     checks.push({
@@ -947,7 +1027,8 @@ async function selfCheck() {
         && profile.source.before !== profile.source.after
         && screenshotHasOutput
         && mcpPreviewComplete
-        && mcpPreviewGpuProof.satisfied,
+        && mcpPreviewGpuProof.satisfied
+        && deterministicVisualProfile.accepted,
       id: profile.id,
       project: profile.project.name,
       source: profile.source.file,
@@ -956,6 +1037,7 @@ async function selfCheck() {
       screenshotHasOutput,
       mcpPreviewComplete,
       mcpPreviewGpuProofGate: mcpPreviewGpuProof,
+      deterministicVisualProfile,
     });
   }
   const failed = checks.filter((check) => !check.ok);
@@ -1015,11 +1097,27 @@ async function runProfile(profile) {
     report.timings.editToScreenshotMs = Date.now() - editStart;
     report.screenshots.push({ label: 'after', ...after });
     const visualDiffStart = Date.now();
-    report.visualDiff = await compareImages(before.path, after.path);
+    const diffPath = path.join(ARTIFACT_DIR, `${profile.id}-external-diff-${Date.now()}.png`);
+    report.visualDiff = await compareImages(before.path, after.path, { diffPath });
     report.timings.visualDiffMs = Date.now() - visualDiffStart;
+    report.visualOracleArtifacts = {
+      before_image: before.path,
+      after_image: after.path,
+      diff_image: report.visualDiff.diffImagePath,
+      capture_backend: 'external_runtime_screenshot',
+    };
+    report.deterministicVisualMode = deterministicVisualModeForExternal(profile, before, after);
+    report.deterministicVisualModeEvaluation = report.deterministicVisualMode
+      ? evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode)
+      : null;
     const accepted =
       report.visualDiff.changedPixelRatio >= profile.visualProof.minChangedPixelRatio
-      && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit;
+      && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit
+      && (
+        report.deterministicVisualModeEvaluation
+          ? report.deterministicVisualModeEvaluation.accepted === true
+          : true
+      );
     report.status = accepted ? 'pass' : 'fail';
     if (!accepted) {
       throw new Error(`visual diff below threshold: ${JSON.stringify(report.visualDiff)}`);
@@ -1113,17 +1211,33 @@ async function runMcpPreviewProfile(profile, dir, report) {
       throw new Error(`after wait_hmr status=${afterCompile.waitStatus}; screenshot=${after.path}`);
     }
     const visualDiffStart = Date.now();
-    report.visualDiff = await compareImages(before.path, after.path);
+    const diffPath = path.join(ARTIFACT_DIR, `${profile.id}-mcp-diff-${Date.now()}.png`);
+    report.visualDiff = await compareImages(before.path, after.path, { diffPath });
     report.timings.visualDiffMs = Date.now() - visualDiffStart;
+    report.visualOracleArtifacts = {
+      before_image: before.path,
+      after_image: after.path,
+      diff_image: report.visualDiff.diffImagePath,
+      blank_frame_rejection: report.screenshots.every((row) => row.accepted_as_visual_evidence === true),
+      same_frame_rejection: report.visualDiff.changedPixelRatio > 0,
+      capture_backend: 'mcp:synthi_screenshot',
+      frame_capture_after_epoch_dispatch: frameGateSatisfied(afterCompile.wait),
+      wait_frame_gate: afterCompile.wait?.frame_gate ?? afterCompile.wait?.frameGate ?? null,
+    };
+    report.deterministicVisualMode = deterministicVisualModeForMcp(profile, before, after, afterCompile);
+    report.deterministicVisualModeEvaluation =
+      evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode);
     const accepted =
       report.visualDiff.changedPixelRatio >= profile.visualProof.minChangedPixelRatio
       && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit
-      && report.screenshots.every((row) => row.accepted_as_visual_evidence === true);
+      && report.screenshots.every((row) => row.accepted_as_visual_evidence === true)
+      && report.deterministicVisualModeEvaluation.accepted === true;
     report.status = accepted ? 'pass' : 'fail';
     if (!accepted) {
       throw new Error(`MCP visual evidence below threshold: ${JSON.stringify({
         visualDiff: report.visualDiff,
         screenshots: report.screenshots,
+        deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation,
       }).slice(0, 2000)}`);
     }
   } finally {

@@ -68,6 +68,14 @@
   },
   "visualProof": {
     "claim": "Changing a file-backed Bevy WGSL material multiplier hot-reloads through the engine renderer and materially changes the visible cube.",
+    "deterministicMode": {
+      "seed_policy_fixed": true,
+      "frozen_camera": true,
+      "temporal_accumulation_not_applicable": true,
+      "taa_not_applicable": true,
+      "denoiser_not_applicable": true,
+      "fixed_swapchain_image_count": true
+    },
     "screenshot": {},
     "minChangedPixelRatio": 0.01,
     "minMeanAbsDelta8bit": 1.0
