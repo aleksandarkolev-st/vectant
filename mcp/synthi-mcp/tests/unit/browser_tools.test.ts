@@ -460,6 +460,71 @@ describe("browser MCP tool surface", () => {
     }));
   });
 
+  it("replays same-origin popup continuation steps on the runtime popup tab", async () => {
+    const url = "https://app.example.com/dashboard";
+    const popupUrl = "https://app.example.com/help";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Dashboard", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_event: true,
+        popup_url: popupUrl,
+        popup_title: "Workflow Help",
+        popup_tab_id: "recorded-popup",
+        opener_tab_id: "app",
+      },
+      element: { tag: "a", role: "button", name: "Open help", test_id: "open-help", source_id: "src_open_help" },
+    }).ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "recorded-popup",
+      url: popupUrl,
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "contracts",
+      detail: {
+        popup_context: true,
+        popup_tab_id: "recorded-popup",
+        opener_tab_id: "app",
+        opener_origin: "https://app.example.com",
+      },
+      element: { tag: "input", role: "textbox", label: "Search help", source_id: "src_help_search" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockImplementation(async (tabId, event, action) => ({
+      ok: true,
+      action,
+      tab_id: tabId,
+      url: event.url,
+      detail: event.detail?.["popup_event"] === true ? { popup_tab_id: "runtime-popup" } : undefined,
+    }));
+    const lease = browserBroker.acquireLease("agent", 5000, "popup-continuation-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 2 }),
+    }));
+    expect(replayAction.mock.calls[0]?.[0]).toBe("app");
+    expect(replayAction.mock.calls[1]?.[0]).toBe("runtime-popup");
+    expect(replayAction.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      action: "fill",
+      tab_id: "recorded-popup",
+      value: "contracts",
+    }));
+  });
+
   it("replays range control workflows through the event-aware adapter path", async () => {
     const url = "https://app.example.com/settings";
     browserBroker.requestConsent(url);

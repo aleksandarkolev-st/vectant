@@ -24,7 +24,7 @@ import { errorFromException, errorResponse, jsonResponse, type ToolResponse } fr
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
   if (event.action === "navigate") {
-    browserBroker.handleOriginChange(event.tab_id, event.url);
+    browserBroker.handleOriginChange(event.tab_id, event.url, event.detail);
     return;
   }
   browserBroker.recordHumanAction(event);
@@ -1180,11 +1180,17 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   }
 
   const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;
+  const replayTabByTraceTab = new Map<string, string>();
+  for (const event of plan.events) {
+    if (event.tab_id) replayTabByTraceTab.set(event.tab_id, replayTab.tab_id);
+    break;
+  }
   let stepsRun = 0;
   for (const event of plan.events) {
     const action = actionForReplay(event);
     if (!action) continue;
     const selector = event.locator_candidates?.[0]?.locator ?? event.selector;
+    const targetTabId = replayTabByTraceTab.get(event.tab_id) ?? replayTab.tab_id;
     if (isFileDropEvent(event)) {
       const filePath = fileDropPathFor(event, parameters);
       if (!filePath) {
@@ -1203,7 +1209,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       const validation = browserBroker.validateAction({
         lease_id: leaseId,
         action,
-        tab_id: replayTab.tab_id,
+        tab_id: targetTabId,
         selector,
         value: filePath,
         url: event.url,
@@ -1222,7 +1228,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
         });
       }
       try {
-        await browserPlaywrightAdapter.fileDrop(replayTab.tab_id, selector, filePath, {
+        await browserPlaywrightAdapter.fileDrop(targetTabId, selector, filePath, {
           file_input: isFileInputDrop(event),
           mime_type: stringOpt(event.detail?.["mime_type"]),
           event,
@@ -1247,7 +1253,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
     const validation = browserBroker.validateAction({
       lease_id: leaseId,
       action,
-      tab_id: replayTab.tab_id,
+      tab_id: targetTabId,
       selector,
       value,
       url: action === "navigate" ? value : event.url,
@@ -1266,7 +1272,8 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
     try {
-      await browserPlaywrightAdapter.replayActionEvent(replayTab.tab_id, event, action, selector, value);
+      const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
+      rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
       stepsRun += 1;
     } catch (err) {
       return jsonResponse({
@@ -1346,6 +1353,16 @@ function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind
     left: numberOpt(event.detail?.["scroll_left"]) ?? 0,
   });
   return event.value;
+}
+
+function rememberReplayPopupTab(
+  replayTabByTraceTab: Map<string, string>,
+  event: BrowserTraceEvent,
+  detail: Record<string, unknown> | undefined
+): void {
+  const tracePopupTab = stringOpt(event.detail?.["popup_tab_id"]);
+  const replayPopupTab = stringOpt(detail?.["popup_tab_id"]);
+  if (tracePopupTab && replayPopupTab) replayTabByTraceTab.set(tracePopupTab, replayPopupTab);
 }
 
 function isFileDropEvent(event: BrowserTraceEvent): boolean {

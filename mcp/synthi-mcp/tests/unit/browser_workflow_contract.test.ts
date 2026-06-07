@@ -273,6 +273,85 @@ describe("browser workflow contract compiler", () => {
     expect(classifyWorkflowReplayBlock(replay)).toBe("unsafeEnvironment");
   });
 
+  it("allows same-origin popup continuation when opener linkage is captured", () => {
+    const events = [
+      baseEvent({
+        event_id: "open-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        detail: {
+          popup_event: true,
+          popup_url: "https://app.example.com/help",
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open help", source_id: "src_open_help" },
+        },
+      }),
+      baseEvent({
+        event_id: "popup-search",
+        event_seq: 2,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://app.example.com/help",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).not.toContain("popupOrMultiTab");
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).not.toBe("blocked");
+    expect(replay.status).toBe("ready");
+  });
+
+  it("blocks popup continuation when the opener event is missing", () => {
+    const events = [
+      baseEvent({
+        event_id: "popup-search",
+        event_seq: 1,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://app.example.com/help",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+      baseEvent({
+        event_id: "main",
+        event_seq: 2,
+        tab_id: "main",
+        action: "click",
+        detail: { element: { role: "button", name: "Close", source_id: "src_close" } },
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toContain("popupOrMultiTab");
+    expect(replay.status).toBe("blocked");
+  });
+
   it("blocks iframe traces that lack a durable frame locator", () => {
     const events = [
       baseEvent({

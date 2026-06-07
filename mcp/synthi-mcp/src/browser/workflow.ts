@@ -965,8 +965,52 @@ function workflowLimitations(
     .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
     .map((event) => event.tab_id)
     .filter(Boolean));
-  if (actionTabIds.size > 1 || events.some((event) => event.detail?.["surface"] === "popup")) limitations.add("popupOrMultiTab");
+  if ((actionTabIds.size > 1 && !isSameOriginPopupChain(events, appOrigin)) ||
+    events.some((event) => event.detail?.["surface"] === "popup")) {
+    limitations.add("popupOrMultiTab");
+  }
   return [...limitations];
+}
+
+function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string): boolean {
+  if (appOrigin === "unknown") return false;
+  const actionEvents = events.filter((event) =>
+    event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation"
+  );
+  const tabIds = new Set(actionEvents.map((event) => event.tab_id).filter(Boolean));
+  if (tabIds.size <= 1) return true;
+  const allowedTabs = new Set<string>();
+  const popupTabs = new Set<string>();
+  let openerEventSeen = false;
+  for (const event of actionEvents) {
+    if (event.origin !== appOrigin) return false;
+    const opener = stringDetail(event, "opener_tab_id");
+    const popup = stringDetail(event, "popup_tab_id");
+    const popupUrl = stringDetail(event, "popup_url");
+    if (event.detail?.["popup_event"] === true && opener && popup && event.tab_id === opener) {
+      if (popupUrl && originFor(popupUrl) !== appOrigin) return false;
+      allowedTabs.add(opener);
+      allowedTabs.add(popup);
+      popupTabs.add(popup);
+      openerEventSeen = true;
+    }
+  }
+  if (!openerEventSeen || popupTabs.size === 0) return false;
+  for (const event of actionEvents) {
+    if (!allowedTabs.has(event.tab_id)) return false;
+    if (popupTabs.has(event.tab_id) && event.detail?.["popup_context"] !== true && event.detail?.["popup_event"] !== true) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function originFor(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 function successCriteriaFor(steps: WorkflowStepContractV7[]): WorkflowContractV7["successCriteria"] {

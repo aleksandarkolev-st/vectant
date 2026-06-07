@@ -257,8 +257,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const warnings: string[] = [];
   warnings.push(...contract.limitations.map((limitation) => `workflow limitation: ${limitation}`));
   if (replayBlocked) warnings.push("workflow replay blocked by unsupported browser surface");
-  let currentUrl: string | null = null;
+  const currentUrlByPage = new Map<string, string>();
   let targetSeq = 0;
+  const popupPageByTab = new Map<string, string>();
   const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
 
   if (replayBlocked) {
@@ -272,10 +273,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   for (const event of coalesceReplayEvents(events)) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
     if (event.kind === "navigation" || event.action === "navigate") {
-      if (event.url !== currentUrl) {
-        lines.push(gotoLine(event.url, baseOrigin));
-        lines.push("  await expect(page).toHaveURL(/.*/);");
-        currentUrl = event.url;
+      const pageVar = popupPageByTab.get(event.tab_id) ?? "page";
+      if (event.url !== currentUrlByPage.get(pageVar)) {
+        lines.push(gotoLine(event.url, baseOrigin, pageVar));
+        lines.push(`  await expect(${pageVar}).toHaveURL(/.*/);`);
+        currentUrlByPage.set(pageVar, event.url);
       }
       continue;
     }
@@ -285,9 +287,10 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       warnings.push(`event ${event.event_id} has no locator candidates`);
       continue;
     }
-    if (!currentUrl) {
-      lines.push(gotoLine(event.url, baseOrigin));
-      currentUrl = event.url;
+    const pageVar = popupPageByTab.get(event.tab_id) ?? "page";
+    if (!currentUrlByPage.has(pageVar)) {
+      lines.push(gotoLine(event.url, baseOrigin, pageVar));
+      currentUrlByPage.set(pageVar, event.url);
     }
     used_locators.push({
       event_id: event.event_id,
@@ -295,7 +298,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       confidence: locator.confidence,
       fallbacks: event.locator_candidates?.slice(1) ?? [],
     });
-    const locatorExpressions = (event.locator_candidates ?? [locator]).map((candidate) => locatorExpressionForEvent(event, candidate.locator));
+    const locatorExpressions = (event.locator_candidates ?? [locator]).map((candidate) => locatorExpressionForEvent(event, candidate.locator, pageVar));
     targetSeq += 1;
     const target = `target${targetSeq}`;
     lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
@@ -313,7 +316,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else if (isDialogTrigger(event)) {
           pushDialogAction(lines, target, "click", event, targetSeq);
         } else if (isPopupTrigger(event)) {
-          pushPopupAction(lines, target, "click", event, targetSeq, baseOrigin);
+          const popupVar = pushPopupAction(lines, target, "click", event, targetSeq, baseOrigin, pageVar);
+          rememberPopupPage(popupPageByTab, event, popupVar);
         } else {
           lines.push(`  await ${target}.click();`);
         }
@@ -325,7 +329,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else if (isDialogTrigger(event)) {
           pushDialogAction(lines, target, "dblclick", event, targetSeq);
         } else if (isPopupTrigger(event)) {
-          pushPopupAction(lines, target, "dblclick", event, targetSeq, baseOrigin);
+          const popupVar = pushPopupAction(lines, target, "dblclick", event, targetSeq, baseOrigin, pageVar);
+          rememberPopupPage(popupPageByTab, event, popupVar);
         } else {
           lines.push(`  await ${target}.dblclick();`);
         }
@@ -378,7 +383,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
             y: numericDetail(event, "pointer_end_y_ratio") ?? 0.5,
           };
           const steps = Math.max(1, Math.min(60, Math.round(numericDetail(event, "pointer_steps") ?? 12)));
-          lines.push(`  const ${dropTarget} = await firstVisible(${locatorExpressionForEvent(event, dropLocator)});`);
+          lines.push(`  const ${dropTarget} = await firstVisible(${locatorExpressionForEvent(event, dropLocator, pageVar)});`);
           lines.push(`  await expect(${dropTarget}).toBeVisible();`);
           lines.push(`  const ${sourceBox} = await ${target}.boundingBox();`);
           lines.push(`  const ${dropBox} = await ${dropTarget}.boundingBox();`);
@@ -393,12 +398,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           }
           break;
         }
-        const dropLocator = typeof event.detail?.["drop_locator"] === "string"
-          ? event.detail["drop_locator"]
-          : event.value;
+          const dropLocator = typeof event.detail?.["drop_locator"] === "string"
+            ? event.detail["drop_locator"]
+            : event.value;
         if (dropLocator) {
           const dropTarget = `dropTarget${targetSeq}`;
-          lines.push(`  const ${dropTarget} = ${locatorExpressionForEvent(event, dropLocator)};`);
+          lines.push(`  const ${dropTarget} = ${locatorExpressionForEvent(event, dropLocator, pageVar)};`);
           lines.push(`  await ${target}.dragTo(${dropTarget});`);
           const draggedText = draggedElementText(event);
           if (draggedText) {
@@ -447,7 +452,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         if (isDialogTrigger(event)) {
           pushDialogAction(lines, target, "press", event, targetSeq, event.value ?? "Enter");
         } else if (isPopupTrigger(event)) {
-          pushPopupAction(lines, target, "press", event, targetSeq, baseOrigin, event.value ?? "Enter");
+          const popupVar = pushPopupAction(lines, target, "press", event, targetSeq, baseOrigin, pageVar, event.value ?? "Enter");
+          rememberPopupPage(popupPageByTab, event, popupVar);
         } else {
           lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
         }
@@ -480,7 +486,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     for (const effectText of observedEffectTexts(event)) {
       const effectLocator = locatorExpressionForEvent(
         event,
-        `page.getByText(${JSON.stringify(effectText)}, { exact: true })`
+        `page.getByText(${JSON.stringify(effectText)}, { exact: true })`,
+        pageVar
       );
       lines.push(`  await expect(${effectLocator}).toBeVisible();`);
     }
@@ -552,8 +559,8 @@ function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
   return null;
 }
 
-function gotoLine(url: string, baseOrigin: string | null): string {
-  return `  await page.goto(${urlExpression(url, baseOrigin)});`;
+function gotoLine(url: string, baseOrigin: string | null, pageVar = "page"): string {
+  return `  await ${pageVar}.goto(${urlExpression(url, baseOrigin)});`;
 }
 
 function urlExpression(url: string, baseOrigin: string | null): string {
@@ -569,10 +576,20 @@ function urlExpression(url: string, baseOrigin: string | null): string {
   return JSON.stringify(url);
 }
 
-function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string): string {
+function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string, pageVar = "page"): string {
   const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : null;
-  if (!frameLocator) return locator;
-  return locator.replace(/^page\./, `page.frameLocator(${JSON.stringify(frameLocator)}).`);
+  const rooted = locator.replace(/^page\./, `${pageVar}.`);
+  if (!frameLocator) return rooted;
+  return rooted.replace(new RegExp(`^${escapeRegExp(pageVar)}\\.`), `${pageVar}.frameLocator(${JSON.stringify(frameLocator)}).`);
+}
+
+function rememberPopupPage(popupPageByTab: Map<string, string>, event: BrowserTraceEvent, popupVar: string): void {
+  const popupTab = typeof event.detail?.["popup_tab_id"] === "string" ? event.detail["popup_tab_id"] : "";
+  if (popupTab) popupPageByTab.set(popupTab, popupVar);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function dragClassFor(event: BrowserTraceEvent): string {
@@ -745,11 +762,12 @@ function pushPopupAction(
   event: BrowserTraceEvent,
   ordinal: number,
   baseOrigin: string | null,
+  pageVar = "page",
   pressKey?: string
-): void {
+): string {
   const popup = `popup${ordinal}`;
   lines.push(`  const [${popup}] = await Promise.all([`);
-  lines.push("    page.waitForEvent('popup'),");
+  lines.push(`    ${pageVar}.waitForEvent('popup'),`);
   if (method === "press") {
     lines.push(`    ${target}.press(${JSON.stringify(pressKey ?? "Enter")}),`);
   } else {
@@ -767,6 +785,7 @@ function pushPopupAction(
   if (popupTitle && !popupTitleRedacted) {
     lines.push(`  await expect(${popup}).toHaveTitle(${JSON.stringify(popupTitle)});`);
   }
+  return popup;
 }
 
 function pushOptionSelectionAssertion(lines: string[], target: string, event: BrowserTraceEvent): void {

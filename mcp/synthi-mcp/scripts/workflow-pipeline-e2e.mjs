@@ -61,6 +61,10 @@ function trimSlash(value) {
   return String(value).replace(/\/$/, "");
 }
 
+function isScreenshotPage(value) {
+  return Boolean(value && typeof value.screenshot === "function");
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
@@ -153,9 +157,10 @@ async function runCase({ testCase, container, context, runner }) {
     record(testCase.id, "click overlay teach", beginState.ok === true && beginState.recording === true, beginState.status || "");
 
     await previewPage.bringToFront().catch(() => undefined);
-    await testCase.teach(previewPage, { caseDir });
+    const taughtVisualPage = await testCase.teach(previewPage, { caseDir });
     await previewPage.waitForTimeout(800);
-    await previewPage.screenshot({ path: path.join(caseDir, "after-teach-actions.png"), fullPage: true });
+    const afterTeachScreenshotPage = isScreenshotPage(taughtVisualPage) ? taughtVisualPage : previewPage;
+    await afterTeachScreenshotPage.screenshot({ path: path.join(caseDir, "after-teach-actions.png"), fullPage: true });
 
     const endState = await clickWorkflowOverlay(previewPage, "stop");
     const taughtSteps = Number(endState.stepCount || 0);
@@ -1584,6 +1589,87 @@ const CASES = [
       await popup.waitForLoadState("domcontentloaded");
       await popup.waitForURL(/help\.html/);
       await page.getByText("Help opened").waitFor();
+    },
+  },
+  {
+    id: "popup-form-window",
+    minSteps: 3,
+    expectedActions: ["click", "fill"],
+    expectedReplayText: [
+      "Popup editor opened",
+      "Saved popup query contracts",
+    ],
+    expectedReplayCode: [
+      "page.waitForEvent('popup')",
+      "popup1.getByLabel(\"Search help\")",
+      "popup1.getByRole(\"button\", { name: \"Save query\" })",
+      "popup1.getByText(\"Saved popup query contracts\", { exact: true })",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => [
+      ...commonFiles({
+        title: "Popup Form Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Popup Form Workflow</h1>",
+          "      <a href=\"/help-form.html\" target=\"_blank\" rel=\"noreferrer\" role=\"button\" data-testid=\"open-help-form\" data-synthi-source-id=\"popup.form.open\">Open help form</a>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+        ].join("\n"),
+        script: [
+          "document.querySelector('[data-testid=\"open-help-form\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Popup editor opened';",
+          "});",
+          "",
+        ].join("\n"),
+      }),
+      {
+        path: "help-form.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Workflow Help Form</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Workflow Help Form</h1>",
+          "      <label for=\"help-query\">Search help</label>",
+          "      <input id=\"help-query\" aria-label=\"Search help\" data-synthi-source-id=\"popup.form.query\" placeholder=\"Search docs\">",
+          "      <button type=\"button\" data-testid=\"save-query\" data-synthi-source-id=\"popup.form.save\">Save query</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script type=\"module\" src=\"/help-form.js\"></script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "help-form.js",
+        encoding: "utf8",
+        content: [
+          "const query = document.querySelector('#help-query');",
+          "document.querySelector('[data-testid=\"save-query\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = `Saved popup query ${query.value}`;",
+          "});",
+          "",
+        ].join("\n"),
+      },
+    ],
+    teach: async (page) => {
+      const popupPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open help form" }).click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState("domcontentloaded");
+      await popup.getByLabel("Search help").fill("contracts");
+      await popup.getByRole("button", { name: "Save query" }).click();
+      await popup.getByText("Saved popup query contracts").waitFor();
+      await page.getByText("Popup editor opened").waitFor();
+      return popup;
     },
   },
   {

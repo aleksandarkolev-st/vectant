@@ -103,6 +103,7 @@ export class BrowserPlaywrightAdapter {
   private nextTabSeq = 0;
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly pages = new Map<string, PageRecord>();
+  private readonly popupOpeners = new Map<string, { opener_tab_id: string; opener_origin: string }>();
   private readonly instrumented = new WeakSet<Page>();
   private readonly workflowOverlayInstalled = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
@@ -489,6 +490,8 @@ export class BrowserPlaywrightAdapter {
       page.waitForEvent("popup"),
       runTargetAction(target, action, value),
     ]);
+    const popup_tab_id = this.idForPage(popup);
+    this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
     await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
     const expectedUrl = stringDetail(event, "popup_url");
     const urlRedacted = boolDetail(event, "popup_url_redacted");
@@ -506,7 +509,7 @@ export class BrowserPlaywrightAdapter {
       action,
       tab_id,
       url: page.url(),
-      detail: { popup_url: popup.url(), popup_title: popupTitle },
+      detail: { popup_url: popup.url(), popup_title: popupTitle, popup_tab_id },
     };
   }
 
@@ -581,6 +584,7 @@ export class BrowserPlaywrightAdapter {
     this.pages.clear();
     this.consoleEvents.clear();
     this.networkEvents.clear();
+    this.popupOpeners.clear();
     this.teachEventSink = null;
     this.workflowOverlayActionSink = null;
     this.workflowOverlayEnabled = false;
@@ -677,7 +681,11 @@ export class BrowserPlaywrightAdapter {
           url,
           origin,
           action: "navigate",
-          detail: { event_source: "page_lifecycle", navigation_event: true },
+          detail: {
+            event_source: "page_lifecycle",
+            navigation_event: true,
+            ...popupNavigationDetail(this.popupOpeners.get(tab_id), tab_id),
+          },
         });
       });
       await this.installTeachCapture(page, tab_id);
@@ -691,14 +699,15 @@ export class BrowserPlaywrightAdapter {
   private async handlePopup(opener: Page, popup: Page, opener_tab_id: string): Promise<void> {
     const popup_tab_id = this.idForPage(popup);
     this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
-    await this.instrumentPage(popup, popup_tab_id).catch(() => undefined);
-    await popup.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
     let origin: string;
     try {
       origin = normalizeOrigin(opener.url()).origin;
     } catch {
       return;
     }
+    this.popupOpeners.set(popup_tab_id, { opener_tab_id, opener_origin: origin });
+    await this.instrumentPage(popup, popup_tab_id).catch(() => undefined);
+    await popup.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
     const popupUrl = redactUrl(popup.url());
     const popupTitle = redactText(await popup.title().catch(() => ""));
     const detail: Record<string, unknown> = {
@@ -801,20 +810,40 @@ export class BrowserPlaywrightAdapter {
     const annotationBindingName = "__synthiAnnotateHumanAction";
     await page.exposeBinding(bindingName, async (source, payload: unknown) => {
       const event = normalizeCapturedHumanAction(
-        await this.enrichCapturedPayloadWithFrame(page, source.frame, payload),
+        this.enrichCapturedPayloadWithTabContext(tab_id, await this.enrichCapturedPayloadWithFrame(page, source.frame, payload)),
         tab_id
       );
       if (!event) return;
       this.teachEventSink?.(event);
     }).catch(() => undefined);
     await page.exposeBinding(annotationBindingName, (_source, payload: unknown) => {
-      const event = normalizeCapturedHumanActionAnnotation(payload, tab_id);
+      const event = normalizeCapturedHumanActionAnnotation(
+        this.enrichCapturedPayloadWithTabContext(tab_id, payload),
+        tab_id
+      );
       if (!event) return;
       this.teachEventAnnotationSink?.(event);
     }).catch(() => undefined);
     const script = teachCaptureInitScript(bindingName, annotationBindingName);
     await page.addInitScript(script).catch(() => undefined);
     await Promise.all(page.frames().map((frame) => frame.evaluate(script).catch(() => undefined)));
+  }
+
+  private enrichCapturedPayloadWithTabContext(tab_id: string, payload: unknown): unknown {
+    const popup = this.popupOpeners.get(tab_id);
+    if (!popup || !payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+    const raw = payload as Record<string, unknown>;
+    const detail = recordOpt(raw["detail"]) ?? {};
+    return {
+      ...raw,
+      detail: {
+        ...detail,
+        popup_context: true,
+        popup_tab_id: tab_id,
+        opener_tab_id: popup.opener_tab_id,
+        opener_origin: popup.opener_origin,
+      },
+    };
   }
 
   private async enrichCapturedPayloadWithFrame(page: Page, frame: Frame | undefined, payload: unknown): Promise<unknown> {
@@ -1043,6 +1072,19 @@ function isDialogReplayEvent(event: BrowserTraceEvent): boolean {
 
 function isPopupReplayEvent(event: BrowserTraceEvent): boolean {
   return event.detail?.["popup_event"] === true;
+}
+
+function popupNavigationDetail(
+  popup: { opener_tab_id: string; opener_origin: string } | undefined,
+  tab_id: string
+): Record<string, unknown> {
+  if (!popup) return {};
+  return {
+    popup_context: true,
+    popup_tab_id: tab_id,
+    opener_tab_id: popup.opener_tab_id,
+    opener_origin: popup.opener_origin,
+  };
 }
 
 async function runTargetAction(

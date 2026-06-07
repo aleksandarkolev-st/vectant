@@ -270,7 +270,7 @@ export class BrowserBroker {
     return this.teachAnswers.map((answer) => ({ ...answer }));
   }
 
-  handleOriginChange(tab_id: string, nextUrl: string): void {
+  handleOriginChange(tab_id: string, nextUrl: string, detail?: Record<string, unknown>): void {
     let origin: string;
     try {
       origin = normalizeOrigin(nextUrl).origin;
@@ -282,7 +282,10 @@ export class BrowserBroker {
     if (tab) {
       this.tabs.set(tab_id, { ...tab, url: nextUrl });
     }
-    if (!this.teachMode.active || this.teachMode.tab_id !== tab_id) return;
+    if (!this.teachMode.active) return;
+    const sameTeachTab = this.teachMode.tab_id === tab_id;
+    const popupTeachTab = this.isTeachPopupContext(tab_id, detail);
+    if (!sameTeachTab && !popupTeachTab) return;
     if (this.teachMode.origin !== origin) {
       this.stopTeachMode(this.hasOriginConsent(origin) ? "origin_changed" : "unapproved_origin_change");
       return;
@@ -297,7 +300,7 @@ export class BrowserBroker {
       url: nextUrl,
       origin,
       action: "navigate",
-      detail: { event_source: "page_lifecycle", navigation_event: true },
+      detail: { event_source: "page_lifecycle", navigation_event: true, ...(detail ?? {}) },
       security: this.securityForUrl(nextUrl),
     });
     eventLog.push({ kind: "browser", action: "navigation", payload: { event } });
@@ -320,7 +323,7 @@ export class BrowserBroker {
   recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string; detail?: Record<string, unknown> }):
     | { ok: true; event: BrowserTraceEvent; lease_conflict: boolean }
     | { ok: false; error: string } {
-    const gate = this.requireTeach(selection.tab_id, selection.url);
+    const gate = this.requireTeach(selection.tab_id, selection.url, selection.detail);
     if (!gate.ok) return gate;
     const normalized = this.normalizeSelectionOrigin(selection);
     if (!normalized.ok) return normalized;
@@ -358,7 +361,7 @@ export class BrowserBroker {
     detail: Record<string, unknown>;
     within_ms?: number;
   }): { ok: true; event: BrowserTraceEvent | null } | { ok: false; error: string } {
-    const gate = this.requireTeach(input.tab_id, input.url);
+    const gate = this.requireTeach(input.tab_id, input.url, input.detail);
     if (!gate.ok) return gate;
     const normalized = this.normalizeSelectionOrigin({
       tab_id: input.tab_id,
@@ -599,13 +602,28 @@ export class BrowserBroker {
     return record?.status === "granted" && record.diagnostics === "granted";
   }
 
-  private requireTeach(tab_id: string, url: string): { ok: true } | { ok: false; error: string } {
+  private requireTeach(tab_id: string, url: string, detail?: Record<string, unknown>): { ok: true } | { ok: false; error: string } {
     if (!this.teachMode.active) return { ok: false, error: "teach_mode_required" };
-    if (this.teachMode.tab_id !== tab_id) return { ok: false, error: "teach_tab_mismatch" };
     const origin = normalizeOrigin(url).origin;
+    if (this.teachMode.tab_id !== tab_id && !this.isSameOriginPopupTeachTab(tab_id, origin, detail)) {
+      return { ok: false, error: "teach_tab_mismatch" };
+    }
     if (this.teachMode.origin !== origin) return { ok: false, error: "teach_origin_mismatch" };
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     return { ok: true };
+  }
+
+  private isSameOriginPopupTeachTab(tab_id: string, origin: string, detail: Record<string, unknown> | undefined): boolean {
+    if (!this.isTeachPopupContext(tab_id, detail)) return false;
+    return origin === this.teachMode.origin;
+  }
+
+  private isTeachPopupContext(tab_id: string, detail: Record<string, unknown> | undefined): boolean {
+    if (!detail || detail["popup_context"] !== true) return false;
+    if (typeof detail["popup_tab_id"] === "string" && detail["popup_tab_id"] !== tab_id) return false;
+    if (detail["opener_tab_id"] !== this.teachMode.tab_id) return false;
+    if (typeof detail["opener_origin"] === "string" && detail["opener_origin"] !== this.teachMode.origin) return false;
+    return true;
   }
 
   private normalizeSelectionOrigin(selection: BrowserSelection): { ok: true; origin: string } | { ok: false; error: string } {
