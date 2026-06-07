@@ -224,7 +224,7 @@ describe("browser workflow contract compiler", () => {
     expect(classifyWorkflowReplayBlock(replay)).toBe("locatorDrift");
   });
 
-  it("surfaces coordinate and pointer limitations without marking them hardened", () => {
+  it("surfaces coordinate and pointer limitations and blocks replay", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
         event_id: "chart",
@@ -242,10 +242,10 @@ describe("browser workflow contract compiler", () => {
       kind: "canvas",
       replay: "unsupported",
     }));
-    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("sameSession");
-    expect(workflow.contract.counterfactualPlan.profiles).toContainEqual(expect.objectContaining({
-      name: "mobile",
-      enabled: false,
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("blocked");
+    expect(workflow.contract.counterfactualPlan).toEqual(expect.objectContaining({
+      mode: "blocked",
+      profiles: [],
     }));
   });
 
@@ -515,6 +515,36 @@ describe("browser workflow contract compiler", () => {
     expect(coldSession.warnings[0]).toContain("fresh browser context");
     expect(sameSession.status).toBe("ready");
     expect(sameSession.events.map((event) => event.event_id)).toEqual(["open", "save", "after"]);
+  });
+
+  it("blocks pointer drag replay before runtime execution", () => {
+    const events = [
+      baseEvent({
+        event_id: "drag",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"list\", { name: \"Done\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          element: { role: "listitem", name: "Task" },
+        },
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toContain("pointerDragUnreliable");
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("blocked");
+    expect(replay).toEqual(expect.objectContaining({
+      status: "blocked",
+      events: [],
+      warnings: expect.arrayContaining([
+        "Replay blocked: pointer or sensor-based drag requires calibrated replay support.",
+      ]),
+    }));
+    expect(classifyWorkflowReplayBlock(replay)).toBe("pointerDragUnreliable");
   });
 
   it("advertises and dispatches workflow contract tools", async () => {

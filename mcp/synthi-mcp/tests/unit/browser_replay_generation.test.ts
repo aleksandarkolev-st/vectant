@@ -333,6 +333,30 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).toContain("workflow limitation: iframeNeedsFrameLocator");
     expect(generated.warnings).toContain("workflow replay blocked by unsupported browser surface");
   });
+
+  it("does not emit dragTo for pointer or sensor-based drags without calibrated replay", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "pointer-drag",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"list\", { name: \"Done\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          element: { role: "listitem", name: "Task" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"listitem\", { name: \"Task\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("test.skip(true, \"Replay blocked: pointer or sensor-based drag requires calibrated replay support.\");");
+    expect(generated.code).not.toContain(".dragTo(");
+    expect(generated.warnings).toContain("workflow limitation: pointerDragUnreliable");
+    expect(generated.warnings).toContain("workflow replay blocked by unsupported browser surface");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

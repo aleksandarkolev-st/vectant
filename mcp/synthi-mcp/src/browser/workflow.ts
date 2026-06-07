@@ -608,7 +608,7 @@ export function classifyWorkflowReplayBlock(plan: Pick<WorkflowReplayPlanV7, "wa
   const message = plan.warnings.join(" ");
   if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
   if (/canvas/i.test(message)) return "canvasUnreliable";
-  if (/pointer drag|pointer-drag/i.test(message)) return "pointerDragUnreliable";
+  if (/pointer.*drag|sensor.*drag/i.test(message)) return "pointerDragUnreliable";
   if (/mutation/i.test(message)) return "mutationBlocked";
   if (/iframe|frame locator/i.test(message)) return "locatorDrift";
   if (/popup|multi-tab/i.test(message)) return "unsafeEnvironment";
@@ -983,6 +983,12 @@ function replayBlockingWarnings(limitations: WorkflowLimitationV7[]): string[] {
   }
   if (limitations.includes("closedShadowDomBlocked")) {
     warnings.push("Replay blocked: closed Shadow DOM requires a dev-only bridge or external affordance.");
+  }
+  if (limitations.includes("canvasCoordinateOnly")) {
+    warnings.push("Replay blocked: coordinate-only canvas/WebGL actions require a semantic app bridge.");
+  }
+  if (limitations.includes("pointerDragUnreliable")) {
+    warnings.push("Replay blocked: pointer or sensor-based drag requires calibrated replay support.");
   }
   return warnings;
 }
