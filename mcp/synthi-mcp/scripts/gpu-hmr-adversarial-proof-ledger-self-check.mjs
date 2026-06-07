@@ -214,6 +214,24 @@ function baselineContract(overrides = {}) {
       evidence_refs: ['code-object:metadata'],
     },
     abi_metadata: {
+      args: [{
+        name: 'output',
+        type: 'float*',
+        size: 8,
+        offset: 0,
+        value_kind: 'device_pointer',
+        access: 'write',
+        address_space: 'global',
+        source: 'code_object',
+      }],
+      workgroup_or_launch_shape: {
+        grid_dim: [64, 1, 1],
+        block_dim: [256, 1, 1],
+        shared_mem_bytes: 0,
+      },
+      stream_or_queue_requirements: {
+        stream: 'stream-1',
+      },
       kernel_abi_fingerprint_hashes: [HASH_C],
       extractor_sources: ['clang_ast'],
     },
@@ -467,6 +485,7 @@ assert.equal(accepted.gpuHmrSuccess, true);
 const acceptedLedger = buildGpuHmrProofLedger(baselineRecord());
 const runtimeArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
+  sourceEditId: 'gpu-artifact-edit',
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -497,6 +516,7 @@ assert.equal(runtimeArtifact.acceptanceContractEvaluation.accepted, true);
 
 const rejectedBlankVisualArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
+  sourceEditId: 'gpu-artifact-edit',
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -539,6 +559,7 @@ assert.ok(
 
 const rejectedSameFrameVisualArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
+  sourceEditId: 'gpu-artifact-edit',
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',
@@ -617,6 +638,7 @@ const forgedDispatchLedgerRecord = baselineRecord({
 assert.equal(evaluateGpuHmrProofLedger(forgedDispatchLedgerRecord).gpuHmrSuccess, true);
 const rejectedForgedExplicitLedgerArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
+  sourceEditId: 'gpu-artifact-edit',
   backend: 'hip',
   gpuArch: 'gfx1201',
   processId: 'pid-1',

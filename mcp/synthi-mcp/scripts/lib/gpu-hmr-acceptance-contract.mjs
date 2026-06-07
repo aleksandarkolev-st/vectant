@@ -84,6 +84,17 @@ function boolValue(value, fallback = false) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function confidenceIsValid(value) {
+  if (value === null || value === undefined || typeof value === 'boolean') return false;
+  if (typeof value === 'string' && !value.trim()) return false;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 && n <= 1;
+}
+
+function normalizeConfidence(value) {
+  return confidenceIsValid(value) ? Number(value) : null;
+}
+
 function boolPresence(...values) {
   for (const value of values) {
     if (typeof value === 'boolean') return { present: true, value };
@@ -183,6 +194,12 @@ function firstObject(...values) {
   return {};
 }
 
+function compactObject(value = {}) {
+  return Object.fromEntries(
+    Object.entries(asObject(value)).filter(([, entryValue]) => fieldProven(entryValue)),
+  );
+}
+
 function firstText(...values) {
   for (const value of values) {
     const normalized = text(value);
@@ -213,7 +230,7 @@ function normalizeClassification(value = {}) {
     project_kind: enumValue(c.project_kind ?? c.projectKind, PROJECT_KINDS, 'unknown'),
     edit_kind: enumValue(c.edit_kind ?? c.editKind, EDIT_KINDS, 'unknown'),
     route: enumValue(c.route, ROUTES, 'reject'),
-    confidence: Number.isFinite(Number(c.confidence)) ? Number(c.confidence) : null,
+    confidence: normalizeConfidence(c.confidence),
     blocking_gaps: compactStringList(c.blocking_gaps ?? c.blockingGaps),
   };
 }
@@ -291,7 +308,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     project_id: text(c.project_id ?? c.projectId),
     edit_id: text(c.edit_id ?? c.editId),
     backend: enumValue(asObject(c.backend).value ?? c.backend, BACKENDS, 'unknown'),
-    confidence: Number.isFinite(Number(c.confidence)) ? Number(c.confidence) : null,
+    confidence: normalizeConfidence(c.confidence),
     evidence_refs: compactStringList(c.evidence_refs ?? c.evidenceRefs),
     ai_hints: asArray(c.ai_hints ?? c.aiHints),
     unsupported_reasons: compactStringList(c.unsupported_reasons ?? c.unsupportedReasons),
@@ -351,6 +368,10 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       actual: contract.contract_version,
     });
   }
+  if (!contract.project_id) addFailure(failures, 'project_id_missing');
+  if (!contract.edit_id) addFailure(failures, 'edit_id_missing');
+  if (!confidenceIsValid(contract.confidence)) addFailure(failures, 'contract_confidence_missing');
+  if (!confidenceIsValid(c.confidence)) addFailure(failures, 'classification_confidence_missing');
   if (contract.backend === 'unknown') addFailure(failures, 'backend_unknown');
   if (c.project_kind === 'cpu_project') addFailure(failures, 'cpu_project_not_gpu_hmr');
   if (c.project_kind === 'unknown') addFailure(failures, 'project_kind_unknown');
@@ -387,6 +408,11 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (!contract.artifact_identity.source_paths.length) addFailure(failures, 'artifact_source_paths_missing');
   if (!contract.artifact_identity.entry_points.length) addFailure(failures, 'artifact_entry_points_missing');
   if (contract.artifact_identity.artifact_kind === 'unknown') addFailure(failures, 'artifact_kind_unknown');
+  if (!contract.artifact_identity.compile_target) addFailure(failures, 'artifact_compile_target_missing');
+  if (!contract.artifact_identity.compiler) addFailure(failures, 'artifact_compiler_missing');
+  if (!contract.artifact_identity.compiler_args_hash) {
+    addFailure(failures, 'artifact_compiler_args_hash_missing');
+  }
   if (!contract.evidence_refs.length) addFailure(failures, 'contract_evidence_refs_missing');
   if (contract.evidence_refs.length === 0 && contract.ai_hints.length > 0) {
     addFailure(failures, 'ai_hints_without_verified_evidence');
@@ -403,10 +429,21 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (
     ['compatible', 'additive'].includes(abi.value)
     && !nonEmptyValue(abiMetadata.args)
-    && !nonEmptyValue(abiMetadata.kernel_abi_fingerprint_hashes)
     && !nonEmptyValue(abiMetadata.descriptor_or_binding_layout)
   ) {
     addFailure(failures, 'abi_metadata_missing');
+  }
+  if (
+    ['compatible', 'additive'].includes(abi.value)
+    && !nonEmptyValue(abiMetadata.workgroup_or_launch_shape)
+  ) {
+    addFailure(failures, 'abi_workgroup_or_launch_shape_missing');
+  }
+  if (
+    ['compatible', 'additive'].includes(abi.value)
+    && !nonEmptyValue(abiMetadata.stream_or_queue_requirements)
+  ) {
+    addFailure(failures, 'abi_stream_or_queue_requirements_missing');
   }
   if (
     ['compatible', 'additive'].includes(abi.value)
@@ -446,6 +483,9 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   }
   const retirementValue = enumValue(contract.epoch_retirement_proof.value, RETIREMENT_PROOFS, 'unproven');
   if (retirementValue === 'unproven') addFailure(failures, 'epoch_retirement_unproven');
+  if (!nonEmptyValue(contract.epoch_retirement_proof.evidence_refs)) {
+    addFailure(failures, 'epoch_retirement_evidence_refs_missing');
+  }
   const fission = contract.fission_report;
   if (!nonEmptyValue(fission.selected_island)) addFailure(failures, 'fission_selected_island_missing');
   if (!nonEmptyValue(fission.selected_reason)) addFailure(failures, 'fission_selected_reason_missing');
@@ -593,12 +633,19 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
   const firewall = normalized.firewall_evidence ?? {};
   return {
     backend: normalized.backend,
+    project_id: normalized.project_id,
+    edit_id: normalized.edit_id,
+    confidence: normalized.confidence,
     classification_project_kind: normalized.classification?.project_kind ?? null,
     classification_edit_kind: normalized.classification?.edit_kind ?? null,
     classification_route: normalized.classification?.route ?? null,
+    classification_confidence: normalized.classification?.confidence ?? null,
     artifact_kind: artifact.artifact_kind ?? null,
     source_paths: sortedStringList(artifact.source_paths),
     entry_points: sortedStringList(artifact.entry_points),
+    compile_target: artifact.compile_target ?? null,
+    compiler: artifact.compiler ?? null,
+    compiler_args_hash: artifact.compiler_args_hash ?? null,
     artifact_hash_before: normalized.artifact_hash_before ?? null,
     artifact_hash_after: normalized.artifact_hash_after ?? null,
     abi_compatibility_class: abi.value ?? null,
@@ -1154,6 +1201,55 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       evidence_refs: compactStringList(abiProof.evidenceRefs ?? abiProof.evidence_refs),
     },
     abi_metadata: {
+      args: uniqueObjectsByPath([
+        ...asArray(abiProof.args),
+        ...asArray(abiProof.kernelArgs),
+        ...asArray(abiProof.kernel_args),
+        ...asArray(abiProof.argumentMetadata),
+        ...asArray(abiProof.argument_metadata),
+        ...asArray(dispatchProof.kernelParams),
+        ...asArray(dispatchProof.kernel_params),
+        ...asArray(dispatchProof.argProvenanceRecords),
+        ...asArray(dispatchProof.arg_provenance_records),
+      ]),
+      descriptor_or_binding_layout: firstObject(
+        abiProof.descriptorOrBindingLayout,
+        abiProof.descriptor_or_binding_layout,
+        abiProof.bindingLayout,
+        abiProof.binding_layout,
+        dispatchProof.descriptorOrBindingLayout,
+        dispatchProof.descriptor_or_binding_layout,
+      ),
+      workgroup_or_launch_shape: compactObject({
+        grid_dim: dispatchProof.gridDim ?? dispatchProof.grid_dim ?? dispatchProof.launchGridDim,
+        block_dim: dispatchProof.blockDim ?? dispatchProof.block_dim ?? dispatchProof.launchBlockDim,
+        shared_mem_bytes:
+          dispatchProof.sharedMemBytes
+          ?? dispatchProof.shared_mem_bytes
+          ?? dispatchProof.dynamicSharedMemoryBytes
+          ?? dispatchProof.dynamic_shared_memory_bytes,
+        work_dim: dispatchProof.workDim ?? dispatchProof.work_dim,
+        global_work_size: dispatchProof.globalWorkSize ?? dispatchProof.global_work_size,
+        local_work_size: dispatchProof.localWorkSize ?? dispatchProof.local_work_size,
+      }),
+      stream_or_queue_requirements: compactObject({
+        stream: firstText(
+          dispatchProof.stream,
+          dispatchProof.streamId,
+          dispatchProof.stream_id,
+          asArray(dispatchProof.dispatchStreamIds)[0],
+          asArray(dispatchProof.dispatch_stream_ids)[0],
+          asArray(epochProof.streamIds)[0],
+          asArray(epochProof.stream_ids)[0],
+        ),
+        queue: firstText(
+          dispatchProof.queue,
+          dispatchProof.queueId,
+          dispatchProof.queue_id,
+          dispatchProof.commandQueue,
+          dispatchProof.command_queue,
+        ),
+      }),
       kernel_abi_fingerprint_hashes: compactStringList(abiProof.kernelAbiFingerprintHashes),
       constant_global_layout_hashes: compactStringList(abiProof.constantGlobalLayoutHashes),
       extractor_sources: compactStringList(abiProof.acceptedExtractorSources),

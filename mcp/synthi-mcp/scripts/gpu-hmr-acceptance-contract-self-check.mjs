@@ -40,6 +40,24 @@ function contract(overrides = {}) {
       evidence_refs: ['code-object:metadata'],
     },
     abi_metadata: {
+      args: [{
+        name: 'output',
+        type: 'float*',
+        size: 8,
+        offset: 0,
+        value_kind: 'device_pointer',
+        access: 'write',
+        address_space: 'global',
+        source: 'code_object',
+      }],
+      workgroup_or_launch_shape: {
+        grid_dim: [64, 1, 1],
+        block_dim: [256, 1, 1],
+        shared_mem_bytes: 0,
+      },
+      stream_or_queue_requirements: {
+        stream: 'stream-1',
+      },
       kernel_abi_fingerprint_hashes: ['sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'],
       extractor_sources: ['clang_ast'],
     },
@@ -117,6 +135,21 @@ function expectReject(name, patch, expectedCode) {
 const accepted = evaluateGpuHmrAcceptanceContract(contract());
 assert.equal(accepted.accepted, true);
 
+expectReject('missing project id', {
+  project_id: null,
+}, 'project_id_missing');
+expectReject('missing edit id', {
+  edit_id: null,
+}, 'edit_id_missing');
+expectReject('missing contract confidence', {
+  confidence: null,
+}, 'contract_confidence_missing');
+expectReject('missing classification confidence', {
+  classification: {
+    ...contract().classification,
+    confidence: null,
+  },
+}, 'classification_confidence_missing');
 expectReject('host-only edit', {
   classification: {
     project_kind: 'gpu_project',
@@ -134,6 +167,24 @@ expectReject('cpu route', {
 expectReject('missing verified evidence refs', {
   evidence_refs: [],
 }, 'contract_evidence_refs_missing');
+expectReject('missing compile target', {
+  artifact_identity: {
+    ...contract().artifact_identity,
+    compile_target: null,
+  },
+}, 'artifact_compile_target_missing');
+expectReject('missing compiler identity', {
+  artifact_identity: {
+    ...contract().artifact_identity,
+    compiler: null,
+  },
+}, 'artifact_compiler_missing');
+expectReject('missing compiler args hash', {
+  artifact_identity: {
+    ...contract().artifact_identity,
+    compiler_args_hash: null,
+  },
+}, 'artifact_compiler_args_hash_missing');
 expectReject('ai hints only', {
   evidence_refs: [],
   ai_hints: [{ backend: 'hip' }],
@@ -166,6 +217,25 @@ expectReject('unknown ABI', {
 expectReject('metadata-only ABI label', {
   abi_metadata: {},
 }, 'abi_metadata_missing');
+expectReject('ABI hash without argument or binding layout', {
+  abi_metadata: {
+    ...contract().abi_metadata,
+    args: [],
+    descriptor_or_binding_layout: null,
+  },
+}, 'abi_metadata_missing');
+expectReject('ABI without launch shape', {
+  abi_metadata: {
+    ...contract().abi_metadata,
+    workgroup_or_launch_shape: null,
+  },
+}, 'abi_workgroup_or_launch_shape_missing');
+expectReject('ABI without stream or queue requirements', {
+  abi_metadata: {
+    ...contract().abi_metadata,
+    stream_or_queue_requirements: null,
+  },
+}, 'abi_stream_or_queue_requirements_missing');
 expectReject('missing reload hook', {
   reload_mechanism: 'unsupported',
 }, 'reload_mechanism_unsupported');
@@ -186,6 +256,12 @@ expectReject('missing epoch retirement mechanism', {
     dispatch_binding: 'dispatch_table_epoch_binding',
   },
 }, 'epoch_retirement_mechanism_missing');
+expectReject('missing epoch retirement evidence refs', {
+  epoch_retirement_proof: {
+    value: 'stream_event_proven',
+    evidence_refs: [],
+  },
+}, 'epoch_retirement_evidence_refs_missing');
 expectReject('missing fission selected reason', {
   fission_report: {
     selected_island: 'device-kernel',
