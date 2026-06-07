@@ -37,6 +37,12 @@ describe("browser MCP tool surface", () => {
     }
   });
 
+  it("defaults workflow replay to a cold session", () => {
+    const tool = BROWSER_TOOLS.find((candidate) => candidate.name === "synthi_browser_run_workflow");
+    const mode = tool?.inputSchema.properties?.["mode"] as { default?: string } | undefined;
+    expect(mode?.default).toBe("coldSession");
+  });
+
   it("returns null for non-browser tool dispatch", async () => {
     expect(await dispatchBrowserTool("synthi_health", {})).toBeNull();
   });

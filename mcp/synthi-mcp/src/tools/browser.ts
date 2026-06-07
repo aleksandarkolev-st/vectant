@@ -418,13 +418,13 @@ export const BROWSER_TOOLS = [
   {
     name: "synthi_browser_run_workflow",
     description:
-      "Replay the compiled workflow in the current authorized browser session under a control lease. prefixOnly stops before the first mutation boundary.",
+      "Replay the compiled workflow under a control lease. coldSession is the default and stops before the first mutation boundary in a fresh context.",
     inputSchema: {
       type: "object",
       properties: {
         lease_id: { type: "string" },
         tab_id: { type: "string" },
-        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "prefixOnly" },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "coldSession" },
         parameters: {
           type: "object",
           description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings here.",
@@ -1023,7 +1023,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const leaseId = requiredString(a, "lease_id");
-  const mode = normalizeReplayMode(a["mode"]);
+  const mode = normalizeReplayMode(a["mode"] ?? "coldSession");
   const parameters = stringParameters(a["parameters"]);
   const plan = browserBroker.workflowReplayPlan(mode);
   if (plan.status === "blocked") {
