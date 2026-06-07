@@ -6,9 +6,173 @@ const MIN_VISIBLE_PIXELS = 500;
 const FLAT_LUMA_STDDEV = 4;
 const FLAT_RGB_SPAN_MEAN = 12;
 const FLAT_UNIQUE_COLOR_SAMPLE_COUNT = 16;
+const CONVERGENCE_METRICS = new Set([
+  'per_frame_delta',
+  'window_mean_delta',
+  'stable_histogram_delta',
+  'oracle_region_delta',
+]);
+
+export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.deterministic_visual_mode.v1';
 
 function numeric(value) {
   return Number.isFinite(value) ? value : null;
+}
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function boolOrNull(value) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function textOrNull(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function finiteNumberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function addGate(failedGates, code, detail = {}) {
+  failedGates.push({ code, ...detail });
+}
+
+function normalizeConvergenceWindow(value = {}) {
+  const window = isObject(value) ? value : {};
+  const metricValue = textOrNull(window.metric?.value ?? window.metric);
+  const frameStart = finiteNumberOrNull(window.frame_start ?? window.frameStart);
+  const frameEnd = finiteNumberOrNull(window.frame_end ?? window.frameEnd);
+  return {
+    frame_start: frameStart,
+    frame_end: frameEnd,
+    metric: metricValue ? { value: metricValue } : null,
+    min_frames:
+      finiteNumberOrNull(window.min_frames ?? window.minFrames)
+      ?? (frameStart !== null && frameEnd !== null ? Math.max(0, frameEnd - frameStart + 1) : null),
+  };
+}
+
+function controlSatisfied(mode, disabledKey, presentKey, notApplicableKey) {
+  return mode[disabledKey] === true
+    || mode[presentKey] === false
+    || mode[notApplicableKey] === true;
+}
+
+function seedPolicyFixed(mode) {
+  return mode.fixed_seed === true
+    || mode.seed_policy_fixed === true
+    || Boolean(textOrNull(mode.seed_policy_hash));
+}
+
+function convergenceWindowAccepted(window) {
+  const metric = window.metric?.value ?? null;
+  return window.frame_start !== null
+    && window.frame_end !== null
+    && window.frame_end >= window.frame_start
+    && CONVERGENCE_METRICS.has(metric);
+}
+
+export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
+  const mode = isObject(input) ? input : {};
+  const convergenceWindow = normalizeConvergenceWindow(
+    mode.convergence_window ?? mode.convergenceWindow,
+  );
+  return {
+    schema_version:
+      textOrNull(mode.schema_version ?? mode.schemaVersion)
+      ?? GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+    fixed_seed: boolOrNull(mode.fixed_seed ?? mode.fixedSeed),
+    seed_policy_fixed: boolOrNull(mode.seed_policy_fixed ?? mode.seedPolicyFixed),
+    seed_policy_hash: textOrNull(mode.seed_policy_hash ?? mode.seedPolicyHash),
+    frozen_camera: boolOrNull(mode.frozen_camera ?? mode.frozenCamera),
+    temporal_accumulation_disabled:
+      boolOrNull(mode.temporal_accumulation_disabled ?? mode.temporalAccumulationDisabled),
+    temporal_accumulation_present:
+      boolOrNull(mode.temporal_accumulation_present ?? mode.temporalAccumulationPresent),
+    temporal_accumulation_not_applicable:
+      boolOrNull(mode.temporal_accumulation_not_applicable ?? mode.temporalAccumulationNotApplicable),
+    taa_disabled: boolOrNull(mode.taa_disabled ?? mode.taaDisabled),
+    taa_present: boolOrNull(mode.taa_present ?? mode.taaPresent),
+    taa_not_applicable: boolOrNull(mode.taa_not_applicable ?? mode.taaNotApplicable),
+    denoiser_disabled: boolOrNull(mode.denoiser_disabled ?? mode.denoiserDisabled),
+    denoiser_present: boolOrNull(mode.denoiser_present ?? mode.denoiserPresent),
+    denoiser_not_applicable: boolOrNull(mode.denoiser_not_applicable ?? mode.denoiserNotApplicable),
+    fixed_resolution: boolOrNull(mode.fixed_resolution ?? mode.fixedResolution),
+    fixed_swapchain_image_count:
+      boolOrNull(mode.fixed_swapchain_image_count ?? mode.fixedSwapchainImageCount),
+    frame_capture_after_epoch_dispatch:
+      boolOrNull(mode.frame_capture_after_epoch_dispatch ?? mode.frameCaptureAfterEpochDispatch),
+    presentation_fence_or_frame_boundary:
+      boolOrNull(mode.presentation_fence_or_frame_boundary ?? mode.presentationFenceOrFrameBoundary),
+    warmup_frames: finiteNumberOrNull(mode.warmup_frames ?? mode.warmupFrames),
+    convergence_window: convergenceWindow,
+  };
+}
+
+export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
+  const mode = normalizeGpuHmrDeterministicVisualMode(input);
+  const failedGates = [];
+  const warnings = [];
+  const convergenceAccepted = convergenceWindowAccepted(mode.convergence_window);
+  const temporalControlled = controlSatisfied(
+    mode,
+    'temporal_accumulation_disabled',
+    'temporal_accumulation_present',
+    'temporal_accumulation_not_applicable',
+  );
+  const taaControlled = controlSatisfied(mode, 'taa_disabled', 'taa_present', 'taa_not_applicable');
+  const denoiserControlled = controlSatisfied(
+    mode,
+    'denoiser_disabled',
+    'denoiser_present',
+    'denoiser_not_applicable',
+  );
+
+  if (mode.schema_version !== GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION) {
+    addGate(failedGates, 'deterministic_visual_mode_schema_unsupported', {
+      expected: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+      actual: mode.schema_version,
+    });
+  }
+  if (mode.frozen_camera !== true) addGate(failedGates, 'frozen_camera_unproven');
+  if (mode.fixed_resolution !== true) addGate(failedGates, 'fixed_resolution_unproven');
+  if (mode.frame_capture_after_epoch_dispatch !== true) {
+    addGate(failedGates, 'frame_capture_after_epoch_dispatch_unproven');
+  }
+  if (mode.presentation_fence_or_frame_boundary !== true) {
+    addGate(failedGates, 'presentation_boundary_unproven');
+  }
+  if (mode.fixed_swapchain_image_count !== true) {
+    warnings.push({ code: 'fixed_swapchain_image_count_unproven' });
+  }
+  if (!seedPolicyFixed(mode) && !convergenceAccepted) {
+    addGate(failedGates, 'seed_policy_unproven');
+  }
+  if (!temporalControlled && !convergenceAccepted) {
+    addGate(failedGates, 'temporal_visual_requires_convergence_window');
+  }
+  if (!taaControlled && !convergenceAccepted) addGate(failedGates, 'taa_control_unproven');
+  if (!denoiserControlled && !convergenceAccepted) addGate(failedGates, 'denoiser_control_unproven');
+  if (!temporalControlled && convergenceAccepted && !seedPolicyFixed(mode)) {
+    warnings.push({ code: 'convergence_window_without_fixed_seed_policy' });
+  }
+
+  return {
+    schemaVersion: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+    mode,
+    accepted: failedGates.length === 0,
+    proofMode: convergenceAccepted ? 'convergence_window' : 'single_frame_deterministic',
+    failedGates,
+    warnings,
+  };
+}
+
+export function deterministicVisualModeAccepted(mode = {}) {
+  return evaluateGpuHmrDeterministicVisualMode(mode).accepted === true;
 }
 
 export function classifyGpuHmrVisualEvidenceStats(stats = {}) {

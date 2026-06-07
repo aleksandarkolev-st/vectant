@@ -6,6 +6,7 @@ import {
   queryGpuHmrLedgerInvariants,
 } from './gpu-hmr-proof-ledger.mjs';
 import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
+import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -811,6 +812,27 @@ function acceptanceContractLimitations(evaluation) {
   }));
 }
 
+function deterministicVisualModeLimitations(evaluation) {
+  if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
+  return compactObjects(evaluation.failedGates).map((gate) => ({
+    stageId: 'deterministic-visual-mode',
+    stage_id: 'deterministic-visual-mode',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-deterministic-visual-mode-proven',
+    required_state: 'gpu-hmr-deterministic-visual-mode-proven',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-deterministic-visual-mode-rejected',
+    degraded_state: 'gpu-hmr-deterministic-visual-mode-rejected',
+    degradedReason: gate.code ?? 'deterministic_visual_mode_gate_failed',
+    degraded_reason: gate.code ?? 'deterministic_visual_mode_gate_failed',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
 function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
@@ -1100,7 +1122,16 @@ function buildProofLedgerRecordFromInput(input, validationContext) {
     full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
     process_restarted: input.processRestarted === true || input.process_restarted === true,
     oracle_artifacts: outputProof?.oracleArtifacts ?? outputProof?.oracle_artifacts ?? {},
-    deterministic_visual_mode: input.deterministicVisualMode ?? input.deterministic_visual_mode ?? {},
+    deterministic_visual_mode:
+      input.deterministicVisualMode
+      ?? input.deterministic_visual_mode
+      ?? validationContext?.deterministicVisualMode
+      ?? validationContext?.deterministic_visual_mode
+      ?? outputProof?.deterministicVisualMode
+      ?? outputProof?.deterministic_visual_mode
+      ?? outputProof?.outputOracle?.deterministicVisualMode
+      ?? outputProof?.outputOracle?.deterministic_visual_mode
+      ?? {},
     timings: input.timings ?? validationContext?.timings ?? {},
     model_provenance: input.modelProvenance ?? input.model_provenance ?? validationContext?.modelProvenance ?? {},
     evidence_refs: compactStringList([
@@ -1118,6 +1149,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const fullRuntimeProof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
     ? input.fullRuntimeProof
     : null;
+  const outputProof = objectOrNull(input.outputProof);
   const sessionId = runtimeSessionId(input);
   const runtimeEvidence = runtimeEvidenceSnapshot(input);
   const validationContext = validationContextSnapshot(input);
@@ -1134,6 +1166,18 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
       classification: input.classification ?? validationContext?.classification ?? {},
     },
   );
+  const deterministicVisualMode = objectOrNull(input.deterministicVisualMode)
+    ?? objectOrNull(input.deterministic_visual_mode)
+    ?? objectOrNull(validationContext?.deterministicVisualMode)
+    ?? objectOrNull(validationContext?.deterministic_visual_mode)
+    ?? objectOrNull(outputProof?.deterministicVisualMode)
+    ?? objectOrNull(outputProof?.deterministic_visual_mode)
+    ?? objectOrNull(outputProof?.outputOracle?.deterministicVisualMode)
+    ?? objectOrNull(outputProof?.outputOracle?.deterministic_visual_mode)
+    ?? null;
+  const deterministicVisualModeEvaluation = deterministicVisualMode
+    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
+    : null;
   const proofLedgerRecord = buildProofLedgerRecordFromInput(input, validationContext);
   const proofLedger = buildGpuHmrProofLedger(proofLedgerRecord);
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
@@ -1146,6 +1190,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const limitations = [
     ...proofLimitations(stages, fullRuntimeProof),
     ...acceptanceContractLimitations(acceptanceContractEvaluation),
+    ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -1177,6 +1222,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionGates,
     acceptanceContract,
     acceptanceContractEvaluation,
+    deterministicVisualMode,
+    deterministicVisualModeEvaluation,
     proofLedger,
     proofLedgerQuery,
     visualEvidenceArtifacts,
@@ -1198,6 +1245,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionGates,
     acceptanceContract,
     acceptanceContractEvaluation,
+    deterministicVisualMode,
+    deterministicVisualModeEvaluation,
     proofLedger,
     proofLedgerQuery,
     visualEvidenceArtifacts,
@@ -1236,6 +1285,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     acceptance_contract: acceptanceContract,
     acceptanceContractEvaluation,
     acceptance_contract_evaluation: acceptanceContractEvaluation,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     proofLedger,
     proof_ledger: proofLedger,
     proofLedgerQuery,

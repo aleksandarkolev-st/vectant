@@ -48,6 +48,9 @@ import {
   buildGpuHmrValidationProofSummary,
 } from "../../scripts/lib/gpu-hmr-validation-proof-summary.mjs";
 import {
+  evaluateGpuHmrDeterministicVisualMode,
+} from "../../scripts/lib/gpu-hmr-visual-evidence.mjs";
+import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
 } from "../../scripts/lib/ai-split-provenance.mjs";
@@ -6284,6 +6287,84 @@ describe("GPU HMR runtime output proof classification", () => {
           status: "blocked",
           degraded_state: "gpu-hmr-visual-evidence-missing",
           degraded_reason: "visual_evidence_not_accepted",
+        }),
+      ])
+    );
+  });
+
+  it("requires deterministic visual controls beyond a raw pixel diff", () => {
+    const weakMode = evaluateGpuHmrDeterministicVisualMode({
+      fixed_seed: true,
+      frozen_camera: true,
+      frame_capture_after_epoch_dispatch: true,
+    });
+
+    expect(weakMode.accepted).toBe(false);
+    expect(weakMode.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "fixed_resolution_unproven",
+        "presentation_boundary_unproven",
+        "temporal_visual_requires_convergence_window",
+        "taa_control_unproven",
+        "denoiser_control_unproven",
+      ])
+    );
+
+    const strictSingleFrame = evaluateGpuHmrDeterministicVisualMode({
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    });
+
+    expect(strictSingleFrame.accepted).toBe(true);
+    expect(strictSingleFrame.proofMode).toBe("single_frame_deterministic");
+  });
+
+  it("accepts convergence-window visual proof for temporal renderers", () => {
+    const convergenceMode = evaluateGpuHmrDeterministicVisualMode({
+      frozen_camera: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      convergence_window: {
+        frame_start: 12,
+        frame_end: 20,
+        metric: {
+          value: "window_mean_delta",
+        },
+      },
+    });
+
+    expect(convergenceMode.accepted).toBe(true);
+    expect(convergenceMode.proofMode).toBe("convergence_window");
+    expect(convergenceMode.warnings.map((warning) => warning.code)).toContain(
+      "convergence_window_without_fixed_seed_policy",
+    );
+  });
+
+  it("surfaces deterministic visual-mode failures in the proof summary", () => {
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      deterministicVisualMode: {
+        fixed_seed: true,
+        frozen_camera: true,
+        frame_capture_after_epoch_dispatch: true,
+      },
+    });
+
+    expect(summary.proof_states.deterministic_visual_mode?.accepted).toBe(false);
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "deterministic-visual-mode",
+          degraded_reason: "fixed_resolution_unproven",
         }),
       ])
     );

@@ -6802,6 +6802,8 @@ async function writeResults() {
       limitations: written.artifact.limitations,
       acceptanceContract: written.artifact.acceptanceContract,
       acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      deterministicVisualMode: written.artifact.deterministicVisualMode,
+      deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
       proofLedger: written.artifact.proofLedger,
       proofLedgerQuery: written.artifact.proofLedgerQuery,
       gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,

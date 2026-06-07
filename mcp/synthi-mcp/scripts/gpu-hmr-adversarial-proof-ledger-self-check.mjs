@@ -184,7 +184,13 @@ assertGpuHmrProofLedgerSuccess(baselineRecord({
   deterministic_visual_mode: {
     fixed_seed: true,
     frozen_camera: true,
+    temporal_accumulation_disabled: true,
+    taa_disabled: true,
+    denoiser_disabled: true,
+    fixed_resolution: true,
+    fixed_swapchain_image_count: true,
     frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
   },
 }));
 

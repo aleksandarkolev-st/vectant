@@ -1,5 +1,6 @@
 import {
   classifyGpuHmrVisualEvidenceStats,
+  evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './gpu-hmr-visual-evidence.mjs';
@@ -422,6 +423,32 @@ function acceptanceContractEvaluationFromRecord(record) {
   return null;
 }
 
+function deterministicVisualModeFromRecord(record) {
+  if (!isObject(record)) return null;
+  if (isObject(record.deterministicVisualMode)) return record.deterministicVisualMode;
+  if (isObject(record.deterministic_visual_mode)) return record.deterministic_visual_mode;
+  if (isObject(record.artifact?.deterministicVisualMode)) return record.artifact.deterministicVisualMode;
+  if (isObject(record.artifact?.deterministic_visual_mode)) {
+    return record.artifact.deterministic_visual_mode;
+  }
+  return null;
+}
+
+function deterministicVisualModeEvaluationFromRecord(record) {
+  if (!isObject(record)) return null;
+  if (isObject(record.deterministicVisualModeEvaluation)) return record.deterministicVisualModeEvaluation;
+  if (isObject(record.deterministic_visual_mode_evaluation)) {
+    return record.deterministic_visual_mode_evaluation;
+  }
+  if (isObject(record.artifact?.deterministicVisualModeEvaluation)) {
+    return record.artifact.deterministicVisualModeEvaluation;
+  }
+  if (isObject(record.artifact?.deterministic_visual_mode_evaluation)) {
+    return record.artifact.deterministic_visual_mode_evaluation;
+  }
+  return null;
+}
+
 function acceptanceContractLimitations(evaluations) {
   return compactObjects(evaluations)
     .filter((evaluation) => evaluation.accepted !== true)
@@ -432,6 +459,22 @@ function acceptanceContractLimitations(evaluations) {
       observed_state: null,
       degraded_state: 'gpu-hmr-acceptance-contract-rejected',
       degraded_reason: gate.code ?? 'acceptance_contract_gate_failed',
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    })));
+}
+
+function deterministicVisualModeLimitations(evaluations) {
+  return compactObjects(evaluations)
+    .filter((evaluation) => evaluation.accepted !== true)
+    .flatMap((evaluation) => compactObjects(evaluation.failedGates).map((gate) => ({
+      stage_id: 'deterministic-visual-mode',
+      status: 'blocked',
+      required_state: 'gpu-hmr-deterministic-visual-mode-proven',
+      observed_state: null,
+      degraded_state: 'gpu-hmr-deterministic-visual-mode-rejected',
+      degraded_reason: gate.code ?? 'deterministic_visual_mode_gate_failed',
       proof_artifact_path: null,
       phase: null,
       name: null,
@@ -504,6 +547,29 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     acceptanceContractEvaluation?.contract
       ?? acceptanceContracts[acceptanceContracts.length - 1]
       ?? null;
+  const deterministicVisualModes = compactObjects([
+    input.deterministicVisualMode,
+    input.deterministic_visual_mode,
+    validationContext.deterministicVisualMode,
+    validationContext.deterministic_visual_mode,
+    ...runtimeArtifactRecords.map(deterministicVisualModeFromRecord),
+  ]);
+  const explicitDeterministicVisualModeEvaluations = compactObjects([
+    input.deterministicVisualModeEvaluation,
+    input.deterministic_visual_mode_evaluation,
+    validationContext.deterministicVisualModeEvaluation,
+    validationContext.deterministic_visual_mode_evaluation,
+    ...runtimeArtifactRecords.map(deterministicVisualModeEvaluationFromRecord),
+  ]);
+  const deterministicVisualModeEvaluations = explicitDeterministicVisualModeEvaluations.length > 0
+    ? explicitDeterministicVisualModeEvaluations
+    : deterministicVisualModes.map((mode) => evaluateGpuHmrDeterministicVisualMode(mode));
+  const deterministicVisualModeEvaluation =
+    deterministicVisualModeEvaluations[deterministicVisualModeEvaluations.length - 1] ?? null;
+  const deterministicVisualMode =
+    deterministicVisualModeEvaluation?.mode
+      ?? deterministicVisualModes[deterministicVisualModes.length - 1]
+      ?? null;
   const proofArtifactPaths = compactStringList([
     ...(Array.isArray(input.proofArtifactPaths) ? input.proofArtifactPaths : []),
     ...(Array.isArray(input.proof_artifact_paths) ? input.proof_artifact_paths : []),
@@ -533,6 +599,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
     ...acceptanceContractLimitations(acceptanceContractEvaluations),
+    ...deterministicVisualModeLimitations(deterministicVisualModeEvaluations),
     ...proofLedgerLimitations(proofLedgerQueries),
     ...targetProgressionGateLimitations(input, validationContext),
     ...visualEvidenceLimitations(qualityRows),
@@ -608,6 +675,14 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
             failed_gate_count: compactObjects(acceptanceContractEvaluation.failedGates).length,
             warning_count: compactObjects(acceptanceContractEvaluation.warnings).length,
             contract_hash: acceptanceContractEvaluation.contract?.contract_hash ?? null,
+        }
+        : null,
+      deterministic_visual_mode: deterministicVisualModeEvaluation
+        ? {
+            accepted: deterministicVisualModeEvaluation.accepted === true,
+            failed_gate_count: compactObjects(deterministicVisualModeEvaluation.failedGates).length,
+            warning_count: compactObjects(deterministicVisualModeEvaluation.warnings).length,
+            proof_mode: deterministicVisualModeEvaluation.proofMode ?? null,
           }
         : null,
       runtime_artifacts: runtimeArtifactRecords.map((record) => ({
@@ -628,8 +703,16 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     acceptance_contract: acceptanceContract,
     acceptance_contract_evaluation: acceptanceContractEvaluation,
     acceptance_contract_evaluations: acceptanceContractEvaluations,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluations: deterministicVisualModeEvaluations,
     gpu_hmr_success: proofLedgerQuery?.gpuHmrSuccess === true
-      && acceptanceContractEvaluation?.accepted === true,
+      && acceptanceContractEvaluation?.accepted === true
+      && (
+        deterministicVisualModeEvaluation
+          ? deterministicVisualModeEvaluation.accepted === true
+          : true
+      ),
     visual_evidence_is_supplemental: true,
     output_correctness_requires_deterministic_oracle: true,
     full_runtime_proven: input.fullRuntimeProof

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
 
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.v1';
 
@@ -104,20 +105,6 @@ function outputKind(outputEvent) {
   return String(firstText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '')
     .trim()
     .toLowerCase();
-}
-
-function visualDeterministicModeAccepted(mode) {
-  const m = asObject(mode);
-  if (m.accepted === true || m.proven === true) return true;
-  if (m.fixed_seed === true && m.frozen_camera === true && m.frame_capture_after_epoch_dispatch === true) {
-    return true;
-  }
-  const window = asObject(m.convergence_window ?? m.convergenceWindow);
-  return m.frozen_camera === true
-    && m.frame_capture_after_epoch_dispatch === true
-    && text(window.metric?.value ?? window.metric)
-    && finiteNumber(window.frame_start ?? window.frameStart) !== null
-    && finiteNumber(window.frame_end ?? window.frameEnd) !== null;
 }
 
 function isVisualOutput(outputEvent) {
@@ -294,8 +281,17 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       actual: dispatchPid,
     });
   }
-  if (isVisualOutput(record.outputEvent) && !visualDeterministicModeAccepted(record.deterministicVisualMode)) {
-    addFailure(failures, 'visual_output_without_deterministic_mode');
+  if (isVisualOutput(record.outputEvent)) {
+    const deterministicVisualModeEvaluation =
+      evaluateGpuHmrDeterministicVisualMode(record.deterministicVisualMode);
+    if (deterministicVisualModeEvaluation.accepted !== true) {
+      addFailure(failures, 'visual_output_without_deterministic_mode', {
+        failedGates: deterministicVisualModeEvaluation.failedGates,
+      });
+      for (const gate of deterministicVisualModeEvaluation.failedGates) {
+        addFailure(failures, gate.code ?? 'deterministic_visual_mode_gate_failed');
+      }
+    }
   }
   if (!record.contractHash) warnings.push({ code: 'contract_hash_missing' });
   if (!record.deviceIdentity || Object.keys(record.deviceIdentity).length === 0) {
