@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from './gpu-hmr-proof-ledger.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -87,7 +91,16 @@ function runtimeCapabilityPreflightFacet(preflight) {
 }
 
 function artifactIdsFromSha256Hashes(values) {
-  return compactStringList(values)
+  const flattened = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === 'string') flattened.push(value);
+  };
+  visit(values);
+  return compactStringList(flattened)
     .map((value) => value.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null)
     .filter(Boolean)
     .map((digest) => `artifact:sha256:${digest}`);
@@ -776,6 +789,302 @@ function targetProgressionGateLimitations(gates) {
     }));
 }
 
+function objectOrNull(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function firstArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function firstArtifactId(...values) {
+  const flattened = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === 'string') flattened.push(value);
+  };
+  values.forEach(visit);
+  return contentAddressedArtifactIds(flattened)[0]
+    ?? artifactIdsFromSha256Hashes(flattened)[0]
+    ?? null;
+}
+
+function proofArtifactId(proof, extraFields = []) {
+  const p = objectOrNull(proof) ?? {};
+  const oracle = objectOrNull(p.outputOracle) ?? objectOrNull(p.output_oracle) ?? {};
+  return firstArtifactId(
+    p.artifactId,
+    p.artifact_id,
+    p.selectedArtifactId,
+    p.selected_artifact_id,
+    p.runtimeArtifactId,
+    p.runtime_artifact_id,
+    p.newArtifactId,
+    p.new_artifact_id,
+    p.publishedArtifactId,
+    p.published_artifact_id,
+    p.activeArtifactId,
+    p.active_artifact_id,
+    p.ramBlobId,
+    p.ram_blob_id,
+    oracle.artifactId,
+    oracle.artifact_id,
+    firstArray(p.artifactIds),
+    firstArray(p.artifact_ids),
+    firstArray(p.selectedArtifactIds),
+    firstArray(p.selected_artifact_ids),
+    firstArray(p.runtimeArtifactIds),
+    firstArray(p.runtime_artifact_ids),
+    firstArray(p.ramBlobIds),
+    firstArray(p.ram_blob_ids),
+    artifactIdsFromSha256Hashes([
+      p.artifactContentHash,
+      p.artifact_content_hash,
+      p.newArtifactHash,
+      p.new_artifact_hash,
+      p.ramBytesHash,
+      p.ram_bytes_hash,
+      firstArray(p.artifactContentHashes),
+      firstArray(p.artifact_content_hashes),
+      firstArray(p.ramBytesHashes),
+      firstArray(p.ram_bytes_hashes),
+    ]),
+    extraFields,
+  );
+}
+
+function epochGraphFromProof(proof) {
+  const p = objectOrNull(proof) ?? {};
+  return objectOrNull(p.epochGenerationGraph)
+    ?? objectOrNull(p.epoch_generation_graph)
+    ?? objectOrNull(p.generationGraph)
+    ?? objectOrNull(p.generation_graph)
+    ?? null;
+}
+
+function latestPublicationFromEpochProof(proof) {
+  const graph = epochGraphFromProof(proof);
+  if (!graph) return null;
+  const latest = objectOrNull(graph.latestPublication) ?? objectOrNull(graph.latest_publication);
+  if (latest) return latest;
+  const publishEdges = firstArray(graph.edges)
+    .filter((edge) => objectOrNull(edge) && String(edge.kind ?? '').toLowerCase() === 'publish');
+  return publishEdges[publishEdges.length - 1] ?? null;
+}
+
+function epochIdFromProof(proof) {
+  const p = objectOrNull(proof) ?? {};
+  const publication = latestPublicationFromEpochProof(proof) ?? {};
+  return firstString(
+    p.epoch,
+    p.epoch_id,
+    p.activeEpoch,
+    p.active_epoch,
+    p.activeGeneration,
+    p.active_generation,
+    publication.epoch,
+    publication.epoch_id,
+    publication.activeEpoch,
+    publication.active_epoch,
+    publication.activeGeneration,
+    publication.active_generation,
+    publication.to,
+  );
+}
+
+function timestampFromValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function latestTimestamp(...values) {
+  const timestamps = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const timestamp = timestampFromValue(value);
+    if (timestamp !== null) timestamps.push(timestamp);
+  };
+  values.forEach(visit);
+  return timestamps.length ? Math.max(...timestamps) : null;
+}
+
+function buildProofLedgerRecordFromInput(input, validationContext) {
+  const explicit = objectOrNull(input.proofLedgerRecord)
+    ?? objectOrNull(input.proof_ledger_record)
+    ?? objectOrNull(input.proofLedger?.record)
+    ?? objectOrNull(input.proof_ledger?.record);
+  if (explicit) return explicit;
+
+  const sourceProof = compactObjects(input.sourceProofs)[0] ?? objectOrNull(input.sourceProof);
+  const fissionProof = objectOrNull(input.fissionProof);
+  const artifactTransportProof = objectOrNull(input.artifactTransportProof);
+  const epochProof = objectOrNull(input.epochProof);
+  const dispatchProof = objectOrNull(input.dispatchProof);
+  const outputProof = objectOrNull(input.outputProof);
+  const outputOracle = objectOrNull(outputProof?.outputOracle)
+    ?? objectOrNull(outputProof?.output_oracle)
+    ?? {};
+  const hostPreservationProof = objectOrNull(input.hostPreservationProof);
+  const publication = latestPublicationFromEpochProof(epochProof) ?? {};
+  const artifactAfterHash = firstArtifactId(
+    input.artifactAfterHash,
+    input.artifact_after_hash,
+    input.changedGpuArtifactHash,
+    input.changed_gpu_artifact_hash,
+    proofArtifactId(outputProof),
+    proofArtifactId(dispatchProof),
+    proofArtifactId(epochProof, [
+      publication.newArtifactId,
+      publication.new_artifact_id,
+      publication.newArtifactHash,
+      publication.new_artifact_hash,
+    ]),
+    proofArtifactId(artifactTransportProof),
+    proofArtifactId(sourceProof),
+  );
+  const artifactBeforeHash = firstArtifactId(
+    input.artifactBeforeHash,
+    input.artifact_before_hash,
+    sourceProof?.artifactBeforeId,
+    sourceProof?.artifact_before_id,
+    sourceProof?.artifactBeforeHash,
+    sourceProof?.artifact_before_hash,
+  );
+  const epoch = epochIdFromProof(epochProof);
+  const dispatchId = firstString(
+    dispatchProof?.dispatchId,
+    dispatchProof?.dispatch_id,
+    dispatchProof?.kernelDispatchId,
+    dispatchProof?.kernel_dispatch_id,
+  );
+  const dispatchTimestamp = latestTimestamp(
+    dispatchProof?.dispatchTimestamps,
+    dispatchProof?.dispatch_timestamps,
+    dispatchProof?.dispatchTimestamp,
+    dispatchProof?.dispatch_timestamp,
+  );
+  const outputTimestamp = latestTimestamp(
+    outputOracle.readbackTimestamp,
+    outputOracle.readback_timestamp,
+    outputOracle.timestampMonotonicNs,
+    outputOracle.timestamp_monotonic_ns,
+    outputProof?.outputTimestamp,
+    outputProof?.output_timestamp,
+  );
+  const publishTimestamp = latestTimestamp(
+    publication.publishTimestamp,
+    publication.publish_timestamp,
+    publication.timestamp,
+    publication.timestamp_monotonic_ns,
+  );
+  const loadedArtifactHash = proofArtifactId(artifactTransportProof);
+  const publishedArtifactHash = proofArtifactId(epochProof, [
+    publication.newArtifactId,
+    publication.new_artifact_id,
+    publication.newArtifactHash,
+    publication.new_artifact_hash,
+  ]);
+  const dispatchArtifactHash = proofArtifactId(dispatchProof);
+  const outputArtifactHash = proofArtifactId(outputProof);
+
+  return {
+    project_id: input.workspaceSlug ?? validationContext?.workspaceSlug ?? validationContext?.workspace_slug ?? null,
+    edit_id: input.sourceEditId ?? input.source_edit_id ?? validationContext?.sourceEditId ?? null,
+    classification: input.classification ?? validationContext?.classification ?? {},
+    contract_hash: firstString(
+      input.contractHash,
+      input.contract_hash,
+      validationContext?.contractHash,
+      validationContext?.contract_hash,
+      fissionProof?.contractHash,
+      fissionProof?.contract_hash,
+    ),
+    artifact_before_hash: artifactBeforeHash,
+    artifact_after_hash: artifactAfterHash,
+    loader_event: {
+      id: firstString(artifactTransportProof?.eventId, artifactTransportProof?.event_id),
+      artifact_hash: loadedArtifactHash,
+      process_id: firstString(artifactTransportProof?.processId, artifactTransportProof?.process_id),
+      timestamp_monotonic_ns: latestTimestamp(
+        artifactTransportProof?.timestampMonotonicNs,
+        artifactTransportProof?.timestamp_monotonic_ns,
+        artifactTransportProof?.transportTimestamp,
+        artifactTransportProof?.transport_timestamp,
+      ),
+    },
+    epoch_publish_event: {
+      id: firstString(epochProof?.eventId, epochProof?.event_id, publication.id, publication.event_id),
+      artifact_hash: publishedArtifactHash,
+      epoch,
+      timestamp_monotonic_ns: publishTimestamp,
+    },
+    dispatch_event: {
+      id: dispatchId,
+      artifact_hash: dispatchArtifactHash,
+      epoch: firstString(dispatchProof?.epoch, dispatchProof?.epoch_id, dispatchProof?.activeEpoch, epoch),
+      process_id: firstString(dispatchProof?.processId, dispatchProof?.process_id),
+      timestamp_monotonic_ns: dispatchTimestamp,
+    },
+    output_event: {
+      id: firstString(outputProof?.eventId, outputProof?.event_id, outputOracle.id, outputOracle.oracleId),
+      kind: firstString(outputOracle.kind, outputProof?.kind, outputProof?.oracleKind),
+      artifact_hash: outputArtifactHash,
+      epoch: firstString(outputProof?.epoch, outputProof?.epoch_id, outputOracle.epoch, epoch),
+      after_dispatch_id: firstString(
+        outputProof?.afterDispatchId,
+        outputProof?.after_dispatch_id,
+        outputOracle.afterDispatchId,
+        outputOracle.after_dispatch_id,
+        outputOracle.dispatchId,
+        outputOracle.dispatch_id,
+      ),
+      timestamp_monotonic_ns: outputTimestamp,
+      passed: outputProof?.resultState === 'gpu-hmr-output-proven' || outputOracle.passed === true,
+    },
+    retirement_event: {
+      id: firstString(epochProof?.retirementEventId, epochProof?.retirement_event_id),
+      epoch,
+      status: epochProof?.oldGenerationRetired === true ? 'retired' : null,
+    },
+    process_identity: {
+      process_id: firstString(
+        hostPreservationProof?.processId,
+        hostPreservationProof?.process_id,
+        validationContext?.processId,
+        validationContext?.process_id,
+      ),
+    },
+    device_identity: input.deviceIdentity ?? input.device_identity ?? validationContext?.deviceIdentity ?? {},
+    cpu_hmr_used: input.cpuHmrUsed === true || input.cpu_hmr_used === true,
+    full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
+    process_restarted: input.processRestarted === true || input.process_restarted === true,
+    oracle_artifacts: outputProof?.oracleArtifacts ?? outputProof?.oracle_artifacts ?? {},
+    deterministic_visual_mode: input.deterministicVisualMode ?? input.deterministic_visual_mode ?? {},
+    timings: input.timings ?? validationContext?.timings ?? {},
+    model_provenance: input.modelProvenance ?? input.model_provenance ?? validationContext?.modelProvenance ?? {},
+    evidence_refs: compactStringList([
+      ...(Array.isArray(artifactTransportProof?.evidenceRefs) ? artifactTransportProof.evidenceRefs : []),
+      ...(Array.isArray(epochProof?.evidenceRefs) ? epochProof.evidenceRefs : []),
+      ...(Array.isArray(dispatchProof?.evidenceRefs) ? dispatchProof.evidenceRefs : []),
+      ...(Array.isArray(outputProof?.evidenceRefs) ? outputProof.evidenceRefs : []),
+      ...(Array.isArray(hostPreservationProof?.evidenceRefs) ? hostPreservationProof.evidenceRefs : []),
+    ]),
+  };
+}
+
 export function buildValidationRuntimeProofArtifact(input = {}) {
   const createdAt = input.createdAt ?? new Date().toISOString();
   const fullRuntimeProof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
@@ -787,6 +1096,9 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
+  const proofLedgerRecord = buildProofLedgerRecordFromInput(input, validationContext);
+  const proofLedger = buildGpuHmrProofLedger(proofLedgerRecord);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const visualEvidenceArtifacts = compactObjects(input.visualEvidenceArtifacts);
   const visualArtifactsByPath = visualArtifactMap(visualEvidenceArtifacts);
@@ -824,6 +1136,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    proofLedger,
+    proofLedgerQuery,
     visualEvidenceArtifacts,
   };
   const materialHash = sha256Hex(stableJson({
@@ -841,6 +1155,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    proofLedger,
+    proofLedgerQuery,
     visualEvidenceArtifacts,
   }));
   const validationContextHash = validationContext
@@ -873,6 +1189,12 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_ledger: targetProgressionLedger,
     targetProgressionGates,
     target_progression_gates: targetProgressionGates,
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery,
+    proof_ledger_query: proofLedgerQuery,
+    gpuHmrSuccess: proofLedgerQuery.gpuHmrSuccess === true,
+    gpu_hmr_success: proofLedgerQuery.gpuHmrSuccess === true,
     validationContextHash,
     createdAt,
     proofMaterial,

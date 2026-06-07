@@ -57,10 +57,22 @@ function eventArtifactHash(event) {
   return firstText(
     event.artifact_hash,
     event.artifactHash,
+    event.artifact_id,
+    event.artifactId,
     event.loaded_artifact_hash,
     event.loadedArtifactHash,
+    event.loaded_artifact_id,
+    event.loadedArtifactId,
     event.published_artifact_hash,
     event.publishedArtifactHash,
+    event.published_artifact_id,
+    event.publishedArtifactId,
+    event.runtime_artifact_id,
+    event.runtimeArtifactId,
+    event.selected_artifact_id,
+    event.selectedArtifactId,
+    event.new_artifact_hash,
+    event.newArtifactHash,
     event.hash,
   );
 }
@@ -306,8 +318,33 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   };
 }
 
+export function buildGpuHmrProofLedger(input = {}) {
+  const record = normalizeGpuHmrProofLedgerRecord(input);
+  const query = evaluateGpuHmrProofLedger(record);
+  return {
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    proofId: record.proofId,
+    records: [record],
+    query,
+    gpuHmrSuccess: query.gpuHmrSuccess,
+    gpu_hmr_success: query.gpuHmrSuccess,
+  };
+}
+
+export function queryGpuHmrLedgerInvariants(input = {}) {
+  const ledger = asObject(input);
+  if (asObject(ledger.query).schemaVersion === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
+    return ledger.query;
+  }
+  const records = Array.isArray(ledger.records) ? ledger.records : null;
+  if (records && records.length > 0) {
+    return evaluateGpuHmrProofLedger(records[records.length - 1]);
+  }
+  return evaluateGpuHmrProofLedger(input);
+}
+
 export function assertGpuHmrProofLedgerSuccess(input = {}) {
-  const result = evaluateGpuHmrProofLedger(input);
+  const result = queryGpuHmrLedgerInvariants(input);
   if (!result.gpuHmrSuccess) {
     const codes = result.failedInvariants.map((failure) => failure.code).join(',');
     throw new Error(`GPU HMR proof ledger rejected record: ${codes}`);

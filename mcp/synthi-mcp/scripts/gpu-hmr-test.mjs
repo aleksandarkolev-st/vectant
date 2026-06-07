@@ -4126,6 +4126,9 @@ async function writeSummary() {
       degradedReason: written.artifact.degradedReason,
       fullRuntimeProven: written.artifact.fullRuntimeProven,
       limitations: written.artifact.limitations,
+      proofLedger: written.artifact.proofLedger,
+      proofLedgerQuery: written.artifact.proofLedgerQuery,
+      gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     });
   }
   const proofArtifactPaths = [...new Set(gpuProofs

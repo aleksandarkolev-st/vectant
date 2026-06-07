@@ -6800,6 +6800,9 @@ async function writeResults() {
       degradedReason: written.artifact.degradedReason,
       fullRuntimeProven: written.artifact.fullRuntimeProven,
       limitations: written.artifact.limitations,
+      proofLedger: written.artifact.proofLedger,
+      proofLedgerQuery: written.artifact.proofLedgerQuery,
+      gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     };
   }
   report.runtime_proof_artifact_paths = report.runtime_proof_artifact_path

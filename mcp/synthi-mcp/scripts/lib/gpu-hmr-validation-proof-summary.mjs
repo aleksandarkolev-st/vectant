@@ -3,6 +3,7 @@ import {
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './gpu-hmr-visual-evidence.mjs';
+import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SUMMARY_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation-proof-summary.v1';
@@ -380,6 +381,40 @@ function missingVisualEvidenceLimitation(input, qualityRows) {
   }];
 }
 
+function proofLedgerFromRecord(record) {
+  if (!isObject(record)) return null;
+  if (isObject(record.proofLedger)) return record.proofLedger;
+  if (isObject(record.proof_ledger)) return record.proof_ledger;
+  if (isObject(record.artifact?.proofLedger)) return record.artifact.proofLedger;
+  if (isObject(record.artifact?.proof_ledger)) return record.artifact.proof_ledger;
+  return null;
+}
+
+function proofLedgerQueryFromRecord(record) {
+  if (!isObject(record)) return null;
+  if (isObject(record.proofLedgerQuery)) return record.proofLedgerQuery;
+  if (isObject(record.proof_ledger_query)) return record.proof_ledger_query;
+  if (isObject(record.artifact?.proofLedgerQuery)) return record.artifact.proofLedgerQuery;
+  if (isObject(record.artifact?.proof_ledger_query)) return record.artifact.proof_ledger_query;
+  return null;
+}
+
+function proofLedgerLimitations(queries) {
+  return compactObjects(queries)
+    .filter((query) => query.gpuHmrSuccess !== true)
+    .flatMap((query) => compactObjects(query.failedInvariants).map((failure) => ({
+      stage_id: 'proof-ledger',
+      status: 'blocked',
+      required_state: 'gpu-hmr-ledger-invariants-proven',
+      observed_state: null,
+      degraded_state: 'gpu-hmr-ledger-invariants-failed',
+      degraded_reason: failure.code ?? 'proof_ledger_invariant_failed',
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    })));
+}
+
 export function buildGpuHmrValidationProofSummary(input = {}) {
   const validationContext = isObject(input.validationContext)
     ? input.validationContext
@@ -389,6 +424,20 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const dockerMetadata = isObject(input.docker) ? input.docker : validationContext.docker;
   const runtimeArtifactRecords = compactObjects(input.runtimeProofArtifactRecords)
     .concat(compactObjects(input.runtime_proof_artifacts));
+  const proofLedgers = compactObjects([
+    input.proofLedger,
+    input.proof_ledger,
+    ...runtimeArtifactRecords.map(proofLedgerFromRecord),
+  ]);
+  const explicitProofLedgerQueries = compactObjects([
+    input.proofLedgerQuery,
+    input.proof_ledger_query,
+    ...runtimeArtifactRecords.map(proofLedgerQueryFromRecord),
+  ]);
+  const proofLedgerQueries = explicitProofLedgerQueries.length > 0
+    ? explicitProofLedgerQueries
+    : proofLedgers.map((ledger) => queryGpuHmrLedgerInvariants(ledger));
+  const proofLedgerQuery = proofLedgerQueries[proofLedgerQueries.length - 1] ?? null;
   const proofArtifactPaths = compactStringList([
     ...(Array.isArray(input.proofArtifactPaths) ? input.proofArtifactPaths : []),
     ...(Array.isArray(input.proof_artifact_paths) ? input.proof_artifact_paths : []),
@@ -417,6 +466,7 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const progressionGates = targetProgressionGates(input, validationContext);
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
+    ...proofLedgerLimitations(proofLedgerQueries),
     ...targetProgressionGateLimitations(input, validationContext),
     ...visualEvidenceLimitations(qualityRows),
     ...missingVisualEvidenceLimitation(input, qualityRows),
@@ -478,6 +528,13 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
       original_host_path: proofState(input.originalHostPathProof),
       full_runtime: proofState(input.fullRuntimeProof),
       runtime_full: fullRuntimeStates,
+      proof_ledger: proofLedgerQuery
+        ? {
+            gpu_hmr_success: proofLedgerQuery.gpuHmrSuccess === true,
+            failed_invariant_count: compactObjects(proofLedgerQuery.failedInvariants).length,
+            warning_count: compactObjects(proofLedgerQuery.warnings).length,
+          }
+        : null,
       runtime_artifacts: runtimeArtifactRecords.map((record) => ({
         phase: record.phase ?? null,
         name: record.name ?? null,
@@ -490,6 +547,10 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
       })),
     },
     limitations,
+    proof_ledger: proofLedgers[proofLedgers.length - 1] ?? null,
+    proof_ledger_query: proofLedgerQuery,
+    proof_ledger_queries: proofLedgerQueries,
+    gpu_hmr_success: proofLedgerQuery?.gpuHmrSuccess === true,
     visual_evidence_is_supplemental: true,
     output_correctness_requires_deterministic_oracle: true,
     full_runtime_proven: input.fullRuntimeProof

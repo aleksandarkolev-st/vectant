@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import {
   evaluateGpuHmrProofLedger,
   assertGpuHmrProofLedgerSuccess,
+  buildGpuHmrProofLedger,
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
 } from './lib/gpu-hmr-proof-ledger.mjs';
+import { buildValidationRuntimeProofArtifact } from './lib/gpu-hmr-validation-proof-artifact.mjs';
+import { buildGpuHmrValidationProofSummary } from './lib/gpu-hmr-validation-proof-summary.mjs';
 
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -83,6 +86,33 @@ const accepted = assertGpuHmrProofLedgerSuccess(baselineRecord());
 assert.equal(accepted.schemaVersion, GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION);
 assert.equal(accepted.gpuHmrSuccess, true);
 
+const acceptedLedger = buildGpuHmrProofLedger(baselineRecord());
+const runtimeArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-generic-project',
+  proofLedgerRecord: baselineRecord(),
+  fullRuntimeProof: {
+    resultState: 'gpu-hmr-full-runtime-proven',
+    fullRuntimeProven: true,
+    stages: [],
+  },
+});
+assert.equal(runtimeArtifact.proofLedger.gpuHmrSuccess, true);
+assert.equal(runtimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(runtimeArtifact.gpuHmrSuccess, true);
+
+const summary = buildGpuHmrValidationProofSummary({
+  workspaceSlug: 'adversarial-generic-project',
+  proofLedger: acceptedLedger,
+  runtimeProofArtifactRecords: [{
+    path: 'memory://runtime-proof-artifact.json',
+    proofLedger: runtimeArtifact.proofLedger,
+    proofLedgerQuery: runtimeArtifact.proofLedgerQuery,
+    gpuHmrSuccess: runtimeArtifact.gpuHmrSuccess,
+  }],
+});
+assert.equal(summary.gpu_hmr_success, true);
+assert.equal(summary.proof_states.proof_ledger.gpu_hmr_success, true);
+
 assertGpuHmrProofLedgerSuccess(baselineRecord({
   output_event: {
     id: 'output-visual-1',
@@ -119,10 +149,31 @@ const rejected = cases.map(([name, record, expectedCode]) => {
   return { name, expectedCode, failedInvariants: result.failedInvariants.map((failure) => failure.code) };
 });
 
+const rejectedArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-generic-project',
+  proofLedgerRecord: baselineRecord({ cpu_hmr_used: true }),
+});
+const rejectedSummary = buildGpuHmrValidationProofSummary({
+  workspaceSlug: 'adversarial-generic-project',
+  runtimeProofArtifactRecords: [{
+    path: 'memory://rejected-runtime-proof-artifact.json',
+    proofLedger: rejectedArtifact.proofLedger,
+    proofLedgerQuery: rejectedArtifact.proofLedgerQuery,
+    gpuHmrSuccess: rejectedArtifact.gpuHmrSuccess,
+  }],
+});
+assert.equal(rejectedSummary.gpu_hmr_success, false);
+assert.ok(
+  rejectedSummary.limitations.some((limitation) =>
+    limitation.stage_id === 'proof-ledger'
+    && limitation.degraded_reason === 'cpu_hmr_used'
+  ),
+);
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
   acceptedProofId: accepted.proofId,
+  artifactProofId: runtimeArtifact.proofId,
   rejected,
 }, null, 2));
-
