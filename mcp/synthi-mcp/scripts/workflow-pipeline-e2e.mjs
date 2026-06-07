@@ -118,8 +118,11 @@ async function runCase({ testCase, container, context, runner }) {
   await mkdir(caseDir, { recursive: true });
 
   log("info", `${testCase.id}: seed ${slug}`);
-  await seedWorkspace(slug, testCase.files());
+  const files = testCase.files();
+  await seedWorkspace(slug, files);
   record(testCase.id, "seed workspace files", true, slug);
+  const registeredSourceTokens = await registerSeedSourceIdentity(slug, files);
+  record(testCase.id, "register source identity", true, `tokens=${registeredSourceTokens}`);
 
   const run = await startWorkspaceDevServer(container, slug, repoPath);
   let idePage;
@@ -256,6 +259,68 @@ async function seedWorkspace(slug, files) {
   } catch (err) {
     log("warn", `${slug}: seed commit skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+async function registerSeedSourceIdentity(slug, files) {
+  const registrations = extractSourceIdentityRegistrations(files);
+  let total = 0;
+  for (const registration of registrations) {
+    const body = await httpJson("POST", `${CFG.bridgeUrl}/browser-workflows/tool`, {
+      tool: "synthi_source_register_tokens",
+      arguments: {
+        workspace_id: slug,
+        file_path: registration.file_path,
+        adapter: "workflow-pipeline-seed",
+        transform_version: "workflow_pipeline_seed_v1",
+        tokens: registration.tokens,
+      },
+    });
+    if (body.ok !== true) {
+      throw new Error(`source identity registration failed for ${registration.file_path}: ${JSON.stringify(body).slice(0, 500)}`);
+    }
+    total += Number(body.result?.registered_count || registration.tokens.length || 0);
+  }
+  return total;
+}
+
+function extractSourceIdentityRegistrations(files) {
+  const registrations = [];
+  for (const file of files) {
+    if (file.encoding !== "utf8" || typeof file.content !== "string") continue;
+    const tokens = extractSourceIdentityTokens(file.path, file.content);
+    if (tokens.length > 0) registrations.push({ file_path: file.path, tokens });
+  }
+  return registrations;
+}
+
+function extractSourceIdentityTokens(filePath, content) {
+  const tokens = [];
+  const seen = new Set();
+  const lines = content.split(/\r?\n/);
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] || "";
+    const regex = /data-synthi-source-id\s*=\s*["']([^"']+)["']/g;
+    let match;
+    while ((match = regex.exec(line)) !== null) {
+      const token = match[1];
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+      tokens.push({
+        token,
+        file: filePath,
+        line: lineIndex + 1,
+        column: match.index + 1,
+        tag: sourceTagForLine(line, match.index),
+      });
+    }
+  }
+  return tokens;
+}
+
+function sourceTagForLine(line, attrIndex) {
+  const before = line.slice(0, attrIndex);
+  const match = before.match(/<([a-zA-Z][\w:-]*)[^<]*$/);
+  return match?.[1] || "element";
 }
 
 async function startWorkspaceDevServer(container, slug, repoPath) {

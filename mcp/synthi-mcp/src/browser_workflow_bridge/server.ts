@@ -86,6 +86,7 @@ const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
   "synthi_browser_begin_teach",
   "synthi_browser_end_teach",
   "synthi_auth_get_tool_auth_readiness",
+  "synthi_source_register_tokens",
   "synthi_source_get_mapping_status",
   "synthi_browser_compile_workflow",
   "synthi_safety_run_prefix_validation",

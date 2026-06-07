@@ -1,10 +1,12 @@
 import {
   SOURCE_IDENTITY_ATTR,
   sourceIdentityRegistry,
+  type SourceIdentityToken,
 } from "../browser/source_identity.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 export const SOURCE_TOOL_NAMES = [
+  "synthi_source_register_tokens",
   "synthi_source_lookup_token",
   "synthi_source_open_in_ide",
   "synthi_source_get_mapping_status",
@@ -12,6 +14,36 @@ export const SOURCE_TOOL_NAMES = [
 ] as const;
 
 export const SOURCE_TOOLS = [
+  {
+    name: "synthi_source_register_tokens",
+    description:
+      "Register SSR-safe source identity transform tokens for a workspace file. Intended for Synthi build/runtime adapters; stores only token, file, line, column, tag, adapter, and transform metadata.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: { type: "string", description: "Workspace scope for these source identity tokens." },
+        root: { type: "string", description: "Optional workspace root used to normalize file paths." },
+        file_path: { type: "string", description: "Workspace file path that produced these tokens." },
+        adapter: { type: "string", description: "Source identity adapter name, for example vite-react." },
+        transform_version: { type: "string", description: "Source identity transform version." },
+        tokens: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              token: { type: "string" },
+              file: { type: "string" },
+              line: { type: "number" },
+              column: { type: "number" },
+              tag: { type: "string" },
+            },
+            required: ["token", "file", "line", "column", "tag"],
+          },
+        },
+      },
+      required: ["workspace_id", "file_path", "tokens"],
+    },
+  },
   {
     name: "synthi_source_lookup_token",
     description:
@@ -69,6 +101,8 @@ export const SOURCE_TOOLS = [
 export async function dispatchSourceTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
     switch (toolName) {
+      case "synthi_source_register_tokens":
+        return registerTokensTool(args);
       case "synthi_source_lookup_token":
         return lookupTokenTool(args);
       case "synthi_source_open_in_ide":
@@ -83,6 +117,27 @@ export async function dispatchSourceTool(toolName: string, args: unknown): Promi
   } catch (err) {
     return errorFromException("source_tool_failed", err);
   }
+}
+
+function registerTokensTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const workspaceId = requiredString(a, "workspace_id");
+  const filePath = requiredString(a, "file_path");
+  const tokens = sourceTokens(a["tokens"]);
+  if (tokens.length === 0) return errorResponse("source_tokens_required", { file_path: filePath });
+  const status = sourceIdentityRegistry.register({
+    workspaceId,
+    root: stringOpt(a["root"]),
+    filePath,
+    tokens,
+    adapter: stringOpt(a["adapter"]),
+    transformVersion: stringOpt(a["transform_version"]),
+  });
+  return jsonResponse({
+    ok: true,
+    registered_count: tokens.length,
+    mapping_status: status,
+  });
 }
 
 function lookupTokenTool(args: unknown): ToolResponse {
@@ -177,6 +232,28 @@ function requiredString(args: Record<string, unknown>, field: string): string {
   const value = args[field];
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`missing_${field}`);
   return value.trim();
+}
+
+function sourceTokens(value: unknown): SourceIdentityToken[] {
+  if (!Array.isArray(value)) return [];
+  const result: SourceIdentityToken[] = [];
+  for (const item of value.slice(0, 10_000)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const raw = item as Record<string, unknown>;
+    const token = stringOpt(raw["token"]);
+    const file = stringOpt(raw["file"]);
+    const tag = stringOpt(raw["tag"]);
+    const line = positiveInt(raw["line"]);
+    const column = positiveInt(raw["column"]);
+    if (!token || !file || !tag || line === undefined || column === undefined) continue;
+    result.push({ token, file, tag, line, column });
+  }
+  return result;
+}
+
+function positiveInt(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function stringOpt(value: unknown): string | undefined {

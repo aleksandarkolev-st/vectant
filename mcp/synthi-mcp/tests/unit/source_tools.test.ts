@@ -19,6 +19,39 @@ describe("source identity MCP tool surface", () => {
     expect(await dispatchSourceTool("synthi_health", {})).toBeNull();
   });
 
+  it("registers source identity transform tokens through the tool surface", async () => {
+    const registered = await dispatchSourceTool("synthi_source_register_tokens", {
+      workspace_id: "workspace-tool",
+      file_path: "src/App.jsx",
+      adapter: "unit-test",
+      transform_version: "unit_source_identity_v1",
+      tokens: [
+        { token: "s_tool", file: "src/App.jsx", line: 4, column: 9, tag: "button" },
+      ],
+    });
+    expect(registered?.isError).toBeUndefined();
+    expect((registered?.structuredContent as {
+      registered_count: number;
+      mapping_status: { status: string; token_count: number };
+    })).toEqual(expect.objectContaining({
+      registered_count: 1,
+      mapping_status: expect.objectContaining({ status: "mapped", token_count: 1 }),
+    }));
+
+    const lookup = await dispatchSourceTool("synthi_source_lookup_token", {
+      workspace_id: "workspace-tool",
+      token: "s_tool",
+    });
+    expect(lookup?.isError).toBeUndefined();
+    expect((lookup?.structuredContent as { source: { file: string; adapter: string; transform_version: string } }).source).toEqual(
+      expect.objectContaining({
+        file: "src/App.jsx",
+        adapter: "unit-test",
+        transform_version: "unit_source_identity_v1",
+      })
+    );
+  });
+
   it("reports source identity mapping status and resolves registered tokens", async () => {
     sourceIdentityRegistry.register({
       workspaceId: "workspace-a",
