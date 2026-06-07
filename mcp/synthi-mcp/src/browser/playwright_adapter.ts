@@ -731,7 +731,9 @@ function teachCaptureInitScript(bindingName: string): string {
 
     function shouldSkipClick(el) {
       const tag = el.tagName.toLowerCase();
+      const type = attr(el, 'type').toLowerCase();
       if (isEditableTextTarget(el)) return true;
+      if (tag === 'input' && ['checkbox', 'radio'].includes(type)) return true;
       return tag === 'select';
     }
 
@@ -760,7 +762,7 @@ function teachCaptureInitScript(bindingName: string): string {
         lastSent.set(el, { signature, ts: Date.now() });
         window[bindingName](payload).catch(() => {});
       };
-      if (['click', 'press', 'drag', 'select', 'check', 'uncheck'].includes(action)) {
+      if (['click', 'press', 'drag'].includes(action)) {
         setTimeout(send, 80);
       } else {
         send();
