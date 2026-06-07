@@ -46,7 +46,7 @@ describe("browser replay generation scenarios", () => {
       event({
         action: "fill",
         frame_id: "checkout-frame",
-        detail: { frame_locator: "iframe[name=\"checkout\"]" },
+        detail: { frame_locator: "iframe[name=\"checkout\"]", observed_effects: ["Saved Ada"] },
         value: "Ada",
         locator_candidates: [
           { kind: "label", locator: "page.getByLabel(\"Cardholder\")", confidence: 0.94, reason: "form_label" },
@@ -56,6 +56,7 @@ describe("browser replay generation scenarios", () => {
 
     expect(generated.code).toContain("page.frameLocator(\"iframe[name=\\\"checkout\\\"]\").getByLabel(\"Cardholder\")");
     expect(generated.code).toContain("await target1.fill(\"Ada\");");
+    expect(generated.code).toContain("page.frameLocator(\"iframe[name=\\\"checkout\\\"]\").getByText(\"Saved Ada\", { exact: true })");
   });
 
   it("uses assertions as delayed-hydration waits before actions", () => {

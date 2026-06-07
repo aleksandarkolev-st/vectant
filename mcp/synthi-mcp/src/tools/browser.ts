@@ -1225,6 +1225,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
         await browserPlaywrightAdapter.fileDrop(replayTab.tab_id, selector, filePath, {
           file_input: isFileInputDrop(event),
           mime_type: stringOpt(event.detail?.["mime_type"]),
+          event,
         });
         stepsRun += 1;
       } catch (err) {

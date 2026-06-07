@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type Frame, type FrameLocator, type Locator, type Page } from "playwright-core";
 import { readFile } from "node:fs/promises";
 import { normalizeOrigin, redactText, redactUrl } from "./security.js";
 import { BROWSER_ACTION_KINDS } from "./types.js";
@@ -7,6 +7,26 @@ import type { BrowserActionKind, BrowserElementMetadata, BrowserSnapshot, Browse
 interface PageRecord {
   page: Page;
   tab_id: string;
+}
+
+export interface FrameLocatorMetadata {
+  frame_id: string;
+  frame_locator: string;
+  frame_locator_candidates: string[];
+  frame_url?: string;
+}
+
+export interface FrameElementDescriptor {
+  tag?: string;
+  id?: string;
+  name?: string;
+  title?: string;
+  aria_label?: string;
+  test_id?: string;
+  data_test?: string;
+  src?: string;
+  css?: string;
+  frame_url?: string;
 }
 
 export interface BrowserActionResult {
@@ -211,54 +231,64 @@ export class BrowserPlaywrightAdapter {
 
   async action(tab_id: string, action: BrowserActionKind, selector?: string, value?: string): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
+    await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocator(page, targetSelector));
+    return { ok: true, action, tab_id, url: page.url() };
+  }
+
+  private async performAction(
+    page: Page,
+    action: BrowserActionKind,
+    selector: string | undefined,
+    value: string | undefined,
+    resolveLocator: (selector: string | undefined) => Locator
+  ): Promise<void> {
     switch (action) {
       case "navigate":
         if (!value) throw new Error("missing_url");
         await page.goto(value, { waitUntil: "domcontentloaded" });
         break;
       case "click":
-        await this.resolveLocator(page, selector).click();
+        await resolveLocator(selector).click();
         break;
       case "dblclick":
-        await this.resolveLocator(page, selector).dblclick();
+        await resolveLocator(selector).dblclick();
         break;
       case "contextmenu":
-        await this.resolveLocator(page, selector).click({ button: "right" });
+        await resolveLocator(selector).click({ button: "right" });
         break;
       case "hover":
-        await this.resolveLocator(page, selector).hover();
+        await resolveLocator(selector).hover();
         break;
       case "drag":
         if (!value) throw new Error("missing_drag_target");
-        await this.resolveLocator(page, selector).dragTo(this.resolveLocator(page, value));
+        await resolveLocator(selector).dragTo(resolveLocator(value));
         break;
       case "scroll":
-        await this.scrollLocator(page, selector, value);
+        await this.scrollLocator(resolveLocator(selector), value);
         break;
       case "fill":
-        await this.resolveLocator(page, selector).fill(value ?? "");
+        await resolveLocator(selector).fill(value ?? "");
         break;
       case "press":
-        await this.resolveLocator(page, selector).press(value ?? "Enter");
+        await resolveLocator(selector).press(value ?? "Enter");
         break;
       case "select":
-        await this.resolveLocator(page, selector).selectOption(value ?? "");
+        await resolveLocator(selector).selectOption(value ?? "");
         break;
       case "check":
-        await this.resolveLocator(page, selector).check();
+        await resolveLocator(selector).check();
         break;
       case "uncheck":
-        await this.resolveLocator(page, selector).uncheck();
+        await resolveLocator(selector).uncheck();
         break;
       case "wait":
-        await this.resolveLocator(page, selector).waitFor();
+        await resolveLocator(selector).waitFor();
         break;
       default: {
         const neverAction: never = action;
         throw new Error(`unsupported_browser_action:${String(neverAction)}`);
       }
     }
-    return { ok: true, action, tab_id, url: page.url() };
   }
 
   async replayActionEvent(
@@ -277,7 +307,12 @@ export class BrowserPlaywrightAdapter {
     if (isPopupReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
       return await this.replayPopupAction(tab_id, event, action, selector, value);
     }
-    return await this.action(tab_id, action, selector, value);
+    if (!stringOpt(event.detail?.["frame_locator"])) {
+      return await this.action(tab_id, action, selector, value);
+    }
+    const page = this.requirePage(tab_id);
+    await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocatorForEvent(page, event, targetSelector));
+    return { ok: true, action, tab_id, url: page.url() };
   }
 
   private async replayDownloadAction(
@@ -287,7 +322,7 @@ export class BrowserPlaywrightAdapter {
     selector?: string
   ): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
-    const target = this.resolveLocator(page, selector);
+    const target = this.resolveLocatorForEvent(page, event, selector);
     const [download] = await Promise.all([
       page.waitForEvent("download"),
       action === "dblclick" ? target.dblclick() : target.click(),
@@ -314,7 +349,7 @@ export class BrowserPlaywrightAdapter {
     value?: string
   ): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
-    const target = this.resolveLocator(page, selector);
+    const target = this.resolveLocatorForEvent(page, event, selector);
     const expectedType = stringDetail(event, "dialog_type") ?? "alert";
     const expectedMessage = stringDetail(event, "dialog_message");
     const messageRedacted = boolDetail(event, "dialog_message_redacted");
@@ -359,7 +394,7 @@ export class BrowserPlaywrightAdapter {
     value?: string
   ): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
-    const target = this.resolveLocator(page, selector);
+    const target = this.resolveLocatorForEvent(page, event, selector);
     const [popup] = await Promise.all([
       page.waitForEvent("popup"),
       runTargetAction(target, action, value),
@@ -389,10 +424,12 @@ export class BrowserPlaywrightAdapter {
     tab_id: string,
     selector: string | undefined,
     filePath: string,
-    options: { file_input?: boolean; mime_type?: string } = {}
+    options: { file_input?: boolean; mime_type?: string; event?: BrowserTraceEvent } = {}
   ): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
-    const target = this.resolveLocator(page, selector);
+    const target = options.event
+      ? this.resolveLocatorForEvent(page, options.event, selector)
+      : this.resolveLocator(page, selector);
     if (options.file_input) {
       await target.setInputFiles(filePath);
     } else {
@@ -626,44 +663,57 @@ export class BrowserPlaywrightAdapter {
   }
 
   private resolveLocator(page: Page, selector: string | undefined): Locator {
+    return this.resolveLocatorFromRoot(page, selector);
+  }
+
+  private resolveLocatorForEvent(page: Page, event: BrowserTraceEvent, selector: string | undefined): Locator {
+    const frameLocator = stringOpt(event.detail?.["frame_locator"]);
+    if (!frameLocator) return this.resolveLocator(page, selector);
+    return this.resolveLocatorFromRoot(page.frameLocator(frameLocator), selector);
+  }
+
+  private resolveLocatorFromRoot(root: Page | FrameLocator, selector: string | undefined): Locator {
     if (!selector || selector.trim().length === 0) throw new Error("missing_selector");
     const trimmed = selector.trim();
     const role = parseRoleLocator(trimmed);
-    if (role) return page.getByRole(role.role as Parameters<Page["getByRole"]>[0], { name: role.name });
+    if (role) return root.getByRole(role.role as Parameters<Page["getByRole"]>[0], { name: role.name });
     const oneArg = parseOneArgLocator(trimmed);
     if (oneArg) {
       switch (oneArg.kind) {
         case "label":
-          return page.getByLabel(oneArg.value);
+          return root.getByLabel(oneArg.value);
         case "placeholder":
-          return page.getByPlaceholder(oneArg.value);
+          return root.getByPlaceholder(oneArg.value);
         case "test_id":
-          return page.getByTestId(oneArg.value);
+          return root.getByTestId(oneArg.value);
         case "text":
-          return page.getByText(oneArg.value);
+          return root.getByText(oneArg.value);
         case "locator":
-          return page.locator(oneArg.value);
+          return root.locator(oneArg.value);
       }
     }
-    return page.locator(trimmed);
+    return root.locator(trimmed);
   }
 
-  private async scrollLocator(page: Page, selector: string | undefined, value: string | undefined): Promise<void> {
+  private async scrollLocator(target: Locator, value: string | undefined): Promise<void> {
     const position = parseScrollPosition(value);
-    await this.resolveLocator(page, selector).evaluate((element, target) => {
+    await target.evaluate((element, targetPosition) => {
       if (element === document.body || element === document.documentElement) {
-        window.scrollTo(target.left, target.top);
+        window.scrollTo(targetPosition.left, targetPosition.top);
         return;
       }
-      element.scrollTo(target.left, target.top);
+      element.scrollTo(targetPosition.left, targetPosition.top);
     }, position);
   }
 
   private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
     const bindingName = "__synthiRecordHumanAction";
     const annotationBindingName = "__synthiAnnotateHumanAction";
-    await page.exposeBinding(bindingName, (_source, payload: unknown) => {
-      const event = normalizeCapturedHumanAction(payload, tab_id);
+    await page.exposeBinding(bindingName, async (source, payload: unknown) => {
+      const event = normalizeCapturedHumanAction(
+        await this.enrichCapturedPayloadWithFrame(page, source.frame, payload),
+        tab_id
+      );
       if (!event) return;
       this.teachEventSink?.(event);
     }).catch(() => undefined);
@@ -674,7 +724,13 @@ export class BrowserPlaywrightAdapter {
     }).catch(() => undefined);
     const script = teachCaptureInitScript(bindingName, annotationBindingName);
     await page.addInitScript(script).catch(() => undefined);
-    await page.evaluate(script).catch(() => undefined);
+    await Promise.all(page.frames().map((frame) => frame.evaluate(script).catch(() => undefined)));
+  }
+
+  private async enrichCapturedPayloadWithFrame(page: Page, frame: Frame | undefined, payload: unknown): Promise<unknown> {
+    if (!frame || frame === page.mainFrame()) return payload;
+    const metadata = await frameLocatorMetadataForFrame(page, frame);
+    return metadata ? enrichCapturedFramePayload(payload, metadata, page.url()) : payload;
   }
 
   private async installWorkflowOverlay(page: Page, tab_id: string): Promise<void> {
@@ -742,6 +798,149 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   const bbox = bboxOpt(raw["bbox"]);
   if (bbox !== undefined) event.bbox = bbox;
   return event;
+}
+
+async function frameLocatorMetadataForFrame(page: Page, frame: Frame): Promise<FrameLocatorMetadata | null> {
+  if (frame === page.mainFrame()) return null;
+  const handle = await frame.frameElement().catch(() => null);
+  if (!handle) return null;
+  try {
+    const descriptor = await handle.evaluate((node, frameUrl) => {
+      function compact(value: unknown): string {
+        return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, 240) : "";
+      }
+
+      function attr(el: Element, name: string): string {
+        return compact(el.getAttribute(name) || "");
+      }
+
+      function cssPath(el: Element): string {
+        const parts: string[] = [];
+        let node: Element | null = el;
+        while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 6) {
+          const currentNode: Element = node;
+          const currentTag = currentNode.tagName;
+          const tag = currentTag.toLowerCase();
+          let part = tag;
+          if (currentNode.id) {
+            parts.unshift(`${tag}#${CSS.escape(currentNode.id)}`);
+            break;
+          }
+          const parentElement: Element | null = currentNode.parentElement;
+          if (parentElement) {
+            const siblings = Array.prototype.slice.call(parentElement.children).filter((child: Element) => child.tagName === currentTag);
+            if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(currentNode) + 1})`;
+          }
+          parts.unshift(part);
+          node = parentElement;
+        }
+        return parts.join(" > ");
+      }
+
+      const el = node as Element;
+      return {
+        tag: el.tagName.toLowerCase(),
+        id: attr(el, "id"),
+        name: attr(el, "name"),
+        title: attr(el, "title"),
+        aria_label: attr(el, "aria-label"),
+        test_id: attr(el, "data-testid"),
+        data_test: attr(el, "data-test"),
+        src: attr(el, "src"),
+        css: cssPath(el),
+        frame_url: compact(frameUrl),
+      };
+    }, frame.url());
+    return frameLocatorMetadataFromElementDescriptor(descriptor);
+  } finally {
+    await handle.dispose().catch(() => undefined);
+  }
+}
+
+export function frameLocatorMetadataFromElementDescriptor(descriptor: FrameElementDescriptor): FrameLocatorMetadata | null {
+  const tag = descriptor.tag === "frame" ? "frame" : "iframe";
+  const candidates = [
+    attrSelector(tag, "data-testid", descriptor.test_id),
+    attrSelector(tag, "data-test", descriptor.data_test),
+    attrSelector(tag, "name", descriptor.name),
+    attrSelector(tag, "title", descriptor.title),
+    attrSelector(tag, "aria-label", descriptor.aria_label),
+    descriptor.id ? `${tag}#${cssIdentifier(descriptor.id)}` : "",
+    srcSelector(tag, descriptor.src),
+    descriptor.css,
+  ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+  const uniqueCandidates = [...new Set(candidates)];
+  const frameLocator = uniqueCandidates[0];
+  if (!frameLocator) return null;
+  const frameId = [
+    descriptor.name,
+    descriptor.title,
+    descriptor.test_id,
+    descriptor.data_test,
+    descriptor.id,
+    descriptor.src,
+    descriptor.frame_url,
+    frameLocator,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  return {
+    frame_id: String(frameId ?? frameLocator),
+    frame_locator: frameLocator,
+    frame_locator_candidates: uniqueCandidates,
+    ...(descriptor.frame_url ? { frame_url: descriptor.frame_url } : {}),
+  };
+}
+
+export function enrichCapturedFramePayload(payload: unknown, metadata: FrameLocatorMetadata, pageUrl: string): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const raw = payload as Record<string, unknown>;
+  const detail = recordOpt(raw["detail"]) ?? {};
+  const frameUrl = stringOpt(detail["frame_url"]) ?? metadata.frame_url ?? stringOpt(raw["url"]);
+  let pageOrigin = stringOpt(raw["origin"]);
+  let frameOrigin: string | undefined;
+  try {
+    pageOrigin = normalizeOrigin(pageUrl).origin;
+  } catch {
+    // Keep the frame-provided origin if the top-level page URL is not a normal web URL.
+  }
+  try {
+    if (frameUrl) frameOrigin = normalizeOrigin(frameUrl).origin;
+  } catch {
+    frameOrigin = undefined;
+  }
+  return {
+    ...raw,
+    url: pageUrl,
+    ...(pageOrigin ? { origin: pageOrigin } : {}),
+    frame_id: stringOpt(raw["frame_id"]) ?? metadata.frame_id,
+    detail: {
+      ...detail,
+      frame_locator: stringOpt(detail["frame_locator"]) ?? metadata.frame_locator,
+      frame_locator_candidates: Array.isArray(detail["frame_locator_candidates"])
+        ? detail["frame_locator_candidates"]
+        : metadata.frame_locator_candidates,
+      ...(frameUrl ? { frame_url: frameUrl } : {}),
+      ...(frameOrigin ? { frame_origin: frameOrigin } : {}),
+    },
+  };
+}
+
+function attrSelector(tag: string, attrName: string, value: unknown): string {
+  const text = stringOpt(value);
+  return text ? `${tag}[${attrName}="${cssAttributeValue(text)}"]` : "";
+}
+
+function srcSelector(tag: string, value: unknown): string {
+  const text = stringOpt(value);
+  if (!text || /^about:/i.test(text)) return "";
+  return `${tag}[src="${cssAttributeValue(text)}"]`;
+}
+
+function cssAttributeValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function cssIdentifier(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, (char) => `\\${char.codePointAt(0)?.toString(16)} `);
 }
 
 function isDownloadReplayEvent(event: BrowserTraceEvent): boolean {

@@ -761,7 +761,7 @@ function stripAnsi(value) {
   return String(value).replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function commonFiles({ title, body, script, styles = [] }) {
+function commonFiles({ title, body, script, styles = [], extraFiles = [] }) {
   return [
     {
       path: "package.json",
@@ -818,6 +818,7 @@ function commonFiles({ title, body, script, styles = [] }) {
       encoding: "utf8",
       content: script,
     },
+    ...extraFiles,
   ];
 }
 
@@ -885,6 +886,71 @@ const CASES = [
       await page.getByLabel("Email").fill("ada@example.test");
       await page.getByRole("button", { name: "Save profile" }).click();
       await page.getByText("Saved ada@example.test").waitFor();
+    },
+  },
+  {
+    id: "iframe-form",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: ["Saved Ada Lovelace"],
+    expectedReplayCode: ["page.frameLocator(\"iframe[data-testid=\\\"checkout-frame\\\"]\")"],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Iframe Form Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Iframe Form Workflow</h1>",
+        "      <iframe data-testid=\"checkout-frame\" title=\"Checkout form\" name=\"checkout\" src=\"/frame.html\"></iframe>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "iframe { width: min(620px, calc(100vw - 48px)); height: 280px; border: 1px solid #b9b9b2; background: white; }",
+      ],
+      script: "",
+      extraFiles: [
+        {
+          path: "frame.html",
+          encoding: "utf8",
+          content: [
+            "<!doctype html>",
+            "<html>",
+            "  <head>",
+            "    <meta charset=\"UTF-8\">",
+            "    <title>Checkout Frame</title>",
+            "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+            "  </head>",
+            "  <body>",
+            "    <main>",
+            "      <h1>Checkout Frame</h1>",
+            "      <label for=\"cardholder\">Cardholder</label>",
+            "      <input id=\"cardholder\" aria-label=\"Cardholder\" data-synthi-source-id=\"iframe.cardholder\" placeholder=\"Name on card\">",
+            "      <button type=\"button\" data-testid=\"save-cardholder\" data-synthi-source-id=\"iframe.save\">Save cardholder</button>",
+            "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+            "    </main>",
+            "    <script type=\"module\" src=\"/frame.js\"></script>",
+            "  </body>",
+            "</html>",
+            "",
+          ].join("\n"),
+        },
+        {
+          path: "frame.js",
+          encoding: "utf8",
+          content: [
+            "document.querySelector('[data-testid=\"save-cardholder\"]').addEventListener('click', () => {",
+            "  const value = document.querySelector('#cardholder').value;",
+            "  document.querySelector('#status').textContent = `Saved ${value}`;",
+            "});",
+            "",
+          ].join("\n"),
+        },
+      ],
+    }),
+    teach: async (page) => {
+      const frame = page.frameLocator('iframe[data-testid="checkout-frame"]');
+      await frame.getByLabel("Cardholder").fill("Ada Lovelace");
+      await frame.getByRole("button", { name: "Save cardholder" }).click();
+      await frame.getByText("Saved Ada Lovelace").waitFor();
     },
   },
   {

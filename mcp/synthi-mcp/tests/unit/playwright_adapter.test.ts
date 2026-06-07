@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  enrichCapturedFramePayload,
+  frameLocatorMetadataFromElementDescriptor,
   normalizeCapturedHumanAction,
   normalizeCapturedHumanActionAnnotation,
   resolveCdpConnectTimeoutMs,
@@ -44,6 +46,65 @@ describe("browser Playwright teach capture", () => {
       detail: expect.objectContaining({
         capture_source: "hosted_browser_dom",
         input_debounced: true,
+      }),
+    }));
+  });
+
+  it("derives durable frame locators from hosted iframe element metadata", () => {
+    const metadata = frameLocatorMetadataFromElementDescriptor({
+      tag: "iframe",
+      id: "runtime-frame",
+      name: "preview",
+      title: "Preview surface",
+      test_id: "app-preview",
+      src: "https://app.example.com/embedded",
+      css: "main > iframe",
+      frame_url: "https://app.example.com/embedded",
+    });
+
+    expect(metadata).toEqual({
+      frame_id: "preview",
+      frame_locator: "iframe[data-testid=\"app-preview\"]",
+      frame_locator_candidates: [
+        "iframe[data-testid=\"app-preview\"]",
+        "iframe[name=\"preview\"]",
+        "iframe[title=\"Preview surface\"]",
+        "iframe#runtime-frame",
+        "iframe[src=\"https://app.example.com/embedded\"]",
+        "main > iframe",
+      ],
+      frame_url: "https://app.example.com/embedded",
+    });
+  });
+
+  it("keeps framed action replay anchored to the top-level page URL", () => {
+    const metadata = frameLocatorMetadataFromElementDescriptor({
+      tag: "iframe",
+      test_id: "checkout-frame",
+      frame_url: "https://app.example.com/frame.html",
+    });
+    expect(metadata).not.toBeNull();
+
+    const enriched = enrichCapturedFramePayload({
+      url: "https://app.example.com/frame.html",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada Lovelace",
+      field_name: "Cardholder",
+      element: { tag: "input", role: "textbox", label: "Cardholder" },
+      detail: { input_debounced: true },
+    }, metadata!, "https://app.example.com/checkout");
+    const event = normalizeCapturedHumanAction(enriched, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      tab_id: "tab-a",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      frame_id: "checkout-frame",
+      detail: expect.objectContaining({
+        frame_locator: "iframe[data-testid=\"checkout-frame\"]",
+        frame_url: "https://app.example.com/frame.html",
+        frame_origin: "https://app.example.com",
       }),
     }));
   });

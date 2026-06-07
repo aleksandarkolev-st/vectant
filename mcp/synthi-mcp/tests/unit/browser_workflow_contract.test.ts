@@ -291,6 +291,27 @@ describe("browser workflow contract compiler", () => {
     expect(classifyWorkflowReplayBlock(replay)).toBe("locatorDrift");
   });
 
+  it("allows iframe traces when a durable frame locator is captured", () => {
+    const events = [
+      baseEvent({
+        event_id: "card",
+        frame_id: "checkout-frame",
+        detail: {
+          frame_locator: "iframe[data-testid=\"checkout-frame\"]",
+          element: { role: "textbox", label: "Cardholder", source_id: "src_cardholder" },
+        },
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.steps[0]?.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).not.toBe("blocked");
+    expect(replay.status).toBe("ready");
+  });
+
   it("surfaces coordinate and pointer limitations and blocks replay", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

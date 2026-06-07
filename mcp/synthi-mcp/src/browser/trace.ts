@@ -421,7 +421,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
     }
     for (const effectText of observedEffectTexts(event)) {
-      lines.push(`  await expect(page.getByText(${JSON.stringify(effectText)}, { exact: true })).toBeVisible();`);
+      const effectLocator = locatorExpressionForEvent(
+        event,
+        `page.getByText(${JSON.stringify(effectText)}, { exact: true })`
+      );
+      lines.push(`  await expect(${effectLocator}).toBeVisible();`);
     }
   }
 
