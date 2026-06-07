@@ -390,6 +390,36 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Applied enterprise urgent; card done; search revenue\", { exact: true })).toBeVisible();");
   });
 
+  it("generates range slider replay with input and change events", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "budget-range",
+        event_seq: 1,
+        action: "fill",
+        value: "75",
+        detail: {
+          control_kind: "range",
+          range_control: true,
+          min: "0",
+          max: "100",
+          step: "5",
+          element: { tag: "input", type: "range", label: "Budget" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"slider\", { name: \"Budget\" })", confidence: 0.96, reason: "accessible_role_and_name" },
+          { kind: "label", locator: "page.getByLabel(\"Budget\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("page.getByRole(\"slider\", { name: \"Budget\" })");
+    expect(generated.code).toContain("element.type !== 'range'");
+    expect(generated.code).toContain("element.dispatchEvent(new Event('input', { bubbles: true }));");
+    expect(generated.code).toContain("element.dispatchEvent(new Event('change', { bubbles: true }));");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(\"75\");");
+    expect(generated.code).not.toContain("await target1.fill(\"75\");");
+  });
+
   it("generates parameterized file drop replay without inventing file contents", () => {
     const generated = generatePlaywrightScript([
       event({

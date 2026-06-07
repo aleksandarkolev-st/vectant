@@ -992,6 +992,55 @@ const CASES = [
     },
   },
   {
+    id: "range-slider",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: ["Applied budget 75"],
+    expectedReplayCode: [
+      "element.dispatchEvent(new Event('input', { bubbles: true }));",
+      "element.dispatchEvent(new Event('change', { bubbles: true }));",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Range Slider Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Range Slider Workflow</h1>",
+        "      <label for=\"budget\">Budget</label>",
+        "      <input id=\"budget\" aria-label=\"Budget\" type=\"range\" min=\"0\" max=\"100\" step=\"5\" value=\"25\" data-synthi-source-id=\"range.budget\">",
+        "      <output id=\"budget-value\" aria-live=\"polite\">Budget 25</output>",
+        "      <button type=\"button\" data-testid=\"apply-budget\" data-synthi-source-id=\"range.apply\">Apply budget</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "input[type='range'] { width: min(520px, calc(100vw - 48px)); padding: 0; }",
+      ],
+      script: [
+        "const budget = document.querySelector('#budget');",
+        "const budgetValue = document.querySelector('#budget-value');",
+        "function syncBudget() { budgetValue.textContent = `Budget ${budget.value}`; }",
+        "budget.addEventListener('input', syncBudget);",
+        "budget.addEventListener('change', syncBudget);",
+        "document.querySelector('[data-testid=\"apply-budget\"]').addEventListener('click', () => {",
+        "  document.querySelector('#status').textContent = `Applied budget ${budget.value}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByLabel("Budget").evaluate((element) => {
+        const input = element;
+        input.value = "75";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await page.getByText("Budget 75").waitFor();
+      await page.getByRole("button", { name: "Apply budget" }).click();
+      await page.getByText("Applied budget 75").waitFor();
+    },
+  },
+  {
     id: "file-input-upload",
     minSteps: 2,
     expectedActions: ["drag", "click"],

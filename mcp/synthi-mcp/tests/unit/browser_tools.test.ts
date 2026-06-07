@@ -396,6 +396,61 @@ describe("browser MCP tool surface", () => {
     }));
   });
 
+  it("replays range control workflows through the event-aware adapter path", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "75",
+      detail: {
+        control_kind: "range",
+        range_control: true,
+        min: "0",
+        max: "100",
+        step: "5",
+      },
+      element: { tag: "input", type: "range", label: "Budget", source_id: "settings.budget" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "app",
+      url,
+      detail: { control_kind: "range", value: "75" },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "range-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({
+        action: "fill",
+        value: "75",
+        detail: expect.objectContaining({ control_kind: "range", range_control: true }),
+      }),
+      "fill",
+      expect.stringContaining("Budget"),
+      "75"
+    );
+  });
+
   it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
     const response = await dispatchBrowserTool("synthi_browser_attach", {});
 

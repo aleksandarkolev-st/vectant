@@ -298,6 +298,9 @@ export class BrowserPlaywrightAdapter {
     selector?: string,
     value?: string
   ): Promise<BrowserActionResult> {
+    if (action === "fill" && isRangeControlEvent(event)) {
+      return await this.replayRangeFillAction(tab_id, event, selector, value);
+    }
     if (isDownloadReplayEvent(event) && (action === "click" || action === "dblclick")) {
       return await this.replayDownloadAction(tab_id, event, action, selector);
     }
@@ -313,6 +316,24 @@ export class BrowserPlaywrightAdapter {
     const page = this.requirePage(tab_id);
     await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocatorForEvent(page, event, targetSelector));
     return { ok: true, action, tab_id, url: page.url() };
+  }
+
+  private async replayRangeFillAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    await setRangeLocatorValue(target, value ?? event.value ?? "");
+    return {
+      ok: true,
+      action: "fill",
+      tab_id,
+      url: page.url(),
+      detail: { control_kind: "range", value: value ?? event.value ?? "" },
+    };
   }
 
   private async replayDownloadAction(
@@ -969,6 +990,17 @@ async function runTargetAction(
   }
 }
 
+async function setRangeLocatorValue(target: Locator, value: string): Promise<void> {
+  await target.evaluate((element, nextValue) => {
+    if (!(element instanceof HTMLInputElement) || element.type !== "range") {
+      throw new Error("target_not_range_input");
+    }
+    element.value = String(nextValue);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
+}
+
 function stringDetail(event: BrowserTraceEvent, key: string): string | undefined {
   const value = event.detail?.[key];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
@@ -976,6 +1008,18 @@ function stringDetail(event: BrowserTraceEvent, key: string): string | undefined
 
 function boolDetail(event: BrowserTraceEvent, key: string): boolean {
   return event.detail?.[key] === true;
+}
+
+function isRangeControlEvent(event: BrowserTraceEvent): boolean {
+  if (event.detail?.["control_kind"] === "range" || event.detail?.["range_control"] === true) return true;
+  const element = event.detail?.["element"];
+  return Boolean(
+    element &&
+    typeof element === "object" &&
+    !Array.isArray(element) &&
+    String((element as { tag?: unknown }).tag ?? "").toLowerCase() === "input" &&
+    String((element as { type?: unknown }).type ?? "").toLowerCase() === "range"
+  );
 }
 
 export function normalizeCapturedHumanActionAnnotation(
@@ -1255,6 +1299,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (tag === 'input') {
         if (type === 'checkbox') return 'checkbox';
         if (type === 'radio') return 'radio';
+        if (type === 'range') return 'slider';
         if (['button', 'submit', 'reset'].includes(type)) return 'button';
         return 'textbox';
       }
@@ -1460,6 +1505,21 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return slug(fieldName(el, element) || 'file') + '_file';
     }
 
+    function isRangeInput(el) {
+      return el && el.tagName && el.tagName.toLowerCase() === 'input' && attr(el, 'type').toLowerCase() === 'range';
+    }
+
+    function rangeControlDetail(el) {
+      if (!isRangeInput(el)) return {};
+      return {
+        control_kind: 'range',
+        range_control: true,
+        min: attr(el, 'min'),
+        max: attr(el, 'max'),
+        step: attr(el, 'step'),
+      };
+    }
+
     function fileDropDetail(el, extra) {
       const inputFiles = el && el.files && typeof el.files.length === 'number' ? Array.from(el.files) : [];
       const dataTransferFiles = extra && extra.dataTransfer && extra.dataTransfer.files
@@ -1487,6 +1547,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const rawDetail = Object.assign({}, detail || {});
       const beforeEffects = Array.isArray(rawDetail.__before_effects) ? rawDetail.__before_effects : visibleEffectTexts();
       delete rawDetail.__before_effects;
+      const controlDetail = action === 'fill' ? rangeControlDetail(el) : {};
       const payload = {
         url: location.href,
         origin: location.origin,
@@ -1495,7 +1556,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         field_name: fieldName(el, element),
         element,
         bbox: bbox(el),
-        detail: Object.assign({ event_source: 'dom_listener' }, rawDetail),
+        detail: Object.assign({ event_source: 'dom_listener' }, controlDetail, rawDetail),
       };
       const detailKey = payload.detail && typeof payload.detail.drop_locator === 'string'
         ? payload.detail.drop_locator

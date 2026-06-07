@@ -385,10 +385,19 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       }
       case "fill":
-        lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
-        if (isContentEditableFill(event)) {
+        if (isRangeControlFill(event)) {
+          lines.push(`  await ${target}.evaluate((element, value) => {`);
+          lines.push("    if (!(element instanceof HTMLInputElement) || element.type !== 'range') throw new Error('target_not_range_input');");
+          lines.push("    element.value = String(value);");
+          lines.push("    element.dispatchEvent(new Event('input', { bubbles: true }));");
+          lines.push("    element.dispatchEvent(new Event('change', { bubbles: true }));");
+          lines.push(`  }, ${JSON.stringify(event.value ?? "")});`);
+          lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        } else if (isContentEditableFill(event)) {
+          lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
           lines.push(`  await expect(${target}).toContainText(${JSON.stringify(event.value ?? "")});`);
         } else {
+          lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
           lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
         }
         break;
@@ -556,6 +565,15 @@ function isPopupTrigger(event: BrowserTraceEvent): boolean {
 function isContentEditableFill(event: BrowserTraceEvent): boolean {
   const element = elementForEvent(event);
   return event.action === "fill" && element?.content_editable === true;
+}
+
+function isRangeControlFill(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "fill" && (
+    event.detail?.["control_kind"] === "range" ||
+    event.detail?.["range_control"] === true ||
+    (element?.tag?.toLowerCase() === "input" && element?.type?.toLowerCase() === "range")
+  );
 }
 
 function pushDownloadAction(
