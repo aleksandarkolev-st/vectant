@@ -47,6 +47,7 @@
     "proof:real-rocm:warm": "node -e \"process.env.SYNTHI_REAL_ROCM_REUSE_WORKER_REPO='1'; process.env.SYNTHI_REAL_ROCM_CLEAN_BUILD='0'; import('./scripts/gpu-hmr-real-rocm-repo-validation.mjs')\"",
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
+    "proof:adversarial-ledger:self-check": "node scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs",
     "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
     "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
     "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
