@@ -1265,7 +1265,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
     try {
-      await browserPlaywrightAdapter.action(replayTab.tab_id, action, selector, value);
+      await browserPlaywrightAdapter.replayActionEvent(replayTab.tab_id, event, action, selector, value);
       stepsRun += 1;
     } catch (err) {
       return jsonResponse({

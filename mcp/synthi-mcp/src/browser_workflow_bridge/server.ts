@@ -90,6 +90,9 @@ const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
   "synthi_source_get_mapping_status",
   "synthi_browser_compile_workflow",
   "synthi_safety_run_prefix_validation",
+  "synthi_browser_acquire_lease",
+  "synthi_browser_run_workflow",
+  "synthi_browser_release_lease",
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
 ]);

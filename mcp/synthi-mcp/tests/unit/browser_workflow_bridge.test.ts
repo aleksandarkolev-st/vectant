@@ -104,6 +104,43 @@ describe("browser workflow bridge", () => {
     }));
   });
 
+  it("allows workflow lease tools through the local workflow bridge", async () => {
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    const acquire = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:3000" },
+      body: JSON.stringify({
+        tool: "synthi_browser_acquire_lease",
+        arguments: { owner: "bridge-test", lease_ms: 5000, reason: "unit" },
+      }),
+    });
+    expect(acquire.status).toBe(200);
+    const acquireBody = await acquire.json() as { ok: boolean; tool: string; result?: { lease?: { lease_id?: string } } };
+    expect(acquireBody).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_browser_acquire_lease",
+    }));
+    const leaseId = acquireBody.result?.lease?.lease_id;
+    expect(leaseId).toBeTruthy();
+
+    const release = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:3000" },
+      body: JSON.stringify({
+        tool: "synthi_browser_release_lease",
+        arguments: { lease_id: leaseId, reason: "unit-complete" },
+      }),
+    });
+    expect(release.status).toBe(200);
+    const releaseBody = await release.json() as { ok: boolean; tool: string };
+    expect(releaseBody).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_browser_release_lease",
+    }));
+  });
+
   it("requires a token when the workflow bridge is not loopback-bound", async () => {
     bridge = startBrowserWorkflowBridge({ port: 0, host: "0.0.0.0" });
     await bridge.ready;

@@ -14,6 +14,7 @@ export interface BrowserActionResult {
   action: BrowserActionKind;
   tab_id: string;
   url: string;
+  detail?: Record<string, unknown>;
 }
 
 export interface BrowserWaitInput {
@@ -258,6 +259,130 @@ export class BrowserPlaywrightAdapter {
       }
     }
     return { ok: true, action, tab_id, url: page.url() };
+  }
+
+  async replayActionEvent(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    action: BrowserActionKind,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    if (isDownloadReplayEvent(event) && (action === "click" || action === "dblclick")) {
+      return await this.replayDownloadAction(tab_id, event, action, selector);
+    }
+    if (isDialogReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
+      return await this.replayDialogAction(tab_id, event, action, selector, value);
+    }
+    if (isPopupReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
+      return await this.replayPopupAction(tab_id, event, action, selector, value);
+    }
+    return await this.action(tab_id, action, selector, value);
+  }
+
+  private async replayDownloadAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    action: "click" | "dblclick",
+    selector?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocator(page, selector);
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      action === "dblclick" ? target.dblclick() : target.click(),
+    ]);
+    const expectedFilename = stringDetail(event, "suggested_filename");
+    const filenameRedacted = boolDetail(event, "suggested_filename_redacted");
+    if (expectedFilename && !filenameRedacted && download.suggestedFilename() !== expectedFilename) {
+      throw new Error(`download_filename_mismatch:${download.suggestedFilename()}`);
+    }
+    return {
+      ok: true,
+      action,
+      tab_id,
+      url: page.url(),
+      detail: { download_filename: download.suggestedFilename() },
+    };
+  }
+
+  private async replayDialogAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    action: "click" | "dblclick" | "press",
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocator(page, selector);
+    const expectedType = stringDetail(event, "dialog_type") ?? "alert";
+    const expectedMessage = stringDetail(event, "dialog_message");
+    const messageRedacted = boolDetail(event, "dialog_message_redacted");
+    const accepted = event.detail?.["dialog_accepted"] !== false;
+    const promptValue = stringDetail(event, "dialog_prompt_value");
+    const promptRedacted = boolDetail(event, "dialog_prompt_value_redacted");
+    let dialogMessage = "";
+    const dialogPromise = new Promise<void>((resolve, reject) => {
+      page.once("dialog", async (dialog) => {
+        try {
+          if (dialog.type() !== expectedType) throw new Error(`dialog_type_mismatch:${dialog.type()}`);
+          dialogMessage = dialog.message();
+          if (expectedMessage && !messageRedacted && !dialogMessage.includes(expectedMessage)) {
+            throw new Error("dialog_message_mismatch");
+          }
+          if (accepted) {
+            await dialog.accept(expectedType === "prompt" && promptValue && !promptRedacted ? promptValue : undefined);
+          } else {
+            await dialog.dismiss();
+          }
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    await Promise.all([dialogPromise, runTargetAction(target, action, value)]);
+    return {
+      ok: true,
+      action,
+      tab_id,
+      url: page.url(),
+      detail: { dialog_type: expectedType, dialog_message: dialogMessage },
+    };
+  }
+
+  private async replayPopupAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    action: "click" | "dblclick" | "press",
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocator(page, selector);
+    const [popup] = await Promise.all([
+      page.waitForEvent("popup"),
+      runTargetAction(target, action, value),
+    ]);
+    await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
+    const expectedUrl = stringDetail(event, "popup_url");
+    const urlRedacted = boolDetail(event, "popup_url_redacted");
+    if (expectedUrl && !urlRedacted && popup.url() !== expectedUrl) {
+      throw new Error(`popup_url_mismatch:${popup.url()}`);
+    }
+    const expectedTitle = stringDetail(event, "popup_title");
+    const titleRedacted = boolDetail(event, "popup_title_redacted");
+    const popupTitle = await popup.title().catch(() => "");
+    if (expectedTitle && !titleRedacted && popupTitle !== expectedTitle) {
+      throw new Error(`popup_title_mismatch:${popupTitle}`);
+    }
+    return {
+      ok: true,
+      action,
+      tab_id,
+      url: page.url(),
+      detail: { popup_url: popup.url(), popup_title: popupTitle },
+    };
   }
 
   async fileDrop(
@@ -617,6 +742,41 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   const bbox = bboxOpt(raw["bbox"]);
   if (bbox !== undefined) event.bbox = bbox;
   return event;
+}
+
+function isDownloadReplayEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["download_event"] === true;
+}
+
+function isDialogReplayEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true;
+}
+
+function isPopupReplayEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["popup_event"] === true;
+}
+
+async function runTargetAction(
+  target: Locator,
+  action: "click" | "dblclick" | "press",
+  value?: string
+): Promise<void> {
+  if (action === "dblclick") {
+    await target.dblclick();
+  } else if (action === "press") {
+    await target.press(value ?? "Enter");
+  } else {
+    await target.click();
+  }
+}
+
+function stringDetail(event: BrowserTraceEvent, key: string): string | undefined {
+  const value = event.detail?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function boolDetail(event: BrowserTraceEvent, key: string): boolean {
+  return event.detail?.[key] === true;
 }
 
 export function normalizeCapturedHumanActionAnnotation(

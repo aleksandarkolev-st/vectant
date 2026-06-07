@@ -233,6 +233,23 @@ async function runCase({ testCase, container, context, runner }) {
     await idePage.bringToFront().catch(() => undefined);
     await idePage.screenshot({ path: path.join(caseDir, "after-validate-panel.png"), fullPage: true });
 
+    if (testCase.liveReplayMode) {
+      const liveReplay = await runLiveWorkflowReplay({
+        caseId: testCase.id,
+        workflowId: contract?.workflowId,
+        mode: testCase.liveReplayMode,
+      });
+      await writeJson(caseDir, "live-replay.json", liveReplay);
+      record(
+        testCase.id,
+        "run MCP workflow replay",
+        liveReplay.ok === true && liveReplay.replay?.steps_run >= testCase.minSteps,
+        liveReplay.ok === true
+          ? `steps=${liveReplay.replay?.steps_run ?? 0}`
+          : `error=${liveReplay.replay?.error || liveReplay.error || "unknown"}`
+      );
+    }
+
     const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir }) : {};
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
@@ -275,15 +292,12 @@ async function registerSeedSourceIdentity(slug, files) {
   const registrations = extractSourceIdentityRegistrations(files);
   let total = 0;
   for (const registration of registrations) {
-    const body = await httpJson("POST", `${CFG.bridgeUrl}/browser-workflows/tool`, {
-      tool: "synthi_source_register_tokens",
-      arguments: {
-        workspace_id: slug,
-        file_path: registration.file_path,
-        adapter: "workflow-pipeline-seed",
-        transform_version: "workflow_pipeline_seed_v1",
-        tokens: registration.tokens,
-      },
+    const body = await workflowBridgeTool("synthi_source_register_tokens", {
+      workspace_id: slug,
+      file_path: registration.file_path,
+      adapter: "workflow-pipeline-seed",
+      transform_version: "workflow_pipeline_seed_v1",
+      tokens: registration.tokens,
     });
     if (body.ok !== true) {
       throw new Error(`source identity registration failed for ${registration.file_path}: ${JSON.stringify(body).slice(0, 500)}`);
@@ -291,6 +305,37 @@ async function registerSeedSourceIdentity(slug, files) {
     total += Number(body.result?.registered_count || registration.tokens.length || 0);
   }
   return total;
+}
+
+async function runLiveWorkflowReplay({ caseId, workflowId, mode }) {
+  if (!workflowId) return { ok: false, error: "missing_workflow_id" };
+  const leaseBody = await workflowBridgeTool("synthi_browser_acquire_lease", {
+    owner: "workflow-pipeline-e2e",
+    lease_ms: 30_000,
+    reason: `${caseId}:live-replay`,
+  });
+  const leaseId = leaseBody.result?.lease?.lease_id;
+  if (!leaseId) return { ok: false, error: "lease_not_acquired", leaseBody };
+  try {
+    const runBody = await workflowBridgeTool("synthi_browser_run_workflow", {
+      lease_id: leaseId,
+      workflow_id: workflowId,
+      mode,
+    });
+    return runBody.result ?? runBody;
+  } finally {
+    await workflowBridgeTool("synthi_browser_release_lease", {
+      lease_id: leaseId,
+      reason: `${caseId}:live-replay-complete`,
+    }).catch(() => undefined);
+  }
+}
+
+async function workflowBridgeTool(tool, args) {
+  return await httpJson("POST", `${CFG.bridgeUrl}/browser-workflows/tool`, {
+    tool,
+    arguments: args,
+  });
 }
 
 function extractSourceIdentityRegistrations(files) {
@@ -1213,6 +1258,7 @@ const CASES = [
       "await popup1.waitForLoadState('domcontentloaded').catch(() => undefined);",
       "await expect(popup1).toHaveTitle(\"Workflow Help\");",
     ],
+    liveReplayMode: "sameSession",
     files: () => [
       ...commonFiles({
         title: "Popup Help Workflow",

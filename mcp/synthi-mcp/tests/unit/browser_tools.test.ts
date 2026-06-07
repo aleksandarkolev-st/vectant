@@ -350,6 +350,52 @@ describe("browser MCP tool surface", () => {
     expect(action).toHaveBeenCalledWith("app", "drag", expect.stringContaining("Revenue audit"), dropLocator);
   });
 
+  it("replays annotated popup workflow actions through the adapter replay path", async () => {
+    const url = "https://app.example.com/dashboard";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Dashboard", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_event: true,
+        popup_url: "https://app.example.com/help",
+        popup_title: "Workflow Help",
+      },
+      element: { tag: "a", role: "button", name: "Open help", test_id: "open-help" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+      detail: { popup_url: "https://app.example.com/help" },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "popup-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledTimes(1);
+    expect(replayAction.mock.calls[0]?.[1].detail).toEqual(expect.objectContaining({
+      popup_event: true,
+      popup_url: "https://app.example.com/help",
+    }));
+  });
+
   it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
     const response = await dispatchBrowserTool("synthi_browser_attach", {});
 
