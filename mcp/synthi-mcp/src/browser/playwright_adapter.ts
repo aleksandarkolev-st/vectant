@@ -301,6 +301,9 @@ export class BrowserPlaywrightAdapter {
     if (action === "fill" && isRangeControlEvent(event)) {
       return await this.replayRangeFillAction(tab_id, event, selector, value);
     }
+    if (action === "fill" && isKeyboardEditorFillEvent(event)) {
+      return await this.replayKeyboardEditorFillAction(tab_id, event, selector, value);
+    }
     if (isDownloadReplayEvent(event) && (action === "click" || action === "dblclick")) {
       return await this.replayDownloadAction(tab_id, event, action, selector);
     }
@@ -333,6 +336,28 @@ export class BrowserPlaywrightAdapter {
       tab_id,
       url: page.url(),
       detail: { control_kind: "range", value: value ?? event.value ?? "" },
+    };
+  }
+
+  private async replayKeyboardEditorFillAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const nextValue = value ?? event.value ?? "";
+    await target.click();
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.insertText(nextValue);
+    return {
+      ok: true,
+      action: "fill",
+      tab_id,
+      url: page.url(),
+      detail: { editor_replay_strategy: "keyboardInsert", value_length: nextValue.length },
     };
   }
 
@@ -1022,6 +1047,17 @@ function isRangeControlEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isKeyboardEditorFillEvent(event: BrowserTraceEvent): boolean {
+  if (event.detail?.["editor_replay_strategy"] === "keyboardInsert") return true;
+  const element = event.detail?.["element"];
+  return Boolean(
+    element &&
+    typeof element === "object" &&
+    !Array.isArray(element) &&
+    (element as { editor_replay_strategy?: unknown }).editor_replay_strategy === "keyboardInsert"
+  );
+}
+
 export function normalizeCapturedHumanActionAnnotation(
   payload: unknown,
   tab_id: string
@@ -1064,10 +1100,34 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const element: BrowserElementMetadata = {};
-  for (const key of ["tag", "role", "name", "label", "placeholder", "test_id", "text", "id", "class_name", "css", "xpath", "type", "source_id"] as const) {
+  for (const key of [
+    "tag",
+    "role",
+    "name",
+    "label",
+    "placeholder",
+    "test_id",
+    "text",
+    "id",
+    "class_name",
+    "css",
+    "xpath",
+    "type",
+    "source_id",
+    "editor_language",
+    "editor_container_test_id",
+    "editor_container_role",
+    "editor_container_css",
+  ] as const) {
     const found = stringOpt(raw[key]);
     if (found !== undefined) element[key] = found;
   }
+  const editorSurface = editorSurfaceOpt(raw["editor_surface"]);
+  if (editorSurface) element.editor_surface = editorSurface;
+  const editorBacking = editorBackingOpt(raw["editor_backing"]);
+  if (editorBacking) element.editor_backing = editorBacking;
+  const editorReplayStrategy = editorReplayStrategyOpt(raw["editor_replay_strategy"]);
+  if (editorReplayStrategy) element.editor_replay_strategy = editorReplayStrategy;
   if (typeof raw["content_editable"] === "boolean") element.content_editable = raw["content_editable"];
   return Object.keys(element).length ? element : undefined;
 }
@@ -1128,6 +1188,35 @@ function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, 
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function editorSurfaceOpt(value: unknown): BrowserElementMetadata["editor_surface"] | undefined {
+  return value === "textarea" ||
+    value === "contenteditable" ||
+    value === "monaco" ||
+    value === "codemirror" ||
+    value === "unknownCodeEditor"
+    ? value
+    : undefined;
+}
+
+function editorBackingOpt(value: unknown): BrowserElementMetadata["editor_backing"] | undefined {
+  return value === "textarea" ||
+    value === "contenteditable" ||
+    value === "hiddenTextarea" ||
+    value === "viewModel" ||
+    value === "unknown"
+    ? value
+    : undefined;
+}
+
+function editorReplayStrategyOpt(value: unknown): BrowserElementMetadata["editor_replay_strategy"] | undefined {
+  return value === "fill" ||
+    value === "focusAndFill" ||
+    value === "keyboardInsert" ||
+    value === "appBridge"
+    ? value
+    : undefined;
 }
 
 function numberOpt(value: unknown): number | undefined {
@@ -1357,6 +1446,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const textContent = text(el.textContent || '');
       const testId = attr(el, 'data-testid') || attr(el, 'data-test');
       const type = attr(el, 'type');
+      const editorContainer = editorContainerFor(el);
+      const editorSurface = editorSurfaceFor(el, editorContainer);
       return {
         tag,
         role: roleFor(el),
@@ -1372,6 +1463,96 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         type,
         source_id: attr(el, 'data-synthi-source-id'),
         content_editable: Boolean(el.isContentEditable || attr(el, 'contenteditable')),
+        editor_surface: editorSurface,
+        editor_backing: editorBackingFor(el, editorSurface),
+        editor_language: editorLanguageFor(el, editorContainer),
+        editor_replay_strategy: editorReplayStrategyFor(editorSurface),
+        editor_container_test_id: editorContainer ? attr(editorContainer, 'data-testid') || attr(editorContainer, 'data-test') : '',
+        editor_container_role: editorContainer ? roleFor(editorContainer) : '',
+        editor_container_css: editorContainer ? cssFor(editorContainer) : '',
+      };
+    }
+
+    function editorContainerFor(el) {
+      if (!isElement(el)) return null;
+      return el.closest('[data-synthi-editor], [data-editor-root], [data-language], .cm-editor, .CodeMirror, .monaco-editor, .code-editor');
+    }
+
+    function editorSurfaceFor(el, container) {
+      const tag = el.tagName.toLowerCase();
+      const classes = ((container && container.className) || el.className || '').toString().toLowerCase();
+      if (classes.includes('monaco-editor')) return 'monaco';
+      if (classes.includes('cm-editor') || classes.includes('codemirror')) return 'codemirror';
+      if (tag === 'textarea' && isCodeEditorLike(el, container)) return 'textarea';
+      if ((el.isContentEditable || attr(el, 'contenteditable')) && isCodeEditorLike(el, container)) return 'contenteditable';
+      if (container && attr(container, 'data-synthi-editor')) return 'unknownCodeEditor';
+      return '';
+    }
+
+    function isCodeEditorLike(el, container) {
+      return Boolean(
+        attr(el, 'data-language') ||
+        attr(el, 'data-editor-language') ||
+        attr(el, 'data-synthi-editor') ||
+        (container && (
+          attr(container, 'data-language') ||
+          attr(container, 'data-editor-language') ||
+          attr(container, 'data-synthi-editor')
+        ))
+      );
+    }
+
+    function editorBackingFor(el, surface) {
+      const tag = el.tagName.toLowerCase();
+      if (surface === 'textarea') return 'textarea';
+      if (surface === 'contenteditable') return 'contenteditable';
+      if ((surface === 'monaco' || surface === 'codemirror') && tag === 'textarea') {
+        const style = window.getComputedStyle(el);
+        return style.display === 'none' || style.visibility === 'hidden' || el.getAttribute('aria-hidden') === 'true'
+          ? 'hiddenTextarea'
+          : 'textarea';
+      }
+      if (surface === 'monaco' || surface === 'codemirror') return 'viewModel';
+      return '';
+    }
+
+    function editorLanguageFor(el, container) {
+      return attr(el, 'data-language') ||
+        attr(el, 'data-editor-language') ||
+        (container ? attr(container, 'data-language') || attr(container, 'data-editor-language') : '');
+    }
+
+    function editorReplayStrategyFor(surface) {
+      if (surface === 'textarea' || surface === 'contenteditable') return 'fill';
+      if (surface === 'monaco' || surface === 'codemirror') return 'keyboardInsert';
+      if (surface === 'unknownCodeEditor') return 'keyboardInsert';
+      return '';
+    }
+
+    function editorReplayElementFor(el, action) {
+      if (action !== 'fill') return el;
+      const container = editorContainerFor(el);
+      if (!container) return el;
+      const surface = editorSurfaceFor(el, container);
+      const strategy = editorReplayStrategyFor(surface);
+      return strategy === 'keyboardInsert' ? container : el;
+    }
+
+    function editorDetailFor(sourceEl, targetEl) {
+      const container = editorContainerFor(sourceEl) || editorContainerFor(targetEl);
+      const surface = editorSurfaceFor(targetEl, container) || editorSurfaceFor(sourceEl, container);
+      if (!surface) return {};
+      const value = editableValue(sourceEl);
+      return {
+        editor_surface: surface,
+        editor_backing: editorBackingFor(sourceEl, surface),
+        editor_language: editorLanguageFor(sourceEl, container),
+        editor_replay_strategy: editorReplayStrategyFor(surface),
+        editor_value_length: value.length,
+        editor_line_count: value.length ? value.split(/\\r\\n|\\r|\\n/).length : 0,
+        editor_container_test_id: container ? attr(container, 'data-testid') || attr(container, 'data-test') : '',
+        editor_container_role: container ? roleFor(container) : '',
+        editor_container_css: container ? cssFor(container) : '',
       };
     }
 
@@ -1543,19 +1724,22 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!window[bindingName] || !isElement(el)) return;
       if (action !== 'fill') flushPendingEdits();
       if (action !== 'scroll') flushPendingScrolls();
-      const element = metadata(el);
+      const replayEl = editorReplayElementFor(el, action);
+      const element = metadata(replayEl);
       const rawDetail = Object.assign({}, detail || {});
       const beforeEffects = Array.isArray(rawDetail.__before_effects) ? rawDetail.__before_effects : visibleEffectTexts();
       delete rawDetail.__before_effects;
-      const controlDetail = action === 'fill' ? rangeControlDetail(el) : {};
+      const controlDetail = action === 'fill'
+        ? Object.assign({}, rangeControlDetail(el), editorDetailFor(el, replayEl))
+        : {};
       const payload = {
         url: location.href,
         origin: location.origin,
         action,
         value: typeof value === 'string' ? value : undefined,
-        field_name: fieldName(el, element),
+        field_name: fieldName(replayEl, element),
         element,
-        bbox: bbox(el),
+        bbox: bbox(replayEl),
         detail: Object.assign({ event_source: 'dom_listener' }, controlDetail, rawDetail),
       };
       const detailKey = payload.detail && typeof payload.detail.drop_locator === 'string'

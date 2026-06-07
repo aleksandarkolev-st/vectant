@@ -1459,6 +1459,50 @@ const CASES = [
     },
   },
   {
+    id: "textarea-code-editor",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: [
+      "Saved script with 2 lines",
+    ],
+    expectedReplayCode: [
+      "await target1.fill(\"const answer = 42;\\nconsole.log(answer);\");",
+      "await expect(target1).toHaveValue(\"const answer = 42;\\nconsole.log(answer);\");",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Textarea Code Editor Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Textarea Code Editor Workflow</h1>",
+        "      <section data-synthi-editor=\"code\" data-language=\"javascript\" data-testid=\"script-editor\" role=\"group\" aria-label=\"Script editor\">",
+        "        <label for=\"automation-script\">Automation script</label>",
+        "        <textarea id=\"automation-script\" aria-label=\"Automation script\" data-language=\"javascript\" data-testid=\"automation-script\" data-synthi-source-id=\"editor.script\"></textarea>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"save-script\" data-synthi-source-id=\"editor.save\">Save script</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "textarea { min-height: 136px; width: min(620px, calc(100vw - 48px)); border: 1px solid #222; background: #fff; padding: 12px; font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }",
+      ],
+      script: [
+        "const script = document.querySelector('[data-testid=\"automation-script\"]');",
+        "document.querySelector('[data-testid=\"save-script\"]').addEventListener('click', () => {",
+        "  const lines = script.value.trim() ? script.value.trim().split(/\\r\\n|\\r|\\n/).length : 0;",
+        "  document.querySelector('#status').textContent = `Saved script with ${lines} lines`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const code = "const answer = 42;\nconsole.log(answer);";
+      await page.getByLabel("Automation script").fill(code);
+      await page.getByRole("button", { name: "Save script" }).click();
+      await page.getByText("Saved script with 2 lines").waitFor();
+    },
+  },
+  {
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],

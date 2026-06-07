@@ -91,6 +91,13 @@ export interface BrowserElementMetadata {
   type?: string;
   source_id?: string;
   content_editable?: boolean;
+  editor_surface?: "textarea" | "contenteditable" | "monaco" | "codemirror" | "unknownCodeEditor";
+  editor_backing?: "textarea" | "contenteditable" | "hiddenTextarea" | "viewModel" | "unknown";
+  editor_language?: string;
+  editor_replay_strategy?: "fill" | "focusAndFill" | "keyboardInsert" | "appBridge";
+  editor_container_test_id?: string;
+  editor_container_role?: string;
+  editor_container_css?: string;
 }
 
 export interface BrowserSelection {

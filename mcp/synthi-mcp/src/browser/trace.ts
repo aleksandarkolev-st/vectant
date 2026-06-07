@@ -393,6 +393,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           lines.push("    element.dispatchEvent(new Event('change', { bubbles: true }));");
           lines.push(`  }, ${JSON.stringify(event.value ?? "")});`);
           lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        } else if (isKeyboardEditorFill(event)) {
+          lines.push(`  await ${target}.click();`);
+          lines.push("  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');");
+          lines.push("  await page.keyboard.press('Backspace');");
+          lines.push(`  await page.keyboard.insertText(${JSON.stringify(event.value ?? "")});`);
+          warnings.push(`event ${event.event_id} uses keyboard insertion for a custom code-editor surface`);
         } else if (isContentEditableFill(event)) {
           lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
           lines.push(`  await expect(${target}).toContainText(${JSON.stringify(event.value ?? "")});`);
@@ -573,6 +579,14 @@ function isRangeControlFill(event: BrowserTraceEvent): boolean {
     event.detail?.["control_kind"] === "range" ||
     event.detail?.["range_control"] === true ||
     (element?.tag?.toLowerCase() === "input" && element?.type?.toLowerCase() === "range")
+  );
+}
+
+function isKeyboardEditorFill(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "fill" && (
+    event.detail?.["editor_replay_strategy"] === "keyboardInsert" ||
+    element?.editor_replay_strategy === "keyboardInsert"
   );
 }
 

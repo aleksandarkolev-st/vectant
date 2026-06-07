@@ -451,6 +451,67 @@ describe("browser MCP tool surface", () => {
     );
   });
 
+  it("replays custom code editor fills through the event-aware adapter path", async () => {
+    const url = "https://app.example.com/editor";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Editor", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "function run() { return 42; }",
+      detail: {
+        editor_surface: "codemirror",
+        editor_backing: "hiddenTextarea",
+        editor_replay_strategy: "keyboardInsert",
+      },
+      element: {
+        tag: "div",
+        role: "textbox",
+        name: "Query editor",
+        test_id: "query-editor",
+        source_id: "editor.query",
+        editor_surface: "codemirror",
+        editor_backing: "hiddenTextarea",
+        editor_replay_strategy: "keyboardInsert",
+      },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "app",
+      url,
+      detail: { editor_replay_strategy: "keyboardInsert" },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "editor-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({
+        action: "fill",
+        detail: expect.objectContaining({ editor_replay_strategy: "keyboardInsert" }),
+      }),
+      "fill",
+      expect.stringContaining("query-editor"),
+      "function run() { return 42; }"
+    );
+  });
+
   it("requires a caller-provided or environment-provided CDP endpoint for browser attach", async () => {
     const response = await dispatchBrowserTool("synthi_browser_attach", {});
 

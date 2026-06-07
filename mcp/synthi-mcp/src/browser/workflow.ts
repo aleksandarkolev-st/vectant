@@ -1150,6 +1150,16 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Pointer-sensor drag is not high-confidence without calibration."],
     };
   }
+  const editorStrategy = editorReplayStrategyFor(event);
+  if (editorStrategy) {
+    return {
+      kind: "dom",
+      replay: editorStrategy === "keyboardInsert" ? "sameSessionOnly" : "durable",
+      notes: [editorStrategy === "keyboardInsert"
+        ? "Code-editor surface uses focus and keyboard insertion because the durable target is not a standard form control."
+        : "Code-editor surface is backed by a standard fillable browser control."],
+    };
+  }
   return {
     kind: "dom",
     replay: "durable",
@@ -1190,6 +1200,13 @@ function surfaceLabel(event: BrowserTraceEvent): string {
     event.detail?.["surface_class"] ??
     ""
   ).toLowerCase();
+}
+
+function editorReplayStrategyFor(event: BrowserTraceEvent): string {
+  const detailStrategy = event.detail?.["editor_replay_strategy"];
+  if (typeof detailStrategy === "string" && detailStrategy.length > 0) return detailStrategy;
+  const element = elementForEvent(event);
+  return element?.editor_replay_strategy ?? "";
 }
 
 function workflowName(steps: WorkflowStepContractV7[]): string {

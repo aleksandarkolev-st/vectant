@@ -396,6 +396,43 @@ describe("browser workflow contract compiler", () => {
     }));
   });
 
+  it("classifies code editor replay strategies in surface plans", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "textarea-editor",
+        event_seq: 1,
+        action: "fill",
+        detail: {
+          editor_surface: "textarea",
+          editor_backing: "textarea",
+          editor_replay_strategy: "fill",
+          element: { role: "textbox", label: "Automation script", source_id: "src_editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "custom-editor",
+        event_seq: 2,
+        action: "fill",
+        detail: {
+          editor_surface: "codemirror",
+          editor_backing: "hiddenTextarea",
+          editor_replay_strategy: "keyboardInsert",
+          element: { role: "textbox", name: "Query editor", source_id: "src_query" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "dom",
+      replay: "durable",
+    }));
+    expect(workflow.contract.steps[1]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "dom",
+      replay: "sameSessionOnly",
+    }));
+    expect(workflow.contract.steps[1]?.surfacePlan.notes[0]).toContain("keyboard insertion");
+  });
+
   it("classifies explicit drag surface replay plans", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

@@ -326,6 +326,75 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("toHaveValue(\"Release notes ready\")");
   });
 
+  it("keeps textarea-backed code editor replay on durable fill", () => {
+    const code = "const answer = 42;\nconsole.log(answer);";
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "code-textarea",
+        event_seq: 1,
+        action: "fill",
+        value: code,
+        detail: {
+          editor_surface: "textarea",
+          editor_backing: "textarea",
+          editor_language: "javascript",
+          editor_replay_strategy: "fill",
+          editor_line_count: 2,
+          element: {
+            tag: "textarea",
+            role: "textbox",
+            label: "Automation script",
+            test_id: "automation-script",
+            source_id: "editor.script",
+            editor_surface: "textarea",
+            editor_replay_strategy: "fill",
+          },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"automation-script\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain(`await target1.fill(${JSON.stringify(code)});`);
+    expect(generated.code).toContain(`await expect(target1).toHaveValue(${JSON.stringify(code)});`);
+    expect(generated.warnings).not.toContain("event code-textarea uses keyboard insertion for a custom code-editor surface");
+  });
+
+  it("uses keyboard insertion for custom code editor surfaces", () => {
+    const code = "function run() { return 42; }";
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "custom-editor",
+        event_seq: 1,
+        action: "fill",
+        value: code,
+        detail: {
+          editor_surface: "codemirror",
+          editor_backing: "hiddenTextarea",
+          editor_replay_strategy: "keyboardInsert",
+          element: {
+            role: "textbox",
+            name: "Query editor",
+            test_id: "query-editor",
+            editor_surface: "codemirror",
+            editor_backing: "hiddenTextarea",
+            editor_replay_strategy: "keyboardInsert",
+          },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"query-editor\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("await target1.click();");
+    expect(generated.code).toContain("await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');");
+    expect(generated.code).toContain(`await page.keyboard.insertText(${JSON.stringify(code)});`);
+    expect(generated.code).not.toContain(`await target1.fill(${JSON.stringify(code)});`);
+    expect(generated.warnings).toContain("event custom-editor uses keyboard insertion for a custom code-editor surface");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({

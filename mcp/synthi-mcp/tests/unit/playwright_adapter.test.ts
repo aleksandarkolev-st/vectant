@@ -109,6 +109,53 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("normalizes code editor metadata on taught fill events", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/editor",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "const answer = 42;",
+      field_name: "Automation script",
+      element: {
+        tag: "textarea",
+        role: "textbox",
+        label: "Automation script",
+        test_id: "automation-script",
+        source_id: "editor.script",
+        editor_surface: "textarea",
+        editor_backing: "textarea",
+        editor_language: "typescript",
+        editor_replay_strategy: "fill",
+        editor_container_test_id: "script-editor",
+        editor_container_role: "textbox",
+        editor_container_css: "[data-testid=\"script-editor\"]",
+      },
+      detail: {
+        editor_surface: "textarea",
+        editor_backing: "textarea",
+        editor_language: "typescript",
+        editor_replay_strategy: "fill",
+        editor_value_length: 18,
+        editor_line_count: 1,
+      },
+    }, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      action: "fill",
+      value: "const answer = 42;",
+      element: expect.objectContaining({
+        editor_surface: "textarea",
+        editor_language: "typescript",
+        editor_replay_strategy: "fill",
+      }),
+      detail: expect.objectContaining({
+        editor_surface: "textarea",
+        editor_backing: "textarea",
+        editor_line_count: 1,
+      }),
+    }));
+  });
+
   it("rejects malformed hosted-browser DOM action payloads", () => {
     expect(normalizeCapturedHumanAction({ action: "click" }, "tab-a")).toBeNull();
     expect(normalizeCapturedHumanAction({
