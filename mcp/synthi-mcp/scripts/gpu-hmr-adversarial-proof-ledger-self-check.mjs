@@ -738,6 +738,30 @@ const cases = [
       })(),
     }),
   }), 'model_availability_checked_at_missing'],
+  ['fallback missing actual provider status', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        actual_model: 'gemini-3.5-flash',
+        fallback_model: 'gemini-3.5-flash',
+        fallback_used: true,
+      },
+    }),
+  }), 'actual_provider_model_status_missing'],
+  ['fallback actual provider status shutdown', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        actual_model: 'gemini-3.5-flash',
+        fallback_model: 'gemini-3.5-flash',
+        fallback_used: true,
+        actual_provider_model_status: 'shutdown',
+        actual_model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+        fallback_provider_model_status: 'available',
+        fallback_model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      },
+    }),
+  }), 'actual_model_provider_status_shutdown'],
   ['missing process identity', baselineRecord({ process_identity: {} }), 'process_identity_missing'],
   ['loader process identity missing', baselineRecord({ loader_event: { id: 'load-1', artifact_hash: HASH_B, timestamp_monotonic_ns: 100 } }), 'loader_process_identity_missing'],
   ['loader process mismatch', baselineRecord({ loader_event: { id: 'load-1', artifact_hash: HASH_B, process_id: 'pid-2', timestamp_monotonic_ns: 100 } }), 'loader_process_identity_mismatch'],

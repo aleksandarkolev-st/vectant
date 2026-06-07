@@ -195,6 +195,23 @@ function modelStatus(record) {
   return enumText(modelField(record, 'provider_model_status', 'providerModelStatus'));
 }
 
+function prefixedModelStatus(record, prefix) {
+  const pascal = `${prefix[0].toUpperCase()}${prefix.slice(1)}`;
+  return enumText(modelField(
+    record,
+    `${prefix}_provider_model_status`,
+    `${prefix}ProviderModelStatus`,
+  ) ?? modelField(
+    record,
+    `${prefix}_model_provider_status`,
+    `${pascal}ModelProviderStatus`,
+  ));
+}
+
+function modelStatusAccepted(status) {
+  return ['available', 'deprecated', 'private_alias'].includes(status ?? '');
+}
+
 function modelHardInfraFailure(record) {
   return modelField(record, 'hard_infra_failure', 'hardInfraFailure') === true;
 }
@@ -502,7 +519,7 @@ export function evaluateGpuHmrProofLedger(input = {}) {
         record: prefix,
         requested_model: modelFieldText(model, 'requested_model', 'requestedModel'),
       });
-    } else if (!['available', 'deprecated', 'private_alias'].includes(status ?? '')) {
+    } else if (!modelStatusAccepted(status)) {
       addFailure(failures, 'model_provider_status_not_accepted', {
         record: prefix,
         provider_model_status: status,
@@ -516,6 +533,38 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       && modelFallbackUsed(model)
     ) {
       warnings.push({ code: 'gpu_delta_model_fallback_used', record: prefix });
+    }
+    if (modelFallbackUsed(model)) {
+      for (const [snakeKey, camelKey, code] of [
+        ['actual_provider_model_status', 'actualProviderModelStatus', 'actual_provider_model_status_missing'],
+        ['actual_model_availability_checked_at', 'actualModelAvailabilityCheckedAt',
+          'actual_model_availability_checked_at_missing'],
+        ['fallback_provider_model_status', 'fallbackProviderModelStatus', 'fallback_provider_model_status_missing'],
+        ['fallback_model_availability_checked_at', 'fallbackModelAvailabilityCheckedAt',
+          'fallback_model_availability_checked_at_missing'],
+      ]) {
+        if (!modelFieldRecorded(model, snakeKey, camelKey)) {
+          addFailure(failures, code, { record: prefix });
+        }
+      }
+      const actualStatus = prefixedModelStatus(model, 'actual');
+      if (actualStatus === 'shutdown') {
+        addFailure(failures, 'actual_model_provider_status_shutdown', { record: prefix });
+      } else if (!modelStatusAccepted(actualStatus)) {
+        addFailure(failures, 'actual_provider_model_status_not_accepted', {
+          record: prefix,
+          provider_model_status: actualStatus,
+        });
+      }
+      const fallbackStatus = prefixedModelStatus(model, 'fallback');
+      if (fallbackStatus === 'shutdown') {
+        addFailure(failures, 'fallback_model_provider_status_shutdown', { record: prefix });
+      } else if (!modelStatusAccepted(fallbackStatus)) {
+        addFailure(failures, 'fallback_provider_model_status_not_accepted', {
+          record: prefix,
+          provider_model_status: fallbackStatus,
+        });
+      }
     }
     if (
       modelStatus(model) === 'deprecated'
