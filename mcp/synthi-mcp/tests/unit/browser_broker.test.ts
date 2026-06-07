@@ -377,6 +377,26 @@ describe("browser locator and script policy", () => {
     expect(candidates[0]?.confidence).toBeGreaterThan(candidates[candidates.length - 1]!.confidence);
   });
 
+  it("prefers host-scoped open shadow selectors over duplicated internals", () => {
+    const candidates = rankedLocatorCandidates({
+      role: "textbox",
+      name: "Display name",
+      label: "Display name",
+      test_id: "display-name",
+      css: "[data-testid=\"billing-profile\"] [data-testid=\"display-name\"]",
+      shadow_dom: "open",
+      shadow_css: "[data-testid=\"billing-profile\"] [data-testid=\"display-name\"]",
+      shadow_host_test_id: "billing-profile",
+      shadow_inner_css: "[data-testid=\"display-name\"]",
+    });
+
+    expect(candidates[0]).toEqual(expect.objectContaining({
+      kind: "css",
+      locator: "page.locator(\"[data-testid=\\\"billing-profile\\\"] [data-testid=\\\"display-name\\\"]\")",
+      reason: "open_shadow_scoped_css",
+    }));
+  });
+
   it("generates replay code with waits, assertions, confidence, and fallback locators", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);

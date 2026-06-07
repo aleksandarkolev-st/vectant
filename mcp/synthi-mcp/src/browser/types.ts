@@ -88,6 +88,13 @@ export interface BrowserElementMetadata {
   class_name?: string;
   css?: string;
   xpath?: string;
+  shadow_dom?: "open" | "closed";
+  shadow_css?: string;
+  shadow_host_css?: string;
+  shadow_inner_css?: string;
+  shadow_host_test_id?: string;
+  shadow_host_id?: string;
+  shadow_host_tag?: string;
   type?: string;
   source_id?: string;
   content_editable?: boolean;

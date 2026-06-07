@@ -475,6 +475,38 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("treats open shadow DOM traces as durable when a piercing locator is captured", () => {
+    const events = [
+      baseEvent({
+        event_id: "shadow-name",
+        event_seq: 1,
+        action: "fill",
+        value: "Ada Shadow",
+        detail: {
+          shadow_dom: "open",
+          shadow_host_tag: "profile-card",
+          shadow_host_css: "profile-card",
+          shadow_inner_css: "label > input",
+          element: { role: "textbox", label: "Shadow name", css: "profile-card label > input", source_id: "src_shadow_name" },
+        },
+        locator_candidates: [
+          { kind: "css", locator: "page.locator(\"profile-card label > input\")", confidence: 0.58, reason: "stable_css_selector" },
+        ],
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "openShadowDom",
+      replay: "durable",
+    }));
+    expect(workflow.contract.limitations).not.toContain("closedShadowDomBlocked");
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).not.toBe("blocked");
+    expect(replay.status).toBe("ready");
+  });
+
   it("surfaces coordinate and pointer limitations and blocks replay", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

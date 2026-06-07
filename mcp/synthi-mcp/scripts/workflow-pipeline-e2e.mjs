@@ -1071,6 +1071,63 @@ const CASES = [
     },
   },
   {
+    id: "open-shadow-form",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: ["Shadow Ada"],
+    expectedReplayCode: [
+      "[data-testid=\\\"billing-profile\\\"] [data-testid=\\\"display-name\\\"]",
+      "[data-testid=\\\"billing-profile\\\"] [data-testid=\\\"save-profile\\\"]",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Open Shadow Form Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Open Shadow Form Workflow</h1>",
+        "      <profile-card data-testid=\"shipping-profile\" data-label=\"Shipping\"></profile-card>",
+        "      <profile-card data-testid=\"billing-profile\" data-label=\"Billing\"></profile-card>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "class ProfileCard extends HTMLElement {",
+        "  connectedCallback() {",
+        "    if (this.shadowRoot) return;",
+        "    const root = this.attachShadow({ mode: 'open' });",
+        "    root.innerHTML = `",
+        "      <style>",
+        "        :host { display: grid; gap: 12px; width: min(620px, calc(100vw - 48px)); }",
+        "        label { display: grid; gap: 8px; font-weight: 700; }",
+        "        input { height: 42px; border: 1px solid #9c9c92; padding: 0 12px; font: inherit; }",
+        "        button { width: max-content; height: 42px; border: 0; background: #202020; color: white; padding: 0 16px; font: inherit; cursor: pointer; }",
+        "        output { min-height: 24px; color: #17663a; font-weight: 700; }",
+        "      </style>",
+        "      <label>Display name",
+        "        <input aria-label=\"Display name\" data-testid=\"display-name\" data-synthi-source-id=\"shadow.displayName\">",
+        "      </label>",
+        "      <button type=\"button\" data-testid=\"save-profile\" data-synthi-source-id=\"shadow.saveProfile\">Save profile</button>",
+        "      <output aria-live=\"polite\">Waiting</output>",
+        "    `;",
+        "    const label = this.getAttribute('data-label') || 'Profile';",
+        "    const input = root.querySelector('input');",
+        "    const output = root.querySelector('output');",
+        "    root.querySelector('button').addEventListener('click', () => {",
+        "      output.textContent = `${label} saved ${input.value}`;",
+        "    });",
+        "  }",
+        "}",
+        "customElements.define('profile-card', ProfileCard);",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const card = page.getByTestId("billing-profile");
+      await card.getByTestId("display-name").fill("Shadow Ada");
+      await card.getByTestId("save-profile").click();
+      await card.getByText("Billing saved Shadow Ada").waitFor();
+    },
+  },
+  {
     id: "settings-controls",
     minSteps: 4,
     expectedActions: ["check", "uncheck", "select", "click"],

@@ -5,12 +5,22 @@ const ROLE_CONFIDENCE = 0.96;
 const LABEL_CONFIDENCE = 0.94;
 const PLACEHOLDER_CONFIDENCE = 0.9;
 const TEXT_CONFIDENCE = 0.72;
+const SHADOW_CSS_CONFIDENCE = 0.995;
 const CSS_CONFIDENCE = 0.58;
 const XPATH_CONFIDENCE = 0.35;
 
 export function rankedLocatorCandidates(element: BrowserElementMetadata | undefined): LocatorCandidate[] {
   if (!element) return [];
   const candidates: LocatorCandidate[] = [];
+
+  if (element.shadow_dom === "open" && stableCss(element.shadow_css)) {
+    candidates.push({
+      kind: "css",
+      locator: `page.locator(${quote(element.shadow_css!)})`,
+      confidence: SHADOW_CSS_CONFIDENCE,
+      reason: "open_shadow_scoped_css",
+    });
+  }
 
   if (element.role && element.name) {
     candidates.push({

@@ -1345,6 +1345,12 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
     "class_name",
     "css",
     "xpath",
+    "shadow_css",
+    "shadow_host_css",
+    "shadow_inner_css",
+    "shadow_host_test_id",
+    "shadow_host_id",
+    "shadow_host_tag",
     "type",
     "source_id",
     "listbox_name",
@@ -1362,6 +1368,8 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
   if (editorBacking) element.editor_backing = editorBacking;
   const editorReplayStrategy = editorReplayStrategyOpt(raw["editor_replay_strategy"]);
   if (editorReplayStrategy) element.editor_replay_strategy = editorReplayStrategy;
+  const shadowDom = raw["shadow_dom"];
+  if (shadowDom === "open" || shadowDom === "closed") element.shadow_dom = shadowDom;
   if (typeof raw["content_editable"] === "boolean") element.content_editable = raw["content_editable"];
   if (typeof raw["selected"] === "boolean") element.selected = raw["selected"];
   if (typeof raw["listbox_multiselect"] === "boolean") element.listbox_multiselect = raw["listbox_multiselect"];
@@ -1526,6 +1534,24 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return value instanceof Element;
     }
 
+    function isWorkflowToolboxPath(path) {
+      return path.some((item) => {
+        if (!isElement(item)) return false;
+        if (item.matches('[data-synthi-workflow-toolbox]')) return true;
+        return Boolean(item.closest('[data-synthi-workflow-toolbox]'));
+      });
+    }
+
+    function eventElement(event) {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      if (isWorkflowToolboxPath(path)) return null;
+      for (const item of path) {
+        if (isElement(item)) return item;
+      }
+      const target = isElement(event.target) ? event.target : null;
+      return target && target.closest('[data-synthi-workflow-toolbox]') ? null : target;
+    }
+
     function text(value) {
       return typeof value === 'string' ? value.trim().replace(/\\s+/g, ' ').slice(0, 160) : '';
     }
@@ -1660,8 +1686,9 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return '';
     }
 
-    function cssFor(el) {
+    function cssPathFor(el, options) {
       if (!isElement(el)) return '';
+      const opts = Object.assign({ allowHostTag: true }, options || {});
       const testId = attr(el, 'data-testid') || attr(el, 'data-test');
       if (testId) return '[data-testid="' + testId.replace(/"/g, '\\\\"') + '"]';
       if (el.id) return '#' + CSS.escape(el.id);
@@ -1678,11 +1705,41 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         if (parent) {
           const siblings = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
           if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+        } else if (!opts.allowHostTag && node === el) {
+          const aria = attr(node, 'aria-label');
+          if (aria) part += '[aria-label="' + aria.replace(/"/g, '\\\\"') + '"]';
         }
         parts.unshift(part);
         node = parent;
       }
       return parts.join(' > ');
+    }
+
+    function cssFor(el) {
+      if (!isElement(el)) return '';
+      const root = el.getRootNode && el.getRootNode();
+      if (root && root instanceof ShadowRoot && isElement(root.host)) {
+        const hostCss = cssPathFor(root.host, { allowHostTag: false });
+        const innerCss = cssPathFor(el);
+        return [hostCss, innerCss].filter(Boolean).join(' ');
+      }
+      return cssPathFor(el);
+    }
+
+    function shadowDetailFor(el) {
+      if (!isElement(el) || !el.getRootNode) return {};
+      const root = el.getRootNode();
+      if (!(root instanceof ShadowRoot) || !isElement(root.host)) return {};
+      const shadowCss = cssFor(el);
+      return {
+        shadow_dom: 'open',
+        shadow_css: shadowCss,
+        shadow_host_tag: root.host.tagName.toLowerCase(),
+        shadow_host_test_id: attr(root.host, 'data-testid') || attr(root.host, 'data-test'),
+        shadow_host_id: attr(root.host, 'id'),
+        shadow_host_css: cssPathFor(root.host, { allowHostTag: false }),
+        shadow_inner_css: cssPathFor(el),
+      };
     }
 
     function xpathFor(el) {
@@ -1736,6 +1793,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const editorContainer = editorContainerFor(el);
       const editorSurface = editorSurfaceFor(el, editorContainer);
       const listbox = listboxForOption(el);
+      const shadowDetail = shadowDetailFor(el);
       return {
         tag,
         role: roleFor(el),
@@ -1748,6 +1806,13 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         class_name: text(el.className || ''),
         css: cssFor(el),
         xpath: xpathFor(el),
+        shadow_dom: shadowDetail.shadow_dom || '',
+        shadow_css: shadowDetail.shadow_css || '',
+        shadow_host_css: shadowDetail.shadow_host_css || '',
+        shadow_inner_css: shadowDetail.shadow_inner_css || '',
+        shadow_host_test_id: shadowDetail.shadow_host_test_id || '',
+        shadow_host_id: shadowDetail.shadow_host_id || '',
+        shadow_host_tag: shadowDetail.shadow_host_tag || '',
         type,
         source_id: attr(el, 'data-synthi-source-id'),
         content_editable: Boolean(el.isContentEditable || attr(el, 'contenteditable')),
@@ -2132,7 +2197,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         field_name: fieldName(replayEl, element),
         element,
         bbox: bbox(replayEl),
-        detail: Object.assign({ event_source: 'dom_listener' }, controlDetail, rawDetail),
+        detail: Object.assign({ event_source: 'dom_listener' }, controlDetail, shadowDetailFor(replayEl), rawDetail),
       };
       const detailKey = payload.detail && typeof payload.detail.drop_locator === 'string'
         ? payload.detail.drop_locator
@@ -2191,7 +2256,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }
 
     document.addEventListener('input', (event) => {
-      const el = event.target;
+      const el = eventElement(event);
       if (!isElement(el) || (!editableTags.has(el.tagName.toLowerCase()) && !el.isContentEditable && !attr(el, 'contenteditable'))) return;
       if (!isEditableTextTarget(el)) return;
       const suppressedUntil = pasteSuppressedUntil.get(el);
@@ -2209,7 +2274,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('paste', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-testid], [data-test]');
       if (!isElement(el) || !isEditableTextTarget(el)) return;
@@ -2223,7 +2288,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('change', (event) => {
-      const el = event.target;
+      const el = eventElement(event);
       if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
       const suppressedUntil = pasteSuppressedUntil.get(el);
       if (suppressedUntil && Date.now() < suppressedUntil && isEditableTextTarget(el)) {
@@ -2260,7 +2325,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('keydown', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if ((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'v' && isEditableTextTarget(target)) return;
@@ -2281,7 +2346,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('click', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (shouldSuppressPointerDragClick(target)) return;
@@ -2291,7 +2356,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('dblclick', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
@@ -2300,7 +2365,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('contextmenu', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
@@ -2309,7 +2374,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('pointerover', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (!event.altKey) return;
@@ -2325,7 +2390,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
 
     document.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
-      const el = pointerDraggableFor(event.target);
+      const el = pointerDraggableFor(eventElement(event));
       if (!el) return;
       activePointerDrag = {
         el,
@@ -2389,7 +2454,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('dragstart', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('[draggable="true"], [data-draggable], [data-testid], [data-test], [role="option"], [role="listitem"]');
@@ -2402,7 +2467,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     }, true);
 
     document.addEventListener('drop', (event) => {
-      const target = event.target;
+      const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const dropTarget = target.closest('[data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
