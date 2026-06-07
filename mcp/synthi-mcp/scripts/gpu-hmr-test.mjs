@@ -1565,7 +1565,17 @@ async function postCompileViaMcp({ ctx, files }) {
     const waitTimeoutMs = Number.isFinite(CFG.hmrWaitTimeoutMs) && CFG.hmrWaitTimeoutMs > 0
       ? Math.min(CFG.hmrTimeoutMs, CFG.hmrWaitTimeoutMs)
       : CFG.hmrTimeoutMs;
-    hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: waitTimeoutMs }, waitTimeoutMs + 5000);
+    hmr = await state.client.toolCall(
+      'synthi_wait_hmr',
+      {
+        timeoutMs: waitTimeoutMs,
+        module: 'device',
+        ...(Number.isFinite(compileRes.dispatched_at)
+          ? { since_ts: compileRes.dispatched_at }
+          : {}),
+      },
+      waitTimeoutMs + 5000,
+    );
   } catch (e) {
     return { ok: true, body: { compile: compileRes }, hmr: { status: 'timeout_or_error', error: e.message } };
   }
