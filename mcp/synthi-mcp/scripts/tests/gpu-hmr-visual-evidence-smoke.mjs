@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import {
+  deterministicVisualModeFromMcpEvidence,
   deterministicVisualModeAccepted,
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  mcpFrameGateSatisfied,
 } from '../lib/gpu-hmr-visual-evidence.mjs';
 
 const deterministicSingleFrame = {
@@ -61,8 +63,57 @@ assert.ok(
   `expected presentation_boundary_unproven, got ${missingPresentationFence.failedGates.map((g) => g.code).join(',')}`,
 );
 
+assert.equal(mcpFrameGateSatisfied({ status: 'satisfied' }), true);
+assert.equal(mcpFrameGateSatisfied({ frame_gate: { status: 'timeout' } }), false);
+
+const mcpDerived = deterministicVisualModeFromMcpEvidence({
+  base: {
+    fixed_seed: true,
+    frozen_camera: true,
+    temporal_accumulation_not_applicable: true,
+    taa_not_applicable: true,
+    denoiser_not_applicable: true,
+    fixed_swapchain_image_count: true,
+    warmup_frames: 1,
+  },
+  before: { width: 640, height: 480 },
+  after: { width: 640, height: 480 },
+  wait: { frame_gate: { status: 'satisfied' } },
+});
+const mcpDerivedEvaluation = evaluateGpuHmrDeterministicVisualMode(mcpDerived);
+assert.equal(mcpDerivedEvaluation.accepted, true);
+assert.equal(mcpDerived.fixed_resolution, true);
+assert.equal(mcpDerived.frame_capture_after_epoch_dispatch, true);
+assert.equal(mcpDerived.presentation_fence_or_frame_boundary, true);
+
+const mcpMissingGate = evaluateGpuHmrDeterministicVisualMode(
+  deterministicVisualModeFromMcpEvidence({
+    base: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_not_applicable: true,
+      taa_not_applicable: true,
+      denoiser_not_applicable: true,
+      fixed_swapchain_image_count: true,
+    },
+    before: { width: 640, height: 480 },
+    after: { width: 640, height: 480 },
+    wait: { frame_gate: { status: 'timeout' } },
+  }),
+);
+assert.equal(mcpMissingGate.accepted, false);
+assert.ok(
+  mcpMissingGate.failedGates.some((gate) => gate.code === 'frame_capture_after_epoch_dispatch_unproven'),
+  `expected frame_capture_after_epoch_dispatch_unproven, got ${mcpMissingGate.failedGates.map((g) => g.code).join(',')}`,
+);
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
-  checkedModes: ['single_frame_deterministic', 'swapchain_rejection', 'convergence_window'],
+  checkedModes: [
+    'single_frame_deterministic',
+    'swapchain_rejection',
+    'convergence_window',
+    'mcp_frame_gate_derived',
+  ],
 }, null, 2));

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
   analyzeGpuHmrImageEvidence,
+  deterministicVisualModeFromMcpEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
@@ -874,11 +875,6 @@ async function captureMcpPreviewScreenshot(client, profile, label) {
   throw new Error(`synthi_screenshot did not return image data for ${label}${suffix}`);
 }
 
-function frameGateSatisfied(wait) {
-  const gate = wait?.frame_gate ?? wait?.frameGate;
-  return isObject(gate) && gate.status === 'satisfied';
-}
-
 function waitContractFromCompileResult(result) {
   return result?.wait?.wait_contract ?? result?.wait?.waitContract ?? result?.waitArgs ?? null;
 }
@@ -887,21 +883,12 @@ function deterministicVisualModeForMcp(profile, before, after, afterCompile) {
   const base = isObject(profile.visualProof.deterministicMode)
     ? profile.visualProof.deterministicMode
     : {};
-  const sameResolution = Number(before?.width) > 0
-    && Number(before?.height) > 0
-    && Number(before?.width) === Number(after?.width)
-    && Number(before?.height) === Number(after?.height);
-  const frameGate = frameGateSatisfied(afterCompile?.wait);
-  return {
-    ...base,
-    fixed_resolution: sameResolution === true ? true : base.fixed_resolution,
-    frame_capture_after_epoch_dispatch: frameGate === true
-      ? true
-      : base.frame_capture_after_epoch_dispatch,
-    presentation_fence_or_frame_boundary: frameGate === true
-      ? true
-      : base.presentation_fence_or_frame_boundary,
-  };
+  return deterministicVisualModeFromMcpEvidence({
+    base,
+    before,
+    after,
+    wait: afterCompile?.wait,
+  });
 }
 
 function deterministicVisualModeForExternal(profile, before, after) {

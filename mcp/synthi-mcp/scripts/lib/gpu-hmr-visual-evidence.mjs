@@ -37,6 +37,13 @@ function finiteNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function firstBool(...values) {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value;
+  }
+  return null;
+}
+
 function addGate(failedGates, code, detail = {}) {
   failedGates.push({ code, ...detail });
 }
@@ -74,6 +81,139 @@ function convergenceWindowAccepted(window) {
     && window.frame_end !== null
     && window.frame_end >= window.frame_start
     && CONVERGENCE_METRICS.has(metric);
+}
+
+function screenshotDimension(shot, key) {
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+    : {};
+  return finiteNumberOrNull(shot?.[key] ?? meta[key]);
+}
+
+export function mcpFrameGateSatisfied(waitOrGate) {
+  const gate = isObject(waitOrGate?.frame_gate ?? waitOrGate?.frameGate)
+    ? (waitOrGate.frame_gate ?? waitOrGate.frameGate)
+    : waitOrGate;
+  return isObject(gate) && gate.status === 'satisfied';
+}
+
+export function deterministicVisualModeFromMcpEvidence(input = {}) {
+  const evidence = isObject(input) ? input : {};
+  const base = isObject(evidence.base ?? evidence.deterministicMode)
+    ? (evidence.base ?? evidence.deterministicMode)
+    : {};
+  const before = evidence.before ?? evidence.beforeScreenshot ?? null;
+  const after = evidence.after ?? evidence.afterScreenshot ?? null;
+  const beforeWidth = screenshotDimension(before, 'width');
+  const beforeHeight = screenshotDimension(before, 'height');
+  const afterWidth = screenshotDimension(after, 'width');
+  const afterHeight = screenshotDimension(after, 'height');
+  const sameResolution = beforeWidth !== null
+    && beforeHeight !== null
+    && afterWidth !== null
+    && afterHeight !== null
+    && beforeWidth > 0
+    && beforeHeight > 0
+    && beforeWidth === afterWidth
+    && beforeHeight === afterHeight;
+  const frameGate = evidence.frameGate ?? evidence.wait?.frame_gate ?? evidence.wait?.frameGate;
+  const frameBoundary = mcpFrameGateSatisfied(frameGate);
+  return normalizeGpuHmrDeterministicVisualMode({
+    ...base,
+    fixed_seed: firstBool(evidence.fixed_seed, evidence.fixedSeed, base.fixed_seed, base.fixedSeed),
+    seed_policy_fixed: firstBool(
+      evidence.seed_policy_fixed,
+      evidence.seedPolicyFixed,
+      base.seed_policy_fixed,
+      base.seedPolicyFixed,
+    ),
+    seed_policy_hash: textOrNull(
+      evidence.seed_policy_hash
+      ?? evidence.seedPolicyHash
+      ?? base.seed_policy_hash
+      ?? base.seedPolicyHash,
+    ),
+    frozen_camera: firstBool(
+      evidence.frozen_camera,
+      evidence.frozenCamera,
+      base.frozen_camera,
+      base.frozenCamera,
+    ),
+    temporal_accumulation_disabled: firstBool(
+      evidence.temporal_accumulation_disabled,
+      evidence.temporalAccumulationDisabled,
+      base.temporal_accumulation_disabled,
+      base.temporalAccumulationDisabled,
+    ),
+    temporal_accumulation_present: firstBool(
+      evidence.temporal_accumulation_present,
+      evidence.temporalAccumulationPresent,
+      base.temporal_accumulation_present,
+      base.temporalAccumulationPresent,
+    ),
+    temporal_accumulation_not_applicable: firstBool(
+      evidence.temporal_accumulation_not_applicable,
+      evidence.temporalAccumulationNotApplicable,
+      base.temporal_accumulation_not_applicable,
+      base.temporalAccumulationNotApplicable,
+    ),
+    taa_disabled: firstBool(evidence.taa_disabled, evidence.taaDisabled, base.taa_disabled, base.taaDisabled),
+    taa_present: firstBool(evidence.taa_present, evidence.taaPresent, base.taa_present, base.taaPresent),
+    taa_not_applicable: firstBool(
+      evidence.taa_not_applicable,
+      evidence.taaNotApplicable,
+      base.taa_not_applicable,
+      base.taaNotApplicable,
+    ),
+    denoiser_disabled: firstBool(
+      evidence.denoiser_disabled,
+      evidence.denoiserDisabled,
+      base.denoiser_disabled,
+      base.denoiserDisabled,
+    ),
+    denoiser_present: firstBool(
+      evidence.denoiser_present,
+      evidence.denoiserPresent,
+      base.denoiser_present,
+      base.denoiserPresent,
+    ),
+    denoiser_not_applicable: firstBool(
+      evidence.denoiser_not_applicable,
+      evidence.denoiserNotApplicable,
+      base.denoiser_not_applicable,
+      base.denoiserNotApplicable,
+    ),
+    fixed_resolution: sameResolution === true
+      ? true
+      : firstBool(evidence.fixed_resolution, evidence.fixedResolution, base.fixed_resolution, base.fixedResolution),
+    fixed_swapchain_image_count: firstBool(
+      evidence.fixed_swapchain_image_count,
+      evidence.fixedSwapchainImageCount,
+      base.fixed_swapchain_image_count,
+      base.fixedSwapchainImageCount,
+    ),
+    frame_capture_after_epoch_dispatch: frameBoundary === true
+      ? true
+      : firstBool(
+          evidence.frame_capture_after_epoch_dispatch,
+          evidence.frameCaptureAfterEpochDispatch,
+          base.frame_capture_after_epoch_dispatch,
+          base.frameCaptureAfterEpochDispatch,
+        ),
+    presentation_fence_or_frame_boundary: frameBoundary === true
+      ? true
+      : firstBool(
+          evidence.presentation_fence_or_frame_boundary,
+          evidence.presentationFenceOrFrameBoundary,
+          base.presentation_fence_or_frame_boundary,
+          base.presentationFenceOrFrameBoundary,
+        ),
+    warmup_frames:
+      finiteNumberOrNull(evidence.warmup_frames ?? evidence.warmupFrames)
+      ?? finiteNumberOrNull(base.warmup_frames ?? base.warmupFrames),
+    convergence_window: evidence.convergence_window ?? evidence.convergenceWindow
+      ?? base.convergence_window ?? base.convergenceWindow,
+  });
 }
 
 export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
