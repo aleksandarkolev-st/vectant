@@ -131,6 +131,9 @@ expectReject('cpu route', {
     route: 'cpu_hmr_or_host_reload',
   },
 }, 'route_not_gpu_hmr');
+expectReject('missing verified evidence refs', {
+  evidence_refs: [],
+}, 'contract_evidence_refs_missing');
 expectReject('ai hints only', {
   evidence_refs: [],
   ai_hints: [{ backend: 'hip' }],

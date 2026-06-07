@@ -387,7 +387,7 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (!contract.artifact_identity.source_paths.length) addFailure(failures, 'artifact_source_paths_missing');
   if (!contract.artifact_identity.entry_points.length) addFailure(failures, 'artifact_entry_points_missing');
   if (contract.artifact_identity.artifact_kind === 'unknown') addFailure(failures, 'artifact_kind_unknown');
-  if (!contract.evidence_refs.length) warnings.push({ code: 'contract_evidence_refs_missing' });
+  if (!contract.evidence_refs.length) addFailure(failures, 'contract_evidence_refs_missing');
   if (contract.evidence_refs.length === 0 && contract.ai_hints.length > 0) {
     addFailure(failures, 'ai_hints_without_verified_evidence');
   }
