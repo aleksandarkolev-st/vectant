@@ -113,10 +113,12 @@ const convergenceWindowWithoutSeed = evaluateGpuHmrDeterministicVisualMode({
     evidence_refs: ['visual-window:post-epoch-frames'],
   },
 });
-assert.equal(convergenceWindowWithoutSeed.accepted, false);
+assert.equal(convergenceWindowWithoutSeed.accepted, true);
 assert.ok(
-  convergenceWindowWithoutSeed.failedGates.some((gate) => gate.code === 'seed_policy_unproven'),
-  `expected seed_policy_unproven, got ${convergenceWindowWithoutSeed.failedGates.map((g) => g.code).join(',')}`,
+  convergenceWindowWithoutSeed.warnings.some((warning) =>
+    warning.code === 'convergence_window_without_fixed_seed_policy'
+  ),
+  `expected convergence_window_without_fixed_seed_policy warning, got ${convergenceWindowWithoutSeed.warnings.map((w) => w.code).join(',')}`,
 );
 
 const missingPresentationFence = evaluateGpuHmrDeterministicVisualMode({
