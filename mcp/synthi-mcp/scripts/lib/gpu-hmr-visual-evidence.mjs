@@ -147,7 +147,7 @@ export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
     addGate(failedGates, 'presentation_boundary_unproven');
   }
   if (mode.fixed_swapchain_image_count !== true) {
-    warnings.push({ code: 'fixed_swapchain_image_count_unproven' });
+    addGate(failedGates, 'fixed_swapchain_image_count_unproven');
   }
   if (!seedPolicyFixed(mode) && !convergenceAccepted) {
     addGate(failedGates, 'seed_policy_unproven');
