@@ -1176,6 +1176,7 @@ const CFG = {
       ?? 'auto',
   ),
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
+  hmrRequiredGpuProofState: (process.env.SYNTHI_REAL_ROCM_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   forceGpuAiDelta: booleanFromEnv(
     process.env,
     'SYNTHI_REAL_ROCM_FORCE_GPU_AI_DELTA',
@@ -3446,10 +3447,44 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
     wait_hmr_status: wait?.status ?? null,
     wait_hmr_source: wait?.source ?? null,
     wait_hmr_detail: wait?.detail ?? null,
+    wait_hmr_args: wait?.wait_args ?? wait?.waitArgs ?? null,
+    wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
+    wait_hmr_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
     gpu_proof: wait?.gpu_proof ?? null,
     gpu_proof_validation: wait?.gpu_proof_validation ?? null,
     runtime_identity: phaseRuntimeIdentitySummary(identityMonitor),
     wait_call_wall_ms: Date.now() - waitStart,
+  };
+}
+
+function configuredWaitRequiredGpuProofState() {
+  if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
+  return CFG.requireFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null;
+}
+
+function waitContractFromArgs(waitArgs = {}) {
+  const requiredState = waitArgs.requiredGpuProofState
+    ?? (waitArgs.requireGpuFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null);
+  return {
+    timeout_ms: Number.isFinite(waitArgs.timeoutMs) ? waitArgs.timeoutMs : null,
+    module: typeof waitArgs.module === 'string' && waitArgs.module.trim()
+      ? waitArgs.module.trim()
+      : null,
+    since_ts: Number.isFinite(waitArgs.since_ts) ? waitArgs.since_ts : null,
+    preview_id: typeof waitArgs.preview_id === 'string' && waitArgs.preview_id.trim()
+      ? waitArgs.preview_id.trim()
+      : null,
+    required_gpu_proof_state: requiredState ?? null,
+    require_gpu_full_runtime_proof: waitArgs.requireGpuFullRuntimeProof === true,
+  };
+}
+
+function attachWaitEvidence(wait, waitArgs) {
+  if (!wait || typeof wait !== 'object') return wait;
+  return {
+    ...wait,
+    wait_args: waitArgs,
+    wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
   };
 }
 
@@ -3464,9 +3499,13 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
+    const requiredGpuProofState = configuredWaitRequiredGpuProofState();
+    const waitArgs = { timeoutMs: sliceTimeoutMs, since_ts: eventLogSinceTs };
+    if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
+    if (requiredGpuProofState) waitArgs.requiredGpuProofState = requiredGpuProofState;
+    if (CFG.requireFullRuntimeProof) waitArgs.requireGpuFullRuntimeProof = true;
+    const waitContract = waitContractFromArgs(waitArgs);
     try {
-      const waitArgs = { timeoutMs: sliceTimeoutMs, since_ts: eventLogSinceTs };
-      if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
         waitArgs,
@@ -3476,10 +3515,11 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
       await capturePhaseRuntimeIdentity(identityMonitor, 'wait_poll_error');
       const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
       if (identityLoss) return identityLoss;
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       throw err;
     }
+    wait = attachWaitEvidence(wait, waitArgs);
     await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait_poll');
     const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
     if (identityLoss) return identityLoss;
@@ -3487,20 +3527,38 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     const previewId = hmrPreviewId(wait?.detail);
     if (previewId && previewId !== CFG.slug) {
       record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       continue;
     }
     if (wait?.status === 'timeout') {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       continue;
     }
     return wait;
   }
-  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+  const requiredGpuProofState = configuredWaitRequiredGpuProofState();
+  const timeoutWaitArgs = { timeoutMs, since_ts: eventLogSinceTs };
+  if (CFG.hmrWaitModule) timeoutWaitArgs.module = CFG.hmrWaitModule;
+  if (requiredGpuProofState) timeoutWaitArgs.requiredGpuProofState = requiredGpuProofState;
+  if (CFG.requireFullRuntimeProof) timeoutWaitArgs.requireGpuFullRuntimeProof = true;
+  const timeoutWaitContract = waitContractFromArgs(timeoutWaitArgs);
+  const recovered = await currentHmrFromEventLog(
+    state,
+    eventLogSinceTs,
+    startedAt,
+    timeoutWaitArgs,
+    timeoutWaitContract,
+  );
   if (recovered) return recovered;
-  return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'real_rocm_validation_harness' };
+  return last ?? {
+    status: 'timeout',
+    elapsedMs: timeoutMs,
+    source: 'real_rocm_validation_harness',
+    wait_args: timeoutWaitArgs,
+    wait_contract: timeoutWaitContract,
+  };
 }
 
 function hmrPreviewId(detail) {
@@ -3528,7 +3586,7 @@ function hmrStatusFromEvent(entry) {
   return null;
 }
 
-async function currentHmrFromEventLog(state, sinceTs, startedAt) {
+async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null, waitContract = null) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
     { kind: 'hmr', since_ts: sinceTs, limit: 200 },
@@ -3549,6 +3607,8 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
       hmrElapsedMs: typeof entry.ts === 'number' ? entry.ts - startedAt : null,
       source: 'event_log',
       detail: raw.data && typeof raw.data === 'object' ? raw.data : raw,
+      wait_args: waitArgs,
+      wait_contract: waitContract ?? waitContractFromArgs(waitArgs ?? {}),
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered after ignoring a stale wait_hmr event',
@@ -5057,6 +5117,33 @@ async function selfCheckRuntimeDispatchEvidence() {
   ].filter(screenshotQualifiesAsVisualEvidence);
   if (visualRows.length !== 1 || visualRows[0]?.path !== 'fresh.png') {
     throw new Error('visual evidence frame predicate accepted a diagnostic-only screenshot');
+  }
+  const waitArgs = {
+    timeoutMs: 12_345,
+    since_ts: 1_780_850_000_000,
+    module: 'device',
+    preview_id: 'gpu-self-check',
+    requiredGpuProofState: 'gpu-hmr-full-runtime-proven',
+    requireGpuFullRuntimeProof: true,
+  };
+  const waitContract = waitContractFromArgs(waitArgs);
+  if (
+    waitContract.timeout_ms !== waitArgs.timeoutMs
+    || waitContract.module !== 'device'
+    || waitContract.since_ts !== waitArgs.since_ts
+    || waitContract.preview_id !== 'gpu-self-check'
+    || waitContract.required_gpu_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || waitContract.require_gpu_full_runtime_proof !== true
+  ) {
+    throw new Error('wait_hmr contract normalization self-check failed');
+  }
+  const attachedWait = attachWaitEvidence({ status: 'timeout' }, waitArgs);
+  if (
+    attachedWait.wait_args !== waitArgs
+    || attachedWait.wait_contract?.required_gpu_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || attachedWait.wait_contract?.require_gpu_full_runtime_proof !== true
+  ) {
+    throw new Error('wait_hmr evidence attachment self-check failed');
   }
   const parsedCmakeArgs = parseStringArrayEnv(
     '["-DNAME=value with spaces","-DENABLE_FEATURE=ON"]',
