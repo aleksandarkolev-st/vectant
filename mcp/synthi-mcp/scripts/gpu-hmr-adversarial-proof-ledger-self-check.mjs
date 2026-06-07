@@ -202,6 +202,7 @@ const summary = buildGpuHmrValidationProofSummary({
     acceptanceContractEvaluation: runtimeArtifact.acceptanceContractEvaluation,
     proofLedger: runtimeArtifact.proofLedger,
     proofLedgerQuery: runtimeArtifact.proofLedgerQuery,
+    fullRuntimeProven: runtimeArtifact.fullRuntimeProven,
     gpuHmrSuccess: runtimeArtifact.gpuHmrSuccess,
   }],
 });

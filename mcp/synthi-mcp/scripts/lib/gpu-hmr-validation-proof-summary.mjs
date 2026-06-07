@@ -514,14 +514,14 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     input.proof_ledger,
     ...runtimeArtifactRecords.map(proofLedgerFromRecord),
   ]);
-  const explicitProofLedgerQueries = compactObjects([
+  const suppliedProofLedgerQueries = compactObjects([
     input.proofLedgerQuery,
     input.proof_ledger_query,
     ...runtimeArtifactRecords.map(proofLedgerQueryFromRecord),
   ]);
-  const proofLedgerQueries = explicitProofLedgerQueries.length > 0
-    ? explicitProofLedgerQueries
-    : proofLedgers.map((ledger) => queryGpuHmrLedgerInvariants(ledger));
+  const proofLedgerQueries = proofLedgers.length > 0
+    ? proofLedgers.map((ledger) => queryGpuHmrLedgerInvariants(ledger))
+    : suppliedProofLedgerQueries.map((query) => queryGpuHmrLedgerInvariants(query));
   const proofLedgerQuery = proofLedgerQueries[proofLedgerQueries.length - 1] ?? null;
   const acceptanceContracts = compactObjects([
     input.acceptanceContract,
@@ -537,17 +537,19 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
       })
     : null;
   if (derivedAcceptanceContract) acceptanceContracts.push(derivedAcceptanceContract);
-  const explicitAcceptanceEvaluations = compactObjects([
+  const suppliedAcceptanceEvaluations = compactObjects([
     input.acceptanceContractEvaluation,
     input.acceptance_contract_evaluation,
     validationContext.acceptanceContractEvaluation,
     validationContext.acceptance_contract_evaluation,
     ...runtimeArtifactRecords.map(acceptanceContractEvaluationFromRecord),
   ]);
-  const acceptanceContractEvaluations = explicitAcceptanceEvaluations.length > 0
-    ? explicitAcceptanceEvaluations
-    : acceptanceContracts.length > 0
-      ? acceptanceContracts.map((contract) => evaluateGpuHmrAcceptanceContract(contract))
+  const acceptanceContractEvaluations = acceptanceContracts.length > 0
+    ? acceptanceContracts.map((contract) => evaluateGpuHmrAcceptanceContract(contract))
+    : suppliedAcceptanceEvaluations.length > 0
+      ? suppliedAcceptanceEvaluations.map((evaluation) =>
+          evaluateGpuHmrAcceptanceContract(evaluation.contract ?? evaluation.acceptanceContract ?? evaluation)
+        )
       : [evaluateGpuHmrAcceptanceContract({
           classification: input.classification ?? validationContext.classification ?? {},
         })];
@@ -564,16 +566,18 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     validationContext.deterministic_visual_mode,
     ...runtimeArtifactRecords.map(deterministicVisualModeFromRecord),
   ]);
-  const explicitDeterministicVisualModeEvaluations = compactObjects([
+  const suppliedDeterministicVisualModeEvaluations = compactObjects([
     input.deterministicVisualModeEvaluation,
     input.deterministic_visual_mode_evaluation,
     validationContext.deterministicVisualModeEvaluation,
     validationContext.deterministic_visual_mode_evaluation,
     ...runtimeArtifactRecords.map(deterministicVisualModeEvaluationFromRecord),
   ]);
-  const deterministicVisualModeEvaluations = explicitDeterministicVisualModeEvaluations.length > 0
-    ? explicitDeterministicVisualModeEvaluations
-    : deterministicVisualModes.map((mode) => evaluateGpuHmrDeterministicVisualMode(mode));
+  const deterministicVisualModeEvaluations = deterministicVisualModes.length > 0
+    ? deterministicVisualModes.map((mode) => evaluateGpuHmrDeterministicVisualMode(mode))
+    : suppliedDeterministicVisualModeEvaluations.map((evaluation) =>
+        evaluateGpuHmrDeterministicVisualMode(evaluation.mode ?? evaluation.deterministicVisualMode ?? evaluation)
+      );
   const deterministicVisualModeEvaluation =
     deterministicVisualModeEvaluations[deterministicVisualModeEvaluations.length - 1] ?? null;
   const deterministicVisualMode =
@@ -636,6 +640,27 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     limitationFromProof('original-host-path', input.originalHostPathProof),
     limitationFromProof('full-runtime', input.fullRuntimeProof),
   ]);
+  const directFullRuntimeProven = input.fullRuntimeProof
+    ? input.fullRuntimeProof.fullRuntimeProven === true
+    : null;
+  const runtimeArtifactsFullRuntimeProven = runtimeArtifactRecords.length > 0
+    ? runtimeArtifactRecords.every((record) =>
+        record.fullRuntimeProven === true
+        && (record.gpuHmrSuccess === true || record.gpu_hmr_success === true)
+      )
+    : null;
+  const fullRuntimeProven = directFullRuntimeProven
+    ?? runtimeArtifactsFullRuntimeProven
+    ?? (fullRuntimeStates.length > 0 && fullRuntimeStates.every((state) => state.full_runtime_proven === true));
+  const gpuHmrSuccess = fullRuntimeProven === true
+    && limitations.length === 0
+    && proofLedgerQuery?.gpuHmrSuccess === true
+    && acceptanceContractEvaluation?.accepted === true
+    && (
+      deterministicVisualModeEvaluation
+        ? deterministicVisualModeEvaluation.accepted === true
+        : true
+    );
 
   return {
     schema_version: GPU_HMR_VALIDATION_PROOF_SUMMARY_SCHEMA_VERSION,
@@ -716,17 +741,9 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluations: deterministicVisualModeEvaluations,
-    gpu_hmr_success: proofLedgerQuery?.gpuHmrSuccess === true
-      && acceptanceContractEvaluation?.accepted === true
-      && (
-        deterministicVisualModeEvaluation
-          ? deterministicVisualModeEvaluation.accepted === true
-          : true
-      ),
+    gpu_hmr_success: gpuHmrSuccess,
     visual_evidence_is_supplemental: true,
     output_correctness_requires_deterministic_oracle: true,
-    full_runtime_proven: input.fullRuntimeProof
-      ? input.fullRuntimeProof.fullRuntimeProven === true
-      : fullRuntimeStates.length > 0 && fullRuntimeStates.every((state) => state.full_runtime_proven === true),
+    full_runtime_proven: fullRuntimeProven,
   };
 }
