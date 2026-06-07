@@ -1026,6 +1026,57 @@ const CASES = [
     },
   },
   {
+    id: "keyboard-shortcut",
+    minSteps: 2,
+    expectedActions: ["press", "click"],
+    expectedReplayText: [
+      "Command palette opened",
+      "Command executed",
+    ],
+    expectedReplayCode: [
+      "await target1.press(\"Control+K\");",
+    ],
+    files: () => commonFiles({
+      title: "Keyboard Shortcut Workflow",
+      body: [
+        "    <main tabindex=\"0\" role=\"application\" aria-label=\"Workspace shell\" data-testid=\"workspace-shell\" data-synthi-source-id=\"shortcut.shell\">",
+        "      <h1>Keyboard Shortcut Workflow</h1>",
+        "      <div id=\"palette\" role=\"dialog\" aria-label=\"Command palette\" hidden>",
+        "        <button type=\"button\" data-testid=\"run-command\" data-synthi-source-id=\"shortcut.run\">Run command</button>",
+        "      </div>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "main:focus { outline: 2px solid #303030; outline-offset: 6px; }",
+        "#palette { border: 1px solid #222; background: #fff; padding: 14px; width: max-content; }",
+      ],
+      script: [
+        "const shell = document.querySelector('[data-testid=\"workspace-shell\"]');",
+        "const palette = document.querySelector('#palette');",
+        "const status = document.querySelector('#status');",
+        "shell.addEventListener('keydown', (event) => {",
+        "  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {",
+        "    event.preventDefault();",
+        "    palette.hidden = false;",
+        "    status.textContent = 'Command palette opened';",
+        "  }",
+        "});",
+        "document.querySelector('[data-testid=\"run-command\"]').addEventListener('click', () => {",
+        "  status.textContent = 'Command executed';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByTestId("workspace-shell").focus();
+      await page.keyboard.press("Control+K");
+      await page.getByText("Command palette opened").waitFor();
+      await page.getByRole("button", { name: "Run command" }).click();
+      await page.getByText("Command executed").waitFor();
+    },
+  },
+  {
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],

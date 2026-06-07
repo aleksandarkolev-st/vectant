@@ -752,6 +752,23 @@ function teachCaptureInitScript(bindingName: string): string {
       return tag === 'select';
     }
 
+    function keyPressValue(event) {
+      if (event.repeat) return '';
+      const key = String(event.key || '');
+      if (!key) return '';
+      if (['Control', 'Meta', 'Shift', 'Alt'].includes(key)) return '';
+      const modifiers = [];
+      if (event.ctrlKey) modifiers.push('Control');
+      if (event.metaKey) modifiers.push('Meta');
+      if (event.altKey) modifiers.push('Alt');
+      if (event.shiftKey) modifiers.push('Shift');
+      const normalizedKey = key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key;
+      if (modifiers.length === 0 && !['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(normalizedKey)) {
+        return '';
+      }
+      return [...modifiers, normalizedKey].join('+');
+    }
+
     function slug(value) {
       return text(value)
         .toLowerCase()
@@ -850,11 +867,20 @@ function teachCaptureInitScript(bindingName: string): string {
       const target = event.target;
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
-      const key = String(event.key || '');
-      if (!['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(key)) return;
-      const el = target.closest('input, textarea, select, button, a, [role="button"], [role="textbox"], [data-testid], [data-test]');
+      const key = keyPressValue(event);
+      if (!key) return;
+      const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="application"], [data-testid], [data-test], main, body');
       if (!isElement(el)) return;
-      emit(el, 'press', key, { key_event: true });
+      emit(el, 'press', key, {
+        key_event: true,
+        key_value: String(event.key || ''),
+        modifier_keys: {
+          alt: Boolean(event.altKey),
+          control: Boolean(event.ctrlKey),
+          meta: Boolean(event.metaKey),
+          shift: Boolean(event.shiftKey),
+        },
+      });
     }, true);
 
     document.addEventListener('click', (event) => {

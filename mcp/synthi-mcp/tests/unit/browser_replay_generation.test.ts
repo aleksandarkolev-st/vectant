@@ -169,6 +169,30 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Context actions visible\", { exact: true })).toBeVisible();");
   });
 
+  it("generates keyboard shortcut replay from taught press chords", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "command-palette",
+        event_seq: 1,
+        action: "press",
+        value: "Control+K",
+        detail: {
+          key_event: true,
+          key_value: "k",
+          modifier_keys: { control: true, meta: false, alt: false, shift: false },
+          observed_effects: ["Command palette opened"],
+          element: { role: "application", name: "Workspace shell", test_id: "workspace-shell", source_id: "src_shell" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"workspace-shell\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("await target1.press(\"Control+K\");");
+    expect(generated.code).toContain("await expect(page.getByText(\"Command palette opened\", { exact: true })).toBeVisible();");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({
