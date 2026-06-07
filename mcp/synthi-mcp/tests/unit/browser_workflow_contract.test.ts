@@ -128,6 +128,41 @@ describe("browser workflow contract compiler", () => {
     ]);
   });
 
+  it("coalesces browser double-click noise and keeps context-menu actions durable", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/records", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    for (const action of ["dblclick", "click", "click"] as const) {
+      browserBroker.recordHumanAction({
+        tab_id: "app",
+        url: "https://app.example.com/records",
+        origin: "https://app.example.com",
+        action,
+        detail: action === "dblclick" ? { dblclick_event: true } : { click_event: true },
+        element: { role: "button", name: "Open record", test_id: "record-open" },
+      });
+    }
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/records",
+      origin: "https://app.example.com",
+      action: "contextmenu",
+      detail: { contextmenu_event: true },
+      element: { role: "row", name: "Open record", test_id: "record-row" },
+    });
+
+    const workflow = browserBroker.compiledWorkflow();
+    const replay = planWorkflowReplay(browserBroker.traceSnapshot(), "sameSession");
+
+    expect(browserBroker.traceSnapshot()).toHaveLength(4);
+    expect(workflow.contract.steps.map((step) => step.label)).toEqual([
+      "Double-click Open record",
+      "Open context menu for Open record",
+    ]);
+    expect(replay.events.map((event) => event.action)).toEqual(["dblclick", "contextmenu"]);
+  });
+
   it("marks redacted inputs as secret parameters without leaking values", () => {
     const workflow = compileWorkflowContract([
       {

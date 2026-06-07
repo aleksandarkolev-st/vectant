@@ -1,6 +1,7 @@
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
 import { readFile } from "node:fs/promises";
 import { normalizeOrigin, redactText, redactUrl } from "./security.js";
+import { BROWSER_ACTION_KINDS } from "./types.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
 
 interface PageRecord {
@@ -202,6 +203,12 @@ export class BrowserPlaywrightAdapter {
         break;
       case "click":
         await this.resolveLocator(page, selector).click();
+        break;
+      case "dblclick":
+        await this.resolveLocator(page, selector).dblclick();
+        break;
+      case "contextmenu":
+        await this.resolveLocator(page, selector).click({ button: "right" });
         break;
       case "hover":
         await this.resolveLocator(page, selector).hover();
@@ -512,18 +519,7 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
 }
 
 function browserActionOpt(value: unknown): BrowserActionKind | undefined {
-  return typeof value === "string" && [
-    "click",
-    "fill",
-    "hover",
-    "drag",
-    "press",
-    "select",
-    "check",
-    "uncheck",
-    "navigate",
-    "wait",
-  ].includes(value) ? value as BrowserActionKind : undefined;
+  return typeof value === "string" && (BROWSER_ACTION_KINDS as readonly string[]).includes(value) ? value as BrowserActionKind : undefined;
 }
 
 function workflowOverlayRequestOpt(value: unknown): BrowserWorkflowOverlayRequest | null {
@@ -813,7 +809,7 @@ function teachCaptureInitScript(bindingName: string): string {
         lastSent.set(el, { signature, ts: Date.now() });
         window[bindingName](payload).catch(() => {});
       };
-      if (['click', 'press', 'drag'].includes(action)) {
+      if (['click', 'dblclick', 'contextmenu', 'press', 'drag', 'select', 'check', 'uncheck'].includes(action)) {
         setTimeout(send, 0);
       } else {
         send();
@@ -868,6 +864,24 @@ function teachCaptureInitScript(bindingName: string): string {
       const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'click', undefined, { click_event: true });
+    }, true);
+
+    document.addEventListener('dblclick', (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
+      if (!isElement(el) || shouldSkipClick(el)) return;
+      emit(el, 'dblclick', undefined, { dblclick_event: true, suppresses_previous_click: true });
+    }, true);
+
+    document.addEventListener('contextmenu', (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
+      if (!isElement(el) || shouldSkipClick(el)) return;
+      emit(el, 'contextmenu', undefined, { contextmenu_event: true });
     }, true);
 
     document.addEventListener('pointerover', (event) => {

@@ -17,6 +17,7 @@ import {
   runBrowserProject,
   stopBrowserProject,
 } from "../browser/project_runner.js";
+import { BROWSER_ACTION_KINDS } from "../browser/types.js";
 import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
@@ -149,6 +150,10 @@ function humanActionLabel(action: string): string {
       return "Filled";
     case "click":
       return "Clicked";
+    case "dblclick":
+      return "Double-clicked";
+    case "contextmenu":
+      return "Opened context menu";
     case "check":
       return "Checked";
     case "uncheck":
@@ -556,7 +561,7 @@ export const BROWSER_TOOLS = [
       properties: {
         lease_id: { type: "string" },
         tab_id: { type: "string" },
-        action: { type: "string", enum: ["click", "fill", "hover", "drag", "press", "select", "check", "uncheck", "navigate", "wait"] },
+        action: { type: "string", enum: [...BROWSER_ACTION_KINDS] },
         selector: { type: "string", description: "A generated Playwright locator string or raw CSS selector." },
         value: { type: "string", description: "Fill text, key name, select option, navigation URL, or drag target locator depending on action." },
       },
@@ -1478,18 +1483,7 @@ function boolOpt(value: unknown): boolean | undefined {
 }
 
 function isBrowserActionKind(value: string): value is BrowserActionKind {
-  return [
-    "click",
-    "fill",
-    "hover",
-    "drag",
-    "press",
-    "select",
-    "check",
-    "uncheck",
-    "navigate",
-    "wait",
-  ].includes(value);
+  return (BROWSER_ACTION_KINDS as readonly string[]).includes(value);
 }
 
 type BrowserWaitCondition = "selector" | "url" | "load" | "networkidle" | "timeout";

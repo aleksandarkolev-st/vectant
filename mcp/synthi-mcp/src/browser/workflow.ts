@@ -2,6 +2,8 @@ import { reduceLane0Windows, type Lane0StatusV7 } from "./lane0.js";
 import { sourceIdentityRegistry } from "./source_identity.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserTraceEvent, LocatorCandidate } from "./types.js";
 
+const RELATED_DBLCLICK_CLICK_WINDOW_MS = 1000;
+
 export type WorkflowStateV7 =
   | "Draft"
   | "Runnable"
@@ -319,9 +321,17 @@ function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
   const result: BrowserTraceEvent[] = [];
   for (const event of events) {
     const previous = result[result.length - 1];
+    if (previous && shouldDropClickAfterDblClick(previous, event)) {
+      continue;
+    }
     if (previous && shouldReplaceWithLatestFill(previous, event)) {
       result[result.length - 1] = event;
       continue;
+    }
+    while (event.action === "dblclick" && result.length > 0) {
+      const prior = result[result.length - 1];
+      if (!prior || !shouldDropClickBeforeDblClick(prior, event)) break;
+      result.pop();
     }
     result.push(event);
   }
@@ -349,6 +359,48 @@ function fillTargetKey(event: BrowserTraceEvent): string {
     element?.label,
     element?.placeholder,
     element?.name,
+    element?.css,
+    element?.xpath,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0).join("|");
+}
+
+function shouldDropClickBeforeDblClick(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "click" || next.action !== "dblclick") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = actionTargetKey(next);
+  return previousTarget.length > 0 && previousTarget === nextTarget;
+}
+
+function shouldDropClickAfterDblClick(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "dblclick" || next.action !== "click") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  if (!isRelatedDblClickNoise(previous, next)) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = actionTargetKey(next);
+  return previousTarget.length > 0 && previousTarget === nextTarget;
+}
+
+function isRelatedDblClickNoise(dblclick: BrowserTraceEvent, click: BrowserTraceEvent): boolean {
+  if (dblclick.detail?.["dblclick_event"] !== true || click.detail?.["click_event"] !== true) return false;
+  const elapsedMs = Math.abs((click.ts || 0) - (dblclick.ts || 0));
+  return elapsedMs <= RELATED_DBLCLICK_CLICK_WINDOW_MS;
+}
+
+function actionTargetKey(event: BrowserTraceEvent): string {
+  const element = elementForEvent(event);
+  return [
+    event.selector,
+    event.locator_candidates?.[0]?.locator,
+    element?.source_id,
+    element?.test_id,
+    element?.id,
+    element?.label,
+    element?.placeholder,
+    element?.name,
+    element?.text,
     element?.css,
     element?.xpath,
   ].filter((part): part is string => typeof part === "string" && part.length > 0).join("|");
@@ -558,9 +610,9 @@ function affordanceName(value: string): string {
 
 export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowReplayModeV7 = "sameSession"): WorkflowReplayPlanV7 {
   const workflow = compileWorkflowContract(events);
-  const ordered = [...events]
+  const ordered = coalesceActionEvents([...events]
     .sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0))
-    .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation");
+    .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation"));
   const firstMutationStepId = workflow.contract.mutationBoundaryPlan.firstMutationStepId;
   if (ordered.length === 0) {
     return {
@@ -737,6 +789,10 @@ function labelForAction(action: BrowserActionKind, targetLabel: string): string 
       return `Fill ${targetLabel}`;
     case "click":
       return `Click ${targetLabel}`;
+    case "dblclick":
+      return `Double-click ${targetLabel}`;
+    case "contextmenu":
+      return `Open context menu for ${targetLabel}`;
     case "hover":
       return `Hover over ${targetLabel}`;
     case "drag":
@@ -763,6 +819,10 @@ function intentForAction(action: BrowserActionKind, targetLabel: string): string
       return `Provide ${targetLabel} input`;
     case "click":
       return `Activate ${targetLabel}`;
+    case "dblclick":
+      return `Activate ${targetLabel} with double-click`;
+    case "contextmenu":
+      return `Open contextual actions for ${targetLabel}`;
     case "hover":
       return `Reveal or inspect ${targetLabel}`;
     case "drag":
@@ -780,6 +840,7 @@ function expectedEffectsFor(action: BrowserActionKind, targetLabel: string, muta
   if (mutates) return [`${targetLabel} changes application state or reaches a mutation boundary.`];
   if (action === "fill" || action === "select") return [`${targetLabel} contains the parameter value.`];
   if (action === "hover") return [`${targetLabel} reveal state is visible.`];
+  if (action === "contextmenu") return [`${targetLabel} contextual actions are visible.`];
   if (action === "drag") return [`${targetLabel} drag target remains reachable.`];
   if (action === "navigate") return [`The browser reaches ${targetLabel}.`];
   return [`${targetLabel} remains visible and actionable.`];
@@ -790,7 +851,7 @@ function mutationFor(
   targetLabel: string,
   event: BrowserTraceEvent
 ): WorkflowStepContractV7["mutation"] | undefined {
-  if (action !== "click" && action !== "press" && action !== "select") return undefined;
+  if (action !== "click" && action !== "dblclick" && action !== "press" && action !== "select") return undefined;
   const evidence: string[] = [];
   for (const [pattern, kind, reason] of MUTATION_WORDS) {
     if (pattern.test(targetLabel)) {

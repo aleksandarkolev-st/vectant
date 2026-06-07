@@ -10,6 +10,8 @@ import type {
   LocatorCandidate,
 } from "./types.js";
 
+const RELATED_DBLCLICK_CLICK_WINDOW_MS = 1000;
+
 export interface TraceRecorderInput {
   tab_id: string;
   url: string;
@@ -247,7 +249,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
   }
 
-  for (const event of events) {
+  for (const event of coalesceReplayEvents(events)) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
     if (event.kind === "navigation" || event.action === "navigate") {
       if (event.url !== currentUrl) {
@@ -287,6 +289,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     switch (event.action) {
       case "click":
         lines.push(`  await ${target}.click();`);
+        break;
+      case "dblclick":
+        lines.push(`  await ${target}.dblclick();`);
+        break;
+      case "contextmenu":
+        lines.push(`  await ${target}.click({ button: 'right' });`);
         break;
       case "hover":
         lines.push(`  await ${target}.hover();`);
@@ -364,6 +372,56 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
 }
 
+function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] {
+  const result: BrowserTraceEvent[] = [];
+  for (const event of events) {
+    const previous = result[result.length - 1];
+    if (previous && shouldDropClickAfterDblClick(previous, event)) {
+      continue;
+    }
+    while (event.action === "dblclick" && result.length > 0) {
+      const prior = result[result.length - 1];
+      if (!prior || !sameActionTarget(prior, event) || prior.action !== "click") break;
+      result.pop();
+    }
+    result.push(event);
+  }
+  return result;
+}
+
+function shouldDropClickAfterDblClick(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.action !== "dblclick" || next.action !== "click") return false;
+  if (!sameActionTarget(previous, next)) return false;
+  if (previous.detail?.["dblclick_event"] !== true || next.detail?.["click_event"] !== true) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  return elapsedMs <= RELATED_DBLCLICK_CLICK_WINDOW_MS;
+}
+
+function sameActionTarget(left: BrowserTraceEvent, right: BrowserTraceEvent): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.tab_id !== right.tab_id || left.origin !== right.origin) return false;
+  const leftKey = actionTargetKey(left);
+  const rightKey = actionTargetKey(right);
+  return leftKey.length > 0 && leftKey === rightKey;
+}
+
+function actionTargetKey(event: BrowserTraceEvent): string {
+  const element = elementForEvent(event);
+  return [
+    event.selector,
+    event.locator_candidates?.[0]?.locator,
+    element?.source_id,
+    element?.test_id,
+    element?.id,
+    element?.label,
+    element?.placeholder,
+    element?.name,
+    element?.text,
+    element?.css,
+    element?.xpath,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0).join("|");
+}
+
 function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
   for (const event of events) {
     try {
@@ -410,11 +468,17 @@ function fileDropEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
 }
 
 function isFileInputDrop(event: BrowserTraceEvent): boolean {
-  const element = event.detail?.["element"];
-  if (!element || typeof element !== "object") return event.detail?.["file_input"] === true;
-  const input = element as BrowserElementMetadata;
+  const input = elementForEvent(event);
+  if (!input) return event.detail?.["file_input"] === true;
   return event.detail?.["file_input"] === true ||
     (input.tag?.toLowerCase() === "input" && input.type?.toLowerCase() === "file");
+}
+
+function elementForEvent(event: BrowserTraceEvent): BrowserElementMetadata | undefined {
+  const element = event.detail?.["element"];
+  return element && typeof element === "object" && !Array.isArray(element)
+    ? element as BrowserElementMetadata
+    : undefined;
 }
 
 function observedEffectTexts(event: BrowserTraceEvent): string[] {
@@ -433,9 +497,8 @@ function observedEffectTexts(event: BrowserTraceEvent): string[] {
 }
 
 function draggedElementText(event: BrowserTraceEvent): string | null {
-  const element = event.detail?.["element"];
-  if (!element || typeof element !== "object") return null;
-  const metadata = element as BrowserElementMetadata;
+  const metadata = elementForEvent(event);
+  if (!metadata) return null;
   const value = metadata.text ?? metadata.name ?? metadata.label ?? metadata.test_id;
   return value && value.trim() ? value.trim().replace(/\s+/g, " ").slice(0, 160) : null;
 }

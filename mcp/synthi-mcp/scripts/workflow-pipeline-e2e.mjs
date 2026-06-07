@@ -974,6 +974,58 @@ const CASES = [
     },
   },
   {
+    id: "double-click-context-menu",
+    minSteps: 2,
+    expectedActions: ["dblclick", "contextmenu"],
+    expectedReplayText: [
+      "Record details opened",
+      "Context actions visible",
+    ],
+    expectedReplayCode: [
+      "await target1.dblclick();",
+      "await target2.click({ button: 'right' });",
+    ],
+    files: () => commonFiles({
+      title: "Double Click Context Menu Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Double Click Context Menu Workflow</h1>",
+        "      <div role=\"row\" tabindex=\"0\" data-testid=\"record-row\" data-synthi-source-id=\"records.row\" aria-label=\"Quarterly record\">",
+        "        <button type=\"button\" data-testid=\"open-record\" data-synthi-source-id=\"records.open\">Open record</button>",
+        "      </div>",
+        "      <div id=\"context-menu\" role=\"menu\" hidden>",
+        "        <button type=\"button\" role=\"menuitem\" data-testid=\"inspect-record\" data-synthi-source-id=\"records.inspect\">Inspect record</button>",
+        "      </div>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[role='row'] { width: max-content; border: 1px solid #9a9a91; padding: 14px; background: #fff; }",
+        "#context-menu { width: max-content; margin-top: 12px; border: 1px solid #222; background: #fff; padding: 8px; }",
+      ],
+      script: [
+        "const status = document.querySelector('#status');",
+        "const row = document.querySelector('[data-testid=\"record-row\"]');",
+        "const menu = document.querySelector('#context-menu');",
+        "document.querySelector('[data-testid=\"open-record\"]').addEventListener('dblclick', () => {",
+        "  status.textContent = 'Record details opened';",
+        "});",
+        "row.addEventListener('contextmenu', (event) => {",
+        "  event.preventDefault();",
+        "  menu.hidden = false;",
+        "  status.textContent = 'Context actions visible';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("button", { name: "Open record" }).dblclick();
+      await page.getByText("Record details opened").waitFor();
+      await page.getByRole("row", { name: "Quarterly record" }).click({ button: "right" });
+      await page.getByText("Context actions visible").waitFor();
+    },
+  },
+  {
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],

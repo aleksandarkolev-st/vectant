@@ -139,6 +139,10 @@ function intentFor(event: BrowserTraceEvent, target: string, groupLabel: string)
       return `Provide ${target} for ${groupLabel}`;
     case "click":
       return isMutationSignal(event) ? `Commit ${groupLabel}` : `Activate ${target}`;
+    case "dblclick":
+      return `Activate ${target} with double-click`;
+    case "contextmenu":
+      return `Open contextual actions for ${target}`;
     case "hover":
       return `Reveal or inspect ${target}`;
     case "drag":

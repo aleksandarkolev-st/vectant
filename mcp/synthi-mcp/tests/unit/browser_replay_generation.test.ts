@@ -109,6 +109,66 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
 
+  it("generates durable double-click and context-menu replay without duplicate click steps", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "open-record",
+        event_seq: 1,
+        action: "dblclick",
+        detail: {
+          dblclick_event: true,
+          observed_effects: ["Record details opened"],
+          element: { role: "button", name: "Open record", source_id: "src_record" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open record\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+      event({
+        event_id: "click-one",
+        event_seq: 2,
+        action: "click",
+        detail: {
+          click_event: true,
+          element: { role: "button", name: "Open record", source_id: "src_record" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open record\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+      event({
+        event_id: "click-two",
+        event_seq: 3,
+        action: "click",
+        detail: {
+          click_event: true,
+          element: { role: "button", name: "Open record", source_id: "src_record" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open record\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+      event({
+        event_id: "row-menu",
+        event_seq: 4,
+        action: "contextmenu",
+        detail: {
+          observed_effects: ["Context actions visible"],
+          element: { role: "row", name: "Open record", source_id: "src_record" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"row\", { name: \"Open record\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).not.toContain("await target1.click();");
+    expect(generated.code).toContain("await target1.dblclick();");
+    expect(generated.code).toContain("await target2.click({ button: 'right' });");
+    expect(generated.code).toContain("await expect(page.getByText(\"Record details opened\", { exact: true })).toBeVisible();");
+    expect(generated.code).toContain("await expect(page.getByText(\"Context actions visible\", { exact: true })).toBeVisible();");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({

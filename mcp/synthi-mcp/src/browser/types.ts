@@ -7,17 +7,22 @@ export type BrowserPermissionTier =
 
 export type BrowserConsentStatus = "granted" | "denied" | "unset";
 
-export type BrowserActionKind =
-  | "click"
-  | "fill"
-  | "hover"
-  | "drag"
-  | "press"
-  | "select"
-  | "check"
-  | "uncheck"
-  | "navigate"
-  | "wait";
+export const BROWSER_ACTION_KINDS = [
+  "click",
+  "dblclick",
+  "contextmenu",
+  "fill",
+  "hover",
+  "drag",
+  "press",
+  "select",
+  "check",
+  "uncheck",
+  "navigate",
+  "wait",
+] as const;
+
+export type BrowserActionKind = typeof BROWSER_ACTION_KINDS[number];
 
 export interface BrowserOrigin {
   scheme: string;

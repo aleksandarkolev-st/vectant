@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
 import { browserBridgeServer } from "../../src/browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
+import { BROWSER_ACTION_KINDS } from "../../src/browser/types.js";
 import type { BrowserSnapshot, BrowserTab } from "../../src/browser/types.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
@@ -44,6 +45,14 @@ describe("browser MCP tool surface", () => {
     const tool = BROWSER_TOOLS.find((candidate) => candidate.name === "synthi_browser_run_workflow");
     const mode = tool?.inputSchema.properties?.["mode"] as { default?: string } | undefined;
     expect(mode?.default).toBe("coldSession");
+  });
+
+  it("advertises the canonical browser action set for direct agent actions", () => {
+    const tool = BROWSER_TOOLS.find((candidate) => candidate.name === "synthi_browser_action");
+    const action = tool?.inputSchema.properties?.["action"] as { enum?: string[] } | undefined;
+
+    expect(action?.enum).toEqual([...BROWSER_ACTION_KINDS]);
+    expect(action?.enum).toEqual(expect.arrayContaining(["dblclick", "contextmenu"]));
   });
 
   it("returns null for non-browser tool dispatch", async () => {
@@ -91,6 +100,49 @@ describe("browser MCP tool surface", () => {
       reason: "complete",
     });
     expect(released?.structuredContent).toEqual({ ok: true, released: true });
+  });
+
+  it("dispatches durable double-click and context-menu agent actions through Playwright", async () => {
+    const url = "https://app.example.com/records";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Records", active: true }]);
+    const lease = browserBroker.acquireLease("agent", 5000, "direct-actions");
+    const action = vi.spyOn(browserPlaywrightAdapter, "action").mockImplementation(async (tabId, kind) => ({
+      ok: true,
+      action: kind,
+      tab_id: tabId,
+      url,
+    }));
+
+    const doubleClicked = await dispatchBrowserTool("synthi_browser_action", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      action: "dblclick",
+      selector: "page.getByRole(\"button\", { name: \"Open record\" })",
+    });
+    const contextMenu = await dispatchBrowserTool("synthi_browser_action", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      action: "contextmenu",
+      selector: "page.getByRole(\"row\", { name: \"Open record\" })",
+    });
+
+    expect(doubleClicked?.isError).toBeUndefined();
+    expect(contextMenu?.isError).toBeUndefined();
+    expect(action).toHaveBeenNthCalledWith(
+      1,
+      "app",
+      "dblclick",
+      "page.getByRole(\"button\", { name: \"Open record\" })",
+      undefined
+    );
+    expect(action).toHaveBeenNthCalledWith(
+      2,
+      "app",
+      "contextmenu",
+      "page.getByRole(\"row\", { name: \"Open record\" })",
+      undefined
+    );
   });
 
   it("denies snapshot before any authorized tab is selected", async () => {
