@@ -302,6 +302,34 @@ function artifactFieldText(artifact, ...keys) {
   return firstText(...keys.map((key) => asObject(artifact)[key]));
 }
 
+function artifactFieldNumber(artifact, ...keys) {
+  for (const key of keys) {
+    const value = asObject(artifact)[key];
+    const n = finiteNumber(value);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function artifactFieldArray(artifact, ...keys) {
+  for (const key of keys) {
+    const value = asObject(artifact)[key];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function visualTraceCorrelates(trace, identifiers) {
+  const normalizedTrace = text(trace);
+  if (!normalizedTrace) return false;
+  const candidates = compactStringList(identifiers);
+  for (const candidate of candidates) {
+    if (normalizedTrace === candidate) return true;
+    if (candidate.length >= 6 && normalizedTrace.includes(candidate)) return true;
+  }
+  return false;
+}
+
 function modelProvenanceRecords(modelProvenance) {
   const provenance = asObject(modelProvenance);
   if (Object.keys(provenance).length === 0) return [];
@@ -654,6 +682,64 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       }
       if (objectFieldValue(artifacts, ['same_frame_rejection', 'sameFrameRejection']) !== true) {
         addFailure(failures, 'visual_same_frame_rejection_not_proven');
+      }
+      const beforeImage = artifactFieldText(artifacts, 'before_image', 'beforeImage');
+      const afterImage = artifactFieldText(artifacts, 'after_image', 'afterImage');
+      const diffImage = artifactFieldText(artifacts, 'diff_image', 'diffImage');
+      if (beforeImage && afterImage && beforeImage === afterImage) {
+        addFailure(failures, 'visual_before_after_same_artifact');
+      }
+      if (diffImage && (diffImage === beforeImage || diffImage === afterImage)) {
+        addFailure(failures, 'visual_diff_artifact_not_independent');
+      }
+      const changedPixelRatio = artifactFieldNumber(
+        artifacts,
+        'changed_pixel_ratio',
+        'changedPixelRatio',
+      );
+      if (changedPixelRatio !== null && changedPixelRatio <= 0) {
+        addFailure(failures, 'visual_changed_pixel_ratio_zero');
+      }
+      const perceptualDiff = artifactFieldNumber(artifacts, 'perceptual_diff', 'perceptualDiff');
+      if (perceptualDiff !== null && perceptualDiff <= 0) {
+        addFailure(failures, 'visual_perceptual_diff_zero');
+      }
+      const visiblePixelCount = artifactFieldNumber(
+        artifacts,
+        'visible_pixel_count',
+        'visiblePixelCount',
+      );
+      if (visiblePixelCount !== null && visiblePixelCount <= 0) {
+        addFailure(failures, 'visual_visible_pixel_count_zero');
+      }
+      const swapchainSize = artifactFieldArray(artifacts, 'swapchain_size', 'swapchainSize');
+      if (
+        swapchainSize.length !== 2
+        || !swapchainSize.every((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+      ) {
+        addFailure(failures, 'visual_swapchain_size_invalid');
+      }
+      const visualTimestamp = artifactFieldNumber(
+        artifacts,
+        'timestamp_after_dispatch',
+        'timestampAfterDispatch',
+      );
+      if (dispatchTs !== null && visualTimestamp !== null && visualTimestamp < dispatchTs) {
+        addFailure(failures, 'visual_artifact_precedes_dispatch');
+      }
+      const visualTrace = objectFieldValue(artifacts, [
+        'new_epoch_watermark_or_trace',
+        'newEpochWatermarkOrTrace',
+        'epoch_trace',
+        'epochTrace',
+      ]);
+      if (!visualTraceCorrelates(visualTrace, [
+        publishedEpoch,
+        dispatchEpoch,
+        artifactAfterHash,
+        dispatchId,
+      ])) {
+        addFailure(failures, 'visual_epoch_trace_not_correlated');
       }
     }
     const deterministicVisualModeEvaluation =

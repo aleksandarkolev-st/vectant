@@ -714,6 +714,53 @@ const cases = [
       visual_oracle_artifacts: baselineVisualOracleArtifacts({ same_frame_rejection: false }),
     },
   }), 'visual_same_frame_rejection_not_proven'],
+  ['visual before after same artifact', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({
+        before_image: 'memory://same-frame.png',
+        after_image: 'memory://same-frame.png',
+      }),
+    },
+  }), 'visual_before_after_same_artifact'],
+  ['visual diff artifact not independent', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({
+        diff_image: 'memory://visual-after.png',
+      }),
+    },
+  }), 'visual_diff_artifact_not_independent'],
+  ['visual zero changed pixels', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ changed_pixel_ratio: 0 }),
+    },
+  }), 'visual_changed_pixel_ratio_zero'],
+  ['visual zero perceptual diff', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ perceptual_diff: 0 }),
+    },
+  }), 'visual_perceptual_diff_zero'],
+  ['visual zero visible pixels', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ visible_pixel_count: 0 }),
+    },
+  }), 'visual_visible_pixel_count_zero'],
+  ['visual invalid swapchain size', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ swapchain_size: [640, 0] }),
+    },
+  }), 'visual_swapchain_size_invalid'],
+  ['visual artifact before dispatch', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({ timestamp_after_dispatch: 250 }),
+    },
+  }), 'visual_artifact_precedes_dispatch'],
+  ['visual epoch trace unrelated', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({
+        new_epoch_watermark_or_trace: 'unrelated-render-trace',
+      }),
+    },
+  }), 'visual_epoch_trace_not_correlated'],
   ['camera jitter visual diff', baselineVisualRecord({
     deterministic_visual_mode: {
       fixed_seed: true,
