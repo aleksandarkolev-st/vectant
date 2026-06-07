@@ -115,6 +115,10 @@ const CFG = {
   hipFakeRuntime: process.env.SYNTHI_GPU_HIP_FAKE_RUNTIME === '1',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
   hmrWaitTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 5000),
+  requireGpuFullRuntimeProof: process.env.SYNTHI_GPU_REQUIRE_FULL_RUNTIME_PROOF !== '0',
+  hmrRequiredGpuProofState: (process.env.SYNTHI_GPU_REQUIRED_GPU_PROOF_STATE
+    ?? process.env.SYNTHI_GPU_HMR_REQUIRED_GPU_PROOF_STATE
+    ?? '').trim(),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
@@ -1528,6 +1532,39 @@ function verifySeedFixtureContract(files) {
 
 // ───────────────────────── compile + HMR over MCP ─────────────────────────
 
+function configuredWaitRequiredGpuProofState(expectedModule = null) {
+  if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
+  return CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+    ? 'gpu-hmr-full-runtime-proven'
+    : null;
+}
+
+function waitContractFromArgs(waitArgs = {}) {
+  const requiredState = waitArgs.requiredGpuProofState
+    ?? (waitArgs.requireGpuFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null);
+  return {
+    timeout_ms: Number.isFinite(waitArgs.timeoutMs) ? waitArgs.timeoutMs : null,
+    module: typeof waitArgs.module === 'string' && waitArgs.module.trim()
+      ? waitArgs.module.trim()
+      : null,
+    since_ts: Number.isFinite(waitArgs.since_ts) ? waitArgs.since_ts : null,
+    preview_id: typeof waitArgs.preview_id === 'string' && waitArgs.preview_id.trim()
+      ? waitArgs.preview_id.trim()
+      : null,
+    required_gpu_proof_state: requiredState ?? null,
+    require_gpu_full_runtime_proof: waitArgs.requireGpuFullRuntimeProof === true,
+  };
+}
+
+function attachWaitEvidence(wait, waitArgs) {
+  if (!wait || typeof wait !== 'object') return wait;
+  return {
+    ...wait,
+    wait_args: waitArgs,
+    wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
+  };
+}
+
 async function postCompileViaMcp({ ctx, files }) {
   const state = await ensureMcpAttached();
   const primaryPath = files[0]?.path ?? ctx.deviceFilename;
@@ -1565,17 +1602,22 @@ async function postCompileViaMcp({ ctx, files }) {
     const waitTimeoutMs = Number.isFinite(CFG.hmrWaitTimeoutMs) && CFG.hmrWaitTimeoutMs > 0
       ? Math.min(CFG.hmrTimeoutMs, CFG.hmrWaitTimeoutMs)
       : CFG.hmrTimeoutMs;
+    const requiredGpuProofState = configuredWaitRequiredGpuProofState('device');
+    const waitArgs = {
+      timeoutMs: waitTimeoutMs,
+      module: 'device',
+      ...(Number.isFinite(compileRes.dispatched_at)
+        ? { since_ts: compileRes.dispatched_at }
+        : {}),
+      ...(requiredGpuProofState ? { requiredGpuProofState } : {}),
+      ...(CFG.requireGpuFullRuntimeProof ? { requireGpuFullRuntimeProof: true } : {}),
+    };
     hmr = await state.client.toolCall(
       'synthi_wait_hmr',
-      {
-        timeoutMs: waitTimeoutMs,
-        module: 'device',
-        ...(Number.isFinite(compileRes.dispatched_at)
-          ? { since_ts: compileRes.dispatched_at }
-          : {}),
-      },
+      waitArgs,
       waitTimeoutMs + 5000,
     );
+    hmr = attachWaitEvidence(hmr, waitArgs);
   } catch (e) {
     return { ok: true, body: { compile: compileRes }, hmr: { status: 'timeout_or_error', error: e.message } };
   }
@@ -4250,6 +4292,24 @@ async function selfCheck() {
       ...flowContract.findings.map((f) => `flow:${f}`),
     ];
     console.error(`gpu-hmr-test self-check failed: ${findings.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  const waitArgs = {
+    timeoutMs: 5000,
+    module: 'device',
+    since_ts: 1_780_850_000_000,
+    requiredGpuProofState: configuredWaitRequiredGpuProofState('device'),
+    requireGpuFullRuntimeProof: true,
+  };
+  const waitContract = waitContractFromArgs(waitArgs);
+  const attachedWait = attachWaitEvidence({ status: 'applied' }, waitArgs);
+  if (
+    waitContract.module !== 'device'
+    || waitContract.required_gpu_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || attachedWait.wait_contract?.require_gpu_full_runtime_proof !== true
+  ) {
+    console.error('gpu-hmr-test self-check failed: wait contract did not require full GPU runtime proof');
     process.exitCode = 1;
     return;
   }

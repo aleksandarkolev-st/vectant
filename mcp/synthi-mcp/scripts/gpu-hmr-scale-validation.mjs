@@ -75,6 +75,8 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
+  requireGpuFullRuntimeProof: process.env.SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF !== '0',
+  hmrRequiredGpuProofState: (process.env.SYNTHI_SCALE_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   hmrDeltaMode: normalizeHmrDeltaMode(process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta'),
   validationProfile: (process.env.SYNTHI_SCALE_VALIDATION_PROFILE ?? 'full').toLowerCase().replace(/[-\s]+/g, '_'),
   aiDeltaEvidenceTimeoutMs: Number(process.env.SYNTHI_SCALE_AI_DELTA_EVIDENCE_TIMEOUT_MS ?? 45000),
@@ -1848,6 +1850,8 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint, options
     wait_hmr_status: wait?.status ?? 'unknown',
     wait_hmr_source: wait?.source ?? null,
     wait_hmr_detail: wait?.detail ?? null,
+    wait_hmr_args: wait?.wait_args ?? wait?.waitArgs ?? null,
+    wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
     frame_gate: wait?.frame_gate ?? null,
     wall_elapsed_ms: wallElapsed,
     worker_log_markers: collectWorkerMarkers(workerTail),
@@ -1895,6 +1899,8 @@ async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReas
     wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
     wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
     wait_hmr_detail: detail,
+    wait_hmr_args: wait?.wait_args ?? wait?.waitArgs ?? null,
+    wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
     frame_gate: { status: 'not_applicable', reason: expectedReason },
     wall_elapsed_ms: Date.now() - wallStart,
     worker_log_markers: [],
@@ -1902,6 +1908,39 @@ async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReas
   report.phases.push(phase);
   record(`${phaseName} explicit fallback`, 'pass', expectedReason);
   return phase;
+}
+
+function configuredWaitRequiredGpuProofState(expectedModule = null) {
+  if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
+  return CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+    ? 'gpu-hmr-full-runtime-proven'
+    : null;
+}
+
+function waitContractFromArgs(waitArgs = {}) {
+  const requiredState = waitArgs.requiredGpuProofState
+    ?? (waitArgs.requireGpuFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null);
+  return {
+    timeout_ms: Number.isFinite(waitArgs.timeoutMs) ? waitArgs.timeoutMs : null,
+    module: typeof waitArgs.module === 'string' && waitArgs.module.trim()
+      ? waitArgs.module.trim()
+      : null,
+    since_ts: Number.isFinite(waitArgs.since_ts) ? waitArgs.since_ts : null,
+    preview_id: typeof waitArgs.preview_id === 'string' && waitArgs.preview_id.trim()
+      ? waitArgs.preview_id.trim()
+      : null,
+    required_gpu_proof_state: requiredState ?? null,
+    require_gpu_full_runtime_proof: waitArgs.requireGpuFullRuntimeProof === true,
+  };
+}
+
+function attachWaitEvidence(wait, waitArgs) {
+  if (!wait || typeof wait !== 'object') return wait;
+  return {
+    ...wait,
+    wait_args: waitArgs,
+    wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
+  };
 }
 
 async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedModule = null) {
@@ -1912,30 +1951,60 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedM
     const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
+    const requiredGpuProofState = configuredWaitRequiredGpuProofState(expectedModule);
+    const waitArgs = {
+      timeoutMs: sliceTimeoutMs,
+      since_ts: eventLogSinceTs,
+      ...(expectedModule ? { module: expectedModule } : {}),
+      ...(requiredGpuProofState ? { requiredGpuProofState } : {}),
+      ...(CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+        ? { requireGpuFullRuntimeProof: true }
+        : {}),
+    };
+    const waitContract = waitContractFromArgs(waitArgs);
     try {
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
-        {
-          timeoutMs: sliceTimeoutMs,
-          ...(expectedModule ? { module: expectedModule } : {}),
-        },
+        waitArgs,
         sliceTimeoutMs + 7000,
       );
     } catch (err) {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       throw err;
     }
+    wait = attachWaitEvidence(wait, waitArgs);
     last = wait;
     const previewId = wait?.detail?.preview_id;
     if (previewId && previewId !== CFG.slug) {
       record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       continue;
     }
     if (wait?.status === 'timeout') {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       continue;
     }
@@ -1949,15 +2018,46 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedM
         'warn',
         `expected_module=${expectedModule}`,
       );
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       continue;
     }
     return wait;
   }
-  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+  const requiredGpuProofState = configuredWaitRequiredGpuProofState(expectedModule);
+  const timeoutWaitArgs = {
+    timeoutMs,
+    since_ts: eventLogSinceTs,
+    ...(expectedModule ? { module: expectedModule } : {}),
+    ...(requiredGpuProofState ? { requiredGpuProofState } : {}),
+    ...(CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+      ? { requireGpuFullRuntimeProof: true }
+      : {}),
+  };
+  const timeoutWaitContract = waitContractFromArgs(timeoutWaitArgs);
+  const recovered = await currentHmrFromEventLog(
+    state,
+    eventLogSinceTs,
+    startedAt,
+    expectedModule,
+    timeoutWaitArgs,
+    timeoutWaitContract,
+  );
   if (recovered) return recovered;
-  return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'validation_harness' };
+  return last ?? {
+    status: 'timeout',
+    elapsedMs: timeoutMs,
+    source: 'validation_harness',
+    wait_args: timeoutWaitArgs,
+    wait_contract: timeoutWaitContract,
+  };
 }
 
 function hmrPreviewId(detail) {
@@ -1997,7 +2097,14 @@ function hmrModule(detail) {
   return null;
 }
 
-async function currentHmrFromEventLog(state, sinceTs, startedAt, expectedModule = null) {
+async function currentHmrFromEventLog(
+  state,
+  sinceTs,
+  startedAt,
+  expectedModule = null,
+  waitArgs = null,
+  waitContract = null,
+) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
     { kind: 'hmr', since_ts: sinceTs, limit: 200 },
@@ -2026,6 +2133,8 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, expectedModule 
       hmrElapsedMs: typeof entry.ts === 'number' ? entry.ts - startedAt : null,
       source: 'event_log',
       detail,
+      wait_args: waitArgs,
+      wait_contract: waitContract ?? waitContractFromArgs(waitArgs ?? {}),
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered from the MCP session event log after a stale wait_hmr event',
@@ -2051,6 +2160,8 @@ async function dispatchCompileViaMcp(args, timeoutMs, phaseName, checkpoint) {
     wait_hmr_status: compile?.ok ? 'not_waited_expected_rejection' : 'dispatch_failed',
     wait_hmr_source: 'negative_validation',
     wait_hmr_detail: compile ?? null,
+    wait_hmr_args: null,
+    wait_hmr_contract: null,
     frame_gate: null,
     wall_elapsed_ms: Date.now() - wallStart,
     worker_log_markers: collectWorkerMarkers(workerTail),
@@ -3109,7 +3220,8 @@ async function writeReport() {
     ...report.phases.map((p) => {
       const detail = p.wait_hmr_detail ? ` detail=${JSON.stringify(p.wait_hmr_detail).slice(0, 500)}` : '';
       const frameGate = p.frame_gate ? ` frame_gate=${JSON.stringify(p.frame_gate).slice(0, 300)}` : '';
-      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} terminal_wait_ms=${p.wait_hmr_terminal_elapsed_ms ?? ''} wall_ms=${p.wall_elapsed_ms}${detail}${frameGate}`;
+      const waitContract = p.wait_hmr_contract ? ` wait_contract=${JSON.stringify(p.wait_hmr_contract).slice(0, 300)}` : '';
+      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} terminal_wait_ms=${p.wait_hmr_terminal_elapsed_ms ?? ''} wall_ms=${p.wall_elapsed_ms}${detail}${frameGate}${waitContract}`;
     }),
     '',
     ...report.ai_delta_observations.map((o) => `AI_DELTA ${o.phase} mode=${o.hmrDeltaMode} profile=${o.validationProfile} worker_called=${o.workerCalled} backend_called=${o.backendCalled} worker_marker=${o.workerMarkers?.[0] ?? ''} backend_marker=${o.backendMarkers?.[0] ?? ''}`),
