@@ -240,6 +240,33 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("expect(download1.suggestedFilename()).toBe(\"report.csv\");");
   });
 
+  it("asserts contenteditable fill replay with text content", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "rich-notes",
+        event_seq: 1,
+        action: "fill",
+        value: "Release notes ready",
+        detail: {
+          element: {
+            role: "textbox",
+            name: "Release notes",
+            test_id: "release-notes",
+            source_id: "src_notes",
+            content_editable: true,
+          },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"release-notes\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("await target1.fill(\"Release notes ready\");");
+    expect(generated.code).toContain("await expect(target1).toContainText(\"Release notes ready\");");
+    expect(generated.code).not.toContain("toHaveValue(\"Release notes ready\")");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({

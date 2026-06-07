@@ -378,7 +378,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       }
       case "fill":
         lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
-        lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        if (isContentEditableFill(event)) {
+          lines.push(`  await expect(${target}).toContainText(${JSON.stringify(event.value ?? "")});`);
+        } else {
+          lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+        }
         break;
       case "press":
         lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
@@ -517,6 +521,11 @@ function scrollPositionFor(event: BrowserTraceEvent): { top: number; left: numbe
 
 function isDownloadTrigger(event: BrowserTraceEvent): boolean {
   return event.detail?.["download_event"] === true;
+}
+
+function isContentEditableFill(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "fill" && element?.content_editable === true;
 }
 
 function pushDownloadAction(

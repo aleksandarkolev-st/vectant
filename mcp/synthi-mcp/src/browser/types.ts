@@ -90,6 +90,7 @@ export interface BrowserElementMetadata {
   xpath?: string;
   type?: string;
   source_id?: string;
+  content_editable?: boolean;
 }
 
 export interface BrowserSelection {

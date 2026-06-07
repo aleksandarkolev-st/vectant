@@ -596,6 +596,7 @@ function elementOpt(value: unknown): BrowserElementMetadata | undefined {
     const found = stringOpt(raw[key]);
     if (found !== undefined) element[key] = found;
   }
+  if (typeof raw["content_editable"] === "boolean") element.content_editable = raw["content_editable"];
   return Object.keys(element).length ? element : undefined;
 }
 
@@ -644,6 +645,7 @@ function teachCaptureInitScript(bindingName: string): string {
     if (window.__SYNTHI_TEACH_CAPTURE_INSTALLED__) return;
     window.__SYNTHI_TEACH_CAPTURE_INSTALLED__ = true;
     const pending = new WeakMap();
+    const pendingElements = new Set();
     const scrollPending = new WeakMap();
     const scrollPendingElements = new Set();
     const scrollBeforeEffects = new WeakMap();
@@ -755,6 +757,7 @@ function teachCaptureInitScript(bindingName: string): string {
         xpath: xpathFor(el),
         type,
         source_id: attr(el, 'data-synthi-source-id'),
+        content_editable: Boolean(el.isContentEditable || attr(el, 'contenteditable')),
       };
     }
 
@@ -839,9 +842,15 @@ function teachCaptureInitScript(bindingName: string): string {
     function isEditableTextTarget(el) {
       const tag = el.tagName.toLowerCase();
       const type = attr(el, 'type').toLowerCase();
+      if (el.isContentEditable || attr(el, 'contenteditable')) return true;
       if (tag === 'textarea') return true;
       if (tag !== 'input') return false;
       return !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'hidden'].includes(type);
+    }
+
+    function editableValue(el) {
+      if (el.isContentEditable || attr(el, 'contenteditable')) return text(el.textContent || '');
+      return String(el.value || '');
     }
 
     function shouldSkipClick(el) {
@@ -903,6 +912,7 @@ function teachCaptureInitScript(bindingName: string): string {
 
     function emit(el, action, value, detail) {
       if (!window[bindingName] || !isElement(el)) return;
+      if (action !== 'fill') flushPendingEdits();
       if (action !== 'scroll') flushPendingScrolls();
       const element = metadata(el);
       const rawDetail = Object.assign({}, detail || {});
@@ -960,16 +970,29 @@ function teachCaptureInitScript(bindingName: string): string {
       const timer = pending.get(el);
       if (timer) clearTimeout(timer);
       pending.delete(el);
+      pendingElements.delete(el);
+    }
+
+    function flushPendingEdits() {
+      for (const el of Array.from(pendingElements)) {
+        const timer = pending.get(el);
+        if (timer) clearTimeout(timer);
+        pending.delete(el);
+        pendingElements.delete(el);
+        if (isElement(el)) emit(el, 'fill', editableValue(el), { input_debounced: true });
+      }
     }
 
     document.addEventListener('input', (event) => {
       const el = event.target;
-      if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
+      if (!isElement(el) || (!editableTags.has(el.tagName.toLowerCase()) && !el.isContentEditable && !attr(el, 'contenteditable'))) return;
       if (!isEditableTextTarget(el)) return;
       clearPending(el);
+      pendingElements.add(el);
       pending.set(el, setTimeout(() => {
         pending.delete(el);
-        emit(el, 'fill', String(el.value || ''), { input_debounced: true });
+        pendingElements.delete(el);
+        emit(el, 'fill', editableValue(el), { input_debounced: true });
       }, 300));
     }, true);
 

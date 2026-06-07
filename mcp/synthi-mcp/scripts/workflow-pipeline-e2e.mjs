@@ -1164,6 +1164,43 @@ const CASES = [
     },
   },
   {
+    id: "rich-text-editor",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: [
+      "Saved Release notes ready",
+    ],
+    expectedReplayCode: [
+      "toContainText(\"Release notes ready\")",
+    ],
+    files: () => commonFiles({
+      title: "Rich Text Editor Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Rich Text Editor Workflow</h1>",
+        "      <div contenteditable=\"true\" role=\"textbox\" aria-label=\"Release notes\" data-testid=\"release-notes\" data-synthi-source-id=\"rich.notes\"></div>",
+        "      <button type=\"button\" data-testid=\"save-notes\" data-synthi-source-id=\"rich.save\">Save notes</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[contenteditable='true'] { min-height: 96px; border: 1px solid #222; background: #fff; padding: 12px; }",
+      ],
+      script: [
+        "const notes = document.querySelector('[data-testid=\"release-notes\"]');",
+        "document.querySelector('[data-testid=\"save-notes\"]').addEventListener('click', () => {",
+        "  document.querySelector('#status').textContent = `Saved ${notes.textContent.trim()}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("textbox", { name: "Release notes" }).fill("Release notes ready");
+      await page.getByRole("button", { name: "Save notes" }).click();
+      await page.getByText("Saved Release notes ready").waitFor();
+    },
+  },
+  {
     id: "dashboard-interactions",
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],
