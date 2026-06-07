@@ -3,6 +3,9 @@ import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence
 
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.v1';
 
+const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
+const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -346,8 +349,16 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   const editKind = firstText(classification.edit_kind, classification.editKind);
   const route = firstText(classification.route);
 
-  if (!projectKind) addFailure(failures, 'classification_project_kind_missing');
-  if (!editKind) addFailure(failures, 'classification_edit_kind_missing');
+  if (!projectKind) {
+    addFailure(failures, 'classification_project_kind_missing');
+  } else if (!GPU_PROJECT_KINDS.has(projectKind)) {
+    addFailure(failures, 'classification_project_kind_not_gpu_hmr', { projectKind });
+  }
+  if (!editKind) {
+    addFailure(failures, 'classification_edit_kind_missing');
+  } else if (!GPU_ARTIFACT_EDIT_KINDS.has(editKind)) {
+    addFailure(failures, 'classification_edit_kind_not_gpu_artifact', { editKind });
+  }
   if (!route) addFailure(failures, 'classification_route_missing');
   if (projectKind === 'cpu_project') addFailure(failures, 'classification_cpu_project');
   if (editKind === 'host_only') addFailure(failures, 'classification_host_only_edit');

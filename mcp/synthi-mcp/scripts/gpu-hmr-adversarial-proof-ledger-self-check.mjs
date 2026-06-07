@@ -606,6 +606,12 @@ const cases = [
     delete record.process_restarted;
     return record;
   })(), 'process_restart_absence_evidence_missing'],
+  ['unknown project kind classification', baselineRecord({
+    classification: { project_kind: 'unknown', edit_kind: 'gpu_artifact_edit', route: 'gpu_hmr' },
+  }), 'classification_project_kind_not_gpu_hmr'],
+  ['mixed host gpu edit classification', baselineRecord({
+    classification: { project_kind: 'mixed_project', edit_kind: 'mixed_host_gpu', route: 'gpu_hmr' },
+  }), 'classification_edit_kind_not_gpu_artifact'],
   ['cpu fallback', baselineRecord({ cpu_hmr_used: true }), 'cpu_hmr_used'],
   ['full rebuild', baselineRecord({ full_rebuild_used: true }), 'full_rebuild_used'],
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],
