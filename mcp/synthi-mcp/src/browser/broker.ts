@@ -10,7 +10,7 @@ import {
   type WorkflowReplayModeV7,
   type WorkflowReplayPlanV7,
 } from "./workflow.js";
-import { bridgeTokenMatches, normalizeOrigin, sameExactOrigin } from "./security.js";
+import { bridgeTokenMatches, normalizeOrigin, redactUrl, sameExactOrigin } from "./security.js";
 import type {
   BrowserActionKind,
   BrowserConsentRecord,
@@ -74,6 +74,19 @@ export interface BrowserWorkflowArtifact {
   saved_at: number;
 }
 
+export interface BrowserRecordingIssue {
+  issue_id: string;
+  at: number;
+  source: "hosted-playwright-adapter" | "hosted-playwright-annotation" | "browser-extension-bridge" | "broker";
+  error: string;
+  tab_id?: string;
+  action?: BrowserActionKind;
+  url?: string;
+  origin?: string;
+  frame_origin?: string;
+  popup_origin?: string;
+}
+
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
 
@@ -98,6 +111,7 @@ export class BrowserBroker {
   private runtime: BrowserRuntimeAttachment | null = null;
   private teachAnswers: BrowserTeachQuestionAnswer[] = [];
   private workflows = new Map<string, BrowserWorkflowArtifact>();
+  private recordingIssues: BrowserRecordingIssue[] = [];
 
   setRuntimeAttachment(runtime: Omit<BrowserRuntimeAttachment, "attached_at">): BrowserRuntimeAttachment {
     this.runtime = { ...runtime, attached_at: Date.now() };
@@ -216,6 +230,7 @@ export class BrowserBroker {
     const origin = normalizeOrigin(tab.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     this.trace.beginTrace();
+    this.recordingIssues = [];
     this.teachMode = { active: true, tab_id, origin };
     eventLog.push({
       kind: "browser",
@@ -268,6 +283,41 @@ export class BrowserBroker {
 
   teachQuestionAnswers(): BrowserTeachQuestionAnswer[] {
     return this.teachAnswers.map((answer) => ({ ...answer }));
+  }
+
+  recordingIssueSnapshot(limit: number = 20): BrowserRecordingIssue[] {
+    return this.recordingIssues.slice(-Math.max(1, Math.min(100, Math.floor(limit)))).map((issue) => ({ ...issue }));
+  }
+
+  recordTeachRecordingIssue(
+    error: string,
+    input: {
+      tab_id?: string;
+      url?: string;
+      origin?: string;
+      action?: BrowserActionKind;
+      detail?: Record<string, unknown>;
+    },
+    source: BrowserRecordingIssue["source"] = "broker"
+  ): BrowserRecordingIssue {
+    const url = typeof input.url === "string" ? input.url : undefined;
+    const origin = url ? this.originOrNull(url) : typeof input.origin === "string" ? this.originOrNull(input.origin) : null;
+    const issue: BrowserRecordingIssue = {
+      issue_id: `recording_issue_${randomUUID()}`,
+      at: Date.now(),
+      source,
+      error,
+      ...(typeof input.tab_id === "string" && input.tab_id.length > 0 ? { tab_id: input.tab_id } : {}),
+      ...(input.action ? { action: input.action } : {}),
+      ...(url ? { url: redactUrl(url).url } : {}),
+      ...(origin ? { origin } : {}),
+      ...(this.targetOriginFromDetail(input.detail, "frame_origin") ? { frame_origin: this.targetOriginFromDetail(input.detail, "frame_origin")! } : {}),
+      ...(this.popupOriginFromDetail(input.detail) ? { popup_origin: this.popupOriginFromDetail(input.detail)! } : {}),
+    };
+    this.recordingIssues.push(issue);
+    if (this.recordingIssues.length > 100) this.recordingIssues.splice(0, this.recordingIssues.length - 100);
+    eventLog.push({ kind: "browser", action: "recording_issue", payload: { issue } });
+    return { ...issue };
   }
 
   handleOriginChange(tab_id: string, nextUrl: string, detail?: Record<string, unknown>): void {
@@ -566,6 +616,7 @@ export class BrowserBroker {
     this.runtime = null;
     this.teachAnswers = [];
     this.workflows.clear();
+    this.recordingIssues = [];
   }
 
   private currentWorkflowArtifact(): BrowserWorkflowArtifact {

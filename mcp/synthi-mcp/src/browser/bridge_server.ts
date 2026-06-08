@@ -108,6 +108,7 @@ export class BrowserBridgeServer {
         const enriched = this.withSelectedTab(payload, pageOrigin);
         if (!enriched.ok) return enriched;
         const result = browserBroker.recordHumanAction(enriched.payload as never);
+        if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, enriched.payload as never, "browser-extension-bridge");
         return result.ok ? { ok: true } : { ok: false, error: result.error };
       }
       case "origin_change": {

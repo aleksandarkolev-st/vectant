@@ -36,11 +36,13 @@ browserPlaywrightAdapter.setTeachEventSink((event) => {
     browserBroker.handleOriginChange(event.tab_id, event.url, event.detail);
     return;
   }
-  browserBroker.recordHumanAction(event);
+  const result = browserBroker.recordHumanAction(event);
+  if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, event, "hosted-playwright-adapter");
 });
 
 browserPlaywrightAdapter.setTeachEventAnnotationSink((event) => {
-  browserBroker.annotateLatestHumanAction(event);
+  const result = browserBroker.annotateLatestHumanAction(event);
+  if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, event, "hosted-playwright-annotation");
 });
 
 browserPlaywrightAdapter.setWorkflowOverlayActionSink(async (request) => {
@@ -1194,6 +1196,7 @@ function browserTraceStatusTool(): ToolResponse {
       limitations: workflow.contract.limitations,
       lane0: workflow.contract.lane0,
       teach_question_answers_count: browserBroker.teachQuestionAnswers().length,
+      recording_issues: browserBroker.recordingIssueSnapshot(),
     },
   });
 }

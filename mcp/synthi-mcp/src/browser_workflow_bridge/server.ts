@@ -20,7 +20,7 @@
  */
 
 import http from "node:http";
-import { browserBroker } from "../browser/broker.js";
+import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import type { WorkflowStepContractV7 } from "../browser/workflow.js";
 import { dispatchAuthTool } from "../tools/auth.js";
@@ -422,6 +422,7 @@ export function buildBrowserWorkflowPanelState(
   const scriptGenerated = Boolean(bridgeState.scriptGeneratedAt) && traceReady;
   const sourceCoverage = workflow.contract.sourceIdentityCoverage;
   const publish = workflow.contract.publishPlan;
+  const recordingIssues = browserBroker.recordingIssueSnapshot();
 
   return {
     workspaceLabel: runtime?.workspace_id ?? stringOpt(process.env["SYNTHI_WORKSPACE_ID"]) ?? "Current workspace",
@@ -522,7 +523,8 @@ export function buildBrowserWorkflowPanelState(
         detail: step.limitations.length
           ? `Needs publish hardening: ${step.limitations.join(", ")}.`
           : "Needs hardening before unattended replay.",
-      })),
+      }))
+      .concat(recordingIssues.map(panelRecordingIssue)),
     blockers: workflow.contract.limitations.map((limitation) => ({
       id: `limitation_${limitation}`,
       label: limitation,
@@ -534,6 +536,7 @@ export function buildBrowserWorkflowPanelState(
       authorizedTabCount: tabs.length,
       lane0,
       replayWarnings: prefixPlan.warnings,
+      recordingIssues,
       generatedAt: {
         compiledAt: bridgeState.compiledAt ?? null,
       scriptGeneratedAt: bridgeState.scriptGeneratedAt ?? null,
@@ -694,6 +697,40 @@ function panelStepForContract(step: WorkflowStepContractV7): Record<string, unkn
     replay: step.surfacePlan.replay,
     limitations: step.limitations,
   };
+}
+
+function panelRecordingIssue(issue: BrowserRecordingIssue): { id: string; label: string; detail: string; [key: string]: unknown } {
+  const targetOrigin = issue.frame_origin ?? issue.popup_origin ?? issue.origin;
+  return {
+    id: issue.issue_id,
+    label: recordingIssueLabel(issue.error),
+    title: recordingIssueLabel(issue.error),
+    detail: targetOrigin
+      ? `${issue.error}: grant consent or keep teaching inside ${targetOrigin}.`
+      : `${issue.error}: the runtime could not record this taught action.`,
+    source: issue.source,
+    action: issue.action,
+    origin: issue.origin,
+    frameOrigin: issue.frame_origin,
+    popupOrigin: issue.popup_origin,
+  };
+}
+
+function recordingIssueLabel(error: string): string {
+  switch (error) {
+    case "frame_origin_consent_required":
+      return "Frame consent required";
+    case "popup_origin_consent_required":
+      return "Popup consent required";
+    case "teach_tab_mismatch":
+      return "Different tab was used";
+    case "teach_origin_mismatch":
+      return "Different origin was used";
+    case "origin_consent_required":
+      return "Origin consent required";
+    default:
+      return "Recording issue";
+  }
 }
 
 function stepMeta(step: WorkflowStepContractV7): string {

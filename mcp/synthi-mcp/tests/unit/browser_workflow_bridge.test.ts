@@ -199,6 +199,46 @@ describe("browser workflow bridge", () => {
     expect(state.observe.consent).toBeNull();
   });
 
+  it("surfaces sanitized recording issues in panel review state", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url, "granted", "unit", { screenshot: true, diagnostics: true });
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, title: "Settings", active: true }]);
+    browserBroker.selectTab("tab-a");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: url,
+      adapter: "hosted-playwright-cdp",
+    });
+    browserBroker.recordTeachRecordingIssue("popup_origin_consent_required", {
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      detail: {
+        popup_origin: "https://checkout.example.test",
+        selector: "#pay",
+        value: "secret-token",
+      },
+    }, "hosted-playwright-adapter");
+
+    const state = buildBrowserWorkflowPanelState() as {
+      unresolvedSteps: Array<{ label: string; detail: string; popupOrigin?: string }>;
+      diagnostics: { recordingIssues: unknown[] };
+    };
+
+    expect(state.unresolvedSteps).toEqual([
+      expect.objectContaining({
+        label: "Popup consent required",
+        detail: expect.stringContaining("https://checkout.example.test"),
+        popupOrigin: "https://checkout.example.test",
+      }),
+    ]);
+    expect(state.diagnostics.recordingIssues).toHaveLength(1);
+    expect(JSON.stringify(state)).not.toMatch(/secret-token|#pay|selector|value/);
+  });
+
   it("dispatches stale panel action aliases to current MCP workflow tools", async () => {
     seedSaveWorkflow();
     bridge = startBrowserWorkflowBridge({ port: 0 });

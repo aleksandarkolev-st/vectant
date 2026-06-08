@@ -116,6 +116,29 @@ describe("browser broker privacy boundary", () => {
     expect(tabs[0]?.target_id).toBe("target-1");
   });
 
+  it("keeps rejected teach-event diagnostics sanitized", () => {
+    const issue = browserBroker.recordTeachRecordingIssue("frame_origin_consent_required", {
+      tab_id: "app",
+      url: "https://app.example.com/settings?token=secret",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        frame_origin: "https://billing.example.com/form",
+        selector: "#card-number",
+        value: "4111111111111111",
+      },
+    }, "hosted-playwright-adapter");
+
+    expect(issue).toEqual(expect.objectContaining({
+      error: "frame_origin_consent_required",
+      source: "hosted-playwright-adapter",
+      origin: "https://app.example.com",
+      frame_origin: "https://billing.example.com",
+    }));
+    const serialized = JSON.stringify(browserBroker.recordingIssueSnapshot());
+    expect(serialized).not.toMatch(/4111111111111111|#card-number|selector|value|secret/);
+  });
+
   it("redacts password fields, API keys, bearer tokens, and token URLs", () => {
     expect(redactValue("password", "correct-horse").value).toBe("[REDACTED]");
     expect(redactValue("accessToken", "short-lived-session-token").value).toBe("[REDACTED]");
@@ -439,6 +462,14 @@ describe("browser broker privacy boundary", () => {
       ttl_ms: 60_000,
     });
     expect(finished.ok).toBe(true);
+    if (!finished.ok) throw new Error("unexpected auth checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: finished.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "secret-local" }] }],
+      },
+    }).ok).toBe(true);
 
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);
     expect(browserBroker.startTeachMode("app").ok).toBe(true);
