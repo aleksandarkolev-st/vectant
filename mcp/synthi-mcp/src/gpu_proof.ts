@@ -99,6 +99,9 @@ const DEGRADED_STATE_RANK_CAPS = new Map<string, number>([
   ["gpu-hmr-fission-unverified", 0],
 ]);
 
+const OUTPUT_ORACLE_PROOF_RANK = gpuHmrProofStateRank("gpu-hmr-output-oracle-proven");
+const FULL_RUNTIME_PROOF_RANK = gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -552,8 +555,9 @@ export function validateGpuHmrProofState(
   let runtimeProofArtifactValidation: GpuHmrRuntimeProofArtifactValidation | null | undefined;
   let ledgerReason: string | undefined;
   let runtimeArtifactReason: string | undefined;
-  if (requiredState === "gpu-hmr-full-runtime-proven" && reason === undefined) {
-    const ledger = embeddedGpuHmrProofLedger(proof.raw);
+  let ledger: Record<string, unknown> | null = null;
+  if (requiredRank >= OUTPUT_ORACLE_PROOF_RANK && reason === undefined) {
+    ledger = embeddedGpuHmrProofLedger(proof.raw);
     if (ledger === null) {
       satisfied = false;
       proofLedgerValidation = null;
@@ -580,21 +584,21 @@ export function validateGpuHmrProofState(
         ledgerReason = "proof_ledger_rejected";
       }
     }
-    if (ledgerReason === undefined) {
-      const expectedRuntimeProofId = proof.proofId?.startsWith("gpu-runtime-proof:") === true
-        ? proof.proofId
-        : null;
-      runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(
-        proof.raw,
-        ledger,
-        expectedRuntimeProofId
-      );
-      if (!runtimeProofArtifactValidation.accepted) {
-        satisfied = false;
-        runtimeArtifactReason = runtimeProofArtifactValidation.present
-          ? "runtime_proof_artifact_rejected"
-          : "runtime_proof_artifact_missing";
-      }
+  }
+  if (requiredRank >= FULL_RUNTIME_PROOF_RANK && reason === undefined && ledgerReason === undefined) {
+    const expectedRuntimeProofId = proof.proofId?.startsWith("gpu-runtime-proof:") === true
+      ? proof.proofId
+      : null;
+    runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(
+      proof.raw,
+      ledger,
+      expectedRuntimeProofId
+    );
+    if (!runtimeProofArtifactValidation.accepted) {
+      satisfied = false;
+      runtimeArtifactReason = runtimeProofArtifactValidation.present
+        ? "runtime_proof_artifact_rejected"
+        : "runtime_proof_artifact_missing";
     }
   }
 

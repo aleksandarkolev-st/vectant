@@ -412,6 +412,67 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("requires a proof ledger for output oracle proof validation", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_missing");
+    expect(validation.proofLedgerValidation).toBeNull();
+    expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("rejects output oracle proof when the embedded ledger rejects", () => {
+    const ledger = proofLedger({ cpu_hmr_used: true });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_rejected");
+    expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "cpu_hmr_used"
+    );
+    expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("accepts output oracle proof with a recomputed accepted ledger and no runtime artifact", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(true);
+    expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(true);
+    expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("continues to allow lower proof states without a ledger", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
+
+    expect(validation.satisfied).toBe(true);
+    expect(validation.proofLedgerValidation).toBeUndefined();
+    expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
   it("treats unknown degraded states as proof blockers", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",

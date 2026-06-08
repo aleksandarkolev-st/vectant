@@ -515,6 +515,58 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_ledger_validation).toBeNull();
   });
 
+  it("rejects output oracle proof telemetry without proof ledger", async () => {
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-output-oracle-proven",
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requiredGpuProofState: "gpu-hmr-output-oracle-proven",
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+      gpu_proof_ledger_validation?: unknown;
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_ledger_missing");
+    expect(body.gpu_proof_ledger_validation).toBeNull();
+  });
+
+  it("accepts output oracle proof telemetry with an accepted proof ledger", async () => {
+    const ledger = passingProofLedger();
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-output-oracle-proven",
+        proofLedger: ledger,
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requiredGpuProofState: "gpu-hmr-output-oracle-proven",
+    });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      gpu_proof_validation?: { satisfied?: boolean; runtimeProofArtifactValidation?: unknown };
+      gpu_proof_ledger_validation?: { gpuHmrSuccess?: boolean };
+    };
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation).toBeUndefined();
+    expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
+  });
+
   it("rejects flat full runtime artifact fields without an explicit runtime artifact object", async () => {
     const ledger = passingProofLedger();
     const artifact = passingRuntimeProofArtifact(ledger);
