@@ -632,10 +632,15 @@ async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, ca
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = await collectProcess(proc, CFG.timeoutMs);
-  await writeFile(path.join(caseDir, "playwright-run.log"), output.stdout + output.stderr);
+  const combinedOutput = output.stdout + output.stderr;
+  const normalizedOutput = stripAnsi(combinedOutput);
+  const skipped = /\b\d+\s+skipped\b/i.test(normalizedOutput);
+  await writeFile(path.join(caseDir, "playwright-run.log"), combinedOutput);
   return {
-    ok: output.code === 0,
-    detail: output.code === 0 ? "passed" : `exit=${output.code} ${stripAnsi(output.stderr || output.stdout).slice(0, 240)}`,
+    ok: output.code === 0 && !skipped,
+    detail: output.code === 0
+      ? skipped ? "skipped - generated script did not execute all required steps" : "passed"
+      : `exit=${output.code} ${stripAnsi(output.stderr || output.stdout).slice(0, 240)}`,
   };
 }
 
