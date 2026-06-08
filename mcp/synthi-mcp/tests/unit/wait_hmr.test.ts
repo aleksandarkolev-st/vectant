@@ -769,6 +769,86 @@ describe("synthi_wait_hmr", () => {
     ]));
   });
 
+  it("rejects full runtime proof when the runtime artifact ledger changes backend", async () => {
+    const ledger = passingProofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    record.backend = "hip";
+    const otherLedger = passingProofLedger();
+    const otherRecord = otherLedger.records[0] as Record<string, any>;
+    otherRecord.backend = "opencl";
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(otherLedger),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: {
+        reason?: string;
+        runtimeProofArtifactValidation?: { failedGates?: Array<{ code?: string }> };
+      };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("runtime_proof_artifact_rejected");
+    expect(
+      body.gpu_proof_validation?.runtimeProofArtifactValidation?.failedGates?.map((gate) => gate.code)
+    ).toContain("runtime_artifact_ledger_backend_mismatch");
+  });
+
+  it("rejects full runtime proof when the runtime artifact ledger changes output oracle target", async () => {
+    const ledger = passingProofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    record.output_oracle_target = {
+      kind: "compute",
+      target_id: "compute-target:a",
+      compute_only_target_verified: true,
+      evidence_refs: ["oracle-target:compute:a"],
+    };
+    const otherLedger = passingProofLedger();
+    const otherRecord = otherLedger.records[0] as Record<string, any>;
+    otherRecord.output_oracle_target = {
+      kind: "compute",
+      target_id: "compute-target:b",
+      compute_only_target_verified: true,
+      evidence_refs: ["oracle-target:compute:b"],
+    };
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(otherLedger),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: {
+        reason?: string;
+        runtimeProofArtifactValidation?: { failedGates?: Array<{ code?: string }> };
+      };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("runtime_proof_artifact_rejected");
+    expect(
+      body.gpu_proof_validation?.runtimeProofArtifactValidation?.failedGates?.map((gate) => gate.code)
+    ).toContain("runtime_artifact_ledger_output_oracle_target_mismatch");
+  });
+
   it("rejects a retained GPU proof that predates since_ts", async () => {
     const staleProof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",

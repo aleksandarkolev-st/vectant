@@ -203,6 +203,25 @@ function nestedObjectField(raw: Record<string, unknown>, ...keys: string[]): Rec
   return {};
 }
 
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(object[key])}`
+  ).join(",")}}`;
+}
+
+function outputOracleTarget(record: Record<string, unknown>, outputEvent: Record<string, unknown>): Record<string, unknown> | null {
+  const outputOracle = nestedObjectField(outputEvent, "output_oracle", "outputOracle");
+  return objectOrNull(record.output_oracle_target)
+    ?? objectOrNull(record.outputOracleTarget)
+    ?? objectOrNull(outputEvent.output_oracle_target)
+    ?? objectOrNull(outputEvent.outputOracleTarget)
+    ?? objectOrNull(outputOracle.output_oracle_target)
+    ?? objectOrNull(outputOracle.outputOracleTarget);
+}
+
 function ledgerIdentityFields(ledger: Record<string, unknown> | null): Record<string, string | null> {
   const record = ledgerRecord(ledger);
   if (record === null) return {};
@@ -214,6 +233,10 @@ function ledgerIdentityFields(ledger: Record<string, unknown> | null): Record<st
     proof_id: stringOrNull(record.proofId ?? record.proof_id ?? ledger?.proofId ?? ledger?.proof_id),
     project_id: stringOrNull(record.project_id ?? record.projectId),
     edit_id: stringOrNull(record.edit_id ?? record.editId),
+    backend: stringOrNull(record.backend ?? record.gpu_backend ?? record.gpuBackend),
+    output_oracle_target: outputOracleTarget(record, outputEvent) === null
+      ? null
+      : stableJson(outputOracleTarget(record, outputEvent)),
     contract_hash: stringOrNull(record.contract_hash ?? record.contractHash),
     artifact_before_hash: stringOrNull(record.artifact_before_hash ?? record.artifactBeforeHash),
     artifact_after_hash: stringOrNull(record.artifact_after_hash ?? record.artifactAfterHash),

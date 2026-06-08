@@ -29,6 +29,7 @@ const DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES = new Set([
   "checksum_digest",
   "digest_bytes",
 ]);
+const VISUAL_OR_ENGINE_BACKENDS = new Set(["hiprt", "vulkan", "webgpu", "bevy_wgsl"]);
 const REQUIRED_TIMING_FIELDS = [
   ["static_discovery_time", "staticDiscoveryTime"],
   ["ai_contract_synthesis_time", "aiContractSynthesisTime"],
@@ -233,6 +234,31 @@ function isVisualOutput(outputEvent: Record<string, unknown>): boolean {
     || kind.includes("pixel")
     || hasOwnDeep(asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts), "after_image")
     || hasOwnDeep(asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts), "afterImage");
+}
+
+function outputOracleTargetForRecord(
+  input: Record<string, unknown>,
+  outputEvent: Record<string, unknown>
+): Record<string, unknown> {
+  const outputOracle = outputOracleObject(outputEvent);
+  return asObject(
+    input.output_oracle_target
+    ?? input.outputOracleTarget
+    ?? outputEvent.output_oracle_target
+    ?? outputEvent.outputOracleTarget
+    ?? outputOracle.output_oracle_target
+    ?? outputOracle.outputOracleTarget
+  );
+}
+
+function outputOracleTargetKind(target: Record<string, unknown>): string | null {
+  return firstText(asObject(target.kind).value, target.kind, target.target_kind, target.targetKind);
+}
+
+function computeOnlyOutputTargetVerified(target: Record<string, unknown>): boolean {
+  return outputOracleTargetKind(target) === "compute"
+    && (target.compute_only_target_verified === true || target.computeOnlyTargetVerified === true)
+    && compactStringList(target.evidence_refs ?? target.evidenceRefs).length > 0;
 }
 
 function outputOracleObject(outputEvent: Record<string, unknown>): Record<string, unknown> {
@@ -678,6 +704,8 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const modelProvenance = asObject(input.model_provenance ?? input.modelProvenance);
   const projectId = firstText(input.project_id, input.projectId);
   const editId = firstText(input.edit_id, input.editId);
+  const backend = firstText(input.backend, input.gpu_backend, input.gpuBackend);
+  const outputOracleTarget = outputOracleTargetForRecord(input, outputEvent);
   const evidenceRefs = compactStringList(input.evidence_refs ?? input.evidenceRefs);
   const contractHash = firstText(input.contract_hash, input.contractHash);
   const artifactBeforeHash = firstText(input.artifact_before_hash, input.artifactBeforeHash);
@@ -783,7 +811,17 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     failures.push({ code: "retirement_proof_missing" });
   }
   const visualArtifacts = visualOracleArtifacts(oracleArtifacts, outputEvent);
-  if (isVisualOutput(outputEvent) || visualArtifacts !== null) {
+  const visualOutput = isVisualOutput(outputEvent) || visualArtifacts !== null;
+  const visualBackend = backend !== null && VISUAL_OR_ENGINE_BACKENDS.has(backend);
+  const computeOnlyTargetVerified = computeOnlyOutputTargetVerified(outputOracleTarget);
+  const oracleTargetKind = outputOracleTargetKind(outputOracleTarget);
+  if (visualBackend && !visualOutput && !computeOnlyTargetVerified) {
+    failures.push({ code: "visual_backend_requires_visual_oracle", backend });
+  }
+  if (visualBackend && oracleTargetKind === "compute" && !computeOnlyTargetVerified) {
+    failures.push({ code: "visual_backend_compute_target_unverified", backend });
+  }
+  if (visualOutput) {
     if (visualArtifacts === null) {
       failures.push({ code: "visual_oracle_artifacts_missing" });
     } else {

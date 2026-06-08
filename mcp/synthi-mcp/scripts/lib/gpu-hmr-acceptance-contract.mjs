@@ -455,6 +455,29 @@ function normalizeFirewallEvidence(value = {}) {
   };
 }
 
+function normalizeOutputOracleTarget(value = {}) {
+  const target = asObject(value);
+  return {
+    kind: text(asObject(target.kind).value ?? target.kind ?? target.target_kind ?? target.targetKind),
+    target_id: text(target.target_id ?? target.targetId ?? target.output_target_id ?? target.outputTargetId),
+    compute_only_target_verified:
+      boolValue(target.compute_only_target_verified ?? target.computeOnlyTargetVerified),
+    evidence_refs: compactStringList(target.evidence_refs ?? target.evidenceRefs),
+  };
+}
+
+function outputOracleTargetKind(target) {
+  const object = asObject(target);
+  return text(asObject(object.kind).value ?? object.kind ?? object.target_kind ?? object.targetKind);
+}
+
+function computeOnlyOutputTargetVerified(target) {
+  const object = asObject(target);
+  return outputOracleTargetKind(object) === 'compute'
+    && (object.compute_only_target_verified === true || object.computeOnlyTargetVerified === true)
+    && compactStringList(object.evidence_refs ?? object.evidenceRefs).length > 0;
+}
+
 export function normalizeGpuHmrAcceptanceContract(input = {}) {
   const c = asObject(input);
   const classification = normalizeClassification(c.classification);
@@ -484,6 +507,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     adapter_outcome: normalizeAdapterOutcome(c.adapter_outcome ?? c.adapterOutcome),
     reload_evidence_refs: compactStringList(c.reload_evidence_refs ?? c.reloadEvidenceRefs),
     firewall_evidence: normalizeFirewallEvidence(c.firewall_evidence ?? c.firewallEvidence),
+    output_oracle_target: normalizeOutputOracleTarget(c.output_oracle_target ?? c.outputOracleTarget),
     dispatch_trace_required: c.dispatch_trace_required !== false && c.dispatchTraceRequired !== false,
     oracle_trace_required: c.oracle_trace_required !== false && c.oracleTraceRequired !== false,
     state_preservation_checks: asObject(c.state_preservation_checks ?? c.statePreservationChecks),
@@ -509,6 +533,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     reload_mechanism: normalized.reload_mechanism,
     adapter_outcome: normalized.adapter_outcome,
     firewall_evidence: normalized.firewall_evidence,
+    output_oracle_target: normalized.output_oracle_target,
   }))}`;
   normalized.contract_id ??= `gpu-hmr-contract:${normalized.contract_hash}`;
   return normalized;
@@ -570,6 +595,13 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   }
   if (!contract.dispatch_trace_required) addFailure(failures, 'dispatch_trace_not_required');
   if (!contract.oracle_trace_required) addFailure(failures, 'oracle_trace_not_required');
+  if (
+    VISUAL_OR_ENGINE_BACKENDS.has(contract.backend)
+    && outputOracleTargetKind(contract.output_oracle_target) === 'compute'
+    && !computeOnlyOutputTargetVerified(contract.output_oracle_target)
+  ) {
+    addFailure(failures, 'visual_backend_compute_target_unverified', { backend: contract.backend });
+  }
   if (!contract.artifact_hash_before) addFailure(failures, 'artifact_hash_before_missing');
   if (!contract.artifact_hash_after) addFailure(failures, 'artifact_hash_after_missing');
   if (contract.artifact_hash_before && contract.artifact_hash_after
@@ -810,6 +842,7 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
   const epochPolicy = normalized.epoch_policy ?? {};
   const fission = normalized.fission_report ?? {};
   const firewall = normalized.firewall_evidence ?? {};
+  const outputTarget = normalized.output_oracle_target ?? {};
   return {
     backend: normalized.backend,
     project_id: normalized.project_id,
@@ -836,6 +869,10 @@ export function comparableGpuHmrAcceptanceContractFields(contract) {
     firewall_process_restarted: firewall.process_restarted,
     firewall_evidence_source: firewall.evidence_source ?? null,
     firewall_evidence_refs: sortedStringList(firewall.evidence_refs),
+    output_oracle_target_kind: outputTarget.kind ?? null,
+    output_oracle_target_id: outputTarget.target_id ?? null,
+    output_oracle_target_compute_only_verified: outputTarget.compute_only_target_verified === true,
+    output_oracle_target_evidence_refs: sortedStringList(outputTarget.evidence_refs),
     process_id: state.process_id ?? null,
     device_uuid: state.device_uuid ?? null,
     context_or_device_handle: state.context_or_device_handle ?? null,
@@ -1696,6 +1733,18 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       ? 'adapter_generated'
       : 'adapter_impossible_requires_app_hook',
     reload_evidence_refs: compactStringList(artifactTransportProof.evidenceRefs ?? artifactTransportProof.evidence_refs),
+    output_oracle_target: firstObject(
+      input.outputOracleTarget,
+      input.output_oracle_target,
+      validationContext.outputOracleTarget,
+      validationContext.output_oracle_target,
+      outputProof.outputOracleTarget,
+      outputProof.output_oracle_target,
+      outputProof.outputOracle?.outputOracleTarget,
+      outputProof.outputOracle?.output_oracle_target,
+      outputProof.output_oracle?.outputOracleTarget,
+      outputProof.output_oracle?.output_oracle_target,
+    ),
     firewall_evidence: {
       route: firewallProof.route,
       evidence_source: firewallProof.evidence_source,

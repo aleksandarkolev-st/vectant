@@ -5,6 +5,7 @@ export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.
 
 const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
 const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
+const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
 const METRIC_CLOCKS = new Set(['monotonic_ns']);
 const METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
@@ -225,6 +226,30 @@ function isVisualOutput(outputEvent) {
     || kind.includes('frame')
     || kind.includes('pixel')
     || asObject(outputEvent.visual_oracle_artifacts ?? outputEvent.visualOracleArtifacts).after_image;
+}
+
+function outputOracleTarget(record) {
+  const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const outputOracle = asObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  return asObject(
+    record.output_oracle_target
+    ?? record.outputOracleTarget
+    ?? outputEvent.output_oracle_target
+    ?? outputEvent.outputOracleTarget
+    ?? outputOracle.output_oracle_target
+    ?? outputOracle.outputOracleTarget,
+  );
+}
+
+function outputOracleTargetKind(target) {
+  return firstText(asObject(target.kind).value, target.kind, target.target_kind, target.targetKind);
+}
+
+function computeOnlyOutputTargetVerified(record) {
+  const target = outputOracleTarget(record);
+  return outputOracleTargetKind(target) === 'compute'
+    && (target.compute_only_target_verified === true || target.computeOnlyTargetVerified === true)
+    && compactStringList(target.evidence_refs ?? target.evidenceRefs).length > 0;
 }
 
 const COMPUTE_ORACLE_ARTIFACT_FIELDS = [
@@ -619,6 +644,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     proofId: firstText(record.proof_id, record.proofId),
     projectId: firstText(record.project_id, record.projectId),
     editId: firstText(record.edit_id, record.editId),
+    backend: firstText(record.backend, record.gpu_backend, record.gpuBackend),
     classification: asObject(record.classification),
     contractHash: firstText(record.contract_hash, record.contractHash),
     artifactBeforeHash,
@@ -649,6 +675,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
       ?? outputEvent.deterministic_visual_mode
       ?? outputEvent.deterministicVisualMode,
     ),
+    outputOracleTarget: outputOracleTarget(record),
     metricClock: firstText(
       record.metric_clock,
       record.metricClock,
@@ -686,6 +713,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
   normalized.proofId ??= `gpu-ledger-proof:sha256:${sha256Hex(stableJson({
     projectId: normalized.projectId,
     editId: normalized.editId,
+    backend: normalized.backend,
     contractHash: normalized.contractHash,
     artifactBeforeHash: normalized.artifactBeforeHash,
     artifactAfterHash: normalized.artifactAfterHash,
@@ -693,6 +721,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     epochPublishEvent: normalized.epochPublishEvent,
     dispatchEvent: normalized.dispatchEvent,
     outputEvent: normalized.outputEvent,
+    outputOracleTarget: normalized.outputOracleTarget,
     cpuHmrUsed: normalized.cpuHmrUsed,
     fullRebuildUsed: normalized.fullRebuildUsed,
     processRestarted: normalized.processRestarted,
@@ -902,7 +931,17 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     if (!retirementStatus) addFailure(failures, 'retirement_proof_missing');
   }
   const visualArtifacts = visualOracleArtifacts(record.oracleArtifacts, record.outputEvent);
-  if (isVisualOutput(record.outputEvent) || visualArtifacts) {
+  const visualOutput = isVisualOutput(record.outputEvent) || visualArtifacts;
+  const visualBackend = VISUAL_OR_ENGINE_BACKENDS.has(record.backend);
+  const computeOnlyTargetVerified = computeOnlyOutputTargetVerified(record);
+  const oracleTargetKind = outputOracleTargetKind(record.outputOracleTarget);
+  if (visualBackend && !visualOutput && !computeOnlyTargetVerified) {
+    addFailure(failures, 'visual_backend_requires_visual_oracle', { backend: record.backend });
+  }
+  if (visualBackend && oracleTargetKind === 'compute' && !computeOnlyTargetVerified) {
+    addFailure(failures, 'visual_backend_compute_target_unverified', { backend: record.backend });
+  }
+  if (visualOutput) {
     const artifacts = visualArtifacts;
     if (!artifacts) {
       addFailure(failures, 'visual_oracle_artifacts_missing');

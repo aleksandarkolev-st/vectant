@@ -344,6 +344,18 @@ function baselineContract(overrides = {}) {
         dispatchId: 'dispatch-1',
         readbackTimestamp: 400,
       },
+      field_evidence_refs: {
+        kernel_name: ['runtime:dispatch'],
+        launch_api: ['runtime:dispatch'],
+        grid_dim: ['runtime:dispatch'],
+        block_dim: ['runtime:dispatch'],
+        shared_mem_bytes: ['runtime:dispatch'],
+        stream: ['runtime:dispatch'],
+        kernel_params: ['runtime:dispatch'],
+        code_object_metadata: ['code-object:metadata'],
+        output_buffers: ['runtime:output-oracle'],
+        readback_oracle: ['runtime:output-oracle'],
+      },
     },
     ...overrides,
   };
@@ -547,6 +559,15 @@ assert.equal(assertGpuHmrProofLedgerSuccess(baselineRecord({
   cache_state: null,
   timings: {
     timingMetrics: baselineTimingMetrics(),
+  },
+})).gpuHmrSuccess, true);
+assert.equal(assertGpuHmrProofLedgerSuccess(baselineRecord({
+  backend: 'vulkan',
+  output_oracle_target: {
+    kind: 'compute',
+    target_id: 'compute-target:validation-buffer',
+    compute_only_target_verified: true,
+    evidence_refs: ['oracle-target:compute-only:validation-buffer'],
   },
 })).gpuHmrSuccess, true);
 
@@ -930,6 +951,16 @@ const cases = [
       }),
     },
   }), 'compute_oracle_raw_readback_source_unaccepted'],
+  ['visual backend with compute oracle rejected', baselineRecord({
+    backend: 'hiprt',
+  }), 'visual_backend_requires_visual_oracle'],
+  ['visual backend compute target without proof rejected', baselineRecord({
+    backend: 'vulkan',
+    output_oracle_target: {
+      kind: 'compute',
+      target_id: 'compute-target:unverified',
+    },
+  }), 'visual_backend_compute_target_unverified'],
   ['visual without deterministic mode', baselineRecord({ output_event: { kind: 'render_target_hash', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'visual_output_without_deterministic_mode'],
   ['missing visual oracle artifacts', baselineVisualRecord({ oracle_artifacts: {} }), 'visual_oracle_artifacts_missing'],
   ['incomplete visual oracle artifacts', baselineVisualRecord({

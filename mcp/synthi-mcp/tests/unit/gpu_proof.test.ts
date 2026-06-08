@@ -587,6 +587,58 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects full runtime artifact bound to a different backend", () => {
+    const ledger = proofLedger({ backend: "hip" });
+    const otherLedger = proofLedger({ backend: "opencl" });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(otherLedger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_artifact_ledger_backend_mismatch"
+    );
+  });
+
+  it("rejects full runtime artifact bound to a different output oracle target", () => {
+    const ledger = proofLedger({
+      output_oracle_target: {
+        kind: "compute",
+        target_id: "compute-target:a",
+        compute_only_target_verified: true,
+        evidence_refs: ["oracle-target:compute:a"],
+      },
+    });
+    const otherLedger = proofLedger({
+      output_oracle_target: {
+        kind: "compute",
+        target_id: "compute-target:b",
+        compute_only_target_verified: true,
+        evidence_refs: ["oracle-target:compute:b"],
+      },
+    });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(otherLedger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_artifact_ledger_output_oracle_target_mismatch"
+    );
+  });
+
   it("rejects full runtime proof when delta model provenance is shutdown", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, any>;

@@ -20,6 +20,8 @@ import {
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
+const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
+
 function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
@@ -1101,6 +1103,62 @@ function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visu
     || compactObjects(visualEvidenceArtifacts).length > 0;
 }
 
+function outputOracleTargetFromSources(...sources) {
+  for (const source of sources) {
+    const object = objectOrNull(source);
+    if (!object) continue;
+    const outputOracle = objectOrNull(object.outputOracle)
+      ?? objectOrNull(object.output_oracle)
+      ?? {};
+    const target = objectOrNull(object.outputOracleTarget)
+      ?? objectOrNull(object.output_oracle_target)
+      ?? objectOrNull(outputOracle.outputOracleTarget)
+      ?? objectOrNull(outputOracle.output_oracle_target);
+    if (target) return target;
+  }
+  return null;
+}
+
+function outputOracleTargetKind(target) {
+  const object = objectOrNull(target) ?? {};
+  return firstString(object.kind?.value, object.kind, object.target_kind, object.targetKind);
+}
+
+function computeOnlyOutputTargetVerified(target) {
+  const object = objectOrNull(target) ?? {};
+  return outputOracleTargetKind(object) === 'compute'
+    && (object.compute_only_target_verified === true || object.computeOnlyTargetVerified === true)
+    && compactStringList(object.evidence_refs ?? object.evidenceRefs).length > 0;
+}
+
+function visualBackendRequiresVisualEvidence({
+  input,
+  validationContext,
+  acceptanceContract,
+  outputProof,
+}) {
+  const backend = firstString(
+    input?.backend,
+    input?.gpuBackend,
+    input?.gpu_backend,
+    validationContext?.backend,
+    validationContext?.gpuBackend,
+    validationContext?.gpu_backend,
+    acceptanceContract?.backend?.value,
+    acceptanceContract?.backend,
+  );
+  if (!VISUAL_OR_ENGINE_BACKENDS.has(backend)) return false;
+  const target = outputOracleTargetFromSources(
+    input,
+    validationContext,
+    acceptanceContract,
+    outputProof,
+    outputProof?.outputOracle,
+    outputProof?.output_oracle,
+  );
+  return !computeOnlyOutputTargetVerified(target);
+}
+
 function visualArtifactPath(artifact) {
   return firstString(artifact.path, artifact.filePath, artifact.file_path);
 }
@@ -1493,6 +1551,7 @@ function evaluateProofLedgerSourceConsistency(explicitRecord, derivedRecord) {
     ['classification_edit_kind', [['classification', 'edit_kind'], ['classification', 'editKind']]],
     ['classification_route', [['classification', 'route']]],
     ['contract_hash', [['contractHash']]],
+    ['backend', [['backend']]],
     ['artifact_before_hash', [['artifactBeforeHash']]],
     ['artifact_after_hash', [['artifactAfterHash']]],
     ['loader_event_id', [['loaderEvent', 'id']]],
@@ -1511,6 +1570,7 @@ function evaluateProofLedgerSourceConsistency(explicitRecord, derivedRecord) {
     ['output_event_epoch', [['outputEvent', 'epoch']]],
     ['output_event_process_id', [['outputEvent', 'process_id'], ['outputEvent', 'processId']]],
     ['output_event_passed', [['outputEvent', 'passed']]],
+    ['output_oracle_target', [['outputOracleTarget']]],
     ['process_identity_process_id', [['processIdentity', 'process_id'], ['processIdentity', 'processId']]],
     ['device_identity_device_uuid', [['deviceIdentity', 'device_uuid'], ['deviceIdentity', 'deviceUuid']]],
     ['cpu_hmr_used', [['cpuHmrUsed']]],
@@ -1567,6 +1627,13 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
   const outputOracle = objectOrNull(outputProof?.outputOracle)
     ?? objectOrNull(outputProof?.output_oracle)
     ?? {};
+  const outputOracleTarget = outputOracleTargetFromSources(
+    input,
+    validationContext,
+    acceptanceContract,
+    outputProof,
+    outputOracle,
+  );
   const hostPreservationProof = objectOrNull(input.hostPreservationProof);
   const firewallEvidence = objectOrNull(input.firewallEvidence)
     ?? objectOrNull(input.firewall_evidence)
@@ -1727,6 +1794,16 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       ?? acceptanceContract?.edit_id
       ?? acceptanceContract?.editId
       ?? null,
+    backend: firstString(
+      input.backend,
+      input.gpuBackend,
+      input.gpu_backend,
+      validationContext?.backend,
+      validationContext?.gpuBackend,
+      validationContext?.gpu_backend,
+      acceptanceContract?.backend?.value,
+      acceptanceContract?.backend,
+    ),
     classification: input.classification ?? validationContext?.classification ?? acceptanceContract?.classification ?? {},
     contract_hash: firstString(
       input.contractHash,
@@ -1820,6 +1897,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
           }
         : {}),
     firewall_evidence: firewallEvidence ?? {},
+    output_oracle_target: outputOracleTarget ?? {},
     oracle_artifacts: oracleArtifactsFromOutputProof(outputProof),
     deterministic_visual_mode:
       input.deterministicVisualMode
@@ -1950,11 +2028,18 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const visualEvidenceArtifacts = compactObjects(input.visualEvidenceArtifacts);
-  const visualEvidenceRequired = outputProofRequiresVisualEvidence(
-    outputProof,
-    visualEvidenceRefs,
-    visualEvidenceArtifacts,
-  );
+  const visualEvidenceRequired =
+    outputProofRequiresVisualEvidence(
+      outputProof,
+      visualEvidenceRefs,
+      visualEvidenceArtifacts,
+    )
+    || visualBackendRequiresVisualEvidence({
+      input,
+      validationContext,
+      acceptanceContract,
+      outputProof,
+    });
   const visualArtifactsByPath = visualArtifactMap(visualEvidenceArtifacts);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))

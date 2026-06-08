@@ -1543,6 +1543,12 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     rawOracle.deterministicVisualMode,
     rawOracle.deterministic_visual_mode,
   );
+  const outputOracleTarget = objectField(
+    observation.outputOracleTarget,
+    observation.output_oracle_target,
+    rawOracle.outputOracleTarget,
+    rawOracle.output_oracle_target,
+  );
   const hasExpected = Object.prototype.hasOwnProperty.call(rawOracle, 'expected');
   const hasActual = Object.prototype.hasOwnProperty.call(rawOracle, 'actual');
   const oracleId = stringField(
@@ -1819,6 +1825,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       oracle_artifacts: oracleArtifacts,
       deterministicVisualMode,
       deterministic_visual_mode: deterministicVisualMode,
+      outputOracleTarget,
+      output_oracle_target: outputOracleTarget,
       processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
@@ -1844,6 +1852,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
         oracle_artifacts: oracleArtifacts,
         deterministicVisualMode,
         deterministic_visual_mode: deterministicVisualMode,
+        outputOracleTarget,
+        output_oracle_target: outputOracleTarget,
         processId: oracleProcessId,
         visualFrameObserved,
         visualEvidenceRequired,
@@ -1865,6 +1875,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       oracle_artifacts: oracleArtifacts,
       deterministicVisualMode,
       deterministic_visual_mode: deterministicVisualMode,
+      outputOracleTarget,
+      output_oracle_target: outputOracleTarget,
       processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
@@ -1930,6 +1942,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     oracle_artifacts: oracleArtifacts,
     deterministicVisualMode,
     deterministic_visual_mode: deterministicVisualMode,
+    outputOracleTarget,
+    output_oracle_target: outputOracleTarget,
     processId: oracleProcessId,
     visualFrameObserved,
     visualEvidenceRequired,

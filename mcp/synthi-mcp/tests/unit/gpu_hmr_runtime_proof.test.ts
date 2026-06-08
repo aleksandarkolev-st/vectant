@@ -6613,6 +6613,104 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("requires visual evidence for visual engine backends unless compute-only target proof is verified", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "hip_source_bridge",
+      compilerName: "hipcc",
+      launchApi: "hipModuleLaunchKernel",
+      sourcePaths: ["src/ray/trace_scene.hip"],
+      entryPoints: ["trace_scene"],
+    });
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      sourceEditId: "edit-1",
+      editId: "edit-1",
+      backend: "hiprt",
+      gpuArch: "gfx1201",
+      compiler: "hipcc",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hiprt-context:test",
+      engineSceneHandles: ["scene:bvh:main"],
+      cameraStateHash: `sha256:${"4".repeat(64)}`,
+      swapchainOrFramebufferIdentity: "framebuffer:main",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      backendContractProof: {
+        resultState: "gpu-hmr-backend-contract-proven",
+        backend: "hiprt",
+        evidenceRefs: ["evidence:backend-contract:hiprt"],
+        fieldEvidenceRefs: backendFieldEvidenceRefsFor("hiprt"),
+        contract: {
+          kernelEntry: "trace_scene",
+          sceneOrBvhHandles: ["scene:bvh:main"],
+          framebufferHandle: "framebuffer:main",
+          materialOrGeometryBuffers: ["buffer:materials", "buffer:geometry"],
+          cameraStateHash: `sha256:${"4".repeat(64)}`,
+          sameProcessReloadHook: "hiprt-runtime:reload-kernel",
+          visualOracle: {
+            oracle_id: "oracle:hiprt:framebuffer-diff",
+            framebuffer_handle: "framebuffer:main",
+          },
+        },
+      },
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.proofMaterial.visualEvidenceRequired).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.proofLedgerQuery.failedInvariants.map((failure: any) => failure.code)).toContain(
+      "visual_backend_requires_visual_oracle",
+    );
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          degraded_reason: "visual_evidence_artifacts_missing",
+        }),
+      ]),
+    );
+  });
+
   it("rejects explicit acceptance contracts that disagree with verified proof material", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
@@ -6949,6 +7047,12 @@ describe("GPU HMR runtime output proof classification", () => {
         engineSceneHandles: ["scene:validation-main"],
         cameraStateHash: `sha256:${"0".repeat(64)}`,
         swapchainOrFramebufferIdentity: "surface:validation-main",
+        outputOracleTarget: {
+          kind: "compute",
+          target_id: "compute-target:backend-contract-fixture",
+          compute_only_target_verified: true,
+          evidence_refs: ["oracle-target:compute-only:backend-contract-fixture"],
+        },
         ...acceptedGpuRouteEvidence(),
         backendContractProof: {
           resultState: "gpu-hmr-backend-contract-proven",
@@ -7886,6 +7990,16 @@ describe("GPU HMR runtime output proof classification", () => {
     };
 
     expect(evaluateGpuHmrProofLedger(baseRecord).gpuHmrSuccess).toBe(true);
+    expect(evaluateGpuHmrProofLedger({
+      ...baseRecord,
+      backend: "vulkan",
+      output_oracle_target: {
+        kind: "compute",
+        target_id: "compute-target:validation-buffer",
+        compute_only_target_verified: true,
+        evidence_refs: ["oracle-target:compute-only:validation-buffer"],
+      },
+    }).gpuHmrSuccess).toBe(true);
 
     const cases = [
       [
@@ -7980,6 +8094,18 @@ describe("GPU HMR runtime output proof classification", () => {
           },
         },
         "compute_oracle_raw_readback_source_unaccepted",
+      ],
+      [{ ...baseRecord, backend: "hiprt" }, "visual_backend_requires_visual_oracle"],
+      [
+        {
+          ...baseRecord,
+          backend: "vulkan",
+          output_oracle_target: {
+            kind: "compute",
+            target_id: "compute-target:unverified",
+          },
+        },
+        "visual_backend_compute_target_unverified",
       ],
     ] as const;
 
