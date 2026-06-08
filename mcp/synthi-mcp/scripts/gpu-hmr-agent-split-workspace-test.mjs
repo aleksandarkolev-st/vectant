@@ -11,6 +11,7 @@
 //   SYNTHI_GPU_HMR=1 SYNTHI_GPU_VENDOR=auto node scripts/gpu-hmr-agent-split-workspace-test.mjs
 
 import { spawn, execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -1039,6 +1040,40 @@ function cleanRel(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
 }
 
+function sha256Hex(value) {
+  return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+function upsertObjectField(root, parentKey, filePath, value) {
+  const normalized = cleanRel(filePath);
+  if (!normalized) return;
+  if (!root[parentKey] || typeof root[parentKey] !== 'object' || Array.isArray(root[parentKey])) {
+    root[parentKey] = {};
+  }
+  root[parentKey][normalized] = value;
+}
+
+function upsertDeviceMappingReportField(root, parentKey, filePath, value) {
+  if (!root.device_mapping_report || typeof root.device_mapping_report !== 'object' || Array.isArray(root.device_mapping_report)) {
+    root.device_mapping_report = {};
+  }
+  upsertObjectField(root.device_mapping_report, parentKey, filePath, value);
+}
+
+function sidecarWithSourceBaseline(sidecarRaw, filePath, source) {
+  const root = JSON.parse(sidecarRaw);
+  const normalized = cleanRel(filePath);
+  if (!normalized || !String(source || '').trim()) {
+    return JSON.stringify(root, null, 2);
+  }
+  const baselineHash = sha256Hex(source);
+  upsertObjectField(root, 'sourceBaselineContents', normalized, source);
+  upsertObjectField(root, 'sourceBaselineHashes', normalized, baselineHash);
+  upsertDeviceMappingReportField(root, 'sourceBaselineContents', normalized, source);
+  upsertDeviceMappingReportField(root, 'sourceBaselineHashes', normalized, baselineHash);
+  return JSON.stringify(root, null, 2);
+}
+
 function manifestRoleForPath(manifest, filePath) {
   const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
     ? manifest.module_files
@@ -1212,10 +1247,12 @@ async function persistGeneratedSplitToWorkspace(split) {
 }
 
 async function compileGeneratedDevice(split, editedDevice) {
+  const previousDevice = split.files[split.roles.device];
+  const sidecarRaw = sidecarWithSourceBaseline(split.sidecarRaw, split.roles.device, previousDevice);
   split.files[split.roles.device] = editedDevice;
   const allFiles = [
     ...Object.entries(split.files).map(([name, content]) => ({ name, content })),
-    { name: '.synthi_split_meta.json', content: split.sidecarRaw },
+    { name: '.synthi_split_meta.json', content: sidecarRaw },
     { name: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' },
   ];
   const additionalFiles = allFiles.filter((f) => cleanRel(f.name) !== cleanRel(split.roles.device));
