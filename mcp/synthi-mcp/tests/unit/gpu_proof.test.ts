@@ -300,6 +300,37 @@ function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, 
   };
 }
 
+function outputOracleRuntimeProofArtifact(
+  ledger = proofLedger(),
+  overrides: Record<string, unknown> = {}
+) {
+  return runtimeProofArtifact(ledger, {
+    resultState: "gpu-hmr-output-oracle-proven",
+    fullRuntimeProven: false,
+    gpuHmrSuccess: false,
+    stageResults: [
+      { stageId: "fission-candidate-verification", requiredState: "gpu-hmr-full-runtime-proven", status: "passed" },
+      { stageId: "compile", requiredState: "gpu-hmr-compile-proven", status: "passed" },
+      { stageId: "symbol-binding", requiredState: "gpu-hmr-symbol-bound", status: "passed" },
+      { stageId: "abi", requiredState: "gpu-hmr-abi-proven", status: "passed" },
+      { stageId: "artifact-transport", requiredState: "gpu-hmr-epoch-swap-proven", status: "passed" },
+      { stageId: "epoch-swap", requiredState: "gpu-hmr-epoch-swap-proven", status: "passed" },
+      { stageId: "dispatch-safe", requiredState: "gpu-hmr-dispatch-safe-proven", status: "passed" },
+      { stageId: "output", requiredState: "gpu-hmr-output-oracle-proven", status: "passed" },
+      { stageId: "artifact-identity", requiredState: "gpu-hmr-full-runtime-proven", status: "passed" },
+      { stageId: "host-preservation", requiredState: "gpu-hmr-host-preservation-proven", status: "blocked" },
+    ],
+    limitations: [{
+      stageId: "full-runtime",
+      status: "blocked",
+      requiredState: "gpu-hmr-full-runtime-proven",
+      observedState: "gpu-hmr-output-oracle-proven",
+      degradedReason: "full_runtime_proof_not_proven",
+    }],
+    ...overrides,
+  });
+}
+
 describe("GPU HMR proof-state validation", () => {
   it("parses worker proof-state status telemetry", () => {
     const proof = classifyGpuHmrProofMessage({
@@ -447,7 +478,7 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.runtimeProofArtifactValidation).toBeUndefined();
   });
 
-  it("accepts output oracle proof with a recomputed accepted ledger and no runtime artifact", () => {
+  it("rejects output oracle proof with a recomputed accepted ledger and no runtime artifact", () => {
     const ledger = proofLedger();
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
@@ -457,9 +488,29 @@ describe("GPU HMR proof-state validation", () => {
 
     const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
 
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_missing");
+    expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(true);
+    expect(validation.runtimeProofArtifactValidation?.accepted).toBe(false);
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_proof_artifact_missing"
+    );
+  });
+
+  it("accepts output oracle proof with a source-consistent runtime artifact before full runtime proof", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: outputOracleRuntimeProofArtifact(ledger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
     expect(validation.satisfied).toBe(true);
     expect(validation.proofLedgerValidation?.gpuHmrSuccess).toBe(true);
-    expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+    expect(validation.runtimeProofArtifactValidation?.accepted).toBe(true);
   });
 
   it("rejects lower proof states without stage material or an artifact reference", () => {

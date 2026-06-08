@@ -546,7 +546,7 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_ledger_validation).toBeNull();
   });
 
-  it("accepts output oracle proof telemetry with an accepted proof ledger", async () => {
+  it("rejects output oracle proof telemetry with an accepted proof ledger but no runtime artifact", async () => {
     const ledger = passingProofLedger();
     const fake = installFakeAttached(async () => {
       fake.feedHmr({
@@ -563,13 +563,61 @@ describe("synthi_wait_hmr", () => {
     });
 
     expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: {
+        reason?: string;
+        satisfied?: boolean;
+        runtimeProofArtifactValidation?: { failedGates?: Array<{ code?: string }> };
+      };
+      gpu_proof_ledger_validation?: { gpuHmrSuccess?: boolean };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.satisfied).toBe(false);
+    expect(body.gpu_proof_validation?.reason).toBe("runtime_proof_artifact_missing");
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.failedGates?.map((gate) => gate.code)).toContain(
+      "runtime_proof_artifact_missing"
+    );
+    expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
+  });
+
+  it("accepts output oracle proof telemetry with an accepted ledger and source-consistent runtime artifact", async () => {
+    const ledger = passingProofLedger();
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-output-oracle-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger, {
+          resultState: "gpu-hmr-output-oracle-proven",
+          fullRuntimeProven: false,
+          gpuHmrSuccess: false,
+          limitations: [{
+            stageId: "full-runtime",
+            status: "blocked",
+            requiredState: "gpu-hmr-full-runtime-proven",
+            observedState: "gpu-hmr-output-oracle-proven",
+            degradedReason: "full_runtime_proof_not_proven",
+          }],
+        }),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requiredGpuProofState: "gpu-hmr-output-oracle-proven",
+    });
+
+    expect(fake).toBeDefined();
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as {
-      gpu_proof_validation?: { satisfied?: boolean; runtimeProofArtifactValidation?: unknown };
+      gpu_proof_validation?: { satisfied?: boolean; runtimeProofArtifactValidation?: { accepted?: boolean } };
       gpu_proof_ledger_validation?: { gpuHmrSuccess?: boolean };
     };
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
-    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation).toBeUndefined();
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
     expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
   });
 

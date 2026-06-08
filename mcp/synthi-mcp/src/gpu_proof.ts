@@ -111,6 +111,16 @@ const LOWER_STATE_STAGE_REQUIREMENTS = new Map<string, string[]>([
   ["gpu-hmr-dispatch-safe-proven", ["dispatch-safe", "runtime-dispatch-safe", "dispatch"]],
 ]);
 
+const OUTPUT_ORACLE_RUNTIME_STAGE_REQUIREMENTS = [
+  "compile",
+  "symbol-binding",
+  "abi",
+  "artifact-transport",
+  "epoch-swap",
+  "dispatch-safe",
+  "output",
+];
+
 const IMMUTABLE_PROOF_ID_PATTERNS = [
   /^gpu-proof:[a-f0-9]{64}$/i,
   /^gpu-runtime-proof:sha256:[a-f0-9]{64}$/i,
@@ -332,7 +342,8 @@ function runtimeProofArtifactCandidate(
 function validateRuntimeProofArtifactAcceptance(
   raw: Record<string, unknown>,
   expectedProofLedger: Record<string, unknown> | null = null,
-  expectedRuntimeProofId: string | null = null
+  expectedRuntimeProofId: string | null = null,
+  requiredState = "gpu-hmr-full-runtime-proven"
 ): GpuHmrRuntimeProofArtifactValidation {
   const candidate = runtimeProofArtifactCandidate(raw);
   if (candidate === null) {
@@ -346,6 +357,8 @@ function validateRuntimeProofArtifactAcceptance(
 
   const artifact = candidate.artifact;
   const failures: Array<{ code: string }> = [];
+  const requiredRank = gpuHmrProofStateRank(requiredState);
+  const requiresFullRuntime = requiredRank >= FULL_RUNTIME_PROOF_RANK;
   const proofLedger = objectField(artifact, "proofLedger", "proof_ledger");
   const proofLedgerQuery = objectField(artifact, "proofLedgerQuery", "proof_ledger_query");
   const acceptanceContract = objectField(artifact, "acceptanceContract", "acceptance_contract");
@@ -369,10 +382,16 @@ function validateRuntimeProofArtifactAcceptance(
     "deterministicVisualModeEvaluation",
     "deterministic_visual_mode_evaluation"
   );
+  const artifactResultState = stringOrNull(artifact.resultState ?? artifact.result_state);
   const artifactProofId = stringOrNull(artifact.proofId ?? artifact.proof_id);
   const stageResults = arrayField(artifact, "stageResults", "stage_results");
   const limitations = arrayField(artifact, "limitations");
 
+  if (artifactResultState === null || gpuHmrProofStateRank(artifactResultState) < requiredRank) {
+    failures.push({ code: artifactResultState === null
+      ? "runtime_proof_artifact_result_state_missing"
+      : "runtime_proof_artifact_result_state_below_required" });
+  }
   if (expectedRuntimeProofId !== null) {
     if (artifactProofId === null) {
       failures.push({ code: "runtime_proof_artifact_proof_id_missing" });
@@ -380,21 +399,60 @@ function validateRuntimeProofArtifactAcceptance(
       failures.push({ code: "runtime_proof_artifact_proof_id_mismatch" });
     }
   }
-  if (boolField(artifact, "fullRuntimeProven", "full_runtime_proven") !== true) {
+  if (requiresFullRuntime && boolField(artifact, "fullRuntimeProven", "full_runtime_proven") !== true) {
     failures.push({ code: "runtime_full_proof_not_proven" });
   }
-  if (boolField(artifact, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
+  if (requiresFullRuntime && boolField(artifact, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
     failures.push({ code: "runtime_proof_artifact_gpu_hmr_success_false" });
   }
   if (stageResults === null || stageResults.length === 0) {
     failures.push({ code: "runtime_proof_artifact_stage_results_missing" });
-  } else if (stageResults.some((stage) => objectOrNull(stage)?.status !== "passed")) {
-    failures.push({ code: "runtime_proof_artifact_stage_failed" });
+  } else {
+    const stages = stageResults
+      .map((stage) => objectOrNull(stage))
+      .filter((stage): stage is Record<string, unknown> => stage !== null);
+    if (requiresFullRuntime) {
+      if (stages.some((stage) => stage.status !== "passed")) {
+        failures.push({ code: "runtime_proof_artifact_stage_failed" });
+      }
+    } else {
+      const stagesById = new Map(
+        stages.map((stage) => [stringOrNull(stage.stageId ?? stage.stage_id), stage])
+      );
+      for (const stageId of OUTPUT_ORACLE_RUNTIME_STAGE_REQUIREMENTS) {
+        const stage = stagesById.get(stageId);
+        if (stage === undefined) {
+          failures.push({ code: "runtime_proof_artifact_required_stage_missing" });
+        } else if (stage.status !== "passed") {
+          failures.push({ code: "runtime_proof_artifact_stage_failed" });
+        }
+      }
+      const failedStagesAtOrBelowRequirement = stages.some((stage) => {
+        const stageRank = gpuHmrProofStateRank(stage.requiredState ?? stage.required_state);
+        return stageRank > 0 && stageRank <= requiredRank && stage.status !== "passed";
+      });
+      if (failedStagesAtOrBelowRequirement) {
+        failures.push({ code: "runtime_proof_artifact_stage_failed" });
+      }
+    }
   }
   if (limitations === null) {
     failures.push({ code: "runtime_proof_artifact_limitations_missing" });
-  } else if (limitations.length > 0) {
+  } else if (requiresFullRuntime && limitations.length > 0) {
     failures.push({ code: "runtime_proof_artifact_limitations_present" });
+  } else if (!requiresFullRuntime) {
+    const blockingLimitations = limitations
+      .map((limitation) => objectOrNull(limitation))
+      .filter((limitation): limitation is Record<string, unknown> => limitation !== null)
+      .filter((limitation) => {
+        const limitationRank = gpuHmrProofStateRank(
+          limitation.requiredState ?? limitation.required_state
+        );
+        return limitationRank === 0 || limitationRank <= requiredRank;
+      });
+    if (blockingLimitations.length > 0) {
+      failures.push({ code: "runtime_proof_artifact_limitations_present" });
+    }
   }
   if (proofLedger === null) failures.push({ code: "proof_ledger_missing" });
   failures.push(...proofLedgerBindingFailures(expectedProofLedger, proofLedger));
@@ -645,14 +703,15 @@ export function validateGpuHmrProofState(
       }
     }
   }
-  if (requiredRank >= FULL_RUNTIME_PROOF_RANK && reason === undefined && ledgerReason === undefined) {
+  if (requiredRank >= OUTPUT_ORACLE_PROOF_RANK && reason === undefined && ledgerReason === undefined) {
     const expectedRuntimeProofId = proof.proofId?.startsWith("gpu-runtime-proof:") === true
       ? proof.proofId
       : null;
     runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(
       proof.raw,
       ledger,
-      expectedRuntimeProofId
+      expectedRuntimeProofId,
+      requiredState
     );
     if (!runtimeProofArtifactValidation.accepted) {
       satisfied = false;
