@@ -389,6 +389,68 @@ function computeRawReadbackHash(artifacts: Record<string, unknown>): string | nu
   );
 }
 
+function computeByteVerification(artifacts: Record<string, unknown>): Record<string, unknown> {
+  return asObject(
+    artifacts.raw_readback_verification
+    ?? artifacts.rawReadbackVerification
+    ?? artifacts.byte_verification
+    ?? artifacts.byteVerification
+  );
+}
+
+function computeVerifiedBool(
+  artifacts: Record<string, unknown>,
+  verification: Record<string, unknown>,
+  artifactKeys: string[],
+  verificationKeys: string[]
+): boolean {
+  return artifactKeys.some((key) => artifacts[key] === true)
+    || verificationKeys.some((key) => verification[key] === true);
+}
+
+function computeReadbackByteLength(
+  artifacts: Record<string, unknown>,
+  verification: Record<string, unknown>
+): number | null {
+  return artifactNumber(
+    { ...verification, ...artifacts },
+    "raw_readback_byte_length",
+    "rawReadbackByteLength",
+    "byte_length",
+    "byteLength",
+    "bytes",
+    "size"
+  );
+}
+
+function computeDeterministicSlice(artifacts: Record<string, unknown>): Record<string, unknown> {
+  return asObject(objectFieldValue(artifacts, [
+    "deterministic_slice",
+    "deterministicSlice",
+  ]));
+}
+
+function computeDeterministicSliceHash(
+  artifacts: Record<string, unknown>,
+  slice: Record<string, unknown>,
+  verification: Record<string, unknown>
+): string | null {
+  return firstText(
+    artifacts.deterministic_slice_hash,
+    artifacts.deterministicSliceHash,
+    slice.hash,
+    slice.sha256,
+    slice.slice_hash,
+    slice.sliceHash,
+    verification.deterministic_slice_hash,
+    verification.deterministicSliceHash
+  );
+}
+
+function computeSha256Digest(value: string | null): string | null {
+  return value?.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+}
+
 function visualOracleArtifacts(
   recordOracleArtifacts: Record<string, unknown>,
   outputEvent: Record<string, unknown>
@@ -991,8 +1053,55 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       const checksumAfter = artifactText(computeArtifacts, "checksum_after", "checksumAfter");
       const rawReadbackSource = (computeRawReadbackSource(computeArtifacts) ?? "").trim().toLowerCase();
       const rawReadbackHash = computeRawReadbackHash(computeArtifacts);
+      const byteVerification = computeByteVerification(computeArtifacts);
+      const rawReadbackByteLength = computeReadbackByteLength(computeArtifacts, byteVerification);
+      const rawReadbackHashVerified = computeVerifiedBool(
+        computeArtifacts,
+        byteVerification,
+        ["raw_readback_hash_verified", "rawReadbackHashVerified"],
+        ["hash_verified", "hashVerified", "raw_readback_hash_verified", "rawReadbackHashVerified"]
+      );
+      const deterministicSlice = computeDeterministicSlice(computeArtifacts);
+      const deterministicSliceOffset = artifactNumber(deterministicSlice, "offset", "byte_offset", "byteOffset");
+      const deterministicSliceLength = artifactNumber(deterministicSlice, "length", "byte_length", "byteLength");
+      const deterministicSliceHash = computeDeterministicSliceHash(
+        computeArtifacts,
+        deterministicSlice,
+        byteVerification
+      );
+      const deterministicSliceHashVerified = computeVerifiedBool(
+        computeArtifacts,
+        byteVerification,
+        ["deterministic_slice_hash_verified", "deterministicSliceHashVerified"],
+        ["deterministic_slice_hash_verified", "deterministicSliceHashVerified", "slice_hash_verified", "sliceHashVerified"]
+      );
       if (!rawReadbackHash) {
         failures.push({ code: "compute_oracle_raw_readback_unproven" });
+      } else if (!computeSha256Digest(rawReadbackHash)) {
+        failures.push({ code: "compute_oracle_raw_readback_hash_invalid" });
+      }
+      if (!rawReadbackHashVerified) {
+        failures.push({ code: "compute_oracle_raw_readback_hash_unverified" });
+      }
+      if (rawReadbackByteLength === null || rawReadbackByteLength <= 0) {
+        failures.push({ code: "compute_oracle_raw_readback_bytes_missing" });
+      }
+      if (deterministicSliceOffset === null || deterministicSliceLength === null || deterministicSliceLength <= 0) {
+        failures.push({ code: "compute_oracle_deterministic_slice_bounds_missing" });
+      } else if (
+        rawReadbackByteLength !== null
+        && rawReadbackByteLength > 0
+        && deterministicSliceOffset + deterministicSliceLength > rawReadbackByteLength
+      ) {
+        failures.push({ code: "compute_oracle_deterministic_slice_out_of_bounds" });
+      }
+      if (!deterministicSliceHash) {
+        failures.push({ code: "compute_oracle_deterministic_slice_hash_missing" });
+      } else if (!computeSha256Digest(deterministicSliceHash)) {
+        failures.push({ code: "compute_oracle_deterministic_slice_hash_invalid" });
+      }
+      if (!deterministicSliceHashVerified) {
+        failures.push({ code: "compute_oracle_deterministic_slice_hash_unverified" });
       }
       if (
         DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES.has(rawReadbackSource)

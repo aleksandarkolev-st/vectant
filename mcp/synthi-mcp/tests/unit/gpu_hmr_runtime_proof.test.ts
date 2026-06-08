@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   classifyGpuHmrAbiProof,
@@ -47,6 +51,7 @@ import {
 } from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
 import {
   buildValidationRuntimeProofArtifact,
+  computeOracleArtifactsFromFiles,
 } from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
 import {
   buildGpuHmrValidationProofSummary,
@@ -512,9 +517,24 @@ function deterministicOutputOracle({
         readback_schema_json: "artifacts/readback.schema.json",
         checksum_before: `sha256:${"1".repeat(64)}`,
         checksum_after: `sha256:${"2".repeat(64)}`,
-        deterministic_slice: ["expected-sentinel"],
+        deterministic_slice: {
+          offset: 0,
+          length: 16,
+          hash: `sha256:${"5".repeat(64)}`,
+        },
         raw_readback_hash: `sha256:${"4".repeat(64)}`,
+        raw_readback_hash_verified: true,
+        raw_readback_byte_length: 32,
         raw_readback_source: "runtime_readback_sample",
+        deterministic_slice_hash: `sha256:${"5".repeat(64)}`,
+        deterministic_slice_hash_verified: true,
+        raw_readback_verification: {
+          hash_verified: true,
+          byte_length: 32,
+          deterministic_slice_hash: `sha256:${"5".repeat(64)}`,
+          deterministic_slice_hash_verified: true,
+          slice_bounds_verified: true,
+        },
         oracle_code_hash: `sha256:${"3".repeat(64)}`,
         rendered_card_png: "artifacts/compute-proof.png",
         producer: "deterministic_probe",
@@ -6781,6 +6801,45 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("materializes compute oracle proof from raw readback bytes", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gpu-hmr-compute-oracle-"));
+    const rawPath = path.join(dir, "readback.bin");
+    const schemaPath = path.join(dir, "readback.schema.json");
+    const rawBytes = Buffer.from([1, 3, 5, 7, 11, 13, 17, 19]);
+    const schemaBytes = Buffer.from(JSON.stringify({ elementType: "u8", count: rawBytes.length }));
+    await writeFile(rawPath, rawBytes);
+    await writeFile(schemaPath, schemaBytes);
+    const rawHash = `sha256:${createHash("sha256").update(rawBytes).digest("hex")}`;
+    const sliceHash = `sha256:${createHash("sha256").update(rawBytes.subarray(2, 6)).digest("hex")}`;
+
+    const artifacts = await computeOracleArtifactsFromFiles({
+      raw_readback_bin: rawPath,
+      readback_schema_json: schemaPath,
+      checksum_before: `sha256:${"1".repeat(64)}`,
+      checksum_after: `sha256:${"2".repeat(64)}`,
+      deterministic_slice: { offset: 2, length: 4 },
+      raw_readback_source: "runtime_readback_sample",
+      oracle_code_hash: `sha256:${"3".repeat(64)}`,
+      rendered_card_png: "artifacts/compute-proof.png",
+      producer: "unit-test",
+      timestamp_after_dispatch: 1779980000000,
+      epoch: "3",
+    });
+
+    expect(artifacts?.raw_readback_hash).toBe(rawHash);
+    expect(artifacts?.raw_readback_hash_verified).toBe(true);
+    expect(artifacts?.raw_readback_byte_length).toBe(rawBytes.length);
+    expect(artifacts?.deterministic_slice_hash).toBe(sliceHash);
+    expect(artifacts?.deterministic_slice_hash_verified).toBe(true);
+    expect(artifacts?.raw_readback_verification).toEqual(expect.objectContaining({
+      byte_length: rawBytes.length,
+      hash_verified: true,
+      deterministic_slice_hash: sliceHash,
+      deterministic_slice_hash_verified: true,
+      slice_bounds_verified: true,
+    }));
   });
 
   it("rejects accepted visual artifacts without deterministic visual mode proof", () => {

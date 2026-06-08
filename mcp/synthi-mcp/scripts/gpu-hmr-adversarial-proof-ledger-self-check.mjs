@@ -75,9 +75,21 @@ function baselineComputeOracleArtifacts(overrides = {}) {
       offset: 0,
       length: 64,
       format: 'float32',
+      hash: HASH_C,
     },
     raw_readback_hash: HASH_B,
+    raw_readback_hash_verified: true,
+    raw_readback_byte_length: 128,
     raw_readback_source: 'runtime_readback_sample',
+    deterministic_slice_hash: HASH_C,
+    deterministic_slice_hash_verified: true,
+    raw_readback_verification: {
+      hash_verified: true,
+      byte_length: 128,
+      deterministic_slice_hash: HASH_C,
+      deterministic_slice_hash_verified: true,
+      slice_bounds_verified: true,
+    },
     oracle_code_hash: HASH_C,
     rendered_card_png: 'memory://compute-oracle-card.png',
     producer: 'adversarial-ledger-self-check',
@@ -935,6 +947,26 @@ const cases = [
       }),
     },
   }), 'compute_oracle_raw_readback_unproven'],
+  ['unverified compute raw readback bytes', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts({
+        raw_readback_hash_verified: false,
+        raw_readback_verification: null,
+      }),
+    },
+  }), 'compute_oracle_raw_readback_hash_unverified'],
+  ['out-of-bounds compute deterministic slice', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts({
+        deterministic_slice: {
+          offset: 96,
+          length: 64,
+          format: 'float32',
+          hash: HASH_C,
+        },
+      }),
+    },
+  }), 'compute_oracle_deterministic_slice_out_of_bounds'],
   ['digest-derived compute raw readback proof', baselineRecord({
     oracle_artifacts: {
       compute_oracle_artifacts: baselineComputeOracleArtifacts({

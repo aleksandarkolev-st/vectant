@@ -84,9 +84,20 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
         readback_schema_json: "memory://schema.json",
         checksum_before: HASH_A,
         checksum_after: HASH_B,
-        deterministic_slice: { offset: 0, length: 32 },
+        deterministic_slice: { offset: 0, length: 32, hash: HASH_C },
         raw_readback_hash: HASH_B,
+        raw_readback_hash_verified: true,
+        raw_readback_byte_length: 64,
         raw_readback_source: "runtime_readback_sample",
+        deterministic_slice_hash: HASH_C,
+        deterministic_slice_hash_verified: true,
+        raw_readback_verification: {
+          hash_verified: true,
+          byte_length: 64,
+          deterministic_slice_hash: HASH_C,
+          deterministic_slice_hash_verified: true,
+          slice_bounds_verified: true,
+        },
         oracle_code_hash: HASH_C,
         rendered_card_png: "memory://card.png",
         producer: "gpu_proof.test",
@@ -1214,6 +1225,45 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.satisfied).toBe(false);
     expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
       "compute_oracle_raw_readback_unproven"
+    );
+  });
+
+  it("rejects full runtime compute proof when raw readback bytes were not hash-verified", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, any>;
+    delete artifacts.raw_readback_hash_verified;
+    delete artifacts.raw_readback_verification;
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "compute_oracle_raw_readback_hash_unverified"
+    );
+  });
+
+  it("rejects full runtime compute proof when the deterministic slice is not byte-backed", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, any>;
+    artifacts.deterministic_slice = { offset: 48, length: 32, hash: HASH_C };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "compute_oracle_deterministic_slice_out_of_bounds"
     );
   });
 

@@ -26,6 +26,10 @@ function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
 
+function sha256BufferHash(bytes) {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -995,6 +999,14 @@ const COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS = [
   'checksumAfter',
   'deterministic_slice',
   'deterministicSlice',
+  'raw_readback_hash',
+  'rawReadbackHash',
+  'raw_readback_verification',
+  'rawReadbackVerification',
+  'raw_readback_byte_length',
+  'rawReadbackByteLength',
+  'deterministic_slice_hash',
+  'deterministicSliceHash',
 ];
 
 function objectHasAnyRecordedField(object, keys) {
@@ -1069,6 +1081,29 @@ function oracleArtifactsFromOutputProof(outputProof) {
   const artifacts = { ...direct };
   if (visual) artifacts.visual_oracle_artifacts = visual;
   if (compute) artifacts.compute_oracle_artifacts = compute;
+  return artifacts;
+}
+
+function oracleArtifactsFromSources(input, outputProof) {
+  const inputArtifacts = objectOrNull(input.oracleArtifacts) ?? objectOrNull(input.oracle_artifacts) ?? {};
+  const artifacts = {
+    ...oracleArtifactsFromOutputProof(outputProof),
+    ...inputArtifacts,
+  };
+  const inputVisual = firstOracleArtifactObject([
+    input.visualOracleArtifacts,
+    input.visual_oracle_artifacts,
+    inputArtifacts.visualOracleArtifacts,
+    inputArtifacts.visual_oracle_artifacts,
+  ], VISUAL_ORACLE_ARTIFACT_HINT_FIELDS);
+  const inputCompute = firstOracleArtifactObject([
+    input.computeOracleArtifacts,
+    input.compute_oracle_artifacts,
+    inputArtifacts.computeOracleArtifacts,
+    inputArtifacts.compute_oracle_artifacts,
+  ], COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS);
+  if (inputVisual) artifacts.visual_oracle_artifacts = inputVisual;
+  if (inputCompute) artifacts.compute_oracle_artifacts = inputCompute;
   return artifacts;
 }
 
@@ -1937,7 +1972,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
         : {}),
     firewall_evidence: firewallEvidence ?? {},
     output_oracle_target: outputOracleTarget ?? {},
-    oracle_artifacts: oracleArtifactsFromOutputProof(outputProof),
+    oracle_artifacts: oracleArtifactsFromSources(input, outputProof),
     deterministic_visual_mode:
       input.deterministicVisualMode
       ?? input.deterministic_visual_mode
@@ -2330,14 +2365,109 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
   return records;
 }
 
+function fileArtifactPath(value) {
+  const ref = firstString(value);
+  if (!ref) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref) && !ref.toLowerCase().startsWith('file://')) return null;
+  if (ref.toLowerCase().startsWith('file://')) {
+    return new URL(ref);
+  }
+  return ref;
+}
+
+function finiteOffset(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+}
+
+export async function computeOracleArtifactsFromFiles(computeArtifacts = null) {
+  const source = objectOrNull(computeArtifacts);
+  if (!source) return null;
+  const rawPath = fileArtifactPath(firstString(source.raw_readback_bin, source.rawReadbackBin));
+  const schemaPath = fileArtifactPath(firstString(source.readback_schema_json, source.readbackSchemaJson));
+  const enriched = { ...source };
+  const verification = {
+    ...objectOrNull(source.raw_readback_verification),
+    ...objectOrNull(source.rawReadbackVerification),
+    ...objectOrNull(source.byte_verification),
+    ...objectOrNull(source.byteVerification),
+  };
+
+  if (schemaPath) {
+    try {
+      const schemaBytes = await readFile(schemaPath);
+      const schemaHash = sha256BufferHash(schemaBytes);
+      enriched.readback_schema_hash = schemaHash;
+      verification.readback_schema_hash = schemaHash;
+      verification.readback_schema_byte_length = schemaBytes.length;
+    } catch (error) {
+      verification.readback_schema_read_error = error?.message ? String(error.message) : String(error);
+    }
+  }
+
+  if (rawPath) {
+    try {
+      const rawBytes = await readFile(rawPath);
+      const actualHash = sha256BufferHash(rawBytes);
+      const declaredHash = firstString(source.raw_readback_hash, source.rawReadbackHash);
+      enriched.raw_readback_hash = declaredHash ?? actualHash;
+      enriched.raw_readback_byte_length = rawBytes.length;
+      verification.byte_length = rawBytes.length;
+      verification.raw_readback_hash = actualHash;
+      verification.hash_verified = !declaredHash || declaredHash.toLowerCase() === actualHash.toLowerCase();
+      const slice = objectOrNull(source.deterministic_slice ?? source.deterministicSlice);
+      const offset = finiteOffset(slice.offset ?? slice.byte_offset ?? slice.byteOffset);
+      const length = finiteOffset(slice.length ?? slice.byte_length ?? slice.byteLength);
+      if (offset !== null && length !== null && length > 0 && offset + length <= rawBytes.length) {
+        const sliceHash = sha256BufferHash(rawBytes.subarray(offset, offset + length));
+        enriched.deterministic_slice = {
+          ...slice,
+          offset,
+          length,
+          hash: firstString(slice.hash, slice.sha256, slice.slice_hash, slice.sliceHash) ?? sliceHash,
+        };
+        enriched.deterministic_slice_hash = enriched.deterministic_slice.hash;
+        verification.deterministic_slice_hash = sliceHash;
+        verification.deterministic_slice_hash_verified =
+          String(enriched.deterministic_slice.hash).toLowerCase() === sliceHash.toLowerCase();
+        verification.slice_bounds_verified = true;
+      } else {
+        verification.slice_bounds_verified = false;
+      }
+    } catch (error) {
+      verification.raw_readback_read_error = error?.message ? String(error.message) : String(error);
+    }
+  }
+
+  if (Object.keys(verification).length > 0) {
+    enriched.raw_readback_verification = verification;
+    if (verification.hash_verified === true) enriched.raw_readback_hash_verified = true;
+    if (verification.deterministic_slice_hash_verified === true) {
+      enriched.deterministic_slice_hash_verified = true;
+    }
+  }
+
+  return enriched;
+}
+
 export async function writeValidationRuntimeProofArtifact(outputDir, input = {}) {
   const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(
     input.visualEvidenceRefs,
     input.visualEvidenceArtifacts,
   );
+  const computeOracleArtifacts = await computeOracleArtifactsFromFiles(
+    input.computeOracleArtifacts
+    ?? input.compute_oracle_artifacts
+    ?? objectOrNull(input.oracleArtifacts)?.computeOracleArtifacts
+    ?? objectOrNull(input.oracleArtifacts)?.compute_oracle_artifacts
+    ?? objectOrNull(input.oracle_artifacts)?.computeOracleArtifacts
+    ?? objectOrNull(input.oracle_artifacts)?.compute_oracle_artifacts
+    ?? computeOracleArtifactsFromOutputProof(input.outputProof),
+  );
   const artifact = buildValidationRuntimeProofArtifact({
     ...input,
     visualEvidenceArtifacts,
+    computeOracleArtifacts,
   });
   await mkdir(outputDir, { recursive: true });
   const workspace = safeToken(input.workspaceSlug);

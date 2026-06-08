@@ -413,6 +413,59 @@ function computeRawReadbackHash(artifacts) {
   );
 }
 
+function computeByteVerification(artifacts) {
+  const source = asObject(artifacts);
+  return asObject(
+    source.raw_readback_verification
+    ?? source.rawReadbackVerification
+    ?? source.byte_verification
+    ?? source.byteVerification,
+  );
+}
+
+function computeVerifiedBool(artifacts, verification, artifactKeys, verificationKeys) {
+  const source = asObject(artifacts);
+  const verified = asObject(verification);
+  return artifactKeys.some((key) => source[key] === true)
+    || verificationKeys.some((key) => verified[key] === true);
+}
+
+function computeReadbackByteLength(artifacts, verification) {
+  return artifactFieldNumber(
+    { ...asObject(verification), ...asObject(artifacts) },
+    'raw_readback_byte_length',
+    'rawReadbackByteLength',
+    'byte_length',
+    'byteLength',
+    'bytes',
+    'size',
+  );
+}
+
+function computeDeterministicSlice(artifacts) {
+  return asObject(objectFieldValue(artifacts, [
+    'deterministic_slice',
+    'deterministicSlice',
+  ]));
+}
+
+function computeDeterministicSliceHash(artifacts, slice, verification) {
+  return firstText(
+    asObject(artifacts).deterministic_slice_hash,
+    asObject(artifacts).deterministicSliceHash,
+    asObject(slice).hash,
+    asObject(slice).sha256,
+    asObject(slice).slice_hash,
+    asObject(slice).sliceHash,
+    asObject(verification).deterministic_slice_hash,
+    asObject(verification).deterministicSliceHash,
+  );
+}
+
+function computeSha256Digest(value) {
+  return String(value ?? '').match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
+}
+
 function visualOracleArtifacts(recordOracleArtifacts, outputEvent) {
   const {
     ledgerArtifacts,
@@ -1086,8 +1139,51 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       const checksumAfter = artifactFieldText(artifacts, 'checksum_after', 'checksumAfter');
       const rawReadbackSource = String(computeRawReadbackSource(artifacts) ?? '').trim().toLowerCase();
       const rawReadbackHash = computeRawReadbackHash(artifacts);
+      const byteVerification = computeByteVerification(artifacts);
+      const rawReadbackByteLength = computeReadbackByteLength(artifacts, byteVerification);
+      const rawReadbackHashVerified = computeVerifiedBool(
+        artifacts,
+        byteVerification,
+        ['raw_readback_hash_verified', 'rawReadbackHashVerified'],
+        ['hash_verified', 'hashVerified', 'raw_readback_hash_verified', 'rawReadbackHashVerified'],
+      );
+      const deterministicSlice = computeDeterministicSlice(artifacts);
+      const deterministicSliceOffset = artifactFieldNumber(deterministicSlice, 'offset', 'byte_offset', 'byteOffset');
+      const deterministicSliceLength = artifactFieldNumber(deterministicSlice, 'length', 'byte_length', 'byteLength');
+      const deterministicSliceHash = computeDeterministicSliceHash(artifacts, deterministicSlice, byteVerification);
+      const deterministicSliceHashVerified = computeVerifiedBool(
+        artifacts,
+        byteVerification,
+        ['deterministic_slice_hash_verified', 'deterministicSliceHashVerified'],
+        ['deterministic_slice_hash_verified', 'deterministicSliceHashVerified', 'slice_hash_verified', 'sliceHashVerified'],
+      );
       if (!rawReadbackHash) {
         addFailure(failures, 'compute_oracle_raw_readback_unproven');
+      } else if (!computeSha256Digest(rawReadbackHash)) {
+        addFailure(failures, 'compute_oracle_raw_readback_hash_invalid');
+      }
+      if (!rawReadbackHashVerified) {
+        addFailure(failures, 'compute_oracle_raw_readback_hash_unverified');
+      }
+      if (rawReadbackByteLength === null || rawReadbackByteLength <= 0) {
+        addFailure(failures, 'compute_oracle_raw_readback_bytes_missing');
+      }
+      if (deterministicSliceOffset === null || deterministicSliceLength === null || deterministicSliceLength <= 0) {
+        addFailure(failures, 'compute_oracle_deterministic_slice_bounds_missing');
+      } else if (
+        rawReadbackByteLength !== null
+        && rawReadbackByteLength > 0
+        && deterministicSliceOffset + deterministicSliceLength > rawReadbackByteLength
+      ) {
+        addFailure(failures, 'compute_oracle_deterministic_slice_out_of_bounds');
+      }
+      if (!deterministicSliceHash) {
+        addFailure(failures, 'compute_oracle_deterministic_slice_hash_missing');
+      } else if (!computeSha256Digest(deterministicSliceHash)) {
+        addFailure(failures, 'compute_oracle_deterministic_slice_hash_invalid');
+      }
+      if (!deterministicSliceHashVerified) {
+        addFailure(failures, 'compute_oracle_deterministic_slice_hash_unverified');
       }
       if (
         DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES.has(rawReadbackSource)
