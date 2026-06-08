@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { AuthCheckpointManager, InMemoryAuthCheckpointStore, authCheckpointManager } from "../../src/browser/auth.js";
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import {
+  AuthCheckpointManager,
+  EncryptedFileAuthCheckpointStore,
+  InMemoryAuthCheckpointStore,
+  createDefaultAuthCheckpointStore,
+  authCheckpointManager,
+} from "../../src/browser/auth.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { AUTH_TOOL_NAMES, AUTH_TOOLS, dispatchAuthTool } from "../../src/tools/auth.js";
 
@@ -65,6 +74,80 @@ describe("auth checkpoint manager", () => {
       idp_origins: ["https://idp.example.com"],
       cookie_domain_audit: expect.objectContaining({ idp_origin_count: 1 }),
     }));
+  });
+
+  it("persists checkpoint metadata encrypted and isolated by scope", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-store-"));
+    const filePath = path.join(directory, "auth-checkpoints.enc.json");
+    const key = `unit-key-${Date.now()}`;
+    const scopeA = "tenant-a/workspace-a";
+    const scopeB = "tenant-b/workspace-b";
+    const managerA = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key,
+      scope_id: scopeA,
+    }));
+    const enrollment = managerA.beginEnrollment("https://app.example.com/settings");
+    const checkpoint = managerA.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/settings",
+      redirect_chain: ["https://idp.example.com/login"],
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected auth finish failure");
+    const provider = managerA.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+    });
+    expect(provider.ok).toBe(true);
+    if (!provider.ok) throw new Error("unexpected refresh provider failure");
+    managerA.testRefreshProvider(provider.provider.provider_id);
+
+    const persisted = await readFile(filePath, "utf8");
+    expect(persisted).toContain("synthi_auth_checkpoint_store_envelope_v1");
+    expect(persisted).not.toMatch(/app\.example|idp\.example|auth-refresh|tenant-a|workspace-a/);
+
+    const reloadedA = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key,
+      scope_id: scopeA,
+    }));
+    expect(reloadedA.readiness("https://app.example.com/settings", false)).toEqual(expect.objectContaining({
+      ready: true,
+      status: "ready",
+      durability: "idpCheckpoint",
+    }));
+    expect(reloadedA.readiness("https://app.example.com/settings", true)).toEqual(expect.objectContaining({
+      ready: true,
+      status: "ready",
+      durability: "refreshProvider",
+    }));
+
+    const isolatedScope = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key,
+      scope_id: scopeB,
+    }));
+    expect(isolatedScope.readiness("https://app.example.com/settings", false)).toEqual(expect.objectContaining({
+      ready: false,
+      status: "checkpointMissing",
+    }));
+  });
+
+  it("creates encrypted auth stores from explicit environment configuration", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-store-env-"));
+    const filePath = path.join(directory, "auth-checkpoints.enc.json");
+    const store = createDefaultAuthCheckpointStore({
+      SYNTHI_AUTH_CHECKPOINT_STORE_FILE: filePath,
+      SYNTHI_AUTH_CHECKPOINT_STORE_KEY: "unit-env-key",
+      SYNTHI_AUTH_CHECKPOINT_SCOPE: "tenant/workspace",
+    });
+    const manager = new AuthCheckpointManager(store);
+    const enrollment = manager.beginEnrollment("https://env.example.com");
+    const finished = manager.finishEnrollment({ enrollment_id: enrollment.enrollment_id, ttl_ms: 60_000 });
+    expect(finished.ok).toBe(true);
+    expect(await readFile(filePath, "utf8")).not.toContain("env.example.com");
   });
 
   it("blocks unattended runs unless checkpoint durability is refresh-provider or CI auth", () => {

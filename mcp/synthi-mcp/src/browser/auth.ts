@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { normalizeOrigin } from "./security.js";
 import type { AuthDurabilityV7 } from "./workflow.js";
 
@@ -109,6 +111,164 @@ export class InMemoryAuthCheckpointStore implements AuthCheckpointStore {
     this.enrollments.clear();
     this.checkpoints.clear();
     this.refreshProviders.clear();
+  }
+}
+
+export interface EncryptedFileAuthCheckpointStoreOptions {
+  file_path: string;
+  key: string;
+  scope_id?: string;
+}
+
+interface PersistedAuthScope {
+  enrollments: Record<string, AuthCheckpointEnrollment>;
+  checkpoints: Record<string, AuthCheckpointMetadata>;
+  refreshProviders: Record<string, AuthRefreshProviderMetadata>;
+}
+
+interface EncryptedAuthStoreDocument {
+  schema_version: "synthi_auth_checkpoint_store_v1";
+  scopes: Record<string, PersistedAuthScope>;
+}
+
+interface EncryptedAuthStoreEnvelope {
+  schema_version: "synthi_auth_checkpoint_store_envelope_v1";
+  algorithm: "aes-256-gcm";
+  iv: string;
+  tag: string;
+  ciphertext: string;
+}
+
+export class EncryptedFileAuthCheckpointStore implements AuthCheckpointStore {
+  private readonly filePath: string;
+  private readonly encryptionKey: Buffer;
+  private readonly scopeId: string;
+
+  constructor(options: EncryptedFileAuthCheckpointStoreOptions) {
+    if (!options.file_path.trim()) throw new Error("auth_checkpoint_store_file_required");
+    if (!options.key.trim()) throw new Error("auth_checkpoint_store_key_required");
+    this.filePath = options.file_path;
+    this.encryptionKey = createHash("sha256").update(options.key, "utf8").digest();
+    this.scopeId = normalizeScopeId(options.scope_id);
+  }
+
+  saveEnrollment(enrollment: AuthCheckpointEnrollment): void {
+    this.updateScope((scope) => {
+      scope.enrollments[enrollment.enrollment_id] = { ...enrollment };
+    });
+  }
+
+  getEnrollment(enrollment_id: string): AuthCheckpointEnrollment | null {
+    const enrollment = this.scope().enrollments[enrollment_id];
+    return enrollment ? { ...enrollment } : null;
+  }
+
+  deleteEnrollment(enrollment_id: string): void {
+    this.updateScope((scope) => {
+      delete scope.enrollments[enrollment_id];
+    });
+  }
+
+  saveCheckpoint(checkpoint: AuthCheckpointMetadata): void {
+    this.updateScope((scope) => {
+      scope.checkpoints[checkpoint.checkpoint_id] = cloneCheckpointMetadata(checkpoint);
+    });
+  }
+
+  getCheckpoint(checkpoint_id: string): AuthCheckpointMetadata | null {
+    const checkpoint = this.scope().checkpoints[checkpoint_id];
+    return checkpoint ? cloneCheckpointMetadata(checkpoint) : null;
+  }
+
+  listCheckpoints(): AuthCheckpointMetadata[] {
+    return Object.values(this.scope().checkpoints).map(cloneCheckpointMetadata);
+  }
+
+  saveRefreshProvider(provider: AuthRefreshProviderMetadata): void {
+    this.updateScope((scope) => {
+      scope.refreshProviders[provider.provider_id] = { ...provider };
+    });
+  }
+
+  getRefreshProvider(provider_id: string): AuthRefreshProviderMetadata | null {
+    const provider = this.scope().refreshProviders[provider_id];
+    return provider ? { ...provider } : null;
+  }
+
+  listRefreshProviders(): AuthRefreshProviderMetadata[] {
+    return Object.values(this.scope().refreshProviders).map((provider) => ({ ...provider }));
+  }
+
+  clear(): void {
+    const document = this.readDocument();
+    document.scopes[this.scopeId] = emptyPersistedScope();
+    this.writeDocument(document);
+  }
+
+  private scope(): PersistedAuthScope {
+    const document = this.readDocument();
+    return clonePersistedScope(document.scopes[this.scopeId] ?? emptyPersistedScope());
+  }
+
+  private updateScope(mutator: (scope: PersistedAuthScope) => void): void {
+    const document = this.readDocument();
+    const scope = clonePersistedScope(document.scopes[this.scopeId] ?? emptyPersistedScope());
+    mutator(scope);
+    document.scopes[this.scopeId] = scope;
+    this.writeDocument(document);
+  }
+
+  private readDocument(): EncryptedAuthStoreDocument {
+    if (!existsSync(this.filePath)) return emptyEncryptedAuthStoreDocument();
+    let envelope: EncryptedAuthStoreEnvelope;
+    try {
+      envelope = JSON.parse(readFileSync(this.filePath, "utf8")) as EncryptedAuthStoreEnvelope;
+      if (
+        envelope.schema_version !== "synthi_auth_checkpoint_store_envelope_v1" ||
+        envelope.algorithm !== "aes-256-gcm" ||
+        typeof envelope.iv !== "string" ||
+        typeof envelope.tag !== "string" ||
+        typeof envelope.ciphertext !== "string"
+      ) {
+        throw new Error("invalid_auth_checkpoint_store_envelope");
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === "invalid_auth_checkpoint_store_envelope") throw err;
+      throw new Error("auth_checkpoint_store_parse_failed");
+    }
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", this.encryptionKey, Buffer.from(envelope.iv, "base64"));
+      decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+      const plaintext = Buffer.concat([
+        decipher.update(Buffer.from(envelope.ciphertext, "base64")),
+        decipher.final(),
+      ]).toString("utf8");
+      const document = JSON.parse(plaintext) as EncryptedAuthStoreDocument;
+      if (document.schema_version !== "synthi_auth_checkpoint_store_v1" || typeof document.scopes !== "object") {
+        throw new Error("invalid_auth_checkpoint_store_document");
+      }
+      return normalizeDocument(document);
+    } catch {
+      throw new Error("auth_checkpoint_store_decrypt_failed");
+    }
+  }
+
+  private writeDocument(document: EncryptedAuthStoreDocument): void {
+    mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
+    const ciphertext = Buffer.concat([
+      cipher.update(JSON.stringify(normalizeDocument(document)), "utf8"),
+      cipher.final(),
+    ]);
+    const envelope: EncryptedAuthStoreEnvelope = {
+      schema_version: "synthi_auth_checkpoint_store_envelope_v1",
+      algorithm: "aes-256-gcm",
+      iv: iv.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+      ciphertext: ciphertext.toString("base64"),
+    };
+    writeFileSync(this.filePath, JSON.stringify(envelope), "utf8");
   }
 }
 
@@ -340,4 +500,47 @@ function cloneCheckpointMetadata(checkpoint: AuthCheckpointMetadata): AuthCheckp
   };
 }
 
-export const authCheckpointManager = new AuthCheckpointManager();
+export function createDefaultAuthCheckpointStore(env: NodeJS.ProcessEnv = process.env): AuthCheckpointStore {
+  const filePath = env["SYNTHI_AUTH_CHECKPOINT_STORE_FILE"]?.trim();
+  const key = env["SYNTHI_AUTH_CHECKPOINT_STORE_KEY"]?.trim();
+  if (!filePath && !key) return new InMemoryAuthCheckpointStore();
+  if (!filePath || !key) throw new Error("auth_checkpoint_store_file_and_key_required");
+  return new EncryptedFileAuthCheckpointStore({
+    file_path: filePath,
+    key,
+    scope_id: env["SYNTHI_AUTH_CHECKPOINT_SCOPE"],
+  });
+}
+
+function emptyEncryptedAuthStoreDocument(): EncryptedAuthStoreDocument {
+  return { schema_version: "synthi_auth_checkpoint_store_v1", scopes: {} };
+}
+
+function emptyPersistedScope(): PersistedAuthScope {
+  return { enrollments: {}, checkpoints: {}, refreshProviders: {} };
+}
+
+function clonePersistedScope(scope: PersistedAuthScope): PersistedAuthScope {
+  return {
+    enrollments: Object.fromEntries(Object.entries(scope.enrollments ?? {}).map(([key, value]) => [key, { ...value }])),
+    checkpoints: Object.fromEntries(Object.entries(scope.checkpoints ?? {}).map(([key, value]) => [key, cloneCheckpointMetadata(value)])),
+    refreshProviders: Object.fromEntries(Object.entries(scope.refreshProviders ?? {}).map(([key, value]) => [key, { ...value }])),
+  };
+}
+
+function normalizeDocument(document: EncryptedAuthStoreDocument): EncryptedAuthStoreDocument {
+  return {
+    schema_version: "synthi_auth_checkpoint_store_v1",
+    scopes: Object.fromEntries(Object.entries(document.scopes ?? {}).map(([scopeId, scope]) => [
+      normalizeScopeId(scopeId),
+      clonePersistedScope(scope),
+    ])),
+  };
+}
+
+function normalizeScopeId(scopeId: string | undefined): string {
+  const trimmed = scopeId?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "default";
+}
+
+export const authCheckpointManager = new AuthCheckpointManager(createDefaultAuthCheckpointStore());
