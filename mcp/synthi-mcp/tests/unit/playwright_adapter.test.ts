@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   enrichCapturedFramePayload,
@@ -17,6 +19,20 @@ describe("browser Playwright adapter config", () => {
 });
 
 describe("browser Playwright teach capture", () => {
+  it("flushes pending discrete action effects before capturing the next action", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/browser/playwright_adapter.ts"), "utf8");
+    const emitStart = source.indexOf("function emit(el, action, value, detail)");
+    const flushEdits = source.indexOf("if (action !== 'fill') flushPendingEdits();", emitStart);
+    const flushScrolls = source.indexOf("if (action !== 'scroll') flushPendingScrolls();", emitStart);
+    const flushActions = source.indexOf("if (action !== 'scroll') flushPendingActionSends();", emitStart);
+    const replayElement = source.indexOf("const replayEl = editorReplayElementFor(el, action);", emitStart);
+
+    expect(emitStart).toBeGreaterThanOrEqual(0);
+    expect(flushActions).toBeGreaterThan(flushEdits);
+    expect(flushActions).toBeGreaterThan(flushScrolls);
+    expect(flushActions).toBeLessThan(replayElement);
+  });
+
   it("normalizes hosted-browser DOM actions into broker teach events", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

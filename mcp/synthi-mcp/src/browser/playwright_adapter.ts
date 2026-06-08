@@ -2851,6 +2851,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!window[bindingName] || !isElement(el)) return;
       if (action !== 'fill') flushPendingEdits();
       if (action !== 'scroll') flushPendingScrolls();
+      if (action !== 'scroll') flushPendingActionSends();
       const replayEl = editorReplayElementFor(el, action);
       const element = metadata(replayEl);
       const rawDetail = Object.assign({}, detail || {});
