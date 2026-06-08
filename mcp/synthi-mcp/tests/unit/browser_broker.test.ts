@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { rankedLocatorCandidates } from "../../src/browser/locator.js";
-import { redactText, redactUrl, redactValue } from "../../src/browser/security.js";
+import { redactStructuredValue, redactText, redactUrl, redactValue } from "../../src/browser/security.js";
 import { eventLog } from "../../src/events/index.js";
 
 beforeEach(() => {
@@ -118,12 +118,59 @@ describe("browser broker privacy boundary", () => {
 
   it("redacts password fields, API keys, bearer tokens, and token URLs", () => {
     expect(redactValue("password", "correct-horse").value).toBe("[REDACTED]");
+    expect(redactValue("accessToken", "short-lived-session-token").value).toBe("[REDACTED]");
     expect(redactText("Authorization: Bearer abcdefghijklmnop123456").text).toContain("[REDACTED]");
     expect(redactText("key=sk-12345678901234567890").text).toContain("[REDACTED]");
     expect(redactText("token=plain-secret-token").text).toBe("token=[REDACTED]");
     const redacted = redactUrl("https://app.example.com/callback?access_token=abc12345678901234567890&ok=1");
     expect(redacted.url).toContain("access_token=[REDACTED]");
     expect(redacted.redacted).toBe(true);
+    expect(redactStructuredValue({
+      headers: { Authorization: "Bearer abcdefghijklmnop123456" },
+      localStorage: { sessionToken: "plain-session-token" },
+      nested: [{ apiKey: "sk-12345678901234567890" }],
+    })).toEqual({
+      value: {
+        headers: { Authorization: "[REDACTED]" },
+        localStorage: "[REDACTED]",
+        nested: [{ apiKey: "[REDACTED]" }],
+      },
+      redacted: true,
+    });
+    const cyclic: Record<string, unknown> = { label: "safe" };
+    cyclic["self"] = cyclic;
+    expect(redactStructuredValue(cyclic)).toEqual({
+      value: { label: "safe", self: "[REDACTED]" },
+      redacted: true,
+    });
+  });
+
+  it("redacts nested secret details before returning recorded traces", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const recorded = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/settings?access_token=abc12345678901234567890",
+      origin: "https://app.example.com",
+      action: "fill",
+      field_name: "API token",
+      value: "plain-token-value",
+      element: { role: "textbox", name: "API token" },
+      detail: {
+        headers: { Authorization: "Bearer abcdefghijklmnop123456" },
+        storage: { refreshToken: "plain-refresh-token" },
+      },
+    });
+
+    expect(recorded.ok).toBe(true);
+    if (!recorded.ok) throw new Error("unexpected record failure");
+    const event = browserBroker.traceSnapshot()[0];
+    expect(event?.url).toContain("access_token=[REDACTED]");
+    expect(event?.value).toBe("[REDACTED]");
+    expect(event?.redacted).toBe(true);
+    expect(JSON.stringify(event)).not.toMatch(/plain-token-value|plain-refresh-token|abcdefghijklmnop123456/);
   });
 
   it("requires separate consent for iframe and popup origins", () => {

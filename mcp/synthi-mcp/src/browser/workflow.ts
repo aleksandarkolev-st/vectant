@@ -679,18 +679,6 @@ function publishNotesFor(
 }
 
 function authPlanFor(events: BrowserTraceEvent[]): WorkflowContractV7["authPlan"] {
-  const explicitDurability = events
-    .map((event) => authDurabilityFromDetail(event.detail?.["auth_durability"]))
-    .find((durability): durability is AuthDurabilityV7 => durability !== null);
-  if (explicitDurability) {
-    return {
-      durability: explicitDurability,
-      required: explicitDurability !== "noneRequired",
-      notes: explicitDurability === "noneRequired"
-        ? ["Trace explicitly marked this workflow as not requiring auth."]
-        : [`Trace explicitly marked auth durability as ${explicitDurability}.`],
-    };
-  }
   if (events.some((event) => event.security?.auth_checkpoint_approved === true)) {
     return {
       durability: "interactiveCheckpoint",
@@ -703,19 +691,6 @@ function authPlanFor(events: BrowserTraceEvent[]): WorkflowContractV7["authPlan"
     required: false,
     notes: ["No auth checkpoint was detected in this trace."],
   };
-}
-
-function authDurabilityFromDetail(value: unknown): AuthDurabilityV7 | null {
-  if (
-    value === "noneRequired" ||
-    value === "interactiveCheckpoint" ||
-    value === "idpCheckpoint" ||
-    value === "refreshProvider" ||
-    value === "ciTestAuth"
-  ) {
-    return value;
-  }
-  return null;
 }
 
 function authDurabilityAllowsUnattended(durability: AuthDurabilityV7): boolean {

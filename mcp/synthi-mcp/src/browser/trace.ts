@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rankedLocatorCandidates } from "./locator.js";
-import { redactUrl, redactValue } from "./security.js";
+import { redactStructuredValue, redactUrl, redactValue } from "./security.js";
 import { compileWorkflowContract, normalizeReplayMode, type WorkflowContractV7, type WorkflowReplayModeV7 } from "./workflow.js";
 import type {
   BrowserActionKind,
@@ -103,7 +103,7 @@ export class BrowserTraceRecorder {
   }
 
   snapshot(): BrowserTraceEvent[] {
-    return this.events.map((event) => ({ ...event }));
+    return this.events.map((event) => this.sanitizeEvent(event));
   }
 
   annotateLatestAction(input: {
@@ -120,8 +120,10 @@ export class BrowserTraceRecorder {
       if (event.tab_id !== input.tab_id) continue;
       if (actions && (!event.action || !actions.has(event.action))) continue;
       if (input.within_ms !== undefined && now - event.ts > input.within_ms) return null;
-      event.detail = { ...(event.detail ?? {}), ...input.detail };
-      return { ...event };
+      const detail = redactStructuredValue({ ...(event.detail ?? {}), ...input.detail });
+      event.detail = detail.value as Record<string, unknown>;
+      if (detail.redacted) event.redacted = true;
+      return this.sanitizeEvent(event);
     }
     return null;
   }
@@ -183,7 +185,16 @@ export class BrowserTraceRecorder {
     if (input.redacted !== undefined) event.redacted = input.redacted;
     if (input.detail !== undefined) event.detail = input.detail;
     if (input.security !== undefined) event.security = input.security;
-    return event;
+    return this.sanitizeEvent(event);
+  }
+
+  private sanitizeEvent(event: BrowserTraceEvent): BrowserTraceEvent {
+    const structured = redactStructuredValue(event);
+    const next = structured.value as BrowserTraceEvent;
+    const url = redactUrl(next.url);
+    next.url = url.url;
+    if (structured.redacted || url.redacted) next.redacted = true;
+    return next;
   }
 
   private newTraceId(): string {

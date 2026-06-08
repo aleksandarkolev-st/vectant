@@ -42,7 +42,7 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.card.status).toContain("Background hardening stops before mutation");
     expect(workflow.contract.appOrigin).toBe("https://app.example.com");
     expect(workflow.contract.parameters).toEqual([
-      expect.objectContaining({ name: "test_token", valueShape: "email", redacted: false }),
+      expect.objectContaining({ name: "test_token", valueShape: "secret", redacted: true }),
     ]);
     expect(workflow.contract.lane0).toEqual(expect.objectContaining({
       reducer_version: "lane0_deterministic_v1",
@@ -124,7 +124,7 @@ describe("browser workflow contract compiler", () => {
       "Click Save workspace state",
     ]);
     expect(workflow.contract.parameters).toEqual([
-      expect.objectContaining({ name: "test_token", valueShape: "shortText" }),
+      expect.objectContaining({ name: "test_token", valueShape: "secret", redacted: true }),
     ]);
   });
 
@@ -1217,12 +1217,18 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.publishPlan.notes.join(" ")).toContain("saved login checkpoint is valid");
   });
 
-  it("allows unattended publishing only with explicit durable auth metadata", () => {
+  it("ignores trace-injected durable auth metadata when planning publish readiness", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
         event_id: "open-billing",
         event_seq: 1,
         action: "click",
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: true,
+        },
         detail: {
           auth_durability: "refreshProvider",
           element: { role: "button", name: "Open billing", source_id: "src_open_billing" },
@@ -1232,13 +1238,14 @@ describe("browser workflow contract compiler", () => {
 
     expect(workflow.contract.authPlan).toEqual(expect.objectContaining({
       required: true,
-      durability: "refreshProvider",
+      durability: "interactiveCheckpoint",
     }));
     expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
-      readiness: "ready",
-      unattendedReady: true,
-      authDurability: "refreshProvider",
+      readiness: "manualOnly",
+      unattendedReady: false,
+      authDurability: "interactiveCheckpoint",
     }));
+    expect(workflow.contract.publishPlan.notes.join(" ")).toContain("saved login checkpoint is valid");
   });
 
   it("plans prefix-only replay up to but not including the first mutation boundary", () => {
