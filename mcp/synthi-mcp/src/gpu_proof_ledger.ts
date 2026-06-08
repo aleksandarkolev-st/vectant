@@ -94,6 +94,10 @@ const VISUAL_ORACLE_ARTIFACT_FIELDS = [
   ["changed_pixel_ratio", "changedPixelRatio"],
   ["visible_pixel_count", "visiblePixelCount"],
 ] as const;
+const VISUAL_ORACLE_ARTIFACT_ANCHOR_FIELDS = VISUAL_ORACLE_ARTIFACT_FIELDS
+  .filter((keys) =>
+    !keys.some((key) => key === "timestamp_after_dispatch" || key === "timestampAfterDispatch")
+  );
 const REQUIRED_MODEL_FIELDS = [
   ["provider", "provider", "provider_missing"],
   ["requested_model", "requestedModel", "requested_model_missing"],
@@ -509,7 +513,7 @@ function visualOracleArtifacts(
 ): Record<string, unknown> | null {
   const { ledgerArtifacts, outputArtifacts, outputOracle, outputOracleArtifacts } =
     oracleArtifactSources(recordOracleArtifacts, outputEvent);
-  return firstArtifactObject([
+  const explicitVisualArtifacts = firstArtifactObject([
     ledgerArtifacts.visual_oracle_artifacts,
     ledgerArtifacts.visualOracleArtifacts,
     outputArtifacts.visual_oracle_artifacts,
@@ -520,11 +524,15 @@ function visualOracleArtifacts(
     outputOracle.visualOracleArtifacts,
     outputOracleArtifacts.visual_oracle_artifacts,
     outputOracleArtifacts.visualOracleArtifacts,
+  ], VISUAL_ORACLE_ARTIFACT_FIELDS);
+  if (explicitVisualArtifacts !== null) return explicitVisualArtifacts;
+
+  return firstArtifactObject([
     ledgerArtifacts,
     outputArtifacts,
     outputOracleArtifacts,
     outputOracle,
-  ], VISUAL_ORACLE_ARTIFACT_FIELDS);
+  ], VISUAL_ORACLE_ARTIFACT_ANCHOR_FIELDS);
 }
 
 function visualPixelVerification(artifacts: Record<string, unknown>): Record<string, unknown> {

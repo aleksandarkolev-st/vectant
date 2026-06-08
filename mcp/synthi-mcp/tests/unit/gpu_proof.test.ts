@@ -1399,6 +1399,48 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("accepts direct compute oracle artifacts without requiring visual artifacts", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, unknown>;
+    record.oracle_artifacts = artifacts;
+    record.output_oracle_target = {
+      kind: "compute",
+      compute_only_target_verified: true,
+      evidence_refs: ["runtime:output"],
+    };
+    record.output_event = {
+      ...record.output_event,
+      oracle_artifacts: artifacts,
+      output_oracle: {
+        kind: "buffer_checksum",
+        passed: true,
+        expected: HASH_B,
+        actual: HASH_B,
+        oracle_artifacts: artifacts,
+        output_oracle_target: record.output_oracle_target,
+      },
+    };
+    const refreshed = queryGpuHmrLedgerInvariants({
+      schemaVersion: ledger.schemaVersion,
+      records: ledger.records,
+    });
+    ledger.proofId = refreshed.proofId;
+    ledger.gpuHmrSuccess = refreshed.gpuHmrSuccess;
+    ledger.query = refreshed;
+
+    const validation = queryGpuHmrLedgerInvariants(ledger);
+
+    expect(validation.failedInvariants.map((failure) => failure.code)).toEqual([]);
+    expect(validation.gpuHmrSuccess).toBe(true);
+    expect(validation.failedInvariants.map((failure) => failure.code)).not.toContain(
+      "visual_oracle_artifacts_incomplete"
+    );
+    expect(validation.failedInvariants.map((failure) => failure.code)).not.toContain(
+      "visual_output_without_deterministic_mode"
+    );
+  });
+
   it("rejects full runtime compute proof when raw readback bytes were not hash-verified", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, any>;
