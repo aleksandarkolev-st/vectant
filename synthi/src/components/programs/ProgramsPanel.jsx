@@ -371,7 +371,9 @@ export default function ProgramsPanel() {
       if (error?.status === 409) {
         setConsent({ requested: error.body?.requested || [] });
       } else if (error?.status === 404) {
-        toast.error('No vectant.program.json or devcontainer.json found in this workspace.');
+        toast.error('No vectant.programs.json or devcontainer.json found in this workspace.');
+      } else if (error?.status === 422) {
+        toast.error(error.body?.message || 'Invalid manifest');
       } else {
         toast.error(error.message || 'Failed to install program');
       }
@@ -482,7 +484,7 @@ export default function ProgramsPanel() {
             <div className="min-w-0">
               <div className="text-sm font-medium">Install from manifest</div>
               <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                Detects vectant.program.json or devcontainer.json in this workspace.
+                Detects vectant.programs.json or devcontainer.json in this workspace.
               </div>
             </div>
             <button

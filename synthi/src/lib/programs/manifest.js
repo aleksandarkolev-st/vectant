@@ -1,5 +1,5 @@
 /**
- * @fileoverview Pure parser/validator for the `vectant.program.json` recipe manifest.
+ * @fileoverview Pure parser/validator for the `vectant.programs.json` recipe manifest.
  *
  * Produces a normalized, fail-closed `NormalizedProgramConfig` consumed by the
  * program store, the collab-server runtime manager, the Next.js program routes,
@@ -194,7 +194,7 @@ function normalizeDisplayName(displayName, packageId) {
 }
 
 /**
- * Parse + validate a `vectant.program.json` manifest into a NormalizedProgramConfig.
+ * Parse + validate a `vectant.programs.json` manifest into a NormalizedProgramConfig.
  *
  * @param {object|string} input - manifest object or JSON text
  * @returns {import('./manifest').NormalizedProgramConfig}
@@ -229,7 +229,7 @@ export function parseProgramManifest(input) {
     surfaces,
     health,
     permissions,
-    source: 'vectant.program.json',
+    source: 'vectant.programs.json',
     sourceHints: {},
   };
 }

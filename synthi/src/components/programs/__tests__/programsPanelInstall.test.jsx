@@ -138,6 +138,19 @@ describe('ProgramsPanel install / launch-from-install', () => {
     expect(h.dispatch).toHaveBeenCalled();
   });
 
+  it('surfaces the manifest_invalid message from a 422 install response', async () => {
+    h.installWorkspaceProgram.mockRejectedValueOnce({ status: 422, body: { error: 'manifest_invalid', message: 'Invalid packageId' } });
+    await render();
+
+    await act(async () => {
+      byTestId(container, 'install-from-manifest').click();
+    });
+    await flush();
+
+    expect(h.toastError).toHaveBeenCalledWith('Invalid packageId');
+    expect(byTestId(container, 'consent-prompt')).toBeNull();
+  });
+
   it('hides install / launch controls for a plain member', async () => {
     h.state.workspace.role = 'member';
     h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);

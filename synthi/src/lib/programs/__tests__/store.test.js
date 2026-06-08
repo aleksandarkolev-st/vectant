@@ -233,7 +233,7 @@ describe('upsertLocalProgram', () => {
       surfaces: [],
       health: null,
       permissions: ['program.launch'],
-      source: 'vectant.program.json',
+      source: 'vectant.programs.json',
       sourceHints: {},
     };
     h.prisma.marketplaceProgram.upsert.mockResolvedValue({

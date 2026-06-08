@@ -1633,7 +1633,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /program-runtime/:slug/manifest  → { found, source, raw }
-  // Reads the workspace recipe manifest (vectant.program.json preferred, else
+  // Reads the workspace recipe manifest (vectant.programs.json preferred, else
   // .devcontainer/devcontainer.json). Returns raw bytes for the caller to parse.
   const manifestMatch = /^\/program-runtime\/([^/]+)\/manifest$/.exec(programRuntimeUrl.pathname);
   if (manifestMatch && req.method === 'GET') {
@@ -1644,7 +1644,7 @@ const server = http.createServer(async (req, res) => {
       const { resolveWorkspaceCwd } = require('./terminalService');
       const cwd = await resolveWorkspaceCwd(slug);
       const candidates = [
-        { source: 'vectant.program.json', file: path.join(cwd, 'vectant.program.json') },
+        { source: 'vectant.programs.json', file: path.join(cwd, 'vectant.programs.json') },
         { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer', 'devcontainer.json') },
         { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer.json') },
       ];

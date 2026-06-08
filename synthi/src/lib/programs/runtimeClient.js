@@ -78,7 +78,7 @@ export async function listProgramRuntimeSessionEvents(workspaceSlug, sessionId) 
 }
 
 /**
- * Discover a recipe manifest in the workspace (vectant.program.json preferred,
+ * Discover a recipe manifest in the workspace (vectant.programs.json preferred,
  * else .devcontainer/devcontainer.json) and parse it into a NormalizedProgramConfig.
  *
  * @returns {Promise<{ config: object, source: string } | null>}
@@ -93,7 +93,7 @@ export async function discoverManifest(workspaceSlug) {
     return { config, source: 'devcontainer.json' };
   }
   const config = parseProgramManifest(data.raw);
-  return { config, source: 'vectant.program.json' };
+  return { config, source: 'vectant.programs.json' };
 }
 
 /**
