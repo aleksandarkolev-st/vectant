@@ -1333,10 +1333,15 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
   }
   if (action === "drag") {
     if (eventHasCalibratedPointerReplay(event)) {
+      const isResizeHandle = event.detail?.["resize_handle"] === true || event.detail?.["resizeHandle"] === true;
       return {
         kind: "pointerDrag",
         replay: "sameSessionOnly",
-        notes: ["Pointer-sensor drag has calibrated source/drop locators and relative replay points for same-session validation."],
+        notes: [
+          isResizeHandle
+            ? "Resize handle drag has calibrated source/drop locators and relative replay points for same-session validation."
+            : "Pointer-sensor drag has calibrated source/drop locators and relative replay points for same-session validation.",
+        ],
       };
     }
     if (dragClass === "nativehtmldnd") {

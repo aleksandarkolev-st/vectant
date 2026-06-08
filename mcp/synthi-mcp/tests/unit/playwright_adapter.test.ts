@@ -388,6 +388,58 @@ describe("browser Playwright teach capture", () => {
     expect(JSON.stringify(event)).not.toContain("secret dropped note");
   });
 
+  it("preserves calibrated resize-handle pointer drag metadata", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/workspace",
+      origin: "https://app.example.com",
+      action: "drag",
+      value: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+      field_name: "Resize panels",
+      element: {
+        tag: "div",
+        role: "separator",
+        name: "Resize panels",
+        source_id: "layout.resize.handle",
+      },
+      detail: {
+        event_source: "dom_listener",
+        drag_mode: true,
+        drag_class: "pointerSensor",
+        pointer_drag: true,
+        pointer_replay: "calibrated",
+        pointer_calibrated: true,
+        pointer_start_x_ratio: 0.5,
+        pointer_start_y_ratio: 0.5,
+        pointer_end_x_ratio: 0.58,
+        pointer_end_y_ratio: 0.5,
+        pointer_steps: 12,
+        drop_locator: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+        resize_handle: true,
+        resize_axis: "x",
+        aria_orientation: "vertical",
+      },
+    }, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      action: "drag",
+      value: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+      element: expect.objectContaining({
+        role: "separator",
+        name: "Resize panels",
+        source_id: "layout.resize.handle",
+      }),
+      detail: expect.objectContaining({
+        drag_class: "pointerSensor",
+        pointer_replay: "calibrated",
+        pointer_calibrated: true,
+        drop_locator: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+        resize_handle: true,
+        resize_axis: "x",
+        aria_orientation: "vertical",
+      }),
+    }));
+  });
+
   it("rejects malformed hosted-browser DOM action payloads", () => {
     expect(normalizeCapturedHumanAction({ action: "click" }, "tab-a")).toBeNull();
     expect(normalizeCapturedHumanAction({

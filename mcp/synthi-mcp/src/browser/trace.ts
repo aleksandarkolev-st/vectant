@@ -511,7 +511,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           lines.push("  await page.mouse.down();");
           lines.push(`  await page.mouse.move(${dropBox}.x + ${dropBox}.width * ${clampedRatioLiteral(end.x)}, ${dropBox}.y + ${dropBox}.height * ${clampedRatioLiteral(end.y)}, { steps: ${steps} });`);
           lines.push("  await page.mouse.up();");
-          const draggedText = draggedElementText(event);
+          const draggedText = isResizeHandleDrag(event) ? null : draggedElementText(event);
           if (draggedText) {
             lines.push(`  await expect(${dropTarget}).toContainText(${JSON.stringify(draggedText)});`);
           }
@@ -1142,6 +1142,10 @@ function isCalibratedPointerDrag(event: BrowserTraceEvent): boolean {
   if (!isPointer) return false;
   if (event.detail?.["pointer_replay"] !== "calibrated" && event.detail?.["pointer_calibrated"] !== true) return false;
   return Boolean(event.detail?.["drop_locator"] || event.value);
+}
+
+function isResizeHandleDrag(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && (event.detail?.["resize_handle"] === true || event.detail?.["resizeHandle"] === true);
 }
 
 function clampedRatioLiteral(value: number): string {

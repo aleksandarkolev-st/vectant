@@ -1704,6 +1704,99 @@ const CASES = [
     },
   },
   {
+    id: "splitter-resizer",
+    minSteps: 2,
+    expectedActions: ["drag", "click"],
+    expectedReplayText: [
+      "Resized left pane to 330px",
+    ],
+    expectedReplayCode: [
+      "page.getByRole(\"separator\", { name: \"Resize panels\" })",
+      "await page.mouse.down();",
+      "await page.mouse.up();",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Splitter Resize Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Splitter Resize Workflow</h1>",
+        "      <section class=\"split-shell\" role=\"group\" aria-label=\"Resizable workspace\" data-synthi-resize-container data-testid=\"resize-shell\" data-synthi-source-id=\"resize.shell\">",
+        "        <aside class=\"pane left\" aria-label=\"Navigator pane\"><strong>Navigator</strong><span>Files, search, and review state</span></aside>",
+        "        <div class=\"splitter\" role=\"separator\" aria-label=\"Resize panels\" aria-orientation=\"vertical\" tabindex=\"0\" data-synthi-resize-handle data-testid=\"resize-handle\" data-synthi-source-id=\"resize.handle\"></div>",
+        "        <section class=\"pane right\" aria-label=\"Editor pane\"><strong>Editor</strong><span>Workspace preview and automation output</span></section>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"apply-split\" data-synthi-source-id=\"resize.apply\">Save workspace layout</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Width 240px</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".split-shell { --left-width: 240px; width: min(860px, calc(100vw - 48px)); min-height: 260px; display: grid; grid-template-columns: var(--left-width) 12px minmax(240px, 1fr); border: 1px solid #202020; background: #fff; overflow: hidden; }",
+        ".pane { min-width: 0; padding: 18px; display: grid; align-content: start; gap: 8px; }",
+        ".left { background: #eef3f1; }",
+        ".right { background: #f8f8f5; }",
+        ".pane strong { font-size: 20px; }",
+        ".pane span { color: #56564f; }",
+        ".splitter { cursor: col-resize; touch-action: none; background: #202020; position: relative; }",
+        ".splitter::before { content: ''; position: absolute; inset: 0 4px; background: #e7d07f; opacity: .9; }",
+        ".splitter.is-dragging { background: #17663a; }",
+      ],
+      script: [
+        "const shell = document.querySelector('[data-testid=\"resize-shell\"]');",
+        "const handle = document.querySelector('[data-testid=\"resize-handle\"]');",
+        "const status = document.querySelector('#status');",
+        "let dragging = false;",
+        "let leftWidth = 240;",
+        "function clampWidth(value) {",
+        "  const max = Math.max(260, shell.clientWidth - 260);",
+        "  return Math.max(180, Math.min(max, Math.round(value)));",
+        "}",
+        "function render(prefix) {",
+        "  shell.style.setProperty('--left-width', `${leftWidth}px`);",
+        "  status.textContent = `${prefix} ${leftWidth}px`;",
+        "}",
+        "handle.addEventListener('pointerdown', (event) => {",
+        "  if (event.button !== 0) return;",
+        "  dragging = true;",
+        "  handle.classList.add('is-dragging');",
+        "});",
+        "document.addEventListener('pointermove', (event) => {",
+        "  if (!dragging) return;",
+        "  const rect = shell.getBoundingClientRect();",
+        "  leftWidth = clampWidth(event.clientX - rect.left);",
+        "  render('Resized left pane to');",
+        "});",
+        "document.addEventListener('pointerup', () => {",
+        "  if (!dragging) return;",
+        "  dragging = false;",
+        "  handle.classList.remove('is-dragging');",
+        "  render('Resized left pane to');",
+        "});",
+        "document.querySelector('[data-testid=\"apply-split\"]').addEventListener('click', () => {",
+        "  status.textContent = `Applied split ${leftWidth}px`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const shell = page.getByTestId("resize-shell");
+      const handle = page.getByRole("separator", { name: "Resize panels" });
+      const shellBox = await shell.boundingBox();
+      const handleBox = await handle.boundingBox();
+      if (!shellBox || !handleBox) throw new Error("splitter-resizer handle not visible");
+      const startX = handleBox.x + handleBox.width / 2;
+      const startY = handleBox.y + handleBox.height / 2;
+      await page.mouse.move(startX, startY);
+      await page.mouse.down();
+      await page.mouse.move(shellBox.x + 330, startY, { steps: 12 });
+      await page.getByText("Resized left pane to 330px").waitFor();
+      await page.mouse.up();
+      await page.getByText("Resized left pane to 330px").waitFor();
+      await page.getByRole("button", { name: "Save workspace layout" }).click();
+      await page.getByText("Applied split 330px").waitFor();
+    },
+  },
+  {
     id: "animated-saas-dashboard",
     minSteps: 6,
     expectedActions: ["fill", "select", "click", "drag"],

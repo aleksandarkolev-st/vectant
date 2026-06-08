@@ -444,6 +444,75 @@ describe("browser MCP tool surface", () => {
     );
   });
 
+  it("replays calibrated resize-handle drags through the event-aware adapter path", async () => {
+    const url = "https://app.example.com/workspace";
+    const dropLocator = "page.getByRole(\"group\", { name: \"Resizable workspace\" })";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Workspace", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      value: dropLocator,
+      detail: {
+        drag_mode: true,
+        drag_class: "pointerSensor",
+        pointer_drag: true,
+        pointer_replay: "calibrated",
+        pointer_start_x_ratio: 0.5,
+        pointer_start_y_ratio: 0.5,
+        pointer_end_x_ratio: 0.58,
+        pointer_end_y_ratio: 0.5,
+        pointer_steps: 10,
+        drop_locator: dropLocator,
+        resize_handle: true,
+        resize_axis: "x",
+        aria_orientation: "vertical",
+      },
+      element: { tag: "div", role: "separator", name: "Resize panels", source_id: "layout.resize.handle" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "drag",
+      tab_id: "app",
+      url,
+      detail: { pointer_replay: "calibrated", resize_handle: true },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "calibrated-resize-handle");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({
+        action: "drag",
+        value: dropLocator,
+        detail: expect.objectContaining({
+          pointer_replay: "calibrated",
+          drop_locator: dropLocator,
+          resize_handle: true,
+          resize_axis: "x",
+        }),
+      }),
+      "drag",
+      expect.stringContaining("layout.resize.handle"),
+      dropLocator
+    );
+  });
+
   it("replays annotated popup workflow actions through the adapter replay path", async () => {
     const url = "https://app.example.com/dashboard";
     browserBroker.requestConsent(url);

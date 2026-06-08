@@ -2326,17 +2326,50 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return null;
       if (target.closest('[data-synthi-workflow-toolbox]')) return null;
       if (isEditableTextTarget(target)) return null;
-      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="option"], [role="listitem"]');
+      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-resize-handle], [data-synthi-resize-handle], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="separator"], [role="option"], [role="listitem"]');
       if (!isElement(el)) return null;
       if (attr(el, 'role') === 'option' && el.closest('[role="listbox"]') && !attr(el, 'data-synthi-pointer-drag') && !attr(el, 'data-pointer-drag') && !attr(el, 'data-draggable') && !attr(el, 'aria-grabbed')) return null;
       if (isEditableTextTarget(el) || isRangeInput(el)) return null;
       return el;
     }
 
-    function pointerDropTargetAt(clientX, clientY) {
+    function resizeContainerFor(el) {
+      if (!isElement(el)) return null;
+      const parent = el.parentElement;
+      if (!isElement(parent)) return null;
+      return parent.closest('[data-resize-container], [data-synthi-resize-container], [data-testid], [data-test], [role="group"], [aria-label]') || parent;
+    }
+
+    function isResizeHandleElement(el) {
+      return isElement(el) && (
+        attr(el, 'role') === 'separator' ||
+        Boolean(attr(el, 'data-resize-handle')) ||
+        Boolean(attr(el, 'data-synthi-resize-handle'))
+      );
+    }
+
+    function resizeDetailFor(el) {
+      if (!isResizeHandleElement(el)) return {};
+      const orientation = attr(el, 'aria-orientation');
+      return {
+        resize_handle: true,
+        resize_axis: orientation === 'horizontal' ? 'y' : 'x',
+        aria_orientation: orientation || 'vertical',
+      };
+    }
+
+    function pointerDropTargetAt(clientX, clientY, sourceEl) {
       const target = document.elementFromPoint(clientX, clientY);
       if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return null;
+      if (isResizeHandleElement(sourceEl)) {
+        const resizeContainer = resizeContainerFor(sourceEl);
+        if (isElement(resizeContainer) && resizeContainer !== sourceEl) return resizeContainer;
+      }
       const dropTarget = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
+      if (isElement(sourceEl) && (dropTarget === sourceEl || sourceEl.contains(dropTarget))) {
+        const resizeContainer = resizeContainerFor(sourceEl);
+        if (isElement(resizeContainer) && resizeContainer !== sourceEl) return resizeContainer;
+      }
       return isElement(dropTarget) ? dropTarget : null;
     }
 
@@ -2989,7 +3022,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(drag.el)) return;
       const distance = distanceBetween(drag.start_x, drag.start_y, event.clientX, event.clientY);
       if (distance < 8) return;
-      const dropTarget = pointerDropTargetAt(event.clientX, event.clientY);
+      const dropTarget = pointerDropTargetAt(event.clientX, event.clientY, drag.el);
       if (!dropTarget || dropTarget === drag.el || drag.el.contains(dropTarget)) return;
       const dropLocator = playwrightLocatorFor(dropTarget);
       if (!dropLocator) return;
@@ -2997,7 +3030,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const dropRect = pointerReplayRect(dropTarget);
       const endRatio = pointRatio(dropRect, event.clientX, event.clientY);
       lastPointerDrag = { el: drag.el, drop_target: dropTarget, ts: Date.now() };
-      emit(drag.el, 'drag', dropLocator, {
+      emit(drag.el, 'drag', dropLocator, Object.assign({
         explicit_intent: true,
         drag_mode: true,
         drag_class: 'pointerSensor',
@@ -3016,7 +3049,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         drop_element: metadata(dropTarget),
         drag_duration_ms: Math.max(0, Date.now() - drag.started_at),
         __before_effects: drag.before_effects,
-      });
+      }, resizeDetailFor(drag.el)));
     }, true);
 
     document.addEventListener('pointercancel', (event) => {

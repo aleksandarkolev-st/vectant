@@ -911,6 +911,45 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("classifies calibrated resize-handle drags as same-session replayable pointer workflows", () => {
+    const events = [
+      baseEvent({
+        event_id: "resize-panels",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          pointer_drag: true,
+          pointer_replay: "calibrated",
+          pointer_start_x_ratio: 0.5,
+          pointer_start_y_ratio: 0.5,
+          pointer_end_x_ratio: 0.58,
+          pointer_end_y_ratio: 0.5,
+          drop_locator: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+          resize_handle: true,
+          resize_axis: "x",
+          aria_orientation: "vertical",
+          element: { role: "separator", name: "Resize panels", source_id: "layout.resize.handle" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"separator\", { name: \"Resize panels\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ];
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).not.toContain("pointerDragUnreliable");
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "pointerDrag",
+      replay: "sameSessionOnly",
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan.notes[0]).toContain("Resize handle drag");
+    expect(replay.status).toBe("ready");
+  });
+
   it("marks clean read-only workflows ready for a private MCP tool manifest", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

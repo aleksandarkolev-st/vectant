@@ -1067,6 +1067,46 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
 
+  it("emits calibrated mouse replay for resize-handle pointer drags", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "resize-panels",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          pointer_drag: true,
+          pointer_replay: "calibrated",
+          pointer_start_x_ratio: 0.5,
+          pointer_start_y_ratio: 0.5,
+          pointer_end_x_ratio: 0.58,
+          pointer_end_y_ratio: 0.5,
+          pointer_steps: 10,
+          drop_locator: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+          resize_handle: true,
+          resize_axis: "x",
+          aria_orientation: "vertical",
+          element: { role: "separator", name: "Resize panels", source_id: "layout.resize.handle" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"separator\", { name: \"Resize panels\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).not.toContain("test.skip(true");
+    expect(generated.code).not.toContain(".dragTo(");
+    expect(generated.code).toContain("page.getByRole(\"separator\", { name: \"Resize panels\" })");
+    expect(generated.code).toContain("page.getByRole(\"group\", { name: \"Resizable workspace\" })");
+    expect(generated.code).toContain("await page.mouse.down();");
+    expect(generated.code).toContain("await page.mouse.move(dropBox1.x + dropBox1.width * 0.58, dropBox1.y + dropBox1.height * 0.5, { steps: 10 });");
+    expect(generated.code).toContain("await page.mouse.up();");
+    expect(generated.code).not.toContain("toContainText(\"Resize panels\")");
+    expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
+  });
+
   it("emits multi-value select replay for native multiple selects", () => {
     const generated = generatePlaywrightScript([
       event({
