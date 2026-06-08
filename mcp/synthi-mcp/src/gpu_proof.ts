@@ -299,7 +299,8 @@ function runtimeProofArtifactCandidate(
 
 function validateRuntimeProofArtifactAcceptance(
   raw: Record<string, unknown>,
-  expectedProofLedger: Record<string, unknown> | null = null
+  expectedProofLedger: Record<string, unknown> | null = null,
+  expectedRuntimeProofId: string | null = null
 ): GpuHmrRuntimeProofArtifactValidation {
   const candidate = runtimeProofArtifactCandidate(raw);
   if (candidate === null) {
@@ -336,9 +337,17 @@ function validateRuntimeProofArtifactAcceptance(
     "deterministicVisualModeEvaluation",
     "deterministic_visual_mode_evaluation"
   );
+  const artifactProofId = stringOrNull(artifact.proofId ?? artifact.proof_id);
   const stageResults = arrayField(artifact, "stageResults", "stage_results");
   const limitations = arrayField(artifact, "limitations");
 
+  if (expectedRuntimeProofId !== null) {
+    if (artifactProofId === null) {
+      failures.push({ code: "runtime_proof_artifact_proof_id_missing" });
+    } else if (artifactProofId !== expectedRuntimeProofId) {
+      failures.push({ code: "runtime_proof_artifact_proof_id_mismatch" });
+    }
+  }
   if (boolField(artifact, "fullRuntimeProven", "full_runtime_proven") !== true) {
     failures.push({ code: "runtime_full_proof_not_proven" });
   }
@@ -572,7 +581,14 @@ export function validateGpuHmrProofState(
       }
     }
     if (ledgerReason === undefined) {
-      runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(proof.raw, ledger);
+      const expectedRuntimeProofId = proof.proofId?.startsWith("gpu-runtime-proof:") === true
+        ? proof.proofId
+        : null;
+      runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(
+        proof.raw,
+        ledger,
+        expectedRuntimeProofId
+      );
       if (!runtimeProofArtifactValidation.accepted) {
         satisfied = false;
         runtimeArtifactReason = runtimeProofArtifactValidation.present

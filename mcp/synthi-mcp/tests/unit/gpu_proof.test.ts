@@ -441,6 +441,64 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.runtimeProofArtifactValidation?.accepted).toBe(true);
   });
 
+  it("accepts runtime proof telemetry when the runtime artifact proof id matches", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofId: "gpu-runtime-proof:fixture",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(true);
+    expect(validation.runtimeProofArtifactValidation?.accepted).toBe(true);
+  });
+
+  it("rejects runtime proof telemetry whose artifact proof id is missing", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofId: "gpu-runtime-proof:fixture",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger, {
+        proofId: undefined,
+      }),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_proof_artifact_proof_id_missing"
+    );
+  });
+
+  it("rejects runtime proof telemetry whose artifact proof id does not match", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofId: "gpu-runtime-proof:fixture",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger, {
+        proofId: "gpu-runtime-proof:other",
+      }),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_proof_artifact_proof_id_mismatch"
+    );
+  });
+
   it("rejects ledger-only full runtime proof telemetry", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
