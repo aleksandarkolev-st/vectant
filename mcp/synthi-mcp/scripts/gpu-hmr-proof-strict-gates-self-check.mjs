@@ -283,6 +283,18 @@ function acceptanceContract(overrides = {}) {
         kind: 'buffer_checksum',
         schema_hash: HASH_C,
       },
+      field_evidence_refs: {
+        kernel_name: ['runtime:hip-kernel-symbol'],
+        launch_api: ['runtime:hip-launch-api'],
+        grid_dim: ['runtime:hip-launch-shape'],
+        block_dim: ['runtime:hip-launch-shape'],
+        shared_mem_bytes: ['runtime:hip-launch-shape'],
+        stream: ['runtime:hip-stream'],
+        kernel_params: ['runtime:hip-kernel-params'],
+        code_object_metadata: ['code-object:metadata'],
+        output_buffers: ['runtime:hip-output-buffer'],
+        readback_oracle: ['runtime:hip-readback-oracle'],
+      },
     },
     ...overrides,
   };
@@ -296,6 +308,12 @@ function runtimeArtifact(overrides = {}) {
     proofId: 'proof-pass',
     fullRuntimeProven: true,
     gpuHmrSuccess: true,
+    stageResults: [{
+      stageId: 'full-runtime',
+      status: 'passed',
+      evidenceRefs: ['runtime:stage:full-runtime'],
+    }],
+    limitations: [],
     proofLedger,
     proofLedgerQuery: proofLedger.query,
     proofLedgerSourceConsistency: {
@@ -330,6 +348,46 @@ assert.match(
 assert.match(
   runtimeProofArtifactStrictGate({ ...passingArtifact, proofLedgerQuery: { gpuHmrSuccess: false } }).detail,
   /proof_ledger_query_rejected/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const artifact = { ...passingArtifact };
+    delete artifact.stageResults;
+    return artifact;
+  })()).detail,
+  /runtime_proof_artifact_stage_results_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    stageResults: [{ stageId: 'dispatch', status: 'failed' }],
+  }).detail,
+  /runtime_proof_artifact_stage_failed/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate((() => {
+    const artifact = { ...passingArtifact };
+    delete artifact.limitations;
+    return artifact;
+  })()).detail,
+  /runtime_proof_artifact_limitations_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    limitations: [{ code: 'output_oracle_not_verified' }],
+  }).detail,
+  /runtime_proof_artifact_limitations_present/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    deterministicVisualModeEvaluation: {
+      accepted: false,
+      failedGates: [{ code: 'frozen_camera_unproven' }],
+    },
+  }).detail,
+  /deterministic_visual_mode_rejected/,
 );
 assert.match(
   runtimeProofArtifactStrictGate({

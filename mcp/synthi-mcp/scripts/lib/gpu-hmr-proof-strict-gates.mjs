@@ -18,6 +18,10 @@ function firstObject(...values) {
   return values.find((value) => isObject(value)) ?? null;
 }
 
+function firstArray(...values) {
+  return values.find((value) => Array.isArray(value)) ?? null;
+}
+
 function sortedCodes(values) {
   return compactStrings((Array.isArray(values) ? values : [])
     .map((value) => value?.code ?? value))
@@ -119,6 +123,15 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       artifact.proofLedgerSourceConsistency,
       artifact.proof_ledger_source_consistency,
     );
+    const deterministicVisualModeEvaluation = firstObject(
+      artifact.deterministicVisualModeEvaluation,
+      artifact.deterministic_visual_mode_evaluation,
+    );
+    const stageResults = firstArray(
+      artifact.stageResults,
+      artifact.stage_results,
+    );
+    const limitations = firstArray(artifact.limitations);
     const gpuHmrSuccess = artifact.gpuHmrSuccess === true
       || artifact.gpu_hmr_success === true;
 
@@ -126,6 +139,16 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push('runtime_full_proof_not_proven');
     }
     if (!gpuHmrSuccess) failures.push('runtime_proof_artifact_gpu_hmr_success_false');
+    if (!stageResults || stageResults.length === 0) {
+      failures.push('runtime_proof_artifact_stage_results_missing');
+    } else if (stageResults.some((stage) => firstObject(stage)?.status !== 'passed')) {
+      failures.push('runtime_proof_artifact_stage_failed');
+    }
+    if (!limitations) {
+      failures.push('runtime_proof_artifact_limitations_missing');
+    } else if (limitations.length > 0) {
+      failures.push('runtime_proof_artifact_limitations_present');
+    }
     if (!proofLedger) {
       failures.push('proof_ledger_missing');
     } else {
@@ -179,6 +202,12 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push('proof_ledger_source_consistency_missing');
     } else if (proofLedgerSourceConsistency.accepted !== true) {
       failures.push('proof_ledger_source_consistency_rejected');
+    }
+    if (
+      deterministicVisualModeEvaluation
+      && deterministicVisualModeEvaluation.accepted !== true
+    ) {
+      failures.push('deterministic_visual_mode_rejected');
     }
   }
   return gateRow(
