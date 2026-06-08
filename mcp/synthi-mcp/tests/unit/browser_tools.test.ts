@@ -1013,6 +1013,76 @@ describe("browser MCP tool surface", () => {
       "agent-provided-token"
     );
   });
+
+  it("requires and forwards native prompt parameters for workflow replay", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        dialog_event: true,
+        dialog_type: "prompt",
+        dialog_message: "Enter workspace name",
+        dialog_prompt_value: "[REDACTED]",
+        dialog_prompt_value_redacted: true,
+        dialog_accepted: true,
+      },
+      element: { role: "button", name: "Rename workspace", source_id: "s_rename_workspace" },
+    }).ok).toBe(true);
+    const lease = browserBroker.acquireLease("agent", 5000, "test-prompt-dialog");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+    });
+
+    const missing = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+    });
+
+    expect((missing?.structuredContent as {
+      ok: boolean;
+      replay: { status: string; failure_class: string; failed_step_id: string; error: string };
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        failure_class: "testDataMissing",
+        failed_step_id: "browser_evt_1",
+        error: "missing_dialog_prompt_parameter:enter_workspace_name",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+      parameters: { enter_workspace_name: "Agent Workspace" },
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({ event_id: "browser_evt_1" }),
+      "click",
+      expect.any(String),
+      undefined,
+      { dialogPromptValue: "Agent Workspace" }
+    );
+  });
 });
 
 function mockPreviewAdapter(previewUrl: string): void {

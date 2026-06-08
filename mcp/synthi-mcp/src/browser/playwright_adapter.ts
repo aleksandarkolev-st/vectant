@@ -297,7 +297,8 @@ export class BrowserPlaywrightAdapter {
     event: BrowserTraceEvent,
     action: BrowserActionKind,
     selector?: string,
-    value?: string
+    value?: string,
+    options: { dialogPromptValue?: string } = {}
   ): Promise<BrowserActionResult> {
     if (action === "fill" && isClipboardPasteEvent(event)) {
       return await this.replayClipboardPasteAction(tab_id, event, selector, value);
@@ -315,7 +316,7 @@ export class BrowserPlaywrightAdapter {
       return await this.replayDownloadAction(tab_id, event, action, selector);
     }
     if (isDialogReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
-      return await this.replayDialogAction(tab_id, event, action, selector, value);
+      return await this.replayDialogAction(tab_id, event, action, selector, value, options);
     }
     if (isPopupReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
       return await this.replayPopupAction(tab_id, event, action, selector, value);
@@ -465,7 +466,8 @@ export class BrowserPlaywrightAdapter {
     event: BrowserTraceEvent,
     action: "click" | "dblclick" | "press",
     selector?: string,
-    value?: string
+    value?: string,
+    options: { dialogPromptValue?: string } = {}
   ): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
     const target = this.resolveLocatorForEvent(page, event, selector);
@@ -473,8 +475,33 @@ export class BrowserPlaywrightAdapter {
     const expectedMessage = stringDetail(event, "dialog_message");
     const messageRedacted = boolDetail(event, "dialog_message_redacted");
     const accepted = event.detail?.["dialog_accepted"] !== false;
-    const promptValue = stringDetail(event, "dialog_prompt_value");
-    const promptRedacted = boolDetail(event, "dialog_prompt_value_redacted");
+    const replayPromptValue = options.dialogPromptValue;
+    if (expectedType === "prompt" && accepted && replayPromptValue === undefined) {
+      throw new Error(`missing_dialog_prompt_parameter:${dialogPromptParameterNameForEvent(event)}`);
+    }
+    if (expectedType === "prompt") {
+      await installPromptReplayOverride(target, {
+        expectedMessage: expectedMessage && !messageRedacted ? expectedMessage : "",
+        accepted,
+        value: replayPromptValue,
+      });
+      await runTargetAction(target, action, value);
+      const promptResult = await readPromptReplayOverride(target);
+      if (!promptResult.consumed) throw new Error("dialog_not_triggered");
+      if (promptResult.error) throw new Error(promptResult.error);
+      return {
+        ok: true,
+        action,
+        tab_id,
+        url: page.url(),
+        detail: {
+          dialog_type: expectedType,
+          dialog_message: promptResult.actualMessage,
+          ...(accepted && replayPromptValue !== undefined ? { dialog_prompt_value_length: replayPromptValue.length } : {}),
+          dialog_prompt_replay: "frame_prompt_override",
+        },
+      };
+    }
     let dialogMessage = "";
     const dialogPromise = new Promise<void>((resolve, reject) => {
       page.once("dialog", async (dialog) => {
@@ -485,7 +512,7 @@ export class BrowserPlaywrightAdapter {
             throw new Error("dialog_message_mismatch");
           }
           if (accepted) {
-            await dialog.accept(expectedType === "prompt" && promptValue && !promptRedacted ? promptValue : undefined);
+            await dialog.accept(expectedType === "prompt" ? replayPromptValue : undefined);
           } else {
             await dialog.dismiss();
           }
@@ -501,7 +528,11 @@ export class BrowserPlaywrightAdapter {
       action,
       tab_id,
       url: page.url(),
-      detail: { dialog_type: expectedType, dialog_message: dialogMessage },
+      detail: {
+        dialog_type: expectedType,
+        dialog_message: dialogMessage,
+        ...(expectedType === "prompt" && replayPromptValue !== undefined ? { dialog_prompt_value_length: replayPromptValue.length } : {}),
+      },
     };
   }
 
@@ -1133,6 +1164,72 @@ async function runTargetAction(
   }
 }
 
+async function installPromptReplayOverride(
+  target: Locator,
+  config: { expectedMessage: string; accepted: boolean; value?: string }
+): Promise<void> {
+  await target.evaluate((element, replayConfig) => {
+    const win = element.ownerDocument?.defaultView;
+    if (!win) throw new Error("prompt_replay_window_missing");
+    const stateKey = "__SYNTHI_PROMPT_REPLAY_STATE__";
+    const installedKey = "__SYNTHI_PROMPT_REPLAY_INSTALLED__";
+    const w = win as Window & {
+      __SYNTHI_PROMPT_REPLAY_STATE__?: {
+        expectedMessage: string;
+        accepted: boolean;
+        value?: string;
+        consumed: boolean;
+        actualMessage: string;
+        error: string;
+      };
+      __SYNTHI_PROMPT_REPLAY_INSTALLED__?: boolean;
+    };
+    w[stateKey] = {
+      expectedMessage: replayConfig.expectedMessage,
+      accepted: replayConfig.accepted,
+      value: replayConfig.value,
+      consumed: false,
+      actualMessage: "",
+      error: "",
+    };
+    if (w[installedKey]) return;
+    const nativePrompt = win.prompt.bind(win);
+    w[installedKey] = true;
+    win.prompt = (message?: string, defaultValue?: string) => {
+      const state = w[stateKey];
+      if (!state || state.consumed) return nativePrompt(message, defaultValue);
+      const actualMessage = String(message ?? "");
+      state.actualMessage = actualMessage;
+      state.consumed = true;
+      if (state.expectedMessage && !actualMessage.includes(state.expectedMessage)) {
+        state.error = "dialog_message_mismatch";
+      }
+      return state.accepted ? String(state.value ?? "") : null;
+    };
+  }, config);
+}
+
+async function readPromptReplayOverride(target: Locator): Promise<{ consumed: boolean; actualMessage: string; error: string }> {
+  return await target.evaluate((element) => {
+    const win = element.ownerDocument?.defaultView;
+    if (!win) return { consumed: false, actualMessage: "", error: "prompt_replay_window_missing" };
+    const w = win as Window & {
+      __SYNTHI_PROMPT_REPLAY_STATE__?: {
+        consumed?: boolean;
+        actualMessage?: string;
+        error?: string;
+      };
+    };
+    const state = w.__SYNTHI_PROMPT_REPLAY_STATE__;
+    delete w.__SYNTHI_PROMPT_REPLAY_STATE__;
+    return {
+      consumed: state?.consumed === true,
+      actualMessage: typeof state?.actualMessage === "string" ? state.actualMessage : "",
+      error: typeof state?.error === "string" ? state.error : "",
+    };
+  });
+}
+
 async function setRangeLocatorValue(target: Locator, value: string): Promise<void> {
   await target.evaluate((element, nextValue) => {
     if (!(element instanceof HTMLInputElement) || element.type !== "range") {
@@ -1205,6 +1302,18 @@ function clipboardPasteParameterNameForEvent(event: BrowserTraceEvent): string {
       stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).test_id)
     : undefined;
   return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
+}
+
+function dialogPromptParameterNameForEvent(event: BrowserTraceEvent): string {
+  const explicit = stringDetail(event, "dialog_prompt_env") ?? stringDetail(event, "dialog_prompt_parameter") ?? stringDetail(event, "prompt_parameter");
+  const message = boolDetail(event, "dialog_message_redacted") ? undefined : stringDetail(event, "dialog_message");
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object" && !Array.isArray(element)
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? message ?? label ?? `${event.event_id}_prompt`);
 }
 
 async function pasteTextIntoLocator(page: Page, target: Locator, text: string): Promise<void> {
@@ -1413,6 +1522,9 @@ function stringArrayOpt(value: unknown): string[] | undefined {
 
 function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, unknown> {
   const detail: Record<string, unknown> = {};
+  const promptValue = typeof raw["dialog_prompt_value"] === "string" && raw["dialog_prompt_value"].length > 0
+    ? raw["dialog_prompt_value"]
+    : undefined;
   for (const [key, value] of Object.entries(raw)) {
     if (typeof value === "string") {
       if (key === "dialog_message" || key === "dialog_default_value") {
@@ -1432,11 +1544,12 @@ function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, 
       let redacted = false;
       for (const item of value) {
         if (typeof item !== "string") continue;
-        const effect = redactText(item);
+        const promptRedactedText = promptValue ? redactExactText(item, promptValue) : { text: item, redacted: false };
+        const effect = redactText(promptRedactedText.text);
         const text = effect.text.trim();
         if (text.length === 0) continue;
         effects.push(text);
-        redacted = redacted || effect.redacted;
+        redacted = redacted || promptRedactedText.redacted || effect.redacted;
         if (effects.length >= 6) break;
       }
       if (effects.length > 0) detail[key] = effects;
@@ -1444,6 +1557,13 @@ function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, 
     }
   }
   return detail;
+}
+
+function redactExactText(value: string, sensitive: string): { text: string; redacted: boolean } {
+  if (!sensitive) return { text: value, redacted: false };
+  const escaped = sensitive.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const next = value.replace(new RegExp(escaped, "g"), "[REDACTED]");
+  return { text: next, redacted: next !== value };
 }
 
 function stringOpt(value: unknown): string | undefined {

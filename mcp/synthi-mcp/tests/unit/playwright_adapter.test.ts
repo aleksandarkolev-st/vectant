@@ -308,4 +308,27 @@ describe("browser Playwright teach capture", () => {
       }),
     }));
   });
+
+  it("redacts prompt responses from derived observed effects", () => {
+    const event = normalizeCapturedHumanActionAnnotation({
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      detail: {
+        dialog_event: true,
+        dialog_type: "prompt",
+        dialog_message: "Enter workspace name",
+        dialog_prompt_value: "Secret Launch Board",
+        dialog_accepted: true,
+        observed_effects: ["Renamed workspace to Secret Launch Board"],
+      },
+    }, "tab-a");
+
+    expect(event?.detail).toEqual(expect.objectContaining({
+      dialog_prompt_value: "[REDACTED]",
+      dialog_prompt_value_redacted: true,
+      observed_effects: ["Renamed workspace to [REDACTED]"],
+      observed_effects_redacted: true,
+    }));
+  });
 });

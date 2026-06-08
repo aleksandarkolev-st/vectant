@@ -512,7 +512,7 @@ export const BROWSER_TOOLS = [
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "coldSession" },
         parameters: {
           type: "object",
-          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings here.",
+          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings; clipboard paste and native prompt steps expect caller-provided text values.",
           additionalProperties: { type: "string" },
         },
       },
@@ -1305,6 +1305,20 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       continue;
     }
     const value = replayValueForEvent(event, action);
+    const dialogPromptValue = dialogPromptValueFor(event, parameters);
+    if (isAcceptedPromptDialogEvent(event) && dialogPromptValue === undefined) {
+      return jsonResponse({
+        ok: false,
+        replay: {
+          ...plan,
+          status: "failed",
+          steps_run: stepsRun,
+          failed_step_id: event.event_id,
+          failure_class: "testDataMissing",
+          error: `missing_dialog_prompt_parameter:${dialogPromptParameterName(event)}`,
+        },
+      });
+    }
     const validation = browserBroker.validateAction({
       lease_id: leaseId,
       action,
@@ -1327,7 +1341,9 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
     try {
-      const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
+      const result = dialogPromptValue !== undefined
+        ? await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value, { dialogPromptValue })
+        : await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
       rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
       stepsRun += 1;
     } catch (err) {
@@ -1432,6 +1448,30 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true &&
+    event.detail?.["dialog_type"] === "prompt" &&
+    event.detail?.["dialog_accepted"] !== false;
+}
+
+function dialogPromptValueFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  if (!isAcceptedPromptDialogEvent(event)) return undefined;
+  const parameterName = dialogPromptParameterName(event);
+  return parameters[parameterName] ?? (typeof event.detail?.["fixture_prompt_value"] === "string" ? event.detail["fixture_prompt_value"] : undefined);
+}
+
+function dialogPromptParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["dialog_prompt_env"]) ?? stringOpt(event.detail?.["dialog_prompt_parameter"]) ?? stringOpt(event.detail?.["prompt_parameter"]);
+  const message = event.detail?.["dialog_message_redacted"] === true ? undefined : stringOpt(event.detail?.["dialog_message"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? message ?? label ?? `${event.event_id}_prompt`);
+}
+
 function clipboardPasteTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
   const parameterName = clipboardPasteParameterName(event);
   return parameters[parameterName] ?? stringOpt(event.detail?.["fixture_text"]);
@@ -1451,7 +1491,7 @@ function clipboardPasteParameterName(event: BrowserTraceEvent): string {
 
 function fileDropPathFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
   const parameterName = fileDropParameterName(event);
-  return parameters[parameterName] ??
+  return stringOpt(parameters[parameterName]) ??
     stringOpt(event.detail?.["fixture_file"]) ??
     stringOpt(event.detail?.["file_path"]);
 }
@@ -1483,7 +1523,7 @@ function stringParameters(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, string> = {};
   for (const [key, parameterValue] of Object.entries(value)) {
-    if (typeof parameterValue === "string" && parameterValue.length > 0) out[slugIdentifier(key)] = parameterValue;
+    if (typeof parameterValue === "string") out[slugIdentifier(key)] = parameterValue;
   }
   return out;
 }

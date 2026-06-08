@@ -215,6 +215,15 @@ async function runCase({ testCase, container, context, runner }) {
         missingCode.length ? `missing=${missingCode.join(" | ")}` : `snippets=${testCase.expectedReplayCode.length}`
       );
     }
+    if (Array.isArray(testCase.forbiddenReplayCode) && testCase.forbiddenReplayCode.length > 0) {
+      const leakedCode = testCase.forbiddenReplayCode.filter((snippet) => String(generated?.code || "").includes(snippet));
+      record(
+        testCase.id,
+        "export forbidden replay code",
+        leakedCode.length === 0,
+        leakedCode.length ? `leaked=${leakedCode.join(" | ")}` : `forbidden=${testCase.forbiddenReplayCode.length}`
+      );
+    }
 
     const manifestBody = await clickWorkflowButton(idePage, /^Manifest$/);
     const manifest = manifestBody.result?.manifest;
@@ -1698,6 +1707,45 @@ const CASES = [
       page.once("dialog", (dialog) => dialog.accept());
       await page.getByRole("button", { name: "Confirm policy" }).click();
       await page.getByText("Confirmed policy").waitFor();
+    },
+  },
+  {
+    id: "native-prompt-dialog",
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayCode: [
+      "process.env[\"ENTER_WORKSPACE_NAME\"]",
+      "await dialog.accept(dialogPrompt1);",
+      "expect(dialog.message()).toContain(\"Enter workspace name\")",
+    ],
+    forbiddenReplayCode: [
+      "Taught Secret Workspace",
+      "Renamed workspace to [REDACTED]",
+    ],
+    liveReplayMode: "sameSession",
+    replayParameters: { enter_workspace_name: "Agent Workspace" },
+    replayEnv: () => ({ ENTER_WORKSPACE_NAME: "Agent Workspace" }),
+    files: () => commonFiles({
+      title: "Native Prompt Dialog Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Native Prompt Dialog Workflow</h1>",
+        "      <button type=\"button\" data-testid=\"rename-workspace\" data-synthi-source-id=\"dialog.prompt.rename\">Rename workspace</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "document.querySelector('[data-testid=\"rename-workspace\"]').addEventListener('click', () => {",
+        "  const name = window.prompt('Enter workspace name', 'Draft workspace');",
+        "  document.querySelector('#status').textContent = name ? `Renamed workspace to ${name}` : 'Rename canceled';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      page.once("dialog", (dialog) => dialog.accept("Taught Secret Workspace"));
+      await page.getByRole("button", { name: "Rename workspace" }).click();
+      await page.getByText("Renamed workspace to Taught Secret Workspace").waitFor();
     },
   },
   {

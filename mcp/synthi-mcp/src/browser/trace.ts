@@ -347,7 +347,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         if (isDownloadTrigger(event)) {
           pushDownloadAction(lines, target, "click", event, targetSeq);
         } else if (isDialogTrigger(event)) {
-          pushDialogAction(lines, target, "click", event, targetSeq);
+          pushDialogAction(lines, warnings, pageVar, target, "click", event, targetSeq);
         } else if (isPopupTrigger(event)) {
           const popupVar = pushPopupAction(lines, target, "click", event, targetSeq, baseOrigin, pageVar);
           rememberPopupPage(popupPageByTab, event, popupVar);
@@ -360,7 +360,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         if (isDownloadTrigger(event)) {
           pushDownloadAction(lines, target, "dblclick", event, targetSeq);
         } else if (isDialogTrigger(event)) {
-          pushDialogAction(lines, target, "dblclick", event, targetSeq);
+          pushDialogAction(lines, warnings, pageVar, target, "dblclick", event, targetSeq);
         } else if (isPopupTrigger(event)) {
           const popupVar = pushPopupAction(lines, target, "dblclick", event, targetSeq, baseOrigin, pageVar);
           rememberPopupPage(popupPageByTab, event, popupVar);
@@ -496,7 +496,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       case "press":
         if (isDialogTrigger(event)) {
-          pushDialogAction(lines, target, "press", event, targetSeq, event.value ?? "Enter");
+          pushDialogAction(lines, warnings, pageVar, target, "press", event, targetSeq, event.value ?? "Enter");
         } else if (isPopupTrigger(event)) {
           const popupVar = pushPopupAction(lines, target, "press", event, targetSeq, baseOrigin, pageVar, event.value ?? "Enter");
           rememberPopupPage(popupPageByTab, event, popupVar);
@@ -702,6 +702,22 @@ function clipboardPasteEnvNameFor(event: BrowserTraceEvent, ordinal: number): st
   return normalized.length > 0 ? normalized : `SYNTHI_CLIPBOARD_PASTE_${ordinal}`;
 }
 
+function dialogPromptEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
+  const explicit = typeof event.detail?.["dialog_prompt_env"] === "string"
+    ? event.detail["dialog_prompt_env"]
+    : typeof event.detail?.["dialog_prompt_parameter"] === "string"
+      ? event.detail["dialog_prompt_parameter"]
+      : typeof event.detail?.["prompt_parameter"] === "string"
+        ? event.detail["prompt_parameter"]
+        : event.detail?.["dialog_message_redacted"] === true
+          ? `SYNTHI_DIALOG_PROMPT_${ordinal}`
+          : typeof event.detail?.["dialog_message"] === "string"
+            ? event.detail["dialog_message"]
+            : `SYNTHI_DIALOG_PROMPT_${ordinal}`;
+  const normalized = explicit.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized : `SYNTHI_DIALOG_PROMPT_${ordinal}`;
+}
+
 function scrollPositionFor(event: BrowserTraceEvent): { top: number; left: number } {
   const top = numericDetail(event, "scroll_top") ?? 0;
   const left = numericDetail(event, "scroll_left") ?? 0;
@@ -810,6 +826,8 @@ function pushDownloadAction(
 
 function pushDialogAction(
   lines: string[],
+  warnings: string[],
+  pageVar: string,
   target: string,
   method: "click" | "dblclick" | "press",
   event: BrowserTraceEvent,
@@ -822,11 +840,21 @@ function pushDialogAction(
   const accepted = event.detail?.["dialog_accepted"] !== false;
   const promptValue = typeof event.detail?.["dialog_prompt_value"] === "string" ? event.detail["dialog_prompt_value"] : "";
   const promptRedacted = event.detail?.["dialog_prompt_value_redacted"] === true;
+  const promptParameterized = type === "prompt" && accepted;
   const dialogPromise = `dialog${ordinal}Promise`;
   const dialogMessage = `dialog${ordinal}Message`;
+  const promptVar = `dialogPrompt${ordinal}`;
+  if (promptParameterized) {
+    const envName = dialogPromptEnvNameFor(event, ordinal);
+    const fixtureValue = typeof event.detail?.["fixture_prompt_value"] === "string" ? event.detail["fixture_prompt_value"] : undefined;
+    lines.push(`  const ${promptVar} = process.env[${JSON.stringify(envName)}]${fixtureValue !== undefined ? ` ?? ${JSON.stringify(fixtureValue)}` : ""};`);
+    lines.push(`  test.skip(${promptVar} === undefined, ${JSON.stringify(`Set ${envName} for prompt dialog step ${event.event_id}.`)});`);
+    lines.push(`  if (${promptVar} === undefined) throw new Error(${JSON.stringify(`missing prompt dialog value for ${event.event_id}`)});`);
+    warnings.push(`event ${event.event_id} prompt dialog replay is parameterized by ${envName}`);
+  }
   lines.push(`  let ${dialogMessage} = "";`);
   lines.push(`  const ${dialogPromise} = new Promise((resolve, reject) => {`);
-  lines.push("    page.once('dialog', async (dialog) => {");
+  lines.push(`    ${pageVar}.once('dialog', async (dialog) => {`);
   lines.push("      try {");
   lines.push(`        expect(dialog.type()).toBe(${JSON.stringify(type)});`);
   if (message && !messageRedacted) {
@@ -834,7 +862,9 @@ function pushDialogAction(
   }
   lines.push(`        ${dialogMessage} = dialog.message();`);
   if (accepted) {
-    if (type === "prompt" && promptValue && !promptRedacted) {
+    if (promptParameterized) {
+      lines.push(`        await dialog.accept(${promptVar});`);
+    } else if (type === "prompt" && promptValue && !promptRedacted) {
       lines.push(`        await dialog.accept(${JSON.stringify(promptValue)});`);
     } else {
       lines.push("        await dialog.accept();");
@@ -927,6 +957,7 @@ function elementForEvent(event: BrowserTraceEvent): BrowserElementMetadata | und
 }
 
 function observedEffectTexts(event: BrowserTraceEvent): string[] {
+  if (event.detail?.["observed_effects_redacted"] === true) return [];
   const raw = event.detail?.["observed_effects"];
   const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
   const seen = new Set<string>();
@@ -934,6 +965,7 @@ function observedEffectTexts(event: BrowserTraceEvent): string[] {
   for (const value of values) {
     if (typeof value !== "string") continue;
     const compact = value.trim().replace(/\s+/g, " ");
+    if (compact.includes("[REDACTED]")) continue;
     if (!compact || seen.has(compact)) continue;
     seen.add(compact);
     result.push(compact.slice(0, 240));

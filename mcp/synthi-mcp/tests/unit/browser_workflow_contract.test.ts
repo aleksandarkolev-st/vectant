@@ -507,6 +507,42 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("models accepted native prompt responses as redacted required parameters", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "prompt-rename",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          dialog_event: true,
+          dialog_type: "prompt",
+          dialog_message: "Enter workspace name",
+          dialog_prompt_value: "[REDACTED]",
+          dialog_prompt_value_redacted: true,
+          dialog_accepted: true,
+          observed_effects: ["Renamed workspace to [REDACTED]"],
+          observed_effects_redacted: true,
+          element: { role: "button", name: "Rename workspace", test_id: "rename-workspace", source_id: "src_rename_workspace" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"rename-workspace\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.action.valueRef).toBe("enter_workspace_name");
+    expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
+      name: "enter_workspace_name",
+      valueShape: "secret",
+      required: true,
+      redacted: true,
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "dom",
+      replay: "parameterized",
+    }));
+  });
+
   it("surfaces coordinate and pointer limitations and blocks replay", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

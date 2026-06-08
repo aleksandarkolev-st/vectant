@@ -270,6 +270,37 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Confirmed policy\", { exact: true })).toBeVisible();");
   });
 
+  it("parameterizes prompt dialog values without leaking taught responses", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "prompt-rename",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          dialog_event: true,
+          dialog_type: "prompt",
+          dialog_message: "Enter workspace name",
+          dialog_prompt_value: "[REDACTED]",
+          dialog_prompt_value_redacted: true,
+          dialog_accepted: true,
+          observed_effects: ["Renamed workspace to [REDACTED]"],
+          observed_effects_redacted: true,
+          element: { role: "button", name: "Rename workspace", test_id: "rename-workspace", source_id: "src_rename" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"rename-workspace\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("const dialogPrompt1 = process.env[\"ENTER_WORKSPACE_NAME\"];");
+    expect(generated.code).toContain("test.skip(dialogPrompt1 === undefined");
+    expect(generated.code).toContain("await dialog.accept(dialogPrompt1);");
+    expect(generated.code).not.toContain("Secret Launch Board");
+    expect(generated.code).not.toContain("Renamed workspace to [REDACTED]");
+    expect(generated.warnings).toContain("event prompt-rename prompt dialog replay is parameterized by ENTER_WORKSPACE_NAME");
+  });
+
   it("wraps popup-triggering clicks with a Playwright popup handler", () => {
     const generated = generatePlaywrightScript([
       event({

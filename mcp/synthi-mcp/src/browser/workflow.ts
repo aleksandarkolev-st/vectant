@@ -940,7 +940,9 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
       sourceStepId: step.stepId,
       valueShape: parameterValueShape(event),
       required: true,
-      redacted: event?.redacted === true || event?.detail?.["pasted_text_redacted"] === true,
+      redacted: event?.redacted === true ||
+        event?.detail?.["pasted_text_redacted"] === true ||
+        event?.detail?.["dialog_prompt_value_redacted"] === true,
     }];
   });
 }
@@ -951,6 +953,11 @@ function parameterNameForAction(
   ordinal: number,
   actionKind: BrowserActionKind
 ): string | undefined {
+  if (isAcceptedPromptDialogEvent(event)) {
+    const explicit = stringDetail(event, "dialog_prompt_env") ?? stringDetail(event, "dialog_prompt_parameter") ?? stringDetail(event, "prompt_parameter");
+    const message = event.detail?.["dialog_message_redacted"] === true ? undefined : stringDetail(event, "dialog_message");
+    return slugIdentifier(explicit || message || element?.label || element?.name || element?.test_id || `prompt_${ordinal}`);
+  }
   if (actionKind === "fill" || actionKind === "select") {
     if (actionKind === "fill" && isClipboardPasteEvent(event)) {
       const explicit = stringDetail(event, "paste_parameter") ?? stringDetail(event, "clipboard_parameter");
@@ -978,6 +985,7 @@ function parameterNameFor(event: BrowserTraceEvent, element: BrowserElementMetad
 function parameterValueShape(event: BrowserTraceEvent | undefined): WorkflowParameterV7["valueShape"] {
   if (event?.action === "drag" && dragClassFor(event) === "filedrop") return "filePath";
   if (event && isClipboardPasteEvent(event)) return "secret";
+  if (event && isAcceptedPromptDialogEvent(event)) return "secret";
   return valueShape(event?.value, event?.redacted === true);
 }
 
@@ -1273,6 +1281,13 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Clipboard paste replay requires caller-provided text; pasted content is not stored in the taught trace."],
     };
   }
+  if (isAcceptedPromptDialogEvent(event)) {
+    return {
+      kind: "dom",
+      replay: "parameterized",
+      notes: ["Native prompt replay requires caller-provided prompt text; the taught prompt response is not stored."],
+    };
+  }
   const editorStrategy = editorReplayStrategyFor(event);
   if (editorStrategy) {
     return {
@@ -1317,6 +1332,12 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
   );
+}
+
+function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true &&
+    event.detail?.["dialog_type"] === "prompt" &&
+    event.detail?.["dialog_accepted"] !== false;
 }
 
 function dragClassFor(event: BrowserTraceEvent): string {
