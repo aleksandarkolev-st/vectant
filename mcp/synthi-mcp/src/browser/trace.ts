@@ -233,6 +233,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
+    ...(mode === "ciIsolated" ? ["import { appendFile } from 'node:fs/promises';"] : []),
     ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
     "",
     `// Workflow: ${contract.name}`,
@@ -424,6 +425,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   if (mode === "ciIsolated" && firstMutationStepId) {
     lines.push("  test.skip(process.env.ALLOW_WORKFLOW_MUTATION !== '1', 'Set ALLOW_WORKFLOW_MUTATION=1 only inside an isolated resettable replay environment.');");
     lines.push("  if (process.env.ALLOW_WORKFLOW_MUTATION !== '1') throw new Error('missing ALLOW_WORKFLOW_MUTATION=1 for CI-isolated mutation replay');");
+    lines.push("  async function recordWorkflowStep(stepId) {");
+    lines.push("    const attestationPath = process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION;");
+    lines.push("    if (!attestationPath) return;");
+    lines.push("    await appendFile(attestationPath, JSON.stringify({ step_id: stepId, at: Date.now() }) + '\\n', 'utf8');");
+    lines.push("  }");
     warnings.push(`ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary ${firstMutationStepId}`);
   }
 
@@ -487,6 +493,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       warnings.push(`${mode} stopped before mutation boundary ${event.event_id}`);
       continue;
     }
+    let replayActionEmitted = true;
     switch (event.action) {
       case "click":
         if (isDownloadTrigger(event)) {
@@ -567,6 +574,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
             : event.value;
           if (!dropLocator) {
             warnings.push(`event ${event.event_id} is a calibrated pointer drag without a durable drop target locator`);
+            replayActionEmitted = false;
             break;
           }
           const dropTarget = `dropTarget${targetSeq}`;
@@ -609,6 +617,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           }
         } else {
           warnings.push(`event ${event.event_id} is a drag step without a durable drop target locator`);
+          replayActionEmitted = false;
         }
         break;
       }
@@ -753,6 +762,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       default:
         warnings.push(`event ${event.event_id} has unsupported action ${event.action ?? "unknown"}`);
+        replayActionEmitted = false;
         break;
     }
     for (const effectText of observedEffectTexts(event)) {
@@ -767,6 +777,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         pageVar
       );
       lines.push(`  await expect(${effectLocator}).toBeVisible();`);
+    }
+    if (mode === "ciIsolated" && firstMutationStepId && replayActionEmitted) {
+      lines.push(`  await recordWorkflowStep(${JSON.stringify(event.event_id)});`);
     }
   }
 

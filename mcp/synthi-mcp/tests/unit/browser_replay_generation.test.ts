@@ -75,8 +75,10 @@ describe("browser replay generation scenarios", () => {
 
     expect(generated.mode).toBe("ciIsolated");
     expect(generated.code).toContain("ALLOW_WORKFLOW_MUTATION");
+    expect(generated.code).toContain("SYNTHI_WORKFLOW_REPLAY_ATTESTATION");
     expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"EMAIL\", \"email\");");
     expect(generated.code).toContain("await target2.click();");
+    expect(generated.code).toContain("await recordWorkflowStep(\"save\");");
     expect(generated.code).not.toContain("Mutation boundary:");
     expect(generated.warnings).toContain("ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary save");
   });

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { generatePlaywrightScript, workflowParameterEnvName } from "./trace.js";
@@ -40,6 +40,7 @@ export interface CiIsolatedReplayResult {
     spec_path: string;
     reset_log_path: string;
     ci_log_path: string;
+    attestation_path: string;
   };
   commands: {
     reset_exit_code: number | null;
@@ -50,6 +51,9 @@ export interface CiIsolatedReplayResult {
     ci_output: string;
     warnings: string[];
     parameter_env: string[];
+    attested_step_ids: string[];
+    required_mutation_step_ids: string[];
+    missing_mutation_step_ids: string[];
   };
 }
 
@@ -68,10 +72,12 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const specPath = path.join(directory, "workflow.spec.mjs");
   const resetLogPath = path.join(directory, "reset.log");
   const ciLogPath = path.join(directory, "ci.log");
+  const attestationPath = path.join(directory, "replay-attestation.jsonl");
   await mkdir(directory, { recursive: true });
 
   const generated = generatePlaywrightScript(input.events, { mode: "ciIsolated" });
   await writeFile(specPath, generated.code + "\n", "utf8");
+  await writeFile(attestationPath, "", "utf8");
 
   const blockers = [
     ...(input.blockers ?? []),
@@ -95,11 +101,13 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       specPath,
       resetLogPath,
       ciLogPath,
+      attestationPath,
       blockers: uniqueBlockers,
       status: "blocked",
       failureClass: "mutationBlocked",
       reset: null,
       ci: null,
+      attestedStepIds: [],
       parameterEnvNames: Object.keys(parameterEnv),
     });
   }
@@ -109,6 +117,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     ...parameterEnv,
     PLAYWRIGHT_BASE_URL: input.profile.base_url!,
     SYNTHI_WORKFLOW_SPEC: specPath,
+    SYNTHI_WORKFLOW_REPLAY_ATTESTATION: attestationPath,
     SYNTHI_WORKFLOW_ID: workflowId,
     SYNTHI_WORKSPACE_ID: workspaceId,
     ALLOW_WORKFLOW_MUTATION: "1",
@@ -126,17 +135,22 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       specPath,
       resetLogPath,
       ciLogPath,
+      attestationPath,
       blockers: [],
       status: "failed",
       failureClass: "appValidationError",
       reset,
       ci: null,
+      attestedStepIds: [],
       parameterEnvNames: Object.keys(parameterEnv),
     });
   }
 
   const ci = await runCommand(input.profile.ci_command!, { cwd: commandCwd, env, timeoutMs });
   await writeFile(ciLogPath, ci.output, "utf8");
+  const attestedStepIds = await readAttestedStepIds(attestationPath);
+  const missingMutationStepIds = missingMutationSteps(input.workflow, attestedStepIds);
+  const missingRequiredMutationAttestation = ci.exitCode === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 && missingMutationStepIds.length > 0;
   return resultFor(input, {
     workflowId,
     workspaceId,
@@ -145,11 +159,15 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     specPath,
     resetLogPath,
     ciLogPath,
+    attestationPath,
     blockers: [],
-    status: ci.exitCode === 0 ? "passed" : "failed",
-    failureClass: ci.exitCode === 0 ? null : classifyCiFailure(ci.output),
+    status: ci.exitCode === 0 && !missingRequiredMutationAttestation ? "passed" : "failed",
+    failureClass: ci.exitCode === 0
+      ? missingRequiredMutationAttestation ? "appValidationError" : null
+      : classifyCiFailure(ci.output),
     reset,
     ci,
+    attestedStepIds,
     parameterEnvNames: Object.keys(parameterEnv),
   });
 }
@@ -164,20 +182,24 @@ function resultFor(
     specPath: string;
     resetLogPath: string;
     ciLogPath: string;
+    attestationPath: string;
     blockers: string[];
     status: CiIsolatedReplayResult["status"];
     failureClass: FailureClassV7 | null;
     reset: CommandResult | null;
     ci: CommandResult | null;
+    attestedStepIds: string[];
     parameterEnvNames: string[];
   }
 ): CiIsolatedReplayResult {
+  const requiredMutationStepIds = input.workflow.contract.mutationBoundaryPlan.mutationSteps.map((step) => step.stepId);
+  const missingMutationStepIds = requiredMutationStepIds.filter((stepId) => !options.attestedStepIds.includes(stepId));
   return {
     workflow_id: options.workflowId,
     workspace_id: options.workspaceId,
     replay_mode: "ciIsolated",
     status: options.status,
-    mutation_executed: options.ci !== null && options.blockers.length === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0,
+    mutation_executed: requiredMutationStepIds.length > 0 && missingMutationStepIds.length === 0 && options.blockers.length === 0,
     isolation_profile: {
       readiness: input.profile.readiness,
       base_url: input.profile.base_url,
@@ -192,6 +214,7 @@ function resultFor(
       spec_path: options.specPath,
       reset_log_path: options.resetLogPath,
       ci_log_path: options.ciLogPath,
+      attestation_path: options.attestationPath,
     },
     commands: {
       reset_exit_code: options.reset?.exitCode ?? null,
@@ -202,8 +225,45 @@ function resultFor(
       ci_output: bounded(redactOutput(options.ci?.output ?? "")),
       warnings: options.generatedWarnings,
       parameter_env: options.parameterEnvNames.sort(),
+      attested_step_ids: [...options.attestedStepIds].sort(),
+      required_mutation_step_ids: requiredMutationStepIds,
+      missing_mutation_step_ids: missingMutationStepIds,
     },
   };
+}
+
+async function readAttestedStepIds(attestationPath: string): Promise<string[]> {
+  let content = "";
+  try {
+    content = await readFile(attestationPath, "utf8");
+  } catch {
+    return [];
+  }
+  const stepIds = new Set<string>();
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as { step_id?: unknown; event_id?: unknown; step_ids?: unknown };
+      if (typeof parsed.step_id === "string" && parsed.step_id.length > 0) stepIds.add(parsed.step_id);
+      if (typeof parsed.event_id === "string" && parsed.event_id.length > 0) stepIds.add(parsed.event_id);
+      if (Array.isArray(parsed.step_ids)) {
+        for (const stepId of parsed.step_ids) {
+          if (typeof stepId === "string" && stepId.length > 0) stepIds.add(stepId);
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return [...stepIds];
+}
+
+function missingMutationSteps(workflow: CompiledWorkflowV7, attestedStepIds: string[]): string[] {
+  const attested = new Set(attestedStepIds);
+  return workflow.contract.mutationBoundaryPlan.mutationSteps
+    .map((step) => step.stepId)
+    .filter((stepId) => !attested.has(stepId));
 }
 
 interface CommandResult {
