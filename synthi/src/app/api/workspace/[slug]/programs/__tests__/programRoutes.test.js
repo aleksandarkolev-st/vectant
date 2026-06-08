@@ -12,6 +12,10 @@ const h = vi.hoisted(() => ({
   createInstall: vi.fn(),
   getInstall: vi.fn(),
   getProgramVersion: vi.fn(),
+  publishProgram: vi.fn(),
+  listPublishedPrograms: vi.fn(),
+  getPublishedProgramVersion: vi.fn(),
+  incrementInstallCount: vi.fn(),
   createProgramSession: vi.fn(),
   updateProgramSession: vi.fn(),
   appendProgramRuntimeEvent: vi.fn(),
@@ -33,11 +37,17 @@ vi.mock('@/lib/programs/store', () => ({
   createProgramSession: h.createProgramSession,
   updateProgramSession: h.updateProgramSession,
   appendProgramRuntimeEvent: h.appendProgramRuntimeEvent,
+  publishProgram: h.publishProgram,
+  listPublishedPrograms: h.listPublishedPrograms,
+  getPublishedProgramVersion: h.getPublishedProgramVersion,
+  incrementInstallCount: h.incrementInstallCount,
   // Real-ish projection so the install route can return a public install.
   toPublicInstall: (row) =>
     row
       ? { id: row.id, version: row.version, status: row.status, packageId: row.program?.packageId ?? null, publisher: row.program?.publisher ?? null }
       : row,
+  // Pass-through projection for published programs in route tests.
+  toPublicMarketplaceProgram: (row) => row,
 }));
 vi.mock('@/lib/programs/runtimeClient', () => ({
   discoverManifest: h.discoverManifest,
@@ -48,6 +58,7 @@ import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
 import { GET as GET_INSTALLED } from '../installed/route.js';
 import { POST as POST_INSTALL } from '../install/route.js';
 import { POST as POST_LAUNCH } from '../[installId]/launch/route.js';
+import { POST as POST_PUBLISH } from '../publish/route.js';
 
 const req = (url, body, method = 'GET') => ({ url, method, json: async () => body });
 const ctx = (params) => ({ params: Promise.resolve(params) });
@@ -62,23 +73,51 @@ beforeEach(() => {
 });
 
 describe('GET /programs/marketplace', () => {
-  it('lists local programs for a member', async () => {
-    h.listLocalPrograms.mockResolvedValue([
-      { id: 'prog1', packageId: 'local:team:web', publisher: 'local', verified: false, latestVersion: '1.0.0' },
+  it('returns the published catalog (search) for a member', async () => {
+    h.listPublishedPrograms.mockResolvedValue([
+      { id: 'p1', packageId: '@team/web', publisher: 'team', verified: false, latestVersion: '1.0.0', displayName: 'Web', description: null, installCount: 3 },
     ]);
 
-    const res = await GET_MARKETPLACE(req('http://x/api/workspace/team/programs/marketplace'), ctx({ slug: 'team' }));
+    const res = await GET_MARKETPLACE(req('http://x/api/workspace/team/programs/marketplace?q=web'), ctx({ slug: 'team' }));
 
     expect(res.status).toBe(200);
+    expect(h.listPublishedPrograms).toHaveBeenCalledWith({ q: 'web' });
     const body = await res.json();
-    expect(body.programs[0]).toMatchObject({ packageId: 'local:team:web', publisher: 'local' });
+    expect(body.programs[0]).toMatchObject({ packageId: '@team/web', publisher: 'team', installCount: 3 });
   });
 
   it('rejects a non-member', async () => {
     h.canRead.mockResolvedValue(false);
     const res = await GET_MARKETPLACE(req('http://x/api/workspace/team/programs/marketplace'), ctx({ slug: 'team' }));
     expect(res.status).toBe(403);
-    expect(h.listLocalPrograms).not.toHaveBeenCalled();
+    expect(h.listPublishedPrograms).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /programs/publish', () => {
+  it('publishes the workspace manifest for an owner/admin', async () => {
+    h.discoverManifest.mockResolvedValue({ config: { packageId: 'web', version: '1.0.0', displayName: 'Web', description: 'd', permissions: ['program.launch'] }, source: 'vectant.programs.json' });
+    h.publishProgram.mockResolvedValue({ program: { id: 'p1', packageId: '@team/web', publisher: 'team', verified: false, latestVersion: '1.0.0', displayName: 'Web', description: 'd', installCount: 0 } });
+
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
+
+    expect(res.status).toBe(200);
+    expect(h.publishProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', publishedByUserId: 'u1' }));
+    const body = await res.json();
+    expect(body.program).toMatchObject({ packageId: '@team/web', publisher: 'team' });
+  });
+
+  it('rejects publish for a plain member (403)', async () => {
+    h.canWrite.mockResolvedValue(false);
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.publishProgram).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when there is no workspace manifest to publish', async () => {
+    h.discoverManifest.mockResolvedValue(null);
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(404);
   });
 });
 
