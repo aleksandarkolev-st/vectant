@@ -978,6 +978,37 @@ function selectedIslandContractFromProof(fissionProof) {
   return contracts[0] ?? {};
 }
 
+function backendContractProofFromVerifiedProofs(input, validationContext, backend) {
+  const proof = firstObject(
+    input.backendContractProof,
+    input.backend_contract_proof,
+    validationContext.backendContractProof,
+    validationContext.backend_contract_proof,
+  );
+  const proven = proof.resultState === 'gpu-hmr-backend-contract-proven'
+    || proof.result_state === 'gpu-hmr-backend-contract-proven'
+    || proof.backendContractProven === true
+    || proof.backend_contract_proven === true;
+  const proofBackend = firstText(proof.backend, proof.gpuBackend, proof.gpu_backend);
+  const backendMatches = !proofBackend || proofBackend === backend;
+  return proven && backendMatches ? proof : {};
+}
+
+function backendSpecificContractFromProof(backendContractProof, backend) {
+  const directContract = firstObject(
+    backendContractProof.contract,
+    backendContractProof.backend_contract,
+    backendContractProof.verifiedContract,
+    backendContractProof.verified_contract,
+  );
+  const byBackend = firstObject(
+    backendContractProof[`${backend}_contract`],
+    backend === 'bevy_wgsl' ? backendContractProof.webgpu_contract : null,
+    directContract,
+  );
+  return byBackend;
+}
+
 function selectedIslandKind(contract, backend) {
   const kind = firstText(contract.artifactKind, contract.artifact_kind)?.toLowerCase();
   if (!kind) return 'unknown';
@@ -1116,79 +1147,87 @@ function hipContractFromVerifiedProofs({
 
 function hiprtContractFromVerifiedProofs({
   entryPoints,
-  input,
-  validationContext,
   outputProof,
+  backendContractProof,
 }) {
+  const contract = backendSpecificContractFromProof(backendContractProof, 'hiprt');
   return {
-    kernel_entry: firstText(input.kernelEntry, input.kernel_entry, entryPoints[0]),
-    scene_or_bvh_handles: compactStringList(input.sceneOrBvhHandles ?? input.scene_or_bvh_handles
-      ?? input.engineSceneHandles ?? input.engine_scene_handles),
+    kernel_entry: firstText(contract.kernelEntry, contract.kernel_entry, entryPoints[0]),
+    scene_or_bvh_handles: compactStringList(contract.sceneOrBvhHandles ?? contract.scene_or_bvh_handles),
     framebuffer_handle: firstText(
-      input.framebufferHandle,
-      input.framebuffer_handle,
-      input.swapchainOrFramebufferIdentity,
-      input.swapchain_or_framebuffer_identity,
-      validationContext.swapchainOrFramebufferIdentity,
-      validationContext.swapchain_or_framebuffer_identity,
+      contract.framebufferHandle,
+      contract.framebuffer_handle,
+      contract.swapchainOrFramebufferIdentity,
+      contract.swapchain_or_framebuffer_identity,
     ),
-    material_or_geometry_buffers: compactStringList(input.materialOrGeometryBuffers ?? input.material_or_geometry_buffers),
-    camera_state_hash: firstText(input.cameraStateHash, input.camera_state_hash, validationContext.cameraStateHash),
-    same_process_reload_hook: firstText(input.sameProcessReloadHook, input.same_process_reload_hook),
-    visual_oracle: firstObject(outputProof?.visualOracle, outputProof?.visual_oracle, outputProof?.outputOracle),
+    material_or_geometry_buffers: compactStringList(
+      contract.materialOrGeometryBuffers ?? contract.material_or_geometry_buffers,
+    ),
+    camera_state_hash: firstText(contract.cameraStateHash, contract.camera_state_hash),
+    same_process_reload_hook: firstText(contract.sameProcessReloadHook, contract.same_process_reload_hook),
+    visual_oracle: firstObject(contract.visualOracle, contract.visual_oracle, outputProof?.visualOracle, outputProof?.visual_oracle),
   };
 }
 
-function openclContractFromVerifiedProofs({ input, outputProof, artifactHashBefore, artifactHashAfter, entryPoints }) {
+function openclContractFromVerifiedProofs({ outputProof, artifactHashBefore, artifactHashAfter, entryPoints, backendContractProof }) {
+  const contract = backendSpecificContractFromProof(backendContractProof, 'opencl');
   const outputOracle = firstObject(outputProof?.outputOracle, outputProof?.output_oracle);
   return {
     program_hash_before: artifactHashBefore,
     program_hash_after: artifactHashAfter,
-    kernel_name: firstText(input.kernelName, input.kernel_name, entryPoints[0]),
-    command_queue: firstText(input.commandQueue, input.command_queue),
-    work_dim: input.workDim ?? input.work_dim,
-    global_work_size: input.globalWorkSize ?? input.global_work_size,
-    local_work_size: input.localWorkSize ?? input.local_work_size,
-    event_trace: input.eventTrace ?? input.event_trace,
-    output_buffer_readback: firstObject(outputProof?.outputBufferReadback, outputProof?.output_buffer_readback, outputOracle),
+    kernel_name: firstText(contract.kernelName, contract.kernel_name, entryPoints[0]),
+    command_queue: firstText(contract.commandQueue, contract.command_queue),
+    work_dim: contract.workDim ?? contract.work_dim,
+    global_work_size: contract.globalWorkSize ?? contract.global_work_size,
+    local_work_size: contract.localWorkSize ?? contract.local_work_size,
+    event_trace: contract.eventTrace ?? contract.event_trace,
+    output_buffer_readback: firstObject(
+      contract.outputBufferReadback,
+      contract.output_buffer_readback,
+      outputProof?.outputBufferReadback,
+      outputProof?.output_buffer_readback,
+      outputOracle,
+    ),
   };
 }
 
-function vulkanContractFromVerifiedProofs({ input, artifactHashBefore, artifactHashAfter, entryPoints }) {
+function vulkanContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfter, entryPoints, backendContractProof }) {
+  const contract = backendSpecificContractFromProof(backendContractProof, 'vulkan');
   return {
-    shader_module_hash_before: firstText(input.shaderModuleHashBefore, input.shader_module_hash_before, artifactHashBefore),
-    shader_module_hash_after: firstText(input.shaderModuleHashAfter, input.shader_module_hash_after, artifactHashAfter),
-    entry_point: firstText(input.entryPoint, input.entry_point, entryPoints[0]),
-    descriptor_set_layout_hash: firstText(input.descriptorSetLayoutHash, input.descriptor_set_layout_hash),
-    pipeline_layout_hash: firstText(input.pipelineLayoutHash, input.pipeline_layout_hash),
-    pipeline_state_hash: firstText(input.pipelineStateHash, input.pipeline_state_hash),
+    shader_module_hash_before: firstText(contract.shaderModuleHashBefore, contract.shader_module_hash_before, artifactHashBefore),
+    shader_module_hash_after: firstText(contract.shaderModuleHashAfter, contract.shader_module_hash_after, artifactHashAfter),
+    entry_point: firstText(contract.entryPoint, contract.entry_point, entryPoints[0]),
+    descriptor_set_layout_hash: firstText(contract.descriptorSetLayoutHash, contract.descriptor_set_layout_hash),
+    pipeline_layout_hash: firstText(contract.pipelineLayoutHash, contract.pipeline_layout_hash),
+    pipeline_state_hash: firstText(contract.pipelineStateHash, contract.pipeline_state_hash),
     command_buffer_re_record_required:
-      input.commandBufferReRecordRequired ?? input.command_buffer_re_record_required,
+      contract.commandBufferReRecordRequired ?? contract.command_buffer_re_record_required,
     command_buffer_re_record_proven:
-      input.commandBufferReRecordProven ?? input.command_buffer_re_record_proven,
+      contract.commandBufferReRecordProven ?? contract.command_buffer_re_record_proven,
     frame_used_new_pipeline_trace:
-      input.frameUsedNewPipelineTrace ?? input.frame_used_new_pipeline_trace,
+      contract.frameUsedNewPipelineTrace ?? contract.frame_used_new_pipeline_trace,
   };
 }
 
-function webgpuContractFromVerifiedProofs({ input, artifactHashBefore, artifactHashAfter, entryPoints, epochProof }) {
+function webgpuContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfter, entryPoints, epochProof, backendContractProof, backend }) {
+  const contract = backendSpecificContractFromProof(backendContractProof, backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu');
   return {
-    wgsl_hash_before: firstText(input.wgslHashBefore, input.wgsl_hash_before, artifactHashBefore),
-    wgsl_hash_after: firstText(input.wgslHashAfter, input.wgsl_hash_after, artifactHashAfter),
-    shader_module_epoch: firstText(input.shaderModuleEpoch, input.shader_module_epoch, epochProof?.activeEpoch),
-    entry_points: compactStringList(input.entryPoints ?? input.entry_points ?? entryPoints),
-    bind_group_layout_hash: firstText(input.bindGroupLayoutHash, input.bind_group_layout_hash),
-    pipeline_layout_hash: firstText(input.pipelineLayoutHash, input.pipeline_layout_hash),
-    vertex_buffer_layout_hash: firstText(input.vertexBufferLayoutHash, input.vertex_buffer_layout_hash),
-    color_target_state_hash: firstText(input.colorTargetStateHash, input.color_target_state_hash),
+    wgsl_hash_before: firstText(contract.wgslHashBefore, contract.wgsl_hash_before, artifactHashBefore),
+    wgsl_hash_after: firstText(contract.wgslHashAfter, contract.wgsl_hash_after, artifactHashAfter),
+    shader_module_epoch: firstText(contract.shaderModuleEpoch, contract.shader_module_epoch, epochProof?.activeEpoch),
+    entry_points: compactStringList(contract.entryPoints ?? contract.entry_points ?? entryPoints),
+    bind_group_layout_hash: firstText(contract.bindGroupLayoutHash, contract.bind_group_layout_hash),
+    pipeline_layout_hash: firstText(contract.pipelineLayoutHash, contract.pipeline_layout_hash),
+    vertex_buffer_layout_hash: firstText(contract.vertexBufferLayoutHash, contract.vertex_buffer_layout_hash),
+    color_target_state_hash: firstText(contract.colorTargetStateHash, contract.color_target_state_hash),
     pipeline_recreate_required:
-      input.pipelineRecreateRequired ?? input.pipeline_recreate_required,
+      contract.pipelineRecreateRequired ?? contract.pipeline_recreate_required,
     pipeline_recreate_proven:
-      input.pipelineRecreateProven ?? input.pipeline_recreate_proven,
+      contract.pipelineRecreateProven ?? contract.pipeline_recreate_proven,
     frame_used_new_pipeline_trace:
-      input.frameUsedNewPipelineTrace ?? input.frame_used_new_pipeline_trace,
-    bevy_shader_asset_source: firstText(input.bevyShaderAssetSource, input.bevy_shader_asset_source, input.assetSource),
-    asset_watched: input.assetWatched ?? input.asset_watched,
+      contract.frameUsedNewPipelineTrace ?? contract.frame_used_new_pipeline_trace,
+    bevy_shader_asset_source: firstText(contract.bevyShaderAssetSource, contract.bevy_shader_asset_source, contract.assetSource),
+    asset_watched: contract.assetWatched ?? contract.asset_watched,
   };
 }
 
@@ -1308,6 +1347,7 @@ function blockingGapsFromVerifiedProofs({
   fullRuntimeProof,
   firewallProof,
   selectedIsland,
+  backendContractProof,
   classificationGaps = [],
 }) {
   const gaps = [];
@@ -1333,6 +1373,11 @@ function blockingGapsFromVerifiedProofs({
     gaps.push('host_preservation_not_verified');
   }
   if (fullRuntimeProof?.fullRuntimeProven !== true) gaps.push('full_runtime_not_verified');
+  if (backend !== 'hip' && backend !== 'unknown' && BACKEND_CONTRACT_COMPARABLE_FIELDS[backend]) {
+    if (!backendContractProof || Object.keys(backendContractProof).length === 0) {
+      gaps.push('backend_contract_not_verified');
+    }
+  }
   gaps.push(...asArray(firewallProof?.blockingGaps));
   return compactStringList(gaps);
 }
@@ -1359,6 +1404,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     dispatchProof,
     artifactTransportProof,
   });
+  const backendContractProof = backendContractProofFromVerifiedProofs(input, validationContext, backend);
   const artifactHashAfter = artifactHashAfterFromProofs(
     input,
     artifactTransportProof,
@@ -1388,6 +1434,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     dispatchProof,
     outputProof,
     hostPreservationProof,
+    backendContractProof,
   );
   const blockingGaps = blockingGapsFromVerifiedProofs({
     backend,
@@ -1402,6 +1449,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     fullRuntimeProof,
     firewallProof,
     selectedIsland,
+    backendContractProof,
     classificationGaps: verifiedClassificationGaps(rawClassification, verifiedClassification),
   });
   const gpuRouteAccepted = blockingGaps.length === 0;
@@ -1624,29 +1672,29 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     }),
     hiprt_contract: hiprtContractFromVerifiedProofs({
       entryPoints,
-      input,
-      validationContext,
       outputProof,
+      backendContractProof,
     }),
     opencl_contract: openclContractFromVerifiedProofs({
-      input,
       outputProof,
       artifactHashBefore,
       artifactHashAfter,
       entryPoints,
+      backendContractProof,
     }),
     vulkan_contract: vulkanContractFromVerifiedProofs({
-      input,
       artifactHashBefore,
       artifactHashAfter,
       entryPoints,
+      backendContractProof,
     }),
     webgpu_contract: webgpuContractFromVerifiedProofs({
-      input,
       artifactHashBefore,
       artifactHashAfter,
       entryPoints,
       epochProof,
+      backendContractProof,
+      backend,
     }),
   });
   return contract;

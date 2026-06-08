@@ -5951,6 +5951,76 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evaluation.accepted).toBe(true);
   });
 
+  it("treats backend-specific top-level fields as hints until a backend contract proof verifies them", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "spirv",
+      compilerName: "glslc",
+      launchApi: "vkCmdDispatch",
+      sourcePaths: ["shaders/lighting.comp"],
+      entryPoints: ["main"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-vulkan-hints",
+      backend: "vulkan",
+      gpuArch: "vulkan-device:test",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "vk-device:test",
+      ...acceptedGpuRouteEvidence(),
+      descriptorSetLayoutHash: `sha256:${"6".repeat(64)}`,
+      pipelineLayoutHash: `sha256:${"7".repeat(64)}`,
+      pipelineStateHash: `sha256:${"8".repeat(64)}`,
+      commandBufferReRecordRequired: true,
+      commandBufferReRecordProven: true,
+      frameUsedNewPipelineTrace: {
+        frame_id: "frame:3",
+        pipeline_epoch: "3",
+      },
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(evaluation.accepted).toBe(false);
+    expect(derived.classification.blocking_gaps).toContain("backend_contract_not_verified");
+    expect(derived.vulkan_contract.descriptor_set_layout_hash).toBeNull();
+    expect(derived.vulkan_contract.pipeline_layout_hash).toBeNull();
+    expect(evaluation.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "classification_blocking_gaps_present",
+        "vulkan_contract_descriptor_set_layout_hash_missing",
+        "vulkan_contract_command_buffer_re_record_requirement_unproven",
+      ]),
+    );
+  });
+
   it("does not let caller-supplied artifact hashes override proof identity", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
@@ -6467,6 +6537,11 @@ describe("GPU HMR runtime output proof classification", () => {
           materialOrGeometryBuffers: ["buffer:materials", "buffer:geometry"],
           cameraStateHash: `sha256:${"4".repeat(64)}`,
           sameProcessReloadHook: "hiprt-runtime:reload-kernel",
+          visualOracle: {
+            oracle_id: "oracle:hiprt:framebuffer-diff",
+            framebuffer_handle: "framebuffer:main",
+            deterministic_visual_mode: "fixed-camera-fixed-seed",
+          },
         },
         forge: (contract: any) => ({
           ...contract,
@@ -6644,7 +6719,12 @@ describe("GPU HMR runtime output proof classification", () => {
         cameraStateHash: `sha256:${"0".repeat(64)}`,
         swapchainOrFramebufferIdentity: "surface:validation-main",
         ...acceptedGpuRouteEvidence(),
-        ...testCase.backendInput,
+        backendContractProof: {
+          resultState: "gpu-hmr-backend-contract-proven",
+          backend: testCase.backend,
+          evidenceRefs: [`evidence:backend-contract:${testCase.backend}`],
+          contract: testCase.backendInput,
+        },
         sourceProofs: [sourceProof],
         fissionProof,
         abiProof,
