@@ -16,6 +16,9 @@ const h = vi.hoisted(() => ({
   launchInstalledProgram: vi.fn(),
   stopProgramSession: vi.fn(),
   restartProgramSession: vi.fn(),
+  publishWorkspaceProgram: vi.fn(),
+  fetchMarketplace: vi.fn(),
+  installPublishedProgram: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
 }));
@@ -33,6 +36,9 @@ vi.mock('../programsClient', () => ({
   launchInstalledProgram: h.launchInstalledProgram,
   stopProgramSession: h.stopProgramSession,
   restartProgramSession: h.restartProgramSession,
+  publishWorkspaceProgram: h.publishWorkspaceProgram,
+  fetchMarketplace: h.fetchMarketplace,
+  installPublishedProgram: h.installPublishedProgram,
 }));
 vi.mock('@/components/docking-wm/state/layout-slice', () => ({
   selectNodes: (s) => s.nodes,
@@ -70,6 +76,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
     };
     h.fetchProgramSessions.mockResolvedValue([]);
     h.fetchInstalledPrograms.mockResolvedValue([]);
+    h.fetchMarketplace.mockResolvedValue([]);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -158,5 +165,30 @@ describe('ProgramsPanel install / launch-from-install', () => {
 
     expect(byTestId(container, 'install-from-manifest')).toBeNull();
     expect(byTestId(container, 'launch-install-inst1')).toBeNull();
+  });
+
+  it('publishes the workspace program when an owner clicks Publish', async () => {
+    h.publishWorkspaceProgram.mockResolvedValue({ program: { packageId: '@team/web', publisher: 'team' } });
+    await render();
+    await act(async () => { byTestId(container, 'publish-program').click(); });
+    await flush();
+    expect(h.publishWorkspaceProgram).toHaveBeenCalledWith('team');
+  });
+
+  it('lists the published catalog and installs a published program', async () => {
+    h.fetchMarketplace.mockResolvedValue([{ id: 'p1', packageId: '@other/web', publisher: 'other', displayName: 'Web', installCount: 4, verified: false, latestVersion: '1.0.0' }]);
+    h.installPublishedProgram.mockResolvedValue({ install: { id: 'inst9', packageId: '@other/web', version: '1.0.0', status: 'installed' } });
+    await render();
+    const card = byTestId(container, 'marketplace-item-@other/web');
+    expect(card).not.toBeNull();
+    await act(async () => { byTestId(container, 'install-published-@other/web').click(); });
+    await flush();
+    expect(h.installPublishedProgram).toHaveBeenCalledWith('team', '@other/web', '1.0.0', undefined);
+  });
+
+  it('hides the Publish action for a plain member', async () => {
+    h.state.workspace.role = 'member';
+    await render();
+    expect(byTestId(container, 'publish-program')).toBeNull();
   });
 });

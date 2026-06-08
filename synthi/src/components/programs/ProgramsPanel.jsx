@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe, Package, Download, ShieldCheck, X } from 'lucide-react';
+import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe, Package, Download, ShieldCheck, X, Store, UploadCloud } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   fetchProgramSessions,
@@ -12,6 +12,9 @@ import {
   fetchInstalledPrograms,
   installWorkspaceProgram,
   launchInstalledProgram,
+  publishWorkspaceProgram,
+  fetchMarketplace,
+  installPublishedProgram,
 } from './programsClient';
 import {
   buildProgramSessionSections,
@@ -233,9 +236,12 @@ export default function ProgramsPanel() {
   const [command, setCommand] = useState('npm run dev');
   const [sessions, setSessions] = useState([]);
   const [installs, setInstalls] = useState([]);
+  const [marketplace, setMarketplace] = useState([]);
+  const [marketQuery, setMarketQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [consent, setConsent] = useState(null);
   const [actingSessionId, setActingSessionId] = useState(null);
 
@@ -247,24 +253,27 @@ export default function ProgramsPanel() {
     if (!workspaceSlug) {
       setSessions([]);
       setInstalls([]);
+      setMarketplace([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
     try {
-      const [nextSessions, nextInstalls] = await Promise.all([
+      const [nextSessions, nextInstalls, nextMarket] = await Promise.all([
         fetchProgramSessions(workspaceSlug),
         fetchInstalledPrograms(workspaceSlug).catch(() => []),
+        fetchMarketplace(workspaceSlug, marketQuery).catch(() => []),
       ]);
       setSessions(nextSessions);
       setInstalls(nextInstalls);
+      setMarketplace(Array.isArray(nextMarket) ? nextMarket : []);
     } catch (error) {
       toast.error(error.message || 'Failed to load programs');
     } finally {
       setLoading(false);
     }
-  }, [workspaceSlug]);
+  }, [workspaceSlug, marketQuery]);
 
   useEffect(() => {
     load();
@@ -400,6 +409,37 @@ export default function ProgramsPanel() {
     }
   }, [load, openProgramSession, workspaceSlug]);
 
+  const handlePublish = useCallback(async () => {
+    if (!workspaceSlug) return;
+
+    setPublishing(true);
+    try {
+      const { program } = await publishWorkspaceProgram(workspaceSlug);
+      toast.success(`Published ${program?.packageId || 'program'}`);
+      await load();
+    } catch (error) {
+      if (error?.status === 422) toast.error(error.body?.message || 'Invalid manifest');
+      else if (error?.status === 404) toast.error('No vectant.programs.json or devcontainer.json found in this workspace.');
+      else toast.error(error.body?.message || error.message || 'Failed to publish');
+    } finally {
+      setPublishing(false);
+    }
+  }, [load, workspaceSlug]);
+
+  const handleInstallPublished = useCallback(async (item, grantScopes) => {
+    if (!workspaceSlug || !item?.packageId) return;
+
+    try {
+      await installPublishedProgram(workspaceSlug, item.packageId, item.latestVersion, grantScopes);
+      toast.success(`Installed ${item.packageId}`);
+      setConsent(null);
+      await load();
+    } catch (error) {
+      if (error?.status === 409) setConsent({ requested: error.body?.requested || [], published: item });
+      else toast.error(error.body?.message || error.message || 'Failed to install');
+    }
+  }, [load, workspaceSlug]);
+
   return (
     <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)' }}>
       <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -471,7 +511,11 @@ export default function ProgramsPanel() {
           <ConsentPrompt
             requested={consent.requested}
             busy={installing}
-            onApprove={() => handleInstall(consent.requested)}
+            onApprove={() =>
+              consent.published
+                ? handleInstallPublished(consent.published, consent.requested)
+                : handleInstall(consent.requested)
+            }
             onCancel={() => setConsent(null)}
           />
         ) : null}
@@ -487,16 +531,29 @@ export default function ProgramsPanel() {
                 Detects vectant.programs.json or devcontainer.json in this workspace.
               </div>
             </div>
-            <button
-              type="button"
-              data-testid="install-from-manifest"
-              onClick={() => handleInstall()}
-              disabled={!workspaceSlug || installing}
-              className="h-9 px-3 rounded-md inline-flex items-center gap-2 text-sm font-medium border disabled:opacity-50"
-              style={{ borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
-            >
-              <Download className="w-4 h-4" /> {installing ? 'Installing…' : 'Install'}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                data-testid="install-from-manifest"
+                onClick={() => handleInstall()}
+                disabled={!workspaceSlug || installing}
+                className="h-9 px-3 rounded-md inline-flex items-center gap-2 text-sm font-medium border disabled:opacity-50"
+                style={{ borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+              >
+                <Download className="w-4 h-4" /> {installing ? 'Installing…' : 'Install'}
+              </button>
+              <button
+                type="button"
+                data-testid="publish-program"
+                onClick={handlePublish}
+                disabled={!workspaceSlug || publishing}
+                className="h-9 px-3 rounded-md inline-flex items-center gap-2 text-sm font-medium border disabled:opacity-50"
+                style={{ borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+                title="Publish this workspace's recipe to the marketplace"
+              >
+                <UploadCloud className="w-4 h-4" /> {publishing ? 'Publishing…' : 'Publish'}
+              </button>
+            </div>
           </div>
         ) : null}
 
@@ -520,6 +577,56 @@ export default function ProgramsPanel() {
                 canManage={canManage}
                 onLaunch={handleLaunchInstall}
               />
+            ))
+          )}
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+              <Store className="w-3.5 h-3.5" /> Marketplace
+            </h3>
+            <input
+              value={marketQuery}
+              onChange={(event) => setMarketQuery(event.target.value)}
+              placeholder="Search published programs"
+              className="h-7 w-40 rounded border px-2 text-[11px] outline-none"
+              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-primary)' }}
+            />
+          </div>
+          {marketplace.length === 0 ? (
+            <div className="text-xs rounded-lg border px-3 py-4" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+              No published programs yet.
+            </div>
+          ) : (
+            marketplace.map((item) => (
+              <div
+                key={item.packageId}
+                data-testid={`marketplace-item-${item.packageId}`}
+                className="rounded-lg border px-3 py-2 flex items-center justify-between gap-3"
+                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+              >
+                <div className="min-w-0 flex items-center gap-2">
+                  <Package className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{item.displayName || item.packageId}</div>
+                    <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      {item.packageId} · {item.installCount || 0} installs
+                    </div>
+                  </div>
+                </div>
+                {canManage ? (
+                  <button
+                    type="button"
+                    data-testid={`install-published-${item.packageId}`}
+                    onClick={() => handleInstallPublished(item, undefined)}
+                    className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1"
+                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  >
+                    <Download className="w-3 h-3" /> Install
+                  </button>
+                ) : null}
+              </div>
             ))
           )}
         </section>

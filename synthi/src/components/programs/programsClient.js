@@ -82,3 +82,30 @@ export async function launchInstalledProgram(workspaceSlug, installId) {
     method: 'POST',
   });
 }
+
+// ── Phase 5: open marketplace (publish / browse / install) ──
+
+/** Publish this workspace's recipe to the global catalog (owner/admin). */
+export async function publishWorkspaceProgram(workspaceSlug) {
+  return request(`${programsBase(workspaceSlug)}/publish`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+/** Browse/search the global published catalog. */
+export async function fetchMarketplace(workspaceSlug, q = '') {
+  if (!workspaceSlug) return [];
+  const suffix = q ? `?q=${encodeURIComponent(q)}` : '';
+  const body = await request(`${programsBase(workspaceSlug)}/marketplace${suffix}`);
+  return body.programs || [];
+}
+
+/**
+ * Install a published program by packageId+version. Like the manifest install,
+ * throws `error.status === 409` with `error.body.requested` when consent is
+ * required; pass `grantScopes` to approve and re-submit.
+ */
+export async function installPublishedProgram(workspaceSlug, packageId, version, grantScopes) {
+  return request(`${programsBase(workspaceSlug)}/install`, {
+    method: 'POST',
+    body: JSON.stringify({ packageId, version, ...(grantScopes ? { grantScopes } : {}) }),
+  });
+}
