@@ -21,7 +21,7 @@ The local proof stack used Docker frontend/collab services, a Synthi workflow br
 - Trace redaction is recursive, handles sensitive key names including camelCase forms, protects cyclic/deep structures, and prevents trace-injected auth durability from granting unattended replay.
 - Auth checkpoint enrollment can only create checkpoint durability. Refresh-provider and CI-auth durability must come from configured and validated provider metadata.
 - Workflow manifest, publish, direct replay, private-tool replay, and CI private-tool paths enforce live auth readiness.
-- Auth checkpoint/provider metadata now sits behind a store boundary so production can swap in encrypted durable storage without changing tool behavior.
+- Auth checkpoint/provider metadata can use an encrypted, scoped file store via `SYNTHI_AUTH_CHECKPOINT_STORE_FILE`, `SYNTHI_AUTH_CHECKPOINT_STORE_KEY`, and `SYNTHI_AUTH_CHECKPOINT_SCOPE`; the file envelope contains no origin, IdP, tenant, workspace, or secret-ref plaintext.
 - CI-isolated replay profiles support a configured workspace working directory and run reset/replay commands there instead of relying on the MCP process cwd.
 
 ## Validation Evidence
@@ -29,7 +29,7 @@ The local proof stack used Docker frontend/collab services, a Synthi workflow br
 Unit coverage:
 
 - `npx vitest run tests/unit/auth_checkpoint.test.ts tests/unit/browser_broker.test.ts tests/unit/browser_workflow_contract.test.ts tests/unit/browser_replay_generation.test.ts tests/unit/browser_tools.test.ts tests/unit/private_tool_manifest.test.ts tests/unit/safety_tools.test.ts tests/unit/browser_workflow_bridge.test.ts`
-- Result: 8 files passed, 168 tests passed.
+- Result: 8 files passed, 170 tests passed.
 
 Build/type coverage:
 
@@ -50,7 +50,7 @@ Key visual artifacts:
 
 ## Remaining Production Work
 
-- Replace the current in-memory auth checkpoint store with encrypted, tenant-scoped browser storage checkpoint persistence and restore in the hosted runtime.
+- Wire the encrypted auth checkpoint store into hosted deployment configuration and implement encrypted browser storage artifact persistence/restore in the hosted runtime.
 - Wire validated refresh providers and CI auth providers to actual hosted-browser auth-state minting, not only readiness policy.
 - Run the private MCP tool acceptance test against a deployed agent client, not only the in-process MCP/private-tool registry.
 - Expand target coverage for cross-origin iframes and popup chains that require separate consent grants per target.
