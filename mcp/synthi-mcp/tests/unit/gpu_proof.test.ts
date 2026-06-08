@@ -505,6 +505,90 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.runtimeProofArtifactValidation).toBeUndefined();
   });
 
+  it("rejects output oracle proof when firewall process identity contradicts no-restart evidence", () => {
+    const ledger = proofLedger({
+      firewall_evidence: {
+        cpu_hmr_used: false,
+        full_rebuild_used: false,
+        process_restarted: false,
+        process_id_before: "pid-1",
+        process_id_after: "pid-2",
+      },
+    });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_rejected");
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining([
+        "firewall_process_identity_contradiction",
+        "firewall_process_identity_after_mismatch",
+      ])
+    );
+  });
+
+  it("rejects output oracle proof when numeric firewall process identity changes", () => {
+    const ledger = proofLedger({
+      process_identity: {
+        process_id: 100,
+      },
+      loader_event: { id: "load-1", artifact_hash: HASH_B, process_id: 100, timestamp_monotonic_ns: 100 },
+      epoch_publish_event: {
+        id: "publish-1",
+        epoch: "epoch-2",
+        artifact_hash: HASH_B,
+        process_id: 100,
+        timestamp_monotonic_ns: 200,
+      },
+      dispatch_event: {
+        id: "dispatch-1",
+        epoch: "epoch-2",
+        artifact_hash: HASH_B,
+        process_id: 100,
+        timestamp_monotonic_ns: 300,
+      },
+      output_event: {
+        id: "output-1",
+        kind: "buffer_checksum",
+        epoch: "epoch-2",
+        artifact_hash: HASH_B,
+        process_id: 100,
+        after_dispatch_id: "dispatch-1",
+        passed: true,
+        timestamp_monotonic_ns: 400,
+      },
+      firewall_evidence: {
+        cpu_hmr_used: false,
+        full_rebuild_used: false,
+        process_restarted: false,
+        processIdBefore: 100,
+        processIdAfter: 101,
+      },
+    });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_rejected");
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining([
+        "firewall_process_identity_contradiction",
+        "firewall_process_identity_after_mismatch",
+      ])
+    );
+  });
+
   it("rejects output oracle proof when the ledger proof id is not content-addressed", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, unknown>;

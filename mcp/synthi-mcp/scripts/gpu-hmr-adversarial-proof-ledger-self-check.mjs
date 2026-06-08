@@ -906,6 +906,15 @@ const cases = [
   ['cpu fallback', baselineRecord({ cpu_hmr_used: true }), 'cpu_hmr_used'],
   ['full rebuild', baselineRecord({ full_rebuild_used: true }), 'full_rebuild_used'],
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],
+  ['firewall process identity contradiction', baselineRecord({
+    firewall_evidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: 'pid-1',
+      process_id_after: 'pid-2',
+    },
+  }), 'firewall_process_identity_contradiction'],
   ['missing project id', baselineRecord({ project_id: null }), 'project_id_missing'],
   ['missing edit id', baselineRecord({ edit_id: null }), 'edit_id_missing'],
   ['missing backend', baselineRecord({ backend: null }), 'backend_missing'],

@@ -115,6 +115,19 @@ function firstText(...values) {
   return null;
 }
 
+function identifierText(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return text(value);
+}
+
+function firstIdentifierText(...values) {
+  for (const value of values) {
+    const normalized = identifierText(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function enumText(value) {
   if (typeof value === 'string') return text(value);
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -223,7 +236,25 @@ function eventArtifactHash(event) {
 }
 
 function eventProcessId(event) {
-  return firstText(event.process_id, event.processId, event.pid);
+  return firstIdentifierText(event.process_id, event.processId, event.pid);
+}
+
+function firewallProcessIdBefore(evidence) {
+  return firstIdentifierText(
+    evidence.process_id_before,
+    evidence.processIdBefore,
+    evidence.firewall_process_id_before,
+    evidence.firewallProcessIdBefore,
+  );
+}
+
+function firewallProcessIdAfter(evidence) {
+  return firstIdentifierText(
+    evidence.process_id_after,
+    evidence.processIdAfter,
+    evidence.firewall_process_id_after,
+    evidence.firewallProcessIdAfter,
+  );
 }
 
 function eventTimestamp(event) {
@@ -748,6 +779,8 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     [firewallEvidence, 'process_restarted'],
     [firewallEvidence, 'processRestarted'],
   );
+  const firewallPidBefore = firewallProcessIdBefore(firewallEvidence);
+  const firewallPidAfter = firewallProcessIdAfter(firewallEvidence);
   const normalized = {
     schemaVersion: record.schemaVersion ?? record.schema_version ?? GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     proofId: null,
@@ -772,6 +805,8 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     fullRebuildUsedEvidencePresent: fullRebuildUsed.present,
     processRestarted: asBool(processRestarted.value),
     processRestartedEvidencePresent: processRestarted.present,
+    firewallProcessIdBefore: firewallPidBefore,
+    firewallProcessIdAfter: firewallPidAfter,
     oracleArtifacts: asObject(
       record.oracle_artifacts
       ?? record.oracleArtifacts
@@ -852,6 +887,8 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
       cpuHmrUsedEvidencePresent: normalized.cpuHmrUsedEvidencePresent,
       fullRebuildUsedEvidencePresent: normalized.fullRebuildUsedEvidencePresent,
       processRestartedEvidencePresent: normalized.processRestartedEvidencePresent,
+      processIdBefore: normalized.firewallProcessIdBefore,
+      processIdAfter: normalized.firewallProcessIdAfter,
     },
   });
   Object.defineProperty(normalized, 'suppliedProofId', {
@@ -956,6 +993,30 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   if (record.cpuHmrUsed) addFailure(failures, 'cpu_hmr_used');
   if (record.fullRebuildUsed) addFailure(failures, 'full_rebuild_used');
   if (record.processRestarted) addFailure(failures, 'process_restarted');
+  if (
+    record.firewallProcessIdBefore
+    && record.firewallProcessIdAfter
+    && record.firewallProcessIdBefore !== record.firewallProcessIdAfter
+  ) {
+    addFailure(failures, 'firewall_process_identity_contradiction', {
+      processIdBefore: record.firewallProcessIdBefore,
+      processIdAfter: record.firewallProcessIdAfter,
+    });
+  }
+  if (identityPid) {
+    if (record.firewallProcessIdBefore && record.firewallProcessIdBefore !== identityPid) {
+      addFailure(failures, 'firewall_process_identity_before_mismatch', {
+        processIdBefore: record.firewallProcessIdBefore,
+        processIdentity: identityPid,
+      });
+    }
+    if (record.firewallProcessIdAfter && record.firewallProcessIdAfter !== identityPid) {
+      addFailure(failures, 'firewall_process_identity_after_mismatch', {
+        processIdAfter: record.firewallProcessIdAfter,
+        processIdentity: identityPid,
+      });
+    }
+  }
   if (!record.contractHash) addFailure(failures, 'contract_hash_missing');
   if (!record.artifactBeforeHash) addFailure(failures, 'artifact_before_hash_missing');
   if (!artifactAfterHash) addFailure(failures, 'artifact_after_hash_missing');

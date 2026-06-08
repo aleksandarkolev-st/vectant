@@ -151,6 +151,19 @@ function firstText(...values: unknown[]): string | null {
   return null;
 }
 
+function identifierText(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return text(value);
+}
+
+function firstIdentifierText(...values: unknown[]): string | null {
+  for (const value of values) {
+    const normalized = identifierText(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function compactStringList(values: unknown): string[] {
   return [...new Set((Array.isArray(values) ? values : [])
     .map(text)
@@ -248,7 +261,25 @@ function eventArtifactHash(event: Record<string, unknown>): string | null {
 }
 
 function eventProcessId(event: Record<string, unknown>): string | null {
-  return firstText(event.process_id, event.processId, event.pid);
+  return firstIdentifierText(event.process_id, event.processId, event.pid);
+}
+
+function firewallProcessIdBefore(evidence: Record<string, unknown>): string | null {
+  return firstIdentifierText(
+    evidence.process_id_before,
+    evidence.processIdBefore,
+    evidence.firewall_process_id_before,
+    evidence.firewallProcessIdBefore
+  );
+}
+
+function firewallProcessIdAfter(evidence: Record<string, unknown>): string | null {
+  return firstIdentifierText(
+    evidence.process_id_after,
+    evidence.processIdAfter,
+    evidence.firewall_process_id_after,
+    evidence.firewallProcessIdAfter
+  );
 }
 
 function eventTimestamp(event: Record<string, unknown>): number | null {
@@ -877,6 +908,8 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const outputTs = eventTimestamp(outputEvent);
   const retirementTs = eventTimestamp(retirementEvent);
   const identityPid = eventProcessId(processIdentity);
+  const firewallPidBefore = firewallProcessIdBefore(firewallEvidence);
+  const firewallPidAfter = firewallProcessIdAfter(firewallEvidence);
   const cpuHmrUsed = firstPresent(
     [input, "cpu_hmr_used"],
     [input, "cpuHmrUsed"],
@@ -931,6 +964,8 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       cpuHmrUsedEvidencePresent: cpuHmrUsed.present,
       fullRebuildUsedEvidencePresent: fullRebuildUsed.present,
       processRestartedEvidencePresent: processRestarted.present,
+      processIdBefore: firewallPidBefore,
+      processIdAfter: firewallPidAfter,
     },
   });
   const suppliedRecordProofId = firstText(input.proof_id, input.proofId);
@@ -964,6 +999,29 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   if (cpuHmrUsed.value === true) failures.push({ code: "cpu_hmr_used" });
   if (fullRebuildUsed.value === true) failures.push({ code: "full_rebuild_used" });
   if (processRestarted.value === true) failures.push({ code: "process_restarted" });
+  if (firewallPidBefore && firewallPidAfter && firewallPidBefore !== firewallPidAfter) {
+    failures.push({
+      code: "firewall_process_identity_contradiction",
+      processIdBefore: firewallPidBefore,
+      processIdAfter: firewallPidAfter,
+    });
+  }
+  if (identityPid) {
+    if (firewallPidBefore && firewallPidBefore !== identityPid) {
+      failures.push({
+        code: "firewall_process_identity_before_mismatch",
+        processIdBefore: firewallPidBefore,
+        processIdentity: identityPid,
+      });
+    }
+    if (firewallPidAfter && firewallPidAfter !== identityPid) {
+      failures.push({
+        code: "firewall_process_identity_after_mismatch",
+        processIdAfter: firewallPidAfter,
+        processIdentity: identityPid,
+      });
+    }
+  }
   if (!contractHash) failures.push({ code: "contract_hash_missing" });
   if (!artifactBeforeHash) failures.push({ code: "artifact_before_hash_missing" });
   if (!artifactAfterHash) failures.push({ code: "artifact_after_hash_missing" });
