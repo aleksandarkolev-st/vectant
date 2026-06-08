@@ -1144,6 +1144,68 @@ const CASES = [
     },
   },
   {
+    id: "clipboard-copy-cut-textarea",
+    minSteps: 2,
+    expectedActions: ["copy", "cut"],
+    expectedReplayText: [
+      "Copied 5 characters",
+      "Cut 4 characters",
+      "Value alpha gamma",
+    ],
+    expectedReplayCode: [
+      "element.setSelectionRange(selection.start, selection.end, direction);",
+      "process.platform === 'darwin' ? \"Meta+C\" : \"Control+C\"",
+      "process.platform === 'darwin' ? \"Meta+X\" : \"Control+X\"",
+    ],
+    forbiddenReplayCode: [
+      "beta",
+      "alpha beta gamma",
+    ],
+    files: () => commonFiles({
+      title: "Clipboard Copy Cut Textarea Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Clipboard Copy Cut Textarea Workflow</h1>",
+        "      <label for=\"release-notes\">Release notes</label>",
+        "      <textarea id=\"release-notes\" aria-label=\"Release notes\" data-testid=\"release-notes\" data-synthi-source-id=\"clipboard.copycut\">alpha beta gamma</textarea>",
+        "      <output id=\"value\" aria-live=\"polite\">Value alpha beta gamma</output>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "textarea { min-height: 112px; width: min(560px, calc(100vw - 48px)); border: 1px solid #222; background: #fff; padding: 12px; }",
+        "textarea:focus { outline: 2px solid #202020; outline-offset: 3px; }",
+      ],
+      script: [
+        "const notes = document.querySelector('[data-testid=\"release-notes\"]');",
+        "const status = document.querySelector('#status');",
+        "const value = document.querySelector('#value');",
+        "function selectedLength() { return Math.max(0, Number(notes.selectionEnd || 0) - Number(notes.selectionStart || 0)); }",
+        "function renderValue() { value.textContent = `Value ${notes.value}`; }",
+        "notes.addEventListener('copy', () => {",
+        "  status.textContent = `Copied ${selectedLength()} characters`;",
+        "});",
+        "notes.addEventListener('cut', () => {",
+        "  status.textContent = `Cut ${selectedLength()} characters`;",
+        "  setTimeout(renderValue, 0);",
+        "});",
+        "notes.addEventListener('input', renderValue);",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const notes = page.getByTestId("release-notes");
+      await notes.focus();
+      await notes.evaluate((element) => element.setSelectionRange(0, 5));
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+C" : "Control+C");
+      await page.getByText("Copied 5 characters").waitFor();
+      await notes.evaluate((element) => element.setSelectionRange(6, 10));
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+X" : "Control+X");
+      await page.getByText("Cut 4 characters").waitFor();
+      await page.getByText("Value alpha  gamma").waitFor();
+    },
+  },
+  {
     id: "iframe-form",
     minSteps: 2,
     expectedActions: ["fill", "click"],

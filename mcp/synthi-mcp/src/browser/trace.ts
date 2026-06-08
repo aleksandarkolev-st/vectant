@@ -443,6 +443,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       case "hover":
         lines.push(`  await ${target}.hover();`);
         break;
+      case "copy":
+        pushClipboardTransferAction(lines, target, "copy", event);
+        break;
+      case "cut":
+        pushClipboardTransferAction(lines, target, "cut", event);
+        break;
       case "drag": {
         const dragClass = dragClassFor(event);
         if (dragClass === "filedrop") {
@@ -780,11 +786,17 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (previous && shouldDropPressBeforeClipboardPaste(previous, event)) {
       result.pop();
     }
+    if (previous && shouldDropPressBeforeClipboardTransfer(previous, event)) {
+      result.pop();
+    }
     const currentPrevious = result[result.length - 1];
     if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
       continue;
     }
     if (currentPrevious && shouldDropFillAfterClipboardDrop(currentPrevious, event)) {
+      continue;
+    }
+    if (currentPrevious && shouldDropFillAfterClipboardCut(currentPrevious, event)) {
       continue;
     }
     while (event.action === "dblclick" && result.length > 0) {
@@ -809,6 +821,19 @@ function shouldDropPressBeforeClipboardPaste(previous: BrowserTraceEvent, next: 
   return sameOrNestedTargetKey(previousTarget, nextTarget);
 }
 
+function shouldDropPressBeforeClipboardTransfer(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "press" || !isClipboardTransferEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  if (next.action === "copy" && !isCopyKeyChord(previous.value)) return false;
+  if (next.action === "cut" && !isCutKeyChord(previous.value)) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = actionTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
 function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
   if (previous.kind !== next.kind) return false;
   if (!isClipboardPasteEvent(previous) || next.action !== "fill") return false;
@@ -819,6 +844,15 @@ function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: Br
   const previousTarget = actionTargetKey(previous);
   const nextTarget = actionTargetKey(next);
   return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function shouldDropFillAfterClipboardCut(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "cut" || next.action !== "fill") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  return eventsShareDurableTarget(previous, next);
 }
 
 function shouldDropFillAfterClipboardDrop(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
@@ -836,9 +870,39 @@ function isPasteKeyChord(value: string | undefined): boolean {
   return value === "Control+V" || value === "Meta+V";
 }
 
+function isCopyKeyChord(value: string | undefined): boolean {
+  return value === "Control+C" || value === "Meta+C";
+}
+
+function isCutKeyChord(value: string | undefined): boolean {
+  return value === "Control+X" || value === "Meta+X";
+}
+
 function sameOrNestedTargetKey(left: string, right: string): boolean {
   if (!left || !right) return false;
   return left === right || left.includes(right) || right.includes(left);
+}
+
+function eventsShareDurableTarget(left: BrowserTraceEvent, right: BrowserTraceEvent): boolean {
+  const leftTokens = durableTargetTokens(left);
+  const rightTokens = durableTargetTokens(right);
+  return leftTokens.some((token) => rightTokens.includes(token));
+}
+
+function durableTargetTokens(event: BrowserTraceEvent): string[] {
+  const element = elementForEvent(event);
+  return [
+    event.selector,
+    event.locator_candidates?.[0]?.locator,
+    element?.source_id,
+    element?.test_id,
+    element?.id,
+    element?.label,
+    element?.placeholder,
+    element?.name,
+    element?.css,
+    element?.xpath,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0);
 }
 
 function shouldDropClickAfterDblClick(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
@@ -1045,6 +1109,10 @@ function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
 }
 
+function isClipboardTransferEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "copy" || event.action === "cut";
+}
+
 function isMultipleSelectEvent(event: BrowserTraceEvent): boolean {
   if (event.action !== "select") return false;
   if (event.detail?.["multiple_select"] === true) return true;
@@ -1113,6 +1181,35 @@ function clickModifiersFor(event: BrowserTraceEvent): string[] {
   if (keys["alt"] === true) modifiers.push("Alt");
   if (keys["shift"] === true) modifiers.push("Shift");
   return modifiers;
+}
+
+function pushClipboardTransferAction(lines: string[], target: string, action: "copy" | "cut", event: BrowserTraceEvent): void {
+  const range = textSelectionRangeFor(event);
+  if (range) {
+    lines.push(`  await ${target}.evaluate((element, selection) => {`);
+    lines.push("    element.focus();");
+    lines.push("    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {");
+    lines.push("      const direction = selection.direction === 'backward' || selection.direction === 'forward' ? selection.direction : 'none';");
+    lines.push("      element.setSelectionRange(selection.start, selection.end, direction);");
+    lines.push("    }");
+    lines.push(`  }, ${JSON.stringify(range)});`);
+  } else {
+    lines.push(`  await ${target}.click();`);
+  }
+  const macKey = action === "copy" ? "Meta+C" : "Meta+X";
+  const otherKey = action === "copy" ? "Control+C" : "Control+X";
+  lines.push(`  await page.keyboard.press(process.platform === 'darwin' ? ${JSON.stringify(macKey)} : ${JSON.stringify(otherKey)});`);
+}
+
+function textSelectionRangeFor(event: BrowserTraceEvent): { start: number; end: number; direction?: string } | null {
+  const start = numericDetail(event, "selection_start");
+  const end = numericDetail(event, "selection_end");
+  if (start === undefined || end === undefined) return null;
+  return {
+    start: Math.max(0, Math.round(start)),
+    end: Math.max(0, Math.round(end)),
+    ...(typeof event.detail?.["selection_direction"] === "string" ? { direction: event.detail["selection_direction"] } : {}),
+  };
 }
 
 function pushDownloadAction(

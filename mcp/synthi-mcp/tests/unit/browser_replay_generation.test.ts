@@ -570,6 +570,57 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).toContain("event terminal-text uses keyboard typing for a non-editable app surface");
   });
 
+  it("generates copy and cut replay without selected text locator leaks", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "copy-range",
+        event_seq: 1,
+        action: "copy",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "copy",
+          copy_event: true,
+          selection_start: 0,
+          selection_end: 5,
+          selected_text_length: 5,
+          selected_text_redacted: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", text: "alpha beta gamma", source_id: "notes.editor" },
+          observed_effects: ["Copied 5 characters"],
+        },
+        locator_candidates: [
+          { kind: "css", locator: "page.locator(\"[data-synthi-source-id=\\\"notes.editor\\\"]\")", confidence: 0.975, reason: "source_identity" },
+        ],
+      }),
+      event({
+        event_id: "cut-range",
+        event_seq: 2,
+        action: "cut",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "cut",
+          cut_event: true,
+          selection_start: 6,
+          selection_end: 10,
+          selected_text_length: 4,
+          selected_text_redacted: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", text: "alpha beta gamma", source_id: "notes.editor" },
+          observed_effects: ["Cut 4 characters"],
+        },
+        locator_candidates: [
+          { kind: "css", locator: "page.locator(\"[data-synthi-source-id=\\\"notes.editor\\\"]\")", confidence: 0.975, reason: "source_identity" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("element.setSelectionRange(selection.start, selection.end, direction);");
+    expect(generated.code).toContain("process.platform === 'darwin' ? \"Meta+C\" : \"Control+C\"");
+    expect(generated.code).toContain("process.platform === 'darwin' ? \"Meta+X\" : \"Control+X\"");
+    expect(generated.code).toContain("Copied 5 characters");
+    expect(generated.code).toContain("Cut 4 characters");
+    expect(generated.code).not.toContain("alpha beta gamma");
+    expect(generated.code).not.toContain("beta");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({

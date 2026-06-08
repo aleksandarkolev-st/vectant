@@ -271,6 +271,12 @@ export class BrowserPlaywrightAdapter {
       case "fill":
         await resolveLocator(selector).fill(value ?? "");
         break;
+      case "copy":
+        await performClipboardTransferAction(page, resolveLocator(selector), "copy", event);
+        break;
+      case "cut":
+        await performClipboardTransferAction(page, resolveLocator(selector), "cut", event);
+        break;
       case "press":
         await resolveLocator(selector).press(value ?? "Enter");
         break;
@@ -1057,7 +1063,7 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   }
   const bbox = bboxOpt(raw["bbox"]);
   if (bbox !== undefined) event.bbox = bbox;
-  if (event.element && isAggregateKeyboardSurfaceElement(event.element)) {
+  if (event.element && (isAggregateKeyboardSurfaceElement(event.element) || isEditableTextMetadata(event.element))) {
     event.element = stripAggregateTextMetadata(event.element);
   }
   return event;
@@ -1244,6 +1250,45 @@ async function runTargetAction(
   } else {
     await target.click(clickOptionsForEvent(event));
   }
+}
+
+async function performClipboardTransferAction(
+  page: Page,
+  target: Locator,
+  action: "copy" | "cut",
+  event?: BrowserTraceEvent
+): Promise<void> {
+  await restoreTextSelection(target, event);
+  await page.keyboard.press(process.platform === "darwin" ? (action === "copy" ? "Meta+C" : "Meta+X") : (action === "copy" ? "Control+C" : "Control+X"));
+}
+
+async function restoreTextSelection(target: Locator, event: BrowserTraceEvent | undefined): Promise<void> {
+  const range = textSelectionRangeForEvent(event);
+  if (!range) {
+    await target.click();
+    return;
+  }
+  await target.evaluate((element, selection) => {
+    const targetElement = element as HTMLElement;
+    targetElement.focus();
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const direction = selection.direction === "backward" || selection.direction === "forward" ? selection.direction : "none";
+      element.setSelectionRange(selection.start, selection.end, direction);
+    }
+  }, range);
+}
+
+function textSelectionRangeForEvent(event: BrowserTraceEvent | undefined): { start: number; end: number; direction?: string } | null {
+  if (!event) return null;
+  const start = numberDetail(event, "selection_start");
+  const end = numberDetail(event, "selection_end");
+  if (start === undefined || end === undefined) return null;
+  const direction = stringDetail(event, "selection_direction");
+  return {
+    start: Math.max(0, Math.round(start)),
+    end: Math.max(0, Math.round(end)),
+    ...(direction ? { direction } : {}),
+  };
 }
 
 type ClickModifier = "Alt" | "Control" | "Meta" | "Shift";
@@ -1683,6 +1728,15 @@ function isAggregateKeyboardSurfaceElement(element: BrowserElementMetadata): boo
   return role === "application";
 }
 
+function isEditableTextMetadata(element: BrowserElementMetadata): boolean {
+  const tag = element.tag?.toLowerCase();
+  const type = element.type?.toLowerCase() ?? "";
+  if (element.content_editable === true) return true;
+  if (tag === "textarea") return true;
+  if (tag !== "input") return element.role?.toLowerCase() === "textbox";
+  return !["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(type);
+}
+
 function stripAggregateTextMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
   const stripped = { ...element };
   const aggregateText = stripped.text?.trim();
@@ -2111,7 +2165,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const aria = attr(el, 'aria-label');
       const textContent = text(el.textContent || '');
       const role = roleFor(el);
-      const allowAggregateTextLocator = !suppressAggregateTextLocator(el, role);
+      const allowAggregateTextLocator = !isEditableTextTarget(el) && !suppressAggregateTextLocator(el, role);
       const testId = attr(el, 'data-testid') || attr(el, 'data-test');
       const type = attr(el, 'type');
       const editorContainer = editorContainerFor(el);
@@ -2571,6 +2625,41 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
     }
 
+    function selectedText(el) {
+      const tag = el.tagName.toLowerCase();
+      if ((tag === 'input' || tag === 'textarea') && typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+        return String(el.value || '').slice(el.selectionStart, el.selectionEnd);
+      }
+      const selection = window.getSelection ? window.getSelection() : null;
+      return selection ? String(selection.toString() || '') : '';
+    }
+
+    function textSelectionDetail(el) {
+      const tag = el.tagName.toLowerCase();
+      if ((tag === 'input' || tag === 'textarea') && typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+        return {
+          selection_start: el.selectionStart,
+          selection_end: el.selectionEnd,
+          selection_direction: String(el.selectionDirection || 'none'),
+          value_length: String(el.value || '').length,
+          text_control_selection: true,
+        };
+      }
+      return {};
+    }
+
+    function clipboardTransferDetail(el, mode, event, beforeEffects) {
+      const selection = selectedText(el);
+      return Object.assign({
+        clipboard_event: true,
+        clipboard_mode: mode,
+        clipboard_transfer_event: true,
+        selected_text_length: selection.length,
+        selected_text_redacted: true,
+        __before_effects: beforeEffects,
+      }, mode === 'copy' ? { copy_event: true } : { cut_event: true }, textSelectionDetail(el));
+    }
+
     function clipboardDropDetail(el, event, beforeEffects) {
       const droppedText = event && event.dataTransfer
         ? String(event.dataTransfer.getData('text/plain') || '')
@@ -2629,7 +2718,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         lastSent.set(el, { signature, ts: Date.now() });
         window[bindingName](payload).catch(() => {});
       };
-      if (['click', 'dblclick', 'contextmenu', 'press', 'drag', 'select', 'check', 'uncheck'].includes(action)) {
+      if (['click', 'dblclick', 'contextmenu', 'press', 'drag', 'select', 'check', 'uncheck', 'copy', 'cut'].includes(action)) {
         enqueueActionSend(send, beforeEffects);
       } else {
         send();
@@ -2743,6 +2832,17 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         emit(el, 'fill', undefined, pasteDetail(el, event, beforeEffects));
       }, 0);
     }, true);
+
+    for (const clipboardMode of ['copy', 'cut']) {
+      document.addEventListener(clipboardMode, (event) => {
+        const target = eventElement(event);
+        if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return;
+        const el = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-testid], [data-test], main, body');
+        if (!isElement(el)) return;
+        const action = clipboardMode === 'copy' ? 'copy' : 'cut';
+        emit(el, action, undefined, clipboardTransferDetail(el, clipboardMode, event, visibleEffectTexts()));
+      }, true);
+    }
 
     document.addEventListener('change', (event) => {
       const el = eventElement(event);

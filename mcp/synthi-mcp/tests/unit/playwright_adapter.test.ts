@@ -251,6 +251,36 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("drops editable text values from element metadata before locator ranking", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/notes",
+      origin: "https://app.example.com",
+      action: "copy",
+      element: {
+        tag: "textarea",
+        role: "textbox",
+        label: "Release notes",
+        text: "alpha beta gamma",
+        source_id: "notes.editor",
+      },
+      detail: {
+        clipboard_event: true,
+        clipboard_mode: "copy",
+        selection_start: 0,
+        selection_end: 5,
+        selected_text_length: 5,
+        selected_text_redacted: true,
+      },
+    }, "tab-a");
+
+    expect(event?.element).toEqual(expect.objectContaining({
+      tag: "textarea",
+      label: "Release notes",
+      source_id: "notes.editor",
+    }));
+    expect(event?.element).not.toEqual(expect.objectContaining({ text: "alpha beta gamma" }));
+  });
+
   it("normalizes ARIA option selection metadata", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

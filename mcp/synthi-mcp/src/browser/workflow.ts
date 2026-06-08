@@ -59,6 +59,8 @@ export type WorkflowSurfaceKindV7 =
   | "fileDrop"
   | "clipboardPaste"
   | "clipboardDrop"
+  | "clipboardCopy"
+  | "clipboardCut"
   | "pointerDrag"
   | "canvas"
   | "openShadowDom"
@@ -328,11 +330,17 @@ function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (previous && shouldDropPressBeforeClipboardPaste(previous, event)) {
       result.pop();
     }
+    if (previous && shouldDropPressBeforeClipboardTransfer(previous, event)) {
+      result.pop();
+    }
     const currentPrevious = result[result.length - 1];
     if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
       continue;
     }
     if (currentPrevious && shouldDropFillAfterClipboardDrop(currentPrevious, event)) {
+      continue;
+    }
+    if (currentPrevious && shouldDropFillAfterClipboardCut(currentPrevious, event)) {
       continue;
     }
     if (currentPrevious && shouldReplaceWithLatestFill(currentPrevious, event)) {
@@ -356,8 +364,19 @@ function shouldDropPressBeforeClipboardPaste(previous: BrowserTraceEvent, next: 
   if (!isPasteKeyChord(previous.value)) return false;
   const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
   if (elapsedMs > 2000) return false;
+  return eventsShareDurableTarget(previous, next);
+}
+
+function shouldDropPressBeforeClipboardTransfer(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "press" || !isClipboardTransferEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  if (next.action === "copy" && !isCopyKeyChord(previous.value)) return false;
+  if (next.action === "cut" && !isCutKeyChord(previous.value)) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
   const previousTarget = actionTargetKey(previous);
-  const nextTarget = fillTargetKey(next);
+  const nextTarget = actionTargetKey(next);
   return sameOrNestedTargetKey(previousTarget, nextTarget);
 }
 
@@ -384,13 +403,52 @@ function shouldDropFillAfterClipboardDrop(previous: BrowserTraceEvent, next: Bro
   return sameOrNestedTargetKey(previousTarget, nextTarget);
 }
 
+function shouldDropFillAfterClipboardCut(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "cut" || next.action !== "fill") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  return eventsShareDurableTarget(previous, next);
+}
+
 function isPasteKeyChord(value: string | undefined): boolean {
   return value === "Control+V" || value === "Meta+V";
+}
+
+function isCopyKeyChord(value: string | undefined): boolean {
+  return value === "Control+C" || value === "Meta+C";
+}
+
+function isCutKeyChord(value: string | undefined): boolean {
+  return value === "Control+X" || value === "Meta+X";
 }
 
 function sameOrNestedTargetKey(left: string, right: string): boolean {
   if (!left || !right) return false;
   return left === right || left.includes(right) || right.includes(left);
+}
+
+function eventsShareDurableTarget(left: BrowserTraceEvent, right: BrowserTraceEvent): boolean {
+  const leftTokens = durableTargetTokens(left);
+  const rightTokens = durableTargetTokens(right);
+  return leftTokens.some((token) => rightTokens.includes(token));
+}
+
+function durableTargetTokens(event: BrowserTraceEvent): string[] {
+  const element = elementForEvent(event);
+  return [
+    event.selector,
+    event.locator_candidates?.[0]?.locator,
+    element?.source_id,
+    element?.test_id,
+    element?.id,
+    element?.label,
+    element?.placeholder,
+    element?.name,
+    element?.css,
+    element?.xpath,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0);
 }
 
 function shouldReplaceWithLatestFill(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
@@ -859,6 +917,10 @@ function labelForAction(action: BrowserActionKind, targetLabel: string): string 
       return `Drag ${targetLabel}`;
     case "scroll":
       return `Scroll ${targetLabel}`;
+    case "copy":
+      return `Copy from ${targetLabel}`;
+    case "cut":
+      return `Cut from ${targetLabel}`;
     case "press":
       return `Press key on ${targetLabel}`;
     case "select":
@@ -891,6 +953,10 @@ function intentForAction(action: BrowserActionKind, targetLabel: string): string
       return `Move ${targetLabel} with explicit drag mode`;
     case "scroll":
       return `Restore ${targetLabel} scroll position`;
+    case "copy":
+      return `Copy selected content from ${targetLabel}`;
+    case "cut":
+      return `Cut selected content from ${targetLabel}`;
     case "navigate":
       return `Reach ${targetLabel}`;
     case "wait":
@@ -907,6 +973,8 @@ function expectedEffectsFor(action: BrowserActionKind, targetLabel: string, muta
   if (action === "contextmenu") return [`${targetLabel} contextual actions are visible.`];
   if (action === "drag") return [`${targetLabel} drag target remains reachable.`];
   if (action === "scroll") return [`${targetLabel} scroll position is restored.`];
+  if (action === "copy") return [`${targetLabel} selected content is available to the browser clipboard.`];
+  if (action === "cut") return [`${targetLabel} selected content is removed after clipboard transfer.`];
   if (action === "navigate") return [`The browser reaches ${targetLabel}.`];
   return [`${targetLabel} remains visible and actionable.`];
 }
@@ -1305,6 +1373,24 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Clipboard paste replay requires caller-provided text; pasted content is not stored in the taught trace."],
     };
   }
+  if (action === "copy") {
+    return {
+      kind: "clipboardCopy",
+      replay: hasTextSelectionRange(event) ? "durable" : "sameSessionOnly",
+      notes: [hasTextSelectionRange(event)
+        ? "Clipboard copy restores the recorded text-control selection and uses the native browser shortcut; copied text is not stored."
+        : "Clipboard copy uses the current focused selection; copied text is not stored."],
+    };
+  }
+  if (action === "cut") {
+    return {
+      kind: "clipboardCut",
+      replay: hasTextSelectionRange(event) ? "durable" : "sameSessionOnly",
+      notes: [hasTextSelectionRange(event)
+        ? "Clipboard cut restores the recorded text-control selection and uses the native browser shortcut; cut text is not stored."
+        : "Clipboard cut uses the current focused selection; cut text is not stored."],
+    };
+  }
   if (isAcceptedPromptDialogEvent(event)) {
     return {
       kind: "dom",
@@ -1369,11 +1455,19 @@ function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
 }
 
+function isClipboardTransferEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "copy" || event.action === "cut";
+}
+
 function isKeyboardTextEntryEvent(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && (
     event.detail?.["keyboard_text_entry"] === true ||
     event.detail?.["text_entry_mode"] === "keyboardInsert"
   );
+}
+
+function hasTextSelectionRange(event: BrowserTraceEvent): boolean {
+  return numericDetail(event, "selection_start") !== undefined && numericDetail(event, "selection_end") !== undefined;
 }
 
 function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {

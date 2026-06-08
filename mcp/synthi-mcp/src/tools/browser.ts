@@ -170,6 +170,10 @@ function humanActionLabel(action: string): string {
       return "Dragged";
     case "scroll":
       return "Scrolled";
+    case "copy":
+      return "Copied";
+    case "cut":
+      return "Cut";
     case "hover":
       return "Hovered";
     case "navigate":

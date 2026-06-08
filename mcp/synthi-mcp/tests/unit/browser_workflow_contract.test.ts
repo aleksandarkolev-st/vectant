@@ -737,6 +737,75 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps[0]?.surfacePlan.notes[0]).toContain("keyboard typing");
   });
 
+  it("classifies copy and cut as clipboard transfer surfaces", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "copy-key",
+        event_seq: 1,
+        action: "press",
+        value: "Control+C",
+        detail: {
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "copy-range",
+        event_seq: 2,
+        action: "copy",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "copy",
+          selection_start: 0,
+          selection_end: 5,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-key",
+        event_seq: 3,
+        action: "press",
+        value: "Control+X",
+        detail: {
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-range",
+        event_seq: 4,
+        action: "cut",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "cut",
+          selection_start: 6,
+          selection_end: 10,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-fill-noise",
+        event_seq: 5,
+        action: "fill",
+        value: "alpha gamma",
+        detail: {
+          input_debounced: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps).toHaveLength(2);
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "clipboardCopy",
+      replay: "durable",
+    }));
+    expect(workflow.contract.steps[1]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "clipboardCut",
+      replay: "durable",
+    }));
+    expect(workflow.contract.steps[0]?.expectedEffects[0]).toContain("clipboard");
+    expect(workflow.contract.steps[1]?.expectedEffects[0]).toContain("removed");
+  });
+
   it("classifies explicit drag surface replay plans", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
