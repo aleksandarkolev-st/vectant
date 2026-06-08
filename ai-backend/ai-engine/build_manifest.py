@@ -101,6 +101,7 @@ class GpuBuildBlock(BaseModel):
     # future multi-device-TU paths are explicit instead of inferred.
     device_roles: List[dict] = Field(default_factory=list)
     device_link: dict = Field(default_factory=dict)
+    generated_split_granularity: dict = Field(default_factory=dict)
 
     if _PYDANTIC_V2:
         model_config = ConfigDict(extra="ignore")
@@ -331,6 +332,9 @@ def manifest_to_dict(manifest: BuildManifest) -> dict:
 
 
 GPU_GENERATED_ROLE_ROOT = ".synthi/generated/gpu"
+GPU_GENERATED_SPLIT_GRANULARITY_SCHEMA_VERSION = (
+    "synthi.gpu_hmr.generated_split_granularity.v1"
+)
 
 
 def _gpu_internal_role_paths(vendor: str) -> dict[str, str]:
@@ -485,6 +489,94 @@ def _lookup_generated_role_content(
     return None, None
 
 
+def _gpu_device_kernel_symbols(source: str) -> List[str]:
+    scrubbed = re.sub(r"/\*.*?\*/", " ", str(source or ""), flags=re.S)
+    scrubbed = re.sub(r"(^|[^:])//.*$", r"\1 ", scrubbed, flags=re.M)
+    patterns = [
+        r"\b__global__\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?(?:[\w:<>,~*&\s]+\s+)?([A-Za-z_]\w*)\s*\(",
+        r"\b__kernel\s+(?:[\w:<>,~*&\s]+\s+)?([A-Za-z_]\w*)\s*\(",
+        r"\bkernel\s+void\s+([A-Za-z_]\w*)\s*\(",
+        r"@compute[\s\S]{0,160}?\bfn\s+([A-Za-z_]\w*)\s*\(",
+    ]
+    symbols: List[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, scrubbed):
+            symbol = match.group(1).strip()
+            if symbol and symbol not in symbols:
+                symbols.append(symbol)
+    return symbols
+
+
+def _generated_split_granularity_report(
+    *,
+    device_roles: List[dict],
+    internal_files: Mapping[str, str],
+) -> dict:
+    device_paths: List[str] = []
+    for role in device_roles:
+        path = str(role.get("path") or "").replace("\\", "/")
+        if path and path not in device_paths:
+            device_paths.append(path)
+    role_reports = []
+    kernel_symbols: List[str] = []
+    missing_paths = []
+    for path in device_paths:
+        source = internal_files.get(path)
+        if source is None:
+            missing_paths.append(path)
+            source = ""
+        kernels = _gpu_device_kernel_symbols(source)
+        for symbol in kernels:
+            if symbol not in kernel_symbols:
+                kernel_symbols.append(symbol)
+        role_reports.append(
+            {
+                "path": path,
+                "present": path not in missing_paths,
+                "kernelSymbols": kernels,
+                "kernelCount": len(kernels),
+                "roleIds": [
+                    str(role.get("id"))
+                    for role in device_roles
+                    if str(role.get("path") or "").replace("\\", "/") == path
+                ],
+            }
+        )
+    hmr_reload_scope = (
+        "device_translation_unit_set"
+        if len(device_paths) > 1
+        else "device_translation_unit"
+    )
+    multiple_kernels_share_tu = any(report["kernelCount"] > 1 for report in role_reports)
+    rejected_claims = ["smallest_safe_fission_island"]
+    if multiple_kernels_share_tu:
+        rejected_claims.append("per_kernel_hmr")
+    reason_codes = ["generated_split.smallest_safe_fission_not_proven_without_verifier"]
+    if missing_paths:
+        reason_codes.append("generated_split.device_role_source_missing")
+    if multiple_kernels_share_tu:
+        reason_codes.append("generated_split.single_translation_unit_contains_multiple_kernels")
+    return {
+        "schemaVersion": GPU_GENERATED_SPLIT_GRANULARITY_SCHEMA_VERSION,
+        "acceptedClaim": f"{hmr_reload_scope}_hmr",
+        "hmrReloadScope": hmr_reload_scope,
+        "fissionGranularity": hmr_reload_scope,
+        "proofBoundary": "generated_manifest_device_role_topology",
+        "smallestSafeFissionIslandProven": False,
+        "requiresDeterministicFissionVerifierForSmallestSafeIsland": True,
+        "deviceRoleCount": len(device_roles),
+        "deviceTranslationUnitCount": len(device_paths),
+        "deviceRolePaths": device_paths,
+        "roleReports": role_reports,
+        "kernelSymbols": kernel_symbols,
+        "kernelCount": len(kernel_symbols),
+        "missingDeviceRolePaths": missing_paths,
+        "multipleKernelsShareDeviceTranslationUnit": multiple_kernels_share_tu,
+        "rejectedClaims": rejected_claims,
+        "reasonCodes": reason_codes,
+    }
+
+
 def internalize_gpu_generated_artifacts(
     split_files: Mapping[str, str],
     manifest: Mapping[str, Any],
@@ -549,6 +641,11 @@ def internalize_gpu_generated_artifacts(
         )
         for role in gpu["device_roles"]:
             role["path"] = internal_roles["device"]
+        granularity_report = _generated_split_granularity_report(
+            device_roles=gpu["device_roles"],
+            internal_files=internal_files,
+        )
+        gpu["generated_split_granularity"] = granularity_report
         gpu["device_link"] = _normalize_gpu_device_link(
             gpu.get("device_link"),
             device_roles=gpu["device_roles"],
@@ -569,6 +666,8 @@ def internalize_gpu_generated_artifacts(
             if str(path).replace("\\", "/") not in consumed_paths
         ),
     }
+    if gpu and "generated_split_granularity" in gpu:
+        report["generatedSplitGranularity"] = gpu["generated_split_granularity"]
     return internal_files, manifest_out, report
 
 
