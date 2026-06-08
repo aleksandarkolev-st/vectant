@@ -8152,6 +8152,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const baseRecord = {
       project_id: "workspace",
       edit_id: "edit-1",
+      backend: "hip",
       classification: {
         project_kind: "gpu_project",
         edit_kind: "gpu_artifact_edit",
@@ -8231,6 +8232,20 @@ describe("GPU HMR runtime output proof classification", () => {
     }).gpuHmrSuccess).toBe(true);
 
     const cases = [
+      [
+        (() => {
+          const { backend: _backend, ...record } = baseRecord;
+          return record;
+        })(),
+        "backend_missing",
+      ],
+      [
+        {
+          ...baseRecord,
+          backend: "unknown",
+        },
+        "backend_unsupported",
+      ],
       [
         (() => {
           const { cpu_hmr_used: _cpuHmrUsed, ...record } = baseRecord;

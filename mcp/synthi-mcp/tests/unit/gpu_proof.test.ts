@@ -50,6 +50,7 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
     proofId: "gpu-ledger-proof:fixture",
     project_id: "generic-gpu-project",
     edit_id: "gpu-edit",
+    backend: "hip",
     classification: {
       project_kind: "gpu_project",
       edit_kind: "gpu_artifact_edit",

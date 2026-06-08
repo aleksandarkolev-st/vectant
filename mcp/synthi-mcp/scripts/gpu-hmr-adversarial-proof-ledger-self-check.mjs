@@ -146,6 +146,7 @@ function baselineRecord(overrides = {}) {
   return {
     project_id: 'adversarial-generic-project',
     edit_id: 'gpu-artifact-edit',
+    backend: 'hip',
     classification: baselineClassification(),
     contract_hash: HASH_C,
     artifact_before_hash: HASH_A,
@@ -841,6 +842,8 @@ const cases = [
   ['process restart', baselineRecord({ process_restarted: true }), 'process_restarted'],
   ['missing project id', baselineRecord({ project_id: null }), 'project_id_missing'],
   ['missing edit id', baselineRecord({ edit_id: null }), 'edit_id_missing'],
+  ['missing backend', baselineRecord({ backend: null }), 'backend_missing'],
+  ['unsupported backend', baselineRecord({ backend: 'unknown' }), 'backend_unsupported'],
   ['missing ledger evidence refs', baselineRecord({ evidence_refs: [] }), 'evidence_refs_missing'],
   ['missing metric clock', baselineRecord({
     metric_clock: null,

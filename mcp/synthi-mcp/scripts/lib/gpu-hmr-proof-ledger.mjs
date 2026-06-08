@@ -5,6 +5,16 @@ export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.
 
 const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
 const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
+const SUPPORTED_BACKENDS = new Set([
+  'hip',
+  'hiprt',
+  'opencl',
+  'vulkan',
+  'webgpu',
+  'bevy_wgsl',
+  'cuda',
+  'sycl',
+]);
 const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
 const METRIC_CLOCKS = new Set(['monotonic_ns']);
 const METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
@@ -763,6 +773,11 @@ export function evaluateGpuHmrProofLedger(input = {}) {
 
   if (!record.projectId) addFailure(failures, 'project_id_missing');
   if (!record.editId) addFailure(failures, 'edit_id_missing');
+  if (!record.backend) {
+    addFailure(failures, 'backend_missing');
+  } else if (!SUPPORTED_BACKENDS.has(record.backend)) {
+    addFailure(failures, 'backend_unsupported', { backend: record.backend });
+  }
   if (record.evidenceRefs.length === 0) addFailure(failures, 'evidence_refs_missing');
   if (!record.metricClock) {
     addFailure(failures, 'metric_clock_missing');

@@ -29,6 +29,16 @@ const DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES = new Set([
   "checksum_digest",
   "digest_bytes",
 ]);
+const SUPPORTED_BACKENDS = new Set([
+  "hip",
+  "hiprt",
+  "opencl",
+  "vulkan",
+  "webgpu",
+  "bevy_wgsl",
+  "cuda",
+  "sycl",
+]);
 const VISUAL_OR_ENGINE_BACKENDS = new Set(["hiprt", "vulkan", "webgpu", "bevy_wgsl"]);
 const REQUIRED_TIMING_FIELDS = [
   ["static_discovery_time", "staticDiscoveryTime"],
@@ -746,6 +756,11 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
 
   if (!projectId) failures.push({ code: "project_id_missing" });
   if (!editId) failures.push({ code: "edit_id_missing" });
+  if (!backend) {
+    failures.push({ code: "backend_missing" });
+  } else if (!SUPPORTED_BACKENDS.has(backend)) {
+    failures.push({ code: "backend_unsupported", backend });
+  }
   if (evidenceRefs.length === 0) failures.push({ code: "evidence_refs_missing" });
   const projectKind = firstText(classification.project_kind, classification.projectKind);
   const editKind = firstText(classification.edit_kind, classification.editKind);

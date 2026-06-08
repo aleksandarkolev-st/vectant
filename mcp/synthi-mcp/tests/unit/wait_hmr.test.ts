@@ -60,6 +60,7 @@ function passingProofLedger() {
     proofId: "gpu-ledger-proof:wait-fixture",
     project_id: "wait-generic-gpu-project",
     edit_id: "gpu-edit",
+    backend: "hip",
     classification: { project_kind: "gpu_project", edit_kind: "gpu_artifact_edit", route: "gpu_hmr" },
     contract_hash: HASH_C,
     artifact_before_hash: HASH_A,
