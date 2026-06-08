@@ -331,6 +331,32 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects full runtime artifact whose embedded ledger query is forged", () => {
+    const ledger = proofLedger();
+    const forgedArtifactLedger = proofLedger();
+    const forgedRecord = forgedArtifactLedger.records[0] as Record<string, unknown>;
+    forgedRecord.cpu_hmr_used = true;
+    forgedArtifactLedger.query = {
+      ...forgedArtifactLedger.query,
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(forgedArtifactLedger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining(["proof_ledger_recomputed_query_rejected", "proof_ledger_query_mismatch"])
+    );
+  });
+
   it("rejects full runtime proof when delta model provenance is shutdown", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, any>;

@@ -143,6 +143,29 @@ function arrayField(raw: Record<string, unknown> | null, ...keys: string[]): unk
   return null;
 }
 
+function failureCodes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      const object = objectOrNull(entry);
+      return stringOrNull(object?.code);
+    })
+    .filter((code): code is string => code !== null)
+    .sort();
+}
+
+function proofLedgerQueriesMatch(
+  supplied: Record<string, unknown>,
+  recomputed: GpuHmrLedgerValidation
+): boolean {
+  const suppliedProofId = stringOrNull(supplied.proofId ?? supplied.proof_id);
+  const suppliedCodes = failureCodes(supplied.failedInvariants ?? supplied.failed_invariants);
+  const recomputedCodes = recomputed.failedInvariants.map((failure) => failure.code).sort();
+  return boolField(supplied, "gpuHmrSuccess", "gpu_hmr_success") === recomputed.gpuHmrSuccess
+    && suppliedProofId === recomputed.proofId
+    && suppliedCodes.join("|") === recomputedCodes.join("|");
+}
+
 const RUNTIME_PROOF_ARTIFACT_KEYS = [
   "runtimeProofArtifact",
   "runtime_proof_artifact",
@@ -241,10 +264,21 @@ function validateRuntimeProofArtifactAcceptance(
     failures.push({ code: "runtime_proof_artifact_limitations_present" });
   }
   if (proofLedger === null) failures.push({ code: "proof_ledger_missing" });
+  const recomputedProofLedgerQuery = proofLedger === null
+    ? null
+    : queryGpuHmrLedgerInvariants(proofLedger);
+  if (recomputedProofLedgerQuery !== null && !recomputedProofLedgerQuery.gpuHmrSuccess) {
+    failures.push({ code: "proof_ledger_recomputed_query_rejected" });
+  }
   if (proofLedgerQuery === null) {
     failures.push({ code: "proof_ledger_query_missing" });
   } else if (boolField(proofLedgerQuery, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
     failures.push({ code: "proof_ledger_query_rejected" });
+  } else if (
+    recomputedProofLedgerQuery !== null
+    && !proofLedgerQueriesMatch(proofLedgerQuery, recomputedProofLedgerQuery)
+  ) {
+    failures.push({ code: "proof_ledger_query_mismatch" });
   }
   if (acceptanceContract === null) failures.push({ code: "acceptance_contract_missing" });
   if (acceptanceContractEvaluation === null) {

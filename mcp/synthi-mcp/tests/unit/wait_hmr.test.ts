@@ -448,6 +448,44 @@ describe("synthi_wait_hmr", () => {
     );
   });
 
+  it("rejects full runtime proof when the runtime artifact ledger query is forged", async () => {
+    const ledger = passingProofLedger();
+    const forgedArtifactLedger = passingProofLedger();
+    const forgedRecord = forgedArtifactLedger.records[0] as Record<string, unknown>;
+    forgedRecord.cpu_hmr_used = true;
+    forgedArtifactLedger.query = {
+      ...forgedArtifactLedger.query,
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    };
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(forgedArtifactLedger),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: {
+        reason?: string;
+        runtimeProofArtifactValidation?: { failedGates?: Array<{ code?: string }> };
+      };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("runtime_proof_artifact_rejected");
+    expect(
+      body.gpu_proof_validation?.runtimeProofArtifactValidation?.failedGates?.map((gate) => gate.code)
+    ).toEqual(expect.arrayContaining(["proof_ledger_recomputed_query_rejected", "proof_ledger_query_mismatch"]));
+  });
+
   it("rejects a retained GPU proof that predates since_ts", async () => {
     const staleProof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
