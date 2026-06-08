@@ -384,6 +384,52 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects full runtime artifact bound to a different ledger identity", () => {
+    const ledger = proofLedger();
+    const otherLedger = proofLedger({
+      project_id: "different-gpu-project",
+      edit_id: "different-edit",
+      contract_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      dispatch_event: {
+        id: "dispatch-other",
+        epoch: "epoch-2",
+        artifact_hash: HASH_B,
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 300,
+      },
+      output_event: {
+        id: "output-other",
+        kind: "buffer_checksum",
+        epoch: "epoch-2",
+        artifact_hash: HASH_B,
+        process_id: "pid-1",
+        after_dispatch_id: "dispatch-other",
+        passed: true,
+        timestamp_monotonic_ns: 400,
+      },
+    });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(otherLedger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "runtime_artifact_ledger_project_id_mismatch",
+        "runtime_artifact_ledger_edit_id_mismatch",
+        "runtime_artifact_ledger_contract_hash_mismatch",
+        "runtime_artifact_ledger_dispatch_event_id_mismatch",
+        "runtime_artifact_ledger_output_event_id_mismatch",
+      ])
+    );
+  });
+
   it("rejects full runtime proof when delta model provenance is shutdown", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, any>;

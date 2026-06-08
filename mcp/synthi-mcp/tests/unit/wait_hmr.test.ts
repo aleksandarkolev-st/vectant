@@ -549,6 +549,56 @@ describe("synthi_wait_hmr", () => {
     ).toEqual(expect.arrayContaining(["proof_ledger_recomputed_query_rejected", "proof_ledger_query_mismatch"]));
   });
 
+  it("rejects full runtime proof when the runtime artifact is bound to another ledger", async () => {
+    const ledger = passingProofLedger();
+    const otherLedger = passingProofLedger();
+    const otherRecord = otherLedger.records[0] as Record<string, any>;
+    otherRecord.project_id = "wait-other-gpu-project";
+    otherRecord.edit_id = "wait-other-edit";
+    otherRecord.contract_hash = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    otherRecord.dispatch_event = {
+      ...otherRecord.dispatch_event,
+      id: "dispatch-other",
+    };
+    otherRecord.output_event = {
+      ...otherRecord.output_event,
+      id: "output-other",
+      after_dispatch_id: "dispatch-other",
+    };
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(otherLedger),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: {
+        reason?: string;
+        runtimeProofArtifactValidation?: { failedGates?: Array<{ code?: string }> };
+      };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("runtime_proof_artifact_rejected");
+    expect(
+      body.gpu_proof_validation?.runtimeProofArtifactValidation?.failedGates?.map((gate) => gate.code)
+    ).toEqual(expect.arrayContaining([
+      "runtime_artifact_ledger_project_id_mismatch",
+      "runtime_artifact_ledger_edit_id_mismatch",
+      "runtime_artifact_ledger_contract_hash_mismatch",
+      "runtime_artifact_ledger_dispatch_event_id_mismatch",
+      "runtime_artifact_ledger_output_event_id_mismatch",
+    ]));
+  });
+
   it("rejects a retained GPU proof that predates since_ts", async () => {
     const staleProof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",

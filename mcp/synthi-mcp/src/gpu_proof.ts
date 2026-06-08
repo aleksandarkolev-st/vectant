@@ -166,6 +166,62 @@ function proofLedgerQueriesMatch(
     && suppliedCodes.join("|") === recomputedCodes.join("|");
 }
 
+function ledgerRecord(ledger: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (ledger === null) return null;
+  const records = Array.isArray(ledger.records)
+    ? ledger.records.filter((record): record is Record<string, unknown> => objectOrNull(record) !== null)
+    : [];
+  if (records.length > 0) return records[records.length - 1]!;
+  return ledger;
+}
+
+function nestedObjectField(raw: Record<string, unknown>, ...keys: string[]): Record<string, unknown> {
+  for (const key of keys) {
+    const value = objectOrNull(raw[key]);
+    if (value !== null) return value;
+  }
+  return {};
+}
+
+function ledgerIdentityFields(ledger: Record<string, unknown> | null): Record<string, string | null> {
+  const record = ledgerRecord(ledger);
+  if (record === null) return {};
+  const loaderEvent = nestedObjectField(record, "loader_event", "loaderEvent");
+  const epochPublishEvent = nestedObjectField(record, "epoch_publish_event", "epochPublishEvent");
+  const dispatchEvent = nestedObjectField(record, "dispatch_event", "dispatchEvent");
+  const outputEvent = nestedObjectField(record, "output_event", "outputEvent");
+  return {
+    proof_id: stringOrNull(record.proofId ?? record.proof_id ?? ledger?.proofId ?? ledger?.proof_id),
+    project_id: stringOrNull(record.project_id ?? record.projectId),
+    edit_id: stringOrNull(record.edit_id ?? record.editId),
+    contract_hash: stringOrNull(record.contract_hash ?? record.contractHash),
+    artifact_before_hash: stringOrNull(record.artifact_before_hash ?? record.artifactBeforeHash),
+    artifact_after_hash: stringOrNull(record.artifact_after_hash ?? record.artifactAfterHash),
+    loader_event_id: stringOrNull(loaderEvent.id),
+    epoch_publish_event_id: stringOrNull(epochPublishEvent.id),
+    dispatch_event_id: stringOrNull(dispatchEvent.id),
+    output_event_id: stringOrNull(outputEvent.id),
+    output_after_dispatch_id: stringOrNull(outputEvent.after_dispatch_id ?? outputEvent.afterDispatchId),
+  };
+}
+
+function proofLedgerBindingFailures(
+  expectedLedger: Record<string, unknown> | null,
+  runtimeArtifactLedger: Record<string, unknown> | null
+): Array<{ code: string }> {
+  if (expectedLedger === null || runtimeArtifactLedger === null) return [];
+  const expected = ledgerIdentityFields(expectedLedger);
+  const actual = ledgerIdentityFields(runtimeArtifactLedger);
+  const failures: Array<{ code: string }> = [];
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    const actualValue = actual[field];
+    if (expectedValue !== null && actualValue !== null && expectedValue !== actualValue) {
+      failures.push({ code: `runtime_artifact_ledger_${field}_mismatch` });
+    }
+  }
+  return failures;
+}
+
 const RUNTIME_PROOF_ARTIFACT_KEYS = [
   "runtimeProofArtifact",
   "runtime_proof_artifact",
@@ -199,7 +255,8 @@ function runtimeProofArtifactCandidate(
 }
 
 function validateRuntimeProofArtifactAcceptance(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  expectedProofLedger: Record<string, unknown> | null = null
 ): GpuHmrRuntimeProofArtifactValidation {
   const candidate = runtimeProofArtifactCandidate(raw);
   if (candidate === null) {
@@ -256,6 +313,7 @@ function validateRuntimeProofArtifactAcceptance(
     failures.push({ code: "runtime_proof_artifact_limitations_present" });
   }
   if (proofLedger === null) failures.push({ code: "proof_ledger_missing" });
+  failures.push(...proofLedgerBindingFailures(expectedProofLedger, proofLedger));
   const recomputedProofLedgerQuery = proofLedger === null
     ? null
     : queryGpuHmrLedgerInvariants(proofLedger);
@@ -454,7 +512,7 @@ export function validateGpuHmrProofState(
       }
     }
     if (ledgerReason === undefined) {
-      runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(proof.raw);
+      runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(proof.raw, ledger);
       if (!runtimeProofArtifactValidation.accepted) {
         satisfied = false;
         runtimeArtifactReason = runtimeProofArtifactValidation.present
