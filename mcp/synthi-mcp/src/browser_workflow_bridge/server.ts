@@ -524,7 +524,7 @@ export function buildBrowserWorkflowPanelState(
           ? `Needs publish hardening: ${step.limitations.join(", ")}.`
           : "Needs hardening before unattended replay.",
       }))
-      .concat(recordingIssues.map(panelRecordingIssue)),
+      .concat(recordingIssues.filter((issue) => issue.blocking).map(panelRecordingIssue)),
     blockers: workflow.contract.limitations.map((limitation) => ({
       id: `limitation_${limitation}`,
       label: limitation,

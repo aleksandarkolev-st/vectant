@@ -208,9 +208,10 @@ describe("browser workflow bridge", () => {
       kind: "hosted",
       workspace_id: "workspace-a",
       runtime_id: "runtime-a",
-      workspace_url: url,
+      workspace_url: "https://ide.example.test/workspace/workspace-a",
       adapter: "hosted-playwright-cdp",
     });
+    expect(browserBroker.startTeachMode("tab-a")).toEqual(expect.objectContaining({ ok: true }));
     browserBroker.recordTeachRecordingIssue("popup_origin_consent_required", {
       tab_id: "tab-a",
       url,
@@ -237,6 +238,43 @@ describe("browser workflow bridge", () => {
     ]);
     expect(state.diagnostics.recordingIssues).toHaveLength(1);
     expect(JSON.stringify(state)).not.toMatch(/secret-token|#pay|selector|value/);
+  });
+
+  it("keeps workspace-shell annotation failures diagnostic-only", async () => {
+    const previewUrl = "https://preview.example.test/settings";
+    const workspaceUrl = "https://ide.example.test/workspace/workspace-a";
+    browserBroker.requestConsent(previewUrl, "granted", "unit", { screenshot: true, diagnostics: true });
+    browserBroker.registerTabs([{ tab_id: "preview", url: previewUrl, title: "Preview", active: true }]);
+    browserBroker.selectTab("preview");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: workspaceUrl,
+      adapter: "hosted-playwright-cdp",
+    });
+    expect(browserBroker.startTeachMode("preview")).toEqual(expect.objectContaining({ ok: true }));
+    browserBroker.recordTeachRecordingIssue("teach_tab_mismatch", {
+      tab_id: "workspace-shell",
+      url: workspaceUrl,
+      origin: "https://ide.example.test",
+      action: "click",
+      detail: {
+        selector: "[data-workflow-overlay]",
+        value: "secret-token",
+      },
+    }, "hosted-playwright-annotation");
+
+    const state = buildBrowserWorkflowPanelState() as {
+      unresolvedSteps: unknown[];
+      diagnostics: { recordingIssues: Array<{ blocking: boolean; url: string }> };
+    };
+
+    expect(state.unresolvedSteps).toEqual([]);
+    expect(state.diagnostics.recordingIssues).toEqual([
+      expect.objectContaining({ blocking: false, url: workspaceUrl }),
+    ]);
+    expect(JSON.stringify(state)).not.toMatch(/secret-token|selector|data-workflow-overlay/);
   });
 
   it("dispatches stale panel action aliases to current MCP workflow tools", async () => {

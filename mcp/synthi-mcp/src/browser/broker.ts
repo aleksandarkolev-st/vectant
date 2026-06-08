@@ -79,6 +79,7 @@ export interface BrowserRecordingIssue {
   at: number;
   source: "hosted-playwright-adapter" | "hosted-playwright-annotation" | "browser-extension-bridge" | "broker";
   error: string;
+  blocking: boolean;
   tab_id?: string;
   action?: BrowserActionKind;
   url?: string;
@@ -302,17 +303,20 @@ export class BrowserBroker {
   ): BrowserRecordingIssue {
     const url = typeof input.url === "string" ? input.url : undefined;
     const origin = url ? this.originOrNull(url) : typeof input.origin === "string" ? this.originOrNull(input.origin) : null;
+    const frameOrigin = this.targetOriginFromDetail(input.detail, "frame_origin");
+    const popupOrigin = this.popupOriginFromDetail(input.detail);
     const issue: BrowserRecordingIssue = {
       issue_id: `recording_issue_${randomUUID()}`,
       at: Date.now(),
       source,
       error,
+      blocking: this.isBlockingRecordingIssue({ error, input, source, url }),
       ...(typeof input.tab_id === "string" && input.tab_id.length > 0 ? { tab_id: input.tab_id } : {}),
       ...(input.action ? { action: input.action } : {}),
       ...(url ? { url: redactUrl(url).url } : {}),
       ...(origin ? { origin } : {}),
-      ...(this.targetOriginFromDetail(input.detail, "frame_origin") ? { frame_origin: this.targetOriginFromDetail(input.detail, "frame_origin")! } : {}),
-      ...(this.popupOriginFromDetail(input.detail) ? { popup_origin: this.popupOriginFromDetail(input.detail)! } : {}),
+      ...(frameOrigin ? { frame_origin: frameOrigin } : {}),
+      ...(popupOrigin ? { popup_origin: popupOrigin } : {}),
     };
     this.recordingIssues.push(issue);
     if (this.recordingIssues.length > 100) this.recordingIssues.splice(0, this.recordingIssues.length - 100);
@@ -684,6 +688,33 @@ export class BrowserBroker {
     const popupGate = this.requirePopupOriginConsent(origin, detail);
     if (!popupGate.ok) return popupGate;
     return { ok: true };
+  }
+
+  private isBlockingRecordingIssue(input: {
+    error: string;
+    input: { tab_id?: string; url?: string; origin?: string; action?: BrowserActionKind; detail?: Record<string, unknown> };
+    source: BrowserRecordingIssue["source"];
+    url?: string;
+  }): boolean {
+    if (input.source === "hosted-playwright-annotation") return false;
+    if (input.error === "teach_mode_required") return false;
+    if (!this.teachMode.active) return false;
+    if (input.url && this.isRuntimeWorkspaceShellUrl(input.url)) return false;
+    return true;
+  }
+
+  private isRuntimeWorkspaceShellUrl(url: string): boolean {
+    const workspaceUrl = this.runtime?.workspace_url;
+    if (!workspaceUrl) return false;
+    try {
+      const candidate = new URL(url);
+      const workspace = new URL(workspaceUrl);
+      const workspacePath = workspace.pathname.endsWith("/") ? workspace.pathname : `${workspace.pathname}/`;
+      return candidate.origin === workspace.origin &&
+        (candidate.pathname === workspace.pathname || candidate.pathname.startsWith(workspacePath));
+    } catch {
+      return false;
+    }
   }
 
   private isTeachPopupContext(tab_id: string, detail: Record<string, unknown> | undefined): boolean {
