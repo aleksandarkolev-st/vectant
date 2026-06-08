@@ -1906,18 +1906,24 @@ const CASES = [
     minSteps: 6,
     expectedActions: ["fill", "select", "click", "drag"],
     expectedReplayText: [
-      "Segment enterprise",
       "Moved Revenue audit to Approved lane",
-      "Runbook saved for enterprise revenue",
+      "Runbook opened",
     ],
     expectedReplayCode: [
       "page.getByTestId(\"global-search\")",
       "page.getByTestId(\"segment-select\")",
+      "parameterizedTextRegex([\"Segment \",\"\"], selectValue2)",
       "await page.mouse.down();",
       "page.getByTestId(\"save-runbook\")",
       "element.dispatchEvent(new Event('change', { bubbles: true }));",
     ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({
+      SEARCH_ACCOUNTS: "expansion",
+      SEGMENT_ALLENTERPRISEGROWTH: "growth",
+      RISK_THRESHOLD: "60",
+      RUNBOOK_NOTE: "growth renewal",
+    }),
     files: () => commonFiles({
       title: "Animated SaaS Dashboard Workflow",
       body: [
