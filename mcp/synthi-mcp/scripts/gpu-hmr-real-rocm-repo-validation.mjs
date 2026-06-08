@@ -3863,6 +3863,24 @@ function readbackSampleBytes(oracle) {
   return bytes.length > 0 ? bytes : null;
 }
 
+function digestBytes(value) {
+  if (Buffer.isBuffer(value)) {
+    return createHash('sha256').update(value).digest();
+  }
+  if (value instanceof Uint8Array) {
+    return createHash('sha256').update(Buffer.from(value)).digest();
+  }
+  if (Array.isArray(value) || (value && typeof value === 'object')) {
+    return createHash('sha256').update(stableJson(value)).digest();
+  }
+  const text = String(value ?? '').trim();
+  const sha256 = text.match(/^sha256:([0-9a-f]{64})$/i)?.[1]
+    ?? text.match(/^([0-9a-f]{64})$/i)?.[1]
+    ?? null;
+  if (sha256) return Buffer.from(sha256, 'hex');
+  return createHash('sha256').update(text).digest();
+}
+
 function computeProofArtifactName(oracle) {
   const base = `${CFG.slug}-${oracle?.oracleId ?? 'runtime-output-oracle'}`
     .replace(/[^A-Za-z0-9_.-]+/g, '-')
