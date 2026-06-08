@@ -211,4 +211,17 @@ All six Phase-3 tasks landed via strict red→green TDD, each committed with the
   2. **Discovered latent gap:** `proxyService.startScanner` was defined/exported but **never called** anywhere — so `activePorts` was always empty and the `/port/<N>/` preview + Phase-1 port refresh were effectively inert. Phase 3 starts the scanner at collab-server startup (passing the server's own PORT to exclude self). This is required for auto-detection to work at all.
   3. Disk gate: `next build`/`docker build` not run (TDD-only). The scanner-start + `onPortsChanged` wiring and the real `http.get` health probe are verified by `node --check` + injectable-unit tests; **end-to-end behavior (a real dev server's port lighting up the App tab, live health) needs a live collab-server rebuild** — the remaining live check before shipping.
   4. Transient `ENOSPC` truncated `routeHelpers.js` mid-edit during T4; restored from HEAD and re-applied cleanly (disk ~5.5G free; not actually full). No data lost.
-  Branch not pushed (awaiting direction); ~19 unpushed `tool-compatibility` commits accumulated.
+  Branch not pushed (awaiting direction); ~19 unpushed `tool-compatibility` commits accumulated. [UPDATE: pushed `fb800aa2..c1dc12c7` to origin/tool-compatibility — 8 commits; branch stays open, no merge/PR.]
+
+---
+
+# Task: Slice 3 Phase 4 (Thin Slice) — GUI Runtime Type + Stubbed Surface (2026-06-08, tool-compatibility)
+
+Plan: `docs/superpowers/plans/2026-06-08-slice3-phase4-gui-runtime-type-thin-slice-plan.md`.
+Decision: Phase 4's real GUI capture (Xvfb/GStreamer/WebRTC + broker lease/freshness) is **deferred** — it needs live infra + the broker rollout + its own branch, and is not TDD-able under the disk gate. This phase ships only the TDD-able sliver; the deferred work is fully enumerated in the plan's "DEFERRED" section.
+Branch: `tool-compatibility` only. Disk gate: TDD only. No schema change (`ProgramSession.runtimeType` exists).
+
+## Phase-4 (thin) Implementation Tasks (TDD, commit per task)
+- [ ] P4-T1 Un-defer `gui` in `manifest.js` (`SUPPORTED_RUNTIME_TYPES` + `normalizeRuntimeType` + `deriveSurfaces` gives gui an `app` surface). Flip the gui-rejection manifest test → acceptance + keep unknown-runtime rejection.
+- [ ] P4-T2 Stubbed GUI surface shell in `ProgramSessionPanel` — `runtimeType==='gui'` App tab renders `gui-surface` (placeholder for the future WebRTC `<video>`) instead of the web iframe. jsdom test.
+- [ ] P4-T3 Regression (targeted + backend unchanged + full vitest) + Phase-4 (thin) review.
