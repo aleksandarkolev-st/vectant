@@ -351,7 +351,18 @@ function installFakeAttached(
     retained?: boolean;
     sequence?: number;
   }>,
-  latestGpuProof?: (opts?: GpuHmrProofMatchOpts) => GpuHmrProofTelemetry | null
+  latestGpuProof?: (opts?: GpuHmrProofMatchOpts) => GpuHmrProofTelemetry | null,
+  frames?: {
+    getFrame: () => Promise<{
+      data: Buffer;
+      width: number;
+      height: number;
+      ts: number;
+      seq: number;
+    }>;
+    hasFrame?: () => boolean;
+    dimensions?: () => { width: number; height: number };
+  }
 ): { feedHmr: (msg: Record<string, unknown>) => void } {
   const listeners: Array<(msg: Record<string, unknown>) => void> = [];
   (session as unknown as { state: string }).state = "attached";
@@ -359,7 +370,7 @@ function installFakeAttached(
     sessionId: "fixture",
     signalingUrl: "ws://localhost:9000",
     resolution: { width: 200, height: 200 },
-    frames: {
+    frames: frames ?? {
       getFrame: async () => ({
         data: Buffer.alloc(0),
         width: 200,
@@ -398,13 +409,56 @@ describe("synthi_wait_hmr", () => {
     delete process.env["SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS"];
   });
 
-  it("reports frame_gate:disabled when no frame_advance has ever been seen", async () => {
+  it("falls back to decoded frames when no frame_advance has ever been seen", async () => {
     installFakeAttached(async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }));
     const res = await waitHmrTool({ timeoutMs: 500 });
     expect(res.isError).toBeUndefined();
-    const body = res.structuredContent as { frame_gate: { status: string }; hmrElapsedMs: number };
+    const body = res.structuredContent as {
+      frame_gate: {
+        status: string;
+        session_id?: string;
+        gate_token?: string;
+        capture_binding_required?: boolean;
+        capture_binding_source?: string;
+        frame_advance_fallback_used?: boolean;
+      };
+      hmrElapsedMs: number;
+    };
     expect(body.hmrElapsedMs).toBe(10);
-    expect(body.frame_gate.status).toBe("disabled");
+    expect(body.frame_gate.status).toBe("satisfied");
+    expect(body.frame_gate.session_id).toBe("fixture");
+    expect(body.frame_gate.gate_token).toMatch(/^frame-gate:/);
+    expect(body.frame_gate.capture_binding_required).toBe(true);
+    expect(body.frame_gate.capture_binding_source).toBe("decoded_frame");
+    expect(body.frame_gate.frame_advance_fallback_used).toBe(true);
+  });
+
+  it("times out when both frame_advance and decoded post-budget frames are unavailable", async () => {
+    installFakeAttached(
+      async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }),
+      undefined,
+      {
+        getFrame: async () => ({
+          data: Buffer.alloc(0),
+          width: 200,
+          height: 200,
+          ts: 1,
+          seq: 1,
+        }),
+        hasFrame: () => true,
+        dimensions: () => ({ width: 200, height: 200 }),
+      }
+    );
+    const res = await waitHmrTool({ timeoutMs: 50 });
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      frame_gate: {
+        status: string;
+        reason?: string;
+      };
+    };
+    expect(body.frame_gate.status).toBe("timeout");
+    expect(body.frame_gate.reason).toBe("decoded_frame_gate_timeout");
   });
 
   it("waits for a post-budget frame advance before returning", async () => {

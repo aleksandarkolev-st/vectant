@@ -34,6 +34,7 @@ interface WaitHmrArgs {
 
 const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
+const FRAME_GATE_POLL_MS = 50;
 
 function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {
   const raw = process.env[POST_APPLY_OBSERVE_ENV];
@@ -108,6 +109,27 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
     source: proof.source,
     observedAt: proof.observedAt,
   };
+}
+
+async function waitForDecodedFrameAtOrAfter(
+  attached: ReturnType<typeof session.require>,
+  minTsMs: number,
+  timeoutMs: number
+): Promise<{ frame_seq: number; ts_ms: number } | null> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      const frame = await attached.frames.getFrame();
+      if (frame.ts >= minTsMs) {
+        return { frame_seq: frame.seq, ts_ms: frame.ts };
+      }
+    } catch {
+      // No decoded frame yet. Keep polling until the caller's wait budget expires.
+    }
+    if (Date.now() - start >= timeoutMs) return null;
+    const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(FRAME_GATE_POLL_MS, remaining)));
+  }
 }
 
 function responseWithGpuProofValidation(
@@ -377,8 +399,34 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         }
       } else {
         const observeMs = Math.min(resolvePostApplyObserveMs(budget), remaining);
-        const lateTerminal = await waitForPostApplyTerminal(observeMs).promise;
-        if (lateTerminal) {
+        const decodedWaitMs = remaining;
+        const decodedFrameWait = waitForDecodedFrameAtOrAfter(attached, tHmr + budget, decodedWaitMs);
+        const lateTerminalWait = waitForPostApplyTerminal(observeMs);
+        type DecodedFrameOutcome = {
+          kind: "decoded_frame";
+          satisfiedBy: { frame_seq: number; ts_ms: number } | null;
+        };
+        type TerminalOutcome = {
+          kind: "terminal";
+          terminal: HmrClassification;
+        };
+        const decodedFrameOutcome: Promise<DecodedFrameOutcome> = decodedFrameWait.then((satisfiedBy) => ({
+          kind: "decoded_frame" as const,
+          satisfiedBy,
+        }));
+        const terminalOutcome: Promise<TerminalOutcome | DecodedFrameOutcome> = (async () => {
+          const terminal = await lateTerminalWait.promise;
+          return terminal
+            ? { kind: "terminal" as const, terminal }
+            : decodedFrameOutcome;
+        })();
+        const outcome = await Promise.race<DecodedFrameOutcome | TerminalOutcome>([
+          decodedFrameOutcome,
+          terminalOutcome,
+        ]);
+        lateTerminalWait.cancel();
+        if (outcome.kind === "terminal" && outcome.terminal) {
+          const lateTerminal = outcome.terminal;
           const late = terminalEventFromClassification(lateTerminal, Date.now() - start);
           return responseWithGpuProofValidation({
             status: late.status,
@@ -390,12 +438,36 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             wait_contract: waitContract,
           }, latestGpuProof, requiredProofState);
         }
-        frameGate = {
-          status: "disabled",
-          reason: "no_frame_advance_observed",
-          pipeline_budget_ms: budget,
-          post_apply_observe_ms: observeMs,
-        };
+        const satisfiedBy = outcome.kind === "decoded_frame" ? outcome.satisfiedBy : null;
+        const gateToken = satisfiedBy
+          ? session.issueFrameGateToken({
+              session_id: attached.sessionId,
+              frame_seq: satisfiedBy.frame_seq,
+              ts_ms: satisfiedBy.ts_ms,
+            })
+          : null;
+        frameGate = satisfiedBy
+          ? {
+              status: "satisfied",
+              frame_seq: satisfiedBy.frame_seq,
+              ts_ms: satisfiedBy.ts_ms,
+              session_id: attached.sessionId,
+              gate_token: gateToken?.token,
+              gate_token_issued_at_ms: gateToken?.issued_at_ms,
+              gate_token_expires_at_ms: gateToken?.expires_at_ms,
+              capture_binding_required: true,
+              capture_binding_source: "decoded_frame",
+              pipeline_budget_ms: budget,
+              frame_advance_fallback_used: true,
+            }
+          : {
+              status: "timeout",
+              reason: "decoded_frame_gate_timeout",
+              note: "no post-budget decoded frame observed and frame_advance telemetry was unavailable",
+              pipeline_budget_ms: budget,
+              post_apply_observe_ms: observeMs,
+              frame_gate_timeout_ms: decodedWaitMs,
+            };
       }
     }
 
