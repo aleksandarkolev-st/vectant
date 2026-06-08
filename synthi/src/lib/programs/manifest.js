@@ -193,6 +193,10 @@ function normalizeDisplayName(displayName, packageId) {
   return packageId;
 }
 
+function normalizeDescription(description) {
+  return typeof description === 'string' ? description.trim() : '';
+}
+
 /**
  * Parse + validate a `vectant.programs.json` manifest into a NormalizedProgramConfig.
  *
@@ -215,11 +219,13 @@ export function parseProgramManifest(input) {
   const surfaces = normalizeSurfaces(obj.surfaces, runtimeType, ports);
   const health = normalizeHealth(obj.health);
   const displayName = normalizeDisplayName(obj.displayName, packageId);
+  const description = normalizeDescription(obj.description);
 
   return {
     packageId,
     version,
     displayName,
+    description,
     runtimeType,
     workingDir,
     install,

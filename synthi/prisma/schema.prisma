@@ -168,6 +168,12 @@ model MarketplaceProgram {
   publisher     String
   verified      Boolean  @default(false)
   latestVersion String
+  // Phase 5 (open marketplace): publish + reputation metadata. publishedByUserId
+  // is the user who published; installCount is the denormalized reputation signal.
+  displayName       String?
+  description       String?
+  publishedByUserId String?
+  installCount      Int      @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

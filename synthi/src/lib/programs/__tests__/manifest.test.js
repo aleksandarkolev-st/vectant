@@ -155,6 +155,13 @@ describe('parseProgramManifest — fail-closed validation', () => {
     );
   });
 
+  it('normalizes an optional description (trimmed, defaults to empty string)', () => {
+    const cfg = parseProgramManifest({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', description: '  A dev server  ' });
+    expect(cfg.description).toBe('A dev server');
+    const noDesc = parseProgramManifest({ packageId: 'web', version: '1.0.0', launch: 'npm run dev' });
+    expect(noDesc.description).toBe('');
+  });
+
   it('rejects a non-object / empty input', () => {
     expectManifestError(() => parseProgramManifest(null), 'invalid_manifest');
     expectManifestError(() => parseProgramManifest('not json{'), 'invalid_manifest');
