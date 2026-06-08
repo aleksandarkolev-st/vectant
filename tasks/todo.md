@@ -186,9 +186,29 @@ Branch: `tool-compatibility` only. Disk gate: TDD only (vitest / `node --test` /
 Existing plumbing reused: `proxyService` global scanner (`getActivePorts`/`onPortsChanged`/`/port/<N>/` proxy), manager `refreshManagedSessionPorts` + `ports_updated`, panel App/Ports/Health surfaces, `mergeProgramSession`, manifest `health` ({type,target,intervalMs}) + `surfaces`.
 
 ## Phase-3 Implementation Tasks (TDD, commit per task)
-- [ ] P3-T1 Pure port-attribution + web-port-selection helpers (`attributeSessionPorts`, `selectWebPort`, `samePorts`) in programRuntimeManager.js. 6 node --test cases.
-- [ ] P3-T2 Continuous per-session port recompute (`recomputeManagedPorts`) wired to `proxyService.onPortsChanged`; thread `declaredPorts`/`surfaces` onto the record; `refreshManagedSessionPorts` delegates. 2 tests + server `node --check`.
-- [ ] P3-T3 Injectable HTTP health probing (`probeManagedSessionHealth`, path-only `healthPath`, clamp interval); start on launch / clear on stop+exit; snapshot exposes `healthState`, hides `health`/`healthTimer`. 4 tests.
-- [ ] P3-T4 `mergeProgramSession` surfaces live `healthState` as `lastHealthState`; route assertion. routeHelpers + program-sessions route tests.
-- [ ] P3-T5 ProgramSessionPanel polish — App waiting state, actionable Ports (Open / Set as App), live health badge. 3 jsdom tests.
-- [ ] P3-T6 Regression + security sweep (full vitest + backend node test + prisma; security checklist) + Phase-3 review.
+- [x] P3-T1 Pure port-attribution + web-port-selection helpers (`attributeSessionPorts`, `selectWebPort`, `samePorts`) in programRuntimeManager.js. Committed `0e095c1d`; 7 node --test cases (backend 8→15).
+- [x] P3-T2 Continuous per-session port recompute (`recomputeManagedPorts`) wired to `proxyService.onPortsChanged`; thread `declaredPorts` onto the record; `refreshManagedSessionPorts` delegates. Committed `8012566c`; +2 tests (→17) + server `node --check`. NOTE: started the previously-inert `proxyService.startScanner` at collab startup (see deviations).
+- [x] P3-T3 Injectable HTTP health probing (`probeManagedSessionHealth`, path-only `healthPath`, clamp interval); start on launch / clear on stop+exit; snapshot exposes `healthState`, hides `health`/`healthTimer`. Committed `b03fd99c`; +4 tests (→21).
+- [x] P3-T4 `mergeProgramSession` surfaces live `healthState` as `lastHealthState`; route assertion. Committed `ced3f7aa`; new `routeHelpers.test.js` (3) + program-sessions route assertion.
+- [x] P3-T5 ProgramSessionPanel polish — App waiting state, actionable Ports (Open / Set as App), live health badge. Committed `75cf90ec`; 3 jsdom tests (panel 2→5).
+- [x] P3-T6 Regression + security sweep (full vitest + backend node test + prisma; security checklist) + Phase-3 review. Full `npx vitest run` → 35 passed / **259 tests** (only the known empty `preview-store.test.js` stub tolerated); backend `node --test` → **21 pass**; prisma generate ✔ + db push "already in sync".
+
+## Phase-3 security checklist (each invariant pinned by a Phase-3 test)
+- [x] Port attribution never cross-assigns a declared port to another session — declared∩detected per session; undeclared live ports only go to a *single* no-declared running session, else dropped; stopped sessions excluded. (`attributeSessionPorts` tests, T1)
+- [x] Health probe targets ONLY `PROXY_HOST:<webPort>` + a path — a manifest-supplied scheme/host is stripped by `healthPath` (proven by `http://evil.example.com/steal → http://127.0.0.1:8080/steal`), so a manifest can't aim the probe at an arbitrary host (SSRF guard). (T3)
+- [x] Runtime snapshot never leaks `health` config, `healthTimer`, `runtime`, or `launchRequest` (env) — `toPublicManagedSession` redaction + the snapshot-leak test. (T3)
+- [x] Health timer cleared on stop + exit (no probe leak past session end); idle/health timers all `unref`'d. (manager teardown)
+- [x] Inherited Phase-1/2 guards intact (env scrub, output cap, idle cull, kill switch, role/consent gates) — unchanged code paths; full regression + backend suite green.
+
+## Slice 3 Phase 3 — COMPLETE (P3-T1..T6, on `tool-compatibility`)
+All six Phase-3 tasks landed via strict red→green TDD, each committed with the `Co-Authored-By: Claude Opus 4.8` trailer (specific files staged; noise files untouched).
+- Web-port auto-detection: two pure helpers (`attributeSessionPorts`, `selectWebPort`) + `recomputeManagedPorts` drive each running session's live `activePorts`/`webPort`, fed by the global `proxyService` scanner via `onPortsChanged`. `ports_updated` emits only on change.
+- Health: injectable `probeManagedSessionHealth` (path-only, own-port) flips `unknown→ok/unhealthy` and emits `health_changed`; scheduled on launch for `health.type==='http'`, cleared on stop/exit; defaults wire real `http.get` + interval in production with no server change.
+- Surfacing: `mergeProgramSession` maps live `healthState` → `lastHealthState`; the panel gained a live health badge, a "waiting for web server" App state, and actionable Ports (Open / Set-as-App via a client-side `appPortOverride`).
+- Verification: backend `node --test` 21 pass; targeted suites 14 files/116; full `npx vitest run` **259 passed** (1 known empty stub tolerated); prisma generate ✔ + db push "already in sync" (no schema delta).
+- **Deviations / forward notes:**
+  1. `selectWebPort` simplified — dropped the planned `runtimeType`/`surfaces` gate (it would have broken the existing Phase-1 test that expects a default-`cli` session with attributed ports to get a `webPort`; attribution already decides ownership). Consequently `surfaces` is NOT threaded onto the record (YAGNI — nothing consumed it).
+  2. **Discovered latent gap:** `proxyService.startScanner` was defined/exported but **never called** anywhere — so `activePorts` was always empty and the `/port/<N>/` preview + Phase-1 port refresh were effectively inert. Phase 3 starts the scanner at collab-server startup (passing the server's own PORT to exclude self). This is required for auto-detection to work at all.
+  3. Disk gate: `next build`/`docker build` not run (TDD-only). The scanner-start + `onPortsChanged` wiring and the real `http.get` health probe are verified by `node --check` + injectable-unit tests; **end-to-end behavior (a real dev server's port lighting up the App tab, live health) needs a live collab-server rebuild** — the remaining live check before shipping.
+  4. Transient `ENOSPC` truncated `routeHelpers.js` mid-edit during T4; restored from HEAD and re-applied cleanly (disk ~5.5G free; not actually full). No data lost.
+  Branch not pushed (awaiting direction); ~19 unpushed `tool-compatibility` commits accumulated.
