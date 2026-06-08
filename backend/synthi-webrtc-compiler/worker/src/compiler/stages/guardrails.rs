@@ -203,164 +203,6 @@ static void synthi_update_host_pixels_preview(AppState* state) {{
     result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::inject_array_backed_gpu_update_bridge;
-
-    const ARRAY_SHARED: &str = r#"
-struct AppState {
-    float hostX[512];
-    float hostY[512];
-    float* deviceX;
-    float* deviceY;
-    unsigned long long frame;
-};
-constexpr int BALLS = 512;
-"#;
-
-    #[test]
-    fn array_backed_gpu_update_bridge_injects_missing_live_kernel_and_readback() {
-        let core = r#"
-#include "shared.h"
-#include <hip/hip_runtime.h>
-
-extern "C" void core_on_update(void* state_ptr, double dt) {
-    AppState* state = reinterpret_cast<AppState*>(state_ptr);
-    if (!state) return;
-    dim3 block(256);
-    dim3 grid((BALLS + block.x - 1) / block.x);
-    int balls_arg = BALLS;
-    bool initialized = synthi_gpu_launch(nullptr, "particle_init", grid, block, 0, nullptr,
-                                         { &state->deviceX, &state->deviceY, &balls_arg });
-    float cx_arg = 400.0f;
-    float cy_arg = 300.0f;
-    float speed_arg = 2.35f;
-    unsigned long long frame_arg = state->frame++;
-}
-"#;
-
-        let fixed = inject_array_backed_gpu_update_bridge(core, ARRAY_SHARED);
-
-        assert!(fixed.contains("synthi_array_gpu_update_bridge"));
-        assert!(fixed.contains("\"particle_flow\""));
-        assert!(fixed.contains("&state->deviceX"));
-        assert!(fixed.contains("&state->deviceY"));
-        assert!(fixed.contains("hipDeviceSynchronize();"));
-        assert!(fixed.contains("hipMemcpy(state->hostX, state->deviceX"));
-        assert!(fixed.contains("hipMemcpy(state->hostY, state->deviceY"));
-        assert!(fixed.find("frame_arg = state->frame++").unwrap() < fixed.find("\"particle_flow\"").unwrap());
-    }
-
-    #[test]
-    fn array_backed_gpu_update_bridge_does_not_duplicate_existing_live_kernel() {
-        let core = r#"
-#include "shared.h"
-#include <cuda_runtime.h>
-
-extern "C" void core_on_update(void* state_ptr, double dt) {
-    AppState* state = reinterpret_cast<AppState*>(state_ptr);
-    if (!state) return;
-    dim3 block(256);
-    dim3 grid((BALLS + block.x - 1) / block.x);
-    int balls_arg = BALLS;
-    float cx_arg = 400.0f;
-    float cy_arg = 300.0f;
-    float speed_arg = 2.35f;
-    unsigned long long frame_arg = state->frame++;
-    (void)synthi_gpu_launch(nullptr, "particle_flow", grid, block, 0, nullptr,
-                            { &state->deviceX, &state->deviceY, &balls_arg, &cx_arg, &cy_arg, &speed_arg, &frame_arg });
-}
-"#;
-
-        let fixed = inject_array_backed_gpu_update_bridge(core, ARRAY_SHARED);
-
-        assert_eq!(fixed, core);
-    }
-}
-
-fn core_update_app_state_variable(source: &str) -> Option<String> {
-    let (body_start, body_end) = function_body_bounds(source, "core_on_update")?;
-    let body = &source[body_start..body_end];
-    let re_state = Regex::new(r"AppState\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*=").ok()?;
-    re_state
-        .captures(body)
-        .and_then(|caps| caps.get(1).map(|name| name.as_str().to_string()))
-        .or_else(|| core_update_state_parameter(source))
-}
-
-fn insert_in_core_update_after(source: &str, anchor: &str, insertion: &str) -> Option<String> {
-    let (body_start, body_end) = function_body_bounds(source, "core_on_update")?;
-    let body = &source[body_start..body_end];
-    let anchor_pos = body.find(anchor)?;
-    let after_anchor = &body[anchor_pos..];
-    let statement_end = after_anchor.find(';')?;
-    let insert_pos = body_start + anchor_pos + statement_end + 1;
-    let mut result = source.to_string();
-    result.insert_str(insert_pos, insertion);
-    Some(result)
-}
-
-fn inject_array_backed_gpu_update_bridge(source: &str, shared_content: &str) -> String {
-    if source.contains("synthi_array_gpu_update_bridge") {
-        return source.to_string();
-    }
-    let Some((body_start, body_end)) = function_body_bounds(source, "core_on_update") else {
-        return source.to_string();
-    };
-    let body = &source[body_start..body_end];
-    if body.contains("\"particle_flow\"") || body.contains("'particle_flow'") {
-        return source.to_string();
-    }
-
-    let has_array_state = ["hostX", "hostY", "deviceX", "deviceY"]
-        .iter()
-        .all(|field| shared_content.contains(field));
-    let has_launch_args = ["balls_arg", "cx_arg", "cy_arg", "speed_arg", "frame_arg", "grid", "block"]
-        .iter()
-        .all(|name| body.contains(name));
-    let has_device_launch_boundary =
-        body.contains("synthi_gpu_launch") && body.contains("\"particle_init\"");
-    if !has_array_state || !has_launch_args || !has_device_launch_boundary {
-        return source.to_string();
-    }
-
-    let Some(state_name) = core_update_app_state_variable(source) else {
-        return source.to_string();
-    };
-    let (sync_api, memcpy_api, d2h_kind) = if source.contains("<hip/hip_runtime.h>")
-        || source.contains("hipDeviceSynchronize")
-        || source.contains("hipMemcpy")
-    {
-        ("hipDeviceSynchronize", "hipMemcpy", "hipMemcpyDeviceToHost")
-    } else if source.contains("<cuda_runtime.h>")
-        || source.contains("cudaDeviceSynchronize")
-        || source.contains("cudaMemcpy")
-    {
-        ("cudaDeviceSynchronize", "cudaMemcpy", "cudaMemcpyDeviceToHost")
-    } else {
-        return source.to_string();
-    };
-
-    let insertion = format!(
-        r#"
-    // [Guardrail] synthi_array_gpu_update_bridge: preserve live GPU simulation output for rendered host arrays.
-    (void)synthi_gpu_launch(nullptr, "particle_flow", grid, block, 0, nullptr,
-                            {{ &{state_name}->deviceX, &{state_name}->deviceY, &balls_arg, &cx_arg, &cy_arg, &speed_arg, &frame_arg }});
-    {sync_api}();
-    {memcpy_api}({state_name}->hostX, {state_name}->deviceX, sizeof(float) * BALLS, {d2h_kind});
-    {memcpy_api}({state_name}->hostY, {state_name}->deviceY, sizeof(float) * BALLS, {d2h_kind});
-"#
-    );
-
-    let updated = insert_in_core_update_after(source, "frame_arg", &insertion)
-        .or_else(|| insert_in_core_update_after(source, "speed_arg", &insertion))
-        .unwrap_or_else(|| source.to_string());
-    if updated != source {
-        eprintln!("[Guardrail] Injected GPU array update/readback bridge");
-    }
-    updated
-}
-
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {
     if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
@@ -439,8 +281,7 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
     if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
         // Skip AI-fix guardrails; keep user-code adapters and proof-visible GPU preview bridge.
         let result = apply_core_user_adapters(content);
-        let result = inject_host_pixels_preview_bridge(&result, shared_content);
-        return inject_array_backed_gpu_update_bridge(&result, shared_content);
+        return inject_host_pixels_preview_bridge(&result, shared_content);
     }
     let mut result = content.to_string();
 
@@ -669,7 +510,6 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
     }
 
     result = inject_host_pixels_preview_bridge(&result, shared_content);
-    result = inject_array_backed_gpu_update_bridge(&result, shared_content);
 
     // FIX: Remove duplicate defines that are already in shared.h
     if result.contains("#include \"shared.h\"") {
