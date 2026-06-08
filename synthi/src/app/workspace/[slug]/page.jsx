@@ -115,11 +115,42 @@ const ADAPTED_MANIFEST_CANDIDATES = [
     ADAPTED_SIDECAR_PATH,
 ];
 const ADAPTED_FALLBACK_HOST_FILES = ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp'];
+const NATIVE_GUI_SOURCE_PATTERNS = [
+    /#\s*include\s*[<"]SDL2\/SDL\.h[>"]/,
+    /#\s*include\s*[<"]SDL\.h[>"]/,
+    /\bSDL_Init\s*\(\s*SDL_INIT_VIDEO\b/,
+    /\bSDL_CreateWindow\s*\(/,
+    /\bSDL_RenderPresent\s*\(/,
+    /\bSDL_RenderClear\s*\(/,
+    /\bSDL_RenderDraw(?:Line|Point|Rect)\s*\(/,
+    /\bSDL_RenderFillRect\s*\(/,
+    /#\s*include\s*[<"]GLFW\/glfw3\.h[>"]/,
+    /\bglfwInit\s*\(/,
+    /\bglfwCreateWindow\s*\(/,
+    /#\s*include\s*[<"]raylib\.h[>"]/,
+    /\bInitWindow\s*\(/,
+    /#\s*include\s*[<"]SFML\/Graphics\.hpp[>"]/,
+    /\bsf::RenderWindow\b/,
+    /#\s*include\s*[<"]X11\/Xlib\.h[>"]/,
+    /\bXOpenDisplay\s*\(/,
+    /\bXCreateWindow\s*\(/,
+    /\bglutCreateWindow\s*\(/,
+];
 
 const normalizeWorkspacePath = (path = '') => String(path)
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .replace(/^\.\//, '');
+
+const sourceHasNativeGuiSignals = (source = '') => (
+    typeof source === 'string' &&
+    NATIVE_GUI_SOURCE_PATTERNS.some((pattern) => pattern.test(source))
+);
+
+const filesHaveNativeGuiSignals = (files = []) => (
+    Array.isArray(files) &&
+    files.some((file) => sourceHasNativeGuiSignals(file?.content || ''))
+);
 
 const extractCompileManifest = (rawManifestContent, path = '') => {
     if (typeof rawManifestContent !== 'string' || rawManifestContent.trim().length === 0) {
@@ -2502,6 +2533,7 @@ export default function EditorPage({ params }) {
             javaGuiRe.test(source) ||
             additionalFiles.some(f => javaGuiRe.test(f.content || ''))
         );
+        const hasNativeGuiSignals = sourceHasNativeGuiSignals(source) || filesHaveNativeGuiSignals(additionalFiles);
 
         let target = null;
         if (isReactNative) target = 'react-native-emulator';
@@ -2509,9 +2541,12 @@ export default function EditorPage({ params }) {
 
         const isMobile = isReactNative || isFlutter;
 
-        // If Java GUI imports are detected, override isGui to true so the
+        // If a desktop GUI is detected, override isGui to true so the
         // backend spawns Xvfb + GStreamer and streams to the in-app preview.
-        const effectiveGuiMode = runInGuiMode || hasJavaGuiImports;
+        const effectiveGuiMode = runInGuiMode || hasJavaGuiImports || hasNativeGuiSignals;
+        if (hasNativeGuiSignals && !runInGuiMode) {
+            appendBuildLog('Detected native GUI framework; opening floating preview.');
+        }
 
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
@@ -2748,7 +2783,8 @@ export default function EditorPage({ params }) {
                 javaGuiRe.test(source) ||
                 additionalFiles.some(f => javaGuiRe.test(f.content || ''))
             );
-            const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui;
+            const hasNativeGuiSignals = sourceHasNativeGuiSignals(source) || filesHaveNativeGuiSignals(additionalFiles);
+            const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui || hasNativeGuiSignals;
 
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {
