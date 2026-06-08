@@ -604,7 +604,12 @@ fn library_file_argument_resolves(
         return false;
     }
     library_exists_in_dirs(flag, search_dirs)
-        || compiler_reports_library(compiler_exe, &[flag.to_string()], search_dirs, workspace_dir)
+        || compiler_reports_library(
+            compiler_exe,
+            &[flag.to_string()],
+            search_dirs,
+            workspace_dir,
+        )
 }
 
 fn library_exists_in_dirs(candidate: &str, search_dirs: &[PathBuf]) -> bool {

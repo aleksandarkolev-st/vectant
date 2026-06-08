@@ -349,4 +349,42 @@ describe("HmrNormalizer.waitForTerminal", () => {
     expect(wrongModuleResult.status).toBe("timeout");
     normalizer.dispose();
   });
+
+  it("does not recover stale or wrong-module GPU proof history", async () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(
+      mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]
+    );
+    const staleSinceTs = Date.now();
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "core",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }));
+    await new Promise((r) => setTimeout(r, 5));
+    const freshSinceTs = Date.now();
+
+    expect(normalizer.latestGpuProof({
+      sinceTs: freshSinceTs,
+      module: "core",
+    })).toBeNull();
+    expect(normalizer.latestGpuProof({
+      sinceTs: staleSinceTs,
+      module: "device",
+    })).toBeNull();
+
+    mockDC.emit(JSON.stringify({
+      status: "gpu-proof-state",
+      module: "device",
+      resultState: "gpu-hmr-full-runtime-proven",
+    }));
+
+    const proof = normalizer.latestGpuProof({
+      sinceTs: freshSinceTs,
+      module: "device",
+    });
+    expect(proof?.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(proof?.raw.module).toBe("device");
+    normalizer.dispose();
+  });
 });

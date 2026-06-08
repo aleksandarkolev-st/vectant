@@ -22,6 +22,7 @@
   },
   "files": [
     "dist",
+    "scripts/lib/gpu-hmr-acceptance-contract.mjs",
     "README.md"
   ],
   "publishConfig": {
@@ -63,6 +64,16 @@
     "proof:real-rocm:warm": "node -e \"process.env.SYNTHI_REAL_ROCM_REUSE_WORKER_REPO='1'; process.env.SYNTHI_REAL_ROCM_CLEAN_BUILD='0'; import('./scripts/gpu-hmr-real-rocm-repo-validation.mjs')\"",
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
+    "proof:adversarial-ledger:self-check": "node scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs",
+    "proof:acceptance-contract:self-check": "node scripts/gpu-hmr-acceptance-contract-self-check.mjs",
+    "proof:strict-gates:self-check": "node scripts/gpu-hmr-proof-strict-gates-self-check.mjs",
+    "proof:visual-evidence:self-check": "node scripts/tests/gpu-hmr-visual-evidence-smoke.mjs",
+    "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
+    "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
+    "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
+    "proof:timing-metrics": "node scripts/gpu-hmr-timing-metrics-summary.mjs",
+    "proof:external-project:bevy": "node scripts/gpu-hmr-external-project-profile.mjs --profile mcp/synthi-mcp/scripts/profiles/bevy-wgsl-shader-material.json",
+    "proof:timing-metrics:self-check": "node scripts/tests/gpu-hmr-timing-metrics-smoke.mjs && node scripts/gpu-hmr-timing-metrics-summary.mjs --self-check",
     "proof:runtime-profile:hiprt": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-megakernel-direct-light-zero.json --mode same-process",
     "proof:runtime-profile:hiprt:camera-rays": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json --mode same-process",
     "proof:hiprt:warm": "node scripts/hiprt-light-math-warm-proof.mjs",

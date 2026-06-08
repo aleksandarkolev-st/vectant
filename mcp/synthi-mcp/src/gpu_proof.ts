@@ -1,3 +1,13 @@
+import {
+  embeddedGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+  type GpuHmrLedgerValidation,
+} from "./gpu_proof_ledger.js";
+import {
+  evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
+} from "../scripts/lib/gpu-hmr-acceptance-contract.mjs";
+
 export const GPU_HMR_PROOF_SCHEMA_VERSION = "synthi.gpu.hmr.proof.v1";
 
 export const GPU_HMR_PROOF_STATES = [
@@ -53,6 +63,21 @@ export interface GpuHmrProofValidation {
   degradedStateRankCap: number | null;
   satisfied: boolean;
   reason?: string;
+  proofLedgerValidation?: GpuHmrLedgerValidation | null;
+  runtimeProofArtifactValidation?: GpuHmrRuntimeProofArtifactValidation | null;
+}
+
+export interface GpuHmrRuntimeProofArtifactValidation {
+  present: boolean;
+  accepted: boolean;
+  source: string | null;
+  failedGates: Array<{ code: string }>;
+}
+
+export interface GpuHmrProofMatchOpts {
+  sinceTs?: number;
+  module?: string;
+  previewId?: string;
 }
 
 const PROOF_STATE_RANKS = new Map<string, number>(
@@ -75,8 +100,652 @@ const DEGRADED_STATE_RANK_CAPS = new Map<string, number>([
   ["gpu-hmr-fission-unverified", 0],
 ]);
 
+const OUTPUT_ORACLE_PROOF_RANK = gpuHmrProofStateRank("gpu-hmr-output-oracle-proven");
+const FULL_RUNTIME_PROOF_RANK = gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+
+const LOWER_STATE_STAGE_REQUIREMENTS = new Map<string, string[]>([
+  ["gpu-hmr-compile-proven", ["device-compile", "compile"]],
+  ["gpu-hmr-symbol-bound", ["symbol-binding", "symbol-bound"]],
+  ["gpu-hmr-abi-proven", ["abi-compatibility", "abi"]],
+  ["gpu-hmr-epoch-swap-proven", ["epoch-swap", "epoch-publish"]],
+  ["gpu-hmr-dispatch-observed", ["runtime-dispatch-observation", "dispatch-observed", "dispatch"]],
+  ["gpu-hmr-dispatch-safe-proven", ["dispatch-safe", "runtime-dispatch-safe", "dispatch"]],
+]);
+
+const OUTPUT_ORACLE_RUNTIME_STAGE_REQUIREMENTS = [
+  "compile",
+  "symbol-binding",
+  "abi",
+  "artifact-transport",
+  "epoch-swap",
+  "dispatch-safe",
+  "output",
+];
+
+const IMMUTABLE_PROOF_ID_PATTERNS = [
+  /^gpu-proof:[a-f0-9]{64}$/i,
+  /^gpu-runtime-proof:sha256:[a-f0-9]{64}$/i,
+  /^gpu-ledger-proof:sha256:[a-f0-9]{64}$/i,
+];
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function nestedString(raw: Record<string, unknown>, key: string): string | null {
+  const direct = stringOrNull(raw[key]);
+  if (direct) return direct;
+  for (const nestedKey of ["data", "detail"]) {
+    const nested = raw[nestedKey];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const value = stringOrNull((nested as Record<string, unknown>)[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function objectField(raw: Record<string, unknown>, ...keys: string[]): Record<string, unknown> | null {
+  for (const key of keys) {
+    const obj = objectOrNull(raw[key]);
+    if (obj !== null) return obj;
+  }
+  return null;
+}
+
+function boolField(raw: Record<string, unknown> | null, ...keys: string[]): boolean | null {
+  if (raw === null) return null;
+  for (const key of keys) {
+    if (typeof raw[key] === "boolean") return raw[key] as boolean;
+  }
+  return null;
+}
+
+function arrayField(raw: Record<string, unknown> | null, ...keys: string[]): unknown[] | null {
+  if (raw === null) return null;
+  for (const key of keys) {
+    if (Array.isArray(raw[key])) return raw[key] as unknown[];
+  }
+  return null;
+}
+
+function nestedArrayField(raw: Record<string, unknown>, ...keys: string[]): unknown[] | null {
+  const direct = arrayField(raw, ...keys);
+  if (direct !== null) return direct;
+  for (const nestedKey of ["data", "detail", "proofMaterial", "proof_material"]) {
+    const nested = objectOrNull(raw[nestedKey]);
+    if (nested === null) continue;
+    const nestedArray = nestedArrayField(nested, ...keys);
+    if (nestedArray !== null) return nestedArray;
+  }
+  return null;
+}
+
+function failureCodes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      const object = objectOrNull(entry);
+      return stringOrNull(object?.code);
+    })
+    .filter((code): code is string => code !== null)
+    .sort();
+}
+
+function proofLedgerQueriesMatch(
+  supplied: Record<string, unknown>,
+  recomputed: GpuHmrLedgerValidation
+): boolean {
+  const suppliedProofId = stringOrNull(supplied.proofId ?? supplied.proof_id);
+  const suppliedCodes = failureCodes(supplied.failedInvariants ?? supplied.failed_invariants);
+  const recomputedCodes = recomputed.failedInvariants.map((failure) => failure.code).sort();
+  return boolField(supplied, "gpuHmrSuccess", "gpu_hmr_success") === recomputed.gpuHmrSuccess
+    && suppliedProofId === recomputed.proofId
+    && suppliedCodes.join("|") === recomputedCodes.join("|");
+}
+
+function acceptanceContractFailureCodes(value: unknown): string[] {
+  const object = objectOrNull(value);
+  if (object === null) return [];
+  return failureCodes(object.failedGates ?? object.failed_gates);
+}
+
+function acceptanceContractEvaluationsMatch(
+  supplied: Record<string, unknown>,
+  recomputed: { accepted: boolean; failedGates?: Array<{ code?: string }> }
+): boolean {
+  const suppliedAccepted = boolField(supplied, "accepted");
+  const suppliedCodes = failureCodes(supplied.failedGates ?? supplied.failed_gates);
+  const recomputedCodes = acceptanceContractFailureCodes(recomputed);
+  return suppliedAccepted === recomputed.accepted
+    && suppliedCodes.join("|") === recomputedCodes.join("|");
+}
+
+function genericEvaluationMatch(
+  supplied: Record<string, unknown>,
+  recomputed: { accepted: boolean; failedGates?: unknown[]; failures?: unknown[] }
+): boolean {
+  const suppliedAccepted = boolField(supplied, "accepted");
+  const suppliedCodes = [
+    ...failureCodes(supplied.failedGates ?? supplied.failed_gates),
+    ...failureCodes(supplied.failures),
+  ].sort();
+  const recomputedCodes = [
+    ...failureCodes(recomputed.failedGates),
+    ...failureCodes(recomputed.failures),
+  ].sort();
+  return suppliedAccepted === recomputed.accepted
+    && suppliedCodes.join("|") === recomputedCodes.join("|");
+}
+
+function ledgerRecord(ledger: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (ledger === null) return null;
+  const records = Array.isArray(ledger.records)
+    ? ledger.records.filter((record): record is Record<string, unknown> => objectOrNull(record) !== null)
+    : [];
+  if (records.length > 0) return records[records.length - 1]!;
+  return ledger;
+}
+
+function nestedObjectField(raw: Record<string, unknown>, ...keys: string[]): Record<string, unknown> {
+  for (const key of keys) {
+    const value = objectOrNull(raw[key]);
+    if (value !== null) return value;
+  }
+  return {};
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(object[key])}`
+  ).join(",")}}`;
+}
+
+function outputOracleTarget(record: Record<string, unknown>, outputEvent: Record<string, unknown>): Record<string, unknown> | null {
+  const outputOracle = nestedObjectField(outputEvent, "output_oracle", "outputOracle");
+  return objectOrNull(record.output_oracle_target)
+    ?? objectOrNull(record.outputOracleTarget)
+    ?? objectOrNull(outputEvent.output_oracle_target)
+    ?? objectOrNull(outputEvent.outputOracleTarget)
+    ?? objectOrNull(outputOracle.output_oracle_target)
+    ?? objectOrNull(outputOracle.outputOracleTarget);
+}
+
+function ledgerIdentityFields(ledger: Record<string, unknown> | null): Record<string, string | null> {
+  const record = ledgerRecord(ledger);
+  if (record === null) return {};
+  const loaderEvent = nestedObjectField(record, "loader_event", "loaderEvent");
+  const epochPublishEvent = nestedObjectField(record, "epoch_publish_event", "epochPublishEvent");
+  const dispatchEvent = nestedObjectField(record, "dispatch_event", "dispatchEvent");
+  const outputEvent = nestedObjectField(record, "output_event", "outputEvent");
+  return {
+    proof_id: stringOrNull(record.proofId ?? record.proof_id ?? ledger?.proofId ?? ledger?.proof_id),
+    project_id: stringOrNull(record.project_id ?? record.projectId),
+    edit_id: stringOrNull(record.edit_id ?? record.editId),
+    backend: stringOrNull(record.backend ?? record.gpu_backend ?? record.gpuBackend),
+    output_oracle_target: outputOracleTarget(record, outputEvent) === null
+      ? null
+      : stableJson(outputOracleTarget(record, outputEvent)),
+    contract_hash: stringOrNull(record.contract_hash ?? record.contractHash),
+    artifact_before_hash: stringOrNull(record.artifact_before_hash ?? record.artifactBeforeHash),
+    artifact_after_hash: stringOrNull(record.artifact_after_hash ?? record.artifactAfterHash),
+    loader_event_id: stringOrNull(loaderEvent.id),
+    epoch_publish_event_id: stringOrNull(epochPublishEvent.id),
+    dispatch_event_id: stringOrNull(dispatchEvent.id),
+    output_event_id: stringOrNull(outputEvent.id),
+    output_after_dispatch_id: stringOrNull(outputEvent.after_dispatch_id ?? outputEvent.afterDispatchId),
+  };
+}
+
+function proofLedgerBindingFailures(
+  expectedLedger: Record<string, unknown> | null,
+  runtimeArtifactLedger: Record<string, unknown> | null
+): Array<{ code: string }> {
+  if (expectedLedger === null || runtimeArtifactLedger === null) return [];
+  const expected = ledgerIdentityFields(expectedLedger);
+  const actual = ledgerIdentityFields(runtimeArtifactLedger);
+  const failures: Array<{ code: string }> = [];
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    const actualValue = actual[field];
+    if (expectedValue !== null && actualValue === null) {
+      failures.push({ code: `runtime_artifact_ledger_${field}_missing` });
+    } else if (expectedValue !== null && actualValue !== null && expectedValue !== actualValue) {
+      failures.push({ code: `runtime_artifact_ledger_${field}_mismatch` });
+    }
+  }
+  return failures;
+}
+
+function hasPath(value: unknown, path: string[]): boolean {
+  let current = value;
+  for (const part of path) {
+    const object = objectOrNull(current);
+    if (object === null || !Object.prototype.hasOwnProperty.call(object, part)) return false;
+    current = object[part];
+  }
+  return true;
+}
+
+function pathValue(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const part of path) {
+    const object = objectOrNull(current);
+    if (object === null || !Object.prototype.hasOwnProperty.call(object, part)) return undefined;
+    current = object[part];
+  }
+  return current;
+}
+
+function firstPathValue(value: unknown, paths: string[][]): unknown {
+  for (const path of paths) {
+    if (!hasPath(value, path)) continue;
+    const current = pathValue(value, path);
+    if (current !== undefined && current !== null && current !== "") return current;
+  }
+  return undefined;
+}
+
+function sourceConsistencyFailureCode(label: string, suffix: string): string {
+  return `proof_ledger_source_${label.replace(/[^A-Za-z0-9]+/g, "_").toLowerCase()}_${suffix}`;
+}
+
+function compareProofLedgerSourceField(
+  failures: Array<{ code: string; field?: string }>,
+  label: string,
+  explicitRecord: Record<string, unknown>,
+  derivedRecord: Record<string, unknown>,
+  paths: string[][]
+): void {
+  const explicitValue = firstPathValue(explicitRecord, paths);
+  if (explicitValue === undefined) return;
+  const derivedValue = firstPathValue(derivedRecord, paths);
+  if (derivedValue === undefined) {
+    failures.push({ code: sourceConsistencyFailureCode(label, "unverified"), field: label });
+    return;
+  }
+  if (stableJson(explicitValue) !== stableJson(derivedValue)) {
+    failures.push({ code: sourceConsistencyFailureCode(label, "mismatch"), field: label });
+  }
+}
+
+function evaluateProofLedgerSourceConsistencyFromRecords(
+  explicitRecord: Record<string, unknown> | null,
+  derivedRecord: Record<string, unknown> | null
+): { accepted: boolean; failures: Array<{ code: string; field?: string }> } {
+  if (derivedRecord === null) {
+    return {
+      accepted: false,
+      failures: [{ code: "proof_ledger_source_derived_record_missing" }],
+    };
+  }
+  if (explicitRecord === null) {
+    return {
+      accepted: true,
+      failures: [],
+    };
+  }
+  const failures: Array<{ code: string; field?: string }> = [];
+  const fieldSpecs: Array<[string, string[][]]> = [
+    ["classification_project_kind", [["classification", "project_kind"], ["classification", "projectKind"]]],
+    ["classification_edit_kind", [["classification", "edit_kind"], ["classification", "editKind"]]],
+    ["classification_route", [["classification", "route"]]],
+    ["contract_hash", [["contract_hash"], ["contractHash"]]],
+    ["backend", [["backend"]]],
+    ["artifact_before_hash", [["artifact_before_hash"], ["artifactBeforeHash"]]],
+    ["artifact_after_hash", [["artifact_after_hash"], ["artifactAfterHash"]]],
+    ["loader_event_id", [["loader_event", "id"], ["loaderEvent", "id"]]],
+    ["loader_event_artifact_hash", [["loader_event", "artifact_hash"], ["loaderEvent", "artifactHash"]]],
+    ["loader_event_process_id", [["loader_event", "process_id"], ["loaderEvent", "processId"]]],
+    ["epoch_publish_event_id", [["epoch_publish_event", "id"], ["epochPublishEvent", "id"]]],
+    ["epoch_publish_event_artifact_hash", [["epoch_publish_event", "artifact_hash"], ["epochPublishEvent", "artifactHash"]]],
+    ["epoch_publish_event_epoch", [["epoch_publish_event", "epoch"], ["epochPublishEvent", "epoch"]]],
+    ["epoch_publish_event_process_id", [["epoch_publish_event", "process_id"], ["epochPublishEvent", "processId"]]],
+    ["dispatch_event_id", [["dispatch_event", "id"], ["dispatchEvent", "id"]]],
+    ["dispatch_event_artifact_hash", [["dispatch_event", "artifact_hash"], ["dispatchEvent", "artifactHash"]]],
+    ["dispatch_event_epoch", [["dispatch_event", "epoch"], ["dispatchEvent", "epoch"]]],
+    ["dispatch_event_process_id", [["dispatch_event", "process_id"], ["dispatchEvent", "processId"]]],
+    ["output_event_after_dispatch_id", [["output_event", "after_dispatch_id"], ["outputEvent", "afterDispatchId"]]],
+    ["output_event_artifact_hash", [["output_event", "artifact_hash"], ["outputEvent", "artifactHash"]]],
+    ["output_event_epoch", [["output_event", "epoch"], ["outputEvent", "epoch"]]],
+    ["output_event_process_id", [["output_event", "process_id"], ["outputEvent", "processId"]]],
+    ["output_event_passed", [["output_event", "passed"], ["outputEvent", "passed"]]],
+    ["process_identity_process_id", [["process_identity", "process_id"], ["processIdentity", "processId"]]],
+    ["device_identity_device_uuid", [["device_identity", "device_uuid"], ["deviceIdentity", "deviceUuid"]]],
+    ["cpu_hmr_used", [["cpu_hmr_used"], ["cpuHmrUsed"]]],
+    ["full_rebuild_used", [["full_rebuild_used"], ["fullRebuildUsed"]]],
+    ["process_restarted", [["process_restarted"], ["processRestarted"]]],
+  ];
+  for (const [label, paths] of fieldSpecs) {
+    compareProofLedgerSourceField(failures, label, explicitRecord, derivedRecord, paths);
+  }
+  return {
+    accepted: failures.length === 0,
+    failures,
+  };
+}
+
+const RUNTIME_PROOF_ARTIFACT_KEYS = [
+  "runtimeProofArtifact",
+  "runtime_proof_artifact",
+  "validationRuntimeProofArtifact",
+  "validation_runtime_proof_artifact",
+  "gpuHmrRuntimeProofArtifact",
+  "gpu_hmr_runtime_proof_artifact",
+  "gpuRuntimeProofArtifact",
+  "gpu_runtime_proof_artifact",
+] as const;
+
+function runtimeProofArtifactCandidate(
+  raw: Record<string, unknown>
+): { source: string; artifact: Record<string, unknown> } | null {
+  for (const key of RUNTIME_PROOF_ARTIFACT_KEYS) {
+    const artifact = objectOrNull(raw[key]);
+    if (artifact !== null) return { source: key, artifact };
+  }
+  for (const nestedKey of ["data", "detail"]) {
+    const nested = objectOrNull(raw[nestedKey]);
+    if (nested === null) continue;
+    const nestedCandidate = runtimeProofArtifactCandidate(nested);
+    if (nestedCandidate !== null) {
+      return {
+        source: `${nestedKey}.${nestedCandidate.source}`,
+        artifact: nestedCandidate.artifact,
+      };
+    }
+  }
+  return null;
+}
+
+function validateRuntimeProofArtifactAcceptance(
+  raw: Record<string, unknown>,
+  expectedProofLedger: Record<string, unknown> | null = null,
+  expectedRuntimeProofId: string | null = null,
+  requiredState = "gpu-hmr-full-runtime-proven"
+): GpuHmrRuntimeProofArtifactValidation {
+  const candidate = runtimeProofArtifactCandidate(raw);
+  if (candidate === null) {
+    return {
+      present: false,
+      accepted: false,
+      source: null,
+      failedGates: [{ code: "runtime_proof_artifact_missing" }],
+    };
+  }
+
+  const artifact = candidate.artifact;
+  const failures: Array<{ code: string }> = [];
+  const requiredRank = gpuHmrProofStateRank(requiredState);
+  const requiresFullRuntime = requiredRank >= FULL_RUNTIME_PROOF_RANK;
+  const proofLedger = objectField(artifact, "proofLedger", "proof_ledger");
+  const proofLedgerQuery = objectField(artifact, "proofLedgerQuery", "proof_ledger_query");
+  const acceptanceContract = objectField(artifact, "acceptanceContract", "acceptance_contract");
+  const acceptanceContractEvaluation = objectField(
+    artifact,
+    "acceptanceContractEvaluation",
+    "acceptance_contract_evaluation"
+  );
+  const acceptanceContractConsistency = objectField(
+    artifact,
+    "acceptanceContractConsistency",
+    "acceptance_contract_consistency"
+  );
+  const derivedAcceptanceContract = objectField(
+    artifact,
+    "derivedAcceptanceContract",
+    "derived_acceptance_contract"
+  );
+  const derivedAcceptanceContractEvaluation = objectField(
+    artifact,
+    "derivedAcceptanceContractEvaluation",
+    "derived_acceptance_contract_evaluation"
+  );
+  const proofLedgerSourceConsistency = objectField(
+    artifact,
+    "proofLedgerSourceConsistency",
+    "proof_ledger_source_consistency"
+  );
+  const explicitProofLedgerRecord = objectField(
+    artifact,
+    "explicitProofLedgerRecord",
+    "explicit_proof_ledger_record"
+  );
+  const derivedProofLedgerRecord = objectField(
+    artifact,
+    "derivedProofLedgerRecord",
+    "derived_proof_ledger_record"
+  );
+  const deterministicVisualModeEvaluation = objectField(
+    artifact,
+    "deterministicVisualModeEvaluation",
+    "deterministic_visual_mode_evaluation"
+  );
+  const artifactResultState = stringOrNull(artifact.resultState ?? artifact.result_state);
+  const artifactProofId = stringOrNull(artifact.proofId ?? artifact.proof_id);
+  const stageResults = arrayField(artifact, "stageResults", "stage_results");
+  const limitations = arrayField(artifact, "limitations");
+
+  if (artifactResultState === null || gpuHmrProofStateRank(artifactResultState) < requiredRank) {
+    failures.push({ code: artifactResultState === null
+      ? "runtime_proof_artifact_result_state_missing"
+      : "runtime_proof_artifact_result_state_below_required" });
+  }
+  if (expectedRuntimeProofId !== null) {
+    if (artifactProofId === null) {
+      failures.push({ code: "runtime_proof_artifact_proof_id_missing" });
+    } else if (artifactProofId !== expectedRuntimeProofId) {
+      failures.push({ code: "runtime_proof_artifact_proof_id_mismatch" });
+    }
+  }
+  if (requiresFullRuntime && boolField(artifact, "fullRuntimeProven", "full_runtime_proven") !== true) {
+    failures.push({ code: "runtime_full_proof_not_proven" });
+  }
+  if (requiresFullRuntime && boolField(artifact, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
+    failures.push({ code: "runtime_proof_artifact_gpu_hmr_success_false" });
+  }
+  if (stageResults === null || stageResults.length === 0) {
+    failures.push({ code: "runtime_proof_artifact_stage_results_missing" });
+  } else {
+    const stages = stageResults
+      .map((stage) => objectOrNull(stage))
+      .filter((stage): stage is Record<string, unknown> => stage !== null);
+    if (requiresFullRuntime) {
+      if (stages.some((stage) => stage.status !== "passed")) {
+        failures.push({ code: "runtime_proof_artifact_stage_failed" });
+      }
+    } else {
+      const stagesById = new Map(
+        stages.map((stage) => [stringOrNull(stage.stageId ?? stage.stage_id), stage])
+      );
+      for (const stageId of OUTPUT_ORACLE_RUNTIME_STAGE_REQUIREMENTS) {
+        const stage = stagesById.get(stageId);
+        if (stage === undefined) {
+          failures.push({ code: "runtime_proof_artifact_required_stage_missing" });
+        } else if (stage.status !== "passed") {
+          failures.push({ code: "runtime_proof_artifact_stage_failed" });
+        }
+      }
+      const failedStagesAtOrBelowRequirement = stages.some((stage) => {
+        const stageRank = gpuHmrProofStateRank(stage.requiredState ?? stage.required_state);
+        return stageRank > 0 && stageRank <= requiredRank && stage.status !== "passed";
+      });
+      if (failedStagesAtOrBelowRequirement) {
+        failures.push({ code: "runtime_proof_artifact_stage_failed" });
+      }
+    }
+  }
+  if (limitations === null) {
+    failures.push({ code: "runtime_proof_artifact_limitations_missing" });
+  } else if (requiresFullRuntime && limitations.length > 0) {
+    failures.push({ code: "runtime_proof_artifact_limitations_present" });
+  } else if (!requiresFullRuntime) {
+    const blockingLimitations = limitations
+      .map((limitation) => objectOrNull(limitation))
+      .filter((limitation): limitation is Record<string, unknown> => limitation !== null)
+      .filter((limitation) => {
+        const limitationRank = gpuHmrProofStateRank(
+          limitation.requiredState ?? limitation.required_state
+        );
+        return limitationRank === 0 || limitationRank <= requiredRank;
+      });
+    if (blockingLimitations.length > 0) {
+      failures.push({ code: "runtime_proof_artifact_limitations_present" });
+    }
+  }
+  if (proofLedger === null) failures.push({ code: "proof_ledger_missing" });
+  failures.push(...proofLedgerBindingFailures(expectedProofLedger, proofLedger));
+  const recomputedProofLedgerQuery = proofLedger === null
+    ? null
+    : queryGpuHmrLedgerInvariants(proofLedger);
+  const recomputedAcceptanceContractEvaluation = acceptanceContract === null
+    ? null
+    : evaluateGpuHmrAcceptanceContract(acceptanceContract);
+  const recomputedDerivedAcceptanceContractEvaluation = derivedAcceptanceContract === null
+    ? null
+    : evaluateGpuHmrAcceptanceContract(derivedAcceptanceContract);
+  const recomputedAcceptanceContractConsistency = acceptanceContract === null
+    ? null
+    : evaluateGpuHmrAcceptanceContractConsistency({
+      explicitContract: acceptanceContract,
+      derivedContract: derivedAcceptanceContract,
+      derivedEvaluation: recomputedDerivedAcceptanceContractEvaluation ?? derivedAcceptanceContractEvaluation,
+    });
+  const recomputedProofLedgerSourceConsistency =
+    evaluateProofLedgerSourceConsistencyFromRecords(explicitProofLedgerRecord, derivedProofLedgerRecord);
+  if (recomputedProofLedgerQuery !== null && !recomputedProofLedgerQuery.gpuHmrSuccess) {
+    failures.push({ code: "proof_ledger_recomputed_query_rejected" });
+  }
+  if (proofLedgerQuery === null) {
+    failures.push({ code: "proof_ledger_query_missing" });
+  } else if (boolField(proofLedgerQuery, "gpuHmrSuccess", "gpu_hmr_success") !== true) {
+    failures.push({ code: "proof_ledger_query_rejected" });
+  } else if (
+    recomputedProofLedgerQuery !== null
+    && !proofLedgerQueriesMatch(proofLedgerQuery, recomputedProofLedgerQuery)
+  ) {
+    failures.push({ code: "proof_ledger_query_mismatch" });
+  }
+  if (acceptanceContract === null) failures.push({ code: "acceptance_contract_missing" });
+  if (
+    recomputedAcceptanceContractEvaluation !== null
+    && recomputedAcceptanceContractEvaluation.accepted !== true
+  ) {
+    failures.push({ code: "acceptance_contract_recomputed_rejected" });
+  }
+  if (acceptanceContractEvaluation === null) {
+    failures.push({ code: "acceptance_contract_evaluation_missing" });
+  } else if (boolField(acceptanceContractEvaluation, "accepted") !== true) {
+    failures.push({ code: "acceptance_contract_rejected" });
+  } else if (
+    recomputedAcceptanceContractEvaluation !== null
+    && !acceptanceContractEvaluationsMatch(
+      acceptanceContractEvaluation,
+      recomputedAcceptanceContractEvaluation
+    )
+  ) {
+    failures.push({ code: "acceptance_contract_evaluation_mismatch" });
+  }
+  if (acceptanceContractConsistency === null) {
+    failures.push({ code: "acceptance_contract_consistency_missing" });
+  } else if (boolField(acceptanceContractConsistency, "accepted") !== true) {
+    failures.push({ code: "acceptance_contract_consistency_rejected" });
+  } else if (
+    recomputedAcceptanceContractConsistency !== null
+    && recomputedAcceptanceContractConsistency.accepted !== true
+  ) {
+    failures.push({ code: "acceptance_contract_consistency_recomputed_rejected" });
+  } else if (
+    recomputedAcceptanceContractConsistency !== null
+    && !genericEvaluationMatch(acceptanceContractConsistency, recomputedAcceptanceContractConsistency)
+  ) {
+    failures.push({ code: "acceptance_contract_consistency_mismatch" });
+  }
+  if (proofLedgerSourceConsistency === null) {
+    failures.push({ code: "proof_ledger_source_consistency_missing" });
+  } else if (boolField(proofLedgerSourceConsistency, "accepted") !== true) {
+    failures.push({ code: "proof_ledger_source_consistency_rejected" });
+  } else if (recomputedProofLedgerSourceConsistency.accepted !== true) {
+    failures.push({ code: "proof_ledger_source_consistency_recomputed_rejected" });
+  } else if (
+    !genericEvaluationMatch(proofLedgerSourceConsistency, recomputedProofLedgerSourceConsistency)
+  ) {
+    failures.push({ code: "proof_ledger_source_consistency_mismatch" });
+  }
+  if (
+    deterministicVisualModeEvaluation !== null
+    && boolField(deterministicVisualModeEvaluation, "accepted") !== true
+  ) {
+    failures.push({ code: "deterministic_visual_mode_rejected" });
+  }
+
+  return {
+    present: true,
+    accepted: failures.length === 0,
+    source: candidate.source,
+    failedGates: failures,
+  };
+}
+
+function lowerStateProofMaterialFailure(
+  proof: GpuHmrProofTelemetry,
+  requiredState: string
+): string | null {
+  const requiredStages = LOWER_STATE_STAGE_REQUIREMENTS.get(requiredState);
+  if (requiredStages === undefined) return null;
+
+  const stageResults = nestedArrayField(proof.raw, "stageResults", "stage_results");
+  if (stageResults !== null) {
+    const matchingStage = stageResults
+      .map((stage) => objectOrNull(stage))
+      .filter((stage): stage is Record<string, unknown> => stage !== null)
+      .find((stage) => requiredStages.includes(stringOrNull(stage?.stageId ?? stage?.stage_id) ?? ""));
+    if (matchingStage === undefined) return "proof_stage_missing";
+    return matchingStage.status === "passed" ? null : "proof_stage_not_passed";
+  }
+
+  if (proof.proofId === null || proof.proofArtifactPath === null) {
+    return "proof_material_missing";
+  }
+  if (!IMMUTABLE_PROOF_ID_PATTERNS.some((pattern) => pattern.test(proof.proofId ?? ""))) {
+    return "proof_material_identity_unverifiable";
+  }
+  return null;
+}
+
+export function gpuHmrProofModule(proof: GpuHmrProofTelemetry | null): string | null {
+  return proof ? nestedString(proof.raw, "module") : null;
+}
+
+export function gpuHmrProofPreviewId(proof: GpuHmrProofTelemetry | null): string | null {
+  if (!proof) return null;
+  return nestedString(proof.raw, "preview_id") ?? nestedString(proof.raw, "previewId");
+}
+
+export function gpuHmrProofMatches(
+  proof: GpuHmrProofTelemetry | null,
+  opts: GpuHmrProofMatchOpts = {}
+): proof is GpuHmrProofTelemetry {
+  if (proof === null) return false;
+  if (opts.sinceTs !== undefined && Number.isFinite(opts.sinceTs) && proof.observedAt < opts.sinceTs) {
+    return false;
+  }
+  const expectedModule = opts.module?.trim();
+  if (expectedModule && gpuHmrProofModule(proof) !== expectedModule) {
+    return false;
+  }
+  const expectedPreviewId = opts.previewId?.trim();
+  if (expectedPreviewId && gpuHmrProofPreviewId(proof) !== expectedPreviewId) {
+    return false;
+  }
+  return true;
 }
 
 export function isKnownGpuHmrProofState(value: unknown): value is GpuHmrProofState {
@@ -158,7 +827,7 @@ export function validateGpuHmrProofState(
   const degradedStateRankCap = gpuHmrDegradedStateRankCap(proof.degradedState);
   const effectiveResultRank =
     degradedStateRankCap === null ? resultRank : Math.min(resultRank, degradedStateRankCap);
-  const satisfied = effectiveResultRank >= requiredRank;
+  let satisfied = effectiveResultRank >= requiredRank;
   const reason =
     resultRank === 0
       ? "unknown_result_proof_state"
@@ -169,6 +838,62 @@ export function validateGpuHmrProofState(
           : !satisfied
             ? "degraded_state_blocks_required_proof"
             : undefined;
+  let proofLedgerValidation: GpuHmrLedgerValidation | null | undefined;
+  let runtimeProofArtifactValidation: GpuHmrRuntimeProofArtifactValidation | null | undefined;
+  let proofMaterialReason: string | undefined;
+  let ledgerReason: string | undefined;
+  let runtimeArtifactReason: string | undefined;
+  let ledger: Record<string, unknown> | null = null;
+  if (requiredRank < OUTPUT_ORACLE_PROOF_RANK && reason === undefined) {
+    proofMaterialReason = lowerStateProofMaterialFailure(proof, requiredState) ?? undefined;
+    if (proofMaterialReason !== undefined) satisfied = false;
+  }
+  if (requiredRank >= OUTPUT_ORACLE_PROOF_RANK && reason === undefined) {
+    ledger = embeddedGpuHmrProofLedger(proof.raw);
+    if (ledger === null) {
+      satisfied = false;
+      proofLedgerValidation = null;
+      ledgerReason = "proof_ledger_missing";
+    } else {
+      proofLedgerValidation = queryGpuHmrLedgerInvariants(ledger);
+      const proofIdIsLedgerId = proof.proofId?.startsWith("gpu-ledger-proof:") === true;
+      if (proofIdIsLedgerId && proof.proofId !== proofLedgerValidation.proofId) {
+        proofLedgerValidation = {
+          ...proofLedgerValidation,
+          gpuHmrSuccess: false,
+          failedInvariants: [
+            ...proofLedgerValidation.failedInvariants,
+            {
+              code: "telemetry_proof_id_ledger_mismatch",
+              telemetryProofId: proof.proofId,
+              ledgerProofId: proofLedgerValidation.proofId,
+            },
+          ],
+        };
+      }
+      if (!proofLedgerValidation.gpuHmrSuccess) {
+        satisfied = false;
+        ledgerReason = "proof_ledger_rejected";
+      }
+    }
+  }
+  if (requiredRank >= OUTPUT_ORACLE_PROOF_RANK && reason === undefined && ledgerReason === undefined) {
+    const expectedRuntimeProofId = proof.proofId?.startsWith("gpu-runtime-proof:") === true
+      ? proof.proofId
+      : null;
+    runtimeProofArtifactValidation = validateRuntimeProofArtifactAcceptance(
+      proof.raw,
+      ledger,
+      expectedRuntimeProofId,
+      requiredState
+    );
+    if (!runtimeProofArtifactValidation.accepted) {
+      satisfied = false;
+      runtimeArtifactReason = runtimeProofArtifactValidation.present
+        ? "runtime_proof_artifact_rejected"
+        : "runtime_proof_artifact_missing";
+    }
+  }
 
   return {
     requiredState,
@@ -179,6 +904,10 @@ export function validateGpuHmrProofState(
     degradedState: proof.degradedState,
     degradedStateRankCap,
     satisfied,
-    ...(reason ? { reason } : {}),
+    ...(proofLedgerValidation !== undefined ? { proofLedgerValidation } : {}),
+    ...(runtimeProofArtifactValidation !== undefined ? { runtimeProofArtifactValidation } : {}),
+    ...(reason ?? proofMaterialReason ?? ledgerReason ?? runtimeArtifactReason
+      ? { reason: reason ?? proofMaterialReason ?? ledgerReason ?? runtimeArtifactReason }
+      : {}),
   };
 }

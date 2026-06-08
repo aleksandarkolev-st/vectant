@@ -1,6 +1,8 @@
 import type { RTCDataChannel } from "werift";
 import {
   classifyGpuHmrProofMessage,
+  gpuHmrProofMatches,
+  type GpuHmrProofMatchOpts,
   type GpuHmrProofTelemetry,
 } from "./gpu_proof.js";
 
@@ -188,9 +190,11 @@ export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
+  private readonly proofHistory: GpuHmrProofTelemetry[] = [];
   private readonly terminalHistory: RetainedHmrTerminalEvent[] = [];
   private terminalSequence = 0;
   private static readonly TERMINAL_HISTORY_LIMIT = 128;
+  private static readonly PROOF_HISTORY_LIMIT = 128;
 
   constructor(dc: RTCDataChannel) {
     const dcListener = (ev: Event): void => {
@@ -210,10 +214,11 @@ export class HmrNormalizer {
       } catch {
         return;
       }
+      const observedAt = Date.now();
       const cls = classifyHmrMessage(parsed);
-      if (cls) this.rememberTerminal(cls, Date.now());
-      const proof = classifyGpuHmrProofMessage(parsed);
-      if (proof) this.latestProof = proof;
+      if (cls) this.rememberTerminal(cls, observedAt);
+      const proof = classifyGpuHmrProofMessage(parsed, observedAt);
+      if (proof) this.rememberGpuProof(proof);
       for (const listener of this.listeners) listener(parsed);
     };
     dc.addEventListener("message", dcListener);
@@ -227,8 +232,20 @@ export class HmrNormalizer {
     };
   }
 
-  latestGpuProof(): GpuHmrProofTelemetry | null {
-    return this.latestProof;
+  latestGpuProof(opts: GpuHmrProofMatchOpts = {}): GpuHmrProofTelemetry | null {
+    if (Object.keys(opts).length === 0) return this.latestProof;
+    for (const proof of this.proofHistory.slice().reverse()) {
+      if (gpuHmrProofMatches(proof, opts)) return proof;
+    }
+    return null;
+  }
+
+  private rememberGpuProof(proof: GpuHmrProofTelemetry): void {
+    this.latestProof = proof;
+    this.proofHistory.push(proof);
+    while (this.proofHistory.length > HmrNormalizer.PROOF_HISTORY_LIMIT) {
+      this.proofHistory.shift();
+    }
   }
 
   private rememberTerminal(cls: HmrClassification, observedAt: number): void {

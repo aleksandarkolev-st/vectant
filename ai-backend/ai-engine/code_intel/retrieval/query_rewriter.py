@@ -58,7 +58,7 @@ class QueryRewriter:
     quiet when running offline / in tests.
     """
 
-    DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
+    DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
     def __init__(
         self,

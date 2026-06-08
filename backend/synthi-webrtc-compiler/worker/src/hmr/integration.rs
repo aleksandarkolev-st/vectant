@@ -26,7 +26,7 @@ use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
 use crate::hmr::adapter_trait::{
     AdapterHealth, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
-    ReloadCapsuleMetadata,
+    ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
 use crate::hmr::build_manifest::BuildManifest;
@@ -468,6 +468,7 @@ impl HmrPipeline {
             build_manifest: manifest.clone(),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: Default::default(),
             preserve_state: matches!(
                 planner_output.reason.state_strategy,
                 StateStrategy::Preserve | StateStrategy::Migrate
@@ -657,6 +658,8 @@ impl HmrPipeline {
             let _ = fsm.apply(LifecycleEvent::BeginReload, now_ms);
         }
 
+        let firewall_process_id_before = std::process::id();
+        let firewall_process_id_after = std::process::id();
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
             module_id: manifest.slot_name(),
@@ -664,6 +667,11 @@ impl HmrPipeline {
             build_manifest: manifest.clone(),
             artifact_blob,
             capsule_metadata,
+            firewall_evidence: ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+                "hmr_integration:execute_gpu_device_reload",
+                firewall_process_id_before,
+                firewall_process_id_after,
+            ),
             preserve_state: true,
             timeout_ms: 5000,
         };

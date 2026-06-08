@@ -1513,10 +1513,10 @@ pub async fn handle_runner_execution(
 #[cfg(test)]
 mod tests {
     use super::{
-        full_device_abi_from_marker, full_device_abi_restart_marker, next_full_device_abi,
-        loaded_runner_module_state, runner_load_command, runner_reuse_allowed,
-        runner_session_matches, same_session_full_device_abi_changed,
-        should_forward_runner_stderr_line_to_log_dc, RunnerReloadPolicy,
+        full_device_abi_from_marker, full_device_abi_restart_marker, loaded_runner_module_state,
+        next_full_device_abi, runner_load_command, runner_reuse_allowed, runner_session_matches,
+        same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
+        RunnerReloadPolicy,
     };
     use crate::compiler::builder::ModuleHashes;
 
@@ -1605,8 +1605,12 @@ mod tests {
             main_hash: 44,
         };
 
-        let state =
-            loaded_runner_module_state(&hashes, "/tmp/libcore.so", "/tmp/libgui.so", Some("abi-v1"));
+        let state = loaded_runner_module_state(
+            &hashes,
+            "/tmp/libcore.so",
+            "/tmp/libgui.so",
+            Some("abi-v1"),
+        );
 
         assert_eq!(state.module_hashes.shared_hash, 11);
         assert_eq!(state.module_hashes.core_hash, 22);

@@ -340,11 +340,8 @@ pub async fn compile_runner(
         let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
         eprintln!("[CompileRunner] {} FAILED:\n{}", compiler_exe, stderr_str);
         if !options.allow_ai_heal {
-            eprintln!(
-                "[CompileRunner] AI heal skipped for validation-only host runner compile"
-            );
-            let report =
-                parse_compiler_output(&stderr_str, "host_runner", CompilerType::Gcc, true);
+            eprintln!("[CompileRunner] AI heal skipped for validation-only host runner compile");
+            let report = parse_compiler_output(&stderr_str, "host_runner", CompilerType::Gcc, true);
             let diagnostics_json = report.to_json();
             let diag_payload = serde_json::json!({
                 "sessionId": session_id.clone(),

@@ -1696,6 +1696,7 @@ async def run_kernel_splitter(
             focus=focus,
             model=model,
             api_key=api_key,
+            request_mode="split",
         )
     except Exception as exc:
         raise KernelSplitProviderError(exc) from exc

@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.external_project_profile.v1",
+  "id": "bevy-wgsl-shader-material",
+  "proofMode": "mcp_preview",
+  "project": {
+    "name": "Bevy shader_material WGSL hot reload",
+    "repoUrl": "https://github.com/bevyengine/bevy.git",
+    "ref": "v0.18.1",
+    "license": "MIT OR Apache-2.0; example assets have separate licenses in Bevy CREDITS.md",
+    "localPath": "tmp/external-hmr/bevy",
+    "upstreamSources": [
+      "https://github.com/bevyengine/bevy",
+      "https://docs.rs/bevy/latest/bevy/asset/",
+      "https://bevy.org/examples/shaders/shader-material/"
+    ]
+  },
+  "runtime": {
+    "env": {
+      "WGPU_BACKEND": "vulkan",
+      "RUSTUP_HOME": "{repoRoot}/tmp/external-hmr/rustup",
+      "CARGO_HOME": "{repoRoot}/tmp/external-hmr/cargo",
+      "CARGO_HTTP_TIMEOUT": "600",
+      "CARGO_NET_RETRY": "10",
+      "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "{repoRoot}/tmp/external-hmr/rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe",
+      "RUSTFLAGS": "-Clinker-flavor=ld.lld -Clink-self-contained=yes -Cdlltool={repoRoot}/tmp/external-hmr/toolchains/w64devkit/bin/dlltool.exe",
+      "PATH": "{repoRoot}/tmp/external-hmr/cargo/bin{pathListSeparator}{repoRoot}/tmp/external-hmr/rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained{pathListSeparator}{repoRoot}/tmp/external-hmr/toolchains/w64devkit/bin{pathListSeparator}{env:PATH}"
+    },
+    "build": {
+      "command": "cargo +stable-x86_64-pc-windows-gnu build --example shader_material --features file_watcher",
+      "cwd": "."
+    },
+    "run": {
+      "command": "cargo +stable-x86_64-pc-windows-gnu run --example shader_material --features file_watcher",
+      "cwd": "."
+    },
+    "readyDelayMs": 8000,
+    "hotReloadDelayMs": 2500,
+    "errorRegexes": [
+      "Shader import not found",
+      "naga::",
+      "wgpu error",
+      "panicked"
+    ]
+  },
+  "source": {
+    "file": "assets/shaders/custom_material_import.wgsl",
+    "before": "const COLOR_MULTIPLIER: vec4<f32> = vec4<f32>(1.0, 1.0, 1.0, 0.5);",
+    "after": "const COLOR_MULTIPLIER: vec4<f32> = vec4<f32>(0.1, 1.0, 0.2, 1.0);"
+  },
+  "mcpPreview": {
+    "language": "rust",
+    "entryFile": "examples/shader/shader_material.rs",
+    "filename": "examples/shader/shader_material.rs",
+    "includeFiles": [
+      "assets/shaders/custom_material.wgsl",
+      "assets/shaders/custom_material_import.wgsl"
+    ],
+    "compile": {
+      "is_gui": true,
+      "use_ai_split": true,
+      "width": 960,
+      "height": 540
+    },
+    "hmrTimeoutMs": 1200000,
+    "screenshotFreshnessMaxMs": 30000,
+    "screenshotAttempts": 8,
+    "screenshotRetryDelayMs": 2000
+  },
+  "visualProof": {
+    "claim": "Changing a file-backed Bevy WGSL material multiplier hot-reloads through the engine renderer and materially changes the visible cube.",
+    "deterministicMode": {
+      "seed_policy_fixed": true,
+      "frozen_camera": true,
+      "temporal_accumulation_not_applicable": true,
+      "taa_not_applicable": true,
+      "denoiser_not_applicable": true,
+      "fixed_swapchain_image_count": true
+    },
+    "screenshot": {},
+    "minChangedPixelRatio": 0.01,
+    "minMeanAbsDelta8bit": 1.0
+  }
+}

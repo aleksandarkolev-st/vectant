@@ -234,6 +234,7 @@ mod tests {
             build_manifest: jvm_manifest("app.jar"),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: Default::default(),
             preserve_state: false,
             timeout_ms: 5000,
         };
@@ -255,6 +256,7 @@ mod tests {
             build_manifest: jvm_manifest("app.so"),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: Default::default(),
             preserve_state: false,
             timeout_ms: 5000,
         };

@@ -173,7 +173,7 @@ class MicroConfig:
 
     # Routing model (fast LLM for ToC navigation). gemini-3-flash-preview is
     # the newest preview tier; previous defaults (gemini-2.0-flash,
-    # gemini-3.1-flash-lite-preview) hit rate limits in bench runs.
+    # gemini-3.1-flash-lite) hit rate limits in bench runs.
     routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-3-flash-preview")
     routing_api_key: Optional[str] = field(
         default_factory=_resolve_gemini_key
