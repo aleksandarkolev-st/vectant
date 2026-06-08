@@ -13,6 +13,7 @@ interface RawArgs {
   region?: unknown;
   max_dim?: unknown;
   freshness_max_ms?: unknown;
+  allow_unbrokered_frame?: unknown;
 }
 
 interface BBox {
@@ -66,6 +67,14 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       return errorResponse("invalid_args", { field: "freshness_max_ms", expected: "non-negative number" });
     }
     freshnessMaxMs = a.freshness_max_ms;
+  }
+
+  let allowUnbrokeredFrame = false;
+  if (a.allow_unbrokered_frame !== undefined) {
+    if (typeof a.allow_unbrokered_frame !== "boolean") {
+      return errorResponse("invalid_args", { field: "allow_unbrokered_frame", expected: "boolean" });
+    }
+    allowUnbrokeredFrame = a.allow_unbrokered_frame;
   }
 
   try {
@@ -138,10 +147,17 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     }
 
     const base64 = png.toString("base64");
-    const brokerFrame = recordBrokerFrameObservation({
-      session_id: attached.sessionId,
-      frame,
-    });
+    let brokerFrame: unknown;
+    let brokerFrameError: string | undefined;
+    try {
+      brokerFrame = recordBrokerFrameObservation({
+        session_id: attached.sessionId,
+        frame,
+      });
+    } catch (err) {
+      if (!allowUnbrokeredFrame) throw err;
+      brokerFrameError = err instanceof Error ? err.message : String(err);
+    }
     const responseTs = Date.now();
     brokerSloRecorder.recordDuration("screenshot_age_p95", responseTs - frame.ts, responseTs);
     eventLog.push({
@@ -158,6 +174,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       },
     });
     session.touch();
+    const validDpr = typeof frame.dpr === "number" && Number.isFinite(frame.dpr) && frame.dpr > 0;
     return imageAndTextResponse(base64, {
       w: resultMeta.w,
       h: resultMeta.h,
@@ -165,9 +182,12 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       seq: frame.seq,
       original_w: frame.width,
       original_h: frame.height,
-      dpr: frame.dpr,
-      viewport: { w: frame.width, h: frame.height, dpr: frame.dpr },
-      broker_frame: brokerFrame,
+      ...(validDpr ? {
+        dpr: frame.dpr,
+        viewport: { w: frame.width, h: frame.height, dpr: frame.dpr },
+      } : {}),
+      brokered: brokerFrame !== undefined,
+      ...(brokerFrame !== undefined ? { broker_frame: brokerFrame } : { broker_frame_error: brokerFrameError ?? "unbrokered_frame" }),
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),
       mimeType: "image/png",
