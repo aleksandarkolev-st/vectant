@@ -134,7 +134,7 @@ impl GpuVendor {
 
     pub fn proof_artifact_kind(&self) -> &'static str {
         match self {
-            Self::Cuda => "cubin",
+            Self::Cuda => "cuda_cubin",
             Self::Rocm => "hsaco",
         }
     }
@@ -1420,6 +1420,7 @@ fn runtime_acceptance_contract(
     dispatch_record: &crate::runtime::gpu_runtime_boundary::LaunchRecord,
     oracle_artifacts: &Value,
     output_oracle_target: &Value,
+    retirement_strategy: &str,
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
 ) -> Value {
     let entry_points = if expected_symbols.is_empty() {
@@ -1464,13 +1465,13 @@ fn runtime_acceptance_contract(
         "project_id": req.build_manifest.preview_id,
         "edit_id": req.reload_id,
         "backend": vendor.proof_backend(),
-        "confidence": "high",
+        "confidence": 0.95,
         "evidence_refs": evidence_refs,
         "classification": {
             "project_kind": "gpu_project",
             "edit_kind": "gpu_artifact_edit",
             "route": "gpu_hmr",
-            "confidence": "high",
+            "confidence": 0.95,
             "blocking_gaps": [],
         },
         "artifact_identity": {
@@ -1501,8 +1502,8 @@ fn runtime_acceptance_contract(
             "extractor_provenance": "runtime_launch_boundary",
             "metadata_sources": evidence_refs,
         },
-        "reload_mechanism": "device_sidecar_module_swap",
-        "adapter_outcome": "accepted",
+        "reload_mechanism": "generated_adapter",
+        "adapter_outcome": "adapter_generated",
         "reload_evidence_refs": evidence_refs,
         "firewall_evidence": {
             "route": req.firewall_evidence.route,
@@ -1527,10 +1528,10 @@ fn runtime_acceptance_contract(
         "epoch_policy": {
             "publish_mechanism": "install_launch_dispatcher_with_metadata",
             "dispatch_binding": "runtime_launch_generation",
-            "retirement_mechanism": "module-manager-retired-slot",
+            "retirement_mechanism": retirement_strategy,
         },
         "epoch_retirement_proof": {
-            "value": "retired_after_quiescent",
+            "value": runtime_epoch_retirement_proof_value(retirement_strategy),
             "evidence_refs": evidence_refs,
         },
         "fission_report": {
@@ -1565,6 +1566,15 @@ fn runtime_acceptance_contract(
     })
 }
 
+fn runtime_epoch_retirement_proof_value(retirement_strategy: &str) -> &'static str {
+    match retirement_strategy {
+        "no_retirement_required" => "no_retirement_required",
+        "epoch_fence" => "stream_event_proven",
+        "conservative_drain_fallback" => "queue_idle_proven",
+        _ => "unproven",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn runtime_full_proof_line(
     req: &AdapterReloadRequest,
@@ -1580,6 +1590,8 @@ fn runtime_full_proof_line(
     reload_elapsed_ms: u64,
     drain_elapsed_ms: u64,
     artifact_bytes: usize,
+    retirement_strategy: &str,
+    retirement_fence_ids: &str,
     capsule_metadata: Option<&ReloadCapsuleMetadata>,
     after_dispatch_id: &str,
 ) -> Option<String> {
@@ -1648,19 +1660,22 @@ fn runtime_full_proof_line(
         .unwrap_or_else(|| dispatch_ts.saturating_add(1));
     let retirement_ts = saturating_u128_to_u64(epoch_millis_now()).max(output_ts.saturating_add(1));
     let dispatch_to_output_ms = output_ts.saturating_sub(dispatch_ts);
-    let evidence_refs = sorted_unique_non_empty(vec![
+    let mut evidence_ref_values = vec![
         format!("runtime-session:{}", runtime_session_id()),
         format!("reload:{}", req.reload_id),
         format!("loader:{new_artifact_id}"),
         format!("epoch:{active_generation}"),
         format!("dispatch:{after_dispatch_id}"),
         format!("oracle:{}", output_record.oracle_id),
+        format!("retirement-strategy:{retirement_strategy}"),
         req.firewall_evidence
             .evidence_source
             .clone()
             .unwrap_or_else(|| "runtime-firewall".to_string()),
         raw_readback_bin.clone(),
-    ]);
+    ];
+    evidence_ref_values.extend(log_list_values(retirement_fence_ids));
+    let evidence_refs = sorted_unique_non_empty(evidence_ref_values);
     let source_paths = sorted_unique_non_empty(
         req.changed_files
             .iter()
@@ -1840,7 +1855,9 @@ fn runtime_full_proof_line(
             "artifact_id": previous_artifact_id,
             "artifact_hash": previous_artifact_id,
             "status": "retired_after_quiescent",
-            "retirement_proof": "module-manager-retired-slot",
+            "retirement_proof": runtime_epoch_retirement_proof_value(retirement_strategy),
+            "retirement_strategy": retirement_strategy,
+            "retirement_fence_ids": log_list_values(retirement_fence_ids),
             "timestamp_monotonic_ns": retirement_ts,
             "process_id": process_id,
         },
@@ -1896,6 +1913,7 @@ fn runtime_full_proof_line(
         &dispatch_record,
         &oracle_artifacts,
         &output_oracle_target,
+        retirement_strategy,
         capsule_metadata,
     );
     let proof_artifact_material = json!({
@@ -3363,6 +3381,8 @@ impl Adapter for GpuModuleAdapter {
                         started.elapsed().as_millis() as u64,
                         drain.outcome.elapsed_ms(),
                         blob.len(),
+                        retirement_strategy,
+                        &retirement_fence_ids,
                         capsule_metadata,
                         after_dispatch_id,
                     ) {
@@ -3544,6 +3564,123 @@ mod tests {
                 "shade".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn runtime_acceptance_contract_uses_shared_schema_enums() {
+        let mut req = dummy_request();
+        req.reload_id = "edit-runtime-contract".to_string();
+        req.changed_files = vec!["kernels/device.hip".to_string()];
+        req.build_manifest.preview_id = "runtime-contract-preview".to_string();
+        req.build_manifest.artifact_path = "build/device.hsaco".to_string();
+        req.build_manifest.abi_version = "abi-v1".to_string();
+        req.build_manifest.translation_units = Some(vec!["kernels/device.hip".to_string()]);
+
+        let dispatch_record = LaunchRecord {
+            runtime_session_id: "runtime-session:test".to_string(),
+            kernel_name: "shade".to_string(),
+            grid: (64, 1, 1),
+            block: (256, 1, 1),
+            grid_size: 64,
+            block_size: 256,
+            shared_bytes: 0,
+            stream_token: 7,
+            arg_count: 1,
+            expected_generation: 1,
+            active_generation: 2,
+            active_artifact_id: Some("sha256:after".to_string()),
+            dispatcher_registration_id: Some("dispatcher:test".to_string()),
+            dispatch_table_hash: Some("sha256:dispatch-table".to_string()),
+            dispatch_table_entry_id: Some("shade:0x1000".to_string()),
+            arg_provenance: vec![LaunchArgProvenance {
+                index: 0,
+                value_ptr: 0x1000,
+                value_size: std::mem::size_of::<usize>(),
+                value_kind: SYNTHI_GPU_ARG_KIND_POINTER,
+                value_bytes: None,
+                observed_value: Some(0x2000),
+                kind: "device-allocation".to_string(),
+                allocation_id: Some("allocation-output".to_string()),
+                allocation_name: Some("output".to_string()),
+                allocation_ptr: Some(0x2000),
+                allocation_bytes: Some(4096),
+                allocation_offset: Some(0),
+            }],
+            arg_provenance_complete: true,
+            dispatched: true,
+            dispatch_id: Some("dispatch:test".to_string()),
+            dispatch_timestamp_ms: Some(1234),
+            dispatch_error: None,
+        };
+        let evidence_refs = vec![
+            "runtime-session:test".to_string(),
+            "reload:edit-runtime-contract".to_string(),
+            "dispatch:dispatch:test".to_string(),
+            "oracle:readback".to_string(),
+        ];
+        let oracle_artifacts = json!({
+            "raw_readback_bin": "memory://gpu-runtime-readback/dispatch-test.bin",
+            "raw_readback_hash_verified": true,
+        });
+        let output_oracle_target = json!({
+            "kind": "compute",
+            "target_id": "allocation-output",
+            "compute_only_target_verified": true,
+            "evidence_refs": evidence_refs.clone(),
+        });
+
+        let contract = runtime_acceptance_contract(
+            &req,
+            GpuVendor::Rocm,
+            "sha256:contract",
+            "sha256:before",
+            "sha256:after",
+            &["shade".to_string()],
+            &["kernels/device.hip".to_string(), "build/device.hsaco".to_string()],
+            &evidence_refs,
+            "sha256:abi",
+            "4321",
+            "rocm:libamdhip64.so",
+            &dispatch_record,
+            &oracle_artifacts,
+            &output_oracle_target,
+            "epoch_fence",
+            None,
+        );
+
+        assert_eq!(contract["confidence"], json!(0.95));
+        assert_eq!(contract["classification"]["confidence"], json!(0.95));
+        assert_eq!(contract["artifact_identity"]["artifact_kind"], json!("hsaco"));
+        assert_eq!(contract["reload_mechanism"], json!("generated_adapter"));
+        assert_eq!(contract["adapter_outcome"], json!("adapter_generated"));
+        assert_eq!(
+            contract["epoch_retirement_proof"]["value"],
+            json!("stream_event_proven")
+        );
+        assert_eq!(
+            contract["hip_contract"]["launch_api"],
+            json!("hipModuleLaunchKernel")
+        );
+        assert_eq!(contract["hip_contract"]["kernel_name"], json!("shade"));
+    }
+
+    #[test]
+    fn vendor_artifact_kinds_match_acceptance_contract_schema() {
+        assert_eq!(GpuVendor::Rocm.proof_artifact_kind(), "hsaco");
+        assert_eq!(GpuVendor::Cuda.proof_artifact_kind(), "cuda_cubin");
+        assert_eq!(
+            runtime_epoch_retirement_proof_value("no_retirement_required"),
+            "no_retirement_required"
+        );
+        assert_eq!(
+            runtime_epoch_retirement_proof_value("epoch_fence"),
+            "stream_event_proven"
+        );
+        assert_eq!(
+            runtime_epoch_retirement_proof_value("conservative_drain_fallback"),
+            "queue_idle_proven"
+        );
+        assert_eq!(runtime_epoch_retirement_proof_value("unknown"), "unproven");
     }
 
     static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
