@@ -64,7 +64,7 @@ const CFG = {
     .toLowerCase()
     .replace(/_/g, '-'),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite',
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'vectant-ade-mcp-1',
   workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',

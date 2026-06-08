@@ -967,7 +967,7 @@ The Gemini provider is hardcoded in
 [ai-backend/ai-engine/llm/providers/factory.py](../ai-backend/ai-engine/llm/providers/factory.py)
 as a literal `return GeminiProvider()`. The `chatgpt.py` provider in the same
 directory is unreachable; passing `provider_name='chatgpt'` silently still
-returns Gemini. Default model is `gemini-3.1-flash-lite-preview`, overridable
+returns Gemini. Default model is `gemini-3.1-flash-lite`, overridable
 via `SYNTHI_GEMINI_MODEL`.
 
 **Heal uses pro, split uses lite, diff_patch uses lite** — the route handlers

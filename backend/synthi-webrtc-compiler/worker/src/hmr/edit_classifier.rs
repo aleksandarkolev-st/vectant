@@ -96,7 +96,7 @@ pub fn classify_edit(old_source: &str, new_source: &str) -> EditClassification {
 
 // NOTE: classify_edit_with_ai() was removed.
 //
-// It ran a /classify/edit AI call (gemini-3.1-flash-lite-preview) to
+// It ran a /classify/edit AI call (Gemini Flash Lite) to
 // assign `EditTarget::{Core,Gui,Shared}` to each non-value hunk so the
 // Tier 2 loop could route each hunk to a targeted single-module
 // diff_patch. Three problems:
