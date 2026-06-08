@@ -522,27 +522,23 @@ __global__ void particle_flow(float* x, float* y, int n, float cx, float cy, flo
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
 
-    float dx = cx - x[i];
-    float dy = cy - y[i];
-    float len = sqrtf(dx * dx + dy * dy) + 0.0001f;
     const float direction = FLOW_DIRECTION; // SYNTHI_HMR_DIRECTION_TOKEN
-    x[i] += direction * dx / len * speed;
-    y[i] += direction * dy / len * speed;
+    float theta = 2.39996323f * (float)i;
+    float radius = 232.0f + (float)((i * 37) % 82);
 
-    float ox = x[i] - cx;
-    float oy = y[i] - cy;
-    float radius = sqrtf(ox * ox + oy * oy);
-    float theta = 2.39996323f * (float)i + 0.015f * (float)(frame % 251ULL);
-    if (direction > 0.0f && radius < 16.0f) {
-        float rr = 300.0f + (float)((i * 19) % 58);
-        x[i] = cx + cosf(theta) * rr;
-        y[i] = cy + sinf(theta) * rr;
+    if (direction > 0.0f) {
+        x[i] = cx + cosf(theta) * radius;
+        y[i] = cy + sinf(theta) * radius * 0.72f;
+        return;
     }
-    if (direction < 0.0f && radius > 384.0f) {
-        float rr = 20.0f + (float)((i * 11) % 24);
-        x[i] = cx + cosf(theta) * rr;
-        y[i] = cy + sinf(theta) * rr;
-    }
+
+    int column = i % 32;
+    int row = i / 32;
+    float u = ((float)column / 31.0f) - 0.5f;
+    float v = ((float)row / 15.0f) - 0.5f;
+    float wave = sinf(u * 6.2831853f) * 26.0f;
+    x[i] = cx + u * 560.0f;
+    y[i] = cy + v * 338.0f + wave;
 }
 
 static void seed(float* x, float* y) {
