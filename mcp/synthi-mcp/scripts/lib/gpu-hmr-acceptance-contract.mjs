@@ -909,6 +909,18 @@ function backendEvidenceText({ input, validationContext, selectedIsland, dispatc
   ].map((value) => String(value ?? '').toLowerCase()).join(' ');
 }
 
+function hasHiprtBackendEvidence(evidence) {
+  return /\bhiprt\b|hiprtpathtracer|hiprt[_-]?oro|hiprto|hiprt[_-]?kernel/.test(evidence);
+}
+
+function hasHipBackendEvidence(evidence) {
+  return /\bhip\b|hipcc|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|hip_source[_-]?bridge|hip[_-]?source[_-]?bridge/.test(evidence);
+}
+
+function hasCudaBackendEvidence(evidence) {
+  return /\bcuda\b|cubin|nvcc|culaunchkernel|cuModuleLoad|cuModuleGetFunction/i.test(evidence);
+}
+
 function backendFromVerifiedContext(input, validationContext, proofContext = {}) {
   const raw = firstText(
     input.backend,
@@ -927,10 +939,11 @@ function backendFromVerifiedContext(input, validationContext, proofContext = {})
   }
   if (raw === 'rocm' || raw === 'amd' || raw === 'nvidia') {
     const evidence = backendEvidenceText({ input, validationContext, ...proofContext });
-    if (raw !== 'nvidia' && /\bhip(rt)?\b|hipmodule|hiplaunch|hipcc|hsaco|amdgpu|source[_-]?include|source[_-]?bridge/.test(evidence)) {
-      return evidence.includes('hiprt') ? 'hiprt' : 'hip';
+    if (raw !== 'nvidia') {
+      if (hasHiprtBackendEvidence(evidence)) return 'hiprt';
+      if (hasHipBackendEvidence(evidence)) return 'hip';
     }
-    if (raw === 'nvidia' && /\bcuda\b|cubin|nvcc|cuLaunchKernel/i.test(evidence)) return 'cuda';
+    if (raw === 'nvidia' && hasCudaBackendEvidence(evidence)) return 'cuda';
   }
   return 'unknown';
 }

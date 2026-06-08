@@ -5842,6 +5842,115 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("does not infer HIP from vendor-only ROCm code-object evidence", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "hsaco",
+      compilerName: "clang++",
+      launchApi: "module_dispatch",
+      sourcePaths: ["src/gpu/kernel.hip"],
+      entryPoints: ["shade"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-rocm-generic",
+      backend: "rocm",
+      gpuArch: "amdgcn-amd-amdhsa",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "runtime-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(derived.backend).toBe("unknown");
+    expect(evaluation.accepted).toBe(false);
+    expect(derived.classification.blocking_gaps).toContain("backend_unknown");
+    expect(evaluation.failedGates.map((gate) => gate.code)).toContain("backend_unknown");
+  });
+
+  it("infers HIP from ROCm only when concrete HIP launch evidence is verified", () => {
+    const dispatchProof = {
+      ...safeDispatchProof(),
+      launchApi: "hipModuleLaunchKernel",
+    };
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "hsaco",
+      compilerName: "clang++",
+      launchApi: "hipModuleLaunchKernel",
+      sourcePaths: ["src/gpu/kernel.hip"],
+      entryPoints: ["shade"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-rocm-hip",
+      backend: "rocm",
+      gpuArch: "amdgcn-amd-amdhsa",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(derived.backend).toBe("hip");
+    expect(evaluation.accepted).toBe(true);
+  });
+
   it("does not let caller-supplied artifact hashes override proof identity", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
