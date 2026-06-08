@@ -28,6 +28,53 @@ export interface AuthCheckpointMetadata {
     idp_origin_count: number;
     has_third_party_idp: boolean;
   };
+  storage_artifact?: AuthStorageArtifactMetadata;
+}
+
+export interface AuthStorageCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: string;
+}
+
+export interface AuthStorageEntry {
+  name: string;
+  value: string;
+}
+
+export interface AuthStorageOriginState {
+  origin: string;
+  localStorage?: AuthStorageEntry[];
+  sessionStorage?: AuthStorageEntry[];
+}
+
+export interface AuthBrowserStorageState {
+  cookies?: AuthStorageCookie[];
+  origins?: AuthStorageOriginState[];
+}
+
+export interface AuthStorageArtifactMetadata {
+  artifact_id: string;
+  checkpoint_id: string;
+  app_origin: string;
+  origin_count: number;
+  cookie_count: number;
+  local_storage_entry_count: number;
+  session_storage_entry_count: number;
+  captured_at: number;
+}
+
+export interface AuthStorageArtifact {
+  metadata: AuthStorageArtifactMetadata;
+  state: {
+    cookies: AuthStorageCookie[];
+    origins: AuthStorageOriginState[];
+  };
 }
 
 export interface AuthRefreshProviderMetadata {
@@ -57,6 +104,9 @@ export interface AuthCheckpointStore {
   saveCheckpoint(checkpoint: AuthCheckpointMetadata): void;
   getCheckpoint(checkpoint_id: string): AuthCheckpointMetadata | null;
   listCheckpoints(): AuthCheckpointMetadata[];
+  saveStorageArtifact(artifact: AuthStorageArtifact): void;
+  getStorageArtifact(artifact_id: string): AuthStorageArtifact | null;
+  deleteStorageArtifact(artifact_id: string): void;
   saveRefreshProvider(provider: AuthRefreshProviderMetadata): void;
   getRefreshProvider(provider_id: string): AuthRefreshProviderMetadata | null;
   listRefreshProviders(): AuthRefreshProviderMetadata[];
@@ -66,6 +116,7 @@ export interface AuthCheckpointStore {
 export class InMemoryAuthCheckpointStore implements AuthCheckpointStore {
   private readonly enrollments = new Map<string, AuthCheckpointEnrollment>();
   private readonly checkpoints = new Map<string, AuthCheckpointMetadata>();
+  private readonly storageArtifacts = new Map<string, AuthStorageArtifact>();
   private readonly refreshProviders = new Map<string, AuthRefreshProviderMetadata>();
 
   saveEnrollment(enrollment: AuthCheckpointEnrollment): void {
@@ -94,6 +145,19 @@ export class InMemoryAuthCheckpointStore implements AuthCheckpointStore {
     return [...this.checkpoints.values()].map(cloneCheckpointMetadata);
   }
 
+  saveStorageArtifact(artifact: AuthStorageArtifact): void {
+    this.storageArtifacts.set(artifact.metadata.artifact_id, cloneStorageArtifact(artifact));
+  }
+
+  getStorageArtifact(artifact_id: string): AuthStorageArtifact | null {
+    const artifact = this.storageArtifacts.get(artifact_id);
+    return artifact ? cloneStorageArtifact(artifact) : null;
+  }
+
+  deleteStorageArtifact(artifact_id: string): void {
+    this.storageArtifacts.delete(artifact_id);
+  }
+
   saveRefreshProvider(provider: AuthRefreshProviderMetadata): void {
     this.refreshProviders.set(provider.provider_id, { ...provider });
   }
@@ -110,6 +174,7 @@ export class InMemoryAuthCheckpointStore implements AuthCheckpointStore {
   clear(): void {
     this.enrollments.clear();
     this.checkpoints.clear();
+    this.storageArtifacts.clear();
     this.refreshProviders.clear();
   }
 }
@@ -123,6 +188,7 @@ export interface EncryptedFileAuthCheckpointStoreOptions {
 interface PersistedAuthScope {
   enrollments: Record<string, AuthCheckpointEnrollment>;
   checkpoints: Record<string, AuthCheckpointMetadata>;
+  storageArtifacts: Record<string, AuthStorageArtifact>;
   refreshProviders: Record<string, AuthRefreshProviderMetadata>;
 }
 
@@ -182,6 +248,23 @@ export class EncryptedFileAuthCheckpointStore implements AuthCheckpointStore {
 
   listCheckpoints(): AuthCheckpointMetadata[] {
     return Object.values(this.scope().checkpoints).map(cloneCheckpointMetadata);
+  }
+
+  saveStorageArtifact(artifact: AuthStorageArtifact): void {
+    this.updateScope((scope) => {
+      scope.storageArtifacts[artifact.metadata.artifact_id] = cloneStorageArtifact(artifact);
+    });
+  }
+
+  getStorageArtifact(artifact_id: string): AuthStorageArtifact | null {
+    const artifact = this.scope().storageArtifacts[artifact_id];
+    return artifact ? cloneStorageArtifact(artifact) : null;
+  }
+
+  deleteStorageArtifact(artifact_id: string): void {
+    this.updateScope((scope) => {
+      delete scope.storageArtifacts[artifact_id];
+    });
   }
 
   saveRefreshProvider(provider: AuthRefreshProviderMetadata): void {
@@ -336,8 +419,47 @@ export class AuthCheckpointManager {
     checkpoint.revoked_at = Date.now();
     checkpoint.status = "revoked";
     checkpoint.unattended_allowed = false;
+    if (checkpoint.storage_artifact) {
+      this.store.deleteStorageArtifact(checkpoint.storage_artifact.artifact_id);
+      delete checkpoint.storage_artifact;
+    }
     this.store.saveCheckpoint(checkpoint);
     return { ok: true, checkpoint: this.snapshot(checkpoint) };
+  }
+
+  saveStorageArtifact(input: {
+    checkpoint_id: string;
+    storage_state: AuthBrowserStorageState;
+    captured_at?: number;
+  }): { ok: true; checkpoint: AuthCheckpointMetadata; storage_artifact: AuthStorageArtifactMetadata } | { ok: false; error: string } {
+    const checkpoint = this.store.getCheckpoint(input.checkpoint_id);
+    if (!checkpoint) return { ok: false, error: "auth_checkpoint_not_found" };
+    const snapshot = this.snapshot(checkpoint);
+    if (snapshot.status !== "valid") return { ok: false, error: `auth_checkpoint_${snapshot.status}` };
+
+    if (checkpoint.storage_artifact) {
+      this.store.deleteStorageArtifact(checkpoint.storage_artifact.artifact_id);
+    }
+    const allowedOrigins = [checkpoint.app_origin, ...checkpoint.idp_origins];
+    const state = filterStorageStateForOrigins(input.storage_state, allowedOrigins);
+    const metadata = storageArtifactMetadata({
+      checkpoint_id: checkpoint.checkpoint_id,
+      app_origin: checkpoint.app_origin,
+      captured_at: input.captured_at ?? Date.now(),
+      state,
+    });
+    const artifact: AuthStorageArtifact = { metadata, state };
+    checkpoint.storage_artifact = metadata;
+    this.store.saveStorageArtifact(artifact);
+    this.store.saveCheckpoint(checkpoint);
+    return { ok: true, checkpoint: this.snapshot(checkpoint), storage_artifact: { ...metadata } };
+  }
+
+  storageArtifactForCheckpoint(checkpoint_id: string): AuthStorageArtifact | null {
+    const checkpoint = this.store.getCheckpoint(checkpoint_id);
+    if (!checkpoint?.storage_artifact) return null;
+    const artifact = this.store.getStorageArtifact(checkpoint.storage_artifact.artifact_id);
+    return artifact ? cloneStorageArtifact(artifact) : null;
   }
 
   configureRefreshProvider(input: {
@@ -497,7 +619,100 @@ function cloneCheckpointMetadata(checkpoint: AuthCheckpointMetadata): AuthCheckp
     ...checkpoint,
     idp_origins: [...checkpoint.idp_origins],
     cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
+    ...(checkpoint.storage_artifact ? { storage_artifact: { ...checkpoint.storage_artifact } } : {}),
   };
+}
+
+function cloneStorageArtifact(artifact: AuthStorageArtifact): AuthStorageArtifact {
+  return {
+    metadata: { ...artifact.metadata },
+    state: {
+      cookies: artifact.state.cookies.map((cookie) => ({ ...cookie })),
+      origins: artifact.state.origins.map((origin) => ({
+        origin: origin.origin,
+        ...(origin.localStorage ? { localStorage: origin.localStorage.map((entry) => ({ ...entry })) } : {}),
+        ...(origin.sessionStorage ? { sessionStorage: origin.sessionStorage.map((entry) => ({ ...entry })) } : {}),
+      })),
+    },
+  };
+}
+
+function filterStorageStateForOrigins(
+  storageState: AuthBrowserStorageState,
+  allowedOrigins: string[]
+): AuthStorageArtifact["state"] {
+  const normalizedOrigins = [...new Set(allowedOrigins.map((origin) => safeOrigin(origin)).filter((origin): origin is string => origin !== null))];
+  const allowedHosts = new Set(normalizedOrigins.map((origin) => new URL(origin).hostname.toLowerCase()));
+  const cookies = (storageState.cookies ?? [])
+    .filter((cookie) => cookieMatchesAllowedOrigin(cookie, allowedHosts))
+    .map(normalizeStorageCookie)
+    .filter((cookie): cookie is AuthStorageCookie => cookie !== null);
+  const origins = (storageState.origins ?? [])
+    .map(normalizeStorageOriginState)
+    .filter((origin): origin is AuthStorageOriginState => origin !== null && normalizedOrigins.includes(origin.origin));
+  return { cookies, origins };
+}
+
+function storageArtifactMetadata(input: {
+  checkpoint_id: string;
+  app_origin: string;
+  captured_at: number;
+  state: AuthStorageArtifact["state"];
+}): AuthStorageArtifactMetadata {
+  return {
+    artifact_id: `auth_storage_${randomUUID()}`,
+    checkpoint_id: input.checkpoint_id,
+    app_origin: input.app_origin,
+    origin_count: input.state.origins.length,
+    cookie_count: input.state.cookies.length,
+    local_storage_entry_count: input.state.origins.reduce((sum, origin) => sum + (origin.localStorage?.length ?? 0), 0),
+    session_storage_entry_count: input.state.origins.reduce((sum, origin) => sum + (origin.sessionStorage?.length ?? 0), 0),
+    captured_at: input.captured_at,
+  };
+}
+
+function normalizeStorageCookie(cookie: AuthStorageCookie): AuthStorageCookie | null {
+  if (!nonEmpty(cookie.name) || !nonEmpty(cookie.value) || !nonEmpty(cookie.domain)) return null;
+  return {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path ?? "/",
+    ...(typeof cookie.expires === "number" ? { expires: cookie.expires } : {}),
+    ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
+    ...(typeof cookie.secure === "boolean" ? { secure: cookie.secure } : {}),
+    ...(typeof cookie.sameSite === "string" ? { sameSite: cookie.sameSite } : {}),
+  };
+}
+
+function normalizeStorageOriginState(originState: AuthStorageOriginState): AuthStorageOriginState | null {
+  const origin = safeOrigin(originState.origin);
+  if (!origin) return null;
+  return {
+    origin,
+    localStorage: normalizeStorageEntries(originState.localStorage),
+    sessionStorage: normalizeStorageEntries(originState.sessionStorage),
+  };
+}
+
+function normalizeStorageEntries(entries: AuthStorageEntry[] | undefined): AuthStorageEntry[] {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry) => nonEmpty(entry.name) && typeof entry.value === "string")
+    .map((entry) => ({ name: entry.name, value: entry.value }));
+}
+
+function cookieMatchesAllowedOrigin(cookie: AuthStorageCookie, allowedHosts: Set<string>): boolean {
+  const cookieDomain = cookie.domain.replace(/^\./, "").toLowerCase();
+  if (!cookieDomain) return false;
+  for (const host of allowedHosts) {
+    if (host === cookieDomain || host.endsWith(`.${cookieDomain}`) || cookieDomain.endsWith(`.${host}`)) return true;
+  }
+  return false;
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 export function createDefaultAuthCheckpointStore(env: NodeJS.ProcessEnv = process.env): AuthCheckpointStore {
@@ -517,13 +732,14 @@ function emptyEncryptedAuthStoreDocument(): EncryptedAuthStoreDocument {
 }
 
 function emptyPersistedScope(): PersistedAuthScope {
-  return { enrollments: {}, checkpoints: {}, refreshProviders: {} };
+  return { enrollments: {}, checkpoints: {}, storageArtifacts: {}, refreshProviders: {} };
 }
 
 function clonePersistedScope(scope: PersistedAuthScope): PersistedAuthScope {
   return {
     enrollments: Object.fromEntries(Object.entries(scope.enrollments ?? {}).map(([key, value]) => [key, { ...value }])),
     checkpoints: Object.fromEntries(Object.entries(scope.checkpoints ?? {}).map(([key, value]) => [key, cloneCheckpointMetadata(value)])),
+    storageArtifacts: Object.fromEntries(Object.entries(scope.storageArtifacts ?? {}).map(([key, value]) => [key, cloneStorageArtifact(value)])),
     refreshProviders: Object.fromEntries(Object.entries(scope.refreshProviders ?? {}).map(([key, value]) => [key, { ...value }])),
   };
 }

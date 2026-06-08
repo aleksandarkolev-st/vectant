@@ -135,6 +135,93 @@ describe("auth checkpoint manager", () => {
     }));
   });
 
+  it("stores approved browser auth artifacts encrypted without exposing values in checkpoint metadata", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-store-artifact-"));
+    const filePath = path.join(directory, "auth-checkpoints.enc.json");
+    const key = `unit-artifact-key-${Date.now()}`;
+    const manager = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key,
+      scope_id: "tenant/workspace/auth-artifact",
+    }));
+    const enrollment = manager.beginEnrollment("https://app.example.com/settings");
+    const finished = manager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/settings",
+      redirect_chain: ["https://idp.example.com/login"],
+      ttl_ms: 60_000,
+    });
+    expect(finished.ok).toBe(true);
+    if (!finished.ok) throw new Error("unexpected auth finish failure");
+
+    const saved = manager.saveStorageArtifact({
+      checkpoint_id: finished.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [
+          { name: "sid", value: "secret-cookie-value", domain: "app.example.com", path: "/", httpOnly: true, secure: true },
+          { name: "idp", value: "secret-idp-cookie", domain: ".idp.example.com", path: "/", secure: true },
+          { name: "unrelated", value: "must-not-persist", domain: "other.example.com", path: "/" },
+        ],
+        origins: [
+          {
+            origin: "https://app.example.com",
+            localStorage: [{ name: "sessionToken", value: "local-storage-secret" }],
+            sessionStorage: [{ name: "csrf", value: "session-storage-secret" }],
+          },
+          {
+            origin: "https://idp.example.com",
+            localStorage: [{ name: "idpSession", value: "idp-local-secret" }],
+          },
+          {
+            origin: "https://other.example.com",
+            localStorage: [{ name: "ignored", value: "ignored-secret" }],
+          },
+        ],
+      },
+      captured_at: 1234,
+    });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) throw new Error("unexpected storage artifact failure");
+    expect(saved.storage_artifact).toEqual(expect.objectContaining({
+      app_origin: "https://app.example.com",
+      origin_count: 2,
+      cookie_count: 2,
+      local_storage_entry_count: 2,
+      session_storage_entry_count: 1,
+      captured_at: 1234,
+    }));
+    expect(JSON.stringify(saved.checkpoint)).not.toMatch(/secret-cookie|local-storage-secret|session-storage-secret|idp-local-secret|must-not-persist/);
+
+    const artifact = manager.storageArtifactForCheckpoint(finished.checkpoint.checkpoint_id);
+    expect(artifact?.state.cookies.map((cookie) => cookie.name).sort()).toEqual(["idp", "sid"]);
+    expect(artifact?.state.origins.map((origin) => origin.origin).sort()).toEqual([
+      "https://app.example.com",
+      "https://idp.example.com",
+    ]);
+    expect(JSON.stringify(artifact)).toContain("local-storage-secret");
+    expect(JSON.stringify(artifact)).not.toContain("must-not-persist");
+
+    const persisted = await readFile(filePath, "utf8");
+    expect(persisted).toContain("synthi_auth_checkpoint_store_envelope_v1");
+    expect(persisted).not.toMatch(/app\.example|idp\.example|secret-cookie|local-storage-secret|session-storage-secret|idp-local-secret|tenant|workspace/);
+
+    const reloaded = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key,
+      scope_id: "tenant/workspace/auth-artifact",
+    }));
+    expect(reloaded.storageArtifactForCheckpoint(finished.checkpoint.checkpoint_id)?.state.origins[0]?.localStorage?.[0]).toEqual({
+      name: "sessionToken",
+      value: "local-storage-secret",
+    });
+    const isolated = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key,
+      scope_id: "tenant/workspace/other",
+    }));
+    expect(isolated.storageArtifactForCheckpoint(finished.checkpoint.checkpoint_id)).toBeNull();
+  });
+
   it("creates encrypted auth stores from explicit environment configuration", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-store-env-"));
     const filePath = path.join(directory, "auth-checkpoints.enc.json");
