@@ -6,6 +6,11 @@ const METRIC_CLOCKS = new Set(["monotonic_ns"]);
 const METRIC_SCOPES = new Set(["cold", "warm", "hot_delta_1", "hot_delta_2"]);
 const CACHE_STATES = new Set(["clean", "compiler_cache_warm", "pipeline_cache_warm"]);
 const MODEL_PROVIDER_STATUSES = new Set(["available", "deprecated", "private_alias"]);
+const REQUIRED_MODEL_PROVIDER = "google_gemini";
+const REQUIRED_MODEL_BY_ROLE: Record<"split" | "gpu_delta", string> = {
+  split: "gemini-3.5-flash",
+  gpu_delta: "gemini-3.1-flash-lite",
+};
 const CONVERGENCE_METRICS = new Set([
   "per_frame_delta",
   "window_mean_delta",
@@ -576,6 +581,14 @@ function modelFallbackUsed(record: Record<string, unknown>): boolean {
   return modelField(record, "fallback_used", "fallbackUsed") === true;
 }
 
+function modelAliasResolvedTo(record: Record<string, unknown>): string | null {
+  return modelFieldText(
+    record,
+    "provider_model_alias_resolved_to",
+    "providerModelAliasResolvedTo"
+  );
+}
+
 function modelShutdownOrDeprecationDetected(record: Record<string, unknown>): boolean {
   return modelField(
     record,
@@ -598,6 +611,43 @@ function modelRoleIsGpuDelta(entry: [string, Record<string, unknown>]): boolean 
   const [key] = entry;
   return ["last_gpu_delta", "lastGpuDelta", "gpu_delta", "gpuDelta", "delta"].includes(key)
     || modelRequestMode(entry) === "gpu_delta";
+}
+
+function requiredModelRole(entry: [string, Record<string, unknown>]): "split" | "gpu_delta" | null {
+  if (modelRoleIsSplit(entry)) return "split";
+  if (modelRoleIsGpuDelta(entry)) return "gpu_delta";
+  return null;
+}
+
+function modelMatchesRequiredModel(
+  record: Record<string, unknown>,
+  expectedModel: string
+): {
+  requestedModel: string | null;
+  actualModel: string | null;
+  aliasResolvedTo: string | null;
+  status: string | null;
+  requestedMatches: boolean;
+  actualMatches: boolean;
+} {
+  const requestedModel = modelFieldText(record, "requested_model", "requestedModel");
+  const actualModel = modelFieldText(record, "actual_model", "actualModel");
+  const aliasResolvedTo = modelAliasResolvedTo(record);
+  const status = modelStatus(record);
+  const requestedMatches =
+    requestedModel === expectedModel
+    || (status === "private_alias" && aliasResolvedTo === expectedModel);
+  const actualMatches =
+    actualModel === expectedModel
+    || (status === "private_alias" && aliasResolvedTo === expectedModel);
+  return {
+    requestedModel,
+    actualModel,
+    aliasResolvedTo,
+    status,
+    requestedMatches,
+    actualMatches,
+  };
 }
 
 function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation {
@@ -874,6 +924,49 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
         record: prefix,
         provider_model_status: status,
       });
+    }
+    const role = requiredModelRole(models[index]!);
+    if (role) {
+      const provider = modelFieldText(model, "provider", "provider");
+      if (provider !== REQUIRED_MODEL_PROVIDER) {
+        failures.push({
+          code: "model_provider_not_allowed",
+          record: prefix,
+          request_mode: role,
+          provider,
+          expected_provider: REQUIRED_MODEL_PROVIDER,
+        });
+      }
+      const expectedModel = REQUIRED_MODEL_BY_ROLE[role]!;
+      const modelMatch = modelMatchesRequiredModel(model, expectedModel);
+      if (modelMatch.status === "private_alias" && !modelMatch.aliasResolvedTo) {
+        failures.push({
+          code: "model_private_alias_unresolved",
+          record: prefix,
+          request_mode: role,
+          expected_model: expectedModel,
+        });
+      }
+      if (!modelMatch.requestedMatches) {
+        failures.push({
+          code: "model_requested_model_unexpected",
+          record: prefix,
+          request_mode: role,
+          requested_model: modelMatch.requestedModel,
+          provider_model_alias_resolved_to: modelMatch.aliasResolvedTo,
+          expected_model: expectedModel,
+        });
+      }
+      if (!modelMatch.actualMatches) {
+        failures.push({
+          code: "model_actual_model_unexpected",
+          record: prefix,
+          request_mode: role,
+          actual_model: modelMatch.actualModel,
+          provider_model_alias_resolved_to: modelMatch.aliasResolvedTo,
+          expected_model: expectedModel,
+        });
+      }
     }
     if (modelHardInfraFailure(model)) failures.push({ code: "model_hard_infra_failure", record: prefix });
     if (modelRoleIsGpuDelta(models[index]!) && modelFallbackUsed(model)) {

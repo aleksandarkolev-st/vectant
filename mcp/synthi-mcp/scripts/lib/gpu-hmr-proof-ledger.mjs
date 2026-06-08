@@ -8,6 +8,11 @@ const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
 const METRIC_CLOCKS = new Set(['monotonic_ns']);
 const METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
+const REQUIRED_MODEL_PROVIDER = 'google_gemini';
+const REQUIRED_MODEL_BY_ROLE = {
+  split: 'gemini-3.5-flash',
+  gpu_delta: 'gemini-3.1-flash-lite',
+};
 const REQUIRED_TIMING_FIELDS = [
   ['static_discovery_time', 'staticDiscoveryTime'],
   ['ai_contract_synthesis_time', 'aiContractSynthesisTime'],
@@ -510,6 +515,14 @@ function modelFallbackUsed(record) {
   return modelField(record, 'fallback_used', 'fallbackUsed') === true;
 }
 
+function modelAliasResolvedTo(record) {
+  return modelFieldText(
+    record,
+    'provider_model_alias_resolved_to',
+    'providerModelAliasResolvedTo',
+  );
+}
+
 function modelShutdownOrDeprecationDetected(record) {
   return modelField(
     record,
@@ -530,6 +543,33 @@ function modelRoleIsSplit(entry) {
 function modelRoleIsGpuDelta(entry) {
   return ['last_gpu_delta', 'lastGpuDelta', 'gpu_delta', 'gpuDelta', 'delta'].includes(entry.role)
     || modelRequestMode(entry.record) === 'gpu_delta';
+}
+
+function requiredModelRole(entry) {
+  if (modelRoleIsSplit(entry)) return 'split';
+  if (modelRoleIsGpuDelta(entry)) return 'gpu_delta';
+  return null;
+}
+
+function modelMatchesRequiredModel(record, expectedModel) {
+  const requestedModel = modelFieldText(record, 'requested_model', 'requestedModel');
+  const actualModel = modelFieldText(record, 'actual_model', 'actualModel');
+  const aliasResolvedTo = modelAliasResolvedTo(record);
+  const status = modelStatus(record);
+  const requestedMatches =
+    requestedModel === expectedModel
+    || (status === 'private_alias' && aliasResolvedTo === expectedModel);
+  const actualMatches =
+    actualModel === expectedModel
+    || (status === 'private_alias' && aliasResolvedTo === expectedModel);
+  return {
+    requestedModel,
+    actualModel,
+    aliasResolvedTo,
+    status,
+    requestedMatches,
+    actualMatches,
+  };
 }
 
 export function normalizeGpuHmrProofLedgerRecord(input = {}) {
@@ -1023,6 +1063,45 @@ export function evaluateGpuHmrProofLedger(input = {}) {
         record: prefix,
         provider_model_status: status,
       });
+    }
+    const role = requiredModelRole(modelEntries[index]);
+    if (role) {
+      const provider = modelFieldText(model, 'provider', 'provider');
+      if (provider !== REQUIRED_MODEL_PROVIDER) {
+        addFailure(failures, 'model_provider_not_allowed', {
+          record: prefix,
+          request_mode: role,
+          provider,
+          expected_provider: REQUIRED_MODEL_PROVIDER,
+        });
+      }
+      const expectedModel = REQUIRED_MODEL_BY_ROLE[role];
+      const modelMatch = modelMatchesRequiredModel(model, expectedModel);
+      if (modelMatch.status === 'private_alias' && !modelMatch.aliasResolvedTo) {
+        addFailure(failures, 'model_private_alias_unresolved', {
+          record: prefix,
+          request_mode: role,
+          expected_model: expectedModel,
+        });
+      }
+      if (!modelMatch.requestedMatches) {
+        addFailure(failures, 'model_requested_model_unexpected', {
+          record: prefix,
+          request_mode: role,
+          requested_model: modelMatch.requestedModel,
+          provider_model_alias_resolved_to: modelMatch.aliasResolvedTo,
+          expected_model: expectedModel,
+        });
+      }
+      if (!modelMatch.actualMatches) {
+        addFailure(failures, 'model_actual_model_unexpected', {
+          record: prefix,
+          request_mode: role,
+          actual_model: modelMatch.actualModel,
+          provider_model_alias_resolved_to: modelMatch.aliasResolvedTo,
+          expected_model: expectedModel,
+        });
+      }
     }
     if (modelHardInfraFailure(model)) {
       addFailure(failures, 'model_hard_infra_failure', { record: prefix });

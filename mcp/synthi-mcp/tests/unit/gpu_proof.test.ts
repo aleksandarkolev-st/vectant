@@ -436,6 +436,64 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects full runtime proof with non-Gemini or unresolved GPU model provenance", () => {
+    const cases = [
+      {
+        name: "non-Gemini split provider",
+        mutate(record: Record<string, any>) {
+          record.model_provenance.split.provider = "anthropic";
+        },
+        expectedCode: "model_provider_not_allowed",
+      },
+      {
+        name: "unexpected split model",
+        mutate(record: Record<string, any>) {
+          record.model_provenance.split.requested_model = "gpt-image-2";
+          record.model_provenance.split.actual_model = "gpt-image-2";
+        },
+        expectedCode: "model_requested_model_unexpected",
+      },
+      {
+        name: "unexpected delta model",
+        mutate(record: Record<string, any>) {
+          record.model_provenance.gpu_delta.requested_model = "gemini-3.5-flash";
+          record.model_provenance.gpu_delta.actual_model = "gemini-3.5-flash";
+        },
+        expectedCode: "model_requested_model_unexpected",
+      },
+      {
+        name: "unresolved private delta alias",
+        mutate(record: Record<string, any>) {
+          record.model_provenance.gpu_delta.requested_model = "internal-fast-delta";
+          record.model_provenance.gpu_delta.actual_model = "internal-fast-delta";
+          record.model_provenance.gpu_delta.provider_model_status = "private_alias";
+          record.model_provenance.gpu_delta.provider_model_alias_resolved_to = null;
+        },
+        expectedCode: "model_private_alias_unresolved",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const ledger = proofLedger();
+      const record = ledger.records[0] as Record<string, any>;
+      testCase.mutate(record);
+      const proof = classifyGpuHmrProofMessage({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+      });
+
+      const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+      expect(validation.satisfied, testCase.name).toBe(false);
+      expect(validation.reason, testCase.name).toBe("proof_ledger_rejected");
+      expect(
+        validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code),
+        testCase.name
+      ).toContain(testCase.expectedCode);
+    }
+  });
+
   it("rejects full runtime proof without compute oracle artifacts", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, unknown>;

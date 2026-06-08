@@ -1091,6 +1091,43 @@ const cases = [
       },
     }),
   }), 'model_provider_status_shutdown'],
+  ['non-Gemini split provider provenance', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      split: {
+        ...baselineModelProvenance().split,
+        provider: 'anthropic',
+      },
+    }),
+  }), 'model_provider_not_allowed'],
+  ['wrong split model provenance', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      split: {
+        ...baselineModelProvenance().split,
+        requested_model: 'gpt-image-2',
+        actual_model: 'gpt-image-2',
+      },
+    }),
+  }), 'model_requested_model_unexpected'],
+  ['wrong delta model provenance', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        requested_model: 'gemini-3.5-flash',
+        actual_model: 'gemini-3.5-flash',
+      },
+    }),
+  }), 'model_requested_model_unexpected'],
+  ['unresolved private delta alias provenance', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        requested_model: 'internal-fast-delta',
+        actual_model: 'internal-fast-delta',
+        provider_model_status: 'private_alias',
+        provider_model_alias_resolved_to: null,
+      },
+    }),
+  }), 'model_private_alias_unresolved'],
   ['missing model availability check time', baselineRecord({
     model_provenance: baselineModelProvenance({
       last_gpu_delta: (() => {

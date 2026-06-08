@@ -481,6 +481,36 @@ describe("synthi_wait_hmr", () => {
     );
   });
 
+  it("rejects full runtime proof when split provenance is not Gemini", async () => {
+    const ledger = passingProofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    record.model_provenance.split.provider = "anthropic";
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+      gpu_proof_ledger_validation?: { failedInvariants?: Array<{ code?: string }> };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_ledger_rejected");
+    expect(body.gpu_proof_ledger_validation?.failedInvariants?.map((failure) => failure.code)).toContain(
+      "model_provider_not_allowed"
+    );
+  });
+
   it("rejects full runtime proof when the runtime artifact ledger query is forged", async () => {
     const ledger = passingProofLedger();
     const forgedArtifactLedger = passingProofLedger();
