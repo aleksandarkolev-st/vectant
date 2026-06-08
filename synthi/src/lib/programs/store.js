@@ -206,6 +206,49 @@ export function toPublicMarketplaceProgram(row) {
   };
 }
 
+/** Browse/search the global published catalog (publisher != 'local'). */
+export async function listPublishedPrograms({ q = '', limit = 50 } = {}) {
+  const trimmed = String(q || '').trim();
+  const rows = await prisma.marketplaceProgram.findMany({
+    where: {
+      publisher: { not: 'local' },
+      ...(trimmed
+        ? {
+            OR: [
+              { packageId: { contains: trimmed, mode: 'insensitive' } },
+              { displayName: { contains: trimmed, mode: 'insensitive' } },
+              { publisher: { contains: trimmed, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    },
+    orderBy: { installCount: 'desc' },
+    take: limit,
+  });
+  return rows.map(toPublicMarketplaceProgram);
+}
+
+/** Resolve a published program + version + parsed manifest config (or null). */
+export async function getPublishedProgramVersion(packageId, version) {
+  const program = await prisma.marketplaceProgram.findUnique({ where: { packageId } });
+  if (!program || program.publisher === 'local') return null;
+  const versionRow = await prisma.programVersion.findUnique({
+    where: { programId_version: { programId: program.id, version } },
+  });
+  if (!versionRow || !versionRow.manifestJson) return null;
+  const config = parseJsonText(versionRow.manifestJson, null);
+  if (!config) return null;
+  return { program, version: versionRow, config };
+}
+
+/** Bump a program's denormalized install counter (reputation signal). */
+export async function incrementInstallCount(programId) {
+  return prisma.marketplaceProgram.update({
+    where: { id: programId },
+    data: { installCount: { increment: 1 } },
+  });
+}
+
 export async function createInstall({ programId, workspaceSlug, version, installedByUserId, grantId = null, status = 'installing' }) {
   return prisma.programInstall.create({
     data: { programId, workspaceSlug, version, installedByUserId, grantId, status },

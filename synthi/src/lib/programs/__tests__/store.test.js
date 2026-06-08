@@ -20,11 +20,14 @@ import {
   createProgramSession,
   getInstall,
   getProgramVersion,
+  getPublishedProgramVersion,
+  incrementInstallCount,
   listInstalls,
   listLocalPrograms,
   listPermissionGrants,
   listProgramRuntimeEvents,
   listProgramSessions,
+  listPublishedPrograms,
   publishProgram,
   toPublicInstall,
   toPublicMarketplaceProgram,
@@ -397,5 +400,60 @@ describe('toPublicMarketplaceProgram', () => {
     expect(pub).toEqual({ id: 'p1', packageId: '@team/web', publisher: 'team', verified: true, latestVersion: '1.0.0', displayName: 'Web', description: 'd', installCount: 7 });
     expect(pub.versions).toBeUndefined();
     expect(JSON.stringify(pub)).not.toContain('SECRET');
+  });
+});
+
+describe('listPublishedPrograms', () => {
+  it('returns published programs (publisher != local) filtered by query, ordered by installCount', async () => {
+    h.prisma.marketplaceProgram.findMany.mockResolvedValue([
+      { id: 'p1', packageId: '@team/web', publisher: 'team', verified: false, latestVersion: '1.0.0', displayName: 'Web', description: null, installCount: 5 },
+    ]);
+
+    const list = await listPublishedPrograms({ q: 'web', limit: 10 });
+
+    const arg = h.prisma.marketplaceProgram.findMany.mock.calls[0][0];
+    expect(arg.where.publisher).toEqual({ not: 'local' });
+    expect(arg.where.OR).toEqual([
+      { packageId: { contains: 'web', mode: 'insensitive' } },
+      { displayName: { contains: 'web', mode: 'insensitive' } },
+      { publisher: { contains: 'web', mode: 'insensitive' } },
+    ]);
+    expect(arg.orderBy).toEqual({ installCount: 'desc' });
+    expect(arg.take).toBe(10);
+    expect(list[0]).toEqual({ id: 'p1', packageId: '@team/web', publisher: 'team', verified: false, latestVersion: '1.0.0', displayName: 'Web', description: null, installCount: 5 });
+  });
+
+  it('omits the OR clause when no query is given', async () => {
+    h.prisma.marketplaceProgram.findMany.mockResolvedValue([]);
+    await listPublishedPrograms({});
+    const arg = h.prisma.marketplaceProgram.findMany.mock.calls[0][0];
+    expect(arg.where).toEqual({ publisher: { not: 'local' } });
+  });
+});
+
+describe('getPublishedProgramVersion', () => {
+  it('resolves a published program + version + parsed config', async () => {
+    h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: '@team/web', publisher: 'team' });
+    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', manifestJson: JSON.stringify({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', permissions: ['program.launch'] }) });
+
+    const found = await getPublishedProgramVersion('@team/web', '1.0.0');
+
+    expect(found.program.id).toBe('p1');
+    expect(found.config.launch).toBe('npm run dev');
+    expect(h.prisma.programVersion.findUnique).toHaveBeenCalledWith({ where: { programId_version: { programId: 'p1', version: '1.0.0' } } });
+  });
+
+  it('returns null for a local (non-published) packageId', async () => {
+    h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: 'local:team:web', publisher: 'local' });
+    const found = await getPublishedProgramVersion('local:team:web', '1.0.0');
+    expect(found).toBeNull();
+  });
+});
+
+describe('incrementInstallCount', () => {
+  it('atomically increments the program installCount', async () => {
+    h.prisma.marketplaceProgram.update.mockResolvedValue({ id: 'p1', installCount: 6 });
+    await incrementInstallCount('p1');
+    expect(h.prisma.marketplaceProgram.update).toHaveBeenCalledWith({ where: { id: 'p1' }, data: { installCount: { increment: 1 } } });
   });
 });
