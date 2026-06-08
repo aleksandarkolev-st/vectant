@@ -234,6 +234,30 @@ function requireBackendField(failures, backend, contract, field) {
   }
 }
 
+function camelCaseField(field) {
+  return String(field).replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+}
+
+function backendFieldEvidenceRefs(contract, field) {
+  const fieldMap = firstObject(
+    contract.field_evidence_refs,
+    contract.fieldEvidenceRefs,
+    contract.evidence_by_field,
+    contract.evidenceByField,
+  );
+  const camelField = camelCaseField(field);
+  return compactStringList([
+    ...(asArray(fieldMap[field])),
+    ...(asArray(fieldMap[camelField])),
+  ]);
+}
+
+function requireBackendFieldEvidence(failures, backend, contract, field) {
+  if (backendFieldEvidenceRefs(contract, field).length === 0) {
+    addFailure(failures, `${backend}_${field}_evidence_refs_missing`);
+  }
+}
+
 function backendContractValue(contract, field) {
   return contract[field];
 }
@@ -676,6 +700,7 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'readback_oracle',
     ]) {
       requireBackendField(failures, 'hip_contract', hip, field);
+      requireBackendFieldEvidence(failures, 'hip_contract', hip, field);
     }
   }
   if (contract.backend === 'hiprt') {
@@ -690,6 +715,7 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'visual_oracle',
     ]) {
       requireBackendField(failures, 'hiprt_contract', hiprt, field);
+      requireBackendFieldEvidence(failures, 'hiprt_contract', hiprt, field);
     }
   }
   if (contract.backend === 'opencl') {
@@ -706,6 +732,7 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'output_buffer_readback',
     ]) {
       requireBackendField(failures, 'opencl_contract', opencl, field);
+      requireBackendFieldEvidence(failures, 'opencl_contract', opencl, field);
     }
   }
   if (contract.backend === 'vulkan') {
@@ -720,6 +747,7 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'frame_used_new_pipeline_trace',
     ]) {
       requireBackendField(failures, 'vulkan_contract', vulkan, field);
+      requireBackendFieldEvidence(failures, 'vulkan_contract', vulkan, field);
     }
     const reRecordRequired = backendContractValue(vulkan, 'command_buffer_re_record_required');
     if (!fieldProven(reRecordRequired) || reRecordRequired === 'unknown') {
@@ -743,6 +771,7 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'frame_used_new_pipeline_trace',
     ]) {
       requireBackendField(failures, 'webgpu_contract', webgpu, field);
+      requireBackendFieldEvidence(failures, 'webgpu_contract', webgpu, field);
     }
     const pipelineRecreateRequired = backendContractValue(webgpu, 'pipeline_recreate_required');
     if (!fieldProven(pipelineRecreateRequired) || pipelineRecreateRequired === 'unknown') {
@@ -1021,6 +1050,46 @@ function backendSpecificContractFromProof(backendContractProof, backend) {
   return byBackend;
 }
 
+function fieldEvidenceRefsForFields(fields, refsByField) {
+  const result = {};
+  for (const field of fields) {
+    const refs = compactStringList(refsByField[field]);
+    if (refs.length > 0) result[field] = refs;
+  }
+  return result;
+}
+
+function backendContractProofFieldEvidenceRefs(backendContractProof, contract, backend, fields) {
+  const backendMaps = firstObject(
+    backendContractProof.backend_field_evidence_refs,
+    backendContractProof.backendFieldEvidenceRefs,
+    backendContractProof.field_evidence_refs_by_backend,
+    backendContractProof.fieldEvidenceRefsByBackend,
+  );
+  const maps = [
+    contract.field_evidence_refs,
+    contract.fieldEvidenceRefs,
+    contract.evidence_by_field,
+    contract.evidenceByField,
+    backendContractProof.field_evidence_refs,
+    backendContractProof.fieldEvidenceRefs,
+    backendContractProof.evidence_by_field,
+    backendContractProof.evidenceByField,
+    asObject(backendMaps[backend]),
+    backend === 'bevy_wgsl' ? asObject(backendMaps.webgpu) : {},
+  ].map(asObject);
+  const result = {};
+  for (const field of fields) {
+    const camelField = camelCaseField(field);
+    const refs = compactStringList(maps.flatMap((map) => [
+      ...(asArray(map[field])),
+      ...(asArray(map[camelField])),
+    ]));
+    if (refs.length > 0) result[field] = refs;
+  }
+  return result;
+}
+
 function selectedIslandKind(contract, backend) {
   const kind = firstText(contract.artifactKind, contract.artifact_kind)?.toLowerCase();
   if (!kind) return 'unknown';
@@ -1104,6 +1173,9 @@ function hipContractFromVerifiedProofs({
     outputOracle.readbackTargetId,
     outputOracle.readback_target_id,
   ]);
+  const dispatchRefs = evidenceRefsFromProofs(dispatchProof, selectedIsland);
+  const abiRefs = evidenceRefsFromProofs(abiProof);
+  const outputRefs = evidenceRefsFromProofs(outputProof, outputOracle);
   return {
     kernel_name: firstText(
       dispatchProof?.kernelName,
@@ -1154,6 +1226,21 @@ function hipContractFromVerifiedProofs({
     ),
     output_buffers: outputBuffers,
     readback_oracle: outputOracle,
+    field_evidence_refs: fieldEvidenceRefsForFields(
+      BACKEND_CONTRACT_COMPARABLE_FIELDS.hip.fields,
+      {
+        kernel_name: dispatchRefs,
+        launch_api: dispatchRefs,
+        grid_dim: dispatchRefs,
+        block_dim: dispatchRefs,
+        shared_mem_bytes: dispatchRefs,
+        stream: dispatchRefs,
+        kernel_params: dispatchRefs,
+        code_object_metadata: abiRefs,
+        output_buffers: outputRefs,
+        readback_oracle: outputRefs,
+      },
+    ),
   };
 }
 
@@ -1178,6 +1265,12 @@ function hiprtContractFromVerifiedProofs({
     camera_state_hash: firstText(contract.cameraStateHash, contract.camera_state_hash),
     same_process_reload_hook: firstText(contract.sameProcessReloadHook, contract.same_process_reload_hook),
     visual_oracle: firstObject(contract.visualOracle, contract.visual_oracle, outputProof?.visualOracle, outputProof?.visual_oracle),
+    field_evidence_refs: backendContractProofFieldEvidenceRefs(
+      backendContractProof,
+      contract,
+      'hiprt',
+      BACKEND_CONTRACT_COMPARABLE_FIELDS.hiprt.fields,
+    ),
   };
 }
 
@@ -1200,6 +1293,12 @@ function openclContractFromVerifiedProofs({ outputProof, artifactHashBefore, art
       outputProof?.output_buffer_readback,
       outputOracle,
     ),
+    field_evidence_refs: backendContractProofFieldEvidenceRefs(
+      backendContractProof,
+      contract,
+      'opencl',
+      BACKEND_CONTRACT_COMPARABLE_FIELDS.opencl.fields,
+    ),
   };
 }
 
@@ -1218,6 +1317,12 @@ function vulkanContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfte
       contract.commandBufferReRecordProven ?? contract.command_buffer_re_record_proven,
     frame_used_new_pipeline_trace:
       contract.frameUsedNewPipelineTrace ?? contract.frame_used_new_pipeline_trace,
+    field_evidence_refs: backendContractProofFieldEvidenceRefs(
+      backendContractProof,
+      contract,
+      'vulkan',
+      BACKEND_CONTRACT_COMPARABLE_FIELDS.vulkan.fields,
+    ),
   };
 }
 
@@ -1240,6 +1345,12 @@ function webgpuContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfte
       contract.frameUsedNewPipelineTrace ?? contract.frame_used_new_pipeline_trace,
     bevy_shader_asset_source: firstText(contract.bevyShaderAssetSource, contract.bevy_shader_asset_source, contract.assetSource),
     asset_watched: contract.assetWatched ?? contract.asset_watched,
+    field_evidence_refs: backendContractProofFieldEvidenceRefs(
+      backendContractProof,
+      contract,
+      backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu',
+      BACKEND_CONTRACT_COMPARABLE_FIELDS[backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu'].fields,
+    ),
   };
 }
 

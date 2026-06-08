@@ -138,6 +138,76 @@ function acceptedGpuRouteEvidence() {
   };
 }
 
+function backendFieldEvidenceRefsFor(backend: string) {
+  const fieldsByBackend: Record<string, string[]> = {
+    hiprt: [
+      "kernel_entry",
+      "scene_or_bvh_handles",
+      "framebuffer_handle",
+      "material_or_geometry_buffers",
+      "camera_state_hash",
+      "same_process_reload_hook",
+      "visual_oracle",
+    ],
+    opencl: [
+      "program_hash_before",
+      "program_hash_after",
+      "kernel_name",
+      "command_queue",
+      "work_dim",
+      "global_work_size",
+      "local_work_size",
+      "event_trace",
+      "output_buffer_readback",
+    ],
+    vulkan: [
+      "shader_module_hash_before",
+      "shader_module_hash_after",
+      "entry_point",
+      "descriptor_set_layout_hash",
+      "pipeline_layout_hash",
+      "pipeline_state_hash",
+      "command_buffer_re_record_required",
+      "command_buffer_re_record_proven",
+      "frame_used_new_pipeline_trace",
+    ],
+    webgpu: [
+      "wgsl_hash_before",
+      "wgsl_hash_after",
+      "shader_module_epoch",
+      "entry_points",
+      "bind_group_layout_hash",
+      "pipeline_layout_hash",
+      "vertex_buffer_layout_hash",
+      "color_target_state_hash",
+      "pipeline_recreate_required",
+      "pipeline_recreate_proven",
+      "frame_used_new_pipeline_trace",
+    ],
+    bevy_wgsl: [
+      "wgsl_hash_before",
+      "wgsl_hash_after",
+      "shader_module_epoch",
+      "entry_points",
+      "bind_group_layout_hash",
+      "pipeline_layout_hash",
+      "vertex_buffer_layout_hash",
+      "color_target_state_hash",
+      "pipeline_recreate_required",
+      "pipeline_recreate_proven",
+      "frame_used_new_pipeline_trace",
+      "bevy_shader_asset_source",
+      "asset_watched",
+    ],
+  };
+  return Object.fromEntries(
+    (fieldsByBackend[backend] ?? []).map((field) => [
+      field,
+      [`evidence:backend-contract-field:${backend}:${field}`],
+    ]),
+  );
+}
+
 function acceptedTimingMetrics() {
   return {
     metric_clock: "monotonic_ns",
@@ -6108,6 +6178,80 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("rejects backend contract values without field-level evidence refs", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "spirv",
+      compilerName: "glslc",
+      launchApi: "vkCmdDispatch",
+      sourcePaths: ["shaders/lighting.comp"],
+      entryPoints: ["main"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-vulkan-field-evidence",
+      backend: "vulkan",
+      gpuArch: "vulkan-device:test",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "vk-device:test",
+      ...acceptedGpuRouteEvidence(),
+      backendContractProof: {
+        resultState: "gpu-hmr-backend-contract-proven",
+        backend: "vulkan",
+        evidenceRefs: ["evidence:backend-contract:vulkan"],
+        contract: {
+          descriptorSetLayoutHash: `sha256:${"6".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"7".repeat(64)}`,
+          pipelineStateHash: `sha256:${"8".repeat(64)}`,
+          commandBufferReRecordRequired: true,
+          commandBufferReRecordProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            pipeline_epoch: "3",
+          },
+        },
+      },
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(evaluation.accepted).toBe(false);
+    expect(evaluation.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "vulkan_contract_entry_point_evidence_refs_missing",
+        "vulkan_contract_descriptor_set_layout_hash_evidence_refs_missing",
+        "vulkan_contract_frame_used_new_pipeline_trace_evidence_refs_missing",
+      ]),
+    );
+  });
+
   it("does not let caller-supplied artifact hashes override proof identity", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
@@ -6810,6 +6954,7 @@ describe("GPU HMR runtime output proof classification", () => {
           resultState: "gpu-hmr-backend-contract-proven",
           backend: testCase.backend,
           evidenceRefs: [`evidence:backend-contract:${testCase.backend}`],
+          fieldEvidenceRefs: backendFieldEvidenceRefsFor(testCase.backend),
           contract: testCase.backendInput,
         },
         sourceProofs: [sourceProof],

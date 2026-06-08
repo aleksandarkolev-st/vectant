@@ -12,6 +12,18 @@ import {
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const HASH_C = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const HIP_FIELD_EVIDENCE_REFS = {
+  kernel_name: ["runtime:dispatch-kernel"],
+  launch_api: ["runtime:dispatch-launch-api"],
+  grid_dim: ["runtime:dispatch-grid"],
+  block_dim: ["runtime:dispatch-block"],
+  shared_mem_bytes: ["runtime:dispatch-shared-mem"],
+  stream: ["runtime:dispatch-stream"],
+  kernel_params: ["runtime:dispatch-params"],
+  code_object_metadata: ["code-object:metadata"],
+  output_buffers: ["runtime:output-buffer"],
+  readback_oracle: ["runtime:readback-oracle"],
+};
 
 type FakeWaitOpts = {
   timeoutMs?: number;
@@ -247,6 +259,7 @@ function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Rec
         kind: "raw_readback",
         schema_hash: HASH_C,
       },
+      field_evidence_refs: HIP_FIELD_EVIDENCE_REFS,
     },
     ...overrides,
   };

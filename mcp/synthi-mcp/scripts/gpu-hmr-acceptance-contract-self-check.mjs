@@ -8,6 +8,18 @@ import {
 
 const BEFORE = 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const AFTER = 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const HIP_FIELD_EVIDENCE_REFS = {
+  kernel_name: ['runtime:dispatch-kernel'],
+  launch_api: ['runtime:dispatch-launch-api'],
+  grid_dim: ['runtime:dispatch-grid'],
+  block_dim: ['runtime:dispatch-block'],
+  shared_mem_bytes: ['runtime:dispatch-shared-mem'],
+  stream: ['runtime:dispatch-stream'],
+  kernel_params: ['runtime:dispatch-params'],
+  code_object_metadata: ['code-object:metadata'],
+  output_buffers: ['runtime:output-buffer'],
+  readback_oracle: ['runtime:readback-oracle'],
+};
 
 function contract(overrides = {}) {
   return {
@@ -118,6 +130,7 @@ function contract(overrides = {}) {
         kind: 'raw_readback',
         schema_hash: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
       },
+      field_evidence_refs: HIP_FIELD_EVIDENCE_REFS,
     },
     ...overrides,
   };
@@ -294,6 +307,15 @@ expectReject('missing HIP launch evidence', {
     kernel_name: 'light_kernel',
   },
 }, 'hip_contract_launch_api_missing');
+expectReject('missing HIP field-level launch evidence', {
+  hip_contract: {
+    ...contract().hip_contract,
+    field_evidence_refs: {
+      ...HIP_FIELD_EVIDENCE_REFS,
+      launch_api: [],
+    },
+  },
+}, 'hip_contract_launch_api_evidence_refs_missing');
 expectReject('missing HIPRT scene proof', {
   backend: 'hiprt',
   artifact_identity: {
