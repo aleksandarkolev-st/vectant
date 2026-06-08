@@ -48,6 +48,48 @@ pub struct ReloadCapsuleMetadata {
     pub proof_hash: Option<String>,
 }
 
+/// Evidence from the caller boundary that non-GPU reload routes were not used.
+///
+/// GPU adapters must consume this as evidence, not infer it locally. Missing
+/// values mean the caller did not prove the firewall invariant.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReloadFirewallEvidence {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cpu_hmr_used: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub full_rebuild_used: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub process_restarted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub route: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub evidence_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub process_id_before: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub process_id_after: Option<u32>,
+}
+
+impl ReloadFirewallEvidence {
+    pub const GPU_DEVICE_SIDECAR_ROUTE: &'static str = "gpu_device_sidecar_reload";
+
+    pub fn from_gpu_device_sidecar_boundary(
+        evidence_source: impl Into<String>,
+        process_id_before: u32,
+        process_id_after: u32,
+    ) -> Self {
+        Self {
+            cpu_hmr_used: Some(false),
+            full_rebuild_used: Some(false),
+            process_restarted: Some(process_id_before != process_id_after),
+            route: Some(Self::GPU_DEVICE_SIDECAR_ROUTE.to_string()),
+            evidence_source: Some(evidence_source.into()),
+            process_id_before: Some(process_id_before),
+            process_id_after: Some(process_id_after),
+        }
+    }
+}
+
 const RELOAD_CAPSULE_METADATA_TOKEN_PREFIX: &str = "capsulev1_";
 
 fn non_empty_token(value: Option<String>) -> Option<String> {
@@ -76,9 +118,7 @@ pub fn encode_reload_capsule_metadata_token(metadata: &ReloadCapsuleMetadata) ->
     let metadata = normalized_reload_capsule_metadata(metadata)?;
     let json = serde_json::to_vec(&metadata).ok()?;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
-    Some(format!(
-        "{RELOAD_CAPSULE_METADATA_TOKEN_PREFIX}{payload}"
-    ))
+    Some(format!("{RELOAD_CAPSULE_METADATA_TOKEN_PREFIX}{payload}"))
 }
 
 pub fn decode_reload_capsule_metadata_token(token: &str) -> Option<ReloadCapsuleMetadata> {
@@ -109,6 +149,9 @@ pub struct AdapterReloadRequest {
     /// Optional capsule proof metadata for generation-published reloads.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub capsule_metadata: Option<ReloadCapsuleMetadata>,
+    /// Explicit firewall evidence supplied by the reload boundary.
+    #[serde(default)]
+    pub firewall_evidence: ReloadFirewallEvidence,
     /// Whether state preservation is requested.
     pub preserve_state: bool,
     /// Timeout for this reload (millis).
@@ -226,6 +269,29 @@ mod tests {
         assert_eq!(adapter.info().name, "noop");
         assert!(adapter.initialize().is_ok());
         assert_eq!(adapter.healthcheck(), AdapterHealth::Unknown);
+    }
+
+    #[test]
+    fn gpu_device_sidecar_firewall_evidence_carries_boundary() {
+        let evidence =
+            ReloadFirewallEvidence::from_gpu_device_sidecar_boundary("unit-test", 100, 100);
+        assert_eq!(evidence.cpu_hmr_used, Some(false));
+        assert_eq!(evidence.full_rebuild_used, Some(false));
+        assert_eq!(evidence.process_restarted, Some(false));
+        assert_eq!(
+            evidence.route.as_deref(),
+            Some(ReloadFirewallEvidence::GPU_DEVICE_SIDECAR_ROUTE)
+        );
+        assert_eq!(evidence.evidence_source.as_deref(), Some("unit-test"));
+        assert_eq!(evidence.process_id_before, Some(100));
+        assert_eq!(evidence.process_id_after, Some(100));
+    }
+
+    #[test]
+    fn gpu_device_sidecar_firewall_evidence_marks_process_change() {
+        let evidence =
+            ReloadFirewallEvidence::from_gpu_device_sidecar_boundary("unit-test", 100, 101);
+        assert_eq!(evidence.process_restarted, Some(true));
     }
 
     #[test]

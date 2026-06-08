@@ -27,6 +27,9 @@
     "reload": {
       "kernelName": "Megakernel (1 SPP)",
       "kernelSymbol": "MegaKernel"
+    },
+    "backend": {
+      "orochiApi": "hip"
     }
   },
   "source": {

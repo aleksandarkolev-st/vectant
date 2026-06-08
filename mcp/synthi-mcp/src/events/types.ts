@@ -34,6 +34,12 @@ export interface InputEvent extends BaseEventFields {
   payload: Record<string, unknown>;
 }
 
+export interface BrowserEvent extends BaseEventFields {
+  kind: "browser";
+  action: string;
+  payload: Record<string, unknown>;
+}
+
 export interface LeaseEvent extends BaseEventFields {
   kind: "lease";
   action:
@@ -62,6 +68,7 @@ export interface FrameEvent extends BaseEventFields {
     dpr: number;
   };
   is_keyframe: boolean;
+  content_hash?: string;
 }
 
 export interface LocatorResolutionEvent extends BaseEventFields {
@@ -96,7 +103,11 @@ export interface SecurityEvent extends BaseEventFields {
     | "wm_class_mismatch"
     | "unsafe_attach"
     | "sensitive_action_interstitial"
-    | "focus_lost";
+    | "focus_lost"
+    | "browser_consent_granted"
+    | "browser_consent_denied"
+    | "browser_consent_revoked"
+    | "browser_human_action_during_agent_lease";
   detail?: Record<string, unknown>;
 }
 
@@ -122,6 +133,7 @@ export type EventLogEntry =
   | LifecycleEvent
   | HmrEvent
   | InputEvent
+  | BrowserEvent
   | LeaseEvent
   | FrameEvent
   | LocatorResolutionEvent

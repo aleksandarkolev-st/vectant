@@ -11,6 +11,12 @@ import {
   loadRuntimeProofProfileFromEnv,
   runtimeProfileToLegacyHiprtWarmProfile,
 } from './lib/gpu-hmr-runtime-profile.mjs';
+import {
+  hiprtRuntimeProbeAdaptationCommand,
+  parseHiprtRuntimeProbeAdaptationOutput,
+} from './lib/hiprt-runtime-probe-adapter.mjs';
+import { hiprtWarmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -143,6 +149,12 @@ const CFG = {
     ?? process.env.SYNTHI_GPU_ARCH
     ?? process.env.SYNTHI_REAL_ROCM_GPU_ARCH
     ?? 'gfx1201',
+  orochiApi: (
+    process.env.SYNTHI_GPU_HMR_RUNTIME_OROCHI_API
+    ?? process.env.SYNTHI_HIPRT_WARM_OROCHI_API
+    ?? PROFILE.orochiApi
+    ?? ''
+  ).toLowerCase(),
   nativeLaunchObserverPath: process.env.SYNTHI_HIPRT_WARM_NATIVE_OBSERVER_PATH
     ?? process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
@@ -279,6 +291,13 @@ function hiprtRuntimeRunInvocation(runCommand) {
     `  sh -lc ${quoted}`,
     'fi',
   ].join('\n');
+}
+
+function hiprtRuntimeBackendSetup() {
+  if (!CFG.orochiApi || CFG.orochiApi === 'auto') return ':';
+  if (CFG.orochiApi === 'hip') return 'export SYNTHI_HIPRT_FORCE_HIP_OROCHI=1';
+  if (CFG.orochiApi === 'cuda') return 'unset SYNTHI_HIPRT_FORCE_HIP_OROCHI';
+  throw new Error(`unsupported HIPRT Orochi API selection: ${CFG.orochiApi}`);
 }
 
 function cleanIdentifier(value) {
@@ -670,6 +689,7 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_CAPTURE=1
 ${shellExports(CFG.runtimeEnv)}
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
+${hiprtRuntimeBackendSetup()}
 ${hiprtRuntimeDisplaySetup()}
 start=$(date +%s%3N)
 cd build
@@ -721,11 +741,35 @@ async function writeWorkerText(workerPath, text, localName) {
   return localPath;
 }
 
+async function applyHiprtRuntimeFramebufferProbeAdapter() {
+  const output = await dockerShell(
+    hiprtRuntimeProbeAdaptationCommand(CFG.workerRepoPath),
+    { timeout: 120000, maxBuffer: 16 * 1024 * 1024 },
+  );
+  const records = parseHiprtRuntimeProbeAdaptationOutput(output);
+  const sourceAdaptations = Array.from(new Set(records.flatMap((record) =>
+    Array.isArray(record?.sourceAdaptations) ? record.sourceAdaptations : [])));
+  const files = records.flatMap((record) => Array.isArray(record?.files) ? record.files : []);
+  const applied = records.some((record) => record?.applied === true);
+  const adaptedOrAlreadyPresent = files.some((file) =>
+    ['adapted', 'already-adapted'].includes(file?.status));
+  return {
+    applied,
+    adaptedOrAlreadyPresent,
+    records,
+    sourceAdaptations,
+  };
+}
+
 async function applySameProcessAdapter() {
   const workerPath = `${CFG.workerRepoPath}/src/Renderer/GPURendererThread.cpp`;
+  const baseRuntimeProbeAdapter = await applyHiprtRuntimeFramebufferProbeAdapter();
   let text = await readWorkerText(workerPath);
   if (!text.includes('SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH')) {
-    throw new Error('HIPRT runtime framebuffer probe adaptation is missing; run the strict HIPRT validator adaptation first');
+    throw new Error(
+      'HIPRT runtime framebuffer probe adaptation did not produce the capture hook: '
+      + JSON.stringify(baseRuntimeProbeAdapter),
+    );
   }
 
   const beforeHash = `sha256:${sha256Hex(text)}`;
@@ -903,6 +947,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
         localPath,
         beforeHash,
         afterHash: `sha256:${sha256Hex(text)}`,
+        baseRuntimeProbeAdapter,
       };
     }
     return {
@@ -911,6 +956,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
       workerPath,
       beforeHash,
       afterHash: beforeHash,
+      baseRuntimeProbeAdapter,
     };
   }
 
@@ -948,6 +994,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
     localPath,
     beforeHash,
     afterHash: `sha256:${sha256Hex(text)}`,
+    baseRuntimeProbeAdapter,
   };
 }
 
@@ -1142,6 +1189,7 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_SECOND_CAPTURE=1
 ${shellExports(CFG.runtimeEnv)}
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
+${hiprtRuntimeBackendSetup()}
 ${hiprtRuntimeDisplaySetup()}
 start=$(date +%s%3N)
 cd build
@@ -1397,7 +1445,7 @@ function summarizeStrictProof(strict) {
 }
 
 async function main() {
-  const totalStartedAt = Date.now();
+  const totalStartedMonotonicNs = monotonicNowNs();
   await fs.mkdir(CFG.outputDir, { recursive: true });
   const strictProof = await findStrictProofJson();
   const strictSummary = summarizeStrictProof(strictProof);
@@ -1509,6 +1557,7 @@ async function main() {
       && diff.meanAbsDelta8bit >= CFG.minMeanAbsDelta8bit,
   };
   const accepted = Object.values(acceptance).every(Boolean);
+  const totalTimingFields = monotonicTimingFields(totalStartedMonotonicNs);
   const proof = {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug: CFG.slug,
@@ -1541,6 +1590,7 @@ async function main() {
       reloadTimeoutMs: CFG.reloadTimeoutMs,
       reloadTimeoutUnbounded: CFG.reloadTimeoutMs === 0,
       buildTimeoutMs: CFG.buildTimeoutMs,
+      orochiApi: CFG.orochiApi || 'auto',
     },
     source,
     sourceWrites: {
@@ -1571,7 +1621,8 @@ async function main() {
       minMeanAbsDelta8bit: CFG.minMeanAbsDelta8bit,
     },
     timings: {
-      totalWallMs: Date.now() - totalStartedAt,
+      ...totalTimingFields,
+      totalWallMs: totalTimingFields.duration_ms,
       mode: CFG.mode,
       baselineReused: Boolean(reusableBaseline),
       sameProcessLiveRecompileMs: changedRun.liveRecompileMs ?? null,
@@ -1585,6 +1636,7 @@ async function main() {
     acceptance,
     accepted,
   };
+  proof.timingMetrics = hiprtWarmTimingMetrics(proof);
   const proofBytesForId = Buffer.from(JSON.stringify({
     schemaVersion: proof.schemaVersion,
     slug: proof.slug,
@@ -1597,6 +1649,7 @@ async function main() {
     changedHash: proof.changed.contentHash,
     diffHash: proof.diff.contentHash,
     timings: proof.timings,
+    timingMetrics: proof.timingMetrics,
     acceptance: proof.acceptance,
     accepted: proof.accepted,
   }));
@@ -1613,6 +1666,7 @@ async function main() {
     changed: changedStats.path,
     diff: diff.path,
     timings: proof.timings,
+    timingMetrics: proof.timingMetrics,
     diffStats: {
       changedPixelRatioThreshold4: diff.changedPixelRatioThreshold4,
       meanAbsDelta8bit: diff.meanAbsDelta8bit,

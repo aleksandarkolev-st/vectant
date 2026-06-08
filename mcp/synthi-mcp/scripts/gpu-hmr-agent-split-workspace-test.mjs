@@ -18,6 +18,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import {
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,13 +43,20 @@ const CFG = {
   mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 240000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_GPU_AGENT_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   workerLogPath: process.env.WORKER_LOG_PATH
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
   captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
@@ -375,6 +387,8 @@ async function startMcp() {
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
       '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
       '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+      '-e', `SYNTHI_GPU_SPLIT_MODEL=${CFG.gpuSplitModel}`,
+      '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
       CFG.mcpContainer,
       'node',
       '/app/dist/index.js',
@@ -391,6 +405,8 @@ async function startMcp() {
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
         SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+        SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+        SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       },
     });
   }
@@ -986,16 +1002,62 @@ async function compileViaMcp(args, timeoutMs) {
   const state = await ensureMcpAttached();
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
+  const waitContract = waitContractForCompile({ args, compile, timeoutMs });
   const wait = await state.client.toolCall(
     'synthi_wait_hmr',
-    { timeoutMs },
+    waitContract.waitArgs,
     timeoutMs + 5000,
   ).catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  return { compile, wait };
+  record('mcp wait_hmr proof gate', wait?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+    role: waitContract.role,
+    module: waitContract.waitArgs.module ?? null,
+    since_ts: waitContract.waitArgs.since_ts ?? null,
+    requireGpuFullRuntimeProof: waitContract.waitArgs.requireGpuFullRuntimeProof === true,
+    requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
+    status: wait?.status ?? null,
+    frame_gate: wait?.frame_gate ?? null,
+  }));
+  return { compile, wait, waitContract };
 }
 
 function cleanRel(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+}
+
+function manifestRoleForPath(manifest, filePath) {
+  const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
+    ? manifest.module_files
+    : {};
+  const normalizedPath = cleanRel(filePath);
+  for (const [role, rolePath] of Object.entries(moduleFiles)) {
+    if (cleanRel(rolePath) === normalizedPath) return role;
+  }
+  return null;
+}
+
+function waitContractForCompile({ args, compile, timeoutMs }) {
+  const manifest = args?.compile_manifest;
+  const filename = cleanRel(args?.filename);
+  const role = manifestRoleForPath(manifest, filename);
+  const isGpuDeviceEdit = role === 'device' || (
+    manifest?.gpu && /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(filename)
+  );
+  const module = process.env.SYNTHI_GPU_HMR_WAIT_MODULE
+    ?? (isGpuDeviceEdit ? 'device' : role ?? undefined);
+  const waitArgs = {
+    timeoutMs,
+    ...(Number.isFinite(compile?.dispatched_at)
+      ? { since_ts: compile.dispatched_at }
+      : {}),
+    ...(module ? { module } : {}),
+  };
+  const requiredState = process.env.SYNTHI_GPU_HMR_REQUIRED_PROOF_STATE;
+  if (requiredState && requiredState.trim()) {
+    waitArgs.requiredGpuProofState = requiredState.trim();
+  } else if (isGpuDeviceEdit && process.env.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF !== '0') {
+    waitArgs.requireGpuFullRuntimeProof = true;
+  }
+  return { waitArgs, role, isGpuDeviceEdit };
 }
 
 function manifestRolePaths(manifest, vendor) {
@@ -1179,7 +1241,7 @@ async function assertVisualDelta(beforeShot, afterShot) {
   return { changedRatio, meanAbs, diffPath: path.relative(process.cwd(), diffPath) };
 }
 
-async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactPrefix = 'after-hmr') {
+async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactPrefix = 'after-hmr', waitEvidence = null) {
   const state = await ensureMcpAttached();
   const analyzeImage = async (data) => {
     if (!data) return { bytes: 0, visiblePixels: 0, meanLuma: 0 };
@@ -1205,13 +1267,17 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     return { bytes, visiblePixels, meanLuma: lumaTotal / pixels };
   };
   const capture = async () => {
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+      freshnessMaxMs: 15000,
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    });
     const shot = await state.client.toolCallRaw(
       'synthi_screenshot',
-      { freshness_max_ms: 15000 },
-      30000,
+      screenshotArgs,
+      Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
-    const meta = shot.json || {};
+    const meta = mcpScreenshotMetadataFromToolResult(shot) || {};
     const analysis = await analyzeImage(image?.data);
     return {
       meta,
@@ -1219,6 +1285,12 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
       seq: Number(meta.seq || 0),
+      ts: Number(meta.ts || 0),
+      frameCaptureAfterEpochDispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+        ...meta,
+        seq: Number(meta.seq || 0),
+        ts: Number(meta.ts || 0),
+      }),
       ...analysis,
     };
   };
@@ -1244,7 +1316,8 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     second.height === first.height &&
     second.bytes > 512 &&
     second.visiblePixels > 500 &&
-    second.seq > first.seq;
+    second.seq > first.seq &&
+    (!waitEvidence || second.frameCaptureAfterEpochDispatch === true);
   let artifactDetail = '';
   if (ok && CFG.captureArtifacts) {
     const firstPath = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);
@@ -1259,8 +1332,8 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     label,
     ok ? 'pass' : 'fail',
     ok
-      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}${artifactDetail}`
-      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`,
+      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}${artifactDetail}`
+      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`,
   );
   if (!ok) throw new Error(`${label} did not return a valid frame`);
   return { first, second };
@@ -1343,7 +1416,7 @@ async function run() {
 
   const editedDevice = flipDeviceDirection(split.files[split.roles.device]);
   const secondStart = await workerCheckpoint();
-  await compileGeneratedDevice(split, editedDevice);
+  const generatedDeviceResult = await compileGeneratedDevice(split, editedDevice);
   record('device edit compile via MCP', 'pass', split.roles.device);
 
   const sawSplitEdit = await awaitWorkerLogRegex(
@@ -1360,7 +1433,7 @@ async function run() {
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
-  const afterShot = await assertMcpScreenshot('mcp screenshot after hmr', 'after-hmr');
+  const afterShot = await assertMcpScreenshot('mcp screenshot after hmr', 'after-hmr', generatedDeviceResult.wait);
   if (CFG.captureArtifacts && baselineShot) {
     await assertVisualDelta(baselineShot.second, afterShot.second);
   }

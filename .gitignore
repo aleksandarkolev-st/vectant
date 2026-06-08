@@ -28,6 +28,7 @@ __pycache__/
 docker-compose.gpu-*.generated.yml
 mcp/synthi-mcp/.gpu-hmr-test-logs/
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/
+/tmp/
 
 # Vitest cache inside the vendored root node_modules (phase-3 soak + live-
 # test harnesses drive vitest at the repo root).

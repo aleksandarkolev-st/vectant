@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-shared-memory",
+  "repo": {
+    "url": "https://github.com/ROCm/rocm-examples.git"
+  },
+  "target": {
+    "entryFile": "HIP-Basic/shared_memory/main.hip",
+    "deltaFile": "HIP-Basic/shared_memory/main.hip",
+    "targetName": "hip_shared_memory",
+    "buildSubdir": "HIP-Basic/shared_memory"
+  },
+  "sourceDelta": {
+    "before": "constexpr unsigned int width      = 64;",
+    "after": "constexpr unsigned int width      = 32;"
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

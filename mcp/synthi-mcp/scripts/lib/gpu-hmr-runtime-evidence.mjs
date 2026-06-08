@@ -92,6 +92,23 @@ function evidenceRefToken(value) {
   return token || 'unknown';
 }
 
+function processIdFromRuntimeSession(value) {
+  const session = String(value ?? '').trim();
+  const match = session.match(/^pid(\d+)(?:[-:]|$)/i);
+  return match ? `pid:${match[1]}` : null;
+}
+
+function processIdsFromRuntimeSessions(values) {
+  return compactStringList((Array.isArray(values) ? values : [])
+    .map(processIdFromRuntimeSession)
+    .filter(Boolean));
+}
+
+function consistentProcessIdFromRuntimeSessions(values) {
+  const ids = processIdsFromRuntimeSessions(values);
+  return ids.length === 1 ? ids[0] : null;
+}
+
 function keyValueTokenMap(value) {
   return commaList(value).reduce((out, item) => {
     const index = item.lastIndexOf(':');
@@ -391,6 +408,7 @@ export function runtimeEpochSwapEvidence(lines) {
   const latestPublication = publications.at(-1) ?? null;
   const retirement = latestPublication ? matchingRetirement(latestPublication, retirements) : null;
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const runtimeSessionObserved = runtimeSessionIds.length > 0;
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const generationLineageObserved = latestPublication
@@ -492,6 +510,8 @@ export function runtimeEpochSwapEvidence(lines) {
     published_count: publications.length,
     retired_count: retirements.length,
     published: latestPublication !== null,
+    process_id: processIds.length === 1 ? processIds[0] : null,
+    process_ids: processIds,
     runtime_session_observed: runtimeSessionObserved,
     runtime_session_ids: runtimeSessionIds,
     runtime_session_consistent: runtimeSessionConsistent,
@@ -545,6 +565,7 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     capsuleMetadataObserved: evidence.capsule_metadata_observed,
     runtimeSessionObserved: evidence.runtime_session_observed,
     runtimeSessionIds: evidence.runtime_session_ids,
+    processId: evidence.process_id,
     runtimeSessionConsistent: evidence.runtime_session_consistent,
     streamOrderingRequested: evidence.stream_ordering_requested,
     streamOrderingProven: evidence.stream_ordering_proven,
@@ -687,6 +708,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     }
   }
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const byRole = new Map();
   for (const record of records) {
@@ -754,6 +776,8 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     rejected_count: rawRecords.length - records.length,
     rejected_reasons: compactStringList(rejectedReasons),
     role_count: byRole.size,
+    process_id: processIds.length === 1 ? processIds[0] : null,
+    process_ids: processIds,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
     runtime_session_observed: records.length > 0,
@@ -799,6 +823,7 @@ export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}
     identitySnapshotObserved: evidence.identity_snapshot_observed,
     identitySnapshotLineageObserved: evidence.identity_snapshot_lineage_observed,
     requiredIdentityRolesObserved: evidence.required_roles_observed,
+    processId: evidence.process_id,
     identityEvidenceRefs: [...evidence.evidence_refs, ...externalIdentityEvidenceRefs],
     identitySnapshotEvidenceRefs: [
       ...evidence.snapshot_evidence_refs,
@@ -834,6 +859,12 @@ function outputOracleRecord(line) {
       ?? fields.readback_elapsed_ms
       ?? null,
     artifactId: fields.artifact_id ?? fields.artifact ?? null,
+    afterDispatchId:
+      fields.after_dispatch_id
+      ?? fields.afterDispatchId
+      ?? fields.after_dispatch
+      ?? null,
+    dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
     visualEvidenceRef: fields.visual_evidence_ref ?? fields.visual_ref ?? null,
     probeMode: fields.probe_mode ?? fields.deterministic_probe_mode ?? null,
     probeConfigHash:
@@ -842,6 +873,10 @@ function outputOracleRecord(line) {
       ?? fields.probe_hash
       ?? null,
     probeEvidenceRef: fields.probe_evidence_ref ?? fields.probe_ref ?? null,
+    readbackBytes: integerValue(fields.readback_bytes),
+    readbackSampleStride: integerValue(fields.readback_sample_stride),
+    readbackSampleSha256: fields.readback_sample_sha256 ?? null,
+    readbackSampleHex: fields.readback_sample_hex ?? null,
   };
 }
 
@@ -1031,6 +1066,8 @@ function dispatchBoundaryRecord(line) {
     line,
     runtimeSession: fields.runtime_session ?? null,
     dispatch: fields.dispatch ?? null,
+    dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
+    artifactId: fields.artifact_id ?? fields.artifact ?? null,
     dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
   };
 }
@@ -1718,6 +1755,7 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   );
   const latest = records.at(-1) ?? null;
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const loaderTransports = compactStringList(records.map((record) => record.selectedLoaderTransport));
   const reloadRequestTransports = compactStringList(records.flatMap((record) =>
@@ -1760,6 +1798,8 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
     total_count: rawRecords.length,
     matched_count: records.length,
     latest,
+    process_id: processIds.length === 1 ? processIds[0] : null,
+    process_ids: processIds,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
     runtime_session_observed: records.length > 0,
@@ -1807,6 +1847,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const latest = matchingRecords.at(-1) ?? null;
   const passedRecords = matchingRecords.filter((record) => record.passed === true);
   const runtimeSessionIds = compactStringList(matchingRecords.map((record) => record.runtimeSession));
+  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
   const expectedActualMatch = latest !== null && Object.is(latest.expected, latest.actual);
@@ -1827,6 +1868,8 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     failed_count: matchingRecords.length - passedRecords.length,
     latest,
     expected_contract: expectedContract,
+    process_id: processIds.length === 1 ? processIds[0] : null,
+    process_ids: processIds,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
     runtime_session_observed: latest !== null,
@@ -1852,12 +1895,21 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           passed: latest.passed,
           tolerance: latest.tolerance,
           runtimeSession: latest.runtimeSession,
+          processId: processIdFromRuntimeSession(latest.runtimeSession),
           outputTargetId: latest.outputTargetId,
           readbackTimestamp: latest.readbackTimestamp,
           artifactId: latest.artifactId,
+          afterDispatchId: latest.afterDispatchId ?? latest.dispatchId,
+          after_dispatch_id: latest.afterDispatchId ?? latest.dispatchId,
+          dispatchId: latest.dispatchId ?? latest.afterDispatchId,
+          dispatch_id: latest.dispatchId ?? latest.afterDispatchId,
           visualEvidenceRef: latest.visualEvidenceRef,
           probeMode: latest.probeMode,
           probeConfigHash: latest.probeConfigHash,
+          readbackBytes: latest.readbackBytes,
+          readbackSampleStride: latest.readbackSampleStride,
+          readbackSampleSha256: latest.readbackSampleSha256,
+          readbackSampleHex: latest.readbackSampleHex,
           probeEvidenceRefs: compactStringList([
             latest.probeEvidenceRef,
             ...evidenceRefs,

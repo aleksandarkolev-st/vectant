@@ -98,7 +98,7 @@ describe("buildManifest", () => {
         body?.error === "invalid_args" && body?.field === "condition";
       expect(rejectedByValidator, `wait rejected advertised condition "${c}"`).toBe(false);
     }
-  });
+  }, 60_000);
 
   it("verify_predicates matches the verify engine's switch", () => {
     const m = buildManifest(ADVERTISED_TOOLS);

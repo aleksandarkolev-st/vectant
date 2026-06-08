@@ -122,6 +122,11 @@ struct SynthiGpuLaunchArgKindFor {{
         SYNTHI_GPU_ARG_KIND_AGGREGATE;
 }};
 
+template <>
+struct SynthiGpuLaunchArgKindFor<std::nullptr_t> {{
+    static constexpr std::uint32_t value = SYNTHI_GPU_ARG_KIND_POINTER;
+}};
+
 struct SynthiGpuLaunchArg {{
     const void* value_ptr;
     std::size_t value_size;
@@ -157,6 +162,15 @@ struct SynthiGpuLaunchArg {{
     constexpr SynthiGpuLaunchArg(std::nullptr_t)
         : value_ptr(nullptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
 }};
+
+template <typename T>
+inline SynthiGpuLaunchArg synthi_gpu_launch_arg_ref(const T& value) {{
+    typedef typename std::remove_reference<T>::type ArgT;
+    return SynthiGpuLaunchArg(
+        static_cast<const void*>(&value),
+        sizeof(ArgT),
+        SynthiGpuLaunchArgKindFor<ArgT>::value);
+}}
 
 extern "C" {{
 
@@ -509,7 +523,7 @@ inline bool synthi_gpu_launch_args(
     Stream stream,
     const Args&... args) {{
     const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
-    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ synthi_gpu_launch_arg_ref(args)... }};
     return table.launch_raw(
         gpu,
         kernel_name,
@@ -537,7 +551,7 @@ inline bool synthi_gpu_launch_original_host_path_args(
     Stream stream,
     const Args&... args) {{
     const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
-    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ synthi_gpu_launch_arg_ref(args)... }};
     return synthi_gpu_launch_original_host_path_raw_arg_info_checked(
         gpu,
         kernel_name,
@@ -567,7 +581,7 @@ inline bool synthi_gpu_launch_source_location_args(
     Stream stream,
     const Args&... args) {{
     const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
-    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ SynthiGpuLaunchArg(&args)... }};
+    const std::initializer_list<SynthiGpuLaunchArg> packed_args = {{ synthi_gpu_launch_arg_ref(args)... }};
     return synthi_gpu_launch_source_location_raw_arg_info_checked(
         gpu,
         kernel_name,
@@ -844,6 +858,7 @@ mod tests {
         assert!(h.contains("inline bool synthi_gpu_launch_args"));
         assert!(h.contains("inline bool synthi_gpu_launch_original_host_path_args"));
         assert!(h.contains("inline bool synthi_gpu_launch_source_location_args"));
+        assert!(h.contains("inline SynthiGpuLaunchArg synthi_gpu_launch_arg_ref"));
         assert!(h.contains("#define SYNTHI_GPU_HOST_PATH_ID"));
         assert!(h.contains("#define synthi_gpu_launch(gpu, kernel_name"));
         assert!(h.contains("\"host_runtime_explicit\""));
@@ -902,6 +917,8 @@ mod tests {
         fs::write(
             &smoke_path,
             r#"#include "synthi_gpu_runtime.h"
+#include <cassert>
+#include <cstdint>
 
 void smoke(SynthiGpuRuntime* gpu) {
     Dim3 grid{1, 1, 1};
@@ -910,12 +927,21 @@ void smoke(SynthiGpuRuntime* gpu) {
     int2 resolution{800, 600};
     int value = 0;
     const void* arg = &value;
+    float* device_values = reinterpret_cast<float*>(static_cast<std::uintptr_t>(0x12345000));
     SynthiGpuLaunchArg sized_arg(&resolution, sizeof(resolution));
     SynthiGpuLaunchArg scalar_arg(&value, sizeof(value), SYNTHI_GPU_ARG_KIND_INTEGER);
+    SynthiGpuLaunchArg packed_scalar = synthi_gpu_launch_arg_ref(value);
+    SynthiGpuLaunchArg packed_pointer = synthi_gpu_launch_arg_ref(device_values);
     (void)point;
     (void)resolution;
     (void)sized_arg;
     (void)scalar_arg;
+    assert(packed_scalar.value_ptr == &value);
+    assert(packed_scalar.value_size == sizeof(value));
+    assert(packed_scalar.value_kind == SYNTHI_GPU_ARG_KIND_INTEGER);
+    assert(packed_pointer.value_ptr == &device_values);
+    assert(packed_pointer.value_size == sizeof(device_values));
+    assert(packed_pointer.value_kind == SYNTHI_GPU_ARG_KIND_POINTER);
     (void)synthi_gpu_stream_token(nullptr);
     (void)synthi_gpu_stream_token(static_cast<void*>(nullptr));
     (void)synthi_gpu_stream_token(0);
@@ -924,6 +950,7 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
     (void)synthi_gpu_launch_original_host_path(gpu, "host-loop", nullptr, "source_instrumented", "noop", grid, block, 0, nullptr, {scalar_arg});
     (void)synthi_gpu_launch_args(gpu, "noop", grid, block, 0, nullptr, value, arg);
+    (void)synthi_gpu_launch_args(gpu, "noop", grid, block, 0, nullptr, value, device_values, nullptr);
     (void)synthi_gpu_launch_original_host_path_args(gpu, "host-loop", "entry-noop", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
     (void)synthi_gpu_launch_source_location_args(gpu, "source.cpp:42", "source_instrumented", "noop", grid, block, 0, nullptr, value, arg);
     synthi_host_identity("smoke", gpu, 0);
@@ -953,6 +980,90 @@ void smoke(SynthiGpuRuntime* gpu) {
         assert!(
             output.status.success(),
             "generated GPU runtime header failed C++11 syntax check\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn generated_header_launch_arg_helper_preserves_storage_and_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let header_path = dir.path().join(SYNTHI_GPU_RUNTIME_HEADER);
+        let smoke_path = dir.path().join("launch_arg_kind_smoke.cpp");
+        let exe_path = dir.path().join("launch_arg_kind_smoke");
+        fs::write(
+            &header_path,
+            render_gpu_runtime_header(&gpu(DeviceVendor::Rocm)),
+        )
+        .unwrap();
+        fs::write(
+            &smoke_path,
+            r#"#include "synthi_gpu_runtime.h"
+#include <cstdint>
+
+int main() {
+    float scalar = 3.0f;
+    float* device_ptr = reinterpret_cast<float*>(static_cast<std::uintptr_t>(0x12345000));
+    const float* const_device_ptr = device_ptr;
+    std::nullptr_t null_ptr = nullptr;
+
+    SynthiGpuLaunchArg scalar_arg = synthi_gpu_launch_arg_ref(scalar);
+    SynthiGpuLaunchArg pointer_arg = synthi_gpu_launch_arg_ref(device_ptr);
+    SynthiGpuLaunchArg const_pointer_arg = synthi_gpu_launch_arg_ref(const_device_ptr);
+    SynthiGpuLaunchArg null_arg = synthi_gpu_launch_arg_ref(null_ptr);
+
+    if (scalar_arg.value_ptr != &scalar ||
+        scalar_arg.value_size != sizeof(scalar) ||
+        scalar_arg.value_kind != SYNTHI_GPU_ARG_KIND_FLOATING) {
+        return 10;
+    }
+    if (pointer_arg.value_ptr != &device_ptr ||
+        pointer_arg.value_size != sizeof(device_ptr) ||
+        pointer_arg.value_kind != SYNTHI_GPU_ARG_KIND_POINTER) {
+        return 20;
+    }
+    if (const_pointer_arg.value_ptr != &const_device_ptr ||
+        const_pointer_arg.value_size != sizeof(const_device_ptr) ||
+        const_pointer_arg.value_kind != SYNTHI_GPU_ARG_KIND_POINTER) {
+        return 30;
+    }
+    if (null_arg.value_ptr != &null_ptr ||
+        null_arg.value_size != sizeof(null_ptr) ||
+        null_arg.value_kind != SYNTHI_GPU_ARG_KIND_POINTER) {
+        return 40;
+    }
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+
+        let compiler = std::env::var("CXX").unwrap_or_else(|_| "c++".to_string());
+        let output = Command::new(&compiler)
+            .arg("-std=c++11")
+            .arg("-I")
+            .arg(dir.path())
+            .arg(&smoke_path)
+            .arg("-o")
+            .arg(&exe_path)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run {compiler}: {err}"));
+
+        assert!(
+            output.status.success(),
+            "generated GPU runtime header launch-arg helper failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let output = Command::new(&exe_path)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run {}: {err}", exe_path.display()));
+
+        assert!(
+            output.status.success(),
+            "generated GPU runtime header launch-arg helper failed runtime check status={:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

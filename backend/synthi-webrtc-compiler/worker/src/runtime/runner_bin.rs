@@ -191,7 +191,7 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::adapter_trait::{
     decode_reload_capsule_metadata_token, Adapter, AdapterReloadRequest, AdapterReloadResult,
-    ReloadArtifactBlob, ReloadCapsuleMetadata,
+    ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
@@ -1676,6 +1676,8 @@ fn main() {
                         .with_capabilities(capabilities)
                         .with_snapshot_modes(vec![SnapshotMode::Binary]);
 
+                        let firewall_process_id_before = std::process::id();
+                        let firewall_process_id_after = std::process::id();
                         let req = AdapterReloadRequest {
                             reload_id: format!("runner-device-{}-{}", language, frame_count),
                             module_id: "device".into(),
@@ -1683,6 +1685,12 @@ fn main() {
                             build_manifest: manifest,
                             artifact_blob,
                             capsule_metadata,
+                            firewall_evidence:
+                                ReloadFirewallEvidence::from_gpu_device_sidecar_boundary(
+                                    "runner_bin:device_sidecar_reload",
+                                    firewall_process_id_before,
+                                    firewall_process_id_after,
+                                ),
                             preserve_state: true,
                             timeout_ms: 5000,
                         };
@@ -2322,8 +2330,8 @@ mod tests {
         )
         .expect("capsule token");
 
-        let metadata = gpu_reload_capsule_metadata_from_token(Some(&token))
-            .expect("runner capsule metadata");
+        let metadata =
+            gpu_reload_capsule_metadata_from_token(Some(&token)).expect("runner capsule metadata");
 
         assert_eq!(
             metadata.fission_island_id.as_deref(),

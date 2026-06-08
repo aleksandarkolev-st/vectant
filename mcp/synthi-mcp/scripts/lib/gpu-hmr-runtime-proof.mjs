@@ -950,6 +950,47 @@ function acceptedAbiExtractorEvidence(observation = {}) {
   };
 }
 
+const GPU_HMR_ABI_COMPATIBILITY_CLASSES = new Set(['compatible', 'additive', 'layout_changed', 'unknown']);
+
+function abiCompatibilityClass(observation = {}) {
+  const raw =
+    observation.abiCompatibilityClass
+    ?? observation.abi_compatibility_class
+    ?? observation.abiClass
+    ?? observation.abi_class
+    ?? observation.compatibilityClass
+    ?? observation.compatibility_class;
+  const value = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+    ? raw.value ?? raw.class ?? raw.abi_compatibility_class
+    : raw;
+  const normalized = typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
+  return GPU_HMR_ABI_COMPATIBILITY_CLASSES.has(normalized) ? normalized : null;
+}
+
+function backendSpecificAdapterSafetyEvidence(observation = {}) {
+  return compactStringList([
+    ...(Array.isArray(observation.backendSpecificAdapterSafetyEvidenceRefs)
+      ? observation.backendSpecificAdapterSafetyEvidenceRefs
+      : []),
+    ...(Array.isArray(observation.backend_specific_adapter_safety_evidence_refs)
+      ? observation.backend_specific_adapter_safety_evidence_refs
+      : []),
+    ...(Array.isArray(observation.adapterSafetyEvidenceRefs)
+      ? observation.adapterSafetyEvidenceRefs
+      : []),
+    ...(Array.isArray(observation.adapter_safety_evidence_refs)
+      ? observation.adapter_safety_evidence_refs
+      : []),
+  ]);
+}
+
+function backendSpecificAdapterSafetyDeclared(observation = {}) {
+  return observation.backendSpecificAdapterSafetyProven === true
+    || observation.backend_specific_adapter_safety_proven === true;
+}
+
 function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degradedState, degradedReason) {
   const requiredRank = proofStateRank(requiredState);
   const passed = evidenceRank >= requiredRank;
@@ -1531,6 +1572,24 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const rawOracle = observation.outputOracle && typeof observation.outputOracle === 'object'
     ? observation.outputOracle
     : {};
+  const oracleArtifacts = objectField(
+    observation.oracleArtifacts,
+    observation.oracle_artifacts,
+    rawOracle.oracleArtifacts,
+    rawOracle.oracle_artifacts,
+  );
+  const deterministicVisualMode = objectField(
+    observation.deterministicVisualMode,
+    observation.deterministic_visual_mode,
+    rawOracle.deterministicVisualMode,
+    rawOracle.deterministic_visual_mode,
+  );
+  const outputOracleTarget = objectField(
+    observation.outputOracleTarget,
+    observation.output_oracle_target,
+    rawOracle.outputOracleTarget,
+    rawOracle.output_oracle_target,
+  );
   const hasExpected = Object.prototype.hasOwnProperty.call(rawOracle, 'expected');
   const hasActual = Object.prototype.hasOwnProperty.call(rawOracle, 'actual');
   const oracleId = stringField(
@@ -1591,11 +1650,44 @@ export function classifyGpuHmrOutputProof(observation = {}) {
             : typeof rawOracle.session_id === 'string' && rawOracle.session_id.trim()
               ? rawOracle.session_id.trim()
               : null;
+  const oracleProcessId = stringField(
+    rawOracle.processId,
+    rawOracle.process_id,
+    observation.processId,
+    observation.process_id,
+  );
   const oracleArtifactId = typeof rawOracle.artifactId === 'string' && rawOracle.artifactId.trim()
     ? rawOracle.artifactId.trim()
     : typeof rawOracle.artifact_id === 'string' && rawOracle.artifact_id.trim()
       ? rawOracle.artifact_id.trim()
       : null;
+  const oracleDispatchId = stringField(
+    rawOracle.afterDispatchId,
+    rawOracle.after_dispatch_id,
+    rawOracle.dispatchId,
+    rawOracle.dispatch_id,
+    observation.afterDispatchId,
+    observation.after_dispatch_id,
+    observation.dispatchId,
+    observation.dispatch_id,
+    dispatchProof?.dispatchId,
+    dispatchProof?.dispatch_id,
+  );
+  const oracleEpoch = stringField(
+    rawOracle.epoch,
+    rawOracle.epoch_id,
+    rawOracle.outputEpoch,
+    rawOracle.output_epoch,
+    rawOracle.outputGeneration,
+    rawOracle.output_generation,
+    rawOracle.generation,
+    Number.isFinite(rawOracle.epoch) ? String(rawOracle.epoch) : null,
+    Number.isFinite(rawOracle.outputEpoch) ? String(rawOracle.outputEpoch) : null,
+    Number.isFinite(rawOracle.output_epoch) ? String(rawOracle.output_epoch) : null,
+    Number.isFinite(rawOracle.outputGeneration) ? String(rawOracle.outputGeneration) : null,
+    Number.isFinite(rawOracle.output_generation) ? String(rawOracle.output_generation) : null,
+    Number.isFinite(rawOracle.generation) ? String(rawOracle.generation) : null,
+  );
   const dispatchArtifactIds = dispatchRuntimeArtifactIdsFromProof(dispatchProof);
   const epochProof = observation.epochProof && typeof observation.epochProof === 'object'
     ? observation.epochProof
@@ -1705,7 +1797,12 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     outputTargetId: oracleOutputTargetId,
     readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
     runtimeSessionId: oracleRuntimeSessionId,
+    processId: oracleProcessId,
     artifactId: oracleArtifactId,
+    epoch: oracleEpoch,
+    generation: oracleEpoch,
+    dispatchId: oracleDispatchId,
+    afterDispatchId: oracleDispatchId,
     artifactMatchesDispatch: oracleArtifactMatchesDispatch,
     artifactMatchesActiveEpoch: oracleArtifactMatchesActiveEpoch,
     artifactMatchesSelected: oracleArtifactMatchesSelected,
@@ -1765,6 +1862,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedState: dispatchProof?.degradedState ?? 'gpu-hmr-dispatch-unobserved',
       degradedReason: dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
       outputOracle: { ...outputOracle, passed: false },
+      oracleArtifacts,
+      oracle_artifacts: oracleArtifacts,
+      deterministicVisualMode,
+      deterministic_visual_mode: deterministicVisualMode,
+      outputOracleTarget,
+      output_oracle_target: outputOracleTarget,
+      processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
       renderVisualEvidenceRequired,
@@ -1785,6 +1889,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
           ? 'visual_evidence_refs_missing'
           : 'visual_frame_not_observed',
         outputOracle,
+        oracleArtifacts,
+        oracle_artifacts: oracleArtifacts,
+        deterministicVisualMode,
+        deterministic_visual_mode: deterministicVisualMode,
+        outputOracleTarget,
+        output_oracle_target: outputOracleTarget,
+        processId: oracleProcessId,
         visualFrameObserved,
         visualEvidenceRequired,
         renderVisualEvidenceRequired,
@@ -1801,6 +1912,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       outputOracle,
+      oracleArtifacts,
+      oracle_artifacts: oracleArtifacts,
+      deterministicVisualMode,
+      deterministic_visual_mode: deterministicVisualMode,
+      outputOracleTarget,
+      output_oracle_target: outputOracleTarget,
+      processId: oracleProcessId,
       visualFrameObserved,
       visualEvidenceRequired,
       renderVisualEvidenceRequired,
@@ -1861,6 +1979,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     degradedState,
     degradedReason,
     outputOracle: { ...outputOracle, passed: false },
+    oracleArtifacts,
+    oracle_artifacts: oracleArtifacts,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    outputOracleTarget,
+    output_oracle_target: outputOracleTarget,
+    processId: oracleProcessId,
     visualFrameObserved,
     visualEvidenceRequired,
     renderVisualEvidenceRequired,
@@ -2106,7 +2231,17 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const runtimeTouchedSymbolsMatch = observation.runtimeTouchedSymbolsMatch !== false;
   const runtimeArtifactMatchesSelected = observation.runtimeArtifactMatchesSelected === true;
   const selectedArtifactIds = contentAddressedArtifactIds(observation.selectedArtifactIds);
-  const runtimeArtifactIds = contentAddressedArtifactIds(observation.runtimeArtifactIds);
+  const runtimeArtifactIds = contentAddressedArtifactIds([
+    observation.runtimeArtifactId,
+    observation.runtime_artifact_id,
+    ...(Array.isArray(observation.runtimeArtifactIds) ? observation.runtimeArtifactIds : []),
+    ...(Array.isArray(observation.runtime_artifact_ids) ? observation.runtime_artifact_ids : []),
+  ]);
+  const runtimeArtifactId = contentAddressedArtifactIds([
+    observation.runtimeArtifactId,
+    observation.runtime_artifact_id,
+    runtimeArtifactIds.at(-1),
+  ])[0] ?? null;
   const dispatcherRegistrationIds = compactStringList(observation.dispatcherRegistrationIds);
   const dispatchTableEntryIds = compactStringList(observation.dispatchTableEntryIds);
   const dispatchTableHashes = compactStringList(observation.dispatchTableHashes);
@@ -2143,6 +2278,38 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     ?? observation.dispatchTimestampMs
     ?? observation.dispatch_timestamp_ms
     ?? [],
+  );
+  const dispatchId = stringField(
+    observation.dispatchId,
+    observation.dispatch_id,
+    observation.kernelDispatchId,
+    observation.kernel_dispatch_id,
+    observation.launchId,
+    observation.launch_id,
+  );
+  const dispatchEpoch = stringField(
+    observation.epoch,
+    observation.epoch_id,
+    observation.dispatchEpoch,
+    observation.dispatch_epoch,
+    observation.dispatchGeneration,
+    observation.dispatch_generation,
+    observation.generation,
+    observation.activeEpoch,
+    observation.active_epoch,
+    observation.activeGeneration,
+    observation.active_generation,
+    Number.isFinite(observation.generation) ? String(observation.generation) : null,
+    Number.isFinite(observation.dispatchGeneration) ? String(observation.dispatchGeneration) : null,
+    Number.isFinite(observation.dispatch_generation) ? String(observation.dispatch_generation) : null,
+    Number.isFinite(observation.activeGeneration) ? String(observation.activeGeneration) : null,
+    Number.isFinite(observation.active_generation) ? String(observation.active_generation) : null,
+  );
+  const processId = stringField(
+    observation.processId,
+    observation.process_id,
+    observation.pid,
+    Number.isFinite(observation.pid) ? String(observation.pid) : null,
   );
 
   if (
@@ -2515,6 +2682,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     if (!dispatchTableEntryIds.length) return 'dispatch_table_entry_identity_not_observed';
     if (!dispatchTableHashes.length) return 'dispatch_table_hash_not_observed';
     if (!dispatchTimestamps.length) return 'dispatch_timestamp_not_observed';
+    if (!dispatchEpoch) return 'dispatch_epoch_identity_not_observed';
     if (!dispatchStreamIds.length) return 'dispatch_stream_identity_not_observed';
     if (!gridDimensions.length) return 'dispatch_grid_dimensions_not_observed';
     if (!blockDimensions.length) return 'dispatch_block_dimensions_not_observed';
@@ -2563,6 +2731,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       blockDimensions,
       sharedMemoryBytes,
       dispatchTimestamps,
+      dispatchId,
+      epoch: dispatchEpoch,
+      processId,
     };
   }
 
@@ -2597,6 +2768,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     runtimeTouchedSymbolsMatch: true,
     runtimeArtifactMatchesSelected: true,
     selectedArtifactIds,
+    runtimeArtifactId,
     runtimeArtifactIds,
     dispatcherRegistrationIds,
     dispatchTableEntryIds,
@@ -2606,6 +2778,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     blockDimensions,
     sharedMemoryBytes,
     dispatchTimestamps,
+    dispatchId,
+    epoch: dispatchEpoch,
+    processId,
   };
 }
 
@@ -2632,6 +2807,16 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     : [];
   const metadataObserved = observation.metadataObserved === true || evidenceRefs.length > 0;
   const layoutSizeAlignmentVerified = observation.layoutSizeAlignmentVerified === true;
+  const parsedCompatibilityClass = abiCompatibilityClass(observation);
+  const compatibilityClass = parsedCompatibilityClass ?? 'unknown';
+  const backendSpecificAdapterSafetyEvidenceRefs = backendSpecificAdapterSafetyEvidence(observation);
+  const adapterSafetyDeclared = backendSpecificAdapterSafetyDeclared(observation);
+  const adapterSafetyDeclaredWithoutEvidence =
+    adapterSafetyDeclared && backendSpecificAdapterSafetyEvidenceRefs.length === 0;
+  const backendSpecificAdapterSafetyProven = backendSpecificAdapterSafetyEvidenceRefs.length > 0;
+  const compatibilityClassAccepted =
+    ['compatible', 'additive'].includes(compatibilityClass)
+    || backendSpecificAdapterSafetyProven;
   const acceptedExtractor = acceptedAbiExtractorEvidence(observation);
   const acceptedExtractorProvenanceObserved = acceptedExtractor.accepted;
   const extractorProvenanceComplete = observation.extractorProvenanceComplete !== false;
@@ -2652,6 +2837,7 @@ export function classifyGpuHmrAbiProof(observation = {}) {
 
   if (
     layoutSizeAlignmentVerified
+    && compatibilityClassAccepted
     && acceptedExtractorProvenanceObserved
     && extractorProvenanceComplete
     && abiFingerprintHashesObserved
@@ -2662,6 +2848,9 @@ export function classifyGpuHmrAbiProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: compatibilityClass,
+      backendSpecificAdapterSafetyProven,
+      backendSpecificAdapterSafetyEvidenceRefs,
       abiFingerprintHashesObserved: true,
       kernelAbiFingerprintHashes,
       constantGlobalLayoutHashes,
@@ -2682,7 +2871,13 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     degradedReason: metadataObserved
       ? (typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
         ? observation.degradedReason.trim()
-        : !layoutSizeAlignmentVerified
+        : adapterSafetyDeclaredWithoutEvidence
+          ? 'backend_specific_adapter_safety_evidence_missing'
+          : parsedCompatibilityClass === null
+          ? 'abi_compatibility_class_missing'
+          : !compatibilityClassAccepted
+          ? 'abi_compatibility_class_unaccepted'
+          : !layoutSizeAlignmentVerified
           ? 'abi_layout_size_alignment_unverified'
           : !acceptedExtractorProvenanceObserved
             ? 'abi_extractor_provenance_unverified'
@@ -2691,6 +2886,9 @@ export function classifyGpuHmrAbiProof(observation = {}) {
               : 'abi_fingerprint_hashes_unverified')
       : 'abi_evidence_not_collected',
     layoutSizeAlignmentVerified,
+    abiCompatibilityClass: compatibilityClass,
+    backendSpecificAdapterSafetyProven,
+    backendSpecificAdapterSafetyEvidenceRefs,
     abiFingerprintHashesObserved,
     kernelAbiFingerprintHashes,
     constantGlobalLayoutHashes,
@@ -2729,6 +2927,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false
     && runtimeSessionIds.length <= 1;
+  const processId = stringField(observation.processId, observation.process_id);
   const generationGraphObserved = epochGraph.observed;
   const generationGraphValid = epochGraph.valid;
   const generationGraphRuntimeSessionIds = epochGraph.runtimeSessionIds;
@@ -2824,6 +3023,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       published: true,
+      processId,
       runtimeSessionObserved: true,
       runtimeSessionIds,
       runtimeSessionConsistent: true,
@@ -2883,6 +3083,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       degradedState: 'gpu-hmr-epoch-retirement-pending',
       degradedReason: 'old_generation_retirement_not_completed',
       published: true,
+      processId,
       runtimeSessionObserved: true,
       runtimeSessionIds,
       runtimeSessionConsistent: true,
@@ -2960,6 +3161,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
                               ? 'epoch_delayed_unload_result_unverified'
                               : 'epoch_retirement_tracking_not_collected',
     published,
+    processId,
     runtimeSessionObserved,
     runtimeSessionIds,
     runtimeSessionConsistent,
@@ -3030,6 +3232,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const processId = stringField(observation.processId, observation.process_id);
   const identitySnapshotEvidenceRefs = Array.isArray(observation.identitySnapshotEvidenceRefs)
     ? observation.identitySnapshotEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
@@ -3055,6 +3258,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedState: 'gpu-hmr-host-replaced',
       degradedReason: 'host_runtime_replaced_or_restarted',
       identityChecksPassed: false,
+      processId,
       identitySnapshotObserved,
       identitySnapshotLineageObserved,
       requiredIdentityRolesObserved,
@@ -3087,6 +3291,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       identityChecksPassed: true,
+      processId,
       identitySnapshotObserved: true,
       identitySnapshotLineageObserved: true,
       requiredIdentityRolesObserved: true,
@@ -3124,6 +3329,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
                   : 'host_identity_checks_not_collected'
       : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
+    processId,
     identitySnapshotObserved,
     identitySnapshotLineageObserved,
     requiredIdentityRolesObserved,

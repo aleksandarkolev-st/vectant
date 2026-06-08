@@ -63,6 +63,10 @@ import { snapshotTool } from "./tools/snapshot.js";
 import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
+import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
+import { BROWSER_TOOLS, dispatchBrowserTool } from "./tools/browser.js";
+import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
+import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 
@@ -72,6 +76,10 @@ export interface SynthiServerOptions {
 }
 
 const TOOLS = [
+  ...BROWSER_TOOLS,
+  ...AUTH_TOOLS,
+  ...SOURCE_TOOLS,
+  ...SAFETY_TOOLS,
   {
     name: "synthi_attach",
     description:
@@ -102,7 +110,7 @@ const TOOLS = [
   {
     name: "synthi_screenshot",
     description:
-      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. Emits a `usage` event for every call.",
+      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms,after_frame_gate,frame_gate_timeout_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. after_frame_gate must be the satisfied synthi_wait_hmr frame_gate including its one-time gate_token; screenshot returns a capture_manifest with frame/image hashes. Emits a `usage` event for every call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,6 +138,23 @@ const TOOLS = [
           description:
             "If true, return the decoded PNG even when producer DPR is unavailable for broker frame proof. The response is marked brokered=false and is not valid as input-gated proof.",
         },
+        after_frame_gate: {
+          type: "object",
+          properties: {
+            status: { type: "string", enum: ["satisfied"] },
+            frame_seq: { type: "number" },
+            ts_ms: { type: "number" },
+            session_id: { type: "string" },
+            gate_token: { type: "string" },
+          },
+          required: ["status", "gate_token"],
+          description:
+            "Satisfied frame_gate returned by synthi_wait_hmr, including the one-time gate_token. When provided, screenshot waits until the decoded frame seq/timestamp is at or after this gate, consumes the token, and returns a capture_manifest bound to image bytes.",
+        },
+        frame_gate_timeout_ms: {
+          type: "number",
+          description: "Maximum time to wait for after_frame_gate before returning frame_gate_timeout. Default 1200000.",
+        },
       },
       required: [],
     },
@@ -143,8 +168,8 @@ const TOOLS = [
       properties: {
         timeoutMs: {
           type: "number",
-          description: "Maximum wait in milliseconds. Default 60000 (accommodates Tier 3 AI-split + compile latency).",
-          default: 60000,
+          description: "Maximum wait in milliseconds. Default 1200000 (20 minutes, accommodates cold GPU validation, AI split, compile, runtime proof, and visual capture latency).",
+          default: 1200000,
         },
         module: {
           type: "string",
@@ -171,7 +196,7 @@ const TOOLS = [
             "gpu-hmr-host-preservation-proven",
             "gpu-hmr-full-runtime-proven",
           ],
-          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness.",
+          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. Raw GPU telemetry is returned as gpu_proof_telemetry; gpu_proof is only returned after a requested proof state passes validation.",
         },
         requireGpuFullRuntimeProof: {
           type: "boolean",
@@ -421,7 +446,7 @@ const TOOLS = [
   {
     name: "synthi_get_event_log",
     description:
-      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
+      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/browser/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
     inputSchema: {
       type: "object",
       properties: {
@@ -435,7 +460,7 @@ const TOOLS = [
         },
         kind: {
           oneOf: [
-            { type: "string", enum: ["lifecycle", "hmr", "input", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
+            { type: "string", enum: ["lifecycle", "hmr", "input", "browser", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
             { type: "array", items: { type: "string" } },
           ],
           description: "Filter by one kind or an array of kinds.",
@@ -1195,6 +1220,14 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     args: unknown,
     signal: AbortSignal | undefined
   ): Promise<CallToolResult> {
+    const browserResponse = await dispatchBrowserTool(toolName, args);
+    if (browserResponse) return browserResponse as CallToolResult;
+    const authResponse = await dispatchAuthTool(toolName, args);
+    if (authResponse) return authResponse as CallToolResult;
+    const sourceResponse = await dispatchSourceTool(toolName, args);
+    if (sourceResponse) return sourceResponse as CallToolResult;
+    const safetyResponse = await dispatchSafetyTool(toolName, args);
+    if (safetyResponse) return safetyResponse as CallToolResult;
     switch (toolName) {
       case "synthi_attach":
         return (await attachTool(args, ctx)) as CallToolResult;

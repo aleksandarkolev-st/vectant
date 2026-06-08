@@ -48,11 +48,23 @@ export async function runWait(args: WaitArgs, timeoutMs: number = DEFAULT_TIMEOU
         if (session.frameSeqGateEnabled()) {
           const remaining = Math.max(0, timeoutMs - (Date.now() - start));
           const satisfiedBy = await session.awaitFrameAdvanceAtOrAfter(tHmr + budget, remaining);
+          const gateToken = satisfiedBy
+            ? session.issueFrameGateToken({
+                session_id: attached.sessionId,
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+              })
+            : null;
           frameGate = satisfiedBy
             ? {
                 status: "satisfied",
                 frame_seq: satisfiedBy.frame_seq,
                 ts_ms: satisfiedBy.ts_ms,
+                session_id: attached.sessionId,
+                gate_token: gateToken?.token,
+                gate_token_issued_at_ms: gateToken?.issued_at_ms,
+                gate_token_expires_at_ms: gateToken?.expires_at_ms,
+                capture_binding_required: true,
                 pipeline_budget_ms: budget,
               }
             : {
@@ -224,6 +236,7 @@ async function waitSourceState(args: SourceStateArgs, timeoutMs: number, start: 
 }
 
 async function waitPixel(args: PixelArgs, timeoutMs: number, start: number): Promise<WaitOutcome> {
+  if (!session.get()) return timeout("pixel", Date.now() - start, { reason: "not_attached" });
   const interval = args.sample_interval_ms ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const tolerance = args.tolerance ?? 0;
   while (Date.now() - start < timeoutMs) {
@@ -264,6 +277,7 @@ function colorClose(a: [number, number, number], b: [number, number, number], to
 }
 
 async function waitMotionSettled(args: MotionSettledArgs, timeoutMs: number, start: number): Promise<WaitOutcome> {
+  if (!session.get()) return timeout("motion_settled", Date.now() - start, { reason: "not_attached" });
   const interval = args.sample_interval_ms ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const stillFor = args.still_for_ms ?? 300;
   const threshold = args.threshold ?? 4;
@@ -293,6 +307,7 @@ async function waitMotionSettled(args: MotionSettledArgs, timeoutMs: number, sta
 }
 
 async function waitSceneChange(args: SceneChangeArgs, timeoutMs: number, start: number): Promise<WaitOutcome> {
+  if (!session.get()) return timeout("scene_change", Date.now() - start, { reason: "not_attached" });
   const interval = args.sample_interval_ms ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const minHamming = args.min_hamming ?? 8;
   let baseline: string | null = null;

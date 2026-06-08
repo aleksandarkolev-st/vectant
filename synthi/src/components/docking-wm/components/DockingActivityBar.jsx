@@ -18,6 +18,7 @@ import {
   Settings,
   Sparkles,
   MessageSquare,
+  Bot,
   Box,
   ChevronRight,
 } from 'lucide-react';
@@ -63,6 +64,7 @@ const TOP_ITEMS = [
   { id: 'git',        panelType: IDE_PANEL.GIT,        label: 'Source Control',  Icon: GitBranch },
   { id: 'extensions', panelType: IDE_PANEL.EXTENSIONS, label: 'Extensions',      Icon: Puzzle },
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
+  { id: 'workflows',  panelType: IDE_PANEL.AGENT_WORKFLOWS, label: 'Workflows',  Icon: Bot },
   { id: 'ai-healing', panelType: IDE_PANEL.AI_HEALING, label: 'AI Healing',      Icon: Sparkles },
   { id: 'pullrequests', panelType: IDE_PANEL.PULL_REQUESTS, label: 'Pull Requests', Icon: GitPullRequest },
 ];
@@ -128,7 +130,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
     // Find a sidebar group — look for a group that already has sidebar-type tabs
     const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
-    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'pullrequests']);
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'agent-workflows', 'pullrequests']);
     let targetGroupId = null;
     for (const [groupId, group] of groups) {
       for (const tId of group.tabs || []) {

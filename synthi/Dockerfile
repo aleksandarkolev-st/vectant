@@ -41,6 +41,7 @@ ARG NEXT_PUBLIC_GATEWAY_WS_URL=
 ARG NEXT_PUBLIC_CODE_INTEL_URL=
 ARG NEXT_PUBLIC_AI_ENGINE_URL=
 ARG NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=
+ARG NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS=
 
 RUN rm -f .env.production.local && \
         : > .env.production.local && \
@@ -52,7 +53,8 @@ RUN rm -f .env.production.local && \
             "NEXT_PUBLIC_GATEWAY_WS_URL=$NEXT_PUBLIC_GATEWAY_WS_URL" \
             "NEXT_PUBLIC_CODE_INTEL_URL=$NEXT_PUBLIC_CODE_INTEL_URL" \
             "NEXT_PUBLIC_AI_ENGINE_URL=$NEXT_PUBLIC_AI_ENGINE_URL" \
-            "NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER"; do \
+            "NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER" \
+            "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS=$NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS"; do \
             key="${entry%%=*}"; \
             value="${entry#*=}"; \
             if [ -n "$value" ]; then printf '%s=%s\n' "$key" "$value" >> .env.production.local; fi; \

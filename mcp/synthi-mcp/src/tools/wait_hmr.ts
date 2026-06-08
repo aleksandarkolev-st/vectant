@@ -13,6 +13,8 @@ import {
 import {
   GPU_HMR_PROOF_STATES,
   classifyGpuHmrProofMessage,
+  gpuHmrProofMatches,
+  type GpuHmrProofMatchOpts,
   isKnownGpuHmrProofState,
   validateGpuHmrProofState,
   type GpuHmrProofTelemetry,
@@ -29,7 +31,7 @@ interface WaitHmrArgs {
   requireGpuFullRuntimeProof?: unknown;
 }
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
 
 function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {
@@ -63,11 +65,15 @@ function requiredGpuProofState(args: WaitHmrArgs): string | null {
   return args.requiredGpuProofState.trim();
 }
 
-function latestGpuProofFromAttached(attached: ReturnType<typeof session.require>): GpuHmrProofTelemetry | null {
+function latestGpuProofFromAttached(
+  attached: ReturnType<typeof session.require>,
+  opts: GpuHmrProofMatchOpts
+): GpuHmrProofTelemetry | null {
   const hmr = attached.channels.hmr as {
-    latestGpuProof?: () => GpuHmrProofTelemetry | null;
+    latestGpuProof?: (opts?: GpuHmrProofMatchOpts) => GpuHmrProofTelemetry | null;
   };
-  return hmr.latestGpuProof?.() ?? null;
+  const proof = hmr.latestGpuProof?.(opts) ?? null;
+  return gpuHmrProofMatches(proof, opts) ? proof : null;
 }
 
 function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unknown> | null {
@@ -91,9 +97,16 @@ function responseWithGpuProofValidation(
   requiredState: string | null
 ): ToolResponse {
   if (proof !== null) {
-    payload.gpu_proof = gpuProofPayload(proof);
+    payload.gpu_proof_telemetry = gpuProofPayload(proof);
   }
   if (requiredState === null) {
+    if (proof !== null) {
+      payload.gpu_proof_validation = {
+        validated: false,
+        satisfied: false,
+        reason: "proof_state_not_requested",
+      };
+    }
     return jsonResponse(payload);
   }
   if (!isKnownGpuHmrProofState(requiredState)) {
@@ -105,8 +118,14 @@ function responseWithGpuProofValidation(
 
   const validation = validateGpuHmrProofState(proof, requiredState);
   payload.gpu_proof_validation = validation;
+  if (validation.proofLedgerValidation !== undefined) {
+    payload.gpu_proof_ledger_validation = validation.proofLedgerValidation;
+  }
   if (!validation.satisfied) {
     return errorResponse("gpu_hmr_proof_insufficient", payload);
+  }
+  if (proof !== null) {
+    payload.gpu_proof = gpuProofPayload(proof);
   }
   return jsonResponse(payload);
 }
@@ -137,18 +156,33 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     ? previewIdValue.trim()
     : undefined;
   const requiredProofState = requiredGpuProofState(a);
+  const waitContract: Record<string, unknown> = {
+    timeout_ms: timeoutMs,
+    module: module ?? null,
+    since_ts: sinceTs ?? null,
+    preview_id: previewId ?? null,
+    required_gpu_proof_state: requiredProofState,
+    require_gpu_full_runtime_proof: a.requireGpuFullRuntimeProof === true,
+  };
   let unsubscribePostApply: (() => void) | null = null;
 
   try {
     const start = Date.now();
     const attached = session.require();
-    let latestGpuProof = latestGpuProofFromAttached(attached);
+    const proofSinceTs = sinceTs ?? start;
+    const proofMatchOpts: GpuHmrProofMatchOpts = {
+      sinceTs: proofSinceTs,
+      ...(module ? { module } : {}),
+      ...(previewId ? { previewId } : {}),
+    };
+    waitContract.proof_since_ts = proofSinceTs;
+    let latestGpuProof = latestGpuProofFromAttached(attached, proofMatchOpts);
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
     unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
       const proof = classifyGpuHmrProofMessage(msg);
-      if (proof) latestGpuProof = proof;
+      if (gpuHmrProofMatches(proof, proofMatchOpts)) latestGpuProof = proof;
       const cls = classifyHmrMessage(msg);
       if (!cls) return;
       if (cls.status === "applied") {
@@ -220,6 +254,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             source: late.source,
             detail: late.detail ?? null,
             post_apply_terminal: true,
+            wait_contract: waitContract,
           }, latestGpuProof, requiredProofState);
         }
         if (outcome.kind === "terminal") {
@@ -231,11 +266,23 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         }
         if (outcome.kind === "frame") {
           const satisfiedBy = outcome.satisfiedBy;
+          const gateToken = satisfiedBy
+            ? session.issueFrameGateToken({
+                session_id: attached.sessionId,
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+              })
+            : null;
           frameGate = satisfiedBy
             ? {
                 status: "satisfied",
                 frame_seq: satisfiedBy.frame_seq,
                 ts_ms: satisfiedBy.ts_ms,
+                session_id: attached.sessionId,
+                gate_token: gateToken?.token,
+                gate_token_issued_at_ms: gateToken?.issued_at_ms,
+                gate_token_expires_at_ms: gateToken?.expires_at_ms,
+                capture_binding_required: true,
                 pipeline_budget_ms: budget,
               }
             : {
@@ -256,6 +303,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             source: late.source,
             detail: late.detail ?? null,
             post_apply_terminal: true,
+            wait_contract: waitContract,
           }, latestGpuProof, requiredProofState);
         }
         frameGate = {
@@ -273,6 +321,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       hmrElapsedMs: result.elapsedMs,
       source: result.source,
       detail: result.detail ?? null,
+      wait_contract: waitContract,
       ...(result.observedAt !== undefined ? { hmrObservedAt: result.observedAt } : {}),
       ...(result.retained ? {
         terminal_recovered_from: "hmr_terminal_history",

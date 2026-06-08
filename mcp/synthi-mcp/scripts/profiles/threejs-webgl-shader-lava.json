@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.external_project_profile.v1",
+  "id": "threejs-webgl-shader-lava",
+  "project": {
+    "name": "Three.js WebGL shader lava hot visual proof",
+    "repoUrl": "https://github.com/mrdoob/three.js.git",
+    "ref": "r184",
+    "license": "MIT",
+    "localPath": "tmp/external-hmr/three.js",
+    "upstreamSources": [
+      "https://github.com/mrdoob/three.js",
+      "https://github.com/mrdoob/three.js/blob/dev/examples/webgl_shader_lava.html",
+      "https://github.com/mrdoob/three.js/blob/dev/package.json"
+    ]
+  },
+  "runtime": {
+    "env": {
+      "PUPPETEER_SKIP_DOWNLOAD": "true"
+    },
+    "build": {
+      "command": "npm install --ignore-scripts --no-audit --no-fund && node utils/build/dev.js",
+      "cwd": "."
+    },
+    "run": {
+      "command": "node utils/server.js -p 8080",
+      "cwd": ".",
+      "readyRegex": "Listening on http://localhost:8080|http://127.0.0.1:8080|Server running"
+    },
+    "readyDelayMs": 3000,
+    "hotReloadDelayMs": 1200,
+    "errorRegexes": [
+      "Shader Error",
+      "WebGL: CONTEXT_LOST_WEBGL",
+      "Failed to compile"
+    ]
+  },
+  "source": {
+    "file": "examples/webgl_shader_lava.html",
+    "before": "mesh = new THREE.Mesh( new THREE.TorusGeometry( size, 0.3, 30, 30 ), material );",
+    "after": "mesh = new THREE.Mesh( new THREE.IcosahedronGeometry( size * 1.45, 6 ), material );"
+  },
+  "visualProof": {
+    "claim": "Changing a Three.js WebGL example source file materially changes the GPU-rendered lava shader scene served by the project dev server.",
+    "deterministicMode": {
+      "seed_policy_fixed": true,
+      "frozen_camera": true,
+      "temporal_accumulation_not_applicable": true,
+      "taa_not_applicable": true,
+      "denoiser_not_applicable": true,
+      "fixed_resolution": true,
+      "fixed_swapchain_image_count": true,
+      "frame_capture_after_epoch_dispatch": true,
+      "presentation_fence_or_frame_boundary": true
+    },
+    "screenshot": {
+      "command": "node \"{repoRoot}/mcp/synthi-mcp/scripts/tools/chrome-screenshot.mjs\" --url \"http://127.0.0.1:8080/examples/webgl_shader_lava.html\" --output \"{output}\" --width 1280 --height 720 --delay-ms 2500"
+    },
+    "minChangedPixelRatio": 0.03,
+    "minMeanAbsDelta8bit": 2.0
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-matrix-multiplication",
+  "repo": {
+    "url": "https://github.com/ROCm/rocm-examples.git"
+  },
+  "target": {
+    "entryFile": "HIP-Basic/matrix_multiplication/main.hip",
+    "deltaFile": "HIP-Basic/matrix_multiplication/main.hip",
+    "targetName": "hip_matrix_multiplication",
+    "buildSubdir": "HIP-Basic/matrix_multiplication"
+  },
+  "sourceDelta": {
+    "before": "constexpr float b_value = 0.02F;",
+    "after": "constexpr float b_value = 0.03F;"
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

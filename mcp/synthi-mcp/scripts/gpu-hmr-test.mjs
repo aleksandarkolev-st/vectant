@@ -48,7 +48,14 @@ import path from 'node:path';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
+import {
+  adversarialPreflightStrictGate,
+  runtimeProofArtifactStrictGates,
+  strictProofGateFailures,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
   dockerContainerSnapshot,
   validationCommandMetadata,
@@ -85,13 +92,18 @@ import {
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
 import {
   analyzeGpuHmrImageEvidence,
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const RUN_STARTED_AT = new Date();
 const RUN_STARTED_MS = Date.now();
+const RUN_STARTED_MONOTONIC_NS = monotonicNowNs();
 
 // ───────────────────────── config ─────────────────────────
 
@@ -115,6 +127,11 @@ const CFG = {
   hipFakeRuntime: process.env.SYNTHI_GPU_HIP_FAKE_RUNTIME === '1',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
   hmrWaitTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 5000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_GPU_FRAME_GATE_TIMEOUT_MS ?? 1200000),
+  requireGpuFullRuntimeProof: process.env.SYNTHI_GPU_REQUIRE_FULL_RUNTIME_PROOF !== '0',
+  hmrRequiredGpuProofState: (process.env.SYNTHI_GPU_REQUIRED_GPU_PROOF_STATE
+    ?? process.env.SYNTHI_GPU_HMR_REQUIRED_GPU_PROOF_STATE
+    ?? '').trim(),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
@@ -125,7 +142,13 @@ const CFG = {
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? 'synthi-ide-ai-engine-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? '') ? 'gemini_api' : 'agent_side'),
   useMcpCompile: (process.env.SYNTHI_GPU_USE_MCP ?? '1') !== '0',
@@ -163,11 +186,18 @@ const runtimeFullProofs = [];
 const gpuProofs = [];
 const visualArtifactPaths = [];
 const screenshots = [];
+let adversarialPreflight = null;
+const strictProofGates = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
   log(l, `[${phase}] ${name}${detail ? ' — ' + detail : ''}`);
 }
+function preflightStatus(preflight) {
+  if (preflight?.skipped) return 'skip';
+  return preflight?.ok ? 'pass' : 'fail';
+}
+
 function recordArtifactTransportProof(phase, name, proofArtifactRecords, runtimeEvidence = null) {
   const proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords, runtimeEvidence);
   artifactTransportProofs.push({
@@ -675,6 +705,8 @@ async function startMcp() {
       SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
     };
     if (CFG.mcpPrometheusPort) mcpEnv.SYNTHI_PROMETHEUS_PORT = CFG.mcpPrometheusPort;
@@ -693,6 +725,8 @@ async function startMcp() {
       SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
     };
     if (CFG.mcpPrometheusPort) env.SYNTHI_PROMETHEUS_PORT = CFG.mcpPrometheusPort;
@@ -1528,6 +1562,39 @@ function verifySeedFixtureContract(files) {
 
 // ───────────────────────── compile + HMR over MCP ─────────────────────────
 
+function configuredWaitRequiredGpuProofState(expectedModule = null) {
+  if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
+  return CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+    ? 'gpu-hmr-full-runtime-proven'
+    : null;
+}
+
+function waitContractFromArgs(waitArgs = {}) {
+  const requiredState = waitArgs.requiredGpuProofState
+    ?? (waitArgs.requireGpuFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null);
+  return {
+    timeout_ms: Number.isFinite(waitArgs.timeoutMs) ? waitArgs.timeoutMs : null,
+    module: typeof waitArgs.module === 'string' && waitArgs.module.trim()
+      ? waitArgs.module.trim()
+      : null,
+    since_ts: Number.isFinite(waitArgs.since_ts) ? waitArgs.since_ts : null,
+    preview_id: typeof waitArgs.preview_id === 'string' && waitArgs.preview_id.trim()
+      ? waitArgs.preview_id.trim()
+      : null,
+    required_gpu_proof_state: requiredState ?? null,
+    require_gpu_full_runtime_proof: waitArgs.requireGpuFullRuntimeProof === true,
+  };
+}
+
+function attachWaitEvidence(wait, waitArgs) {
+  if (!wait || typeof wait !== 'object') return wait;
+  return {
+    ...wait,
+    wait_args: waitArgs,
+    wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
+  };
+}
+
 async function postCompileViaMcp({ ctx, files }) {
   const state = await ensureMcpAttached();
   const primaryPath = files[0]?.path ?? ctx.deviceFilename;
@@ -1565,7 +1632,22 @@ async function postCompileViaMcp({ ctx, files }) {
     const waitTimeoutMs = Number.isFinite(CFG.hmrWaitTimeoutMs) && CFG.hmrWaitTimeoutMs > 0
       ? Math.min(CFG.hmrTimeoutMs, CFG.hmrWaitTimeoutMs)
       : CFG.hmrTimeoutMs;
-    hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: waitTimeoutMs }, waitTimeoutMs + 5000);
+    const requiredGpuProofState = configuredWaitRequiredGpuProofState('device');
+    const waitArgs = {
+      timeoutMs: waitTimeoutMs,
+      module: 'device',
+      ...(Number.isFinite(compileRes.dispatched_at)
+        ? { since_ts: compileRes.dispatched_at }
+        : {}),
+      ...(requiredGpuProofState ? { requiredGpuProofState } : {}),
+      ...(CFG.requireGpuFullRuntimeProof ? { requireGpuFullRuntimeProof: true } : {}),
+    };
+    hmr = await state.client.toolCall(
+      'synthi_wait_hmr',
+      waitArgs,
+      waitTimeoutMs + 5000,
+    );
+    hmr = attachWaitEvidence(hmr, waitArgs);
   } catch (e) {
     return { ok: true, body: { compile: compileRes }, hmr: { status: 'timeout_or_error', error: e.message } };
   }
@@ -1620,7 +1702,7 @@ async function postCompile({ ctx, slug, files, manifest }) {
   return postCompileViaAiEngine({ slug, files, manifest });
 }
 
-async function captureMcpScreenshot(label) {
+async function captureMcpScreenshot(label, waitEvidence = null) {
   if (!CFG.useMcpCompile) {
     record('FLOW', `${label} screenshot`, 'skip', 'MCP compile disabled');
     return null;
@@ -1630,21 +1712,34 @@ async function captureMcpScreenshot(label) {
     let lastShot = null;
     for (let attempt = 1; attempt <= 8; ++attempt) {
       await sleep(attempt === 1 ? 900 : 650);
+      const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+        baseArgs: { max_dim: 640 },
+        freshnessMaxMs: 5000,
+        frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+      });
       const shot = await state.client.toolCall(
         'synthi_screenshot',
-        { max_dim: 640, freshness_max_ms: 5000 },
-        20000,
+        screenshotArgs,
+        Math.max(20000, CFG.frameGateTimeoutMs + 5000),
       );
       lastShot = shot;
       if (shot?.data) {
         const bytes = Buffer.from(shot.data, 'base64');
         const stats = await analyzeGpuHmrImageEvidence(bytes);
+        const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
         const row = visualEvidenceRow({
           label,
           path: path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`),
           ...stats,
           bytes: bytes.length,
           attempt,
+          screenshot_metadata: screenshotMetadata,
+          wait_frame_gate: waitEvidence?.frame_gate ?? waitEvidence?.frameGate ?? null,
+          frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+            ...screenshotMetadata,
+            seq: Number(screenshotMetadata?.seq || 0),
+            ts: Number(screenshotMetadata?.ts || 0),
+          }),
         });
         if (row.accepted_as_visual_evidence) {
           await writeFile(row.path, bytes);
@@ -2012,6 +2107,8 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const generation = logField(line, 'generation') ?? logField(line, 'active_generation');
+    const epoch = logField(line, 'epoch') ?? logField(line, 'active_epoch');
     const streamId = logField(line, 'stream');
     const gridDimensions = logDim3Field(line, 'grid');
     const blockDimensions = logDim3Field(line, 'block');
@@ -2029,6 +2126,8 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
         : null,
+      generation: generation && generation !== 'none' ? generation : null,
+      epoch: epoch && epoch !== 'none' ? epoch : null,
       streamId: streamId && streamId !== 'none' ? streamId : null,
       gridDimensions,
       blockDimensions,
@@ -2055,6 +2154,10 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     dispatchTableEntryIds: [
       ...new Set(records.map((record) => record.dispatchTableEntryId).filter(Boolean)),
     ],
+    generations: [...new Set(records.map((record) => record.generation).filter(Boolean))],
+    generation: records.at(-1)?.generation ?? null,
+    epochs: [...new Set(records.map((record) => record.epoch).filter(Boolean))],
+    epoch: records.at(-1)?.epoch ?? records.at(-1)?.generation ?? null,
     dispatchStreamIds: [...new Set(records.map((record) => record.streamId).filter(Boolean))],
     gridDimensions: [...new Set(records.map((record) => record.gridDimensions).filter(Boolean))],
     blockDimensions: [...new Set(records.map((record) => record.blockDimensions).filter(Boolean))],
@@ -2261,6 +2364,228 @@ async function writeRuntimeOutputOracleEvidenceArtifact(input) {
     refs: [evidenceId, filePath],
     artifact,
   };
+}
+
+function sha256Value(value) {
+  return `sha256:${createHash('sha256').update(stableJson(value)).digest('hex')}`;
+}
+
+function bytesSha256(bytes) {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function xmlEscape(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
+function numericVectorBuffer(values) {
+  const normalized = Array.isArray(values)
+    ? values.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+    : [];
+  if (normalized.length === 0) return Buffer.from(stableJson(values ?? null));
+  const bytes = Buffer.allocUnsafe(normalized.length * 4);
+  normalized.forEach((value, index) => bytes.writeFloatLE(value, index * 4));
+  return bytes;
+}
+
+async function writeOracleCardPng(filePath, lines) {
+  const textLines = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line ?? '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const height = Math.max(140, 44 + textLines.length * 22);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="${height}" viewBox="0 0 720 ${height}">
+    <rect width="720" height="${height}" fill="#071018"/>
+    <rect x="16" y="16" width="688" height="${height - 32}" rx="0" fill="#0f1b24" stroke="#2d5362"/>
+    <text x="32" y="44" font-family="Consolas, monospace" font-size="18" fill="#bff7ff">GPU HMR output oracle</text>
+    ${textLines.map((line, index) => `<text x="32" y="${76 + index * 22}" font-family="Consolas, monospace" font-size="14" fill="#e6edf3">${xmlEscape(line)}</text>`).join('')}
+  </svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(filePath);
+}
+
+async function writeComputeOracleArtifacts({
+  phase,
+  name,
+  previousOutput,
+  currentOutput,
+  expectedOutput,
+  outputEvidence,
+  readbackTimestamp,
+  epoch,
+  producer,
+  outputChangeExpected,
+  deterministicSlice,
+}) {
+  await mkdir(OUTPUT_ORACLE_ARTIFACT_DIR, { recursive: true });
+  const base = `${safeArtifactToken(CFG.slug)}-${safeArtifactToken(phase)}-${safeArtifactToken(name)}`;
+  const currentBytes = numericVectorBuffer(currentOutput);
+  const rawPath = path.join(OUTPUT_ORACLE_ARTIFACT_DIR, `${base}-readback.bin`);
+  await writeFile(rawPath, currentBytes);
+  const schema = {
+    schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+    encoding: Array.isArray(currentOutput) ? 'float32_le_vector' : 'stable_json_utf8',
+    elementCount: Array.isArray(currentOutput) ? currentOutput.length : null,
+    expectedOutput: expectedOutput ?? null,
+    outputChangeExpected: outputChangeExpected === true,
+    rawReadbackHash: bytesSha256(currentBytes),
+    evidenceId: outputEvidence?.evidenceId ?? null,
+  };
+  const schemaPath = path.join(OUTPUT_ORACLE_ARTIFACT_DIR, `${base}-schema.json`);
+  await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`);
+  const cardPath = path.join(OUTPUT_ORACLE_ARTIFACT_DIR, `${base}-card.png`);
+  await writeOracleCardPng(cardPath, [
+    `phase=${phase} name=${name}`,
+    `producer=${producer ?? 'runtime_readback'}`,
+    `before=${sha256Value(previousOutput ?? null).slice(0, 24)}`,
+    `after=${sha256Value(currentOutput ?? null).slice(0, 24)}`,
+    `raw=${bytesSha256(currentBytes).slice(0, 24)}`,
+    `evidence=${outputEvidence?.evidenceId ?? 'none'}`,
+  ]);
+  return {
+    raw_readback_bin: rawPath,
+    readback_schema_json: schemaPath,
+    checksum_before: sha256Value(previousOutput ?? null),
+    checksum_after: sha256Value(currentOutput ?? null),
+    expected_output_change: outputChangeExpected === true,
+    deterministic_slice: deterministicSlice ?? {
+      offset: 0,
+      length: Array.isArray(currentOutput) ? currentOutput.length : 1,
+      source: 'runtime_readback',
+    },
+    oracle_code_hash: outputEvidence?.artifact?.contentHash ?? outputEvidence?.artifact?.content_hash ?? null,
+    rendered_card_png: cardPath,
+    producer: producer ?? 'runtime_readback',
+    timestamp_after_dispatch: readbackTimestamp ?? null,
+    epoch: epoch ?? null,
+  };
+}
+
+async function writeVisualOracleArtifacts({
+  phase,
+  name,
+  beforeImage,
+  afterImage,
+  timestampAfterDispatch,
+  epochTrace,
+  cameraStateHash,
+  captureBackend,
+  frameNumber,
+}) {
+  if (!beforeImage || !afterImage) return null;
+  await mkdir(OUTPUT_ORACLE_ARTIFACT_DIR, { recursive: true });
+  const beforeRaw = await sharp(beforeImage).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const afterRaw = await sharp(afterImage)
+    .resize(beforeRaw.info.width, beforeRaw.info.height, { fit: 'fill' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const diff = Buffer.allocUnsafe(beforeRaw.data.length);
+  let changed = 0;
+  let visible = 0;
+  let totalAbs = 0;
+  for (let i = 0; i < beforeRaw.data.length; i += 4) {
+    const alpha = Math.max(beforeRaw.data[i + 3], afterRaw.data[i + 3]);
+    if (alpha > 0) visible += 1;
+    const dr = Math.abs(afterRaw.data[i] - beforeRaw.data[i]);
+    const dg = Math.abs(afterRaw.data[i + 1] - beforeRaw.data[i + 1]);
+    const db = Math.abs(afterRaw.data[i + 2] - beforeRaw.data[i + 2]);
+    const da = Math.abs(afterRaw.data[i + 3] - beforeRaw.data[i + 3]);
+    const delta = dr + dg + db + da;
+    if (delta > 12) changed += 1;
+    totalAbs += delta;
+    diff[i] = Math.min(255, dr * 4);
+    diff[i + 1] = Math.min(255, dg * 4);
+    diff[i + 2] = Math.min(255, db * 4);
+    diff[i + 3] = 255;
+  }
+  const pixelCount = beforeRaw.info.width * beforeRaw.info.height;
+  const changedPixelRatio = pixelCount > 0 ? changed / pixelCount : 0;
+  const perceptualDiff = pixelCount > 0 ? totalAbs / (pixelCount * 4 * 255) : 0;
+  const diffPath = path.join(
+    OUTPUT_ORACLE_ARTIFACT_DIR,
+    `${safeArtifactToken(CFG.slug)}-${safeArtifactToken(phase)}-${safeArtifactToken(name)}-visual-diff.png`,
+  );
+  await sharp(diff, {
+    raw: {
+      width: beforeRaw.info.width,
+      height: beforeRaw.info.height,
+      channels: 4,
+    },
+  }).png().toFile(diffPath);
+  return {
+    before_image: beforeImage,
+    after_image: afterImage,
+    diff_image: diffPath,
+    blank_frame_rejection: visible > 0,
+    same_frame_rejection: changedPixelRatio > 0,
+    new_epoch_watermark_or_trace: epochTrace ?? null,
+    camera_state_hash: cameraStateHash ?? null,
+    swapchain_size: [beforeRaw.info.width, beforeRaw.info.height],
+    capture_backend: captureBackend ?? 'mcp_synthi_screenshot',
+    frame_number: Number.isFinite(frameNumber) ? frameNumber : null,
+    timestamp_after_dispatch: timestampAfterDispatch ?? null,
+    perceptual_diff: perceptualDiff,
+    changed_pixel_ratio: changedPixelRatio,
+    visible_pixel_count: visible,
+  };
+}
+
+function flowDeterministicVisualMode() {
+  return {
+    fixed_seed: true,
+    frozen_camera: true,
+    temporal_accumulation_disabled: true,
+    taa_disabled: true,
+    denoiser_disabled: true,
+    fixed_resolution: true,
+    fixed_swapchain_image_count: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+  };
+}
+
+function flowCameraStateHash() {
+  return sha256Value({
+    fixture: 'flow',
+    camera: 'fixed-orthographic',
+    resolution: [800, 600],
+    center: [400, 300],
+  });
+}
+
+function frameNumberFromRuntimeSnippet(snippet) {
+  const parsed = Number(String(snippet ?? '').match(/\bframe=(\d+)\b/)?.[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function epochLabelFromDispatchProof(dispatchProof, fallbackArtifactId = null) {
+  const epochProof = dispatchProof?.epochProof && typeof dispatchProof.epochProof === 'object'
+    ? dispatchProof.epochProof
+    : dispatchProof?.epoch_proof && typeof dispatchProof.epoch_proof === 'object'
+      ? dispatchProof.epoch_proof
+      : null;
+  const publication = epochProof?.latestPublication && typeof epochProof.latestPublication === 'object'
+    ? epochProof.latestPublication
+    : epochProof?.latest_publication && typeof epochProof.latest_publication === 'object'
+      ? epochProof.latest_publication
+      : null;
+  const activeGeneration = Number(
+    epochProof?.activeGeneration
+    ?? epochProof?.active_generation
+    ?? publication?.activeGeneration
+    ?? publication?.active_generation,
+  );
+  if (Number.isInteger(activeGeneration) && activeGeneration >= 0) {
+    return `generation:${activeGeneration}`;
+  }
+  const dispatchId = String(dispatchProof?.dispatchId ?? dispatchProof?.dispatch_id ?? '').trim();
+  if (dispatchId) return `dispatch:${dispatchId}`;
+  return fallbackArtifactId ?? null;
 }
 
 function summarizeLogLine(line) {
@@ -2762,6 +3087,8 @@ async function awaitRuntimeDispatchProof(
     blockDimensions: runtimeDispatchArtifacts.blockDimensions,
     sharedMemoryBytes: runtimeDispatchArtifacts.sharedMemoryBytes,
     dispatchTimestamps: runtimeDispatchArtifacts.dispatchTimestamps,
+    epoch: runtimeDispatchArtifacts.epoch,
+    generation: runtimeDispatchArtifacts.generation,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
       runtimeDispatchArtifacts,
       selectedArtifactIds,
@@ -2841,8 +3168,10 @@ async function recordVectorReadbackOutputProof({
   dispatchProof,
   fissionProof,
   sourceContent,
+  previousExpectedReadback,
   expectedReadback,
   sample,
+  outputChangeExpected = true,
 }) {
   const actual = Array.isArray(sample?.values) ? sample.values.slice(0, expectedReadback.length) : null;
   const passed = readbackMatches(actual, expectedReadback);
@@ -2886,6 +3215,23 @@ async function recordVectorReadbackOutputProof({
     probeConfigHash: probeContract.configHash,
     rawEvidence: sample?.raw,
   });
+  const computeOracleArtifacts = await writeComputeOracleArtifacts({
+    phase,
+    name,
+    previousOutput: previousExpectedReadback ?? null,
+    currentOutput: actual,
+    expectedOutput: expectedReadback,
+    outputEvidence,
+    readbackTimestamp,
+    epoch: epochLabelFromDispatchProof(dispatchProof, artifactId),
+    producer: 'runtime_readback',
+    outputChangeExpected,
+    deterministicSlice: {
+      offset: 0,
+      length: Array.isArray(actual) ? actual.length : expectedReadback.length,
+      source: 'gui_readback',
+    },
+  });
   return recordRuntimeOutputProof(phase, `${name} output proof`, {
     dispatchProof,
     deterministicOutputObserved: Boolean(sample),
@@ -2909,6 +3255,9 @@ async function recordVectorReadbackOutputProof({
       probeEvidenceRefs: outputEvidence.refs,
       evidenceRefs: outputEvidence.refs,
     },
+    oracleArtifacts: {
+      compute_oracle_artifacts: computeOracleArtifacts,
+    },
     visualFrameObserved: false,
     visualEvidenceRequired: false,
   });
@@ -2920,7 +3269,9 @@ async function recordVectorRuntimeProofLadder({
   checkpoint,
   hmr,
   sourceContent,
+  previousExpectedReadback,
   expectedReadback,
+  outputChangeExpected,
   dispatchName,
   readbackName,
 }) {
@@ -3006,8 +3357,10 @@ async function recordVectorRuntimeProofLadder({
     dispatchProof,
     fissionProof,
     sourceContent,
+    previousExpectedReadback,
     expectedReadback,
     sample: readbackSample,
+    outputChangeExpected,
   });
   const epochProof = await runtimeEpochSwapProofSince(checkpoint, 5000, runtimeProofLogBytes);
   const hostProofWithEvidence = await runtimeHostPreservationProofSince(
@@ -3279,7 +3632,7 @@ async function phaseFlow(ctx) {
     inwardTrend.matched ? 'pass' : 'warn',
     inwardTrend.snippet || 'inward trend not observed before timeout');
 
-  const inwardScreenshot = await captureMcpScreenshot('flow-inward');
+  const inwardScreenshot = await captureMcpScreenshot('flow-inward', baseline.hmr);
   const inwardReadbackTimestamp = Date.now();
   const inwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const inwardRuntimeSessionId = inwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
@@ -3311,6 +3664,23 @@ async function phaseFlow(ctx) {
     rawEvidence: inwardTrend.snippet,
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
+  const inwardComputeOracleArtifacts = await writeComputeOracleArtifacts({
+    phase: 'FLOW',
+    name: 'inward output proof',
+    previousOutput: null,
+    currentOutput: inwardTrend.matched ? 'inward' : null,
+    expectedOutput: 'inward',
+    outputEvidence: inwardOutputEvidence,
+    readbackTimestamp: inwardReadbackTimestamp,
+    epoch: epochLabelFromDispatchProof(inwardDispatchProof, inwardArtifactId),
+    producer: 'runtime_readback',
+    outputChangeExpected: false,
+    deterministicSlice: {
+      offset: 0,
+      length: 1,
+      source: 'worker-log-runtime-readback',
+    },
+  });
   const inwardOutputProof = recordRuntimeOutputProof('FLOW', 'inward output proof', {
     dispatchProof: inwardDispatchProof,
     deterministicOutputObserved: inwardTrend.matched,
@@ -3332,6 +3702,9 @@ async function phaseFlow(ctx) {
       probeConfigHash: inwardProbeContract.configHash,
       probeEvidenceRefs: inwardOutputEvidence.refs,
       evidenceRefs: inwardOutputEvidence.refs,
+    },
+    oracleArtifacts: {
+      compute_oracle_artifacts: inwardComputeOracleArtifacts,
     },
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRequired: true,
@@ -3454,7 +3827,7 @@ async function phaseFlow(ctx) {
     trend.matched ? 'pass' : 'warn',
     trend.snippet || 'outward trend not observed before timeout');
 
-  const outwardScreenshot = await captureMcpScreenshot('flow-outward');
+  const outwardScreenshot = await captureMcpScreenshot('flow-outward', flip.hmr);
   const outwardReadbackTimestamp = Date.now();
   const outwardOutputTargetId = `${CFG.slug}:runtime-readback-trend`;
   const outwardRuntimeSessionId = outwardDispatchProof?.runtimeSessionIds?.[0] ?? null;
@@ -3486,6 +3859,40 @@ async function phaseFlow(ctx) {
     rawEvidence: trend.snippet,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
+  const outwardComputeOracleArtifacts = await writeComputeOracleArtifacts({
+    phase: 'FLOW',
+    name: 'outward output proof',
+    previousOutput: 'inward',
+    currentOutput: trend.matched ? 'outward' : null,
+    expectedOutput: 'outward',
+    outputEvidence: outwardOutputEvidence,
+    readbackTimestamp: outwardReadbackTimestamp,
+    epoch: epochLabelFromDispatchProof(outwardDispatchProof, outwardArtifactId),
+    producer: 'runtime_readback',
+    outputChangeExpected: true,
+    deterministicSlice: {
+      offset: 0,
+      length: 1,
+      source: 'worker-log-runtime-readback',
+    },
+  });
+  const outwardVisualOracleArtifacts = inwardScreenshot && outwardScreenshot
+    ? await writeVisualOracleArtifacts({
+        phase: 'FLOW',
+        name: 'outward output proof',
+        beforeImage: inwardScreenshot,
+        afterImage: outwardScreenshot,
+        timestampAfterDispatch: outwardReadbackTimestamp,
+        epochTrace: `${outwardDispatchProof?.dispatchId ?? 'dispatch'}:${outwardArtifactId ?? 'artifact'}`,
+        cameraStateHash: flowCameraStateHash(),
+        captureBackend: 'mcp_synthi_screenshot',
+        frameNumber: frameNumberFromRuntimeSnippet(trend.snippet),
+      })
+    : null;
+  const outwardOracleArtifacts = {
+    compute_oracle_artifacts: outwardComputeOracleArtifacts,
+    ...(outwardVisualOracleArtifacts ? { visual_oracle_artifacts: outwardVisualOracleArtifacts } : {}),
+  };
   const outwardOutputProof = recordRuntimeOutputProof('FLOW', 'outward output proof', {
     dispatchProof: outwardDispatchProof,
     deterministicOutputObserved: trend.matched,
@@ -3508,6 +3915,8 @@ async function phaseFlow(ctx) {
       probeEvidenceRefs: outwardOutputEvidence.refs,
       evidenceRefs: outwardOutputEvidence.refs,
     },
+    oracleArtifacts: outwardOracleArtifacts,
+    deterministicVisualMode: outwardVisualOracleArtifacts ? flowDeterministicVisualMode() : undefined,
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRequired: true,
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
@@ -3633,7 +4042,9 @@ async function phaseP1(ctx) {
       checkpoint: preTail,
       hmr: compile.hmr,
       sourceContent: DEVICE_CU_PHASE1_EDIT,
+      previousExpectedReadback: VECTOR_ADD_READBACK,
       expectedReadback: VECTOR_MUL_READBACK,
+      outputChangeExpected: true,
       dispatchName: 'post-edit GPU dispatch ok',
       readbackName: 'post-edit numeric GPU readback',
     });
@@ -3774,7 +4185,9 @@ async function phaseP2(ctx) {
         checkpoint: fastLogStart,
         hmr: fast.hmr,
         sourceContent: DEVICE_CU_PHASE2_FAST,
+        previousExpectedReadback: VECTOR_MUL_READBACK,
         expectedReadback: VECTOR_MUL_READBACK,
+        outputChangeExpected: false,
         dispatchName: 'fast-swap GPU dispatch ok',
         readbackName: 'fast-swap numeric GPU readback',
       });
@@ -3954,6 +4367,22 @@ async function main() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
 
+  adversarialPreflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  const adversarialPreflightGate = adversarialPreflightStrictGate(adversarialPreflight);
+  strictProofGates.push(adversarialPreflightGate);
+  record(
+    'preflight',
+    'adversarial proof ledger preflight',
+    preflightStatus(adversarialPreflight),
+    `elapsed_ms=${adversarialPreflight.elapsedMs.toFixed(1)}`,
+  );
+  record('preflight', adversarialPreflightGate.name, adversarialPreflightGate.status, adversarialPreflightGate.detail);
+  if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
+    throw new Error(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
+  }
+
   const pre = await preflight();
   if (CFG.useMcpCompile) {
     try {
@@ -4030,7 +4459,8 @@ async function writeSummary() {
   const failed = results.filter((r) => r.status === 'fail').length;
   const skipped = results.filter((r) => r.status === 'skip').length;
   const finishedAt = new Date().toISOString();
-  const durationMs = Date.now() - RUN_STARTED_MS;
+  const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
+  const durationMs = timingFields.duration_ms;
   const commandMetadata = validationCommandMetadata({
     envKeys: [
       'SYNTHI_GPU_HMR',
@@ -4039,6 +4469,8 @@ async function writeSummary() {
       'SYNTHI_GPU_VENDOR',
       'SYNTHI_GPU_ARCH',
       'SYNTHI_GEMINI_MODEL',
+      'SYNTHI_GPU_SPLIT_MODEL',
+      'SYNTHI_GPU_DELTA_MODEL',
       'MCP_TRANSPORT',
       'MCP_CONTAINER',
       'WORKER_CONTAINER',
@@ -4064,8 +4496,12 @@ async function writeSummary() {
     gpu_vendor: CFG.vendor,
     gpu_arch: CFG.gpuArch ?? null,
     timings: {
+      metric_clock: 'monotonic_ns',
       started_at: RUN_STARTED_AT.toISOString(),
+      started_monotonic_ns: RUN_STARTED_MONOTONIC_NS,
       finished_at: finishedAt,
+      finished_monotonic_ns: timingFields.finished_monotonic_ns,
+      duration_monotonic_ns: timingFields.duration_monotonic_ns,
       duration_ms: durationMs,
     },
     result_counts: { total: results.length, passed, warned, failed, skipped },
@@ -4116,7 +4552,23 @@ async function writeSummary() {
       degradedReason: written.artifact.degradedReason,
       fullRuntimeProven: written.artifact.fullRuntimeProven,
       limitations: written.artifact.limitations,
+      acceptanceContract: written.artifact.acceptanceContract,
+      acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      acceptanceContractConsistency: written.artifact.acceptanceContractConsistency,
+      deterministicVisualMode: written.artifact.deterministicVisualMode,
+      deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
+      proofLedger: written.artifact.proofLedger,
+      proofLedgerQuery: written.artifact.proofLedgerQuery,
+      gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     });
+  }
+  const runtimeProofStrictRows = runtimeProofArtifactStrictGates(runtimeProofArtifactRecords, {
+    requireAtLeastOne: true,
+    namePrefix: 'strict live runtime proof artifact acceptance',
+  });
+  strictProofGates.push(...runtimeProofStrictRows);
+  for (const gate of runtimeProofStrictRows) {
+    record('summary', gate.name, gate.status, gate.detail);
   }
   const proofArtifactPaths = [...new Set(gpuProofs
     .map((proof) => proof.proofArtifactPath)
@@ -4146,11 +4598,16 @@ async function writeSummary() {
     run_at: RUN_STARTED_AT.toISOString(),
     started_at: RUN_STARTED_AT.toISOString(),
     finished_at: finishedAt,
+    metric_clock: 'monotonic_ns',
+    started_monotonic_ns: RUN_STARTED_MONOTONIC_NS,
+    finished_monotonic_ns: timingFields.finished_monotonic_ns,
+    duration_monotonic_ns: timingFields.duration_monotonic_ns,
     duration_ms: durationMs,
     model: CFG.geminiModel,
     gpu_vendor: CFG.vendor,
     gpu_arch: CFG.gpuArch ?? null,
     command: commandMetadata,
+    adversarial_preflight: adversarialPreflight,
     urls: {
       frontend: CFG.frontendUrl,
       collab: CFG.collabUrl,
@@ -4185,6 +4642,7 @@ async function writeSummary() {
     runtime_full_proofs: runtimeFullProofs,
     runtime_proof_artifacts: runtimeProofArtifactRecords,
     runtime_proof_artifact_paths: runtimeProofArtifactPaths,
+    strict_proof_gates: strictProofGates,
     screenshots,
     visual_artifact_paths: validationProofSummary.visual_artifact_paths,
     visual_evidence_quality: validationProofSummary.visual_evidence_quality,
@@ -4205,7 +4663,8 @@ async function writeSummary() {
   console.log(`  Logs:      ${LOG_DIR}`);
   console.log(`  Results:   ${path.join(LOG_DIR, 'results.json')}`);
 
-  process.exitCode = failed > 0 ? 1 : 0;
+  const strictFailures = strictProofGateFailures(strictProofGates);
+  process.exitCode = failed > 0 || strictFailures.length > 0 ? 1 : 0;
 }
 
 async function selfCheck() {
@@ -4233,6 +4692,24 @@ async function selfCheck() {
       ...flowContract.findings.map((f) => `flow:${f}`),
     ];
     console.error(`gpu-hmr-test self-check failed: ${findings.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  const waitArgs = {
+    timeoutMs: 5000,
+    module: 'device',
+    since_ts: 1_780_850_000_000,
+    requiredGpuProofState: configuredWaitRequiredGpuProofState('device'),
+    requireGpuFullRuntimeProof: true,
+  };
+  const waitContract = waitContractFromArgs(waitArgs);
+  const attachedWait = attachWaitEvidence({ status: 'applied' }, waitArgs);
+  if (
+    waitContract.module !== 'device'
+    || waitContract.required_gpu_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || attachedWait.wait_contract?.require_gpu_full_runtime_proof !== true
+  ) {
+    console.error('gpu-hmr-test self-check failed: wait contract did not require full GPU runtime proof');
     process.exitCode = 1;
     return;
   }
@@ -4307,11 +4784,11 @@ async function selfCheck() {
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=x expected_symbols=kernel_a,kernel_b touched_symbols=kernel_a,kernel_b retired_modules=1 replaced_primary=false\n',
   );
   const sessionEvidence = runtimeSessionEvidence(
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:alloc_bytes=8:alloc_offset=0:size=8\n',
   );
   const dispatchArtifacts = runtimeDispatchArtifactEvidence(
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
     ['kernel_a'],
   );
   const selectedDispatchRegex = selectedArtifactDispatchLineRegex(
@@ -4319,9 +4796,9 @@ async function selfCheck() {
     [selectedArtifactId],
   );
   const staleDispatchLine =
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${staleArtifactId} dispatcher_registration_id=${staleDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`;
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=1 runtime_session=session-1 artifact_id=${staleArtifactId} dispatcher_registration_id=${staleDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`;
   const selectedDispatchLine =
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(2, 1, 1) block=(64, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-2 artifact_id=${selectedArtifactId} dispatcher_registration_id=${selectedDispatcherId} dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n`;
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(2, 1, 1) block=(64, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 runtime_session=session-2 artifact_id=${selectedArtifactId} dispatcher_registration_id=${selectedDispatcherId} dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n`;
   const selectedDispatchScope = scopeRuntimeDispatchWindowToSelectedArtifact(
     staleDispatchLine
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=1 complete=true known_args=1 unknown_args=0\n'
@@ -4348,6 +4825,8 @@ async function selfCheck() {
     || dispatchArtifacts.runtimeArtifactIds[0] !== selfArtifactId
     || dispatchArtifacts.dispatchEvidenceRefs[0] !== 'worker-log:synthi_gpu_launch:session-1:kernel_a'
     || dispatchArtifacts.dispatchTimestamps[0] !== 1779979999000
+    || dispatchArtifacts.generation !== '2'
+    || dispatchArtifacts.epoch !== '2'
     || dispatchArtifacts.gridDimensions[0] !== '1x1x1'
     || dispatchArtifacts.blockDimensions[0] !== '32x1x1'
     || dispatchArtifacts.dispatchStreamIds[0] !== '0'
@@ -4402,6 +4881,8 @@ async function selfCheck() {
     blockDimensions: dispatchArtifacts.blockDimensions,
     sharedMemoryBytes: dispatchArtifacts.sharedMemoryBytes,
     dispatchTimestamps: dispatchArtifacts.dispatchTimestamps,
+    epoch: dispatchArtifacts.epoch,
+    generation: dispatchArtifacts.generation,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
       dispatchArtifacts,
       [selfArtifactId],

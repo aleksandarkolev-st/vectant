@@ -610,7 +610,10 @@ fn split_manifest_argv_value(value: &str) -> Vec<String> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    if !trimmed.chars().any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'') {
+    if !trimmed
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'')
+    {
         return vec![trimmed.to_string()];
     }
 

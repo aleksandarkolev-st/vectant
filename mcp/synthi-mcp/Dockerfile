@@ -20,6 +20,7 @@ RUN npm ci
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY scripts ./scripts
 RUN npm run build
 
 # Keep the container up so live-test.mjs can `docker exec` into it repeatedly

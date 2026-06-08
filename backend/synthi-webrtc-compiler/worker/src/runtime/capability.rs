@@ -1175,8 +1175,6 @@ mod tests {
         let json = status.to_json();
 
         assert!(json.contains(r#""proofId":"gpu-proof:abc""#));
-        assert!(json.contains(
-            r#""proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_abc.json""#
-        ));
+        assert!(json.contains(r#""proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_abc.json""#));
     }
 }

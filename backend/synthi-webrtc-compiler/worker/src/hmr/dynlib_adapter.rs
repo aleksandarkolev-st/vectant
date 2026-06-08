@@ -313,6 +313,7 @@ mod tests {
             build_manifest: test_manifest("libmod_a.so"),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: Default::default(),
             preserve_state: false,
             timeout_ms: 5000,
         };
@@ -335,6 +336,7 @@ mod tests {
             build_manifest: test_manifest("not_a_lib.txt"),
             artifact_blob: None,
             capsule_metadata: None,
+            firewall_evidence: Default::default(),
             preserve_state: false,
             timeout_ms: 5000,
         };

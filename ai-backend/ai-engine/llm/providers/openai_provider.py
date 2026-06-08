@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Mapping, Optional, Sequence
 
-from .base import AiProvider
+from .base import AiProvider, provider_model_provenance
 
 logger = logging.getLogger("llm.providers.openai")
 
@@ -53,10 +54,12 @@ class OpenAIProvider(AiProvider):
         focus: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        request_mode: Optional[str] = None,
     ) -> str:
         client = self._get_client(api_key)
         target = model or self.model_name
         mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
+        start_time = time.time()
 
         # Mirror gemini.py mode handling so callers (diff_patch uses 'delta',
         # heal/refactor use 'patch'/'fullfile') get the same prompt shape they
@@ -72,17 +75,38 @@ class OpenAIProvider(AiProvider):
                 fence = f"```{lang}\n{code}\n```"
                 user_text = f"{user_text}\n\n{fence}" if user_text else fence
 
-        resp = await client.chat.completions.create(
-            model=target,
-            temperature=0.2,
-            max_tokens=8192,
-            messages=[
-                {"role": "system", "content": "You are a careful, concise coding assistant."},
-                {"role": "user", "content": user_text},
-            ],
-        )
-        choice = resp.choices[0] if getattr(resp, "choices", None) else None
-        if not choice:
-            return ""
-        msg = getattr(choice, "message", None)
-        return getattr(msg, "content", "") or ""
+        try:
+            resp = await client.chat.completions.create(
+                model=target,
+                temperature=0.2,
+                max_tokens=8192,
+                messages=[
+                    {"role": "system", "content": "You are a careful, concise coding assistant."},
+                    {"role": "user", "content": user_text},
+                ],
+            )
+            latency_ms = (time.time() - start_time) * 1000.0
+            self.last_call_metadata = provider_model_provenance(
+                provider=self.name,
+                requested_model=target,
+                actual_model=target,
+                mode=mode_lower,
+                request_mode=request_mode,
+                latency_ms=latency_ms,
+            )
+            choice = resp.choices[0] if getattr(resp, "choices", None) else None
+            if not choice:
+                return ""
+            msg = getattr(choice, "message", None)
+            return getattr(msg, "content", "") or ""
+        except Exception as exc:
+            self.last_call_metadata = provider_model_provenance(
+                provider=self.name,
+                requested_model=target,
+                actual_model=None,
+                mode=mode_lower,
+                request_mode=request_mode,
+                latency_ms=(time.time() - start_time) * 1000.0,
+                error_type=type(exc).__name__,
+            )
+            raise
