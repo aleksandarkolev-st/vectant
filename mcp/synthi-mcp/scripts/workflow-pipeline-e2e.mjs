@@ -2157,6 +2157,111 @@ const CASES = [
     },
   },
   {
+    id: "keyboard-control-keys",
+    minSteps: 6,
+    expectedActions: ["press"],
+    expectedReplayText: [
+      "Cursor at start",
+      "Deleted A; buffer BC",
+      "Cursor at end",
+      "Backspaced C; buffer B",
+      "Help opened",
+      "Executed B",
+    ],
+    expectedReplayCode: [
+      "await target1.press(\"Home\");",
+      "await target2.press(\"Delete\");",
+      "await target3.press(\"End\");",
+      "await target4.press(\"Backspace\");",
+      "await target5.press(\"F2\");",
+      "await target6.press(\"Enter\");",
+    ],
+    files: () => commonFiles({
+      title: "Keyboard Control Keys Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Keyboard Control Keys Workflow</h1>",
+        "      <section role=\"application\" tabindex=\"0\" aria-label=\"Terminal control surface\" data-testid=\"control-shell\" data-synthi-source-id=\"keys.shell\">",
+        "        <div id=\"buffer\" aria-live=\"polite\">ABC</div>",
+        "        <pre id=\"log\" role=\"status\">Waiting</pre>",
+        "      </section>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[role='application'] { width: min(640px, calc(100vw - 48px)); min-height: 168px; border: 1px solid #222; background: #101214; color: #f3f6f4; padding: 16px; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }",
+        "[role='application']:focus { outline: 2px solid #17663a; outline-offset: 4px; }",
+        "pre { margin: 12px 0 0; white-space: pre-wrap; }",
+      ],
+      script: [
+        "const shell = document.querySelector('[data-testid=\"control-shell\"]');",
+        "const bufferNode = document.querySelector('#buffer');",
+        "const log = document.querySelector('#log');",
+        "const status = document.querySelector('#status');",
+        "let buffer = 'ABC';",
+        "let cursor = buffer.length;",
+        "function render(message) {",
+        "  bufferNode.textContent = buffer || '(empty)';",
+        "  log.textContent = `cursor ${cursor}`;",
+        "  status.textContent = message;",
+        "}",
+        "shell.addEventListener('keydown', (event) => {",
+        "  if (event.key === 'Home') {",
+        "    event.preventDefault();",
+        "    cursor = 0;",
+        "    render('Cursor at start');",
+        "    return;",
+        "  }",
+        "  if (event.key === 'Delete') {",
+        "    event.preventDefault();",
+        "    const removed = buffer[cursor] || '';",
+        "    if (removed) buffer = buffer.slice(0, cursor) + buffer.slice(cursor + 1);",
+        "    render(removed ? `Deleted ${removed}; buffer ${buffer}` : `Delete at end; buffer ${buffer}`);",
+        "    return;",
+        "  }",
+        "  if (event.key === 'End') {",
+        "    event.preventDefault();",
+        "    cursor = buffer.length;",
+        "    render('Cursor at end');",
+        "    return;",
+        "  }",
+        "  if (event.key === 'Backspace') {",
+        "    event.preventDefault();",
+        "    const removed = cursor > 0 ? buffer[cursor - 1] : '';",
+        "    if (removed) { buffer = buffer.slice(0, cursor - 1) + buffer.slice(cursor); cursor -= 1; }",
+        "    render(removed ? `Backspaced ${removed}; buffer ${buffer}` : `Backspace at start; buffer ${buffer}`);",
+        "    return;",
+        "  }",
+        "  if (event.key === 'F2') {",
+        "    event.preventDefault();",
+        "    render('Help opened');",
+        "    return;",
+        "  }",
+        "  if (event.key === 'Enter') {",
+        "    event.preventDefault();",
+        "    render(`Executed ${buffer}`);",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByTestId("control-shell").focus();
+      await page.keyboard.press("Home");
+      await page.getByText("Cursor at start").waitFor();
+      await page.keyboard.press("Delete");
+      await page.getByText("Deleted A; buffer BC").waitFor();
+      await page.keyboard.press("End");
+      await page.getByText("Cursor at end").waitFor();
+      await page.keyboard.press("Backspace");
+      await page.getByText("Backspaced C; buffer B").waitFor();
+      await page.keyboard.press("F2");
+      await page.getByText("Help opened").waitFor();
+      await page.keyboard.press("Enter");
+      await page.getByText("Executed B").waitFor();
+    },
+  },
+  {
     id: "terminal-text-entry",
     minSteps: 2,
     expectedActions: ["fill", "press"],

@@ -2514,7 +2514,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return tag === 'select';
     }
 
-    function keyPressValue(event) {
+    function keyPressValue(event, target) {
       if (event.repeat) return '';
       const key = String(event.key || '');
       if (!key) return '';
@@ -2525,8 +2525,14 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (event.altKey) modifiers.push('Alt');
       if (event.shiftKey) modifiers.push('Shift');
       const normalizedKey = key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key;
-      if (modifiers.length === 0 && !['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(normalizedKey)) {
-        return '';
+      if (modifiers.length === 0) {
+        const activationKeys = ['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'];
+        const appSurfaceKeys = ['Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Space'];
+        const functionKey = /^F(?:[1-9]|1[0-2])$/.test(normalizedKey);
+        const editable = isEditableTextTarget(target);
+        if (!activationKeys.includes(normalizedKey) && !functionKey && !(appSurfaceKeys.includes(normalizedKey) && !editable)) {
+          return '';
+        }
       }
       return [...modifiers, normalizedKey].join('+');
     }
@@ -2935,7 +2941,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         return;
       }
       if (keyboardTextSurface) flushPendingKeyboardText(keyboardTextSurface);
-      const key = keyPressValue(event);
+      const key = keyPressValue(event, target);
       if (!key) return;
       const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="option"], [role="listbox"], [role="application"], [data-testid], [data-test], main, body');
       if (!isElement(el)) return;
