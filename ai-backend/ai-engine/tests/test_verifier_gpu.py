@@ -370,6 +370,84 @@ def test_split_rejects_launching_preserved_kernel_not_in_source_launch_graph():
     )
 
 
+def test_split_rejects_missing_source_launch_when_other_launch_is_present():
+    source_files = {
+        "src/live_update.hip": (
+            "#include <hip/hip_runtime.h>\n"
+            'extern "C" __global__ void seed_particles(float* values) { values[0] = 1.0f; }\n'
+            'extern "C" __global__ void advect_particles(float* values) { values[0] += 1.0f; }\n'
+            "void tick(float* device_values, float* host_values) {\n"
+            "  dim3 grid(1), block(64);\n"
+            "  seed_particles<<<grid, block>>>(device_values);\n"
+            "  advect_particles<<<grid, block>>>(device_values);\n"
+            "  hipMemcpy(host_values, device_values, sizeof(float) * 16, hipMemcpyDeviceToHost);\n"
+            "}\n"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* device_values; float host_values[16]; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            'auto* s = static_cast<AppState*>(state); dim3 grid(1), block(64); '
+            'synthi_gpu_launch(nullptr, "seed_particles", grid, block, 0, nullptr, { &s->device_values }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": (
+            'extern "C" __global__ void seed_particles(float* values) { values[0] = 1.0f; }\n'
+            'extern "C" __global__ void advect_particles(float* values) { values[0] += 1.0f; }\n'
+        ),
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert any(
+        v.rule == "source_launch_kernel_not_preserved"
+        and v.offending_symbol == "advect_particles"
+        for v in r.violations
+    )
+    assert any(v.rule == "source_device_to_host_readback_not_preserved" for v in r.violations)
+
+
+def test_split_accepts_source_launches_and_device_to_host_readback_coverage():
+    source_files = {
+        "src/live_update.hip": (
+            "#include <hip/hip_runtime.h>\n"
+            'extern "C" __global__ void advect_particles(float* values) { values[0] += 1.0f; }\n'
+            "void tick(float* device_values, float* host_values) {\n"
+            "  dim3 grid(1), block(64);\n"
+            "  advect_particles<<<grid, block>>>(device_values);\n"
+            "  hipMemcpy(host_values, device_values, sizeof(float) * 16, hipMemcpyDeviceToHost);\n"
+            "}\n"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* device_values; float host_values[16]; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            'auto* s = static_cast<AppState*>(state); dim3 grid(1), block(64); '
+            'synthi_gpu_launch_source_location(nullptr, "src/live_update.hip:5", "source_instrumented", "advect_particles", grid, block, 0, nullptr, { &s->device_values }); '
+            'hipMemcpy(s->host_values, s->device_values, sizeof(float) * 16, hipMemcpyDeviceToHost); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": 'extern "C" __global__ void advect_particles(float* values) { values[0] += 1.0f; }',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert not any(v.rule == "source_launch_kernel_not_preserved" for v in r.violations)
+    assert not any(v.rule == "source_device_to_host_readback_not_preserved" for v in r.violations)
+
+
 def test_split_rejects_statically_invalid_launch_dimensions():
     source_files = {
         "src/device.hip": 'extern "C" __global__ void step(int* out) { }',

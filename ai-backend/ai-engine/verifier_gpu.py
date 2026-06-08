@@ -350,7 +350,8 @@ _GPU_HOST_TO_DEVICE_COPY_RE = re.compile(
     re.DOTALL,
 )
 _GPU_DEVICE_TO_HOST_COPY_RE = re.compile(
-    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyDeviceToHost|hipMemcpyDeviceToHost)\b",
+    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyDeviceToHost|hipMemcpyDeviceToHost)\b"
+    r"|\b(?:cuMemcpyDtoH|cudaMemcpyDtoH|hipMemcpyDtoH|oroMemcpyDtoH|oroMemcpyDtoHAsync|oroMemcpy_dtoh)\s*\(",
     re.DOTALL,
 )
 _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
@@ -3002,6 +3003,7 @@ def verify_split_output(
         )
 
     synthi_launch_count = 0
+    generated_launch_kernels: Set[str] = set()
     for host_path in (core_path, gui_path, host_runner_path):
         src = files.get(host_path)
         if not src:
@@ -3044,6 +3046,7 @@ def verify_split_output(
             kernel = _launch_kernel_name(launch.kernel_arg)
             if not kernel:
                 continue
+            generated_launch_kernels.add(kernel)
             if kernel not in declared_kernels:
                 violations.append(
                     Violation(
@@ -3079,6 +3082,54 @@ def verify_split_output(
                         offending_symbol=kernel,
                     )
                 )
+
+    source_declared_launch_kernels = {
+        kernel
+        for kernel in source_launch_kernels
+        if kernel in declared_kernels
+    }
+    missing_source_launch_kernels = sorted(
+        source_declared_launch_kernels - generated_launch_kernels
+    )
+    for kernel in missing_source_launch_kernels:
+        violations.append(
+            Violation(
+                rule="source_launch_kernel_not_preserved",
+                message=(
+                    f"The source launch graph contains kernel {kernel!r}, "
+                    "but the generated host roles never launch it through "
+                    "synthi_gpu_launch(...). Preserve every source-reachable "
+                    "launch path through Synthi's launch indirection boundary, "
+                    "or reject the split as unsupported instead of returning "
+                    "an inert generated runtime."
+                ),
+                offending_module=core_path,
+                offending_symbol=kernel,
+            )
+        )
+
+    source_requires_host_readback = bool(
+        _GPU_DEVICE_TO_HOST_COPY_RE.search(mask_comments_for_parsing(source_blob))
+    )
+    generated_preserves_host_readback = any(
+        _GPU_DEVICE_TO_HOST_COPY_RE.search(mask_comments_for_parsing(files.get(path) or ""))
+        for path in (core_path, gui_path, host_runner_path)
+    )
+    if source_requires_host_readback and not generated_preserves_host_readback:
+        violations.append(
+            Violation(
+                rule="source_device_to_host_readback_not_preserved",
+                message=(
+                    "The source uses a host-visible DeviceToHost readback path, "
+                    "but generated host roles do not preserve any equivalent "
+                    "cudaMemcpy/hipMemcpy DeviceToHost copy. Preserve the real "
+                    "readback on the generated update/render path so visual "
+                    "output is produced from GPU state, not from stale or "
+                    "host-fabricated mirrors."
+                ),
+                offending_module=core_path,
+            )
+        )
 
     source_preserved_mapping_only = _device_role_is_source_preserved_mapping_only(
         declared_kernels=declared_kernels,

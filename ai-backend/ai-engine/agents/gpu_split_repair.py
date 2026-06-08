@@ -474,6 +474,7 @@ def repair_split_artifacts(
         and device_path in repaired
         and (
             "device_kernels_not_launched" in input_reason_codes
+            or "source_launch_kernel_not_preserved" in input_reason_codes
             or removed_unresolved_launches
         )
     ):
