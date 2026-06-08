@@ -91,6 +91,7 @@ async function main() {
   const browser = await chromium.connectOverCDP(CFG.cdpUrl);
   try {
     const context = browser.contexts()[0] ?? await browser.newContext();
+    await configureWorkflowBridgeForContext(context);
     await closeExistingPages(context);
 
     const selectedCases = CASES.filter((testCase) => CFG.cases.length === 0 || CFG.cases.includes(testCase.id));
@@ -109,8 +110,17 @@ async function main() {
     log("ok", `workflow pipeline passed ${selectedCases.length} seeded project(s)`);
     console.log(`artifacts=${artifactRoot}`);
   } finally {
-    await browser.close().catch(() => undefined);
+    // This harness attaches to an already-owned hosted/runtime browser over CDP.
+    // Closing the Playwright Browser can terminate that runtime; let process
+    // teardown release the client connection instead.
   }
+}
+
+async function configureWorkflowBridgeForContext(context) {
+  const bridgeUrl = CFG.bridgeUrl;
+  await context.addInitScript((url) => {
+    window.localStorage.setItem("synthi.agentWorkflowBridgeUrl", url);
+  }, bridgeUrl);
 }
 
 async function runCase({ testCase, container, context, runner }) {
@@ -272,10 +282,10 @@ async function runCase({ testCase, container, context, runner }) {
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
   } finally {
     if (previewPage && !previewPage.isClosed()) {
-      await previewPage.close().catch(() => undefined);
+      await resetHostedRuntimePage(previewPage);
     }
     if (idePage && !idePage.isClosed()) {
-      await idePage.close().catch(() => undefined);
+      await resetHostedRuntimePage(idePage);
     }
     await stopWorkspaceDevServer(container, run).catch((err) => {
       log("warn", `${testCase.id}: failed to stop dev server: ${err instanceof Error ? err.message : String(err)}`);
@@ -439,7 +449,7 @@ async function waitForPreviewPort(slug, expectedPort) {
 async function openWorkflowsPanel(context, workspaceUrl, slug) {
   for (const candidate of context.pages()) {
     if (candidate.url().includes(`/workspace/${encodeURIComponent(slug)}`)) {
-      await candidate.close().catch(() => undefined);
+      await resetHostedRuntimePage(candidate);
     }
   }
   const page = await context.newPage();
@@ -458,19 +468,24 @@ async function openWorkflowsPanel(context, workspaceUrl, slug) {
 }
 
 async function closeExistingPages(context) {
-  await Promise.all(context.pages().map((page) => page.close().catch(() => undefined)));
+  await Promise.all(context.pages().map((page) => resetHostedRuntimePage(page)));
 }
 
 async function openPreviewPage(context, previewUrl) {
   for (const candidate of context.pages()) {
     if (trimSlash(candidate.url()) === trimSlash(previewUrl)) {
-      await candidate.close().catch(() => undefined);
+      await resetHostedRuntimePage(candidate);
     }
   }
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(previewUrl, { waitUntil: "domcontentloaded", timeout: CFG.timeoutMs });
   return page;
+}
+
+async function resetHostedRuntimePage(page) {
+  if (!page || page.isClosed()) return;
+  await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }).catch(() => undefined);
 }
 
 async function waitForWorkflowOverlay(page) {
@@ -2756,7 +2771,12 @@ const CASES = [
   },
 ];
 
-main().catch((err) => {
+main().then(() => {
+  // A CDP-attached Playwright client can keep sockets referenced after the
+  // harness has finished. Exiting here releases this process without issuing
+  // Browser.close() against the hosted runtime.
+  process.exit(0);
+}).catch((err) => {
   log("fail", err instanceof Error ? err.stack || err.message : String(err));
   process.exit(1);
 });
