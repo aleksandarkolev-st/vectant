@@ -1179,6 +1179,7 @@ export function abiProofFromProofArtifacts(records) {
   const extractorProvenance = [];
   const kernelAbiFingerprintHashes = [];
   const constantGlobalLayoutHashes = [];
+  const abiCompatibilityClasses = [];
   let extractorProvenanceComplete = true;
   let layoutSizeAlignmentVerified = false;
   let degradedReason = null;
@@ -1196,6 +1197,16 @@ export function abiProofFromProofArtifacts(records) {
       evidenceRefs.push(abiEvidenceId(evidence, artifact, record));
       if (metadata.layoutSizeAlignmentVerified === true) {
         layoutSizeAlignmentVerified = true;
+      }
+      const metadataAbiClass =
+        metadata.abiCompatibilityClass
+        ?? metadata.abi_compatibility_class
+        ?? metadata.compatibilityClass
+        ?? metadata.compatibility_class;
+      if (metadataAbiClass && typeof metadataAbiClass === 'object' && !Array.isArray(metadataAbiClass)) {
+        abiCompatibilityClasses.push(metadataAbiClass.value ?? metadataAbiClass.class);
+      } else {
+        abiCompatibilityClasses.push(metadataAbiClass);
       }
       acceptedExtractorEvidenceRefs.push(...uniqueStrings(metadata.acceptedExtractorEvidenceRefs ?? []));
       acceptedExtractorSources.push(...uniqueStrings(metadata.acceptedExtractorSources ?? []));
@@ -1234,6 +1245,7 @@ export function abiProofFromProofArtifacts(records) {
   return classifyGpuHmrAbiProof({
     metadataObserved: evidenceRefs.length > 0,
     layoutSizeAlignmentVerified,
+    abiCompatibilityClass: uniqueStrings(abiCompatibilityClasses)[0],
     degradedReason,
     evidenceRefs: uniqueStrings(evidenceRefs),
     acceptedExtractorEvidenceRefs: uniqueStrings(acceptedExtractorEvidenceRefs),

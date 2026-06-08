@@ -2807,7 +2807,8 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     : [];
   const metadataObserved = observation.metadataObserved === true || evidenceRefs.length > 0;
   const layoutSizeAlignmentVerified = observation.layoutSizeAlignmentVerified === true;
-  const compatibilityClass = abiCompatibilityClass(observation) ?? 'compatible';
+  const parsedCompatibilityClass = abiCompatibilityClass(observation);
+  const compatibilityClass = parsedCompatibilityClass ?? 'unknown';
   const backendSpecificAdapterSafetyEvidenceRefs = backendSpecificAdapterSafetyEvidence(observation);
   const adapterSafetyDeclared = backendSpecificAdapterSafetyDeclared(observation);
   const adapterSafetyDeclaredWithoutEvidence =
@@ -2872,6 +2873,8 @@ export function classifyGpuHmrAbiProof(observation = {}) {
         ? observation.degradedReason.trim()
         : adapterSafetyDeclaredWithoutEvidence
           ? 'backend_specific_adapter_safety_evidence_missing'
+          : parsedCompatibilityClass === null
+          ? 'abi_compatibility_class_missing'
           : !compatibilityClassAccepted
           ? 'abi_compatibility_class_unaccepted'
           : !layoutSizeAlignmentVerified

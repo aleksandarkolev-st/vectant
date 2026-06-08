@@ -91,6 +91,7 @@ function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
     metadataObserved: true,
     layoutSizeAlignmentVerified: true,
+    abiCompatibilityClass: "compatible",
     kernelAbiFingerprintHash: "d".repeat(64),
     constantGlobalLayoutHash: "e".repeat(64),
     evidenceRefs: ["evidence:device-abi-metadata:test"],
@@ -2166,6 +2167,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("treats metadata-only ABI evidence as symbol-bound but unverified", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
+      abiCompatibilityClass: "compatible",
       evidenceRefs: ["evidence:device-abi-metadata:abc"],
     });
 
@@ -2174,6 +2176,29 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("abi_layout_size_alignment_unverified");
     expect(proof.evidenceRefs).toEqual(["evidence:device-abi-metadata:abc"]);
     expect(summarizeGpuHmrAbiProof(proof)).toContain("layout=unverified");
+  });
+
+  it("does not prove ABI when compatibility class is absent", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      evidenceRefs: ["evidence:device-abi-metadata:test"],
+      extractorProvenance: [{
+        extractorKind: "clang_ast",
+        evidenceId: "evidence:clang-ast:abc",
+        extractorName: "test_clang_ast",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -ast-dump=json",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_compatibility_class_missing");
+    expect(proof.abiCompatibilityClass).toBe("unknown");
   });
 
   it("reports ABI-proven only when layout, size, and alignment were verified", () => {
@@ -2192,6 +2217,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       evidenceRefs: ["evidence:device-abi-layout:abc"],
     });
 
@@ -2205,6 +2231,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       acceptedExtractorEvidenceRefs: ["evidence:clang-ast:abc"],
       acceptedExtractorSources: ["clang_ast"],
     });
@@ -2219,6 +2246,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const missingCommand = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       kernelAbiFingerprintHash: "d".repeat(64),
       constantGlobalLayoutHash: "e".repeat(64),
       extractorProvenance: [{
@@ -2232,6 +2260,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const invalidInputHash = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       kernelAbiFingerprintHash: "d".repeat(64),
       constantGlobalLayoutHash: "e".repeat(64),
       extractorProvenance: [{
@@ -2254,6 +2283,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       extractorProvenance: [{
         extractorKind: "clang_record_layout",
         evidenceId: "evidence:clang-record-layout:abc",
@@ -2274,6 +2304,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       kernelAbiFingerprintHash: "unknown",
       constantGlobalLayoutHash: "0",
       extractorProvenance: [{
@@ -2377,6 +2408,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       extractorProvenance: [{
         extractorKind: "clang_ast",
         evidenceId: "evidence:clang-ast:abc",
@@ -2476,6 +2508,7 @@ describe("GPU HMR runtime output proof classification", () => {
           metadata: {
             schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
             layoutSizeAlignmentVerified: true,
+            abiCompatibilityClass: "compatible",
             kernelAbiFingerprintHash: "d".repeat(64),
             constantGlobalLayoutHash: "3476900567878811119",
             acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
@@ -2504,6 +2537,44 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.acceptedExtractorInputHashes).toEqual([`sha256:${"d".repeat(64)}`]);
     expect(proof.kernelAbiFingerprintHashes).toEqual(["d".repeat(64)]);
     expect(proof.constantGlobalLayoutHashes).toEqual(["3476900567878811119"]);
+  });
+
+  it("does not prove ABI from artifact metadata without compatibility class", () => {
+    const proof = abiProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-abi-metadata",
+          evidenceId: "evidence:device-abi-metadata:def",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
+            layoutSizeAlignmentVerified: true,
+            kernelAbiFingerprintHash: "d".repeat(64),
+            constantGlobalLayoutHash: "3476900567878811119",
+            acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
+            acceptedExtractorSources: ["clang_record_layout"],
+            extractorProvenance: [{
+              extractorKind: "clang_record_layout",
+              evidenceId: "evidence:clang-record-layout:def",
+              extractorName: "test_clang_record_layout",
+              extractorVersion: "v1",
+              command: "clang++ -Xclang -fdump-record-layouts",
+              inputHash: `sha256:${"d".repeat(64)}`,
+            }],
+          },
+        }],
+        stageResults: [{
+          stageId: "abi-compatibility",
+          status: "passed",
+        }],
+      },
+    }]);
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_compatibility_class_missing");
+    expect(proof.abiCompatibilityClass).toBe("unknown");
   });
 
   it("proves fission only from verifier stages with evidence", () => {
@@ -5772,6 +5843,7 @@ describe("GPU HMR runtime output proof classification", () => {
       sourceProofs: [acceptedSourceProof()],
       abiProof: classifyGpuHmrAbiProof({
         metadataObserved: true,
+        abiCompatibilityClass: "compatible",
         evidenceRefs: ["evidence:device-abi-metadata:abc"],
       }),
       outputProof: classifyGpuHmrOutputProof({
@@ -6204,6 +6276,58 @@ describe("GPU HMR runtime output proof classification", () => {
       "evidence:abi-adapter-safety:fixture",
     ]);
     expect(evaluateGpuHmrAcceptanceContract(layoutChangedContract).accepted).toBe(true);
+  });
+
+  it("does not default malformed proven ABI payloads to compatible contracts", () => {
+    const abiProof = {
+      ...acceptedAbiProof(),
+      abiCompatibilityClass: "not-a-valid-abi-class",
+    };
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof,
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const contract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-malformed-abi",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof,
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(contract);
+
+    expect(contract.abi_compatibility_class.value).toBe("unknown");
+    expect(evaluation.accepted).toBe(false);
+    expect(evaluation.failedGates.map((gate) => gate.code)).toContain(
+      "abi_compatibility_not_proven",
+    );
   });
 
   it("rejects acceptance contracts that claim ABI adapter safety without evidence refs", () => {

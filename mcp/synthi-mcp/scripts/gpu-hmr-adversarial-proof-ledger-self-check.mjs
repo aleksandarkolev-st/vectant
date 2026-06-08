@@ -461,6 +461,7 @@ function baselineProofComponents() {
     },
     abiProof: {
       resultState: 'gpu-hmr-abi-proven',
+      abiCompatibilityClass: 'compatible',
       kernelAbiFingerprintHashes: [HASH_C],
       acceptedExtractorSources: ['clang_ast'],
       codeObjectMetadata: {

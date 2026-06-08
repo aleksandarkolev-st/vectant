@@ -1579,7 +1579,7 @@ function abiCompatibilityClassFromProof(abiProof = {}) {
     ? value.trim().toLowerCase()
     : null;
   if (ABI_CLASSES.has(normalized)) return normalized;
-  return 'compatible';
+  return 'unknown';
 }
 
 function abiAdapterSafetyEvidenceRefsFromProof(abiProof = {}) {
