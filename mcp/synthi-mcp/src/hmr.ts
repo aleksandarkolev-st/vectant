@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import {
   classifyGpuHmrProofMessage,
@@ -57,10 +58,104 @@ export interface HmrTerminalEvent {
 
 export type WireMessage = Record<string, unknown>;
 
+interface StructuredJsonChunk {
+  chunkId: string;
+  sha256: string;
+  byteLength: number;
+  index: number;
+  total: number;
+  data: string;
+}
+
+interface StructuredJsonChunkBuffer {
+  sha256: string;
+  byteLength: number;
+  total: number;
+  chunks: Map<number, Buffer>;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+const STRUCTURED_JSON_CHUNK_TYPE = "structured-json-chunk";
+const STRUCTURED_JSON_CHUNK_BUFFER_LIMIT = 32;
+const STRUCTURED_JSON_CHUNK_TTL_MS = 120_000;
+
 export interface HmrClassification {
   status: HmrTerminalStatus;
   source: HmrTerminalSource;
   detail: Record<string, unknown>;
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function parseWireJsonObject(text: string): WireMessage | null {
+  try {
+    return objectOrNull(JSON.parse(text)) as WireMessage | null;
+  } catch {
+    return null;
+  }
+}
+
+function embeddedJsonObjectCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+    if (ch !== "}" || depth === 0) continue;
+    depth -= 1;
+    if (depth === 0 && start >= 0) {
+      candidates.push(text.slice(start, i + 1));
+      start = -1;
+    }
+  }
+  return candidates;
+}
+
+export function parseWireMessages(text: string): WireMessage[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  const direct = parseWireJsonObject(trimmed);
+  if (direct !== null) return [direct];
+
+  const messages: WireMessage[] = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    const lineDirect = parseWireJsonObject(line.trim());
+    if (lineDirect !== null) {
+      messages.push(lineDirect);
+      continue;
+    }
+    for (const candidate of embeddedJsonObjectCandidates(line)) {
+      const parsed = parseWireJsonObject(candidate);
+      if (parsed !== null) messages.push(parsed);
+    }
+  }
+  return messages;
 }
 
 /**
@@ -190,6 +285,7 @@ export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
+  private readonly structuredJsonChunks = new Map<string, StructuredJsonChunkBuffer>();
   private readonly proofHistory: GpuHmrProofTelemetry[] = [];
   private readonly terminalHistory: RetainedHmrTerminalEvent[] = [];
   private terminalSequence = 0;
@@ -208,21 +304,114 @@ export class HmrNormalizer {
         text = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
       }
       if (!text) return;
-      let parsed: WireMessage;
-      try {
-        parsed = JSON.parse(text) as WireMessage;
-      } catch {
-        return;
-      }
       const observedAt = Date.now();
-      const cls = classifyHmrMessage(parsed);
-      if (cls) this.rememberTerminal(cls, observedAt);
-      const proof = classifyGpuHmrProofMessage(parsed, observedAt);
-      if (proof) this.rememberGpuProof(proof);
-      for (const listener of this.listeners) listener(parsed);
+      for (const parsed of parseWireMessages(text)) {
+        for (const msg of this.expandStructuredJsonChunk(parsed, observedAt)) {
+          this.rememberMessage(msg, observedAt);
+        }
+      }
     };
     dc.addEventListener("message", dcListener);
     this.unbind = (): void => dc.removeEventListener("message", dcListener);
+  }
+
+  private rememberMessage(parsed: WireMessage, observedAt: number): void {
+    const cls = classifyHmrMessage(parsed);
+    if (cls) this.rememberTerminal(cls, observedAt);
+    const proof = classifyGpuHmrProofMessage(parsed, observedAt);
+    if (proof) this.rememberGpuProof(proof);
+    for (const listener of this.listeners) listener(parsed);
+  }
+
+  private expandStructuredJsonChunk(parsed: WireMessage, observedAt: number): WireMessage[] {
+    const chunk = this.parseStructuredJsonChunk(parsed);
+    if (chunk === null) return [parsed];
+
+    const existing = this.structuredJsonChunks.get(chunk.chunkId);
+    const buffer = existing ?? {
+      sha256: chunk.sha256,
+      byteLength: chunk.byteLength,
+      total: chunk.total,
+      chunks: new Map<number, Buffer>(),
+      createdAt: observedAt,
+      lastSeenAt: observedAt,
+    };
+    if (
+      buffer.sha256 !== chunk.sha256
+      || buffer.byteLength !== chunk.byteLength
+      || buffer.total !== chunk.total
+    ) {
+      this.structuredJsonChunks.delete(chunk.chunkId);
+      return [];
+    }
+
+    buffer.chunks.set(chunk.index, Buffer.from(chunk.data, "base64"));
+    buffer.lastSeenAt = observedAt;
+    this.structuredJsonChunks.set(chunk.chunkId, buffer);
+    this.pruneStructuredJsonChunks(observedAt);
+    if (buffer.chunks.size < buffer.total) return [];
+
+    const parts: Buffer[] = [];
+    for (let index = 0; index < buffer.total; index += 1) {
+      const part = buffer.chunks.get(index);
+      if (part === undefined) return [];
+      parts.push(part);
+    }
+    this.structuredJsonChunks.delete(chunk.chunkId);
+    const body = Buffer.concat(parts);
+    const actualHash = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    if (body.byteLength !== buffer.byteLength || actualHash !== buffer.sha256) return [];
+    return parseWireMessages(body.toString("utf8"));
+  }
+
+  private parseStructuredJsonChunk(parsed: WireMessage): StructuredJsonChunk | null {
+    if (parsed.type !== STRUCTURED_JSON_CHUNK_TYPE) return null;
+    const chunkId = typeof parsed.chunkId === "string" && parsed.chunkId.trim()
+      ? parsed.chunkId.trim()
+      : null;
+    const sha256 = typeof parsed.sha256 === "string" && /^sha256:[a-f0-9]{64}$/i.test(parsed.sha256)
+      ? parsed.sha256.toLowerCase()
+      : null;
+    const byteLength = typeof parsed.byteLength === "number" && Number.isInteger(parsed.byteLength)
+      && parsed.byteLength > 0
+      ? parsed.byteLength
+      : null;
+    const index = typeof parsed.index === "number" && Number.isInteger(parsed.index)
+      && parsed.index >= 0
+      ? parsed.index
+      : null;
+    const total = typeof parsed.total === "number" && Number.isInteger(parsed.total)
+      && parsed.total > 0
+      && parsed.total <= 4096
+      ? parsed.total
+      : null;
+    const data = typeof parsed.data === "string" && parsed.data.trim() ? parsed.data : null;
+    if (
+      chunkId === null
+      || sha256 === null
+      || byteLength === null
+      || index === null
+      || total === null
+      || data === null
+      || index >= total
+    ) {
+      return null;
+    }
+    return { chunkId, sha256, byteLength, index, total, data };
+  }
+
+  private pruneStructuredJsonChunks(now: number): void {
+    for (const [chunkId, buffer] of this.structuredJsonChunks) {
+      if (now - buffer.lastSeenAt > STRUCTURED_JSON_CHUNK_TTL_MS) {
+        this.structuredJsonChunks.delete(chunkId);
+      }
+    }
+    while (this.structuredJsonChunks.size > STRUCTURED_JSON_CHUNK_BUFFER_LIMIT) {
+      const oldest = [...this.structuredJsonChunks.entries()]
+        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0]?.[0];
+      if (oldest === undefined) break;
+      this.structuredJsonChunks.delete(oldest);
+    }
   }
 
   onMessage(cb: MessageHandler): () => void {

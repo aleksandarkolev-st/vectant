@@ -1,8 +1,10 @@
 use crate::debug_log;
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose, Engine as _};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -21,6 +23,9 @@ use crate::infra::messages::CompileRequest;
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 use crate::webrtc::PER_DC_SEND_TIMEOUT;
 
+const STRUCTURED_LOG_CHUNK_BYTES: usize = 4096;
+const STRUCTURED_LOG_CHUNK_SCHEMA_VERSION: &str = "synthi.build_log.structured_json_chunk.v1";
+
 fn extract_structured_runner_message(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
@@ -34,6 +39,38 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
 fn should_forward_runner_stderr_line_to_log_dc(line: &str) -> bool {
     let trimmed = line.trim_start();
     !trimmed.starts_with("[gpu-runtime-boundary]")
+}
+
+fn sha256_hex_local(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn structured_log_json_chunks(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    if bytes.len() <= STRUCTURED_LOG_CHUNK_BYTES {
+        return vec![text.to_string()];
+    }
+
+    let hash = sha256_hex_local(bytes);
+    let total = bytes.len().div_ceil(STRUCTURED_LOG_CHUNK_BYTES);
+    (0..total)
+        .filter_map(|index| {
+            let start = index * STRUCTURED_LOG_CHUNK_BYTES;
+            let end = bytes.len().min(start + STRUCTURED_LOG_CHUNK_BYTES);
+            let payload = serde_json::json!({
+                "type": "structured-json-chunk",
+                "schemaVersion": STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
+                "chunkId": format!("structured-json:sha256:{hash}"),
+                "encoding": "base64:utf8",
+                "sha256": format!("sha256:{hash}"),
+                "byteLength": bytes.len(),
+                "index": index,
+                "total": total,
+                "data": general_purpose::STANDARD.encode(&bytes[start..end]),
+            });
+            serde_json::to_string(&payload).ok()
+        })
+        .collect()
 }
 
 async fn send_log_dc_text_bounded(
@@ -55,6 +92,23 @@ async fn send_log_dc_text_bounded(
             false
         }
     }
+}
+
+async fn send_structured_log_dc_text_bounded(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &'static str,
+) -> bool {
+    let chunks = structured_log_json_chunks(&text);
+    if chunks.len() == 1 {
+        return send_log_dc_text_bounded(dc, text, label).await;
+    }
+
+    let mut all_sent = true;
+    for chunk in chunks {
+        all_sent &= send_log_dc_text_bounded(dc, chunk, label).await;
+    }
+    all_sent
 }
 
 /// Emit a lifecycle-progress message on the build-log DC so the MCP +
@@ -1214,7 +1268,7 @@ pub async fn handle_runner_execution(
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
                             if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
-                                let _ = send_log_dc_text_bounded(
+                                let _ = send_structured_log_dc_text_bounded(
                                     &ctx_clone2.log_dc,
                                     structured.to_string(),
                                     "runner-structured",
@@ -1516,9 +1570,39 @@ mod tests {
         full_device_abi_from_marker, full_device_abi_restart_marker, loaded_runner_module_state,
         next_full_device_abi, runner_load_command, runner_reuse_allowed, runner_session_matches,
         same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
-        RunnerReloadPolicy,
+        structured_log_json_chunks, RunnerReloadPolicy, STRUCTURED_LOG_CHUNK_BYTES,
     };
+    use base64::{engine::general_purpose, Engine as _};
     use crate::compiler::builder::ModuleHashes;
+
+    #[test]
+    fn structured_log_json_chunks_fragment_oversized_json() {
+        let text = serde_json::json!({
+            "type": "gpu_hmr_proof",
+            "payload": "x".repeat(STRUCTURED_LOG_CHUNK_BYTES * 2 + 17),
+        })
+        .to_string();
+        let chunks = structured_log_json_chunks(&text);
+        assert!(chunks.len() > 1);
+
+        let mut decoded_parts = Vec::new();
+        for (expected_index, chunk) in chunks.iter().enumerate() {
+            let value: serde_json::Value = serde_json::from_str(chunk).unwrap();
+            assert_eq!(value["type"], "structured-json-chunk");
+            assert_eq!(value["encoding"], "base64:utf8");
+            assert_eq!(value["index"], expected_index);
+            assert_eq!(value["total"], chunks.len());
+            assert_eq!(value["byteLength"], text.as_bytes().len());
+            assert!(value["sha256"].as_str().unwrap().starts_with("sha256:"));
+            decoded_parts.extend(
+                general_purpose::STANDARD
+                    .decode(value["data"].as_str().unwrap())
+                    .unwrap(),
+            );
+        }
+
+        assert_eq!(decoded_parts, text.as_bytes());
+    }
 
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
