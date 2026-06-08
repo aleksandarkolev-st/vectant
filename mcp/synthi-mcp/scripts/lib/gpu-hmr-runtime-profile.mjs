@@ -59,6 +59,77 @@ function stringList(value, field) {
   return value.map((item, index) => nonEmptyString(item, `${field}[${index}]`));
 }
 
+function optionalStringList(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`runtime profile ${field} must be a string array`);
+  }
+  return value.map((item, index) => nonEmptyString(item, `${field}[${index}]`));
+}
+
+function optionalStringMap(value, field) {
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`runtime profile ${field} must be an object of string values`);
+  }
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = nonEmptyString(key, `${field} key`);
+    out[normalizedKey] = nonEmptyString(item, `${field}.${normalizedKey}`);
+  }
+  return out;
+}
+
+function optionalBoolean(value, field) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'boolean') {
+    throw new Error(`runtime profile ${field} must be a boolean`);
+  }
+  return value;
+}
+
+function normalizeDeterministicVisualMode(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile deterministicVisualMode must be an object');
+  }
+  return {
+    fixedSeed: optionalString(value.fixedSeed, 'deterministicVisualMode.fixedSeed'),
+    frozenCamera: optionalBoolean(value.frozenCamera, 'deterministicVisualMode.frozenCamera'),
+    temporalAccumulationDisabled: optionalBoolean(
+      value.temporalAccumulationDisabled,
+      'deterministicVisualMode.temporalAccumulationDisabled',
+    ),
+    taaDisabled: optionalBoolean(value.taaDisabled, 'deterministicVisualMode.taaDisabled'),
+    denoiserDisabled: optionalBoolean(value.denoiserDisabled, 'deterministicVisualMode.denoiserDisabled'),
+    fixedResolution: optionalBoolean(value.fixedResolution, 'deterministicVisualMode.fixedResolution'),
+    presentationFenceOrFrameBoundary: optionalString(
+      value.presentationFenceOrFrameBoundary,
+      'deterministicVisualMode.presentationFenceOrFrameBoundary',
+    ),
+    warmupFrames: positiveInteger(value.warmupFrames, 'deterministicVisualMode.warmupFrames', 1),
+    convergenceWindow: value.convergenceWindow && typeof value.convergenceWindow === 'object' && !Array.isArray(value.convergenceWindow)
+      ? {
+        frameStart: positiveInteger(
+          value.convergenceWindow.frameStart,
+          'deterministicVisualMode.convergenceWindow.frameStart',
+          1,
+        ),
+        frameEnd: positiveInteger(
+          value.convergenceWindow.frameEnd,
+          'deterministicVisualMode.convergenceWindow.frameEnd',
+          1,
+        ),
+        metric: optionalString(
+          value.convergenceWindow.metric,
+          'deterministicVisualMode.convergenceWindow.metric',
+        ),
+      }
+      : null,
+    notes: optionalStringList(value.notes, 'deterministicVisualMode.notes'),
+  };
+}
+
 function positiveInteger(value, field, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
   const parsed = Number(value);
@@ -93,6 +164,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
   const reload = runtime.reload && typeof runtime.reload === 'object' ? runtime.reload : {};
   const adapter = raw.adapter && typeof raw.adapter === 'object' ? raw.adapter : {};
   const visual = raw.visualProof && typeof raw.visualProof === 'object' ? raw.visualProof : {};
+  const build = raw.build && typeof raw.build === 'object' ? raw.build : {};
 
   const id = nonEmptyString(pick(raw.id, opts.defaultId, 'custom-runtime-profile'), 'id');
   const adapterFamily = nonEmptyString(
@@ -149,6 +221,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       targetName,
       workerRepoPath: optionalString(runtime.workerRepoPath ?? raw.workerRepoPath, 'runtime.workerRepoPath'),
       mode: optionalString(runtime.mode ?? raw.mode, 'runtime.mode'),
+      env: optionalStringMap(runtime.env, 'runtime.env'),
       requiredKernels,
       reload: {
         kernelName: reloadKernelName,
@@ -185,6 +258,13 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
         1.0,
       ),
     },
+    build: {
+      cmakeArgs: optionalStringList(build.cmakeArgs, 'build.cmakeArgs'),
+      env: optionalStringMap(build.env, 'build.env'),
+    },
+    deterministicVisualMode: normalizeDeterministicVisualMode(
+      raw.deterministicVisualMode ?? visual.deterministicVisualMode,
+    ),
     proof: {
       requireStrictProvenance: raw.proof && typeof raw.proof === 'object'
         ? raw.proof.requireStrictProvenance !== false
@@ -208,6 +288,7 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     reloadKernelSymbol: normalized.runtime.reload.kernelSymbol,
     mode: normalized.runtime.mode ?? undefined,
     runtimeArgs: normalized.runtime.args,
+    runtimeEnv: normalized.runtime.env,
     requiredFiles: normalized.runtime.requiredFiles,
     claim: normalized.visualProof.claim,
     width: normalized.visualProof.width,
@@ -215,6 +296,9 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     minChangedPixelRatio: normalized.visualProof.minChangedPixelRatio,
     minMeanAbsDelta8bit: normalized.visualProof.minMeanAbsDelta8bit,
     workerRepoPath: normalized.runtime.workerRepoPath ?? undefined,
+    cmakeArgs: normalized.build.cmakeArgs,
+    buildEnv: normalized.build.env,
+    deterministicVisualMode: normalized.deterministicVisualMode,
   };
 }
 
@@ -239,8 +323,14 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
   if (normalized.runtime.mode) env.SYNTHI_HIPRT_WARM_MODE = normalized.runtime.mode;
   if (normalized.runtime.workerRepoPath) env.SYNTHI_HIPRT_WARM_WORKER_REPO = normalized.runtime.workerRepoPath;
   if (normalized.runtime.args.length > 0) env.SYNTHI_HIPRT_WARM_RUN_ARGS_JSON = JSON.stringify(normalized.runtime.args);
+  if (Object.keys(normalized.runtime.env).length > 0) env.SYNTHI_HIPRT_WARM_RUNTIME_ENV_JSON = JSON.stringify(normalized.runtime.env);
   if (normalized.runtime.requiredFiles.length > 0) {
     env.SYNTHI_HIPRT_WARM_REQUIRED_FILES_JSON = JSON.stringify(normalized.runtime.requiredFiles);
+  }
+  if (normalized.build.cmakeArgs.length > 0) env.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON = JSON.stringify(normalized.build.cmakeArgs);
+  if (Object.keys(normalized.build.env).length > 0) env.SYNTHI_HIPRT_WARM_BUILD_ENV_JSON = JSON.stringify(normalized.build.env);
+  if (normalized.deterministicVisualMode) {
+    env.SYNTHI_HIPRT_WARM_DETERMINISTIC_VISUAL_MODE_JSON = JSON.stringify(normalized.deterministicVisualMode);
   }
   return env;
 }

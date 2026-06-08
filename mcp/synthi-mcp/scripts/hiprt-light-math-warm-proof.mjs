@@ -106,6 +106,30 @@ const CFG = {
     PROFILE.requiredFiles ?? [],
     'required runtime files',
   ),
+  cmakeArgs: parseJsonStringListEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_CMAKE_ARGS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON,
+    PROFILE.cmakeArgs ?? [],
+    'CMake arguments',
+  ),
+  buildEnv: parseJsonStringMapEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_BUILD_ENV_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_BUILD_ENV_JSON,
+    PROFILE.buildEnv ?? {},
+    'build environment',
+  ),
+  runtimeEnv: parseJsonStringMapEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_ENV_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_RUNTIME_ENV_JSON,
+    PROFILE.runtimeEnv ?? {},
+    'runtime environment',
+  ),
+  deterministicVisualMode: parseJsonObjectEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DETERMINISTIC_VISUAL_MODE_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_DETERMINISTIC_VISUAL_MODE_JSON,
+    PROFILE.deterministicVisualMode ?? null,
+    'deterministic visual mode',
+  ),
   width: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_WIDTH', PROFILE.width ?? 640, 'SYNTHI_GPU_HMR_RUNTIME_WIDTH'),
   height: positiveIntegerFromEnv('SYNTHI_HIPRT_WARM_HEIGHT', PROFILE.height ?? 360, 'SYNTHI_GPU_HMR_RUNTIME_HEIGHT'),
   runTimeoutMs: nonNegativeIntegerFromEnv('SYNTHI_HIPRT_WARM_RUN_TIMEOUT_MS', 0, 'SYNTHI_GPU_HMR_RUNTIME_RUN_TIMEOUT_MS'),
@@ -193,6 +217,40 @@ function parseJsonStringListEnv(raw, fallback, label) {
     }
     return item.trim();
   });
+}
+
+function parseJsonStringMapEnv(raw, fallback, label) {
+  const source = raw === undefined || String(raw).trim() === '' ? fallback : JSON.parse(raw);
+  if (source === null || source === undefined) return {};
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error(`${label} must be a JSON object with string values`);
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof key !== 'string' || key.trim() === '') {
+      throw new Error(`${label} contains an empty key`);
+    }
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error(`${label}.${key} must be a non-empty string`);
+    }
+    out[key.trim()] = value.trim();
+  }
+  return out;
+}
+
+function parseJsonObjectEnv(raw, fallback, label) {
+  const source = raw === undefined || String(raw).trim() === '' ? fallback : JSON.parse(raw);
+  if (source === null || source === undefined) return null;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return source;
+}
+
+function shellExports(envMap) {
+  return Object.entries(envMap || {})
+    .map(([key, value]) => `export ${key}=${shQuote(value)}`)
+    .join('\n');
 }
 
 function shQuote(value) {
@@ -609,6 +667,7 @@ export SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS=1
 export SYNTHI_HIPRT_DISABLE_OPENGL_INTEROP=1
 export SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH=${shQuote(workerCapturePath)}
 export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_CAPTURE=1
+${shellExports(CFG.runtimeEnv)}
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
 ${hiprtRuntimeDisplaySetup()}
@@ -897,6 +956,7 @@ async function buildHiprtTarget(reason) {
   const script = `
 set -e
 cd ${shQuote(CFG.workerRepoPath)}
+${shellExports(CFG.buildEnv)}
 start=$(date +%s%3N)
 cmake --build build -j2 --target ${shQuote(CFG.targetName)}
 status=$?
@@ -928,10 +988,11 @@ async function configureHiprtBuild(reason) {
   const script = `
 set -e
 cd ${shQuote(CFG.workerRepoPath)}
+${shellExports(CFG.buildEnv)}
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} -DASSIMP_WARNINGS_AS_ERRORS=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} -DASSIMP_WARNINGS_AS_ERRORS=OFF ${CFG.cmakeArgs.map(shQuote).join(' ')}
 status=$?
 end=$(date +%s%3N)
 printf 'SYNTHI_WARM_CONFIGURE_TIMING reason=%s configure_ms=%s exit_code=%s\\n' ${shQuote(reason)} "$((end-start))" "$status"
@@ -1078,6 +1139,7 @@ export SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_KERNEL_NAME=${shQuote(CFG.reloadKernelN
 export SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_KERNEL_SYMBOL=${shQuote(CFG.reloadKernelSymbol)}
 export SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS=1
 export SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_SECOND_CAPTURE=1
+${shellExports(CFG.runtimeEnv)}
 export LD_PRELOAD=${shQuote(CFG.nativeLaunchObserverPath)}\${LD_PRELOAD:+:\${LD_PRELOAD}}
 export SYNTHI_GPU_NATIVE_LAUNCH_OBSERVER=observe_only
 ${hiprtRuntimeDisplaySetup()}
@@ -1459,6 +1521,12 @@ async function main() {
       reloadKernelSymbol: CFG.reloadKernelSymbol,
     },
     runtimeProfile: CFG.runtimeProfile,
+    profileControls: {
+      cmakeArgs: CFG.cmakeArgs,
+      buildEnvKeys: Object.keys(CFG.buildEnv).sort(),
+      runtimeEnvKeys: Object.keys(CFG.runtimeEnv).sort(),
+      deterministicVisualMode: CFG.deterministicVisualMode,
+    },
     claim: CFG.claim,
     repo: {
       workerContainer: CFG.workerContainer,
