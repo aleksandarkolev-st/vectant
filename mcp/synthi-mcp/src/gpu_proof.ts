@@ -111,6 +111,12 @@ const LOWER_STATE_STAGE_REQUIREMENTS = new Map<string, string[]>([
   ["gpu-hmr-dispatch-safe-proven", ["dispatch-safe", "runtime-dispatch-safe", "dispatch"]],
 ]);
 
+const IMMUTABLE_PROOF_ID_PATTERNS = [
+  /^gpu-proof:[a-f0-9]{64}$/i,
+  /^gpu-runtime-proof:sha256:[a-f0-9]{64}$/i,
+  /^gpu-ledger-proof:sha256:[a-f0-9]{64}$/i,
+];
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -475,6 +481,9 @@ function lowerStateProofMaterialFailure(
 
   if (proof.proofId === null || proof.proofArtifactPath === null) {
     return "proof_material_missing";
+  }
+  if (!IMMUTABLE_PROOF_ID_PATTERNS.some((pattern) => pattern.test(proof.proofId ?? ""))) {
+    return "proof_material_identity_unverifiable";
   }
   return null;
 }

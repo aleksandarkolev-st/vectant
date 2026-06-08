@@ -480,8 +480,8 @@ describe("GPU HMR proof-state validation", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
       resultState: "gpu-hmr-symbol-bound",
-      proofId: "gpu-proof:stage-artifact",
-      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_stage-artifact.json",
+      proofId: "gpu-proof:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
     });
 
     const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
@@ -489,6 +489,20 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.satisfied).toBe(true);
     expect(validation.proofLedgerValidation).toBeUndefined();
     expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("rejects lower proof artifact references with unverifiable identity", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+      proofId: "gpu-proof:not-a-hash",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_not-a-hash.json",
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_material_identity_unverifiable");
   });
 
   it("rejects lower proof states when embedded stage material is not passed", () => {
