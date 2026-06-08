@@ -310,6 +310,9 @@ export class BrowserPlaywrightAdapter {
     if (action === "fill" && isRangeControlEvent(event)) {
       return await this.replayRangeFillAction(tab_id, event, selector, value);
     }
+    if (action === "fill" && isKeyboardTextEntryEvent(event)) {
+      return await this.replayKeyboardTextEntryAction(tab_id, event, selector, value);
+    }
     if (action === "fill" && isKeyboardEditorFillEvent(event)) {
       return await this.replayKeyboardEditorFillAction(tab_id, event, selector, value);
     }
@@ -348,6 +351,26 @@ export class BrowserPlaywrightAdapter {
       tab_id,
       url: page.url(),
       detail: { control_kind: "range", value: value ?? event.value ?? "" },
+    };
+  }
+
+  private async replayKeyboardTextEntryAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const text = value ?? event.value ?? "";
+    await target.click();
+    await page.keyboard.type(text);
+    return {
+      ok: true,
+      action: "fill",
+      tab_id,
+      url: page.url(),
+      detail: { keyboard_text_entry: true, value_length: text.length },
     };
   }
 
@@ -1034,6 +1057,9 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   }
   const bbox = bboxOpt(raw["bbox"]);
   if (bbox !== undefined) event.bbox = bbox;
+  if (event.element && isAggregateKeyboardSurfaceElement(event.element)) {
+    event.element = stripAggregateTextMetadata(event.element);
+  }
   return event;
 }
 
@@ -1371,6 +1397,13 @@ function isKeyboardEditorFillEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isKeyboardTextEntryEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["keyboard_text_entry"] === true ||
+    event.detail?.["text_entry_mode"] === "keyboardInsert"
+  );
+}
+
 function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && (
     event.detail?.["clipboard_event"] === true ||
@@ -1645,6 +1678,21 @@ function isClipboardTextTransferDetail(detail: Record<string, unknown> | undefin
     detail?.["clipboard_drop_event"] === true;
 }
 
+function isAggregateKeyboardSurfaceElement(element: BrowserElementMetadata): boolean {
+  const role = element.role?.toLowerCase();
+  return role === "application";
+}
+
+function stripAggregateTextMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
+  const stripped = { ...element };
+  const aggregateText = stripped.text?.trim();
+  if (aggregateText) {
+    if (stripped.name?.trim() === aggregateText) delete stripped.name;
+    delete stripped.text;
+  }
+  return stripped;
+}
+
 function redactClipboardTextTransferElementMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
   const redacted = { ...element };
   if (redacted.content_editable === true || redacted.role === "textbox" || redacted.tag === "textarea" || redacted.tag === "input") {
@@ -1793,6 +1841,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const scrollPending = new WeakMap();
     const scrollPendingElements = new Set();
     const scrollBeforeEffects = new WeakMap();
+    const keyboardTextPending = new WeakMap();
+    const keyboardTextElements = new Set();
     const lastSent = new WeakMap();
     const pasteSuppressedUntil = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
@@ -2060,6 +2110,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const placeholder = attr(el, 'placeholder');
       const aria = attr(el, 'aria-label');
       const textContent = text(el.textContent || '');
+      const role = roleFor(el);
+      const allowAggregateTextLocator = !suppressAggregateTextLocator(el, role);
       const testId = attr(el, 'data-testid') || attr(el, 'data-test');
       const type = attr(el, 'type');
       const editorContainer = editorContainerFor(el);
@@ -2068,12 +2120,12 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const shadowDetail = shadowDetailFor(el);
       return {
         tag,
-        role: roleFor(el),
-        name: aria || label || placeholder || textContent,
+        role,
+        name: aria || label || placeholder || (allowAggregateTextLocator ? textContent : ''),
         label,
         placeholder,
         test_id: testId,
-        text: textContent,
+        text: allowAggregateTextLocator ? textContent : '',
         id: attr(el, 'id'),
         class_name: text(el.className || ''),
         css: cssFor(el),
@@ -2100,6 +2152,14 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         editor_container_role: editorContainer ? roleFor(editorContainer) : '',
         editor_container_css: editorContainer ? cssFor(editorContainer) : '',
       };
+    }
+
+    function suppressAggregateTextLocator(el, role) {
+      if (!isElement(el) || isEditableTextTarget(el)) return false;
+      return attr(el, 'data-synthi-keyboard-text-entry') ||
+        attr(el, 'data-terminal') ||
+        attr(el, 'data-terminal-root') ||
+        String(role || '').toLowerCase() === 'application';
     }
 
     function editorContainerFor(el) {
@@ -2321,6 +2381,33 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     function editableValue(el) {
       if (el.isContentEditable || attr(el, 'contenteditable')) return text(el.textContent || '');
       return String(el.value || '');
+    }
+
+    function keyboardTextEntrySurface(target) {
+      if (!isElement(target) || isEditableTextTarget(target)) return null;
+      const selectors = [
+        '[data-synthi-keyboard-text-entry]',
+        '[data-terminal]',
+        '[data-terminal-root]',
+        '[role="application"]',
+        '[tabindex][aria-label]',
+        '[tabindex][data-testid]',
+        '[tabindex][data-test]',
+      ];
+      for (const selector of selectors) {
+        const candidate = target.closest(selector);
+        if (!isElement(candidate)) continue;
+        if (isEditableTextTarget(candidate)) continue;
+        if (candidate.matches('button, a, input, textarea, select, [contenteditable], [role="button"], [role="link"]')) continue;
+        return candidate;
+      }
+      return null;
+    }
+
+    function keyboardTextEntryValue(event) {
+      if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return '';
+      const key = String(event.key || '');
+      return key.length === 1 ? key : '';
     }
 
     function shouldSkipClick(el) {
@@ -2565,6 +2652,48 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       }
     }
 
+    function clearPendingKeyboardText(el) {
+      const state = keyboardTextPending.get(el);
+      if (state && state.timer) clearTimeout(state.timer);
+      keyboardTextPending.delete(el);
+      keyboardTextElements.delete(el);
+    }
+
+    function flushPendingKeyboardText(el) {
+      const state = keyboardTextPending.get(el);
+      if (!state || !state.text) {
+        clearPendingKeyboardText(el);
+        return;
+      }
+      clearPendingKeyboardText(el);
+      emit(el, 'fill', state.text, {
+        keyboard_text_entry: true,
+        text_entry_mode: 'keyboardInsert',
+        input_debounced: true,
+        typed_text_length: state.text.length,
+        __before_effects: state.beforeEffects,
+      });
+    }
+
+    function flushPendingKeyboardTextEntries() {
+      for (const el of Array.from(keyboardTextElements)) {
+        if (isElement(el)) flushPendingKeyboardText(el);
+      }
+    }
+
+    function queueKeyboardTextEntry(el, value) {
+      const existing = keyboardTextPending.get(el);
+      if (existing && existing.timer) clearTimeout(existing.timer);
+      const state = {
+        text: String(existing && existing.text ? existing.text : '') + value,
+        beforeEffects: existing && Array.isArray(existing.beforeEffects) ? existing.beforeEffects : visibleEffectTexts(),
+        timer: null,
+      };
+      keyboardTextElements.add(el);
+      state.timer = setTimeout(() => flushPendingKeyboardText(el), 300);
+      keyboardTextPending.set(el, state);
+    }
+
     function clearPending(el) {
       const timer = pending.get(el);
       if (timer) clearTimeout(timer);
@@ -2580,6 +2709,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         pendingElements.delete(el);
         if (isElement(el)) emit(el, 'fill', editableValue(el), { input_debounced: true });
       }
+      flushPendingKeyboardTextEntries();
     }
 
     document.addEventListener('input', (event) => {
@@ -2656,6 +2786,13 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if ((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'v' && isEditableTextTarget(target)) return;
+      const keyboardTextSurface = keyboardTextEntrySurface(target);
+      const typedText = keyboardTextSurface ? keyboardTextEntryValue(event) : '';
+      if (keyboardTextSurface && typedText) {
+        queueKeyboardTextEntry(keyboardTextSurface, typedText);
+        return;
+      }
+      if (keyboardTextSurface) flushPendingKeyboardText(keyboardTextSurface);
       const key = keyPressValue(event);
       if (!key) return;
       const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="option"], [role="listbox"], [role="application"], [data-testid], [data-test], main, body');
@@ -2670,6 +2807,12 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
           shift: Boolean(event.shiftKey),
         },
       });
+    }, true);
+
+    document.addEventListener('focusout', (event) => {
+      const target = eventElement(event);
+      const keyboardTextSurface = keyboardTextEntrySurface(target);
+      if (keyboardTextSurface) flushPendingKeyboardText(keyboardTextSurface);
     }, true);
 
     document.addEventListener('click', (event) => {

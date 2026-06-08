@@ -1312,6 +1312,13 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Native prompt replay requires caller-provided prompt text; the taught prompt response is not stored."],
     };
   }
+  if (isKeyboardTextEntryEvent(event)) {
+    return {
+      kind: "dom",
+      replay: "parameterized",
+      notes: ["Non-editable keyboard surface uses focus and keyboard typing; generated replay requires caller-provided text."],
+    };
+  }
   const editorStrategy = editorReplayStrategyFor(event);
   if (editorStrategy) {
     return {
@@ -1360,6 +1367,13 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
 
 function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
+}
+
+function isKeyboardTextEntryEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["keyboard_text_entry"] === true ||
+    event.detail?.["text_entry_mode"] === "keyboardInsert"
+  );
 }
 
 function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {

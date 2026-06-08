@@ -710,6 +710,33 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps[1]?.surfacePlan.notes[0]).toContain("keyboard insertion");
   });
 
+  it("classifies terminal-like keyboard text entry as parameterized keyboard insertion", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "terminal-text",
+        event_seq: 1,
+        action: "fill",
+        value: "deploy preview",
+        detail: {
+          keyboard_text_entry: true,
+          text_entry_mode: "keyboardInsert",
+          element: { role: "application", name: "Terminal surface", source_id: "terminal.shell" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.action.valueRef).toBe("terminal_surface");
+    expect(workflow.contract.parameters[0]).toEqual(expect.objectContaining({
+      name: "terminal_surface",
+      valueShape: "shortText",
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "dom",
+      replay: "parameterized",
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan.notes[0]).toContain("keyboard typing");
+  });
+
   it("classifies explicit drag surface replay plans", () => {
     const workflow = compileWorkflowContract([
       baseEvent({

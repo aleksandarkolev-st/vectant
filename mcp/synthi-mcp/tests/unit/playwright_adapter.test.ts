@@ -220,6 +220,37 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("drops aggregate visible text from non-editable application surfaces", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/workspace",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "deploy preview",
+      element: {
+        tag: "section",
+        role: "application",
+        name: "Prompt deploy preview Idle",
+        text: "Prompt deploy preview Idle",
+        test_id: "terminal-shell",
+        source_id: "terminal.shell",
+      },
+      detail: {
+        keyboard_text_entry: true,
+        text_entry_mode: "keyboardInsert",
+      },
+    }, "tab-a");
+
+    expect(event?.element).toEqual(expect.objectContaining({
+      role: "application",
+      test_id: "terminal-shell",
+      source_id: "terminal.shell",
+    }));
+    expect(event?.element).not.toEqual(expect.objectContaining({
+      name: "Prompt deploy preview Idle",
+      text: "Prompt deploy preview Idle",
+    }));
+  });
+
   it("normalizes ARIA option selection metadata", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

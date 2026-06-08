@@ -568,6 +568,18 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           lines.push("    element.dispatchEvent(new Event('change', { bubbles: true }));");
           lines.push(`  }, ${valueExpr});`);
           lines.push(`  await expect(${target}).toHaveValue(${valueExpr});`);
+        } else if (isKeyboardTextEntryFill(event)) {
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "inputValue");
+          const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
+          if (valueParameter) {
+            pushRequiredValueParameter(lines, valueParameter);
+            effectValueExpr = valueParameter.valueVar;
+            rememberScalarValueReplacement(scalarValueReplacements, event, valueParameter.valueVar);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
+          lines.push(`  await ${target}.click();`);
+          lines.push(`  await page.keyboard.type(${valueExpr});`);
+          warnings.push(`event ${event.event_id} uses keyboard typing for a non-editable app surface`);
         } else if (isKeyboardEditorFill(event)) {
           const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "inputValue");
           const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
@@ -1011,6 +1023,13 @@ function isKeyboardEditorFill(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && (
     event.detail?.["editor_replay_strategy"] === "keyboardInsert" ||
     element?.editor_replay_strategy === "keyboardInsert"
+  );
+}
+
+function isKeyboardTextEntryFill(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["keyboard_text_entry"] === true ||
+    event.detail?.["text_entry_mode"] === "keyboardInsert"
   );
 }
 

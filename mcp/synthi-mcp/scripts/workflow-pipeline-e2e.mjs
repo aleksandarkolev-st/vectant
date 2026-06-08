@@ -1987,6 +1987,70 @@ const CASES = [
     },
   },
   {
+    id: "terminal-text-entry",
+    minSteps: 2,
+    expectedActions: ["fill", "press"],
+    expectedReplayText: [
+      "parameterizedTextRegex([\"Prompt \",\"\"], inputValue1)",
+      "parameterizedTextRegex([\"Ran \",\"\"], inputValue1)",
+    ],
+    expectedReplayCode: [
+      "const inputValue1 = readRequiredEnv(\"TERMINAL_SURFACE\", \"browser_evt_1\");",
+      "await page.keyboard.type(inputValue1);",
+      "await target2.press(\"Enter\");",
+    ],
+    forbiddenReplayCode: [
+      "deploy preview",
+    ],
+    replayEnv: () => ({ TERMINAL_SURFACE: "ship investor demo" }),
+    files: () => commonFiles({
+      title: "Terminal Text Entry Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Terminal Text Entry Workflow</h1>",
+        "      <section role=\"application\" tabindex=\"0\" aria-label=\"Terminal surface\" data-testid=\"terminal-shell\" data-synthi-source-id=\"terminal.shell\">",
+        "        <div id=\"prompt\" aria-live=\"polite\">Prompt</div>",
+        "        <pre id=\"log\" role=\"status\">Idle</pre>",
+        "      </section>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[role='application'] { width: min(680px, calc(100vw - 48px)); min-height: 180px; border: 1px solid #222; background: #101214; color: #f3f6f4; padding: 16px; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }",
+        "[role='application']:focus { outline: 2px solid #17663a; outline-offset: 4px; }",
+        "pre { margin: 12px 0 0; white-space: pre-wrap; }",
+      ],
+      script: [
+        "const shell = document.querySelector('[data-testid=\"terminal-shell\"]');",
+        "const prompt = document.querySelector('#prompt');",
+        "const log = document.querySelector('#log');",
+        "const status = document.querySelector('#status');",
+        "let buffer = '';",
+        "shell.addEventListener('keydown', (event) => {",
+        "  if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {",
+        "    event.preventDefault();",
+        "    buffer += event.key;",
+        "    prompt.textContent = `Prompt ${buffer}`;",
+        "    return;",
+        "  }",
+        "  if (event.key === 'Enter') {",
+        "    event.preventDefault();",
+        "    status.textContent = `Ran ${buffer}`;",
+        "    log.textContent = `Queued ${buffer}`;",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByTestId("terminal-shell").focus();
+      await page.keyboard.type("deploy preview");
+      await page.getByText("Prompt deploy preview").waitFor();
+      await page.keyboard.press("Enter");
+      await page.getByText("Ran deploy preview").waitFor();
+    },
+  },
+  {
     id: "scroll-region",
     minSteps: 2,
     expectedActions: ["scroll", "click"],

@@ -537,6 +537,39 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).toContain("event custom-editor uses keyboard insertion for a custom code-editor surface");
   });
 
+  it("uses parameterized keyboard insertion for terminal-like text entry surfaces", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "terminal-text",
+        event_seq: 1,
+        action: "fill",
+        value: "deploy preview",
+        detail: {
+          keyboard_text_entry: true,
+          text_entry_mode: "keyboardInsert",
+          typed_text_length: 14,
+          observed_effects: ["Prompt deploy preview"],
+          element: {
+            role: "application",
+            name: "Terminal surface",
+            test_id: "terminal-shell",
+            source_id: "terminal.shell",
+          },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"terminal-shell\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"TERMINAL_SURFACE\", \"terminal-text\");");
+    expect(generated.code).toContain("await target1.click();");
+    expect(generated.code).toContain("await page.keyboard.type(inputValue1);");
+    expect(generated.code).toContain("parameterizedTextRegex([\"Prompt \",\"\"], inputValue1)");
+    expect(generated.code).not.toContain("deploy preview");
+    expect(generated.warnings).toContain("event terminal-text uses keyboard typing for a non-editable app surface");
+  });
+
   it("asserts select values, drag effects, and captured live-region outcomes", () => {
     const generated = generatePlaywrightScript([
       event({
