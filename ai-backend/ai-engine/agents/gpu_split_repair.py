@@ -34,6 +34,7 @@ from verifier_gpu import (
     _host_runner_routes_gui_module,
     _launch_block_thread_count,
     _launch_dim_values,
+    _launch_args_match_source_option,
     _launch_initializer_args,
     _launch_kernel_name,
     _normalize_launch_buffer_arg,
@@ -2188,7 +2189,11 @@ def _repair_source_launch_provenance(
                 for arg in site.args
                 if str(arg).strip()
             ]
-            if generated_arg_identities == source_arg_identities:
+            if _launch_args_match_source_option(
+                generated_arg_identities,
+                source_arg_identities,
+                host_source,
+            ):
                 selected_site = site
                 break
         if selected_site is None:
