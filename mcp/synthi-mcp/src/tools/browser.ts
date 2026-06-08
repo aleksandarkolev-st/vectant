@@ -251,6 +251,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
   "synthi_browser_publish_private_tool",
+  "synthi_browser_get_private_tool_manifest",
   "synthi_browser_capture_auth_checkpoint_storage",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
@@ -527,6 +528,18 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_get_private_tool_manifest",
+    description:
+      "Return the redacted registered manifest and MCP schema for a published private app-specific workflow tool by tool_name. Lets agents inspect run modes, parameters, auth durability, mutation policy, and blockers without a script path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool_name: { type: "string", description: "Published private workflow tool name from tools/list, for example synthi_app_save_runbook." },
+      },
+      required: ["tool_name"],
+    },
+  },
+  {
     name: "synthi_browser_capture_auth_checkpoint_storage",
     description:
       "Capture browser cookies, localStorage, and sessionStorage for an approved auth checkpoint from the Synthi-hosted browser. Stores raw values broker-side only and returns counts, never auth values.",
@@ -747,6 +760,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserGeneratePrivateToolManifestTool(args);
       case "synthi_browser_publish_private_tool":
         return browserPublishPrivateToolTool(args);
+      case "synthi_browser_get_private_tool_manifest":
+        return browserGetPrivateToolManifestTool(args);
       case "synthi_browser_capture_auth_checkpoint_storage":
         return await browserCaptureAuthCheckpointStorageTool(args);
       case "synthi_browser_run_workflow":
@@ -1083,6 +1098,29 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
     registered_at: published.registration.registered_at,
     manifest,
     tool: privateWorkflowToolDefinition(published.registration),
+  });
+}
+
+function browserGetPrivateToolManifestTool(args: unknown): ToolResponse {
+  const toolName = requiredString(obj(args), "tool_name");
+  const registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
+  let manifest = registration.manifest;
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (artifact.ok) {
+    manifest = manifestWithLiveAuthReadiness(registration.manifest, artifact.artifact.workflow.contract);
+  }
+  const liveRegistration = { ...registration, manifest };
+  return jsonResponse({
+    ok: true,
+    tool_name: registration.tool_name,
+    workflow_id: registration.workflow_id,
+    registered_at: registration.registered_at,
+    manifest,
+    tool: privateWorkflowToolDefinition(liveRegistration),
   });
 }
 

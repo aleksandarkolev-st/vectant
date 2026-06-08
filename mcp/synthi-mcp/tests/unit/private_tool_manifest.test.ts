@@ -557,6 +557,37 @@ describe("private browser workflow MCP tool manifest", () => {
         }),
       ]));
 
+      const manifestLookup = await client.callTool({
+        name: "synthi_browser_get_private_tool_manifest",
+        arguments: { tool_name: publishedToolName },
+      });
+      expect(manifestLookup.isError).not.toBe(true);
+      const lookupBody = JSON.parse(String(manifestLookup.content[0]?.text));
+      expect(lookupBody).toEqual(expect.objectContaining({
+        ok: true,
+        tool_name: publishedToolName,
+        workflow_id: expect.any(String),
+        manifest: expect.objectContaining({
+          tool_name: publishedToolName,
+          parameters: expect.arrayContaining([
+            expect.objectContaining({
+              name: "access_token",
+              redacted: true,
+              value_shape: "secret",
+            }),
+          ]),
+        }),
+        tool: expect.objectContaining({
+          name: publishedToolName,
+          inputSchema: expect.objectContaining({
+            properties: expect.objectContaining({
+              access_token: expect.objectContaining({ format: "password" }),
+            }),
+          }),
+        }),
+      }));
+      expect(JSON.stringify(lookupBody)).not.toMatch(/secret-value-that-must-not-be-plaintext/);
+
       const run = await client.callTool({
         name: publishedToolName,
         arguments: { access_token: "agent-supplied-value" },
