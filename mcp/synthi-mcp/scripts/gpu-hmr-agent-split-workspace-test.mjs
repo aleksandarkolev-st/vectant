@@ -775,8 +775,9 @@ ${runtimeInclude(vendor)}
 
 constexpr int WIDTH = 800;
 constexpr int HEIGHT = 600;
-constexpr int BEAMS = 13;
-constexpr int STEPS = 128;
+constexpr int BEAMS = 17;
+constexpr int LEG_STEPS = 44;
+constexpr int STEPS = LEG_STEPS * 3;
 constexpr int RAY_SAMPLES = BEAMS * STEPS;
 
 extern "C" __global__ void trace_light_rays(float* sampleX, float* sampleY, float* sampleEnergy, int samples) {
@@ -785,22 +786,82 @@ extern "C" __global__ void trace_light_rays(float* sampleX, float* sampleY, floa
 
     int beam = idx % BEAMS;
     int step = idx / BEAMS;
-    float lane = (float)beam - (float)(BEAMS - 1) * 0.5f;
-    float t = (float)step / (float)(STEPS - 1);
+    float lane = ((float)beam - (float)(BEAMS - 1) * 0.5f) / ((float)(BEAMS - 1) * 0.5f);
 
     const float direction = 1.0f; // SYNTHI_HMR_DIRECTION_TOKEN
-    float emitterX = 400.0f + direction * 155.0f;
-    float emitterY = 78.0f;
-    float y = emitterY + t * 468.0f;
-    float slope = direction * (0.24f + lane * 0.015f);
-    float spread = lane * (10.0f + 34.0f * t);
-    float caustic = sinf(t * 18.0f + lane * 1.7f) * (3.0f + 11.0f * t);
-    float x = emitterX + spread + slope * (y - emitterY) + caustic;
+    float emitterX = 400.0f + direction * 252.0f;
+    float emitterY = 74.0f;
 
-    float focus = expf(-((t - 0.84f) * (t - 0.84f)) / (2.0f * 0.13f * 0.13f));
+    float rayDx = -direction * (0.70f + lane * 0.10f);
+    float rayDy = 1.0f;
+    float invRayLen = rsqrtf(rayDx * rayDx + rayDy * rayDy);
+    rayDx *= invRayLen;
+    rayDy *= invRayLen;
+
+    const float mirrorAnchorX = 400.0f;
+    const float mirrorMidY = 260.0f;
+    const float mirrorSlope = 0.32f;
+    float denom = rayDx - mirrorSlope * rayDy;
+    float mirrorT = (mirrorAnchorX + (emitterY - mirrorMidY) * mirrorSlope - emitterX) / denom;
+    if (mirrorT < 40.0f) mirrorT = 40.0f;
+    float hitX = emitterX + rayDx * mirrorT;
+    float hitY = emitterY + rayDy * mirrorT;
+    hitY += lane * 10.0f;
+    hitX = mirrorAnchorX + (hitY - mirrorMidY) * mirrorSlope;
+
+    float normalX = 1.0f;
+    float normalY = -mirrorSlope;
+    float invNormalLen = rsqrtf(normalX * normalX + normalY * normalY);
+    normalX *= invNormalLen;
+    normalY *= invNormalLen;
+    float dotN = rayDx * normalX + rayDy * normalY;
+    float reflectX = rayDx - 2.0f * dotN * normalX;
+    float reflectY = rayDy - 2.0f * dotN * normalY;
+    if (reflectY < 0.25f) reflectY = 0.72f;
+    float invReflectLen = rsqrtf(reflectX * reflectX + reflectY * reflectY);
+    reflectX *= invReflectLen;
+    reflectY *= invReflectLen;
+
+    float groundY = 504.0f + lane * 7.0f;
+    float groundT = (groundY - hitY) / reflectY;
+    if (groundT < 90.0f) groundT = 90.0f;
+    float groundX = hitX + reflectX * groundT;
+
+    float diffuseX = -reflectX * 0.42f + lane * 0.10f;
+    float diffuseY = -0.82f;
+    float invDiffuseLen = rsqrtf(diffuseX * diffuseX + diffuseY * diffuseY);
+    diffuseX *= invDiffuseLen;
+    diffuseY *= invDiffuseLen;
+    float diffuseEndX = groundX + diffuseX * (88.0f + 18.0f * fabsf(lane));
+    float diffuseEndY = groundY + diffuseY * 108.0f;
+
+    int segment = step / LEG_STEPS;
+    int segmentStep = step - segment * LEG_STEPS;
+    if (segment > 2) {
+        segment = 2;
+        segmentStep = LEG_STEPS - 1;
+    }
+    float u = (float)segmentStep / (float)(LEG_STEPS - 1);
+    float x;
+    float y;
+    float energy;
+    if (segment == 0) {
+        x = emitterX + (hitX - emitterX) * u;
+        y = emitterY + (hitY - emitterY) * u;
+        energy = 1.0f - 0.25f * u;
+    } else if (segment == 1) {
+        x = hitX + (groundX - hitX) * u;
+        y = hitY + (groundY - hitY) * u;
+        float caustic = expf(-((u - 0.82f) * (u - 0.82f)) / (2.0f * 0.10f * 0.10f));
+        energy = 0.68f + caustic * 0.62f;
+    } else {
+        x = groundX + (diffuseEndX - groundX) * u;
+        y = groundY + (diffuseEndY - groundY) * u;
+        energy = 0.42f * (1.0f - u);
+    }
     sampleX[idx] = x;
     sampleY[idx] = y;
-    sampleEnergy[idx] = 0.22f + (1.0f - t) * 0.58f + focus * 0.72f;
+    sampleEnergy[idx] = energy;
 }
 
 int main(int, char**) {
@@ -848,18 +909,51 @@ int main(int, char**) {
             SDL_RenderDrawLine(renderer, 0, gy, WIDTH, gy);
         }
 
-        for (int i = 0; i < RAY_SAMPLES; ++i) {
-            int e = (int)(hostEnergy[i] * 255.0f);
-            if (e < 0) e = 0;
-            if (e > 255) e = 255;
-            SDL_SetRenderDrawColor(renderer, 255, 210, 80 + e / 3, 255);
-            int size = 2 + e / 96;
-            SDL_Rect sample{(int)hostX[i], (int)hostY[i], size, size};
-            SDL_RenderFillRect(renderer, &sample);
+        SDL_SetRenderDrawColor(renderer, 92, 176, 210, 255);
+        SDL_RenderDrawLine(renderer, 350, 184, 448, 491);
+        SDL_RenderDrawLine(renderer, 354, 184, 452, 491);
+        SDL_SetRenderDrawColor(renderer, 20, 48, 58, 255);
+        SDL_Rect mirrorBack{386, 252, 78, 18};
+        SDL_RenderFillRect(renderer, &mirrorBack);
+        SDL_SetRenderDrawColor(renderer, 12, 12, 16, 255);
+        SDL_Rect occluder{455, 374, 54, 86};
+        SDL_RenderFillRect(renderer, &occluder);
+        SDL_SetRenderDrawColor(renderer, 78, 86, 92, 255);
+        SDL_RenderDrawRect(renderer, &occluder);
+
+        for (int beam = 0; beam < BEAMS; ++beam) {
+            for (int step = 1; step < STEPS; ++step) {
+                int prev = (step - 1) * BEAMS + beam;
+                int cur = step * BEAMS + beam;
+                int e = (int)(hostEnergy[cur] * 255.0f);
+                if (e < 0) e = 0;
+                if (e > 255) e = 255;
+                if (step < LEG_STEPS) {
+                    SDL_SetRenderDrawColor(renderer, 255, 226, 116 + e / 4, 255);
+                } else if (step < LEG_STEPS * 2) {
+                    SDL_SetRenderDrawColor(renderer, 128 + e / 3, 218, 255, 255);
+                } else {
+                    SDL_SetRenderDrawColor(renderer, 255, 160 + e / 5, 80, 255);
+                }
+                SDL_RenderDrawLine(renderer, (int)hostX[prev], (int)hostY[prev], (int)hostX[cur], (int)hostY[cur]);
+                if ((step % 8) == 0) {
+                    int size = 1 + e / 128;
+                    SDL_Rect sample{(int)hostX[cur], (int)hostY[cur], size, size};
+                    SDL_RenderFillRect(renderer, &sample);
+                }
+            }
+            int mirrorHit = LEG_STEPS * BEAMS + beam;
+            int groundHit = (LEG_STEPS * 2) * BEAMS + beam;
+            SDL_SetRenderDrawColor(renderer, 170, 238, 255, 255);
+            SDL_Rect hit{(int)hostX[mirrorHit] - 3, (int)hostY[mirrorHit] - 3, 7, 7};
+            SDL_RenderFillRect(renderer, &hit);
+            SDL_SetRenderDrawColor(renderer, 255, 212, 104, 255);
+            SDL_Rect pool{(int)hostX[groundHit] - 7, (int)hostY[groundHit] - 2, 15, 5};
+            SDL_RenderFillRect(renderer, &pool);
         }
 
         SDL_SetRenderDrawColor(renderer, 255, 236, 154, 255);
-        SDL_Rect emitter{392, 68, 16, 16};
+        SDL_Rect emitter{(int)hostX[0] - 8, (int)hostY[0] - 8, 16, 16};
         SDL_RenderFillRect(renderer, &emitter);
 
         SDL_RenderPresent(renderer);
