@@ -102,6 +102,15 @@ const DEGRADED_STATE_RANK_CAPS = new Map<string, number>([
 const OUTPUT_ORACLE_PROOF_RANK = gpuHmrProofStateRank("gpu-hmr-output-oracle-proven");
 const FULL_RUNTIME_PROOF_RANK = gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
 
+const LOWER_STATE_STAGE_REQUIREMENTS = new Map<string, string[]>([
+  ["gpu-hmr-compile-proven", ["device-compile", "compile"]],
+  ["gpu-hmr-symbol-bound", ["symbol-binding", "symbol-bound"]],
+  ["gpu-hmr-abi-proven", ["abi-compatibility", "abi"]],
+  ["gpu-hmr-epoch-swap-proven", ["epoch-swap", "epoch-publish"]],
+  ["gpu-hmr-dispatch-observed", ["runtime-dispatch-observation", "dispatch-observed", "dispatch"]],
+  ["gpu-hmr-dispatch-safe-proven", ["dispatch-safe", "runtime-dispatch-safe", "dispatch"]],
+]);
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -145,6 +154,18 @@ function arrayField(raw: Record<string, unknown> | null, ...keys: string[]): unk
   if (raw === null) return null;
   for (const key of keys) {
     if (Array.isArray(raw[key])) return raw[key] as unknown[];
+  }
+  return null;
+}
+
+function nestedArrayField(raw: Record<string, unknown>, ...keys: string[]): unknown[] | null {
+  const direct = arrayField(raw, ...keys);
+  if (direct !== null) return direct;
+  for (const nestedKey of ["data", "detail", "proofMaterial", "proof_material"]) {
+    const nested = objectOrNull(raw[nestedKey]);
+    if (nested === null) continue;
+    const nestedArray = nestedArrayField(nested, ...keys);
+    if (nestedArray !== null) return nestedArray;
   }
   return null;
 }
@@ -433,6 +454,29 @@ function validateRuntimeProofArtifactAcceptance(
   };
 }
 
+function lowerStateProofMaterialFailure(
+  proof: GpuHmrProofTelemetry,
+  requiredState: string
+): string | null {
+  const requiredStages = LOWER_STATE_STAGE_REQUIREMENTS.get(requiredState);
+  if (requiredStages === undefined) return null;
+
+  const stageResults = nestedArrayField(proof.raw, "stageResults", "stage_results");
+  if (stageResults !== null) {
+    const matchingStage = stageResults
+      .map((stage) => objectOrNull(stage))
+      .filter((stage): stage is Record<string, unknown> => stage !== null)
+      .find((stage) => requiredStages.includes(stringOrNull(stage?.stageId ?? stage?.stage_id) ?? ""));
+    if (matchingStage === undefined) return "proof_stage_missing";
+    return matchingStage.status === "passed" ? null : "proof_stage_not_passed";
+  }
+
+  if (proof.proofId === null || proof.proofArtifactPath === null) {
+    return "proof_material_missing";
+  }
+  return null;
+}
+
 export function gpuHmrProofModule(proof: GpuHmrProofTelemetry | null): string | null {
   return proof ? nestedString(proof.raw, "module") : null;
 }
@@ -553,9 +597,14 @@ export function validateGpuHmrProofState(
             : undefined;
   let proofLedgerValidation: GpuHmrLedgerValidation | null | undefined;
   let runtimeProofArtifactValidation: GpuHmrRuntimeProofArtifactValidation | null | undefined;
+  let proofMaterialReason: string | undefined;
   let ledgerReason: string | undefined;
   let runtimeArtifactReason: string | undefined;
   let ledger: Record<string, unknown> | null = null;
+  if (requiredRank < OUTPUT_ORACLE_PROOF_RANK && reason === undefined) {
+    proofMaterialReason = lowerStateProofMaterialFailure(proof, requiredState) ?? undefined;
+    if (proofMaterialReason !== undefined) satisfied = false;
+  }
   if (requiredRank >= OUTPUT_ORACLE_PROOF_RANK && reason === undefined) {
     ledger = embeddedGpuHmrProofLedger(proof.raw);
     if (ledger === null) {
@@ -613,8 +662,8 @@ export function validateGpuHmrProofState(
     satisfied,
     ...(proofLedgerValidation !== undefined ? { proofLedgerValidation } : {}),
     ...(runtimeProofArtifactValidation !== undefined ? { runtimeProofArtifactValidation } : {}),
-    ...(reason ?? ledgerReason ?? runtimeArtifactReason
-      ? { reason: reason ?? ledgerReason ?? runtimeArtifactReason }
+    ...(reason ?? proofMaterialReason ?? ledgerReason ?? runtimeArtifactReason
+      ? { reason: reason ?? proofMaterialReason ?? ledgerReason ?? runtimeArtifactReason }
       : {}),
   };
 }

@@ -361,6 +361,7 @@ describe("GPU HMR proof-state validation", () => {
       status: "gpu-proof-state",
       resultState: "gpu-hmr-full-runtime-proven",
       degradedState: "gpu-hmr-output-unobserved",
+      stageResults: [{ stageId: "dispatch-safe", status: "passed" }],
     });
 
     const dispatchValidation = validateGpuHmrProofState(proof, "gpu-hmr-dispatch-safe-proven");
@@ -396,6 +397,7 @@ describe("GPU HMR proof-state validation", () => {
       status: "gpu-proof-state",
       resultState: "gpu-hmr-output-oracle-proven",
       degradedState: "gpu-hmr-visual-evidence-missing",
+      stageResults: [{ stageId: "dispatch-safe", status: "passed" }],
     });
 
     const dispatchValidation = validateGpuHmrProofState(proof, "gpu-hmr-dispatch-safe-proven");
@@ -460,7 +462,7 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.runtimeProofArtifactValidation).toBeUndefined();
   });
 
-  it("continues to allow lower proof states without a ledger", () => {
+  it("rejects lower proof states without stage material or an artifact reference", () => {
     const proof = classifyGpuHmrProofMessage({
       status: "gpu-proof-state",
       resultState: "gpu-hmr-symbol-bound",
@@ -468,9 +470,52 @@ describe("GPU HMR proof-state validation", () => {
 
     const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
 
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_material_missing");
+    expect(validation.proofLedgerValidation).toBeUndefined();
+    expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("allows lower proof states with a proof artifact reference", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+      proofId: "gpu-proof:stage-artifact",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_stage-artifact.json",
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
+
     expect(validation.satisfied).toBe(true);
     expect(validation.proofLedgerValidation).toBeUndefined();
     expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("rejects lower proof states when embedded stage material is not passed", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+      proofId: "gpu-proof:blocked-stage-artifact",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_blocked-stage-artifact.json",
+      stageResults: [{ stageId: "symbol-binding", status: "blocked" }],
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_stage_not_passed");
+  });
+
+  it("accepts lower proof states when embedded stage material passed", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-symbol-bound",
+      stageResults: [{ stageId: "symbol-binding", status: "passed" }],
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-symbol-bound");
+
+    expect(validation.satisfied).toBe(true);
   });
 
   it("treats unknown degraded states as proof blockers", () => {
