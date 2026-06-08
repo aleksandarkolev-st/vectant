@@ -223,6 +223,45 @@ describe('POST /programs/install', () => {
     const body = await res.json();
     expect(body.error).toBe('program_runtime_unreachable');
   });
+
+  it('installs a published program by packageId+version and bumps installCount', async () => {
+    h.getPublishedProgramVersion.mockResolvedValue({
+      program: { id: 'pubprog', packageId: '@other/web', publisher: 'other' },
+      version: { id: 'v1' },
+      config: { packageId: 'web', version: '1.0.0', permissions: ['program.launch'] },
+    });
+    h.listPermissionGrants.mockResolvedValue([{ id: 'g0', scopes: ['program.launch'] }]);
+    h.createInstall.mockResolvedValue({ id: 'inst2', version: '1.0.0', status: 'installed' });
+
+    const res = await POST_INSTALL(
+      req('http://x/api/workspace/team/programs/install', { packageId: '@other/web', version: '1.0.0' }, 'POST'),
+      ctx({ slug: 'team' }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(h.discoverManifest).not.toHaveBeenCalled();
+    expect(h.createInstall).toHaveBeenCalledWith(expect.objectContaining({ programId: 'pubprog', version: '1.0.0', status: 'installed' }));
+    expect(h.incrementInstallCount).toHaveBeenCalledWith('pubprog');
+  });
+
+  it('returns 404 when the published program/version is not found', async () => {
+    h.getPublishedProgramVersion.mockResolvedValue(null);
+    const res = await POST_INSTALL(
+      req('http://x/api/workspace/team/programs/install', { packageId: '@other/web', version: '9.9.9', grantScopes: ['program.launch'] }, 'POST'),
+      ctx({ slug: 'team' }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('does not bump installCount for a local workspace-manifest install', async () => {
+    h.discoverManifest.mockResolvedValue(manifest);
+    h.listPermissionGrants.mockResolvedValue([{ id: 'g0', scopes: ['program.launch', 'network.outbound'] }]);
+    h.upsertLocalProgram.mockResolvedValue({ program: { id: 'prog1', packageId: 'local:team:web', publisher: 'local' } });
+    h.createInstall.mockResolvedValue({ id: 'inst1', version: '1.0.0', status: 'installed' });
+
+    await POST_INSTALL(req('http://x/api/workspace/team/programs/install', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(h.incrementInstallCount).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /programs/[installId]/launch', () => {

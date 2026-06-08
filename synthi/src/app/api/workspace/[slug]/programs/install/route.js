@@ -7,6 +7,8 @@ import {
   upsertLocalProgram,
   createInstall,
   toPublicInstall,
+  getPublishedProgramVersion,
+  incrementInstallCount,
 } from '@/lib/programs/store';
 import { discoverManifest } from '@/lib/programs/runtimeClient';
 import { normalizeGrantScopes, PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
@@ -19,8 +21,10 @@ function grantCoversScopes(grant, requiredScopes) {
 }
 
 // POST /api/workspace/:slug/programs/install
-// Owner/admin: discover the workspace recipe, gate on a consent PermissionGrant
-// that covers the manifest's declared scopes, persist a local program + install.
+// Owner/admin. Two paths, both gated by a consent PermissionGrant covering the
+// manifest's declared scopes:
+//   - published install: body { packageId, version } → manifest from the catalog
+//   - local install:     no packageId → discover the workspace recipe
 export async function POST(req, { params }) {
   const { slug } = await params;
   const actor = await resolveActor();
@@ -32,29 +36,49 @@ export async function POST(req, { params }) {
 
   const body = await req.json().catch(() => ({}));
 
-  let discovered;
-  try {
-    // Pass the actor's userId so per-user workspace repos resolve correctly.
-    discovered = await discoverManifest(slug, actor.userId);
-  } catch (error) {
-    // A manifest that fails validation is the caller's problem (422); any other
-    // failure (collab unreachable, cwd/fs error) is infrastructure (502).
-    if (error?.name === 'ProgramManifestError') {
+  let config;
+  let programId;
+  let localProgram = null;
+  let publishedProgramId = null;
+
+  if (body.packageId && body.version) {
+    // Published install: pull the already-validated manifest from the catalog.
+    const found = await getPublishedProgramVersion(body.packageId, body.version);
+    if (!found) {
+      return NextResponse.json({ error: 'program_not_found' }, { status: 404 });
+    }
+    config = found.config;
+    programId = found.program.id;
+    publishedProgramId = found.program.id;
+  } else {
+    // Local install: discover the workspace recipe from its working tree.
+    let discovered;
+    try {
+      // Pass the actor's userId so per-user workspace repos resolve correctly.
+      discovered = await discoverManifest(slug, actor.userId);
+    } catch (error) {
+      // A manifest that fails validation is the caller's problem (422); any other
+      // failure (collab unreachable, cwd/fs error) is infrastructure (502).
+      if (error?.name === 'ProgramManifestError') {
+        return NextResponse.json(
+          { error: 'manifest_invalid', code: error.code, field: error.field, message: error.message },
+          { status: 422 },
+        );
+      }
       return NextResponse.json(
-        { error: 'manifest_invalid', code: error.code, field: error.field, message: error.message },
-        { status: 422 },
+        { error: 'program_runtime_unreachable', message: error?.message || 'program runtime error' },
+        { status: 502 },
       );
     }
-    return NextResponse.json(
-      { error: 'program_runtime_unreachable', message: error?.message || 'program runtime error' },
-      { status: 502 },
-    );
-  }
-  if (!discovered) {
-    return NextResponse.json({ error: 'manifest_not_found' }, { status: 404 });
+    if (!discovered) {
+      return NextResponse.json({ error: 'manifest_not_found' }, { status: 404 });
+    }
+    config = discovered.config;
+    const { program } = await upsertLocalProgram({ workspaceSlug: slug, config });
+    localProgram = program;
+    programId = program.id;
   }
 
-  const config = discovered.config;
   const requiredScopes = Array.isArray(config.permissions) && config.permissions.length
     ? config.permissions
     : [PROGRAM_LAUNCH_SCOPE];
@@ -79,9 +103,8 @@ export async function POST(req, { params }) {
     grant = await createPermissionGrant({ workspaceSlug: slug, scopes, grantedByUserId: actor.userId });
   }
 
-  const { program } = await upsertLocalProgram({ workspaceSlug: slug, config });
   const install = await createInstall({
-    programId: program.id,
+    programId,
     workspaceSlug: slug,
     version: config.version,
     installedByUserId: actor.userId,
@@ -89,9 +112,17 @@ export async function POST(req, { params }) {
     status: 'installed',
   });
 
+  // Published installs bump the catalog reputation counter; local ones don't.
+  if (publishedProgramId) {
+    await incrementInstallCount(publishedProgramId);
+  }
+
+  const programForProjection = localProgram || { id: programId, packageId: body.packageId || null };
   return NextResponse.json({
-    install: toPublicInstall({ ...install, program }),
-    program: { id: program.id, packageId: program.packageId, publisher: program.publisher },
+    install: toPublicInstall({ ...install, program: programForProjection }),
+    program: localProgram
+      ? { id: localProgram.id, packageId: localProgram.packageId, publisher: localProgram.publisher }
+      : { id: programId },
     grant,
   });
 }
