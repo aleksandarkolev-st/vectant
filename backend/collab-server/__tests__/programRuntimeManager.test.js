@@ -107,6 +107,23 @@ function createManagedRuntimeHandle() {
   };
 }
 
+// Phase 3: a self-contained manager with no real timers (port/health tests
+// drive recompute/probe directly; injected timer fns are inert).
+function makeManager(overrides = {}) {
+  return createProgramRuntimeManager({
+    activeSessions: new Map(),
+    setTimeoutFn: () => ({ unref() {} }),
+    clearTimeoutFn: () => {},
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+    now: () => 1000,
+    launchRuntime: async () => createManagedRuntimeHandle(),
+    getActivePorts: () => [],
+    logger: { warn() {} },
+    ...overrides,
+  });
+}
+
 test('kills orphaned headless sessions after the TTL', () => {
   const activeSessions = new Map();
   const timers = createTimerHarness();
@@ -482,4 +499,43 @@ test('samePorts compares ordered port lists', () => {
   assert.equal(samePorts([3000, 5173], [3000, 5173]), true);
   assert.equal(samePorts([3000], [3000, 5173]), false);
   assert.equal(samePorts([5173, 3000], [3000, 5173]), false);
+});
+
+// ── Phase 3: continuous per-session port recompute ──
+
+test('recomputeManagedPorts detects a live port for a launched program and emits ports_updated once per change', async () => {
+  const manager = makeManager();
+  await manager.launchManagedProgram({
+    sessionId: 'ps-1',
+    workspaceSlug: 'team',
+    config: { packageId: 'web', runtimeType: 'web', ports: [], launch: 'npm run dev', env: {} },
+  });
+
+  let snap = manager.getManagedSession('ps-1');
+  assert.deepEqual(snap.activePorts, []);
+  assert.equal(snap.webPort, null);
+
+  const updated = manager.recomputeManagedPorts([3000]);
+  assert.equal(updated.length, 1);
+  snap = manager.getManagedSession('ps-1');
+  assert.deepEqual(snap.activePorts, [3000]);
+  assert.equal(snap.webPort, 3000);
+
+  // idempotent — same detection → no new snapshot/event
+  assert.equal(manager.recomputeManagedPorts([3000]).length, 0);
+  assert.equal(manager.listManagedSessionEvents('ps-1').filter((e) => e.type === 'ports_updated').length, 1);
+});
+
+test('recomputeManagedPorts keeps a declared port and ignores foreign detected ports', async () => {
+  const manager = makeManager();
+  await manager.launchManagedProgram({
+    sessionId: 'ps-2',
+    workspaceSlug: 'team',
+    config: { packageId: 'app', runtimeType: 'web', ports: [8080], launch: 'npm start', env: {} },
+  });
+  // 9999 is foreign and there is no no-declared session → dropped.
+  manager.recomputeManagedPorts([8080, 9999]);
+  const snap = manager.getManagedSession('ps-2');
+  assert.deepEqual(snap.activePorts, [8080]);
+  assert.equal(snap.webPort, 8080);
 });

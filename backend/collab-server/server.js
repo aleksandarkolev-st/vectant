@@ -4456,6 +4456,18 @@ process.on('uncaughtException', (err) => {
     // Synthi Genome — bridge fs-change events to the ai-engine's
     // continuous-shadow watcher (master plan §14).
     shadowContinuousProducer.start();
+
+    // Slice 3 Phase 3 — live web-port auto-detection. Run the port scanner
+    // (excluding our own port) and push detected port-set changes into the
+    // managed program sessions so their App/Ports surfaces light up live.
+    proxyService.startScanner(PORT);
+    proxyService.onPortsChanged((ports) => {
+      try {
+        managedProgramRuntime.recomputeManagedPorts(ports);
+      } catch (err) {
+        logger.warn({ err }, 'recomputeManagedPorts failed');
+      }
+    });
   });
 })();
 

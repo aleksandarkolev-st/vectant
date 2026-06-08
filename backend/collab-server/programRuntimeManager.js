@@ -455,7 +455,8 @@ function createProgramRuntimeManager(options = {}) {
       output: '',
       outputTruncated: false,
       activePorts: declaredPorts,
-      webPort: declaredPorts[0] ?? null,
+      webPort: selectWebPort({ declaredPorts }, declaredPorts),
+      declaredPorts,
       exitCode: null,
       stopReason: null,
       metadata,
@@ -551,22 +552,46 @@ function createProgramRuntimeManager(options = {}) {
     return launchManagedSession(record.launchRequest);
   }
 
-  async function refreshManagedSessionPorts(sessionId) {
-    const record = managedSessions.get(sessionId);
-    if (!record) {
-      return null;
+  /**
+   * Re-attribute a globally-detected port set across all managed sessions and
+   * update each session's activePorts/webPort, emitting `ports_updated` only on
+   * an actual change. Returns the public snapshots that changed.
+   */
+  function recomputeManagedPorts(detectedPorts) {
+    const sessions = [...managedSessions.values()].map((record) => ({
+      sessionId: record.sessionId,
+      state: record.state,
+      declaredPorts: record.declaredPorts || [],
+    }));
+    const attribution = attributeSessionPorts({ sessions, detectedPorts });
+    const updated = [];
+
+    for (const [sessionId, ports] of attribution) {
+      const record = managedSessions.get(sessionId);
+      if (!record) {
+        continue;
+      }
+      const nextWebPort = selectWebPort({ declaredPorts: record.declaredPorts || [] }, ports);
+      if (samePorts(record.activePorts, ports) && record.webPort === nextWebPort) {
+        continue;
+      }
+      record.activePorts = ports;
+      record.webPort = nextWebPort;
+      record.lastActivityAt = now();
+      appendManagedSessionEvent(record, 'ports_updated', {
+        activePorts: [...ports],
+        webPort: nextWebPort,
+      });
+      updated.push(toPublicManagedSession(record));
     }
 
-    const ports = normalizePorts(await Promise.resolve(getActivePorts(record)));
-    record.activePorts = ports;
-    record.webPort = ports[0] ?? null;
-    record.lastActivityAt = now();
-    appendManagedSessionEvent(record, 'ports_updated', {
-      activePorts: [...record.activePorts],
-      webPort: record.webPort,
-    });
+    return updated;
+  }
 
-    return toPublicManagedSession(record);
+  async function refreshManagedSessionPorts(sessionId) {
+    const detected = normalizePorts(await Promise.resolve(getActivePorts()));
+    recomputeManagedPorts(detected);
+    return getManagedSession(sessionId);
   }
 
   function getManagedSession(sessionId) {
@@ -600,6 +625,7 @@ function createProgramRuntimeManager(options = {}) {
     launchManagedProgram,
     listManagedSessionEvents,
     listManagedSessions,
+    recomputeManagedPorts,
     refreshManagedSessionPorts,
     restartManagedSession,
     stopManagedSession,
