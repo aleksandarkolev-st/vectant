@@ -102,7 +102,7 @@ const TOOLS = [
   {
     name: "synthi_screenshot",
     description:
-      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. Emits a `usage` event for every call.",
+      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms,after_frame_gate,frame_gate_timeout_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. after_frame_gate must be the satisfied synthi_wait_hmr frame_gate including its one-time gate_token; screenshot returns a capture_manifest with frame/image hashes. Emits a `usage` event for every call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -125,6 +125,23 @@ const TOOLS = [
           type: "number",
           description: "SLA: return frame_stale if latest frame's age exceeds this many ms.",
         },
+        after_frame_gate: {
+          type: "object",
+          properties: {
+            status: { type: "string", enum: ["satisfied"] },
+            frame_seq: { type: "number" },
+            ts_ms: { type: "number" },
+            session_id: { type: "string" },
+            gate_token: { type: "string" },
+          },
+          required: ["status", "gate_token"],
+          description:
+            "Satisfied frame_gate returned by synthi_wait_hmr, including the one-time gate_token. When provided, screenshot waits until the decoded frame seq/timestamp is at or after this gate, consumes the token, and returns a capture_manifest bound to image bytes.",
+        },
+        frame_gate_timeout_ms: {
+          type: "number",
+          description: "Maximum time to wait for after_frame_gate before returning frame_gate_timeout. Default 1200000.",
+        },
       },
       required: [],
     },
@@ -138,8 +155,8 @@ const TOOLS = [
       properties: {
         timeoutMs: {
           type: "number",
-          description: "Maximum wait in milliseconds. Default 60000 (accommodates Tier 3 AI-split + compile latency).",
-          default: 60000,
+          description: "Maximum wait in milliseconds. Default 1200000 (20 minutes, accommodates cold GPU validation, AI split, compile, runtime proof, and visual capture latency).",
+          default: 1200000,
         },
         module: {
           type: "string",
@@ -166,7 +183,7 @@ const TOOLS = [
             "gpu-hmr-host-preservation-proven",
             "gpu-hmr-full-runtime-proven",
           ],
-          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness.",
+          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. Raw GPU telemetry is returned as gpu_proof_telemetry; gpu_proof is only returned after a requested proof state passes validation.",
         },
         requireGpuFullRuntimeProof: {
           type: "boolean",

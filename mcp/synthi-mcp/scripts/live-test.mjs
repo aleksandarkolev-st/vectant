@@ -14,7 +14,8 @@
 //   SIGNALING_URL          ws://localhost:9000     (MCP → signaling)
 //   PROMETHEUS_PORT        9464                    (MCP /metrics)
 //   GOOGLE_API_KEY         (required)              (Gemini API key)
-//   SYNTHI_GEMINI_MODEL    gemini-3-flash-preview
+//   SYNTHI_GPU_SPLIT_MODEL gemini-3.5-flash
+//   SYNTHI_GPU_DELTA_MODEL gemini-3.1-flash-lite
 //   SLUG                   mcp-counter-<ts>        (per-run unique to avoid collisions)
 //   WORKSPACE_NAME         Synthi MCP Live Test
 //   HOST_ID                mcp-live-test
@@ -50,6 +51,9 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import {
+  mcpScreenshotArgsForFrameGate,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,7 +64,13 @@ const CFG = {
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   prometheusPort: Number(process.env.PROMETHEUS_PORT ?? 9464),
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   slug: process.env.SLUG ?? `mcp-counter-${Date.now()}`,
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
   hostId: process.env.HOST_ID ?? 'mcp-live-test',
@@ -68,6 +78,7 @@ const CFG = {
   fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/button/main.cpp'),
   frontendPrecompiled: (process.env.FRONTEND_PRECOMPILED ?? 'false').toLowerCase() === 'true',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_LIVE_TEST_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   syncToGcs: 'true',
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
@@ -525,6 +536,8 @@ async function main() {
       SYNTHI_VISION_BACKEND: 'gemini_api',
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
       SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
       SYNTHI_STUN_URL: CFG.stunUrl,
@@ -542,6 +555,8 @@ async function main() {
       SYNTHI_VISION_BACKEND: 'gemini_api',
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+      SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
       SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
       SYNTHI_STUN_URL: CFG.stunUrl,
@@ -921,7 +936,9 @@ async function main() {
 
     // K2. post-edit screenshot + pHash
     log('info', 'synthi_screenshot (post-edit)');
-    const shot2 = await client.toolCall('synthi_screenshot', {});
+    const shot2 = await client.toolCall('synthi_screenshot', mcpScreenshotArgsForFrameGate(hmr, {
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    }));
     if (!shot2?.data) fail('post-edit synthi_screenshot returned no data');
     const shot2Path = path.join(ARTIFACT_DIR, 'post-edit.png');
     await writeFile(shot2Path, Buffer.from(shot2.data, 'base64'));

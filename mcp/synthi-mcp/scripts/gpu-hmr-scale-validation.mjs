@@ -17,6 +17,19 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
+import {
+  adversarialPreflightStrictGate,
+  strictProofGateFailures,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
+} from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  eventLogAppliedRecoveryAllowed,
+} from './lib/gpu-hmr-wait-contract.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +60,18 @@ function parseNonNegativeIntegerEnv(name, fallback) {
   return parsed;
 }
 
+function defaultGpuSplitModel() {
+  return process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash';
+}
+
+function defaultGpuDeltaModel() {
+  return process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite';
+}
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -64,7 +89,9 @@ const CFG = {
     .toLowerCase()
     .replace(/_/g, '-'),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? defaultGpuSplitModel(),
+  gpuSplitModel: defaultGpuSplitModel(),
+  gpuDeltaModel: defaultGpuDeltaModel(),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'vectant-ade-mcp-1',
   workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
@@ -75,6 +102,8 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
+  requireGpuFullRuntimeProof: process.env.SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF !== '0',
+  hmrRequiredGpuProofState: (process.env.SYNTHI_SCALE_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   hmrDeltaMode: normalizeHmrDeltaMode(process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta'),
   validationProfile: (process.env.SYNTHI_SCALE_VALIDATION_PROFILE ?? 'full').toLowerCase().replace(/[-\s]+/g, '_'),
   aiDeltaEvidenceTimeoutMs: Number(process.env.SYNTHI_SCALE_AI_DELTA_EVIDENCE_TIMEOUT_MS ?? 45000),
@@ -82,12 +111,21 @@ const CFG = {
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_SCALE_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   targetWorkspaceFileCount: parseNonNegativeIntegerEnv('SYNTHI_SCALE_TARGET_FILE_COUNT', 0),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
 };
+
+function mcpModelEnv() {
+  return {
+    SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+    SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+    SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
+  };
+}
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
@@ -248,6 +286,10 @@ const report = {
   slug: CFG.slug,
   repo_commit: '',
   model: CFG.geminiModel,
+  model_roles: {
+    gpu_split: CFG.gpuSplitModel,
+    gpu_delta: CFG.gpuDeltaModel,
+  },
   vendor: '',
   arch: '',
   render_backend: CFG.renderBackend,
@@ -271,6 +313,7 @@ const report = {
   launch_indirection: {},
   warm_rebuild: {},
   runtime_policy: {},
+  adversarial_preflight: null,
   direct_device_fast_path: {},
   ai_delta_observations: [],
   phases: [],
@@ -558,6 +601,7 @@ let mcpState = null;
 async function startMcp() {
   if (mcpState?.client) return mcpState;
   let proc;
+  const modelEnv = mcpModelEnv();
   if (CFG.mcpTransport === 'docker') {
     proc = spawn('docker', [
       'exec',
@@ -567,7 +611,7 @@ async function startMcp() {
       '-e', `SYNTHI_VISION_BACKEND=${CFG.mcpVisionBackend}`,
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
       '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
-      '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+      ...Object.entries(modelEnv).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
       CFG.mcpContainer,
       'node',
       '/app/dist/index.js',
@@ -583,7 +627,7 @@ async function startMcp() {
         SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
-        SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+        ...modelEnv,
       },
     });
   }
@@ -1848,6 +1892,8 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint, options
     wait_hmr_status: wait?.status ?? 'unknown',
     wait_hmr_source: wait?.source ?? null,
     wait_hmr_detail: wait?.detail ?? null,
+    wait_hmr_args: wait?.wait_args ?? wait?.waitArgs ?? null,
+    wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
     frame_gate: wait?.frame_gate ?? null,
     wall_elapsed_ms: wallElapsed,
     worker_log_markers: collectWorkerMarkers(workerTail),
@@ -1895,6 +1941,8 @@ async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReas
     wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
     wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
     wait_hmr_detail: detail,
+    wait_hmr_args: wait?.wait_args ?? wait?.waitArgs ?? null,
+    wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
     frame_gate: { status: 'not_applicable', reason: expectedReason },
     wall_elapsed_ms: Date.now() - wallStart,
     worker_log_markers: [],
@@ -1902,6 +1950,44 @@ async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReas
   report.phases.push(phase);
   record(`${phaseName} explicit fallback`, 'pass', expectedReason);
   return phase;
+}
+
+function preflightStatus(preflight) {
+  if (preflight?.skipped) return 'skip';
+  return preflight?.ok ? 'pass' : 'fail';
+}
+
+function configuredWaitRequiredGpuProofState(expectedModule = null) {
+  if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
+  return CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+    ? 'gpu-hmr-full-runtime-proven'
+    : null;
+}
+
+function waitContractFromArgs(waitArgs = {}) {
+  const requiredState = waitArgs.requiredGpuProofState
+    ?? (waitArgs.requireGpuFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null);
+  return {
+    timeout_ms: Number.isFinite(waitArgs.timeoutMs) ? waitArgs.timeoutMs : null,
+    module: typeof waitArgs.module === 'string' && waitArgs.module.trim()
+      ? waitArgs.module.trim()
+      : null,
+    since_ts: Number.isFinite(waitArgs.since_ts) ? waitArgs.since_ts : null,
+    preview_id: typeof waitArgs.preview_id === 'string' && waitArgs.preview_id.trim()
+      ? waitArgs.preview_id.trim()
+      : null,
+    required_gpu_proof_state: requiredState ?? null,
+    require_gpu_full_runtime_proof: waitArgs.requireGpuFullRuntimeProof === true,
+  };
+}
+
+function attachWaitEvidence(wait, waitArgs) {
+  if (!wait || typeof wait !== 'object') return wait;
+  return {
+    ...wait,
+    wait_args: waitArgs,
+    wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
+  };
 }
 
 async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedModule = null) {
@@ -1912,30 +1998,60 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedM
     const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
+    const requiredGpuProofState = configuredWaitRequiredGpuProofState(expectedModule);
+    const waitArgs = {
+      timeoutMs: sliceTimeoutMs,
+      since_ts: eventLogSinceTs,
+      ...(expectedModule ? { module: expectedModule } : {}),
+      ...(requiredGpuProofState ? { requiredGpuProofState } : {}),
+      ...(CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+        ? { requireGpuFullRuntimeProof: true }
+        : {}),
+    };
+    const waitContract = waitContractFromArgs(waitArgs);
     try {
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
-        {
-          timeoutMs: sliceTimeoutMs,
-          ...(expectedModule ? { module: expectedModule } : {}),
-        },
+        waitArgs,
         sliceTimeoutMs + 7000,
       );
     } catch (err) {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       throw err;
     }
+    wait = attachWaitEvidence(wait, waitArgs);
     last = wait;
     const previewId = wait?.detail?.preview_id;
     if (previewId && previewId !== CFG.slug) {
       record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       continue;
     }
     if (wait?.status === 'timeout') {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       continue;
     }
@@ -1949,15 +2065,46 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedM
         'warn',
         `expected_module=${expectedModule}`,
       );
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      const recovered = await currentHmrFromEventLog(
+        state,
+        eventLogSinceTs,
+        startedAt,
+        expectedModule,
+        waitArgs,
+        waitContract,
+      );
       if (recovered) return recovered;
       continue;
     }
     return wait;
   }
-  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+  const requiredGpuProofState = configuredWaitRequiredGpuProofState(expectedModule);
+  const timeoutWaitArgs = {
+    timeoutMs,
+    since_ts: eventLogSinceTs,
+    ...(expectedModule ? { module: expectedModule } : {}),
+    ...(requiredGpuProofState ? { requiredGpuProofState } : {}),
+    ...(CFG.requireGpuFullRuntimeProof && expectedModule === 'device'
+      ? { requireGpuFullRuntimeProof: true }
+      : {}),
+  };
+  const timeoutWaitContract = waitContractFromArgs(timeoutWaitArgs);
+  const recovered = await currentHmrFromEventLog(
+    state,
+    eventLogSinceTs,
+    startedAt,
+    expectedModule,
+    timeoutWaitArgs,
+    timeoutWaitContract,
+  );
   if (recovered) return recovered;
-  return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'validation_harness' };
+  return last ?? {
+    status: 'timeout',
+    elapsedMs: timeoutMs,
+    source: 'validation_harness',
+    wait_args: timeoutWaitArgs,
+    wait_contract: timeoutWaitContract,
+  };
 }
 
 function hmrPreviewId(detail) {
@@ -1997,7 +2144,14 @@ function hmrModule(detail) {
   return null;
 }
 
-async function currentHmrFromEventLog(state, sinceTs, startedAt, expectedModule = null) {
+async function currentHmrFromEventLog(
+  state,
+  sinceTs,
+  startedAt,
+  expectedModule = null,
+  waitArgs = null,
+  waitContract = null,
+) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
     { kind: 'hmr', since_ts: sinceTs, limit: 200 },
@@ -2020,12 +2174,17 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, expectedModule 
     ) {
       continue;
     }
+    if (status === 'applied' && !eventLogAppliedRecoveryAllowed(waitArgs, waitContract)) {
+      continue;
+    }
     return {
       status,
       elapsedMs: Date.now() - startedAt,
       hmrElapsedMs: typeof entry.ts === 'number' ? entry.ts - startedAt : null,
       source: 'event_log',
       detail,
+      wait_args: waitArgs,
+      wait_contract: waitContract ?? waitContractFromArgs(waitArgs ?? {}),
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered from the MCP session event log after a stale wait_hmr event',
@@ -2051,6 +2210,8 @@ async function dispatchCompileViaMcp(args, timeoutMs, phaseName, checkpoint) {
     wait_hmr_status: compile?.ok ? 'not_waited_expected_rejection' : 'dispatch_failed',
     wait_hmr_source: 'negative_validation',
     wait_hmr_detail: compile ?? null,
+    wait_hmr_args: null,
+    wait_hmr_contract: null,
     frame_gate: null,
     wall_elapsed_ms: Date.now() - wallStart,
     worker_log_markers: collectWorkerMarkers(workerTail),
@@ -2081,20 +2242,26 @@ function collectWorkerMarkers(text) {
   return [...new Set(out)];
 }
 
-async function captureScreenshot(label, compareTo = null) {
+async function captureScreenshot(label, compareTo = null, options = {}) {
   const state = await ensureMcpAttached();
   const safe = label.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
   let lastRow = null;
+  const waitEvidence = options.wait ?? options.waitEvidence ?? null;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+      freshnessMaxMs: CFG.screenshotFreshnessMaxMs,
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    });
     const shot = await state.client.toolCallRaw(
       'synthi_screenshot',
-      { freshness_max_ms: CFG.screenshotFreshnessMaxMs },
-      30000,
+      screenshotArgs,
+      Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
     if (!image?.data) throw new Error(`synthi_screenshot returned no image for ${label}`);
     const input = Buffer.from(image.data, 'base64');
+    const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
     const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
     const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${safe}${suffix}.png`);
     await writeFile(outPath, input);
@@ -2107,7 +2274,15 @@ async function captureScreenshot(label, compareTo = null) {
       mean_luma: analysis.mean_luma,
       captured_after_phase: label,
       attempt,
-      seq: Number(shot.json?.seq || 0),
+      seq: Number(screenshotMetadata?.seq || 0),
+      ts: Number(screenshotMetadata?.ts || 0),
+      wait_frame_gate: waitEvidence?.frame_gate ?? waitEvidence?.frameGate ?? null,
+      screenshot_metadata: screenshotMetadata,
+      frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
+        ...screenshotMetadata,
+        seq: Number(screenshotMetadata?.seq || 0),
+        ts: Number(screenshotMetadata?.ts || 0),
+      }),
     };
     if (compareTo) {
       row.differs_from_first = await screenshotsDiffer(compareTo.path, outPath);
@@ -3091,6 +3266,7 @@ async function writeReport() {
     `slug: ${report.slug}`,
     `repo_commit: ${report.repo_commit}`,
     `model: ${report.model}`,
+    `model_roles: ${JSON.stringify(report.model_roles)}`,
     `vendor: ${report.vendor}`,
     `arch: ${report.arch}`,
     `render_backend: ${report.render_backend}`,
@@ -3109,7 +3285,8 @@ async function writeReport() {
     ...report.phases.map((p) => {
       const detail = p.wait_hmr_detail ? ` detail=${JSON.stringify(p.wait_hmr_detail).slice(0, 500)}` : '';
       const frameGate = p.frame_gate ? ` frame_gate=${JSON.stringify(p.frame_gate).slice(0, 300)}` : '';
-      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} terminal_wait_ms=${p.wait_hmr_terminal_elapsed_ms ?? ''} wall_ms=${p.wall_elapsed_ms}${detail}${frameGate}`;
+      const waitContract = p.wait_hmr_contract ? ` wait_contract=${JSON.stringify(p.wait_hmr_contract).slice(0, 300)}` : '';
+      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} terminal_wait_ms=${p.wait_hmr_terminal_elapsed_ms ?? ''} wall_ms=${p.wall_elapsed_ms}${detail}${frameGate}${waitContract}`;
     }),
     '',
     ...report.ai_delta_observations.map((o) => `AI_DELTA ${o.phase} mode=${o.hmrDeltaMode} profile=${o.validationProfile} worker_called=${o.workerCalled} backend_called=${o.backendCalled} worker_marker=${o.workerMarkers?.[0] ?? ''} backend_marker=${o.backendMarkers?.[0] ?? ''}`),
@@ -3134,6 +3311,20 @@ async function writeReport() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  const adversarialPreflightGate = adversarialPreflightStrictGate(report.adversarial_preflight);
+  report.adversarial_preflight_strict_gate = adversarialPreflightGate;
+  record(
+    'adversarial proof ledger preflight',
+    preflightStatus(report.adversarial_preflight),
+    `elapsed_ms=${report.adversarial_preflight.elapsedMs.toFixed(1)}`,
+  );
+  record(adversarialPreflightGate.name, adversarialPreflightGate.status, adversarialPreflightGate.detail);
+  if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
+    fail(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
+  }
   if (!SUPPORTED_RENDER_FIXTURES.has(CFG.renderBackend)) {
     fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected ${[...SUPPORTED_RENDER_FIXTURES].join(', ')}`);
   }
@@ -3157,7 +3348,7 @@ async function run() {
   report.vendor = vendor;
   report.arch = arch;
   report.env = {
-    SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+    ...mcpModelEnv(),
     SYNTHI_GPU_VENDOR: process.env.SYNTHI_GPU_VENDOR ?? '',
     SYNTHI_GPU_ARCH: arch,
     SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
@@ -3178,6 +3369,14 @@ async function run() {
     'pass',
     `${vendor} arch=${arch} render_backend=${CFG.renderBackend} cmake_target_mode=${CFG.cmakeTargetMode} template_evidence=${CFG.templateEvidenceMode} hmr_delta_mode=${CFG.hmrDeltaMode} validation_profile=${CFG.validationProfile}`,
   );
+  record(
+    'gpu model role separation',
+    CFG.gpuSplitModel && CFG.gpuDeltaModel && CFG.gpuSplitModel !== CFG.gpuDeltaModel ? 'pass' : 'fail',
+    `split=${CFG.gpuSplitModel || 'unset'} delta=${CFG.gpuDeltaModel || 'unset'}`,
+  );
+  if (!CFG.gpuSplitModel || !CFG.gpuDeltaModel || CFG.gpuSplitModel === CFG.gpuDeltaModel) {
+    fail('GPU split and delta model roles must be configured separately');
+  }
 
   const project = buildScaleProject(vendor, arch, CFG.renderBackend, CFG.cmakeTargetMode);
   report.workspace_file_count = project.files.length;
@@ -3395,7 +3594,9 @@ async function run() {
   if (!hotSwap.matched) throw new Error('device-only GPU HMR evidence missing');
 
   await sleep(1000);
-  const secondShot = await captureScreenshot('post-hmr', firstShot);
+  const secondShot = await captureScreenshot('post-hmr', firstShot, {
+    wait: deviceDeltaResult.wait,
+  });
   if (!secondShot.differs_from_first) {
     throw new Error('post-HMR screenshot did not differ materially from first screenshot');
   }
@@ -3421,7 +3622,7 @@ async function run() {
     await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.templateHeaderPath, content: editedHeader }] });
     await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: bounded template warm rebuild' });
     const warmCheckpoint = await workerCheckpoint();
-    await compileTemplateWarmRebuild(project, editedHeader, editedDevice, vendor, warmCheckpoint);
+    const warmRebuildResult = await compileTemplateWarmRebuild(project, editedHeader, editedDevice, vendor, warmCheckpoint);
     record('template header warm rebuild compile via MCP', 'pass', project.templateHeaderPath);
     await assertNoGeneratedSplitWorkspaceArtifacts(split);
 
@@ -3459,7 +3660,9 @@ async function run() {
     if (warmAiMarker) throw new Error(`warm rebuild unexpectedly invoked AI: ${warmAiMarker[0]}`);
 
     await sleep(1000);
-    const warmShot = await captureScreenshot('post-warm-rebuild', secondShot);
+    const warmShot = await captureScreenshot('post-warm-rebuild', secondShot, {
+      wait: warmRebuildResult.wait,
+    });
     if (!warmShot.differs_from_first) {
       throw new Error('post-warm-rebuild screenshot did not differ materially from post-HMR screenshot');
     }
@@ -3822,10 +4025,41 @@ async function run() {
   console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
 }
 
-run()
-  .catch(async (err) => {
-    record('fatal', 'fail', err.stack || err.message);
-    await writeReport().catch(() => {});
-    process.exitCode = 1;
-  })
-  .finally(() => stopMcp());
+function runSelfCheck() {
+  const modelEnv = mcpModelEnv();
+  const failures = [];
+  if (!CFG.gpuSplitModel) failures.push('gpu_split_model_missing');
+  if (!CFG.gpuDeltaModel) failures.push('gpu_delta_model_missing');
+  if (CFG.gpuSplitModel && CFG.gpuSplitModel === CFG.gpuDeltaModel) {
+    failures.push('gpu_model_roles_not_separated');
+  }
+  if (modelEnv.SYNTHI_GPU_SPLIT_MODEL !== CFG.gpuSplitModel) {
+    failures.push('mcp_split_model_env_mismatch');
+  }
+  if (modelEnv.SYNTHI_GPU_DELTA_MODEL !== CFG.gpuDeltaModel) {
+    failures.push('mcp_delta_model_env_mismatch');
+  }
+  if (report.model_roles.gpu_split !== CFG.gpuSplitModel || report.model_roles.gpu_delta !== CFG.gpuDeltaModel) {
+    failures.push('report_model_roles_mismatch');
+  }
+  const result = {
+    ok: failures.length === 0,
+    modelRoles: report.model_roles,
+    mcpModelEnv: modelEnv,
+    failures,
+  };
+  console.log(JSON.stringify(result, null, 2));
+  if (failures.length > 0) process.exitCode = 1;
+}
+
+if (process.argv.includes('--self-check')) {
+  runSelfCheck();
+} else {
+  run()
+    .catch(async (err) => {
+      record('fatal', 'fail', err.stack || err.message);
+      await writeReport().catch(() => {});
+      process.exitCode = 1;
+    })
+    .finally(() => stopMcp());
+}

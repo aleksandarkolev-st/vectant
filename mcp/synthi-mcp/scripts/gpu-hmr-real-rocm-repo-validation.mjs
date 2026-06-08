@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // Real public ROCm repository validation for GPU HMR.
 //
-// Default target:
-//   https://github.com/ROCm/rocm-examples
-//   HIP-Basic/saxpy/main.hip
+// Default target profile:
+//   mcp/synthi-mcp/scripts/profiles/real-rocm-saxpy.json
 //
 // This script intentionally separates two claims:
 //   1. The upstream ROCm target builds and runs in the current worker.
@@ -14,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
@@ -59,9 +59,21 @@ import {
 } from './lib/gpu-hmr-validation-proof-summary.mjs';
 import {
   analyzeGpuHmrImageEvidence,
+  mcpFrameGateSatisfiedByScreenshot,
+  mcpScreenshotArgsForFrameGate,
+  mcpScreenshotMetadataFromToolResult,
   screenshotQualifiesAsVisualEvidence,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  eventLogAppliedRecoveryAllowed,
+} from './lib/gpu-hmr-wait-contract.mjs';
+import { runGpuHmrAdversarialPreflight } from './lib/gpu-hmr-adversarial-preflight.mjs';
+import {
+  adversarialPreflightStrictGate,
+  runtimeProofArtifactStrictGates,
+  strictProofGateFailures,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
@@ -73,10 +85,17 @@ import {
   buildUpstreamRunLaunchPlan,
   canContinueWithCachedMetadataAfterLifecycleFailure,
 } from './lib/real-rocm-upstream-lifecycle.mjs';
+import { realRocmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
+import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const PROFILE_DIR = existsSync(path.join(__dirname, 'profiles'))
+  ? path.join(__dirname, 'profiles')
+  : path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
+const REAL_ROCM_PROFILE_SCHEMA_VERSION = 'synthi.gpu.hmr.real_rocm_profile.v1';
+const DEFAULT_REAL_ROCM_PROFILE_PATH = path.join(PROFILE_DIR, 'real-rocm-saxpy.json');
 const DEFAULT_REAL_REPO_URL = 'https://github.com/ROCm/rocm-examples.git';
 const TARGET_PROGRESSION_PHASES = new Set([
   'small-oracle',
@@ -86,6 +105,7 @@ const TARGET_PROGRESSION_PHASES = new Set([
 ]);
 const TARGET_PROGRESSION_LEDGER_SCHEMA_VERSION =
   'synthi.real_rocm.target_progression_ledger.v1';
+const RUN_STARTED_MONOTONIC_NS = monotonicNowNs();
 const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
   'small-oracle',
   'partial-reload',
@@ -119,6 +139,184 @@ function cleanIdentifier(value) {
 function repoNameFromUrl(repoUrl) {
   const raw = String(repoUrl || DEFAULT_REAL_REPO_URL).split('/').filter(Boolean).at(-1) ?? 'repo';
   return cleanIdentifier(raw.replace(/\.git$/i, ''));
+}
+
+function objectOrEmpty(value, field) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected object`);
+  }
+  return value;
+}
+
+function optionalProfileString(value, field) {
+  if (value === undefined || value === null || String(value).trim() === '') return '';
+  if (typeof value !== 'string') {
+    throw new Error(`invalid real ROCm profile ${field}: expected string`);
+  }
+  return value.trim();
+}
+
+function requiredProfileString(value, field) {
+  const text = optionalProfileString(value, field);
+  if (!text) throw new Error(`invalid real ROCm profile ${field}: expected non-empty string`);
+  return text;
+}
+
+function optionalProfileBoolean(value, field) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'boolean') {
+    throw new Error(`invalid real ROCm profile ${field}: expected boolean`);
+  }
+  return value;
+}
+
+function optionalProfileNumber(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected finite number`);
+  }
+  return parsed;
+}
+
+function optionalProfileStringArray(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected array`);
+  }
+  return value.map((item, index) => requiredProfileString(item, `${field}[${index}]`));
+}
+
+function normalizeRealRocmProfile(rawProfile, source) {
+  const raw = objectOrEmpty(rawProfile, 'root');
+  const schemaVersion = raw.schemaVersion ?? REAL_ROCM_PROFILE_SCHEMA_VERSION;
+  if (schemaVersion !== REAL_ROCM_PROFILE_SCHEMA_VERSION) {
+    throw new Error(`unsupported real ROCm profile schemaVersion: ${schemaVersion}`);
+  }
+  const repo = objectOrEmpty(raw.repo, 'repo');
+  const target = objectOrEmpty(raw.target, 'target');
+  const sourceDelta = objectOrEmpty(raw.sourceDelta ?? raw.source_delta, 'sourceDelta');
+  const secondDelta = objectOrEmpty(sourceDelta.second ?? sourceDelta.secondDelta, 'sourceDelta.second');
+  const outputOracle = objectOrEmpty(raw.outputOracle ?? raw.output_oracle, 'outputOracle');
+  const preview = objectOrEmpty(raw.preview, 'preview');
+  return {
+    schemaVersion,
+    id: requiredProfileString(raw.id, 'id'),
+    source,
+    repo: {
+      url: optionalProfileString(repo.url, 'repo.url') || DEFAULT_REAL_REPO_URL,
+      name: optionalProfileString(repo.name, 'repo.name'),
+      commit: optionalProfileString(repo.commit, 'repo.commit'),
+      initSubmodules: optionalProfileBoolean(repo.initSubmodules, 'repo.initSubmodules'),
+    },
+    target: {
+      entryFile: requiredProfileString(target.entryFile, 'target.entryFile').replace(/\\/g, '/'),
+      deltaFile: optionalProfileString(target.deltaFile, 'target.deltaFile').replace(/\\/g, '/'),
+      targetName: requiredProfileString(target.targetName, 'target.targetName'),
+      buildSubdir: requiredProfileString(target.buildSubdir, 'target.buildSubdir').replace(/\\/g, '/'),
+      cmakeArgs: optionalProfileStringArray(target.cmakeArgs, 'target.cmakeArgs'),
+      cmakeConfigName: optionalProfileString(target.cmakeConfigName, 'target.cmakeConfigName'),
+      cmakeTargetType: optionalProfileString(target.cmakeTargetType, 'target.cmakeTargetType'),
+      cmakeTargetIdNamespace: optionalProfileString(target.cmakeTargetIdNamespace, 'target.cmakeTargetIdNamespace'),
+      upstreamRunCommand: optionalProfileString(target.upstreamRunCommand, 'target.upstreamRunCommand'),
+      buildUpstream: optionalProfileBoolean(target.buildUpstream, 'target.buildUpstream'),
+      runUpstream: optionalProfileBoolean(target.runUpstream, 'target.runUpstream'),
+      nativeLaunchSymbols: optionalProfileStringArray(
+        target.nativeLaunchSymbols ?? target.native_launch_symbols,
+        'target.nativeLaunchSymbols',
+      ),
+    },
+    sourceDelta: {
+      before: requiredProfileString(sourceDelta.before, 'sourceDelta.before'),
+      after: requiredProfileString(sourceDelta.after, 'sourceDelta.after'),
+      second: {
+        file: optionalProfileString(secondDelta.file, 'sourceDelta.second.file').replace(/\\/g, '/'),
+        before: optionalProfileString(secondDelta.before, 'sourceDelta.second.before'),
+        after: optionalProfileString(secondDelta.after, 'sourceDelta.second.after'),
+      },
+      extraDeltas: Array.isArray(sourceDelta.extraDeltas) ? sourceDelta.extraDeltas : [],
+    },
+    outputOracle: {
+      profile: optionalProfileString(outputOracle.profile, 'outputOracle.profile'),
+      contract: outputOracle.contract && typeof outputOracle.contract === 'object' && !Array.isArray(outputOracle.contract)
+        ? outputOracle.contract
+        : null,
+    },
+    preview: {
+      renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
+      expectScreenshot: optionalProfileBoolean(preview.expectScreenshot, 'preview.expectScreenshot'),
+      width: optionalProfileNumber(preview.width, 'preview.width'),
+      height: optionalProfileNumber(preview.height, 'preview.height'),
+    },
+  };
+}
+
+function loadRealRocmProfile() {
+  const inline = process.env.SYNTHI_REAL_ROCM_PROFILE_JSON
+    ?? process.env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_JSON
+    ?? '';
+  if (String(inline).trim()) {
+    return normalizeRealRocmProfile(JSON.parse(inline), 'env:SYNTHI_REAL_ROCM_PROFILE_JSON');
+  }
+  const profilePath = process.env.SYNTHI_REAL_ROCM_PROFILE_PATH
+    ?? process.env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_PATH
+    ?? DEFAULT_REAL_ROCM_PROFILE_PATH;
+  const absolutePath = path.resolve(REPO_ROOT, profilePath);
+  return normalizeRealRocmProfile(
+    JSON.parse(readFileSync(absolutePath, 'utf8')),
+    path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/'),
+  );
+}
+
+async function discoverPackagedRealRocmProfiles() {
+  const entries = await readdir(PROFILE_DIR, { withFileTypes: true });
+  const profiles = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^real-rocm-.+\.json$/i.test(entry.name)) continue;
+    const absolutePath = path.join(PROFILE_DIR, entry.name);
+    const source = path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/');
+    const profile = normalizeRealRocmProfile(
+      JSON.parse(readFileSync(absolutePath, 'utf8')),
+      source,
+    );
+    profiles.push(profile);
+  }
+  profiles.sort((left, right) => left.id.localeCompare(right.id));
+  return profiles;
+}
+
+async function selfCheckRealRocmProfiles() {
+  const profiles = await discoverPackagedRealRocmProfiles();
+  if (profiles.length === 0) {
+    throw new Error(`no packaged real ROCm profiles found in ${PROFILE_DIR}`);
+  }
+  const seen = new Set();
+  for (const profile of profiles) {
+    if (seen.has(profile.id)) {
+      throw new Error(`duplicate real ROCm profile id: ${profile.id}`);
+    }
+    seen.add(profile.id);
+    if (profile.outputOracle.profile !== 'none' && profile.outputOracle.profile !== 'auto') {
+      const known = outputOracleProfilesByName().has(profile.outputOracle.profile.toLowerCase());
+      if (!known) {
+        throw new Error(`real ROCm profile ${profile.id} references unknown output oracle profile: ${profile.outputOracle.profile}`);
+      }
+    }
+    const localRepoPath = path.resolve(REPO_ROOT, `tmp/real-rocm/${repoNameFromUrl(profile.repo.url)}`);
+    if (existsSync(localRepoPath)) {
+      for (const requiredPath of [
+        profile.target.entryFile,
+        profile.target.deltaFile || profile.target.entryFile,
+        `${profile.target.buildSubdir}/CMakeLists.txt`,
+      ]) {
+        if (!existsSync(path.join(localRepoPath, requiredPath))) {
+          throw new Error(`real ROCm profile ${profile.id} references missing local path: ${requiredPath}`);
+        }
+      }
+    }
+  }
+  console.log(`real ROCm profile self-check passed profiles=${profiles.map((profile) => profile.id).join(',')}`);
 }
 
 function parseOutputOracleContract(raw) {
@@ -157,6 +355,7 @@ function parseOutputOracleContract(raw) {
       'sessionId',
       'session_id',
     ],
+    kernelSymbol: ['kernelSymbol', 'kernel_symbol', 'kernel', 'kernelName', 'kernel_name'],
   };
   for (const [canonical, fields] of Object.entries(aliases)) {
     for (const field of fields) {
@@ -175,6 +374,29 @@ function parseOutputOracleContract(raw) {
     );
   }
   return contract;
+}
+
+function parseNativeLaunchSymbols(raw, fallback = []) {
+  const explicit = String(raw ?? '').trim();
+  if (!explicit) return compactStringList(fallback);
+  let values;
+  if (explicit.startsWith('[')) {
+    try {
+      values = JSON.parse(explicit);
+    } catch (err) {
+      throw new Error(`invalid native launch symbol list JSON: ${err.message}`);
+    }
+    if (!Array.isArray(values)) {
+      throw new Error('invalid native launch symbol list: expected array or comma-separated string');
+    }
+  } else {
+    values = explicit.split(',');
+  }
+  const symbols = compactStringList(values.map((value) => String(value ?? '').trim()));
+  if (symbols.length === 0) {
+    throw new Error('invalid native launch symbol list: at least one non-empty symbol is required');
+  }
+  return symbols;
 }
 
 function outputOracleProfileMode(raw) {
@@ -491,16 +713,66 @@ function partialArtifactReplacementProofObserved(sourceProofs = [], fissionProof
     );
 }
 
+function artifactKindLooksFullDevice(kind) {
+  return /(^|[-_])full[-_]?device($|[-_])|device[-_]?module/i.test(String(kind ?? ''));
+}
+
+function artifactKindLooksPartial(kind) {
+  return /partial|source[_-]?include|kernel[_-]?region|kernel[_-]?translation[_-]?unit|direct[_-]?device[_-]?translation[_-]?unit/i
+    .test(String(kind ?? ''));
+}
+
+function forcedGpuAiDeltaArtifactGateRows({ sourceProofs = [], fissionProof = null, workerEvidence = [] }) {
+  const proofs = Array.isArray(sourceProofs) ? sourceProofs : [];
+  const selectedKinds = proofs.flatMap((proof) => [
+    proof?.selectedArtifactKind,
+    ...(Array.isArray(proof?.selectedArtifactKinds) ? proof.selectedArtifactKinds : []),
+  ]).filter((kind) => typeof kind === 'string' && kind.trim());
+  const selectedKind = proofs.map((proof) => proof?.selectedArtifactKind)
+    .find((kind) => typeof kind === 'string' && kind.trim()) ?? null;
+  const fissionKinds = Array.isArray(fissionProof?.selectedIslandContracts)
+    ? fissionProof.selectedIslandContracts
+      .map((contract) => contract?.artifactKind)
+      .filter((kind) => typeof kind === 'string' && kind.trim())
+    : [];
+  const partialSourceProof = proofs.some((proof) =>
+    proof?.partialArtifactReplacement === true
+    && artifactKindLooksPartial(proof?.selectedArtifactKind));
+  const partialFissionProof = fissionKinds.some(artifactKindLooksPartial);
+  const fallbackLines = (Array.isArray(workerEvidence) ? workerEvidence : [])
+    .filter((line) =>
+      /\[compile-device\].*(sidecar ready|reload package).*fallbackUsed=true/i.test(String(line)));
+  const selectedFullDevice = selectedKind ? artifactKindLooksFullDevice(selectedKind) : false;
+  return [
+    {
+      name: 'forced GPU AI delta partial artifact selection',
+      status: partialSourceProof || partialFissionProof ? 'pass' : 'fail',
+      detail: `selected=${selectedKind ?? 'none'} observed=${selectedKinds.join(',') || 'none'} fission=${fissionKinds.join(',') || 'none'}`,
+    },
+    {
+      name: 'forced GPU AI delta no full-device selected artifact',
+      status: selectedFullDevice ? 'fail' : 'pass',
+      detail: `selected=${selectedKind ?? 'none'} observed=${selectedKinds.join(',') || 'none'}`,
+    },
+    {
+      name: 'forced GPU AI delta no compile fallback',
+      status: fallbackLines.length === 0 ? 'pass' : 'fail',
+      detail: fallbackLines.length === 0
+        ? 'fallbackUsed=false'
+        : fallbackLines.slice(0, 3).join(' | ').slice(0, 1200),
+    },
+  ];
+}
+
 function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
   return (Array.isArray(visualEvidenceFrames) ? visualEvidenceFrames : [])
     .filter((frame) => {
-      if (typeof frame === 'string') return frame.trim().length > 0;
+      if (typeof frame === 'string') return false;
       if (!frame || typeof frame !== 'object') return false;
       if (frame.accepted_as_visual_evidence === false) return false;
-      return frame.accepted_as_visual_evidence === true
-        || typeof frame.path === 'string'
-        || typeof frame.filePath === 'string'
-        || typeof frame.file_path === 'string';
+      const epochCorrelated = frame.frame_capture_after_epoch_dispatch === true
+        || frame.frameCaptureAfterEpochDispatch === true;
+      return frame.accepted_as_visual_evidence === true && epochCorrelated;
     })
     .length;
 }
@@ -751,9 +1023,12 @@ async function writeTargetProgressionLedgerArtifact(outputDir, { report, entry }
   };
 }
 
-const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
+const REAL_ROCM_PROFILE = loadRealRocmProfile();
+const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? REAL_ROCM_PROFILE.repo.url;
 const configuredRepoName = cleanIdentifier(
-  process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
+  process.env.SYNTHI_REAL_ROCM_REPO_NAME
+    ?? REAL_ROCM_PROFILE.repo.name
+    ?? repoNameFromUrl(configuredRepoUrl),
 );
 const configuredWorkspaceRoot =
   process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
@@ -765,29 +1040,44 @@ const configuredExpectScreenshotExplicit =
   && String(process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT).trim() !== '';
 const configuredExpectScreenshotValue = configuredExpectScreenshotExplicit
   ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT', false)
-  : false;
+  : REAL_ROCM_PROFILE.preview.expectScreenshot ?? false;
 const configuredRenderPreview = booleanFromEnv(
   process.env,
   'SYNTHI_REAL_ROCM_RENDER_PREVIEW',
-  configuredExpectScreenshotValue,
+  REAL_ROCM_PROFILE.preview.renderPreview ?? configuredExpectScreenshotValue,
 );
 const configuredExpectScreenshot = booleanFromEnv(
   process.env,
   'SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT',
   configuredRenderPreview,
 );
+const configuredCmakeArgs = process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON !== undefined
+  ? parseStringArrayEnv(
+    process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON,
+    'SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON',
+  )
+  : REAL_ROCM_PROFILE.target.cmakeArgs;
+const configuredOutputOracleJson = process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
+  ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
+  ?? (REAL_ROCM_PROFILE.outputOracle.contract
+    ? JSON.stringify(REAL_ROCM_PROFILE.outputOracle.contract)
+    : '');
 
 const CFG = {
   repoUrl: configuredRepoUrl,
   repoName: configuredRepoName,
   repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
-  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
-  initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0',
-  entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? 'HIP-Basic/saxpy/main.hip',
-  deltaFile: process.env.SYNTHI_REAL_ROCM_DELTA_FILE
+  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? REAL_ROCM_PROFILE.repo.commit ?? '',
+  initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== undefined
+    ? process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0'
+    : REAL_ROCM_PROFILE.repo.initSubmodules ?? true,
+  realRocmProfile: REAL_ROCM_PROFILE,
+  entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? REAL_ROCM_PROFILE.target.entryFile,
+  deltaFile: (process.env.SYNTHI_REAL_ROCM_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
-    ?? 'HIP-Basic/saxpy/main.hip',
-  targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? 'hip_saxpy',
+    ?? REAL_ROCM_PROFILE.target.deltaFile)
+    || REAL_ROCM_PROFILE.target.entryFile,
+  targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? REAL_ROCM_PROFILE.target.targetName,
   targetProgressionPhase: process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_PHASE ?? '',
   finalAcceptanceTarget: process.env.SYNTHI_REAL_ROCM_FINAL_ACCEPTANCE_TARGET ?? '',
   requireTargetProgression: booleanFromEnv(
@@ -799,7 +1089,7 @@ const CFG = {
     configuredTargetProgressionLedgerInput.raw,
   ),
   targetProgressionLedgerPath: configuredTargetProgressionLedgerInput.path,
-  buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
+  buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? REAL_ROCM_PROFILE.target.buildSubdir,
   workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
   workerTempDir: configuredWorkerTempDir,
   workspaceRoot: configuredWorkspaceRoot,
@@ -807,28 +1097,44 @@ const CFG = {
   seedCommitMessage:
     process.env.SYNTHI_REAL_ROCM_SEED_COMMIT_MESSAGE ??
     `real-rocm-validation: seed ${configuredRepoName} ${process.env.SYNTHI_REAL_ROCM_TARGET ?? 'target'}`,
-  cmakeConfigName: process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG ?? 'Release',
-  cmakeArgs: parseStringArrayEnv(
-    process.env.SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON,
-    'SYNTHI_REAL_ROCM_CMAKE_ARGS_JSON',
-  ),
-  cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
-  cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
+  cmakeConfigName: (
+    process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG
+    ?? REAL_ROCM_PROFILE.target.cmakeConfigName
+  ) || 'Release',
+  cmakeArgs: configuredCmakeArgs,
+  cmakeTargetType: (
+    process.env.SYNTHI_REAL_ROCM_TARGET_TYPE
+    ?? REAL_ROCM_PROFILE.target.cmakeTargetType
+  ) || 'EXECUTABLE',
+  cmakeTargetIdNamespace: (
+    process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE
+    ?? REAL_ROCM_PROFILE.target.cmakeTargetIdNamespace
+  ) || 'real-rocm',
   buildMetadataDir: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR
     ? path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR)
     : '',
   gpuMode: process.env.SYNTHI_REAL_ROCM_GPU_MODE ?? 'rocm',
-  buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
-  runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
-  upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND ?? '',
+  buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== undefined
+    ? process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0'
+    : REAL_ROCM_PROFILE.target.buildUpstream ?? true,
+  runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== undefined
+    ? process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0'
+    : REAL_ROCM_PROFILE.target.runUpstream ?? true,
+  upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND
+    ?? REAL_ROCM_PROFILE.target.upstreamRunCommand
+    ?? '',
   upstreamDisplayMode: process.env.SYNTHI_REAL_ROCM_UPSTREAM_DISPLAY_MODE ?? 'auto',
   upstreamXdgRuntimeDir: process.env.SYNTHI_REAL_ROCM_UPSTREAM_XDG_RUNTIME_DIR ?? '',
   nativeLaunchObserver: process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER === '1',
   nativeLaunchObserverPath:
     process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH
     ?? '/usr/local/lib/synthi-gpu-native-launch-observer.so',
-  width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800),
-  height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600),
+  nativeLaunchSymbols: parseNativeLaunchSymbols(
+    process.env.SYNTHI_REAL_ROCM_NATIVE_LAUNCH_SYMBOLS,
+    REAL_ROCM_PROFILE.target.nativeLaunchSymbols,
+  ),
+  width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? REAL_ROCM_PROFILE.preview.width ?? 800),
+  height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? REAL_ROCM_PROFILE.preview.height ?? 600),
   hiprtRuntimeProbe:
     process.env.SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE !== undefined
       ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE', false)
@@ -845,17 +1151,26 @@ const CFG = {
   ),
   deltaBefore:
     process.env.SYNTHI_REAL_ROCM_DELTA_BEFORE ??
-    'd_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];',
+    REAL_ROCM_PROFILE.sourceDelta.before,
   deltaAfter:
     process.env.SYNTHI_REAL_ROCM_DELTA_AFTER ??
-    'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];',
-  secondDeltaFile: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE
+    REAL_ROCM_PROFILE.sourceDelta.after,
+  secondDeltaFile: (process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
-    ?? 'HIP-Basic/saxpy/main.hip',
-  secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
-  secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
-  extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
+    ?? REAL_ROCM_PROFILE.sourceDelta.second.file)
+    || REAL_ROCM_PROFILE.target.deltaFile
+    || REAL_ROCM_PROFILE.target.entryFile,
+  secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE
+    ?? REAL_ROCM_PROFILE.sourceDelta.second.before
+    ?? '',
+  secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER
+    ?? REAL_ROCM_PROFILE.sourceDelta.second.after
+    ?? '',
+  extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON
+    ?? (REAL_ROCM_PROFILE.sourceDelta.extraDeltas.length
+      ? JSON.stringify(REAL_ROCM_PROFILE.sourceDelta.extraDeltas)
+      : ''),
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
   compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
   compileTransport: (process.env.SYNTHI_REAL_ROCM_COMPILE_TRANSPORT ?? 'inline').toLowerCase(),
@@ -882,6 +1197,7 @@ const CFG = {
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
+  frameGateTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FRAME_GATE_TIMEOUT_MS ?? 1200000),
   expectScreenshot: configuredExpectScreenshot,
   renderPreview: configuredRenderPreview,
   requireFreshAiSplit:
@@ -899,19 +1215,30 @@ const CFG = {
     false,
   ),
   outputOracleContract: parseOutputOracleContract(
-    process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
-      ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
-      ?? '',
+    configuredOutputOracleJson,
   ),
   outputOracleProfile: outputOracleProfileMode(
     process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE
       ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_PROFILE
+      ?? REAL_ROCM_PROFILE.outputOracle.profile
       ?? 'auto',
   ),
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
+  hmrRequiredGpuProofState: (process.env.SYNTHI_REAL_ROCM_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
+  forceGpuAiDelta: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_FORCE_GPU_AI_DELTA',
+    false,
+  ),
   gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS === '1',
 };
 
@@ -924,6 +1251,11 @@ const WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH =
 
 const report = {
   slug: CFG.slug,
+  real_rocm_profile: {
+    id: CFG.realRocmProfile.id,
+    schemaVersion: CFG.realRocmProfile.schemaVersion,
+    source: CFG.realRocmProfile.source,
+  },
   source_url: CFG.repoUrl,
   repo_path: CFG.repoPath,
   repo_commit: null,
@@ -945,6 +1277,10 @@ const report = {
   cmake_config: CFG.cmakeConfigName,
   cmake_args: CFG.cmakeArgs,
   model: CFG.geminiModel,
+  model_roles: {
+    gpu_split: CFG.gpuSplitModel,
+    gpu_delta: CFG.gpuDeltaModel,
+  },
   gpu_vendor: CFG.gpuMode,
   gpu_arch: CFG.gpuArch,
   containers: {
@@ -962,10 +1298,12 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  adversarial_preflight: null,
   hiprt_runtime_probe: {
     enabled: CFG.hiprtRuntimeProbe,
     capture_worker_path: null,
     capture_artifact_path: null,
+    native_launch_symbols: CFG.nativeLaunchSymbols,
     source_adaptations: [],
     source_adaptation_runs: [],
     visual_evidence: null,
@@ -982,6 +1320,7 @@ const report = {
   epoch_swap_proof: null,
   dispatch_proof: null,
   output_proof: null,
+  compute_output_oracle_visual_evidence: null,
   host_preservation_proof: null,
   original_host_path_proof: null,
   full_runtime_proof: null,
@@ -1007,7 +1346,12 @@ const report = {
   original_host_path_proof_required: CFG.requireOriginalHostPathProof,
   full_runtime_proof_required: CFG.requireFullRuntimeProof,
   started_at: new Date().toISOString(),
+  metric_clock: 'monotonic_ns',
+  started_monotonic_ns: RUN_STARTED_MONOTONIC_NS,
   finished_at: null,
+  finished_monotonic_ns: null,
+  duration_monotonic_ns: null,
+  timingMetrics: null,
 };
 
 function record(name, status, detail = '') {
@@ -2104,6 +2448,15 @@ async function collectHiprtRuntimeProbeCapture() {
   const bytes = await readFile(localPath);
   const stats = await analyzeGpuHmrImageEvidence(bytes);
   const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const outputTargetId = runtimeOutputTargetId({
+    visualFrame: {
+      label: 'hiprt-runtime-framebuffer',
+      source: 'hiprt-runtime-device-framebuffer',
+      path: localPath,
+      outputKind: 'framebuffer',
+    },
+    outputKind: 'framebuffer',
+  });
   const row = visualEvidenceRow({
     label: 'hiprt-runtime-framebuffer',
     path: localPath,
@@ -2112,6 +2465,10 @@ async function collectHiprtRuntimeProbeCapture() {
     source: 'hiprt-runtime-device-framebuffer',
     contentHash,
     content_hash: contentHash,
+    outputTargetId,
+    output_target_id: outputTargetId,
+    outputKind: 'framebuffer',
+    output_kind: 'framebuffer',
   });
   report.screenshots.push(row);
   report.hiprt_runtime_probe.capture_artifact_path = localPath;
@@ -2946,6 +3303,8 @@ async function ensureMcpAttached() {
         '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
         '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
         '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+        '-e', `SYNTHI_GPU_SPLIT_MODEL=${CFG.gpuSplitModel}`,
+        '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
         CFG.mcpContainer,
         'node',
         '/app/dist/index.js',
@@ -3084,6 +3443,86 @@ function runtimeIdentityChangeEvidence(runtimeIdentity = report.runtime_identity
   };
 }
 
+function runtimeProofStateAccepted(proof, state) {
+  return proof?.resultState === state && !proof?.degradedState;
+}
+
+function runtimeEvidenceRefsFromProofs(...proofs) {
+  return compactStringList(proofs.flatMap((proof) =>
+    Array.isArray(proof?.evidenceRefs) ? proof.evidenceRefs : []
+  ));
+}
+
+function deriveCpuGpuFirewallEvidence({
+  runtimeIdentityChanges,
+  runtimeHostPreservation,
+  runtimeDispatch,
+  runtimeOutputOracle,
+  runtimeOwnership,
+  hostRestartCount,
+}) {
+  const dispatchProven = runtimeProofStateAccepted(
+    report.dispatch_proof,
+    'gpu-hmr-dispatch-safe-proven',
+  );
+  const outputProven = runtimeProofStateAccepted(
+    report.output_proof,
+    'gpu-hmr-output-oracle-proven',
+  );
+  const hostPreservationProven = runtimeProofStateAccepted(
+    report.host_preservation_proof,
+    'gpu-hmr-host-preservation-proven',
+  );
+  const fissionProven = report.fission_proof?.fissionProven === true
+    && !report.fission_proof?.degradedState;
+  const identityMonitored = Number(runtimeIdentityChanges?.total_phases ?? 0) > 0
+    || report.docker?.worker?.available === true;
+  const processRestartObserved =
+    Number(hostRestartCount ?? 0) > 0
+    || Number(runtimeIdentityChanges?.changed_count ?? 0) > 0;
+  const evidenceRefs = runtimeEvidenceRefsFromProofs(
+    report.artifact_transport_proof,
+    report.epoch_swap_proof,
+    report.dispatch_proof,
+    report.output_proof,
+    report.host_preservation_proof,
+    report.fission_proof,
+  );
+  if (runtimeIdentityChanges?.evidence_refs) {
+    evidenceRefs.push(...runtimeIdentityChanges.evidence_refs);
+  }
+  if (runtimeDispatch?.evidence_refs) evidenceRefs.push(...runtimeDispatch.evidence_refs);
+  if (runtimeOutputOracle?.evidence_refs) evidenceRefs.push(...runtimeOutputOracle.evidence_refs);
+  const firewall = {
+    schemaVersion: 'synthi.gpu.hmr.cpu_gpu_firewall_evidence.v1',
+    source: 'real_rocm_runtime_proofs',
+    cpu_hmr_absence_basis: dispatchProven && outputProven
+      ? 'gpu_artifact_dispatch_and_output_oracle_proven'
+      : null,
+    full_rebuild_absence_basis: fissionProven && hostPreservationProven
+      ? 'fission_and_host_preservation_proven'
+      : null,
+    process_restart_absence_basis: identityMonitored && !processRestartObserved
+      ? 'worker_identity_monitoring'
+      : null,
+    process_restart_observed: processRestartObserved,
+    host_restart_count: hostRestartCount,
+    runtime_identity_changes: runtimeIdentityChanges,
+    runtime_ownership_summary: {
+      primary_replacement_count: runtimeOwnership?.primary_replacement_count ?? null,
+      scope_proven_count: runtimeOwnership?.scope_proven_count ?? null,
+    },
+    evidence_refs: compactStringList(evidenceRefs),
+  };
+  if (dispatchProven && outputProven) firewall.cpu_hmr_used = false;
+  if (fissionProven && hostPreservationProven) firewall.full_rebuild_used = false;
+  if (identityMonitored) firewall.process_restarted = processRestartObserved;
+  if (runtimeHostPreservation?.evidence) {
+    firewall.host_preservation_evidence = runtimeHostPreservation.evidence;
+  }
+  return firewall;
+}
+
 async function compileViaMcp(args, timeoutMs, phaseName) {
   const state = await ensureMcpAttached();
   const identityMonitor = await beginPhaseRuntimeIdentityMonitor(phaseName);
@@ -3131,12 +3570,18 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
   const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
   report.phases.push(phase);
+  const waitApplied = wait?.status === 'applied';
+  const waitTerminalProvisional = !waitApplied && CFG.requireFullRuntimeProof;
+  if (waitTerminalProvisional) {
+    phase.wait_hmr_terminal_provisional = true;
+    phase.wait_hmr_terminal_provisional_reason = 'strict_full_runtime_proof_required';
+  }
   record(
     phaseName,
-    wait?.status === 'applied' ? 'pass' : 'fail',
-    `${summarizeGpuProof(phase.gpu_proof)} ${JSON.stringify(phase).slice(0, 1000)}`,
+    waitApplied ? 'pass' : waitTerminalProvisional ? 'warn' : 'fail',
+    `${waitTerminalProvisional ? 'provisional_wait_terminal=true ' : ''}${summarizeGpuProof(phase.gpu_proof)} ${JSON.stringify(phase).slice(0, 1000)}`,
   );
-  if (wait?.status !== 'applied') throw new Error(`${phaseName} wait_hmr status=${wait?.status}`);
+  if (!waitApplied && !waitTerminalProvisional) throw new Error(`${phaseName} wait_hmr status=${wait?.status}`);
   return { compile, wait, phase };
 }
 
@@ -3149,10 +3594,44 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
     wait_hmr_status: wait?.status ?? null,
     wait_hmr_source: wait?.source ?? null,
     wait_hmr_detail: wait?.detail ?? null,
+    wait_hmr_args: wait?.wait_args ?? wait?.waitArgs ?? null,
+    wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
+    wait_hmr_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
     gpu_proof: wait?.gpu_proof ?? null,
     gpu_proof_validation: wait?.gpu_proof_validation ?? null,
     runtime_identity: phaseRuntimeIdentitySummary(identityMonitor),
     wait_call_wall_ms: Date.now() - waitStart,
+  };
+}
+
+function configuredWaitRequiredGpuProofState() {
+  if (CFG.hmrRequiredGpuProofState) return CFG.hmrRequiredGpuProofState;
+  return CFG.requireFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null;
+}
+
+function waitContractFromArgs(waitArgs = {}) {
+  const requiredState = waitArgs.requiredGpuProofState
+    ?? (waitArgs.requireGpuFullRuntimeProof ? 'gpu-hmr-full-runtime-proven' : null);
+  return {
+    timeout_ms: Number.isFinite(waitArgs.timeoutMs) ? waitArgs.timeoutMs : null,
+    module: typeof waitArgs.module === 'string' && waitArgs.module.trim()
+      ? waitArgs.module.trim()
+      : null,
+    since_ts: Number.isFinite(waitArgs.since_ts) ? waitArgs.since_ts : null,
+    preview_id: typeof waitArgs.preview_id === 'string' && waitArgs.preview_id.trim()
+      ? waitArgs.preview_id.trim()
+      : null,
+    required_gpu_proof_state: requiredState ?? null,
+    require_gpu_full_runtime_proof: waitArgs.requireGpuFullRuntimeProof === true,
+  };
+}
+
+function attachWaitEvidence(wait, waitArgs) {
+  if (!wait || typeof wait !== 'object') return wait;
+  return {
+    ...wait,
+    wait_args: waitArgs,
+    wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
   };
 }
 
@@ -3167,9 +3646,13 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
+    const requiredGpuProofState = configuredWaitRequiredGpuProofState();
+    const waitArgs = { timeoutMs: sliceTimeoutMs, since_ts: eventLogSinceTs };
+    if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
+    if (requiredGpuProofState) waitArgs.requiredGpuProofState = requiredGpuProofState;
+    if (CFG.requireFullRuntimeProof) waitArgs.requireGpuFullRuntimeProof = true;
+    const waitContract = waitContractFromArgs(waitArgs);
     try {
-      const waitArgs = { timeoutMs: sliceTimeoutMs, since_ts: eventLogSinceTs };
-      if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
         waitArgs,
@@ -3179,10 +3662,11 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
       await capturePhaseRuntimeIdentity(identityMonitor, 'wait_poll_error');
       const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
       if (identityLoss) return identityLoss;
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       throw err;
     }
+    wait = attachWaitEvidence(wait, waitArgs);
     await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait_poll');
     const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
     if (identityLoss) return identityLoss;
@@ -3190,20 +3674,38 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     const previewId = hmrPreviewId(wait?.detail);
     if (previewId && previewId !== CFG.slug) {
       record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       continue;
     }
     if (wait?.status === 'timeout') {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       continue;
     }
     return wait;
   }
-  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+  const requiredGpuProofState = configuredWaitRequiredGpuProofState();
+  const timeoutWaitArgs = { timeoutMs, since_ts: eventLogSinceTs };
+  if (CFG.hmrWaitModule) timeoutWaitArgs.module = CFG.hmrWaitModule;
+  if (requiredGpuProofState) timeoutWaitArgs.requiredGpuProofState = requiredGpuProofState;
+  if (CFG.requireFullRuntimeProof) timeoutWaitArgs.requireGpuFullRuntimeProof = true;
+  const timeoutWaitContract = waitContractFromArgs(timeoutWaitArgs);
+  const recovered = await currentHmrFromEventLog(
+    state,
+    eventLogSinceTs,
+    startedAt,
+    timeoutWaitArgs,
+    timeoutWaitContract,
+  );
   if (recovered) return recovered;
-  return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'real_rocm_validation_harness' };
+  return last ?? {
+    status: 'timeout',
+    elapsedMs: timeoutMs,
+    source: 'real_rocm_validation_harness',
+    wait_args: timeoutWaitArgs,
+    wait_contract: timeoutWaitContract,
+  };
 }
 
 function hmrPreviewId(detail) {
@@ -3231,7 +3733,7 @@ function hmrStatusFromEvent(entry) {
   return null;
 }
 
-async function currentHmrFromEventLog(state, sinceTs, startedAt) {
+async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null, waitContract = null) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
     { kind: 'hmr', since_ts: sinceTs, limit: 200 },
@@ -3246,12 +3748,17 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
     if (!['applied', 'rejected', 'compile-error', 'full-reload-required', 'discarded'].includes(status)) {
       continue;
     }
+    if (status === 'applied' && !eventLogAppliedRecoveryAllowed(waitArgs, waitContract)) {
+      continue;
+    }
     return {
       status,
       elapsedMs: Date.now() - startedAt,
       hmrElapsedMs: typeof entry.ts === 'number' ? entry.ts - startedAt : null,
       source: 'event_log',
       detail: raw.data && typeof raw.data === 'object' ? raw.data : raw,
+      wait_args: waitArgs,
+      wait_contract: waitContract ?? waitContractFromArgs(waitArgs ?? {}),
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered after ignoring a stale wait_hmr event',
@@ -3261,12 +3768,20 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
   return null;
 }
 
-async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}) {
+async function captureScreenshot(label, { required = CFG.expectScreenshot, wait = null } = {}) {
   if (!mcpState?.client) return null;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   let lastRow = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const shot = await mcpState.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: CFG.screenshotFreshnessMaxMs }, 30000).catch((e) => ({ error: e.message }));
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(wait, {
+      freshnessMaxMs: CFG.screenshotFreshnessMaxMs,
+      frameGateTimeoutMs: CFG.frameGateTimeoutMs,
+    });
+    const shot = await mcpState.client.toolCallRaw(
+      'synthi_screenshot',
+      screenshotArgs,
+      Math.max(30000, CFG.frameGateTimeoutMs + 5000),
+    ).catch((e) => ({ error: e.message }));
     const content = Array.isArray(shot?.content) ? shot.content : [];
     const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
     if (imageBlock?.data) {
@@ -3275,7 +3790,21 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}
       const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
       const stats = await analyzeGpuHmrImageEvidence(bytes);
-      const row = visualEvidenceRow({ label, path: outPath, ...stats, bytes: bytes.length, attempt });
+      const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
+      const row = visualEvidenceRow({
+        label,
+        path: outPath,
+        ...stats,
+        bytes: bytes.length,
+        attempt,
+        screenshot_metadata: screenshotMetadata,
+        wait_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
+        frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(wait, {
+          ...screenshotMetadata,
+          seq: Number(screenshotMetadata?.seq || 0),
+          ts: Number(screenshotMetadata?.ts || 0),
+        }),
+      });
       report.screenshots.push(row);
       const ok = screenshotQualifiesAsVisualEvidence(row);
       if (ok) {
@@ -3308,7 +3837,280 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot } = {}
 }
 
 function visualEvidenceFrames() {
-  return report.screenshots.filter(screenshotQualifiesAsVisualEvidence);
+  return report.screenshots.filter((shot) =>
+    shot?.visualEvidenceSupplementalOnly !== true
+    && shot?.visual_evidence_supplemental_only !== true
+    && (
+      shot?.frame_capture_after_epoch_dispatch === true
+      || shot?.frameCaptureAfterEpochDispatch === true
+    )
+    && screenshotQualifiesAsVisualEvidence(shot)
+  );
+}
+
+function xmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function readbackSampleBytes(oracle) {
+  const hex = String(oracle?.readbackSampleHex ?? '').trim();
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const bytes = Buffer.from(hex, 'hex');
+  return bytes.length > 0 ? bytes : null;
+}
+
+function computeProofArtifactName(oracle) {
+  const base = `${CFG.slug}-${oracle?.oracleId ?? 'runtime-output-oracle'}`
+    .replace(/[^A-Za-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 160);
+  return `${base || CFG.slug}-compute-output-oracle.png`;
+}
+
+async function writeRuntimeOutputOracleVisualProof(runtimeOutputOracle) {
+  const oracle = runtimeOutputOracle?.output_oracle
+    ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
+    : null;
+  if (!oracle || runtimeOutputOracle.deterministic_oracle_passed !== true) {
+    return null;
+  }
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const outPath = path.join(ARTIFACT_DIR, computeProofArtifactName(oracle));
+  const width = 960;
+  const height = 540;
+  const expectedBytes = digestBytes(oracle.expected);
+  const actualBytes = digestBytes(oracle.actual);
+  const sampleBytes = readbackSampleBytes(oracle);
+  const mixedBytes = digestBytes([
+    oracle.oracleId,
+    oracle.outputTargetId,
+    oracle.runtimeSession,
+    oracle.artifactId,
+    oracle.probeConfigHash,
+  ].join('|'));
+  const raw = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 3;
+      const stripe = Math.floor((x / width) * 32) % 32;
+      const band = Math.floor((y / height) * 32) % 32;
+      const e = expectedBytes[(stripe + band) % expectedBytes.length];
+      const a = actualBytes[(stripe * 3 + band) % actualBytes.length];
+      const sample = sampleBytes
+        ? sampleBytes[(x + y * width + stripe * 17 + band * 31) % sampleBytes.length]
+        : mixedBytes[(x + y + stripe) % mixedBytes.length];
+      const m = mixedBytes[(x + y + stripe) % mixedBytes.length];
+      raw[i] = (18 + ((e ^ sample ^ m) % 180)) & 0xff;
+      raw[i + 1] = (36 + ((a + sample + m) % 170)) & 0xff;
+      raw[i + 2] = (48 + ((e + a + sample + band * 7) % 190)) & 0xff;
+    }
+  }
+  const expectedShort = String(oracle.expected ?? '').slice(0, 23);
+  const actualShort = String(oracle.actual ?? '').slice(0, 23);
+  const svg = `
+<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="${width}" height="${height}" fill="rgba(4,8,12,0.18)"/>
+  <rect x="36" y="32" width="888" height="132" rx="8" fill="rgba(0,0,0,0.62)"/>
+  <rect x="36" y="184" width="424" height="282" rx="8" fill="rgba(0,0,0,0.50)"/>
+  <rect x="500" y="184" width="424" height="282" rx="8" fill="rgba(0,0,0,0.50)"/>
+  <text x="60" y="74" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="30" font-weight="700">Runtime Compute Output Oracle</text>
+  <text x="60" y="112" fill="#9ed8ff" font-family="Arial, sans-serif" font-size="18">target ${xmlEscape(oracle.outputTargetId ?? 'unknown')}</text>
+  <text x="60" y="140" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">session ${xmlEscape(oracle.runtimeSession ?? 'unknown')} | generation ${xmlEscape(oracle.generation ?? 'unknown')} | ${oracle.passed ? 'PASSED' : 'FAILED'}</text>
+  <text x="60" y="228" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Expected</text>
+  <text x="60" y="262" fill="#b7ffd2" font-family="Consolas, monospace" font-size="20">${xmlEscape(expectedShort)}</text>
+  <text x="60" y="308" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Actual Readback</text>
+  <text x="60" y="342" fill="#b7ffd2" font-family="Consolas, monospace" font-size="20">${xmlEscape(actualShort)}</text>
+  <text x="60" y="400" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">kind ${xmlEscape(oracle.kind ?? 'unknown')}</text>
+  <text x="60" y="430" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">producer ${xmlEscape(oracle.producer ?? 'unknown')}</text>
+  <text x="524" y="228" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Artifact</text>
+  <text x="524" y="262" fill="#ffe39e" font-family="Consolas, monospace" font-size="18">${xmlEscape(String(oracle.artifactId ?? 'unknown').slice(0, 42))}</text>
+  <text x="524" y="320" fill="#f4f7fb" font-family="Arial, sans-serif" font-size="21" font-weight="700">Probe</text>
+  <text x="524" y="354" fill="#ffe39e" font-family="Consolas, monospace" font-size="18">${xmlEscape(String(oracle.probeMode ?? 'unknown').slice(0, 42))}</text>
+  <text x="524" y="414" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">readback ${xmlEscape(oracle.readbackTimestamp ?? 'unknown')}</text>
+  <text x="524" y="442" fill="#b7c8d8" font-family="Arial, sans-serif" font-size="16">sample ${xmlEscape(sampleBytes ? `${sampleBytes.length} bytes from GPU readback` : 'checksum-derived fallback')}</text>
+</svg>`;
+  await sharp(raw, { raw: { width, height, channels: 3 } })
+    .composite([{ input: Buffer.from(svg) }])
+    .png()
+    .toFile(outPath);
+  const stats = await analyzeGpuHmrImageEvidence(outPath);
+  const row = visualEvidenceRow({
+    label: 'rocm-compute-output-oracle',
+    path: outPath,
+    source: 'runtime-output-oracle-readback-visualization',
+    evidence_refs: oracle.evidenceRefs ?? runtimeOutputOracle.evidence_refs ?? [],
+    oracle_id: oracle.oracleId,
+    output_target_id: oracle.outputTargetId,
+    runtime_session: oracle.runtimeSession,
+    artifact_id: oracle.artifactId,
+    visualEvidenceSupplementalOnly: true,
+    ...stats,
+  });
+  report.screenshots.push(row);
+  report.compute_output_oracle_visual_evidence = row;
+  record(
+    'runtime output oracle visual proof',
+    row.accepted_as_visual_evidence ? 'pass' : 'warn',
+    `quality=${row.visual_quality} path=${row.path}`,
+  );
+  return row;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function outputOracleBaselineChecksum() {
+  return stringField(report.output_oracle_contract, ['baselineSha256', 'baseline_sha256'])
+    || stringField(report.output_oracle_runtime_profile, ['baselineSha256', 'baseline_sha256'])
+    || stringField(
+      report.output_oracle_adaptations?.at(-1),
+      ['baselineSha256', 'baseline_sha256'],
+    )
+    || null;
+}
+
+async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, options = {}) {
+  const oracle = runtimeOutputOracle?.output_oracle
+    ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
+    : null;
+  if (!oracle || runtimeOutputOracle.deterministic_oracle_passed !== true) return null;
+  const baselineChecksum = outputOracleBaselineChecksum();
+  const actualChecksum = String(oracle.actual ?? '').trim();
+  if (!baselineChecksum || !actualChecksum) return null;
+  const rawBytes = readbackSampleBytes(oracle);
+  const sampleSha256 = String(oracle.readbackSampleSha256 ?? '').trim();
+  const rawReadbackHash = rawBytes
+    ? `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`
+    : null;
+  if (!rawBytes || sampleSha256 !== rawReadbackHash) return null;
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const base = `${CFG.slug}-${oracle.oracleId ?? 'runtime-output-oracle'}`
+    .replace(/[^A-Za-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 160);
+  const rawPath = path.join(ARTIFACT_DIR, `${base || CFG.slug}-compute-readback.bin`);
+  await writeFile(rawPath, rawBytes);
+  const schema = {
+    schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+    source: 'real_rocm_runtime_output_oracle',
+    encoding: 'runtime_sample_hex',
+    readbackSampleStride: oracle.readbackSampleStride ?? null,
+    readbackSampleSha256: sampleSha256,
+    outputTargetId: oracle.outputTargetId ?? null,
+    oracleId: oracle.oracleId ?? null,
+    artifactId: oracle.artifactId ?? null,
+    runtimeSession: oracle.runtimeSession ?? null,
+    generation: oracle.generation ?? null,
+    probeMode: oracle.probeMode ?? null,
+    probeConfigHash: oracle.probeConfigHash ?? null,
+    rawReadbackHash,
+    rawReadbackSource: 'runtime_readback_sample',
+  };
+  const schemaPath = path.join(ARTIFACT_DIR, `${base || CFG.slug}-compute-readback-schema.json`);
+  await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`);
+  const cardPath = options.proofCardPath
+    ?? report.compute_output_oracle_visual_evidence?.path
+    ?? null;
+  return {
+    raw_readback_bin: rawPath,
+    readback_schema_json: schemaPath,
+    checksum_before: baselineChecksum,
+    checksum_after: actualChecksum,
+    expected_output_change:
+      report.output_oracle_contract?.expectedOutputChange === true
+      || baselineChecksum !== actualChecksum,
+    deterministic_slice: {
+      offset: 0,
+      length: rawBytes.length,
+      source: 'runtime_readback_sample',
+    },
+    raw_readback_hash: rawReadbackHash,
+    raw_readback_source: 'runtime_readback_sample',
+    oracle_code_hash: oracle.probeConfigHash ?? `sha256:${createHash('sha256').update(stableJson(schema)).digest('hex')}`,
+    rendered_card_png: cardPath,
+    producer: oracle.producer ?? 'runtime_probe',
+    timestamp_after_dispatch: oracle.readbackTimestamp ?? null,
+    epoch: oracle.generation ? `generation:${oracle.generation}` : oracle.artifactId ?? null,
+  };
+}
+
+async function writeRuntimeVisualOracleArtifactsFromFrames(frames = [], afterFrame = null, options = {}) {
+  const acceptedFrames = (Array.isArray(frames) ? frames : [])
+    .filter((frame) =>
+      frame?.accepted_as_visual_evidence === true
+      && typeof frame?.path === 'string'
+      && frame.path.trim()
+    );
+  const after = afterFrame && typeof afterFrame.path === 'string'
+    ? afterFrame
+    : acceptedFrames.at(-1);
+  if (!after) return null;
+  const before = acceptedFrames.find((frame) => frame.path !== after.path);
+  if (!before) return null;
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const beforeRaw = await sharp(before.path).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const afterRaw = await sharp(after.path)
+    .resize(beforeRaw.info.width, beforeRaw.info.height, { fit: 'fill' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const diff = Buffer.allocUnsafe(beforeRaw.data.length);
+  let changed = 0;
+  let visible = 0;
+  let totalAbs = 0;
+  for (let i = 0; i < beforeRaw.data.length; i += 4) {
+    const alpha = Math.max(beforeRaw.data[i + 3], afterRaw.data[i + 3]);
+    if (alpha > 0) visible += 1;
+    const dr = Math.abs(afterRaw.data[i] - beforeRaw.data[i]);
+    const dg = Math.abs(afterRaw.data[i + 1] - beforeRaw.data[i + 1]);
+    const db = Math.abs(afterRaw.data[i + 2] - beforeRaw.data[i + 2]);
+    const da = Math.abs(afterRaw.data[i + 3] - beforeRaw.data[i + 3]);
+    const delta = dr + dg + db + da;
+    if (delta > 12) changed += 1;
+    totalAbs += delta;
+    diff[i] = Math.min(255, dr * 4);
+    diff[i + 1] = Math.min(255, dg * 4);
+    diff[i + 2] = Math.min(255, db * 4);
+    diff[i + 3] = 255;
+  }
+  const pixelCount = beforeRaw.info.width * beforeRaw.info.height;
+  const diffPath = path.join(
+    ARTIFACT_DIR,
+    `${CFG.slug}-${options.name ?? 'runtime-visual-oracle'}-diff.png`
+      .replace(/[^A-Za-z0-9_.-]+/g, '-'),
+  );
+  await sharp(diff, {
+    raw: {
+      width: beforeRaw.info.width,
+      height: beforeRaw.info.height,
+      channels: 4,
+    },
+  }).png().toFile(diffPath);
+  return {
+    before_image: before.path,
+    after_image: after.path,
+    diff_image: diffPath,
+    blank_frame_rejection: visible > 0,
+    same_frame_rejection: changed > 0,
+    new_epoch_watermark_or_trace: options.epochTrace ?? after.contentHash ?? after.content_hash ?? null,
+    camera_state_hash: options.cameraStateHash ?? null,
+    swapchain_size: [beforeRaw.info.width, beforeRaw.info.height],
+    capture_backend: options.captureBackend ?? 'mcp_synthi_screenshot',
+    frame_number: Number.isFinite(options.frameNumber) ? options.frameNumber : null,
+    timestamp_after_dispatch: options.timestampAfterDispatch ?? Date.now(),
+    perceptual_diff: pixelCount > 0 ? totalAbs / (pixelCount * 4 * 255) : 0,
+    changed_pixel_ratio: pixelCount > 0 ? changed / pixelCount : 0,
+    visible_pixel_count: visible,
+  };
 }
 
 function editSource(source, before, after, label) {
@@ -3383,6 +4185,17 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
   const constants = parseSaxpySourceConstants(source);
   const multiplierPlan = saxpyMultiplierPlanAfterDelta(source, deltaAfter);
   if (!constants || multiplierPlan === null) return null;
+  const bytesForMultiplier = (multiplier) => {
+    const bytes = Buffer.allocUnsafe(constants.size * 4);
+    const yInitial = Math.fround(constants.yFill);
+    for (let index = 0; index < constants.size; index += 1) {
+      const xValue = Math.fround(constants.xStart + index);
+      const value = Math.fround(Math.fround(multiplier * xValue) + yInitial);
+      bytes.writeFloatLE(value, index * 4);
+    }
+    return bytes;
+  };
+  const baselineBytes = bytesForMultiplier(Math.fround(constants.a));
   const bytes = Buffer.allocUnsafe(constants.size * 4);
   const yInitial = Math.fround(constants.yFill);
   for (let index = 0; index < constants.size; index += 1) {
@@ -3390,6 +4203,7 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
     const value = Math.fround(Math.fround(multiplierPlan.effectiveMultiplier * xValue) + yInitial);
     bytes.writeFloatLE(value, index * 4);
   }
+  const baselineSha256 = `sha256:${createHash('sha256').update(baselineBytes).digest('hex')}`;
   const expectedSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const config = {
     schemaVersion: 'synthi.real_rocm.output_oracle_profile.saxpy_readback_y.v1',
@@ -3400,8 +4214,10 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
     xStart: constants.xStart,
     yInitial: constants.yFill,
     argumentMultiplier: multiplierPlan.argumentMultiplier,
+    baselineEffectiveMultiplier: Math.fround(constants.a),
     effectiveMultiplier: multiplierPlan.effectiveMultiplier,
     kernelDelta: multiplierPlan.kernelDelta,
+    baselineSha256,
     deltaAfterSha256: `sha256:${createHash('sha256').update(deltaAfter).digest('hex')}`,
     expectedSha256,
   };
@@ -3419,6 +4235,7 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
       enabled: true,
       profileId: 'hip.saxpy.readback-y.v1',
       oracleId: `oracle:real-rocm:saxpy-readback-y:${configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`,
+      baselineSha256,
       expectedSha256,
       producer: 'real_rocm_source_derived_output_profile',
       outputTargetId: `${sourceFile}:y`,
@@ -3604,6 +4421,8 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
     requiredOracleId: oracle.oracleId,
     kind: 'buffer_checksum',
     expected: oracle.expectedSha256,
+    baselineSha256: oracle.baselineSha256,
+    expectedOutputChange: oracle.baselineSha256 !== oracle.expectedSha256,
     producer: oracle.producer,
     outputTargetId: oracle.outputTargetId,
   };
@@ -3615,6 +4434,7 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
     kind: 'source_derived_buffer_checksum',
     file: CFG.deltaFile,
     oracleId: oracle.oracleId,
+    baselineSha256: oracle.baselineSha256,
     expectedSha256: oracle.expectedSha256,
     configHash: oracle.configHash,
     producer: oracle.producer,
@@ -3721,6 +4541,141 @@ function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
 
+function uniqueLogFieldValues(lines, key, linePattern = null) {
+  const values = [];
+  for (const line of lines) {
+    if (linePattern && !linePattern.test(line)) continue;
+    const value = logField(line, key);
+    if (value && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+function plainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function modelRecordLooksStructured(value) {
+  const record = plainObject(value);
+  if (!record) return false;
+  return [
+    'provider',
+    'requested_model',
+    'requestedModel',
+    'provider_model_status',
+    'providerModelStatus',
+    'model_availability_checked_at',
+    'modelAvailabilityCheckedAt',
+    'actual_model',
+    'actualModel',
+    'request_mode',
+    'requestMode',
+  ].some((key) => Object.prototype.hasOwnProperty.call(record, key));
+}
+
+function modelRecordOrNull(value) {
+  return modelRecordLooksStructured(value) ? value : null;
+}
+
+function structuredModelProvenanceFromSidecar(sidecarArtifact = {}) {
+  const sidecar = plainObject(sidecarArtifact.parsed) ?? {};
+  const nested = plainObject(sidecar._synthi_model_provenance) ?? {};
+  const verifier = plainObject(sidecar.lastGpuAiDeltaVerifierReport) ?? {};
+  const verifierEvidence = plainObject(verifier.evidence) ?? {};
+  const split = modelRecordOrNull(sidecar.model_provenance)
+    ?? modelRecordOrNull(nested.split)
+    ?? null;
+  const lastGpuDelta = modelRecordOrNull(sidecar.lastGpuAiDeltaModelProvenance)
+    ?? modelRecordOrNull(nested.last_gpu_delta)
+    ?? modelRecordOrNull(nested.lastGpuDelta)
+    ?? modelRecordOrNull(verifierEvidence.modelProvenance)
+    ?? null;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.model_provenance.sidecar.v1',
+    evidence_source: sidecarArtifact.path ?? null,
+    evidence_available: sidecarArtifact.available === true,
+    evidence_parse_error: sidecarArtifact.parseError ?? null,
+    expected_gpu_split_model: CFG.gpuSplitModel,
+    expected_gpu_delta_model: CFG.gpuDeltaModel,
+    split,
+    last_gpu_delta: lastGpuDelta,
+    observed_records: [
+      ...(split ? ['split'] : []),
+      ...(lastGpuDelta ? ['last_gpu_delta'] : []),
+    ],
+    missing_records: [
+      ...(!split ? ['split'] : []),
+      ...(!lastGpuDelta ? ['last_gpu_delta'] : []),
+    ],
+  };
+}
+
+async function readWorkerWorkspaceJson(relativePath) {
+  const normalizedRelative = String(relativePath ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalizedRelative) {
+    return { available: false, path: null, reason: 'empty_relative_path' };
+  }
+  if (CFG.mcpTransport !== 'docker') {
+    return {
+      available: false,
+      path: normalizedRelative,
+      reason: `transport_${CFG.mcpTransport}_cannot_read_worker_workspace`,
+    };
+  }
+  const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const directPath = `${workspaceRoot}/${normalizedRelative}`;
+  const basename = path.posix.basename(normalizedRelative);
+  const startedAt = report.started_at;
+  const raw = await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      [
+        `direct=${shQuote(directPath)}`,
+        `basename=${shQuote(basename)}`,
+        `started_at=${shQuote(startedAt)}`,
+        'candidate=""',
+        '[ -f "$direct" ] && candidate="$direct"',
+        'if [ -z "$candidate" ]; then',
+        '  candidate=$(find /tmp /home/runner /synthi -name "$basename" -type f -newermt "$started_at" -printf "%T@\\t%p\\n" 2>/dev/null | sort -n | tail -1 | cut -f2- || true)',
+        'fi',
+        'if [ -z "$candidate" ]; then',
+        '  candidate=$(find /tmp /home/runner /synthi -name "$basename" -type f -printf "%T@\\t%p\\n" 2>/dev/null | sort -n | tail -1 | cut -f2- || true)',
+        'fi',
+        '[ -f "$candidate" ] || exit 0',
+        'printf "__SYNTHI_JSON_PATH__%s\\n" "$candidate"',
+        'cat "$candidate"',
+      ].join('\n'),
+    ],
+    30000,
+    false,
+  );
+  if (!raw) {
+    return { available: false, path: directPath, reason: 'worker_workspace_json_missing' };
+  }
+  const markerMatch = raw.match(/^__SYNTHI_JSON_PATH__(.*)\n/);
+  const workerPath = markerMatch?.[1]?.trim() || directPath;
+  const body = markerMatch ? raw.slice(markerMatch[0].length) : raw;
+  try {
+    return {
+      available: true,
+      path: workerPath,
+      parsed: JSON.parse(body),
+      raw_sha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+    };
+  } catch (err) {
+    return {
+      available: false,
+      path: workerPath,
+      parseError: err.message,
+      raw_sha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+    };
+  }
+}
+
 function normalizeSessionMarker(value) {
   return String(value ?? '').trim().replace(/^["']+|["',;:)]+$/g, '');
 }
@@ -3728,6 +4683,18 @@ function normalizeSessionMarker(value) {
 function runtimeSessionIdFromLine(line) {
   const match = String(line ?? '').match(/\bruntime_session=([^\s]+)/i);
   return match ? normalizeSessionMarker(match[1]) : null;
+}
+
+function processIdFromRuntimeSession(value) {
+  const session = String(value ?? '').trim();
+  const match = session.match(/^pid(\d+)(?:[-:]|$)/i);
+  return match ? `pid:${match[1]}` : null;
+}
+
+function processIdsFromRuntimeSessions(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(processIdFromRuntimeSession)
+    .filter((value) => typeof value === 'string' && value.trim()))];
 }
 
 function logField(line, key) {
@@ -3847,6 +4814,9 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const dispatchId = logField(line, 'dispatch_id');
+    const generation = logField(line, 'generation') ?? logField(line, 'active_generation');
+    const epoch = logField(line, 'epoch') ?? logField(line, 'active_epoch');
     const streamId = logField(line, 'stream');
     const gridDimensions = logDim3Field(line, 'grid');
     const blockDimensions = logDim3Field(line, 'block');
@@ -3864,6 +4834,9 @@ function runtimeDispatchEvidence(workerEvidence) {
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
         : null,
+      dispatchId: dispatchId && dispatchId !== 'none' ? dispatchId : null,
+      generation: generation && generation !== 'none' ? generation : null,
+      epoch: epoch && epoch !== 'none' ? epoch : null,
       streamId: streamId && streamId !== 'none' ? streamId : null,
       gridDimensions,
       blockDimensions,
@@ -3879,12 +4852,23 @@ function runtimeDispatchEvidence(workerEvidence) {
     if (!record.runtimeSession || !record.kernelName) return null;
     return `worker-log:synthi_gpu_launch:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
   }).filter(Boolean))];
+  const latestSuccessRecord = successRecords.at(-1) ?? null;
+  const processIds = processIdsFromRuntimeSessions(successRecords.map((record) => record.runtimeSession));
   return {
     success_count: dispatchSuccessCount,
+    process_id: processIds.length === 1 ? processIds[0] : null,
+    process_ids: processIds,
     success_lines: dispatchSuccessLines.slice(-20),
     success_records: successRecords.slice(-20),
     evidence_refs: dispatchEvidenceRefs,
     runtime_artifact_ids: [...new Set(successRecords.map((record) => record.artifactId).filter(Boolean))],
+    runtime_artifact_id: latestSuccessRecord?.artifactId ?? null,
+    dispatch_ids: [...new Set(successRecords.map((record) => record.dispatchId).filter(Boolean))],
+    dispatch_id: latestSuccessRecord?.dispatchId ?? null,
+    generations: [...new Set(successRecords.map((record) => record.generation).filter(Boolean))],
+    generation: latestSuccessRecord?.generation ?? null,
+    epochs: [...new Set(successRecords.map((record) => record.epoch).filter(Boolean))],
+    epoch: latestSuccessRecord?.epoch ?? latestSuccessRecord?.generation ?? null,
     dispatcher_registration_ids: [
       ...new Set(successRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
     ],
@@ -3930,8 +4914,18 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     api: logField(line, 'api'),
     runtimeSession: runtimeSessionIdFromLine(line),
     sequence: logField(line, 'sequence'),
+    generation: logField(line, 'generation') ?? logField(line, 'active_generation'),
+    epoch: logField(line, 'epoch') ?? logField(line, 'active_epoch'),
+    dispatchTimestamp: logField(line, 'dispatch_timestamp') ?? logField(line, 'dispatch_timestamp_ms'),
     functionPtr: logField(line, 'function_ptr'),
     kernelSymbol: logField(line, 'kernel_symbol') ?? logField(line, 'kernel') ?? logField(line, 'symbol'),
+    gridDimensions: logDim3Field(line, 'grid'),
+    blockDimensions: logDim3Field(line, 'block'),
+    streamId: logField(line, 'stream'),
+    sharedMemoryBytes: logField(line, 'shared_bytes'),
+    dispatcherRegistrationId: logField(line, 'dispatcher_registration_id'),
+    dispatchTableHash: logField(line, 'dispatch_table_hash'),
+    dispatchTableEntryId: logField(line, 'dispatch_table_entry_id'),
     dispatch: logField(line, 'dispatch'),
     realLaunchResolved: logField(line, 'real_launch_resolved'),
   }));
@@ -4024,8 +5018,18 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     api: logField(line, 'api'),
     runtimeSession: runtimeSessionIdFromLine(line),
     sequence: logField(line, 'sequence'),
+    generation: logField(line, 'generation') ?? logField(line, 'active_generation'),
+    epoch: logField(line, 'epoch') ?? logField(line, 'active_epoch'),
+    dispatchTimestamp: logField(line, 'dispatch_timestamp') ?? logField(line, 'dispatch_timestamp_ms'),
     functionPtr: logField(line, 'function_ptr'),
     kernelSymbol: logField(line, 'kernel_symbol') ?? logField(line, 'kernel') ?? logField(line, 'symbol'),
+    gridDimensions: logDim3Field(line, 'grid'),
+    blockDimensions: logDim3Field(line, 'block'),
+    streamId: logField(line, 'stream'),
+    sharedMemoryBytes: logField(line, 'shared_bytes'),
+    dispatcherRegistrationId: logField(line, 'dispatcher_registration_id'),
+    dispatchTableHash: logField(line, 'dispatch_table_hash'),
+    dispatchTableEntryId: logField(line, 'dispatch_table_entry_id'),
     result: logField(line, 'result'),
     dispatch: logField(line, 'dispatch'),
   }));
@@ -4216,11 +5220,147 @@ function hiprtNativeVisualFrame(frames = []) {
   ) ?? null;
 }
 
+function firstStringField(entry, names = []) {
+  if (!entry || typeof entry !== 'object') return null;
+  for (const name of names) {
+    const value = entry[name];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function stableOutputIdentityPart(value, fallback) {
+  const cleaned = String(value ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 128);
+  return cleaned || fallback;
+}
+
+function runtimeOutputTargetId({
+  outputOracleContract = report.output_oracle_contract,
+  outputOracleRuntimeProfile = report.output_oracle_runtime_profile,
+  visualFrame = null,
+  outputKind = 'framebuffer',
+} = {}) {
+  const runtimeProfile = outputOracleRuntimeProfile && typeof outputOracleRuntimeProfile === 'object'
+    ? outputOracleRuntimeProfile
+    : {};
+  const runtimeProfileRuntime = runtimeProfile.runtime && typeof runtimeProfile.runtime === 'object'
+    ? runtimeProfile.runtime
+    : {};
+  const contract = outputOracleContract && typeof outputOracleContract === 'object'
+    ? outputOracleContract
+    : {};
+  const explicit = firstStringField(contract, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]) ?? firstStringField(runtimeProfile, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]) ?? firstStringField(runtimeProfileRuntime, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]) ?? firstStringField(visualFrame, [
+    'outputTargetId',
+    'output_target_id',
+    'outputTarget',
+    'output_target',
+    'target',
+  ]);
+  if (explicit) return explicit;
+
+  const adapterFamily = stableOutputIdentityPart(
+    report.real_rocm_profile?.adapter?.family
+      ?? report.real_rocm_profile?.runtime?.backend?.orochiApi
+      ?? report.real_rocm_profile?.runtime?.backend?.api
+      ?? (CFG.hiprtRuntimeProbe ? 'hiprt' : CFG.gpuMode),
+    'gpu',
+  );
+  const targetName = stableOutputIdentityPart(
+    runtimeProfileRuntime.targetName
+      ?? runtimeProfile.targetName
+      ?? CFG.targetName
+      ?? report.target_name,
+    'runtime-target',
+  );
+  const kind = stableOutputIdentityPart(
+    firstStringField(visualFrame, ['outputKind', 'output_kind', 'kind']) ?? outputKind,
+    'output',
+  );
+  return `${adapterFamily}:${targetName}:${kind}`;
+}
+
 function hiprtNativeEvidenceRef(record, kind = 'native_launch_observed') {
   const session = evidenceRefPart(record?.runtimeSession, 'native-session');
   const kernel = evidenceRefPart(record?.kernelSymbol, 'kernel');
   const sequence = evidenceRefPart(record?.sequence, 'sequence');
   return `worker-log:${kind}:${session}:${kernel}:${sequence}`;
+}
+
+function nativeLaunchTargetSymbols({
+  nativeLaunchSymbols = CFG.nativeLaunchSymbols,
+  outputOracleRuntimeProfile = report.output_oracle_runtime_profile,
+  outputOracleContract = report.output_oracle_contract,
+} = {}) {
+  const runtimeProfile = outputOracleRuntimeProfile && typeof outputOracleRuntimeProfile === 'object'
+    ? outputOracleRuntimeProfile
+    : {};
+  const runtimeProfileRuntime = runtimeProfile.runtime && typeof runtimeProfile.runtime === 'object'
+    ? runtimeProfile.runtime
+    : {};
+  const runtimeProfileReload =
+    runtimeProfileRuntime.reload && typeof runtimeProfileRuntime.reload === 'object'
+      ? runtimeProfileRuntime.reload
+      : {};
+  const contract = outputOracleContract && typeof outputOracleContract === 'object'
+    ? outputOracleContract
+    : {};
+  return compactStringList([
+    ...compactStringList(nativeLaunchSymbols),
+    runtimeProfile.kernelSymbol,
+    runtimeProfile.kernel_symbol,
+    runtimeProfile.kernelName,
+    runtimeProfile.kernel_name,
+    runtimeProfileRuntime.kernelSymbol,
+    runtimeProfileRuntime.kernel_symbol,
+    runtimeProfileRuntime.kernelName,
+    runtimeProfileRuntime.kernel_name,
+    runtimeProfileReload.kernelSymbol,
+    runtimeProfileReload.kernel_symbol,
+    runtimeProfileReload.kernelName,
+    runtimeProfileReload.kernel_name,
+    ...(Array.isArray(runtimeProfile.requiredKernels) ? runtimeProfile.requiredKernels : []),
+    ...(Array.isArray(runtimeProfile.required_kernels) ? runtimeProfile.required_kernels : []),
+    ...(Array.isArray(runtimeProfileRuntime.requiredKernels) ? runtimeProfileRuntime.requiredKernels : []),
+    ...(Array.isArray(runtimeProfileRuntime.required_kernels) ? runtimeProfileRuntime.required_kernels : []),
+    contract.kernelSymbol,
+    contract.kernel_symbol,
+    contract.kernelName,
+    contract.kernel_name,
+  ]);
+}
+
+function nativeLaunchRecordsForContract(records, targetSymbols) {
+  const normalizedTargets = new Set(
+    compactStringList(targetSymbols).map((symbol) => symbol.toLowerCase()),
+  );
+  if (normalizedTargets.size === 0) return records;
+  return records.filter((record) =>
+    typeof record?.kernelSymbol === 'string'
+    && normalizedTargets.has(record.kernelSymbol.trim().toLowerCase())
+  );
 }
 
 function buildHiprtNativeDispatchProof({
@@ -4240,18 +5380,64 @@ function buildHiprtNativeDispatchProof({
       && record.kernelSymbol.trim()
     );
   if (records.length === 0) return null;
-  const preferred = records.filter((record) =>
-    /^(CameraRays|MegaKernel|GMoNComputeMedianOfMeans)$/i.test(record.kernelSymbol),
-  );
-  const acceptedRecords = preferred.length > 0 ? preferred : records;
+  const targetSymbols = nativeLaunchTargetSymbols();
+  const acceptedRecords = nativeLaunchRecordsForContract(records, targetSymbols);
+  if (acceptedRecords.length === 0) return null;
   const runtimeSessionIds = [
     ...new Set(acceptedRecords.map((record) => record.runtimeSession).filter(Boolean)),
   ];
+  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const artifactId = preferredRuntimeArtifactId({ selectedArtifactIds, epochProof });
   const dispatchEvidenceRefs = acceptedRecords.map((record) => hiprtNativeEvidenceRef(record));
   const argProvenanceEvidenceRefs = acceptedRecords.map((record) =>
     hiprtNativeEvidenceRef(record, 'launch_arg_provenance'),
   );
+  const observedEpochs = [
+    ...new Set(acceptedRecords.map((record) => record.epoch ?? record.generation).filter(Boolean)),
+  ];
+  const dispatchTimestamps = acceptedRecords
+    .map((record) => Number(record.dispatchTimestamp))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const dispatcherRegistrationIds = [
+    ...new Set(acceptedRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
+  ];
+  const dispatchTableEntryIds = [
+    ...new Set(acceptedRecords.map((record) => record.dispatchTableEntryId).filter(Boolean)),
+  ];
+  const dispatchTableHashes = [
+    ...new Set(acceptedRecords.map((record) => record.dispatchTableHash).filter(Boolean)),
+  ];
+  const dispatchIds = acceptedRecords
+    .map((record) => record.runtimeSession && record.sequence
+      ? `native:${record.runtimeSession}:${record.sequence}`
+      : null)
+    .filter(Boolean);
+  const dispatchStreamIds = [
+    ...new Set(acceptedRecords.map((record) => record.streamId).filter(Boolean)),
+  ];
+  const gridDimensions = [
+    ...new Set(acceptedRecords.map((record) => record.gridDimensions).filter(Boolean)),
+  ];
+  const blockDimensions = [
+    ...new Set(acceptedRecords.map((record) => record.blockDimensions).filter(Boolean)),
+  ];
+  const sharedMemoryBytes = [
+    ...new Set(acceptedRecords
+      .map((record) => Number(record.sharedMemoryBytes))
+      .filter((value) => Number.isFinite(value) && value >= 0)),
+  ];
+  if (
+    observedEpochs.length === 0
+    || dispatchTimestamps.length === 0
+    || dispatchIds.length === 0
+    || dispatcherRegistrationIds.length === 0
+    || dispatchTableEntryIds.length === 0
+    || dispatchTableHashes.length === 0
+    || dispatchStreamIds.length === 0
+    || gridDimensions.length === 0
+    || blockDimensions.length === 0
+    || sharedMemoryBytes.length === 0
+  ) return null;
   return {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
     resultState: 'gpu-hmr-dispatch-safe-proven',
@@ -4264,6 +5450,7 @@ function buildHiprtNativeDispatchProof({
     sessionScoped: runtimeSessionIds.length > 0,
     runtimeSessionObserved: runtimeSessionIds.length > 0,
     runtimeSessionIds,
+    processId: processIds.length === 1 ? processIds[0] : null,
     runtimeSessionConsistent: runtimeSessionIds.length <= 1,
     argProvenanceObserved: true,
     argProvenanceComplete: true,
@@ -4292,16 +5479,19 @@ function buildHiprtNativeDispatchProof({
     runtimeArtifactMatchesSelected: artifactId !== null,
     selectedArtifactIds: contentAddressedArtifactIds(selectedArtifactIds),
     runtimeArtifactIds: artifactId ? [artifactId] : [],
-    dispatcherRegistrationIds: ['native-hip-module-launch-observer'],
-    dispatchTableEntryIds: acceptedRecords.map((record) =>
-      `native-launch-observer:${record.sequence}`,
-    ),
-    dispatchTableHashes: [],
-    dispatchStreamIds: [],
-    gridDimensions: [],
-    blockDimensions: [],
-    sharedMemoryBytes: [],
+    dispatcherRegistrationIds,
+    dispatchTableEntryIds,
+    dispatchTableHashes,
+    dispatchStreamIds,
+    gridDimensions,
+    blockDimensions,
+    sharedMemoryBytes,
+    dispatchTimestamps,
+    dispatchId: dispatchIds.at(-1) ?? null,
+    epoch: observedEpochs.at(-1) ?? null,
+    generation: observedEpochs.at(-1) ?? null,
     nativeLaunchObserved: true,
+    nativeLaunchTargetSymbols: targetSymbols,
     nativeLaunchRecords: acceptedRecords,
     proofSource: 'hiprt-native-launch-observer',
   };
@@ -4312,7 +5502,12 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
   const contentHash = visualFrame.contentHash ?? visualFrame.content_hash;
   if (!/^sha256:[0-9a-f]{64}$/i.test(String(contentHash ?? ''))) return null;
   const artifactId = dispatchProof.runtimeArtifactIds?.[0] ?? dispatchProof.selectedArtifactIds?.[0] ?? null;
+  const processId = dispatchProof.processId
+    ?? processIdFromRuntimeSession(dispatchProof.runtimeSessionIds?.[0])
+    ?? null;
   const visualEvidenceRefs = [visualFrame.path].filter(Boolean);
+  const outputTargetId = runtimeOutputTargetId({ visualFrame, outputKind: 'framebuffer' });
+  if (!outputTargetId) return null;
   const oracleEvidenceRef = `validation:output-oracle:${contentHash}`;
   return {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
@@ -4343,9 +5538,10 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
       exactValueMatch: true,
       evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
       producer: 'hiprt-runtime-device-framebuffer',
-      outputTargetId: 'HIPRTPathTracer framebuffer',
+      outputTargetId,
       readbackTimestamp: Date.now(),
       runtimeSessionId: dispatchProof.runtimeSessionIds?.[0] ?? null,
+      processId,
       artifactId,
       probeContractComplete: true,
       probeContract: {
@@ -4360,6 +5556,7 @@ function buildHiprtNativeOutputProof({ dispatchProof, visualFrame } = {}) {
     visualEvidenceComplete: visualEvidenceRefs.length > 0,
     visualEvidenceRefs,
     evidenceRefs: [oracleEvidenceRef, ...visualEvidenceRefs],
+    processId,
     dispatchProof,
     artifactId,
     proofSource: 'hiprt-runtime-device-framebuffer',
@@ -4611,6 +5808,7 @@ function summarizeGpuProof(proof) {
 }
 
 async function selfCheckRuntimeDispatchEvidence() {
+  await selfCheckRealRocmProfiles();
   const visualRows = [
     { path: 'blank.png', width: 800, height: 600, visible_pixels: 0 },
     { path: 'tiny.png', width: 120, height: 90, visible_pixels: 10800 },
@@ -4626,6 +5824,33 @@ async function selfCheckRuntimeDispatchEvidence() {
   ].filter(screenshotQualifiesAsVisualEvidence);
   if (visualRows.length !== 1 || visualRows[0]?.path !== 'fresh.png') {
     throw new Error('visual evidence frame predicate accepted a diagnostic-only screenshot');
+  }
+  const waitArgs = {
+    timeoutMs: 12_345,
+    since_ts: 1_780_850_000_000,
+    module: 'device',
+    preview_id: 'gpu-self-check',
+    requiredGpuProofState: 'gpu-hmr-full-runtime-proven',
+    requireGpuFullRuntimeProof: true,
+  };
+  const waitContract = waitContractFromArgs(waitArgs);
+  if (
+    waitContract.timeout_ms !== waitArgs.timeoutMs
+    || waitContract.module !== 'device'
+    || waitContract.since_ts !== waitArgs.since_ts
+    || waitContract.preview_id !== 'gpu-self-check'
+    || waitContract.required_gpu_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || waitContract.require_gpu_full_runtime_proof !== true
+  ) {
+    throw new Error('wait_hmr contract normalization self-check failed');
+  }
+  const attachedWait = attachWaitEvidence({ status: 'timeout' }, waitArgs);
+  if (
+    attachedWait.wait_args !== waitArgs
+    || attachedWait.wait_contract?.required_gpu_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || attachedWait.wait_contract?.require_gpu_full_runtime_proof !== true
+  ) {
+    throw new Error('wait_hmr evidence attachment self-check failed');
   }
   const parsedCmakeArgs = parseStringArrayEnv(
     '["-DNAME=value with spaces","-DENABLE_FEATURE=ON"]',
@@ -4651,7 +5876,7 @@ async function selfCheckRuntimeDispatchEvidence() {
     throw new Error('upstream run exit code parser did not preserve the recorded status');
   }
   const evidence = runtimeDispatchEvidence([
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok dispatch_timestamp=1779979999000',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok generation=2 dispatch_timestamp=1779979999000',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=second grid=(1, 1, 1) dispatch=failed',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=third grid=(1, 1, 1) dispatch=stale-pointer',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=fourth grid=(1, 1, 1) dispatch=missing-dispatcher',
@@ -4668,6 +5893,9 @@ async function selfCheckRuntimeDispatchEvidence() {
   }
   if (evidence.dispatch_timestamps[0] !== 1779979999000) {
     throw new Error('dispatch timestamp evidence parser failed');
+  }
+  if (evidence.generation !== '2' || evidence.epoch !== '2') {
+    throw new Error('dispatch generation evidence parser failed');
   }
   const scoped = scopeLogTextToSession(
     [
@@ -4913,7 +6141,7 @@ async function selfCheckRuntimeDispatchEvidence() {
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
-      `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original artifact_id=${syntheticArtifactId} dispatcher_registration_id=${syntheticDispatcherId} dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1 dispatch_timestamp=1779979999000`,
+      `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=3 runtime_session=pid-original artifact_id=${syntheticArtifactId} dispatcher_registration_id=${syntheticDispatcherId} dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1 dispatch_timestamp=1779979999000`,
       '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
     ].join('\n'),
   });
@@ -4960,6 +6188,8 @@ async function selfCheckRuntimeDispatchEvidence() {
     blockDimensions: upstreamOnlyDispatch.block_dimensions,
     sharedMemoryBytes: upstreamOnlyDispatch.shared_memory_bytes,
     dispatchTimestamps: upstreamOnlyDispatch.dispatch_timestamps,
+    epoch: upstreamOnlyDispatch.epoch,
+    generation: upstreamOnlyDispatch.generation,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected({
       runtimeDispatch: upstreamOnlyDispatch,
       selectedArtifactIds: [syntheticArtifactId],
@@ -4991,6 +6221,25 @@ async function selfCheckRuntimeDispatchEvidence() {
   });
   const nativeOnlyObservation = runtimeNativeLaunchObservationEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
+  );
+  const nativeOnlyTargetSymbols = nativeLaunchTargetSymbols({
+    nativeLaunchSymbols: [],
+    outputOracleRuntimeProfile: {
+      runtime: {
+        reload: {
+          kernelSymbol: 'kernel',
+        },
+      },
+    },
+    outputOracleContract: null,
+  });
+  const nativeOnlyAcceptedRecords = nativeLaunchRecordsForContract(
+    nativeOnlyObservation.records,
+    nativeOnlyTargetSymbols,
+  );
+  const nativeOnlyRejectedRecords = nativeLaunchRecordsForContract(
+    nativeOnlyObservation.records,
+    ['different_kernel'],
   );
   const nativeOnlyDispatch = runtimeDispatchEvidence(nativeOnlyRuntimeEvidence.runtimeEvidence);
   const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
@@ -5078,6 +6327,9 @@ async function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyObservation.attempt_records[0]?.kernelSymbol !== 'kernel'
     || nativeOnlyObservation.records[0]?.functionPtr !== '0x1'
     || nativeOnlyObservation.records[0]?.kernelSymbol !== 'kernel'
+    || nativeOnlyTargetSymbols[0] !== 'kernel'
+    || nativeOnlyAcceptedRecords.length !== 1
+    || nativeOnlyRejectedRecords.length !== 0
     || nativeOnlyOriginalHost.evidence.native_launch_symbols[0] !== 'kernel'
     || nativeOnlyOriginalHost.evidence.native_launch_function_ptrs[0] !== '0x1'
     || nativeOnlyOriginalHost.evidence.native_launch_attempt_records[0]?.kernel_symbol !== 'kernel'
@@ -5238,6 +6490,7 @@ int main()
     actual: 'sha256:abc',
     passed: true,
     runtimeSession: 'pid1',
+    processId: 'pid:1',
     outputTargetId: 'target:main',
     readbackTimestamp: 300,
     artifactId: activeEpochArtifactId,
@@ -5309,9 +6562,32 @@ int main()
     || !epochBoundOutputProof.outputOracle?.artifactMatchesActiveEpoch
     || selectedOnlyOutputProof.degradedReason !== 'output_oracle_artifact_mismatch'
     || selectedOnlyOutputProof.outputOracle?.artifactMatchesRuntime
+    || epochBoundOutputProof.processId !== 'pid:1'
+    || epochBoundOutputProof.outputOracle?.processId !== 'pid:1'
     || dispatchUnknownProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
   ) {
     throw new Error('runtime dispatch/output proof classifier failed');
+  }
+  const processBoundEpoch = epochSwapProofFromRuntimeEvidence([
+    `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid4242-123 publish_timestamp_ms=200 previous_generation=1 active_generation=2 old_artifact_id=none new_artifact_id=${activeEpochArtifactId} new_artifact_hash=sha256:${'2'.repeat(64)} capsule_id=capsule:sha256:${'5'.repeat(64)} fission_island_id=island:device abi_membrane_hash=sha256:${'6'.repeat(64)} dependency_closure_hash=sha256:${'7'.repeat(64)} proof_hash=sha256:${'8'.repeat(64)} changed_symbols=kernel function_handle_ids=handle:kernel stream_epoch_counters=stream0:2 dispatch_table_hash_before=0x1 dispatch_table_hash_after=0x2 dispatch_table_hash=0x2 changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=stream stream_ids=stream0 stream_ordering_proven=true retirement_fence_ids=fence0 retirement_strategy=epoch_fence delayed_unload_result=not_required drain_result=synced drain_elapsed_ms=0 drain_budget_ms=1`,
+  ]);
+  const processBoundOutputEvidence = runtimeOutputOracleEvidence([
+    `[gpu-runtime-boundary] output_oracle id=probe.process required_oracle_id=probe.process kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=2 runtime_session=pid4242-123 producer=runtime_probe output_target_id=target readback_timestamp=300 artifact_id=${activeEpochArtifactId} probe_mode=post_hmr_active_kernel_readback_checksum probe_config_hash=sha256:${'9'.repeat(64)} probe_evidence_ref=probe-ref`,
+  ]);
+  const processBoundTransportEvidence = runtimeArtifactTransportEvidence([
+    `[gpu-runtime-boundary] artifact_transport runtime_session=pid4242-123 generation=2 artifact_hash=sha256:${'2'.repeat(64)} artifact_bytes=16 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=${activeEpochArtifactId} ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok`,
+  ]);
+  const processBoundTransportProof = artifactTransportProofFromProofArtifacts(
+    [],
+    processBoundTransportEvidence,
+  );
+  if (
+    processBoundEpoch.proof.processId !== 'pid:4242'
+    || processBoundOutputEvidence.process_id !== 'pid:4242'
+    || processBoundOutputEvidence.output_oracle?.processId !== 'pid:4242'
+    || processBoundTransportProof.processId !== 'pid:4242'
+  ) {
+    throw new Error('runtime process identity propagation self-check failed');
   }
   const hostReplacedProof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: true,
@@ -5489,7 +6765,27 @@ int main()
     }),
     fullRuntimeProof: { fullRuntimeProven: true },
     visualEvidenceExpected: true,
-    visualEvidenceFrames: [{ path: 'fresh.png', accepted_as_visual_evidence: true }],
+    visualEvidenceFrames: [{
+      path: 'fresh.png',
+      accepted_as_visual_evidence: true,
+      frame_capture_after_epoch_dispatch: true,
+    }],
+    targetProgressionLedger: completeProgressionLedger,
+  });
+  const finalAcceptanceStaleVisualFails = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    visualEvidenceExpected: true,
+    visualEvidenceFrames: [{
+      path: 'stale.png',
+      accepted_as_visual_evidence: true,
+      frame_capture_after_epoch_dispatch: false,
+    }],
     targetProgressionLedger: completeProgressionLedger,
   });
   if (
@@ -5503,6 +6799,7 @@ int main()
     || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 5
     || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 4
     || finalAcceptanceVisualPasses.some((row) => row.status === 'fail')
+    || finalAcceptanceStaleVisualFails.filter((row) => row.status === 'fail').length !== 1
   ) {
     throw new Error('target progression gate self-check failed');
   }
@@ -5569,6 +6866,51 @@ int main()
     targetSourcePaths: ['src/kernel.h'],
   })) {
     throw new Error('CMake metadata coverage self-check should reject unrelated sources');
+  }
+  const structuredSidecarProvenance = structuredModelProvenanceFromSidecar({
+    available: true,
+    path: '/tmp/self-check/.synthi_split_meta.json',
+    parsed: {
+      model_provenance: {
+        provider: 'google_gemini',
+        requested_model: 'gemini-3.5-flash',
+        provider_model_status: 'available',
+        provider_model_alias_resolved_to: null,
+        provider_shutdown_or_deprecation_detected: false,
+        model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+        model_availability_source: 'https://ai.google.dev/gemini-api/docs/deprecations',
+        model_availability_basis: 'static_registry',
+        model_availability_check_time_ms: 0,
+        actual_model: 'gemini-3.5-flash',
+        fallback_model: null,
+        fallback_used: false,
+        request_mode: 'split',
+        hard_infra_failure: false,
+      },
+      lastGpuAiDeltaModelProvenance: {
+        provider: 'google_gemini',
+        requested_model: 'gemini-3.1-flash-lite',
+        provider_model_status: 'deprecated',
+        provider_model_alias_resolved_to: null,
+        provider_shutdown_or_deprecation_detected: true,
+        model_availability_checked_at: '2026-06-07T00:00:01.000Z',
+        model_availability_source: 'https://ai.google.dev/gemini-api/docs/deprecations',
+        model_availability_basis: 'static_registry',
+        model_availability_check_time_ms: 0,
+        actual_model: 'gemini-3.1-flash-lite',
+        fallback_model: null,
+        fallback_used: false,
+        request_mode: 'gpu_delta',
+        hard_infra_failure: false,
+      },
+    },
+  });
+  if (
+    structuredSidecarProvenance.split?.request_mode !== 'split'
+    || structuredSidecarProvenance.last_gpu_delta?.request_mode !== 'gpu_delta'
+    || structuredSidecarProvenance.missing_records.length !== 0
+  ) {
+    throw new Error('structured model provenance sidecar self-check failed');
   }
   const visualSelfCheckRoot = path.join(REPO_ROOT, 'tmp');
   await mkdir(visualSelfCheckRoot, { recursive: true });
@@ -5724,8 +7066,10 @@ async function collectRuntimeEvidence() {
   );
   const aiEvidence = evidenceLines(
     aiLogs,
-    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split(?:\/verified|\/gpu)?|diff_patch(?:\/gpu)?|heal)/i,
+    /Calling API|mode=delta|mode=split|\[GpuDiffPatch\]|verifier rejected|POST \/refactor\/(?:split(?:\/verified|\/gpu)?|diff_patch(?:\/gpu)?|heal)/i,
   );
+  const splitSidecarArtifact = await readWorkerWorkspaceJson('.synthi_split_meta.json');
+  const structuredModelProvenance = structuredModelProvenanceFromSidecar(splitSidecarArtifact);
   const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
@@ -5794,6 +7138,27 @@ async function collectRuntimeEvidence() {
       compile_heal: compileHealCalls,
       model_delta_mode: countMatches(aiEvidence, /mode=delta/i),
     },
+    ai_model_provenance: {
+      expected_gpu_split_model: CFG.gpuSplitModel,
+      expected_gpu_delta_model: CFG.gpuDeltaModel,
+      structured: structuredModelProvenance,
+      split: structuredModelProvenance.split,
+      last_gpu_delta: structuredModelProvenance.last_gpu_delta,
+      observed_gpu_split_actual_models: uniqueLogFieldValues(aiEvidence, 'actual_model', /\[split\/gpu\]\s+accepted/i),
+      observed_gpu_split_fallback_used: uniqueLogFieldValues(aiEvidence, 'fallback_used', /\[split\/gpu\]\s+accepted/i),
+      observed_gpu_delta_models: uniqueLogFieldValues(aiEvidence, 'model', /\[GpuDiffPatch\]/i),
+      observed_gpu_delta_actual_models: uniqueLogFieldValues(aiEvidence, 'actual_model', /\[GpuDiffPatch\]/i),
+      observed_gpu_delta_fallback_used: uniqueLogFieldValues(aiEvidence, 'fallback_used', /\[GpuDiffPatch\]/i),
+      forced_gpu_ai_delta: CFG.forceGpuAiDelta,
+    },
+    model_provenance: structuredModelProvenance,
+    split_sidecar_artifact: {
+      available: splitSidecarArtifact.available === true,
+      path: splitSidecarArtifact.path ?? null,
+      raw_sha256: splitSidecarArtifact.raw_sha256 ?? null,
+      parse_error: splitSidecarArtifact.parseError ?? null,
+      reason: splitSidecarArtifact.reason ?? null,
+    },
     runner_policy_counts: {
       existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
       runner_restarts: hostRestartCount,
@@ -5812,20 +7177,67 @@ async function collectRuntimeEvidence() {
     runtime_original_host_path: runtimeOriginalHostPath.evidence,
     runtime_identity_changes: runtimeIdentityChanges,
   };
+  report.modelProvenance = structuredModelProvenance;
+  report.model_provenance = structuredModelProvenance;
   report.evidence.ai_split_provenance = classifyFreshAiSplitProvenance({
     required: CFG.requireFreshAiSplit,
-    model: CFG.geminiModel,
+    model: CFG.gpuSplitModel,
     aiCallCounts: report.evidence.ai_call_counts,
     evidenceLines: aiEvidence,
   });
   if (CFG.requireFreshAiSplit) {
     const provenance = report.evidence.ai_split_provenance;
+    const observedSplitActualModels = report.evidence.ai_model_provenance.observed_gpu_split_actual_models;
+    const observedSplitFallback = report.evidence.ai_model_provenance.observed_gpu_split_fallback_used;
+    const splitActualModelObserved = observedSplitActualModels.length === 0
+      || observedSplitActualModels.includes(CFG.gpuSplitModel);
+    const splitFallbackObserved = observedSplitFallback.some((value) =>
+      /^(1|true|yes|on)$/i.test(String(value)));
     record(
       'fresh AI split provenance',
-      provenance.observed ? 'pass' : 'fail',
-      `model=${provenance.model ?? 'unspecified'} split_calls=${provenance.splitCallCount}`,
+      provenance.observed && splitActualModelObserved && !splitFallbackObserved ? 'pass' : 'fail',
+      `model=${provenance.model ?? 'unspecified'} actual=${observedSplitActualModels.join(',') || 'none'} fallback=${observedSplitFallback.join(',') || 'none'} split_calls=${provenance.splitCallCount}`,
     );
-    if (!provenance.observed) process.exitCode = 1;
+    if (!provenance.observed || !splitActualModelObserved || splitFallbackObserved) process.exitCode = 1;
+  }
+  if (CFG.forceGpuAiDelta) {
+    const observedDeltaModels = report.evidence.ai_model_provenance.observed_gpu_delta_models;
+    const observedActualDeltaModels = report.evidence.ai_model_provenance.observed_gpu_delta_actual_models;
+    const observedDeltaFallback = report.evidence.ai_model_provenance.observed_gpu_delta_fallback_used;
+    const structuredDelta = report.evidence.ai_model_provenance.last_gpu_delta;
+    const deltaModelObserved = observedDeltaModels.includes(CFG.gpuDeltaModel);
+    const actualDeltaModelObserved = observedActualDeltaModels.length > 0
+      ? observedActualDeltaModels.includes(CFG.gpuDeltaModel)
+      : deltaModelObserved
+        || structuredDelta?.actual_model === CFG.gpuDeltaModel
+        || structuredDelta?.requested_model === CFG.gpuDeltaModel;
+    const deltaFallbackObserved = observedDeltaFallback.some((value) =>
+      /^(1|true|yes|on)$/i.test(String(value)))
+      || structuredDelta?.fallback_used === true;
+    record(
+      'forced GPU AI delta endpoint',
+      gpuDeltaCalls > 0 ? 'pass' : 'fail',
+      `gpu_delta_calls=${gpuDeltaCalls}`,
+    );
+    record(
+      'forced GPU AI delta model provenance',
+      (deltaModelObserved || structuredDelta?.requested_model === CFG.gpuDeltaModel)
+        && actualDeltaModelObserved
+        && !deltaFallbackObserved
+        && structuredDelta
+        ? 'pass'
+        : 'fail',
+      `expected=${CFG.gpuDeltaModel} requested=${observedDeltaModels.join(',') || structuredDelta?.requested_model || 'none'} actual=${observedActualDeltaModels.join(',') || structuredDelta?.actual_model || 'none'} fallback=${observedDeltaFallback.join(',') || String(structuredDelta?.fallback_used ?? 'none')}`,
+    );
+    if (
+      gpuDeltaCalls <= 0
+      || (!deltaModelObserved && structuredDelta?.requested_model !== CFG.gpuDeltaModel)
+      || !actualDeltaModelObserved
+      || deltaFallbackObserved
+      || !structuredDelta
+    ) {
+      process.exitCode = 1;
+    }
   }
   if (upstreamRunEvidence.length > 0) {
     record('runtime original host run evidence', 'pass', `lines=${upstreamRunEvidence.length}`);
@@ -5928,12 +7340,22 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime epoch swap evidence', 'warn', 'no dispatcher_epoch lines captured');
   }
+  let runtimeOutputOracleVisualRow = null;
+  let runtimeOutputOracleArtifacts = null;
   if (runtimeOutputOracle.total_count > 0) {
     record(
       'runtime output oracle evidence',
       runtimeOutputOracle.deterministic_oracle_passed ? 'pass' : 'warn',
       `records=${runtimeOutputOracle.total_count} matched=${runtimeOutputOracle.matched_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
     );
+    runtimeOutputOracleVisualRow = await writeRuntimeOutputOracleVisualProof(runtimeOutputOracle);
+    const computeOracleArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
+      runtimeOutputOracle,
+      { proofCardPath: runtimeOutputOracleVisualRow?.path },
+    );
+    runtimeOutputOracleArtifacts = computeOracleArtifacts
+      ? { compute_oracle_artifacts: computeOracleArtifacts }
+      : null;
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
   }
@@ -6013,6 +7435,7 @@ async function collectRuntimeEvidence() {
     replacementScopeProven: runtimeOwnership.scope_proven_count > 0,
     selectedArtifactIds,
     runtimeArtifactIds: runtimeDispatch.runtime_artifact_ids,
+    runtimeArtifactId: runtimeDispatch.runtime_artifact_id,
     dispatcherRegistrationIds: runtimeDispatch.dispatcher_registration_ids,
     dispatchTableEntryIds: runtimeDispatch.dispatch_table_entry_ids,
     dispatchTableHashes: runtimeDispatch.dispatch_table_hashes,
@@ -6021,6 +7444,10 @@ async function collectRuntimeEvidence() {
     blockDimensions: runtimeDispatch.block_dimensions,
     sharedMemoryBytes: runtimeDispatch.shared_memory_bytes,
     dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
+    dispatchId: runtimeDispatch.dispatch_id,
+    generation: runtimeDispatch.generation,
+    epoch: runtimeDispatch.epoch,
+    processId: runtimeDispatch.process_id,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });
   const hiprtVisualFrame = hiprtNativeVisualFrame(freshVisualFrames);
@@ -6042,6 +7469,7 @@ async function collectRuntimeEvidence() {
     deterministicOracleProvided: runtimeOutputOracle.deterministic_oracle_provided,
     deterministicOraclePassed: runtimeOutputOracle.deterministic_oracle_passed,
     outputOracle: runtimeOutputOracle.output_oracle ?? undefined,
+    oracleArtifacts: runtimeOutputOracleArtifacts ?? undefined,
     evidenceRefs: runtimeOutputOracle.evidence_refs,
     visualEvidenceRequired:
       CFG.renderPreview
@@ -6073,6 +7501,15 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
   });
+  report.firewall_evidence = deriveCpuGpuFirewallEvidence({
+    runtimeIdentityChanges,
+    runtimeHostPreservation,
+    runtimeDispatch,
+    runtimeOutputOracle,
+    runtimeOwnership,
+    hostRestartCount,
+  });
+  report.evidence.firewall_evidence = report.firewall_evidence;
   if (hiprtNativeDispatchProof || hiprtNativeOutputProof || hiprtNativeOriginalHostPathProof) {
     record(
       'HIPRT native runtime proof bridge',
@@ -6142,6 +7579,13 @@ async function collectRuntimeEvidence() {
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
   });
+  if (CFG.forceGpuAiDelta) {
+    strictProofRows.push(...forcedGpuAiDeltaArtifactGateRows({
+      sourceProofs: report.source_proofs,
+      fissionProof: report.fission_proof,
+      workerEvidence,
+    }));
+  }
   report.strict_proof_gates = strictProofRows;
   for (const gate of strictProofRows) {
     record(gate.name, gate.status, gate.detail);
@@ -6216,15 +7660,20 @@ async function dockerContainerSnapshot(containerName) {
 
 async function writeResults() {
   report.finished_at = new Date().toISOString();
-  const startedMs = Date.parse(report.started_at);
-  const finishedMs = Date.parse(report.finished_at);
-  report.duration_ms = Number.isFinite(startedMs) && Number.isFinite(finishedMs)
-    ? Math.max(0, finishedMs - startedMs)
-    : null;
+  const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
+  report.finished_monotonic_ns = timingFields.finished_monotonic_ns;
+  report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
+  report.duration_ms = timingFields.duration_ms;
+  report.timingMetrics = realRocmTimingMetrics(report);
   const validationContext = {
     command: report.command,
     docker: report.docker,
     containers: report.containers,
+    modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
+    firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
+    cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
+    full_rebuild_used: report.firewall_evidence?.full_rebuild_used,
+    process_restarted: report.firewall_evidence?.process_restarted,
     urls: {
       frontend: CFG.frontendUrl,
       collab: CFG.collabUrl,
@@ -6245,9 +7694,14 @@ async function writeResults() {
     render_preview_enabled: report.render_preview_enabled,
     fresh_ai_split_required: report.fresh_ai_split_required,
     timings: {
+      metric_clock: 'monotonic_ns',
       started_at: report.started_at,
+      started_monotonic_ns: report.started_monotonic_ns,
       finished_at: report.finished_at,
+      finished_monotonic_ns: report.finished_monotonic_ns,
+      duration_monotonic_ns: report.duration_monotonic_ns,
       duration_ms: report.duration_ms,
+      timingMetrics: report.timingMetrics,
       phases: report.phases.map((phase) => ({
         name: phase.name,
         timings: phase.timings ?? null,
@@ -6279,6 +7733,9 @@ async function writeResults() {
     uniqueColorSampleCount: shot.unique_color_sample_count ?? null,
     visualQuality: shot.visual_quality ?? null,
     acceptedAsVisualEvidence: shot.accepted_as_visual_evidence === true,
+    visualEvidenceSupplementalOnly:
+      shot.visualEvidenceSupplementalOnly === true
+      || shot.visual_evidence_supplemental_only === true,
   }));
   let runtimeProofVisualEvidenceArtifacts = [];
   if (report.full_runtime_proof) {
@@ -6297,6 +7754,11 @@ async function writeResults() {
       fullRuntimeProof: report.full_runtime_proof,
       runtimeEvidence: report.evidence,
       validationContext,
+      modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
+      firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
+      cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
+      full_rebuild_used: report.firewall_evidence?.full_rebuild_used,
+      process_restarted: report.firewall_evidence?.process_restarted,
       targetProgressionLedger: report.target_progression_ledger,
       targetProgressionGates: report.target_progression_gates,
       label: 'real-rocm-runtime-proof',
@@ -6316,11 +7778,31 @@ async function writeResults() {
       degradedReason: written.artifact.degradedReason,
       fullRuntimeProven: written.artifact.fullRuntimeProven,
       limitations: written.artifact.limitations,
+      acceptanceContract: written.artifact.acceptanceContract,
+      acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      acceptanceContractConsistency: written.artifact.acceptanceContractConsistency,
+      deterministicVisualMode: written.artifact.deterministicVisualMode,
+      deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
+      proofLedger: written.artifact.proofLedger,
+      proofLedgerQuery: written.artifact.proofLedgerQuery,
+      gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     };
   }
   report.runtime_proof_artifact_paths = report.runtime_proof_artifact_path
     ? [report.runtime_proof_artifact_path]
     : [];
+  const runtimeProofArtifactStrictRows = runtimeProofArtifactStrictGates(
+    report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],
+    {
+      requireAtLeastOne: true,
+      namePrefix: 'strict real ROCm runtime proof artifact acceptance',
+    },
+  );
+  report.runtime_proof_artifact_strict_gates = runtimeProofArtifactStrictRows;
+  for (const gate of runtimeProofArtifactStrictRows) {
+    record(gate.name, gate.status, gate.detail);
+    if (gate.status === 'fail') process.exitCode = 1;
+  }
   report.target_progression_ledger_entry = buildTargetProgressionLedgerEntry({
     report,
     visualArtifactPaths,
@@ -6394,6 +7876,7 @@ async function writeResults() {
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
     `model: ${report.model}`,
+    `model_roles: ${JSON.stringify(report.model_roles)}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
     `duration_ms: ${report.duration_ms}`,
@@ -6445,6 +7928,24 @@ async function writeResults() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
+    cwd: __dirname,
+  });
+  const adversarialPreflightGate = adversarialPreflightStrictGate(report.adversarial_preflight);
+  report.adversarial_preflight_strict_gate = adversarialPreflightGate;
+  record(
+    'adversarial proof ledger preflight',
+    report.adversarial_preflight.skipped
+      ? 'skip'
+      : report.adversarial_preflight.ok
+        ? 'pass'
+        : 'fail',
+    `elapsed_ms=${report.adversarial_preflight.elapsedMs.toFixed(1)}`,
+  );
+  record(adversarialPreflightGate.name, adversarialPreflightGate.status, adversarialPreflightGate.detail);
+  if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
+    throw new Error(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
+  }
   await ensureRepo();
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);
@@ -6485,7 +7986,7 @@ async function run() {
   await createWorkspace();
   await writeFilesBatch(files);
 
-  await compileViaMcp({
+  const firstCompileResult = await compileViaMcp({
     language: 'cpp',
     filename: CFG.entryFile,
     source: primary.content,
@@ -6501,7 +8002,7 @@ async function run() {
     width: CFG.width,
     height: CFG.height,
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
-  await captureScreenshot('first-compile', { required: false });
+  await captureScreenshot('first-compile', { required: false, wait: firstCompileResult.wait });
 
   const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
   const hmrAdditionalFiles = buildCompileProjection(
@@ -6517,7 +8018,7 @@ async function run() {
     { 'x-user-id': CFG.hostId },
   );
   updateFileContent(CFG.deltaFile, edited);
-  await compileViaMcp({
+  const hmrCompileResult = await compileViaMcp({
     language: 'cpp',
     filename: CFG.deltaFile,
     source: edited,
@@ -6525,7 +8026,8 @@ async function run() {
     is_gui: CFG.renderPreview,
     use_ai_split: true,
     bypass_ai_split_cache: CFG.requireFreshAiSplit,
-    user_requested_ai: true,
+    user_requested_ai: false,
+    force_gpu_ai_delta: CFG.forceGpuAiDelta,
     prefer_gpu_pipeline: true,
     gpu_mode: CFG.gpuMode,
     gpu_arch: CFG.gpuArch,
@@ -6533,7 +8035,7 @@ async function run() {
     width: CFG.width,
     height: CFG.height,
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
-  await captureScreenshot('post-hmr', { required: CFG.expectScreenshot });
+  await captureScreenshot('post-hmr', { required: CFG.expectScreenshot, wait: hmrCompileResult.wait });
 
   for (let index = 0; index < extraDeltas.length; index += 1) {
     const delta = extraDeltas[index];
@@ -6559,7 +8061,7 @@ async function run() {
       { 'x-user-id': CFG.hostId },
     );
     updateFileContent(delta.file, editedSource);
-    await compileViaMcp({
+    const extraCompileResult = await compileViaMcp({
       language: 'cpp',
       filename: delta.file,
       source: editedSource,
@@ -6567,7 +8069,8 @@ async function run() {
       is_gui: CFG.renderPreview,
       use_ai_split: true,
       bypass_ai_split_cache: CFG.requireFreshAiSplit,
-      user_requested_ai: true,
+      user_requested_ai: false,
+      force_gpu_ai_delta: CFG.forceGpuAiDelta,
       prefer_gpu_pipeline: true,
       gpu_mode: CFG.gpuMode,
       gpu_arch: CFG.gpuArch,
@@ -6575,7 +8078,7 @@ async function run() {
       width: CFG.width,
       height: CFG.height,
     }, CFG.hmrTimeoutMs, phaseName);
-    await captureScreenshot(screenshotLabel, { required: CFG.expectScreenshot });
+    await captureScreenshot(screenshotLabel, { required: CFG.expectScreenshot, wait: extraCompileResult.wait });
   }
 }
 

@@ -1154,7 +1154,11 @@ async fn device_artifact_cache_key(
     };
 
     let mut hasher = Sha256::new();
-    cache_update_str(&mut hasher, "cache_key_schema", DEVICE_ARTIFACT_CACHE_KEY_SCHEMA);
+    cache_update_str(
+        &mut hasher,
+        "cache_key_schema",
+        DEVICE_ARTIFACT_CACHE_KEY_SCHEMA,
+    );
     cache_update_str(&mut hasher, "artifact_schema", DEVICE_ARTIFACT_CACHE_SCHEMA);
     cache_update_str(
         &mut hasher,
@@ -1170,7 +1174,11 @@ async fn device_artifact_cache_key(
         return Ok(None);
     };
     cache_update_str(&mut hasher, "compiler_identity", &compiler_identity);
-    cache_update_str(&mut hasher, "sdk_version", &gpu_sdk_version_fingerprint(gpu));
+    cache_update_str(
+        &mut hasher,
+        "sdk_version",
+        &gpu_sdk_version_fingerprint(gpu),
+    );
     cache_update_str(&mut hasher, "vendor", gpu.vendor.as_str());
     cache_update_str(
         &mut hasher,
@@ -1180,7 +1188,11 @@ async fn device_artifact_cache_key(
     for arch in &gpu.arch {
         cache_update_str(&mut hasher, "arch", arch);
     }
-    cache_update_str(&mut hasher, "target_triple", &target_triple_fingerprint(gpu));
+    cache_update_str(
+        &mut hasher,
+        "target_triple",
+        &target_triple_fingerprint(gpu),
+    );
     for (name, value) in device_compiler_env_fingerprint(gpu) {
         cache_update_str(&mut hasher, "env_name", &name);
         cache_update_str(&mut hasher, "env_value", &value);
@@ -1229,8 +1241,10 @@ async fn device_compile_proof_metadata(
             hash: cache_key.dependency_hash.clone(),
             method: cache_key.dependency_method.clone(),
         }),
-        None => device_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename, source)
-            .await?,
+        None => {
+            device_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename, source)
+                .await?
+        }
     };
 
     Ok(DeviceCompileProofMetadata {
@@ -1249,7 +1263,9 @@ async fn device_compile_proof_metadata(
                 .unwrap_or_else(|| hash_string_sequence("compile_command", &normalized_command)),
         ),
         dependency_hash: dependency_digest.as_ref().map(|digest| digest.hash.clone()),
-        dependency_method: dependency_digest.as_ref().map(|digest| digest.method.clone()),
+        dependency_method: dependency_digest
+            .as_ref()
+            .map(|digest| digest.method.clone()),
         artifact_cache_key: cache_key.map(|cache_key| cache_key.cache_key.clone()),
         cache_hit,
     })
@@ -1335,10 +1351,7 @@ fn normalize_path_flag_value(workspace_dir: &Path, value: &str) -> String {
 #[cfg(feature = "gpu-hmr")]
 fn is_windows_absolute_path_value(value: &str) -> bool {
     let bytes = value.as_bytes();
-    (bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && bytes[2] == b'/')
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/')
         || value.starts_with("//")
 }
 
@@ -1356,8 +1369,7 @@ fn normalize_windows_absolute_path_value(value: &str) -> String {
 fn is_separate_path_value_flag(flag: &str) -> bool {
     matches!(
         flag,
-        "-I"
-            | "-isystem"
+        "-I" | "-isystem"
             | "-iquote"
             | "-idirafter"
             | "-include"
@@ -1375,11 +1387,7 @@ fn normalize_compile_command_token(workspace_dir: &Path, token: &str) -> String 
     if token == "__synthi_device_artifact__" {
         return token;
     }
-    for prefix in [
-        "--include-directory=",
-        "--system-include=",
-        "--sysroot=",
-    ] {
+    for prefix in ["--include-directory=", "--system-include=", "--sysroot="] {
         if let Some(rest) = token.strip_prefix(prefix).filter(|rest| !rest.is_empty()) {
             return format!("{prefix}{}", normalize_path_flag_value(workspace_dir, rest));
         }
@@ -1481,7 +1489,11 @@ fn device_compiler_env_fingerprint(
     }
     let mut out = names
         .into_iter()
-        .filter_map(|name| std::env::var(name).ok().map(|value| (name.to_string(), value)))
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| (name.to_string(), value))
+        })
         .collect::<Vec<_>>();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -1572,7 +1584,12 @@ async fn compiler_depfile_dependency_cache_hash(
     }
     cmd.arg(source_filename).kill_on_drop(true);
 
-    let out = match timeout(Duration::from_secs(DEVICE_DEPFILE_TIMEOUT_SECS), cmd.output()).await {
+    let out = match timeout(
+        Duration::from_secs(DEVICE_DEPFILE_TIMEOUT_SECS),
+        cmd.output(),
+    )
+    .await
+    {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => {
             eprintln!("[compile-device] dependency depfile probe unavailable: {e}");
@@ -1616,8 +1633,7 @@ fn dependency_probe_flags(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) -> 
     while let Some(flag) = iter.next() {
         if matches!(
             flag.as_str(),
-            "-I"
-                | "-isystem"
+            "-I" | "-isystem"
                 | "-iquote"
                 | "-idirafter"
                 | "-D"
@@ -1859,7 +1875,11 @@ async fn hash_dependency_paths(
 
     let mut total_bytes = 0u64;
     let mut hasher = Sha256::new();
-    cache_update_str(&mut hasher, "dependency_schema", DEVICE_ARTIFACT_CACHE_KEY_SCHEMA);
+    cache_update_str(
+        &mut hasher,
+        "dependency_schema",
+        DEVICE_ARTIFACT_CACHE_KEY_SCHEMA,
+    );
     cache_update_str(&mut hasher, "dependency_method", method);
     for unresolved in unresolved_entries {
         cache_update_str(&mut hasher, "unresolved_dependency", &unresolved);
@@ -1897,7 +1917,11 @@ async fn hash_dependency_paths(
         cache_update_str(&mut hasher, "dependency_size", &metadata.len().to_string());
         match tokio::fs::read(&path).await {
             Ok(content) => {
-                cache_update_str(&mut hasher, "dependency_content_hash", &hex_sha256(&content));
+                cache_update_str(
+                    &mut hasher,
+                    "dependency_content_hash",
+                    &hex_sha256(&content),
+                );
             }
             Err(_) => {
                 let modified = metadata
@@ -2772,9 +2796,9 @@ mod tests {
         assert!(tokens
             .iter()
             .any(|token| token == "/workspace/project/third_party/sdk"));
-        assert!(tokens.iter().any(|token| {
-            token == "--include-directory=/workspace/project/generated/headers"
-        }));
+        assert!(tokens
+            .iter()
+            .any(|token| { token == "--include-directory=/workspace/project/generated/headers" }));
         assert!(tokens.iter().any(|token| {
             token == "/workspace/project/.synthi/generated/gpu/device.partial.test.hip"
         }));

@@ -363,6 +363,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.target_symbol_not_exported".to_string());
     }
 
+    if !artifact_identity_contract_valid(candidate) {
+        reason_codes.push("fission.artifact_identity_invalid".to_string());
+    }
+
     if !safe_export_superset_justified(candidate) {
         reason_codes.push("fission.safe_export_superset_unverified".to_string());
     }
@@ -432,6 +436,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
         "hashFieldCoverage": hash_field_coverage(candidate),
+        "artifactIdentityContract": artifact_identity_contract_summary(candidate),
         "loaderCapabilityContract": loader_capability_contract_summary(
             candidate.get("loaderCapabilityRequirement")
         ),
@@ -468,7 +473,9 @@ fn collect_candidates(value: &Value) -> Vec<Value> {
 }
 
 fn non_empty_string(value: Option<&Value>) -> bool {
-    value.and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty())
 }
 
 fn sha256_digest_string(value: Option<&Value>) -> bool {
@@ -491,7 +498,9 @@ fn hash_field_coverage(candidate: &Value) -> Value {
 }
 
 fn non_empty_array(value: Option<&Value>) -> bool {
-    value.and_then(Value::as_array).is_some_and(|items| !items.is_empty())
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
 }
 
 fn valid_source_span(value: &Value) -> bool {
@@ -797,7 +806,151 @@ fn loader_capability_selected_artifact_id_valid(object: &serde_json::Map<String,
         .get("selectedArtifactId")
         .and_then(Value::as_str)
         .map(str::trim)
-        .is_none_or(|value| value.starts_with("artifact:") && value.len() > "artifact:".len())
+        .is_none_or(content_addressed_artifact_id_valid)
+}
+
+fn artifact_identity_contract_valid(candidate: &Value) -> bool {
+    let artifact_ids = artifact_identity_ids(candidate);
+    if artifact_ids
+        .iter()
+        .any(|id| !content_addressed_artifact_id_valid(id))
+    {
+        return false;
+    }
+
+    let hashes = artifact_identity_hashes(candidate);
+    if hashes.iter().any(|hash| !sha256_digest_value(hash)) {
+        return false;
+    }
+
+    let hash_digests = hashes
+        .iter()
+        .filter_map(|hash| canonical_sha256_digest(hash))
+        .collect::<BTreeSet<_>>();
+    if hash_digests.is_empty() {
+        return true;
+    }
+    if artifact_ids.is_empty() {
+        return false;
+    }
+
+    artifact_ids.iter().all(|id| {
+        artifact_id_sha256_digest(id).is_some_and(|digest| hash_digests.contains(&digest))
+    })
+}
+
+fn artifact_identity_contract_summary(candidate: &Value) -> Value {
+    let artifact_ids = artifact_identity_ids(candidate);
+    let hashes = artifact_identity_hashes(candidate);
+    json!({
+        "artifactIds": artifact_ids,
+        "artifactHashes": hashes,
+        "contentAddressedArtifactIds": artifact_ids
+            .iter()
+            .all(|id| content_addressed_artifact_id_valid(id)),
+        "hashesValid": hashes.iter().all(|hash| sha256_digest_value(hash)),
+        "idsMatchHashes": artifact_identity_contract_valid(candidate),
+    })
+}
+
+fn artifact_identity_ids(candidate: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    collect_artifact_identity_id(candidate.get("selectedArtifactId"), &mut ids);
+    collect_artifact_identity_id(candidate.get("artifactId"), &mut ids);
+    if let Some(loader) = candidate
+        .get("loaderCapabilityRequirement")
+        .and_then(Value::as_object)
+    {
+        collect_artifact_identity_id(loader.get("selectedArtifactId"), &mut ids);
+        collect_artifact_identity_id(loader.get("artifactId"), &mut ids);
+    }
+    if let Some(oracle) = candidate
+        .get("outputOracleProposal")
+        .and_then(Value::as_object)
+    {
+        for field in [
+            "artifactId",
+            "artifact",
+            "selectedArtifactId",
+            "runtimeArtifactBinding",
+            "artifact_id",
+            "selected_artifact_id",
+        ] {
+            collect_artifact_identity_id(oracle.get(field), &mut ids);
+        }
+    }
+    ids.into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn collect_artifact_identity_id(value: Option<&Value>, ids: &mut Vec<String>) {
+    match value {
+        Some(Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.starts_with("artifact:") {
+                ids.push(trimmed.to_string());
+            }
+        }
+        Some(Value::Object(object)) => {
+            for field in ["artifactId", "selectedArtifactId", "id"] {
+                collect_artifact_identity_id(object.get(field), ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn artifact_identity_hashes(candidate: &Value) -> Vec<String> {
+    let mut hashes = Vec::new();
+    for field in [
+        "artifactHash",
+        "contentHash",
+        "artifactContentHash",
+        "selectedArtifactHash",
+    ] {
+        collect_artifact_identity_hash(candidate.get(field), &mut hashes);
+    }
+    if let Some(loader) = candidate
+        .get("loaderCapabilityRequirement")
+        .and_then(Value::as_object)
+    {
+        for field in ["contentHash", "artifactHash", "selectedArtifactHash"] {
+            collect_artifact_identity_hash(loader.get(field), &mut hashes);
+        }
+    }
+    hashes
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn collect_artifact_identity_hash(value: Option<&Value>, hashes: &mut Vec<String>) {
+    if let Some(value) = value.and_then(Value::as_str).map(str::trim) {
+        if !value.is_empty() {
+            hashes.push(value.to_string());
+        }
+    }
+}
+
+fn content_addressed_artifact_id_valid(value: &str) -> bool {
+    artifact_id_sha256_digest(value).is_some()
+}
+
+fn artifact_id_sha256_digest(value: &str) -> Option<String> {
+    canonical_sha256_digest(value.trim().strip_prefix("artifact:")?)
+}
+
+fn sha256_digest_value(value: &str) -> bool {
+    canonical_sha256_digest(value).is_some()
+}
+
+fn canonical_sha256_digest(value: &str) -> Option<String> {
+    let digest = value.trim().strip_prefix("sha256:").unwrap_or(value.trim());
+    (digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .then(|| digest.to_ascii_lowercase())
 }
 
 fn loader_capability_token_valid(value: &str) -> bool {
@@ -819,8 +972,7 @@ fn loader_capability_token_valid(value: &str) -> bool {
 }
 
 fn oracle_requirement_present(candidate: &Value) -> bool {
-    non_empty_string(candidate.get("requiredOracleId"))
-        || output_oracle_proposal_valid(candidate)
+    non_empty_string(candidate.get("requiredOracleId")) || output_oracle_proposal_valid(candidate)
 }
 
 fn output_oracle_proposal_present(candidate: &Value) -> bool {
@@ -828,7 +980,10 @@ fn output_oracle_proposal_present(candidate: &Value) -> bool {
 }
 
 fn output_oracle_proposal_valid(candidate: &Value) -> bool {
-    let Some(object) = candidate.get("outputOracleProposal").and_then(Value::as_object) else {
+    let Some(object) = candidate
+        .get("outputOracleProposal")
+        .and_then(Value::as_object)
+    else {
         return false;
     };
     let Some(kind) = output_oracle_kind(candidate) else {
@@ -864,8 +1019,8 @@ fn output_oracle_expected_value_present(object: &serde_json::Map<String, Value>)
         "expected_hash",
         "expected_increment",
     ]
-        .iter()
-        .any(|field| object.get(*field).is_some_and(value_present))
+    .iter()
+    .any(|field| object.get(*field).is_some_and(value_present))
 }
 
 fn output_oracle_producer_present(object: &serde_json::Map<String, Value>) -> bool {
@@ -876,8 +1031,8 @@ fn output_oracle_producer_present(object: &serde_json::Map<String, Value>) -> bo
         "producer_subsystem",
         "producer_id",
     ]
-        .iter()
-        .any(|field| non_empty_string(object.get(*field)))
+    .iter()
+    .any(|field| non_empty_string(object.get(*field)))
 }
 
 fn output_oracle_output_target_present(object: &serde_json::Map<String, Value>) -> bool {
@@ -888,8 +1043,8 @@ fn output_oracle_output_target_present(object: &serde_json::Map<String, Value>) 
         "output_target_id",
         "output_target",
     ]
-        .iter()
-        .any(|field| object.get(*field).is_some_and(value_present))
+    .iter()
+    .any(|field| object.get(*field).is_some_and(value_present))
 }
 
 fn output_oracle_readback_contract_present(object: &serde_json::Map<String, Value>) -> bool {
@@ -917,9 +1072,7 @@ fn output_oracle_readback_contract_present(object: &serde_json::Map<String, Valu
     .any(|field| object.get(*field).is_some_and(value_present))
 }
 
-fn output_oracle_runtime_session_binding_present(
-    object: &serde_json::Map<String, Value>,
-) -> bool {
+fn output_oracle_runtime_session_binding_present(object: &serde_json::Map<String, Value>) -> bool {
     [
         "runtimeSessionId",
         "runtimeSession",
@@ -958,9 +1111,7 @@ fn output_oracle_artifact_binding_present(object: &serde_json::Map<String, Value
     .any(|field| object.get(*field).is_some_and(value_present))
 }
 
-fn output_oracle_visual_evidence_contract_present(
-    object: &serde_json::Map<String, Value>,
-) -> bool {
+fn output_oracle_visual_evidence_contract_present(object: &serde_json::Map<String, Value>) -> bool {
     [
         "visualEvidenceRef",
         "visualEvidenceRefs",
@@ -1101,7 +1252,12 @@ fn symbol_identity_mappings(
                     )?;
                     let exported = first_mapping_string(
                         mapping,
-                        &["exportedSymbol", "runtimeSymbol", "artifactSymbol", "mangledSymbol"],
+                        &[
+                            "exportedSymbol",
+                            "runtimeSymbol",
+                            "artifactSymbol",
+                            "mangledSymbol",
+                        ],
                     )?;
                     let evidence_ids = first_mapping_evidence_ids(
                         mapping,
@@ -1424,8 +1580,12 @@ fn ai_source_marker_present(candidate: &Value) -> bool {
 fn value_indicates_ai_source(value: Option<&Value>) -> bool {
     match value {
         Some(Value::String(value)) => text_indicates_ai_source(value),
-        Some(Value::Object(object)) => object.values().any(|value| value_indicates_ai_source(Some(value))),
-        Some(Value::Array(items)) => items.iter().any(|value| value_indicates_ai_source(Some(value))),
+        Some(Value::Object(object)) => object
+            .values()
+            .any(|value| value_indicates_ai_source(Some(value))),
+        Some(Value::Array(items)) => items
+            .iter()
+            .any(|value| value_indicates_ai_source(Some(value))),
         _ => false,
     }
 }
@@ -1525,9 +1685,8 @@ fn runtime_attachment_value_proven(value: &Value) -> bool {
     match value {
         Value::Bool(_) => false,
         Value::Object(object) => {
-            let direct_claim_proven =
-                bool_true(object.get("runtimeAttachmentProven"))
-                    && !runtime_attachment_evidence_ids_for_object(object).is_empty();
+            let direct_claim_proven = bool_true(object.get("runtimeAttachmentProven"))
+                && !runtime_attachment_evidence_ids_for_object(object).is_empty();
             direct_claim_proven
                 || object
                     .get("mapping")
@@ -1606,7 +1765,10 @@ fn original_host_attachment_instrumentation_proposals(candidate: &Value) -> Vec<
     ids.into_iter().collect()
 }
 
-fn collect_original_host_attachment_proposal_ids(value: Option<&Value>, ids: &mut BTreeSet<String>) {
+fn collect_original_host_attachment_proposal_ids(
+    value: Option<&Value>,
+    ids: &mut BTreeSet<String>,
+) {
     let Some(value) = value else {
         return;
     };
@@ -1823,7 +1985,9 @@ fn select_narrowest_candidate_index(reports: &[Value]) -> Option<usize> {
             let right_score = selection_score_key(right);
             left_score
                 .cmp(&right_score)
-                .then_with(|| verifier_evidence_id_value(left).cmp(&verifier_evidence_id_value(right)))
+                .then_with(|| {
+                    verifier_evidence_id_value(left).cmp(&verifier_evidence_id_value(right))
+                })
                 .then_with(|| left_index.cmp(right_index))
         })
         .map(|(index, _)| index)
@@ -2232,7 +2396,10 @@ mod tests {
                 "evidenceIds": ["evidence:symbol-ownership"]
             }
         ]);
-        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("safeExportSupersetReason");
 
         let report = verify_fission_candidate(&candidate);
 
@@ -2303,7 +2470,11 @@ mod tests {
         assert_eq!(report["status"], "reject");
         assert_eq!(
             report["hashFieldCoverage"]["invalidFields"],
-            json!(["dependencyClosureHash", "compileRecipeHash", "compileCommandHash"])
+            json!([
+                "dependencyClosureHash",
+                "compileRecipeHash",
+                "compileCommandHash"
+            ])
         );
         for reason in [
             "fission.dependencyClosureHash_invalid",
@@ -2430,6 +2601,92 @@ mod tests {
     }
 
     #[test]
+    fn accepts_content_addressed_selected_artifact_identity() {
+        let mut candidate = valid_candidate();
+        let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        candidate["selectedArtifactId"] = json!(format!("artifact:sha256:{digest}"));
+        candidate["artifactHash"] = json!(format!("sha256:{digest}"));
+        candidate["loaderCapabilityRequirement"] = json!({
+            "acceptedTransports": ["ram_blob", "filesystem_path"],
+            "selectedArtifactId": format!("artifact:sha256:{digest}"),
+            "contentHash": format!("sha256:{digest}")
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(
+            report["artifactIdentityContract"]["contentAddressedArtifactIds"],
+            true
+        );
+        assert_eq!(report["artifactIdentityContract"]["idsMatchHashes"], true);
+    }
+
+    #[test]
+    fn rejects_non_content_addressed_selected_artifact_identity() {
+        let mut candidate = valid_candidate();
+        candidate["selectedArtifactId"] = json!("artifact:latest");
+        candidate["loaderCapabilityRequirement"] = json!({
+            "acceptedTransports": ["ram_blob", "filesystem_path"],
+            "selectedArtifactId": "artifact:latest"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["artifactIdentityContract"]["contentAddressedArtifactIds"],
+            false
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.artifact_identity_invalid"));
+    }
+
+    #[test]
+    fn rejects_selected_artifact_hash_mismatch() {
+        let mut candidate = valid_candidate();
+        let id_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let hash_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        candidate["selectedArtifactId"] = json!(format!("artifact:sha256:{id_digest}"));
+        candidate["artifactHash"] = json!(format!("sha256:{hash_digest}"));
+        candidate["loaderCapabilityRequirement"] = json!({
+            "acceptedTransports": ["ram_blob", "filesystem_path"],
+            "selectedArtifactId": format!("artifact:sha256:{id_digest}"),
+            "contentHash": format!("sha256:{hash_digest}")
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["artifactIdentityContract"]["idsMatchHashes"], false);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.artifact_identity_invalid"));
+    }
+
+    #[test]
+    fn rejects_artifact_hash_without_selected_artifact_identity() {
+        let mut candidate = valid_candidate();
+        let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        candidate["artifactHash"] = json!(format!("sha256:{digest}"));
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["artifactIdentityContract"]["idsMatchHashes"], false);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.artifact_identity_invalid"));
+    }
+
+    #[test]
     fn rejects_unknown_loader_capability_as_unproven() {
         let mut candidate = valid_candidate();
         candidate["loaderCapabilityRequirement"] = json!({
@@ -2453,7 +2710,10 @@ mod tests {
     #[test]
     fn rejects_candidate_without_oracle() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
 
         let report = verify_fission_candidate(&candidate);
 
@@ -2468,7 +2728,10 @@ mod tests {
     #[test]
     fn accepts_candidate_with_valid_inline_output_oracle_proposal() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "selected_pixels",
             "producer": "deterministic_probe",
@@ -2491,7 +2754,10 @@ mod tests {
 
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
-        assert_eq!(report["outputOracleContract"]["proposalKind"], "selected_pixels");
+        assert_eq!(
+            report["outputOracleContract"]["proposalKind"],
+            "selected_pixels"
+        );
         assert_eq!(
             report["outputOracleContract"]["proposalExpectedValuePresent"],
             true
@@ -2513,7 +2779,10 @@ mod tests {
     #[test]
     fn accepts_candidate_with_buffer_checksum_output_oracle_proposal() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "buffer_checksum",
             "producer": "deterministic_probe",
@@ -2531,7 +2800,10 @@ mod tests {
 
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
-        assert_eq!(report["outputOracleContract"]["proposalKind"], "buffer_checksum");
+        assert_eq!(
+            report["outputOracleContract"]["proposalKind"],
+            "buffer_checksum"
+        );
         assert_eq!(
             report["outputOracleContract"]["proposalExpectedValuePresent"],
             true
@@ -2553,7 +2825,10 @@ mod tests {
     #[test]
     fn accepts_candidate_with_snake_case_output_oracle_contract_aliases() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "buffer_checksum",
             "producer_subsystem": "deterministic_probe",
@@ -2570,7 +2845,10 @@ mod tests {
 
         assert_eq!(report["status"], "pass");
         assert_eq!(report["outputOracleContract"]["proposalValid"], true);
-        assert_eq!(report["outputOracleContract"]["proposalKind"], "buffer_checksum");
+        assert_eq!(
+            report["outputOracleContract"]["proposalKind"],
+            "buffer_checksum"
+        );
         assert_eq!(
             report["outputOracleContract"]["proposalRuntimeSessionBindingPresent"],
             true
@@ -2584,7 +2862,10 @@ mod tests {
     #[test]
     fn accepts_render_output_oracle_with_visual_ref_alias() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "selected_pixel_values",
             "producer": "deterministic_probe",
@@ -2615,7 +2896,10 @@ mod tests {
     #[test]
     fn rejects_inline_output_oracle_with_unknown_kind() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "screenshot_changed",
             "producer": "deterministic_probe",
@@ -2648,7 +2932,10 @@ mod tests {
     #[test]
     fn rejects_inline_output_oracle_without_runtime_binding_contract() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "buffer_checksum",
             "producer": "deterministic_probe",
@@ -2682,7 +2969,10 @@ mod tests {
     #[test]
     fn rejects_render_output_oracle_without_visual_evidence_contract() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "render_target_hash",
             "producer": "deterministic_probe",
@@ -2714,7 +3004,10 @@ mod tests {
     #[test]
     fn rejects_inline_output_oracle_without_expected_value() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("requiredOracleId");
         candidate["outputOracleProposal"] = json!({
             "kind": "dispatch_counter",
             "producer": "deterministic_probe",
@@ -3110,7 +3403,10 @@ mod tests {
 
         assert_eq!(report["status"], "reject");
         assert_eq!(report["originalHostRuntimeAttachmentProven"], false);
-        assert_eq!(report["originalHostRuntimeAttachmentEvidenceIds"], json!([]));
+        assert_eq!(
+            report["originalHostRuntimeAttachmentEvidenceIds"],
+            json!([])
+        );
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
@@ -3133,7 +3429,10 @@ mod tests {
 
         assert_eq!(report["status"], "reject");
         assert_eq!(report["originalHostRuntimeAttachmentProven"], false);
-        assert_eq!(report["originalHostRuntimeAttachmentEvidenceIds"], json!([]));
+        assert_eq!(
+            report["originalHostRuntimeAttachmentEvidenceIds"],
+            json!([])
+        );
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
@@ -3246,7 +3545,10 @@ mod tests {
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "reject");
-        assert_eq!(report["unmappedSourceSpanPaths"], json!(["src/other.kernel"]));
+        assert_eq!(
+            report["unmappedSourceSpanPaths"],
+            json!(["src/other.kernel"])
+        );
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
@@ -3264,14 +3566,20 @@ mod tests {
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "pass");
-        assert_eq!(report["normalizedSourcePaths"], json!(["src/device.kernel"]));
+        assert_eq!(
+            report["normalizedSourcePaths"],
+            json!(["src/device.kernel"])
+        );
         assert_eq!(report["unmappedSourceSpanPaths"], json!([]));
     }
 
     #[test]
     fn rejects_generated_device_candidate_without_generated_role_path() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("generatedRolePath");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("generatedRolePath");
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3290,8 +3598,14 @@ mod tests {
         let mut candidate = valid_candidate();
         candidate["artifactKind"] = json!("function_body");
         candidate["exportedSymbolsExpected"] = json!(["step"]);
-        candidate.as_object_mut().unwrap().remove("generatedRolePath");
-        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("generatedRolePath");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("safeExportSupersetReason");
         candidate
             .as_object_mut()
             .unwrap()
@@ -3382,7 +3696,10 @@ mod tests {
     #[test]
     fn rejects_unjustified_safe_export_superset() {
         let mut candidate = valid_candidate();
-        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("safeExportSupersetReason");
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3509,7 +3826,10 @@ mod tests {
         let mut candidate = valid_candidate();
         candidate["artifactKind"] = json!("function_body");
         candidate["exportedSymbolsExpected"] = json!(["step"]);
-        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("safeExportSupersetReason");
         candidate
             .as_object_mut()
             .unwrap()
@@ -3528,7 +3848,10 @@ mod tests {
     fn accepts_exact_export_set_without_superset_reason() {
         let mut candidate = valid_candidate();
         candidate["exportedSymbolsExpected"] = json!(["step"]);
-        candidate.as_object_mut().unwrap().remove("safeExportSupersetReason");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("safeExportSupersetReason");
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3665,10 +3988,7 @@ mod tests {
             report["selectionDecision"]["selectedIslandId"],
             "island:narrow"
         );
-        assert_eq!(
-            report["selectionDecision"]["selectedCandidateIndex"],
-            1
-        );
+        assert_eq!(report["selectionDecision"]["selectedCandidateIndex"], 1);
         assert_eq!(
             report["selectionDecision"]["selectedScore"],
             report["candidates"][1]["selectionScore"]

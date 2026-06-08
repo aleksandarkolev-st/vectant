@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { Vp8RtpPayload, type MediaStreamTrack } from "werift";
@@ -18,6 +19,8 @@ export interface FrameSnapshot {
   ts: number;
   /** Monotonic counter of frames received since attach. */
   seq: number;
+  /** SHA-256 of the decoded PNG bytes for this frame. */
+  contentHash: string;
 }
 
 interface ProducerViewport {
@@ -33,6 +36,7 @@ interface LatestPng {
   dpr?: number;
   seq: number;
   ts: number;
+  contentHash: string;
 }
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -344,6 +348,7 @@ export class FrameSink {
         dpr: this.producerDprFor(width, height),
         seq: this.seq,
         ts: now,
+        contentHash: sha256(png),
       };
       this.stdoutBuf = this.stdoutBuf.subarray(pngEnd);
     }
@@ -393,6 +398,7 @@ export class FrameSink {
       dpr: latest.dpr,
       ts: latest.ts,
       seq: latest.seq,
+      contentHash: latest.contentHash,
     };
   }
 
@@ -420,4 +426,8 @@ export class FrameSink {
       // ignored
     }
   }
+}
+
+function sha256(data: Buffer): string {
+  return `sha256:${createHash("sha256").update(data).digest("hex")}`;
 }

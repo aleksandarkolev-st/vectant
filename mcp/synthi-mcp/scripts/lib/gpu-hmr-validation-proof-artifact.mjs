@@ -1,11 +1,37 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import sharp from 'sharp';
+import {
+  buildGpuHmrProofLedger,
+  normalizeGpuHmrProofLedgerRecord,
+  queryGpuHmrLedgerInvariants,
+} from './gpu-hmr-proof-ledger.mjs';
+import {
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
+  normalizeGpuHmrAcceptanceContract,
+} from './gpu-hmr-acceptance-contract.mjs';
+import {
+  analyzeGpuHmrImageEvidence,
+  evaluateGpuHmrDeterministicVisualMode,
+  screenshotQualifiesAsVisualEvidence,
+} from './gpu-hmr-visual-evidence.mjs';
+import {
+  adversarialPreflightStrictGate,
+} from './gpu-hmr-proof-strict-gates.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
+const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
+
 function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+function sha256BufferHash(bytes) {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
 function stableJson(value) {
@@ -86,8 +112,37 @@ function runtimeCapabilityPreflightFacet(preflight) {
   };
 }
 
+function adversarialPreflightFacet(preflight) {
+  if (!preflight || typeof preflight !== 'object' || Array.isArray(preflight)) return null;
+  const strictGate = adversarialPreflightStrictGate(preflight);
+  return {
+    schemaVersion: preflight.schemaVersion ?? null,
+    ok: preflight.ok === true,
+    skipped: preflight.skipped === true,
+    scriptPath: typeof preflight.scriptPath === 'string' ? preflight.scriptPath : null,
+    exitCode: Number.isFinite(preflight.exitCode) ? preflight.exitCode : null,
+    elapsedMs: Number.isFinite(preflight.elapsedMs) ? preflight.elapsedMs : null,
+    stdoutHash: typeof preflight.stdoutHash === 'string' ? preflight.stdoutHash : null,
+    stderrHash: typeof preflight.stderrHash === 'string' ? preflight.stderrHash : null,
+    error: preflight.error ?? null,
+    reason: preflight.reason ?? null,
+    strictGate,
+    strict_gate: strictGate,
+    accepted: strictGate.accepted === true,
+  };
+}
+
 function artifactIdsFromSha256Hashes(values) {
-  return compactStringList(values)
+  const flattened = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === 'string') flattened.push(value);
+  };
+  visit(values);
+  return compactStringList(flattened)
     .map((value) => value.match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null)
     .filter(Boolean)
     .map((digest) => `artifact:sha256:${digest}`);
@@ -536,6 +591,86 @@ function proofLimitations(stages, fullRuntimeProof) {
   return limitations;
 }
 
+const REQUIRED_RUNTIME_STAGE_IDS = [
+  'fission-candidate-verification',
+  'compile',
+  'symbol-binding',
+  'abi',
+  'artifact-transport',
+  'epoch-swap',
+  'dispatch-safe',
+  'output',
+  'artifact-identity',
+  'host-preservation',
+];
+
+function fullRuntimeStructuralLimitations(stages, fullRuntimeProof) {
+  const limitations = [];
+  if (!fullRuntimeProof || typeof fullRuntimeProof !== 'object') {
+    limitations.push({
+      stageId: 'full-runtime',
+      stage_id: 'full-runtime',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      required_state: 'gpu-hmr-full-runtime-proven',
+      observedState: null,
+      observed_state: null,
+      degradedState: 'gpu-hmr-full-runtime-unverified',
+      degraded_state: 'gpu-hmr-full-runtime-unverified',
+      degradedReason: 'full_runtime_proof_missing',
+      degraded_reason: 'full_runtime_proof_missing',
+      proofArtifactPath: null,
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    });
+    return limitations;
+  }
+  if (fullRuntimeProof.fullRuntimeProven !== true) {
+    limitations.push({
+      stageId: 'full-runtime',
+      stage_id: 'full-runtime',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      required_state: 'gpu-hmr-full-runtime-proven',
+      observedState: fullRuntimeProof.resultState ?? null,
+      observed_state: fullRuntimeProof.resultState ?? null,
+      degradedState: fullRuntimeProof.degradedState ?? 'gpu-hmr-full-runtime-unverified',
+      degraded_state: fullRuntimeProof.degradedState ?? 'gpu-hmr-full-runtime-unverified',
+      degradedReason: fullRuntimeProof.degradedReason ?? 'full_runtime_proof_not_proven',
+      degraded_reason: fullRuntimeProof.degradedReason ?? 'full_runtime_proof_not_proven',
+      proofArtifactPath: null,
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    });
+  }
+  const stageById = new Map((Array.isArray(stages) ? stages : []).map((stage) => [stage.stageId, stage]));
+  for (const stageId of REQUIRED_RUNTIME_STAGE_IDS) {
+    const stage = stageById.get(stageId);
+    if (!stage || stage.status !== 'passed') {
+      limitations.push({
+        stageId: 'full-runtime',
+        stage_id: 'full-runtime',
+        status: 'blocked',
+        requiredState: 'gpu-hmr-full-runtime-proven',
+        required_state: 'gpu-hmr-full-runtime-proven',
+        observedState: stage?.observedState ?? null,
+        observed_state: stage?.observedState ?? null,
+        degradedState: stage?.degradedState ?? 'gpu-hmr-full-runtime-stage-missing',
+        degraded_state: stage?.degradedState ?? 'gpu-hmr-full-runtime-stage-missing',
+        degradedReason: stage ? `required_stage_not_passed:${stageId}` : `required_stage_missing:${stageId}`,
+        degraded_reason: stage ? `required_stage_not_passed:${stageId}` : `required_stage_missing:${stageId}`,
+        proofArtifactPath: stage?.proofArtifactPath ?? null,
+        proof_artifact_path: stage?.proof_artifact_path ?? null,
+        phase: stage?.phase ?? null,
+        name: stage?.name ?? null,
+      });
+    }
+  }
+  return limitations;
+}
+
 function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
   const fissionProof = input.fissionProof && typeof input.fissionProof === 'object'
     ? input.fissionProof
@@ -776,25 +911,1439 @@ function targetProgressionGateLimitations(gates) {
     }));
 }
 
+function acceptanceContractLimitations(evaluation) {
+  if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
+  return compactObjects(evaluation.failedGates).map((gate) => ({
+    stageId: 'acceptance-contract',
+    stage_id: 'acceptance-contract',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-acceptance-contract-verified',
+    required_state: 'gpu-hmr-acceptance-contract-verified',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-acceptance-contract-rejected',
+    degraded_state: 'gpu-hmr-acceptance-contract-rejected',
+    degradedReason: gate.code ?? 'acceptance_contract_gate_failed',
+    degraded_reason: gate.code ?? 'acceptance_contract_gate_failed',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function acceptanceContractConsistencyLimitations(evaluation) {
+  if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
+  return compactObjects(evaluation.failedGates).map((gate) => ({
+    stageId: 'acceptance-contract-consistency',
+    stage_id: 'acceptance-contract-consistency',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-acceptance-contract-backed-by-verified-proofs',
+    required_state: 'gpu-hmr-acceptance-contract-backed-by-verified-proofs',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-acceptance-contract-mismatch',
+    degraded_state: 'gpu-hmr-acceptance-contract-mismatch',
+    degradedReason: gate.code ?? 'acceptance_contract_consistency_failed',
+    degraded_reason: gate.code ?? 'acceptance_contract_consistency_failed',
+    field: gate.field ?? null,
+    explicitValue: gate.explicitValue ?? null,
+    explicit_value: gate.explicit_value ?? null,
+    derivedValue: gate.derivedValue ?? null,
+    derived_value: gate.derived_value ?? null,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function deterministicVisualModeLimitations(evaluation, { required = false } = {}) {
+  if (!objectOrNull(evaluation)) {
+    if (!required) return [];
+    return [{
+      stageId: 'deterministic-visual-mode',
+      stage_id: 'deterministic-visual-mode',
+      status: 'blocked',
+      requiredState: 'gpu-hmr-deterministic-visual-mode-proven',
+      required_state: 'gpu-hmr-deterministic-visual-mode-proven',
+      observedState: 'missing',
+      observed_state: 'missing',
+      degradedState: 'gpu-hmr-deterministic-visual-mode-missing',
+      degraded_state: 'gpu-hmr-deterministic-visual-mode-missing',
+      degradedReason: 'deterministic_visual_mode_missing',
+      degraded_reason: 'deterministic_visual_mode_missing',
+      proofArtifactPath: null,
+      proof_artifact_path: null,
+      phase: null,
+      name: null,
+    }];
+  }
+  if (evaluation.accepted === true) return [];
+  return compactObjects(evaluation.failedGates).map((gate) => ({
+    stageId: 'deterministic-visual-mode',
+    stage_id: 'deterministic-visual-mode',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-deterministic-visual-mode-proven',
+    required_state: 'gpu-hmr-deterministic-visual-mode-proven',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-deterministic-visual-mode-rejected',
+    degraded_state: 'gpu-hmr-deterministic-visual-mode-rejected',
+    degradedReason: gate.code ?? 'deterministic_visual_mode_gate_failed',
+    degraded_reason: gate.code ?? 'deterministic_visual_mode_gate_failed',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
+const VISUAL_ORACLE_ARTIFACT_HINT_FIELDS = [
+  'before_image',
+  'beforeImage',
+  'after_image',
+  'afterImage',
+  'diff_image',
+  'diffImage',
+  'changed_pixel_ratio',
+  'changedPixelRatio',
+  'visible_pixel_count',
+  'visiblePixelCount',
+  'pixel_metrics_verified',
+  'pixelMetricsVerified',
+  'visual_pixel_verification',
+  'visualPixelVerification',
+  'before_image_hash',
+  'beforeImageHash',
+  'after_image_hash',
+  'afterImageHash',
+  'diff_image_hash',
+  'diffImageHash',
+];
+
+const COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS = [
+  'raw_readback_bin',
+  'rawReadbackBin',
+  'readback_schema_json',
+  'readbackSchemaJson',
+  'checksum_before',
+  'checksumBefore',
+  'checksum_after',
+  'checksumAfter',
+  'deterministic_slice',
+  'deterministicSlice',
+  'raw_readback_hash',
+  'rawReadbackHash',
+  'raw_readback_verification',
+  'rawReadbackVerification',
+  'raw_readback_byte_length',
+  'rawReadbackByteLength',
+  'deterministic_slice_hash',
+  'deterministicSliceHash',
+];
+
+function objectHasAnyRecordedField(object, keys) {
+  const source = objectOrNull(object);
+  if (!source) return false;
+  return keys.some((key) => {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) return false;
+    const value = source[key];
+    if (typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    return value && typeof value === 'object' && Object.keys(value).length > 0;
+  });
+}
+
+function firstOracleArtifactObject(candidates, hintFields) {
+  for (const candidate of candidates) {
+    const object = objectOrNull(candidate);
+    if (object && objectHasAnyRecordedField(object, hintFields)) return object;
+  }
+  return null;
+}
+
+function visualOracleArtifactsFromOutputProof(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
+  const proofOracleArtifacts = objectOrNull(proof.oracleArtifacts) ?? objectOrNull(proof.oracle_artifacts) ?? {};
+  const nestedOracleArtifacts = objectOrNull(oracle.oracleArtifacts) ?? objectOrNull(oracle.oracle_artifacts) ?? {};
+  return firstOracleArtifactObject([
+    proof.visualOracleArtifacts,
+    proof.visual_oracle_artifacts,
+    proofOracleArtifacts.visualOracleArtifacts,
+    proofOracleArtifacts.visual_oracle_artifacts,
+    oracle.visualOracleArtifacts,
+    oracle.visual_oracle_artifacts,
+    nestedOracleArtifacts.visualOracleArtifacts,
+    nestedOracleArtifacts.visual_oracle_artifacts,
+    proofOracleArtifacts,
+    nestedOracleArtifacts,
+    proof,
+    oracle,
+  ], VISUAL_ORACLE_ARTIFACT_HINT_FIELDS);
+}
+
+function computeOracleArtifactsFromOutputProof(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
+  const proofOracleArtifacts = objectOrNull(proof.oracleArtifacts) ?? objectOrNull(proof.oracle_artifacts) ?? {};
+  const nestedOracleArtifacts = objectOrNull(oracle.oracleArtifacts) ?? objectOrNull(oracle.oracle_artifacts) ?? {};
+  return firstOracleArtifactObject([
+    proof.computeOracleArtifacts,
+    proof.compute_oracle_artifacts,
+    proofOracleArtifacts.computeOracleArtifacts,
+    proofOracleArtifacts.compute_oracle_artifacts,
+    oracle.computeOracleArtifacts,
+    oracle.compute_oracle_artifacts,
+    nestedOracleArtifacts.computeOracleArtifacts,
+    nestedOracleArtifacts.compute_oracle_artifacts,
+    proofOracleArtifacts,
+    nestedOracleArtifacts,
+    proof,
+    oracle,
+  ], COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS);
+}
+
+function oracleArtifactsFromOutputProof(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const direct = objectOrNull(proof.oracleArtifacts) ?? objectOrNull(proof.oracle_artifacts) ?? {};
+  const visual = visualOracleArtifactsFromOutputProof(proof);
+  const compute = computeOracleArtifactsFromOutputProof(proof);
+  const artifacts = { ...direct };
+  if (visual) artifacts.visual_oracle_artifacts = visual;
+  if (compute) artifacts.compute_oracle_artifacts = compute;
+  return artifacts;
+}
+
+function oracleArtifactsFromSources(input, outputProof) {
+  const inputArtifacts = objectOrNull(input.oracleArtifacts) ?? objectOrNull(input.oracle_artifacts) ?? {};
+  const artifacts = {
+    ...oracleArtifactsFromOutputProof(outputProof),
+    ...inputArtifacts,
+  };
+  const inputVisual = firstOracleArtifactObject([
+    input.visualOracleArtifacts,
+    input.visual_oracle_artifacts,
+    inputArtifacts.visualOracleArtifacts,
+    inputArtifacts.visual_oracle_artifacts,
+  ], VISUAL_ORACLE_ARTIFACT_HINT_FIELDS);
+  const inputCompute = firstOracleArtifactObject([
+    input.computeOracleArtifacts,
+    input.compute_oracle_artifacts,
+    inputArtifacts.computeOracleArtifacts,
+    inputArtifacts.compute_oracle_artifacts,
+  ], COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS);
+  if (inputVisual) artifacts.visual_oracle_artifacts = inputVisual;
+  if (inputCompute) artifacts.compute_oracle_artifacts = inputCompute;
+  return artifacts;
+}
+
+function proofOutputKind(outputProof) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const oracle = objectOrNull(proof.outputOracle) ?? objectOrNull(proof.output_oracle) ?? {};
+  return String(firstString(
+    proof.kind,
+    proof.oracleKind,
+    proof.oracle_kind,
+    oracle.kind,
+    oracle.oracleKind,
+    oracle.oracle_kind,
+  ) ?? '').toLowerCase();
+}
+
+function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visualEvidenceArtifacts) {
+  const proof = objectOrNull(outputProof) ?? {};
+  const kind = proofOutputKind(proof);
+  return proof.visualEvidenceRequired === true
+    || proof.visual_evidence_required === true
+    || proof.renderVisualEvidenceRequired === true
+    || proof.render_visual_evidence_required === true
+    || proof.visualFrameObserved === true
+    || proof.visual_frame_observed === true
+    || kind.includes('visual')
+    || kind.includes('render')
+    || kind.includes('frame')
+    || kind.includes('pixel')
+    || visualOracleArtifactsFromOutputProof(proof) !== null
+    || compactStringList(visualEvidenceRefs).length > 0
+    || compactObjects(visualEvidenceArtifacts).length > 0;
+}
+
+function outputOracleTargetFromSources(...sources) {
+  for (const source of sources) {
+    const object = objectOrNull(source);
+    if (!object) continue;
+    const outputOracle = objectOrNull(object.outputOracle)
+      ?? objectOrNull(object.output_oracle)
+      ?? {};
+    const target = objectOrNull(object.outputOracleTarget)
+      ?? objectOrNull(object.output_oracle_target)
+      ?? objectOrNull(outputOracle.outputOracleTarget)
+      ?? objectOrNull(outputOracle.output_oracle_target);
+    if (target) return target;
+  }
+  return null;
+}
+
+function outputOracleTargetKind(target) {
+  const object = objectOrNull(target) ?? {};
+  return firstString(object.kind?.value, object.kind, object.target_kind, object.targetKind);
+}
+
+function computeOnlyOutputTargetVerified(target) {
+  const object = objectOrNull(target) ?? {};
+  return outputOracleTargetKind(object) === 'compute'
+    && (object.compute_only_target_verified === true || object.computeOnlyTargetVerified === true)
+    && compactStringList(object.evidence_refs ?? object.evidenceRefs).length > 0;
+}
+
+function visualBackendRequiresVisualEvidence({
+  input,
+  validationContext,
+  acceptanceContract,
+  outputProof,
+}) {
+  const backend = firstString(
+    input?.backend,
+    input?.gpuBackend,
+    input?.gpu_backend,
+    validationContext?.backend,
+    validationContext?.gpuBackend,
+    validationContext?.gpu_backend,
+    acceptanceContract?.backend?.value,
+    acceptanceContract?.backend,
+  );
+  if (!VISUAL_OR_ENGINE_BACKENDS.has(backend)) return false;
+  const target = outputOracleTargetFromSources(
+    input,
+    validationContext,
+    acceptanceContract,
+    outputProof,
+    outputProof?.outputOracle,
+    outputProof?.output_oracle,
+  );
+  return !computeOnlyOutputTargetVerified(target);
+}
+
+function visualArtifactPath(artifact) {
+  return firstString(artifact.path, artifact.filePath, artifact.file_path);
+}
+
+function visualArtifactHash(artifact) {
+  return firstString(artifact.contentHash, artifact.content_hash);
+}
+
+function visualArtifactAccepted(artifact) {
+  return artifact.acceptedAsVisualEvidence === true
+    || artifact.accepted_as_visual_evidence === true;
+}
+
+function visualArtifactQuality(artifact) {
+  return firstString(artifact.visualQuality, artifact.visual_quality);
+}
+
+function visualProofArtifactLimitations({
+  outputProof,
+  visualEvidenceRefs,
+  visualEvidenceArtifacts,
+  visualEvidenceRequired,
+}) {
+  const artifacts = compactObjects(visualEvidenceArtifacts);
+  const refs = compactStringList(visualEvidenceRefs);
+  if (visualEvidenceRequired !== true && !outputProofRequiresVisualEvidence(outputProof, refs, artifacts)) {
+    return [];
+  }
+
+  const limitations = [];
+  if (refs.length === 0 && artifacts.length === 0) {
+    limitations.push({
+      degradedReason: 'visual_evidence_artifacts_missing',
+      observedState: 'missing',
+    });
+  }
+
+  for (const artifact of artifacts) {
+    const readError = firstString(artifact.readError, artifact.read_error);
+    const visualAnalysisError = firstString(
+      artifact.visualAnalysisError,
+      artifact.visual_analysis_error,
+    );
+    if (readError) {
+      limitations.push({
+        degradedReason: 'visual_artifact_read_error',
+        observedState: readError,
+        proofArtifactPath: visualArtifactPath(artifact),
+      });
+    }
+    if (visualAnalysisError) {
+      limitations.push({
+        degradedReason: 'visual_artifact_analysis_error',
+        observedState: visualAnalysisError,
+        proofArtifactPath: visualArtifactPath(artifact),
+      });
+    }
+    if (!visualArtifactAccepted(artifact)) {
+      limitations.push({
+        degradedReason: 'visual_artifact_not_accepted',
+        observedState: visualArtifactQuality(artifact) ?? 'gpu-hmr-visual-unaccepted',
+        proofArtifactPath: visualArtifactPath(artifact),
+      });
+    }
+  }
+
+  const acceptedArtifacts = artifacts.filter(visualArtifactAccepted);
+  if (acceptedArtifacts.length === 0) {
+    limitations.push({
+      degradedReason: 'accepted_visual_artifact_missing',
+      observedState: artifacts.length > 0 ? 'all_visual_artifacts_rejected' : 'missing',
+    });
+  }
+
+  const oracleArtifacts = visualOracleArtifactsFromOutputProof(outputProof);
+  const beforePath = firstString(oracleArtifacts?.before_image, oracleArtifacts?.beforeImage);
+  const afterPath = firstString(oracleArtifacts?.after_image, oracleArtifacts?.afterImage);
+  if (beforePath && afterPath) {
+    const artifactsByPath = new Map(artifacts.map((artifact) => [visualArtifactPath(artifact), artifact]));
+    const before = artifactsByPath.get(beforePath);
+    const after = artifactsByPath.get(afterPath);
+    if (!before || !after) {
+      limitations.push({
+        degradedReason: 'visual_before_after_artifacts_missing',
+        observedState: 'missing_before_or_after_image',
+      });
+    } else if (!visualArtifactAccepted(before) || !visualArtifactAccepted(after)) {
+      limitations.push({
+        degradedReason: 'visual_before_after_artifacts_not_accepted',
+        observedState: 'before_or_after_rejected',
+      });
+    } else {
+      const beforeHash = visualArtifactHash(before);
+      const afterHash = visualArtifactHash(after);
+      if (beforeHash && afterHash && beforeHash === afterHash) {
+        limitations.push({
+          degradedReason: 'visual_before_after_same_frame',
+          observedState: beforeHash,
+          proofArtifactPath: afterPath,
+        });
+      }
+    }
+  }
+
+  return limitations.map((limitation) => ({
+    stageId: 'visual-evidence',
+    stage_id: 'visual-evidence',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-visual-evidence-accepted',
+    required_state: 'gpu-hmr-visual-evidence-accepted',
+    observedState: limitation.observedState ?? null,
+    observed_state: limitation.observedState ?? null,
+    degradedState: 'gpu-hmr-visual-evidence-rejected',
+    degraded_state: 'gpu-hmr-visual-evidence-rejected',
+    degradedReason: limitation.degradedReason,
+    degraded_reason: limitation.degradedReason,
+    proofArtifactPath: limitation.proofArtifactPath ?? null,
+    proof_artifact_path: limitation.proofArtifactPath ?? null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function proofLedgerLimitations(query) {
+  if (!objectOrNull(query) || query.gpuHmrSuccess === true) return [];
+  return compactObjects(query.failedInvariants).map((failure) => ({
+    stageId: 'proof-ledger',
+    stage_id: 'proof-ledger',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-ledger-invariants-proven',
+    required_state: 'gpu-hmr-ledger-invariants-proven',
+    observedState: null,
+    observed_state: null,
+    degradedState: 'gpu-hmr-ledger-invariants-failed',
+    degraded_state: 'gpu-hmr-ledger-invariants-failed',
+    degradedReason: failure.code ?? 'proof_ledger_invariant_failed',
+    degraded_reason: failure.code ?? 'proof_ledger_invariant_failed',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function objectOrNull(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function adversarialPreflightFromInput(input = {}, validationContext = null) {
+  return objectOrNull(input.adversarialPreflight)
+    ?? objectOrNull(input.adversarial_preflight)
+    ?? objectOrNull(validationContext?.adversarialPreflight)
+    ?? objectOrNull(validationContext?.adversarial_preflight)
+    ?? null;
+}
+
+function adversarialPreflightLimitations(facet) {
+  if (facet?.accepted === true) return [];
+  const failures = compactStringList(
+    facet?.strictGate?.failures
+      ?? facet?.strict_gate?.failures
+      ?? ['adversarial_preflight_missing'],
+  );
+  return (failures.length ? failures : ['adversarial_preflight_missing']).map((failure) => ({
+    stageId: 'adversarial-refusal-preflight',
+    stage_id: 'adversarial-refusal-preflight',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-false-positive-refusal-preflight-passed',
+    required_state: 'gpu-hmr-false-positive-refusal-preflight-passed',
+    observedState: facet?.strictGate?.status ?? facet?.strict_gate?.status ?? null,
+    observed_state: facet?.strictGate?.status ?? facet?.strict_gate?.status ?? null,
+    degradedState: 'gpu-hmr-adversarial-preflight-rejected',
+    degraded_state: 'gpu-hmr-adversarial-preflight-rejected',
+    degradedReason: failure,
+    degraded_reason: failure,
+    proofArtifactPath: facet?.scriptPath ?? null,
+    proof_artifact_path: facet?.scriptPath ?? null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function hasOwn(object, key) {
+  return object && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function firstPresent(...entries) {
+  for (const [object, key] of entries) {
+    if (hasOwn(object, key)) return { present: true, value: object[key] };
+  }
+  return { present: false, value: undefined };
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function firstStringOrFiniteNumber(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function firstArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function firstArtifactId(...values) {
+  const flattened = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === 'string') flattened.push(value);
+  };
+  values.forEach(visit);
+  return contentAddressedArtifactIds(flattened)[0]
+    ?? artifactIdsFromSha256Hashes(flattened)[0]
+    ?? null;
+}
+
+function proofArtifactId(proof, extraFields = []) {
+  const p = objectOrNull(proof) ?? {};
+  const oracle = objectOrNull(p.outputOracle) ?? objectOrNull(p.output_oracle) ?? {};
+  return firstArtifactId(
+    p.artifactId,
+    p.artifact_id,
+    p.selectedArtifactId,
+    p.selected_artifact_id,
+    p.runtimeArtifactId,
+    p.runtime_artifact_id,
+    p.newArtifactId,
+    p.new_artifact_id,
+    p.publishedArtifactId,
+    p.published_artifact_id,
+    p.activeArtifactId,
+    p.active_artifact_id,
+    p.ramBlobId,
+    p.ram_blob_id,
+    oracle.artifactId,
+    oracle.artifact_id,
+    firstArray(p.artifactIds),
+    firstArray(p.artifact_ids),
+    firstArray(p.selectedArtifactIds),
+    firstArray(p.selected_artifact_ids),
+    firstArray(p.runtimeArtifactIds),
+    firstArray(p.runtime_artifact_ids),
+    firstArray(p.ramBlobIds),
+    firstArray(p.ram_blob_ids),
+    artifactIdsFromSha256Hashes([
+      p.artifactContentHash,
+      p.artifact_content_hash,
+      p.newArtifactHash,
+      p.new_artifact_hash,
+      p.ramBytesHash,
+      p.ram_bytes_hash,
+      firstArray(p.artifactContentHashes),
+      firstArray(p.artifact_content_hashes),
+      firstArray(p.ramBytesHashes),
+      firstArray(p.ram_bytes_hashes),
+    ]),
+    extraFields,
+  );
+}
+
+function epochGraphFromProof(proof) {
+  const p = objectOrNull(proof) ?? {};
+  return objectOrNull(p.epochGenerationGraph)
+    ?? objectOrNull(p.epoch_generation_graph)
+    ?? objectOrNull(p.generationGraph)
+    ?? objectOrNull(p.generation_graph)
+    ?? null;
+}
+
+function latestPublicationFromEpochProof(proof) {
+  const graph = epochGraphFromProof(proof);
+  if (!graph) return null;
+  const latest = objectOrNull(graph.latestPublication) ?? objectOrNull(graph.latest_publication);
+  if (latest) return latest;
+  const publishEdges = firstArray(graph.edges)
+    .filter((edge) => objectOrNull(edge) && String(edge.kind ?? '').toLowerCase() === 'publish');
+  return publishEdges[publishEdges.length - 1] ?? null;
+}
+
+function latestRetirementFromEpochProof(proof) {
+  const graph = epochGraphFromProof(proof);
+  if (!graph) return null;
+  const retireEdges = firstArray(graph.edges)
+    .filter((edge) => objectOrNull(edge) && String(edge.kind ?? '').toLowerCase() === 'retire');
+  return retireEdges[retireEdges.length - 1] ?? null;
+}
+
+function epochIdFromProof(proof) {
+  const p = objectOrNull(proof) ?? {};
+  const publication = latestPublicationFromEpochProof(proof) ?? {};
+  return firstStringOrFiniteNumber(
+    p.epoch,
+    p.epoch_id,
+    p.activeEpoch,
+    p.active_epoch,
+    p.activeGeneration,
+    p.active_generation,
+    publication.epoch,
+    publication.epoch_id,
+    publication.activeEpoch,
+    publication.active_epoch,
+    publication.activeGeneration,
+    publication.active_generation,
+    publication.to,
+  );
+}
+
+function timestampFromValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function latestTimestamp(...values) {
+  const timestamps = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const timestamp = timestampFromValue(value);
+    if (timestamp !== null) timestamps.push(timestamp);
+  };
+  values.forEach(visit);
+  return timestamps.length ? Math.max(...timestamps) : null;
+}
+
+function explicitProofLedgerRecordFromInput(input = {}) {
+  return objectOrNull(input.proofLedgerRecord)
+    ?? objectOrNull(input.proof_ledger_record)
+    ?? objectOrNull(input.proofLedger?.record)
+    ?? objectOrNull(input.proof_ledger?.record)
+    ?? null;
+}
+
+function hasLedgerPath(object, pathParts) {
+  let current = object;
+  for (const part of pathParts) {
+    if (!objectOrNull(current) || !hasOwn(current, part)) return false;
+    current = current[part];
+  }
+  return true;
+}
+
+function ledgerPathValue(object, pathParts) {
+  let current = object;
+  for (const part of pathParts) {
+    if (!objectOrNull(current) || !hasOwn(current, part)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function ledgerFirstPathValue(record, paths) {
+  for (const pathParts of paths) {
+    if (hasLedgerPath(record, pathParts)) {
+      const value = ledgerPathValue(record, pathParts);
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+  }
+  return undefined;
+}
+
+function proofLedgerSourceConsistencyFailureCode(label, suffix) {
+  return `proof_ledger_source_${String(label).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}_${suffix}`;
+}
+
+function canonicalProofLedgerComparableValue(label, value) {
+  if (
+    value !== undefined
+    && value !== null
+    && /(?:^|_)artifact_(?:after_|before_)?hash$|artifact_hash$/.test(label)
+    && typeof value === 'string'
+  ) {
+    return firstArtifactId(value) ?? value;
+  }
+  return value;
+}
+
+function compareProofLedgerField(failures, label, explicitRecord, derivedRecord, paths) {
+  const explicitValue = canonicalProofLedgerComparableValue(
+    label,
+    ledgerFirstPathValue(explicitRecord, paths),
+  );
+  const derivedValue = canonicalProofLedgerComparableValue(
+    label,
+    ledgerFirstPathValue(derivedRecord, paths),
+  );
+  if (explicitValue === undefined) return;
+  if (derivedValue === undefined) {
+    failures.push({
+      code: proofLedgerSourceConsistencyFailureCode(label, 'unverified'),
+      field: label,
+      explicit: explicitValue,
+      derived: null,
+    });
+    return;
+  }
+  if (label === 'evidence_refs') {
+    const explicitRefs = compactStringList(explicitValue);
+    const derivedRefs = new Set(compactStringList(derivedValue));
+    const missingRefs = explicitRefs.filter((ref) => !derivedRefs.has(ref));
+    if (missingRefs.length > 0) {
+      failures.push({
+        code: proofLedgerSourceConsistencyFailureCode(label, 'mismatch'),
+        field: label,
+        explicit: explicitRefs,
+        derived: compactStringList(derivedValue),
+        missingRefs,
+      });
+    }
+    return;
+  }
+  if (stableJson(explicitValue) !== stableJson(derivedValue)) {
+    failures.push({
+      code: proofLedgerSourceConsistencyFailureCode(label, 'mismatch'),
+      field: label,
+      explicit: explicitValue,
+      derived: derivedValue,
+    });
+  }
+}
+
+function evaluateProofLedgerSourceConsistency(explicitRecord, derivedRecord) {
+  if (!explicitRecord) {
+    return {
+      accepted: true,
+      mode: 'derived_only',
+      failures: [],
+    };
+  }
+  const normalizedExplicit = normalizeGpuHmrProofLedgerRecord(explicitRecord);
+  const normalizedDerived = normalizeGpuHmrProofLedgerRecord(derivedRecord ?? {});
+  const failures = [];
+  const fieldSpecs = [
+    ['classification_project_kind', [['classification', 'project_kind'], ['classification', 'projectKind']]],
+    ['classification_edit_kind', [['classification', 'edit_kind'], ['classification', 'editKind']]],
+    ['classification_route', [['classification', 'route']]],
+    ['contract_hash', [['contractHash']]],
+    ['backend', [['backend']]],
+    ['artifact_before_hash', [['artifactBeforeHash']]],
+    ['artifact_after_hash', [['artifactAfterHash']]],
+    ['loader_event_id', [['loaderEvent', 'id']]],
+    ['loader_event_artifact_hash', [['loaderEvent', 'artifact_hash'], ['loaderEvent', 'artifactHash']]],
+    ['loader_event_process_id', [['loaderEvent', 'process_id'], ['loaderEvent', 'processId']]],
+    ['epoch_publish_event_id', [['epochPublishEvent', 'id']]],
+    ['epoch_publish_event_artifact_hash', [['epochPublishEvent', 'artifact_hash'], ['epochPublishEvent', 'artifactHash']]],
+    ['epoch_publish_event_epoch', [['epochPublishEvent', 'epoch']]],
+    ['epoch_publish_event_process_id', [['epochPublishEvent', 'process_id'], ['epochPublishEvent', 'processId']]],
+    ['dispatch_event_id', [['dispatchEvent', 'id']]],
+    ['dispatch_event_artifact_hash', [['dispatchEvent', 'artifact_hash'], ['dispatchEvent', 'artifactHash']]],
+    ['dispatch_event_epoch', [['dispatchEvent', 'epoch']]],
+    ['dispatch_event_process_id', [['dispatchEvent', 'process_id'], ['dispatchEvent', 'processId']]],
+    ['output_event_after_dispatch_id', [['outputEvent', 'after_dispatch_id'], ['outputEvent', 'afterDispatchId']]],
+    ['output_event_artifact_hash', [['outputEvent', 'artifact_hash'], ['outputEvent', 'artifactHash']]],
+    ['output_event_epoch', [['outputEvent', 'epoch']]],
+    ['output_event_process_id', [['outputEvent', 'process_id'], ['outputEvent', 'processId']]],
+    ['output_event_passed', [['outputEvent', 'passed']]],
+    ['output_oracle_target', [['outputOracleTarget']]],
+    ['process_identity_process_id', [['processIdentity', 'process_id'], ['processIdentity', 'processId']]],
+    ['device_identity_device_uuid', [['deviceIdentity', 'device_uuid'], ['deviceIdentity', 'deviceUuid']]],
+    ['cpu_hmr_used', [['cpuHmrUsed']]],
+    ['full_rebuild_used', [['fullRebuildUsed']]],
+    ['process_restarted', [['processRestarted']]],
+    ['output_oracle_target', [['outputOracleTarget']]],
+    ['compute_oracle_raw_readback_hash', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_hash'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackHash'],
+      ['outputEvent', 'oracle_artifacts', 'compute_oracle_artifacts', 'raw_readback_hash'],
+      ['outputEvent', 'oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackHash'],
+    ]],
+    ['compute_oracle_raw_readback_hash_verified', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_hash_verified'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackHashVerified'],
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_verification', 'hash_verified'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackVerification', 'hashVerified'],
+    ]],
+    ['compute_oracle_raw_readback_byte_length', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_byte_length'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackByteLength'],
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_verification', 'byte_length'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackVerification', 'byteLength'],
+    ]],
+    ['compute_oracle_raw_readback_source', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_source'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackSource'],
+    ]],
+    ['compute_oracle_deterministic_slice', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'deterministic_slice'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'deterministicSlice'],
+    ]],
+    ['compute_oracle_deterministic_slice_hash', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'deterministic_slice_hash'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'deterministicSliceHash'],
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_verification', 'deterministic_slice_hash'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackVerification', 'deterministicSliceHash'],
+    ]],
+    ['compute_oracle_checksum_before', [[
+      'oracleArtifacts',
+      'compute_oracle_artifacts',
+      'checksum_before',
+    ], [
+      'oracleArtifacts',
+      'computeOracleArtifacts',
+      'checksumBefore',
+    ]]],
+    ['compute_oracle_checksum_after', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'checksum_after'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'checksumAfter'],
+    ]],
+    ['visual_oracle_before_image_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'before_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'beforeImageHash'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'before_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'beforeImageHash'],
+    ]],
+    ['visual_oracle_after_image_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'after_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'afterImageHash'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'after_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'afterImageHash'],
+    ]],
+    ['visual_oracle_diff_image_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'diff_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'diffImageHash'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'diff_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'diffImageHash'],
+    ]],
+    ['visual_oracle_pixel_metrics_verified', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'pixel_metrics_verified'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'pixelMetricsVerified'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'metrics_verified'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'metricsVerified'],
+    ]],
+    ['visual_oracle_changed_pixel_ratio', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'changed_pixel_ratio'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'changedPixelRatio'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'changed_pixel_ratio'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'changedPixelRatio'],
+    ]],
+    ['visual_oracle_perceptual_diff', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'perceptual_diff'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'perceptualDiff'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'perceptual_diff'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'perceptualDiff'],
+    ]],
+    ['visual_oracle_visible_pixel_count', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visible_pixel_count'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visiblePixelCount'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'visible_pixel_count'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'visiblePixelCount'],
+    ]],
+    ['visual_oracle_blank_frame_rejection', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'blank_frame_rejection'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'blankFrameRejection'],
+    ]],
+    ['visual_oracle_same_frame_rejection', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'same_frame_rejection'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'sameFrameRejection'],
+    ]],
+    ['visual_oracle_epoch_trace', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'new_epoch_watermark_or_trace'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'newEpochWatermarkOrTrace'],
+    ]],
+    ['visual_oracle_camera_state_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'camera_state_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'cameraStateHash'],
+    ]],
+    ['visual_oracle_swapchain_size', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'swapchain_size'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'swapchainSize'],
+    ]],
+    ['visual_oracle_frame_number', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'frame_number'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'frameNumber'],
+    ]],
+    ['visual_oracle_timestamp_after_dispatch', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'timestamp_after_dispatch'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'timestampAfterDispatch'],
+    ]],
+    ['deterministic_visual_mode', [['deterministicVisualMode']]],
+    ['metric_clock', [['metricClock']]],
+    ['metric_scope', [['metricScope']]],
+    ['cache_state', [['cacheState']]],
+    ['timings', [['timings']]],
+    ['model_provenance', [['modelProvenance']]],
+    ['evidence_refs', [['evidenceRefs']]],
+  ];
+  for (const [label, paths] of fieldSpecs) {
+    compareProofLedgerField(failures, label, normalizedExplicit, normalizedDerived, paths);
+  }
+  return {
+    accepted: failures.length === 0,
+    mode: 'explicit_vs_derived',
+    failures,
+    explicitProofId: normalizedExplicit.proofId,
+    derivedProofId: normalizedDerived.proofId,
+  };
+}
+
+function proofLedgerSourceConsistencyLimitations(consistency) {
+  if (!objectOrNull(consistency) || consistency.accepted === true) return [];
+  return compactObjects(consistency.failures).map((failure) => ({
+    stageId: 'proof-ledger-source-consistency',
+    stage_id: 'proof-ledger-source-consistency',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-ledger-source-consistent',
+    required_state: 'gpu-hmr-ledger-source-consistent',
+    observedState: failure.field ?? null,
+    observed_state: failure.field ?? null,
+    degradedState: 'gpu-hmr-ledger-source-inconsistent',
+    degraded_state: 'gpu-hmr-ledger-source-inconsistent',
+    degradedReason: failure.code ?? 'proof_ledger_source_inconsistent',
+    degraded_reason: failure.code ?? 'proof_ledger_source_inconsistent',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }));
+}
+
+function buildProofLedgerRecordFromInput(input, validationContext, options = {}) {
+  const acceptanceContract = objectOrNull(input.acceptanceContract)
+    ?? objectOrNull(input.acceptance_contract)
+    ?? objectOrNull(validationContext?.acceptanceContract)
+    ?? objectOrNull(validationContext?.acceptance_contract);
+  const explicit = explicitProofLedgerRecordFromInput(input);
+  if (explicit && options.allowExplicit !== false) return explicit;
+
+  const sourceProof = compactObjects(input.sourceProofs)[0] ?? objectOrNull(input.sourceProof);
+  const fissionProof = objectOrNull(input.fissionProof);
+  const artifactTransportProof = objectOrNull(input.artifactTransportProof);
+  const epochProof = objectOrNull(input.epochProof);
+  const dispatchProof = objectOrNull(input.dispatchProof);
+  const outputProof = objectOrNull(input.outputProof);
+  const outputOracle = objectOrNull(outputProof?.outputOracle)
+    ?? objectOrNull(outputProof?.output_oracle)
+    ?? {};
+  const outputOracleTarget = outputOracleTargetFromSources(
+    input,
+    validationContext,
+    acceptanceContract,
+    outputProof,
+    outputOracle,
+  );
+  const hostPreservationProof = objectOrNull(input.hostPreservationProof);
+  const firewallEvidence = objectOrNull(input.firewallEvidence)
+    ?? objectOrNull(input.firewall_evidence)
+    ?? objectOrNull(validationContext?.firewallEvidence)
+    ?? objectOrNull(validationContext?.firewall_evidence)
+    ?? null;
+  const cpuHmrUsed = firstPresent(
+    [input, 'cpuHmrUsed'],
+    [input, 'cpu_hmr_used'],
+    [validationContext, 'cpuHmrUsed'],
+    [validationContext, 'cpu_hmr_used'],
+    [firewallEvidence, 'cpuHmrUsed'],
+    [firewallEvidence, 'cpu_hmr_used'],
+  );
+  const fullRebuildUsed = firstPresent(
+    [input, 'fullRebuildUsed'],
+    [input, 'full_rebuild_used'],
+    [validationContext, 'fullRebuildUsed'],
+    [validationContext, 'full_rebuild_used'],
+    [firewallEvidence, 'fullRebuildUsed'],
+    [firewallEvidence, 'full_rebuild_used'],
+  );
+  const processRestarted = firstPresent(
+    [input, 'processRestarted'],
+    [input, 'process_restarted'],
+    [validationContext, 'processRestarted'],
+    [validationContext, 'process_restarted'],
+    [firewallEvidence, 'processRestarted'],
+    [firewallEvidence, 'process_restarted'],
+  );
+  const publication = latestPublicationFromEpochProof(epochProof) ?? {};
+  const retirement = latestRetirementFromEpochProof(epochProof) ?? {};
+  const artifactAfterHash = firstArtifactId(
+    proofArtifactId(outputProof),
+    proofArtifactId(dispatchProof),
+    proofArtifactId(epochProof, [
+      publication.newArtifactId,
+      publication.new_artifact_id,
+      publication.newArtifactHash,
+      publication.new_artifact_hash,
+    ]),
+    proofArtifactId(artifactTransportProof),
+    proofArtifactId(sourceProof),
+    acceptanceContract?.artifact_hash_after,
+    acceptanceContract?.artifactHashAfter,
+    input.artifactAfterHash,
+    input.artifact_after_hash,
+    input.changedGpuArtifactHash,
+    input.changed_gpu_artifact_hash,
+  );
+  const artifactBeforeHash = firstArtifactId(
+    publication.oldArtifactId,
+    publication.old_artifact_id,
+    publication.oldArtifactHash,
+    publication.old_artifact_hash,
+    sourceProof?.artifactBeforeId,
+    sourceProof?.artifact_before_id,
+    sourceProof?.artifactBeforeHash,
+    sourceProof?.artifact_before_hash,
+    acceptanceContract?.artifact_hash_before,
+    acceptanceContract?.artifactHashBefore,
+    input.artifactBeforeHash,
+    input.artifact_before_hash,
+  );
+  const epoch = epochIdFromProof(epochProof);
+  const dispatchId = firstString(
+    dispatchProof?.dispatchId,
+    dispatchProof?.dispatch_id,
+    dispatchProof?.kernelDispatchId,
+    dispatchProof?.kernel_dispatch_id,
+  );
+  const dispatchTimestamp = latestTimestamp(
+    dispatchProof?.dispatchTimestamps,
+    dispatchProof?.dispatch_timestamps,
+    dispatchProof?.dispatchTimestamp,
+    dispatchProof?.dispatch_timestamp,
+  );
+  const dispatchEpoch = firstStringOrFiniteNumber(
+    dispatchProof?.epoch,
+    dispatchProof?.epoch_id,
+    dispatchProof?.dispatchEpoch,
+    dispatchProof?.dispatch_epoch,
+    dispatchProof?.dispatchGeneration,
+    dispatchProof?.dispatch_generation,
+    dispatchProof?.generation,
+    dispatchProof?.activeEpoch,
+    dispatchProof?.active_epoch,
+    dispatchProof?.activeGeneration,
+    dispatchProof?.active_generation,
+  );
+  const outputTimestamp = latestTimestamp(
+    outputOracle.readbackTimestamp,
+    outputOracle.readback_timestamp,
+    outputOracle.timestampMonotonicNs,
+    outputOracle.timestamp_monotonic_ns,
+    outputProof?.outputTimestamp,
+    outputProof?.output_timestamp,
+  );
+  const outputEpoch = firstStringOrFiniteNumber(
+    outputProof?.epoch,
+    outputProof?.epoch_id,
+    outputProof?.outputEpoch,
+    outputProof?.output_epoch,
+    outputProof?.outputGeneration,
+    outputProof?.output_generation,
+    outputProof?.generation,
+    outputProof?.activeEpoch,
+    outputProof?.active_epoch,
+    outputProof?.activeGeneration,
+    outputProof?.active_generation,
+    outputOracle.epoch,
+    outputOracle.epoch_id,
+    outputOracle.outputEpoch,
+    outputOracle.output_epoch,
+    outputOracle.outputGeneration,
+    outputOracle.output_generation,
+    outputOracle.generation,
+  );
+  const publishTimestamp = latestTimestamp(
+    publication.timestampMonotonicNs,
+    publication.timestamp_monotonic_ns,
+    publication.publishTimestampMonotonicNs,
+    publication.publish_timestamp_monotonic_ns,
+    publication.publishTimestamp,
+    publication.publish_timestamp,
+    publication.timestamp,
+    publication.timestamp_monotonic_ns,
+  );
+  const loadedArtifactHash = proofArtifactId(artifactTransportProof);
+  const publishedArtifactHash = proofArtifactId(epochProof, [
+    publication.newArtifactId,
+    publication.new_artifact_id,
+    publication.newArtifactHash,
+    publication.new_artifact_hash,
+  ]);
+  const dispatchArtifactHash = proofArtifactId(dispatchProof);
+  const outputArtifactHash = proofArtifactId(outputProof);
+  const timingMetrics = objectOrNull(input.timingMetrics)
+    ?? objectOrNull(input.timing_metrics)
+    ?? objectOrNull(input.timings?.timingMetrics)
+    ?? objectOrNull(input.timings?.timing_metrics)
+    ?? objectOrNull(validationContext?.timingMetrics)
+    ?? objectOrNull(validationContext?.timing_metrics)
+    ?? objectOrNull(validationContext?.timings?.timingMetrics)
+    ?? objectOrNull(validationContext?.timings?.timing_metrics)
+    ?? null;
+  const ledgerTimings = objectOrNull(input.timings)
+    ?? objectOrNull(validationContext?.timings)
+    ?? timingMetrics
+    ?? {};
+
+  const record = {
+    project_id: input.workspaceSlug
+      ?? validationContext?.workspaceSlug
+      ?? validationContext?.workspace_slug
+      ?? acceptanceContract?.project_id
+      ?? acceptanceContract?.projectId
+      ?? null,
+    edit_id: input.sourceEditId
+      ?? input.source_edit_id
+      ?? validationContext?.sourceEditId
+      ?? validationContext?.source_edit_id
+      ?? acceptanceContract?.edit_id
+      ?? acceptanceContract?.editId
+      ?? null,
+    backend: firstString(
+      input.backend,
+      input.gpuBackend,
+      input.gpu_backend,
+      validationContext?.backend,
+      validationContext?.gpuBackend,
+      validationContext?.gpu_backend,
+      acceptanceContract?.backend?.value,
+      acceptanceContract?.backend,
+    ),
+    classification: input.classification ?? validationContext?.classification ?? acceptanceContract?.classification ?? {},
+    contract_hash: firstString(
+      input.contractHash,
+      input.contract_hash,
+      validationContext?.contractHash,
+      validationContext?.contract_hash,
+      acceptanceContract?.contract_hash,
+      acceptanceContract?.contractHash,
+      fissionProof?.contractHash,
+      fissionProof?.contract_hash,
+    ),
+    artifact_before_hash: artifactBeforeHash,
+    artifact_after_hash: artifactAfterHash,
+    loader_event: {
+      id: firstString(artifactTransportProof?.eventId, artifactTransportProof?.event_id),
+      artifact_hash: loadedArtifactHash,
+      process_id: firstString(artifactTransportProof?.processId, artifactTransportProof?.process_id),
+      timestamp_monotonic_ns: latestTimestamp(
+        artifactTransportProof?.timestampMonotonicNs,
+        artifactTransportProof?.timestamp_monotonic_ns,
+        artifactTransportProof?.transportTimestamp,
+        artifactTransportProof?.transport_timestamp,
+      ),
+    },
+    epoch_publish_event: {
+      id: firstString(epochProof?.eventId, epochProof?.event_id, publication.id, publication.eventId, publication.event_id),
+      artifact_hash: publishedArtifactHash,
+      epoch,
+      process_id: firstString(
+        epochProof?.processId,
+        epochProof?.process_id,
+        publication.processId,
+        publication.process_id,
+      ),
+      timestamp_monotonic_ns: publishTimestamp,
+    },
+    dispatch_event: {
+      id: dispatchId,
+      artifact_hash: dispatchArtifactHash,
+      epoch: dispatchEpoch,
+      process_id: firstString(dispatchProof?.processId, dispatchProof?.process_id),
+      timestamp_monotonic_ns: dispatchTimestamp,
+    },
+    output_event: {
+      id: firstString(outputProof?.eventId, outputProof?.event_id, outputOracle.id, outputOracle.oracleId),
+      kind: firstString(outputOracle.kind, outputProof?.kind, outputProof?.oracleKind),
+      artifact_hash: outputArtifactHash,
+      epoch: outputEpoch,
+      process_id: firstString(
+        outputProof?.processId,
+        outputProof?.process_id,
+        outputOracle.processId,
+        outputOracle.process_id,
+      ),
+      after_dispatch_id: firstString(
+        outputProof?.afterDispatchId,
+        outputProof?.after_dispatch_id,
+        outputOracle.afterDispatchId,
+        outputOracle.after_dispatch_id,
+        outputOracle.dispatchId,
+        outputOracle.dispatch_id,
+      ),
+      timestamp_monotonic_ns: outputTimestamp,
+      passed: outputProof?.resultState === 'gpu-hmr-output-oracle-proven' || outputOracle.passed === true,
+    },
+    retirement_event: {
+      id: firstString(
+        epochProof?.retirementEventId,
+        epochProof?.retirement_event_id,
+        retirement.id,
+        retirement.eventId,
+        retirement.event_id,
+        retirement.retirementEventId,
+        retirement.retirement_event_id,
+      ),
+      epoch,
+      status: epochProof?.oldGenerationRetired === true ? 'retired' : null,
+      timestamp_monotonic_ns: latestTimestamp(
+        epochProof?.retirementTimestamp,
+        epochProof?.retirement_timestamp,
+        epochProof?.retirementTimestampMonotonicNs,
+        epochProof?.retirement_timestamp_monotonic_ns,
+        epochProof?.retirementEventTimestamp,
+        epochProof?.retirement_event_timestamp,
+        epochProof?.retirementEventTimestampMonotonicNs,
+        epochProof?.retirement_event_timestamp_monotonic_ns,
+        epochProof?.retirementFenceTimestamp,
+        epochProof?.retirement_fence_timestamp,
+        retirement.timestampMonotonicNs,
+        retirement.timestamp_monotonic_ns,
+        retirement.retirementTimestampMonotonicNs,
+        retirement.retirement_timestamp_monotonic_ns,
+        retirement.retirementEventTimestampMonotonicNs,
+        retirement.retirement_event_timestamp_monotonic_ns,
+      ),
+    },
+    process_identity: {
+      process_id: firstString(
+        hostPreservationProof?.processId,
+        hostPreservationProof?.process_id,
+        validationContext?.processId,
+        validationContext?.process_id,
+      ),
+    },
+    device_identity: input.deviceIdentity
+      ?? input.device_identity
+      ?? validationContext?.deviceIdentity
+      ?? validationContext?.device_identity
+      ?? (firstString(input.deviceUuid, input.device_uuid, validationContext?.deviceUuid, validationContext?.device_uuid)
+        ? {
+            device_uuid: firstString(
+              input.deviceUuid,
+              input.device_uuid,
+              validationContext?.deviceUuid,
+              validationContext?.device_uuid,
+            ),
+          }
+        : {}),
+    firewall_evidence: firewallEvidence ?? {},
+    output_oracle_target: outputOracleTarget ?? {},
+    oracle_artifacts: oracleArtifactsFromSources(input, outputProof),
+    deterministic_visual_mode:
+      input.deterministicVisualMode
+      ?? input.deterministic_visual_mode
+      ?? validationContext?.deterministicVisualMode
+      ?? validationContext?.deterministic_visual_mode
+      ?? outputProof?.deterministicVisualMode
+      ?? outputProof?.deterministic_visual_mode
+      ?? outputProof?.outputOracle?.deterministicVisualMode
+      ?? outputProof?.outputOracle?.deterministic_visual_mode
+      ?? {},
+    metric_clock:
+      input.metricClock
+      ?? input.metric_clock
+      ?? validationContext?.metricClock
+      ?? validationContext?.metric_clock
+      ?? timingMetrics?.metricClock
+      ?? timingMetrics?.metric_clock
+      ?? ledgerTimings?.metricClock
+      ?? ledgerTimings?.metric_clock,
+    metric_scope:
+      input.metricScope
+      ?? input.metric_scope
+      ?? validationContext?.metricScope
+      ?? validationContext?.metric_scope
+      ?? timingMetrics?.metricScope
+      ?? timingMetrics?.metric_scope
+      ?? ledgerTimings?.metricScope
+      ?? ledgerTimings?.metric_scope,
+    cache_state:
+      input.cacheState
+      ?? input.cache_state
+      ?? validationContext?.cacheState
+      ?? validationContext?.cache_state
+      ?? timingMetrics?.cacheState
+      ?? timingMetrics?.cache_state
+      ?? ledgerTimings?.cacheState
+      ?? ledgerTimings?.cache_state,
+    timings: ledgerTimings,
+    timing_metrics: timingMetrics ?? {},
+    model_provenance: input.modelProvenance ?? input.model_provenance ?? validationContext?.modelProvenance ?? {},
+    evidence_refs: compactStringList([
+      ...(Array.isArray(input.evidenceRefs) ? input.evidenceRefs : []),
+      ...(Array.isArray(input.evidence_refs) ? input.evidence_refs : []),
+      ...(Array.isArray(validationContext?.evidenceRefs) ? validationContext.evidenceRefs : []),
+      ...(Array.isArray(validationContext?.evidence_refs) ? validationContext.evidence_refs : []),
+      ...(Array.isArray(acceptanceContract?.evidence_refs) ? acceptanceContract.evidence_refs : []),
+      ...(Array.isArray(acceptanceContract?.evidenceRefs) ? acceptanceContract.evidenceRefs : []),
+      ...(Array.isArray(artifactTransportProof?.evidenceRefs) ? artifactTransportProof.evidenceRefs : []),
+      ...(Array.isArray(epochProof?.evidenceRefs) ? epochProof.evidenceRefs : []),
+      ...(Array.isArray(dispatchProof?.evidenceRefs) ? dispatchProof.evidenceRefs : []),
+      ...(Array.isArray(outputProof?.evidenceRefs) ? outputProof.evidenceRefs : []),
+      ...(Array.isArray(hostPreservationProof?.evidenceRefs) ? hostPreservationProof.evidenceRefs : []),
+    ]),
+  };
+  if (cpuHmrUsed.present) record.cpu_hmr_used = cpuHmrUsed.value === true;
+  if (fullRebuildUsed.present) record.full_rebuild_used = fullRebuildUsed.value === true;
+  if (processRestarted.present) record.process_restarted = processRestarted.value === true;
+  return record;
+}
+
 export function buildValidationRuntimeProofArtifact(input = {}) {
   const createdAt = input.createdAt ?? new Date().toISOString();
   const fullRuntimeProof = input.fullRuntimeProof && typeof input.fullRuntimeProof === 'object'
     ? input.fullRuntimeProof
     : null;
+  const outputProof = objectOrNull(input.outputProof);
   const sessionId = runtimeSessionId(input);
   const runtimeEvidence = runtimeEvidenceSnapshot(input);
   const validationContext = validationContextSnapshot(input);
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
+  const adversarialPreflight = adversarialPreflightFacet(
+    adversarialPreflightFromInput(input, validationContext),
+  );
+  const explicitAcceptanceContract = objectOrNull(input.acceptanceContract)
+    ?? objectOrNull(input.acceptance_contract)
+    ?? objectOrNull(validationContext?.acceptanceContract)
+    ?? objectOrNull(validationContext?.acceptance_contract)
+    ?? null;
+  const derivedAcceptanceContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+    ...input,
+    validationContext,
+  });
+  const derivedAcceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(
+    derivedAcceptanceContract ?? {
+      classification: input.classification ?? validationContext?.classification ?? {},
+    },
+  );
+  const acceptanceContract = explicitAcceptanceContract
+    ?? derivedAcceptanceContract;
+  const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(
+    acceptanceContract ?? {
+      classification: input.classification ?? validationContext?.classification ?? {},
+    },
+  );
+  const acceptanceContractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: explicitAcceptanceContract,
+    derivedContract: derivedAcceptanceContract,
+    derivedEvaluation: derivedAcceptanceContractEvaluation,
+  });
+  const deterministicVisualMode = objectOrNull(input.deterministicVisualMode)
+    ?? objectOrNull(input.deterministic_visual_mode)
+    ?? objectOrNull(validationContext?.deterministicVisualMode)
+    ?? objectOrNull(validationContext?.deterministic_visual_mode)
+    ?? objectOrNull(outputProof?.deterministicVisualMode)
+    ?? objectOrNull(outputProof?.deterministic_visual_mode)
+    ?? objectOrNull(outputProof?.outputOracle?.deterministicVisualMode)
+    ?? objectOrNull(outputProof?.outputOracle?.deterministic_visual_mode)
+    ?? null;
+  const deterministicVisualModeEvaluation = deterministicVisualMode
+    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
+    : null;
+  const proofLedgerRecordInput = {
+    ...input,
+    acceptanceContract,
+  };
+  const explicitProofLedgerRecord = explicitProofLedgerRecordFromInput(proofLedgerRecordInput);
+  const derivedProofLedgerRecord = buildProofLedgerRecordFromInput(
+    proofLedgerRecordInput,
+    validationContext,
+    { allowExplicit: false },
+  );
+  const proofLedgerSourceConsistency = evaluateProofLedgerSourceConsistency(
+    explicitProofLedgerRecord,
+    derivedProofLedgerRecord,
+  );
+  const proofLedgerRecord = explicitProofLedgerRecord ?? derivedProofLedgerRecord;
+  const proofLedger = buildGpuHmrProofLedger(proofLedgerRecord);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
   const visualEvidenceArtifacts = compactObjects(input.visualEvidenceArtifacts);
+  const visualEvidenceRequired =
+    outputProofRequiresVisualEvidence(
+      outputProof,
+      visualEvidenceRefs,
+      visualEvidenceArtifacts,
+    )
+    || visualBackendRequiresVisualEvidence({
+      input,
+      validationContext,
+      acceptanceContract,
+      outputProof,
+    });
   const visualArtifactsByPath = visualArtifactMap(visualEvidenceArtifacts);
   const stages = Array.isArray(fullRuntimeProof?.stages)
     ? fullRuntimeProof.stages.map((stage) => proofStageResult(stage, input, createdAt))
     : [];
   const limitations = [
+    ...fullRuntimeStructuralLimitations(stages, fullRuntimeProof),
     ...proofLimitations(stages, fullRuntimeProof),
+    ...acceptanceContractLimitations(acceptanceContractEvaluation),
+    ...acceptanceContractConsistencyLimitations(acceptanceContractConsistency),
+    ...deterministicVisualModeLimitations(deterministicVisualModeEvaluation, {
+      required: visualEvidenceRequired,
+    }),
+    ...visualProofArtifactLimitations({
+      outputProof,
+      visualEvidenceRefs,
+      visualEvidenceArtifacts,
+      visualEvidenceRequired,
+    }),
+    ...adversarialPreflightLimitations(adversarialPreflight),
+    ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
+    ...proofLedgerLimitations(proofLedgerQuery),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -804,11 +2353,26 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(fullRuntimeProof),
     ...evidenceStringsFromValue(runtimeEvidence),
     ...evidenceStringsFromValue(targetProgressionLedger),
+    ...evidenceStringsFromValue(adversarialPreflight),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) =>
     evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
   );
   const proofMaterial = {
+    workspaceSlug: input.workspaceSlug ?? null,
+    sourceEditId: input.sourceEditId ?? null,
+    backend: input.backend ?? null,
+    gpuBackend: input.gpuBackend ?? input.gpu_backend ?? null,
+    gpuVendor: input.gpuVendor ?? input.gpu_vendor ?? null,
+    gpuArch: input.gpuArch ?? input.gpu_arch ?? null,
+    processId: input.processId ?? input.process_id ?? null,
+    deviceUuid: input.deviceUuid ?? input.device_uuid ?? null,
+    contextHandle: input.contextHandle ?? input.context_handle ?? null,
+    contextOrDeviceHandle: input.contextOrDeviceHandle ?? input.context_or_device_handle ?? null,
+    cameraStateHash: input.cameraStateHash ?? input.camera_state_hash ?? null,
+    swapchainOrFramebufferIdentity:
+      input.swapchainOrFramebufferIdentity ?? input.swapchain_or_framebuffer_identity ?? null,
+    engineSceneHandles: input.engineSceneHandles ?? input.engine_scene_handles ?? null,
     fullRuntimeProof,
     sourceProofs: input.sourceProofs ?? (input.sourceProof ? [input.sourceProof] : []),
     fissionProof: input.fissionProof ?? null,
@@ -824,6 +2388,20 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    adversarialPreflight,
+    acceptanceContract,
+    acceptanceContractEvaluation,
+    derivedAcceptanceContract,
+    derivedAcceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    visualEvidenceRequired,
+    derivedProofLedgerRecord,
+    explicitProofLedgerRecord,
+    proofLedgerSourceConsistency,
+    proofLedger,
+    proofLedgerQuery,
     visualEvidenceArtifacts,
   };
   const materialHash = sha256Hex(stableJson({
@@ -841,11 +2419,37 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    adversarialPreflight,
+    acceptanceContract,
+    acceptanceContractEvaluation,
+    derivedAcceptanceContract,
+    derivedAcceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    derivedProofLedgerRecord,
+    explicitProofLedgerRecord,
+    proofLedgerSourceConsistency,
+    proofLedger,
+    proofLedgerQuery,
     visualEvidenceArtifacts,
   }));
   const validationContextHash = validationContext
     ? `sha256:${sha256Hex(stableJson(validationContext))}`
     : null;
+  const gpuHmrSuccess = fullRuntimeProof?.fullRuntimeProven === true
+    && stages.length > 0
+    && stages.every((stage) => stage.status === 'passed')
+    && limitations.length === 0
+    && proofLedgerQuery.gpuHmrSuccess === true
+    && acceptanceContractEvaluation.accepted === true
+    && acceptanceContractConsistency.accepted === true
+    && adversarialPreflight?.accepted === true
+    && (
+      deterministicVisualModeEvaluation
+        ? deterministicVisualModeEvaluation.accepted === true
+        : true
+    );
 
   return {
     schemaVersion: GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
@@ -873,6 +2477,34 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_ledger: targetProgressionLedger,
     targetProgressionGates,
     target_progression_gates: targetProgressionGates,
+    adversarialPreflight,
+    adversarial_preflight: adversarialPreflight,
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
+    acceptanceContractEvaluation,
+    acceptance_contract_evaluation: acceptanceContractEvaluation,
+    derivedAcceptanceContract,
+    derived_acceptance_contract: derivedAcceptanceContract,
+    derivedAcceptanceContractEvaluation,
+    derived_acceptance_contract_evaluation: derivedAcceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    acceptance_contract_consistency: acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery,
+    proof_ledger_query: proofLedgerQuery,
+    derivedProofLedgerRecord,
+    derived_proof_ledger_record: derivedProofLedgerRecord,
+    explicitProofLedgerRecord,
+    explicit_proof_ledger_record: explicitProofLedgerRecord,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
     validationContextHash,
     createdAt,
     proofMaterial,
@@ -885,9 +2517,16 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
   for (const artifactPath of compactStringList(paths)) {
     const existing = existingByPath.get(artifactPath) ?? {};
     let fileRecord = null;
+    let imageEvidence = null;
+    let visualAnalysisError = null;
     try {
       const bytes = await readFile(artifactPath);
       const digest = createHash('sha256').update(bytes).digest('hex');
+      try {
+        imageEvidence = await analyzeGpuHmrImageEvidence(artifactPath);
+      } catch (error) {
+        visualAnalysisError = error?.message ? String(error.message) : String(error);
+      }
       fileRecord = {
         path: artifactPath,
         bytes: bytes.length,
@@ -904,9 +2543,36 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
         readError: error?.message ? String(error.message) : String(error),
       };
     }
+    const imageRecord = imageEvidence ? {
+      width: imageEvidence.width,
+      height: imageEvidence.height,
+      visiblePixels: imageEvidence.visible_pixels,
+      visible_pixels: imageEvidence.visible_pixels,
+      meanLuma: imageEvidence.mean_luma,
+      mean_luma: imageEvidence.mean_luma,
+      lumaStddev: imageEvidence.luma_stddev,
+      luma_stddev: imageEvidence.luma_stddev,
+      rgbSpanMean: imageEvidence.rgb_span_mean,
+      rgb_span_mean: imageEvidence.rgb_span_mean,
+      uniqueColorSampleCount: imageEvidence.unique_color_sample_count,
+      unique_color_sample_count: imageEvidence.unique_color_sample_count,
+      visualQuality: imageEvidence.visual_quality,
+      visual_quality: imageEvidence.visual_quality,
+      acceptedAsVisualEvidence: screenshotQualifiesAsVisualEvidence({
+        path: artifactPath,
+        ...imageEvidence,
+      }),
+      accepted_as_visual_evidence: screenshotQualifiesAsVisualEvidence({
+        path: artifactPath,
+        ...imageEvidence,
+      }),
+    } : {};
     records.push({
       ...existing,
       ...fileRecord,
+      ...imageRecord,
+      visualAnalysisError,
+      visual_analysis_error: visualAnalysisError,
       kind: 'visual-artifact',
       producerSubsystem: 'mcp.gpu_hmr_validation',
       summary: existing.summary ?? artifactPath,
@@ -915,14 +2581,212 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
   return records;
 }
 
+function fileArtifactPath(value) {
+  const ref = firstString(value);
+  if (!ref) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref) && !ref.toLowerCase().startsWith('file://')) return null;
+  if (ref.toLowerCase().startsWith('file://')) {
+    return new URL(ref);
+  }
+  return ref;
+}
+
+function finiteOffset(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+}
+
+export async function computeOracleArtifactsFromFiles(computeArtifacts = null) {
+  const source = objectOrNull(computeArtifacts);
+  if (!source) return null;
+  const rawPath = fileArtifactPath(firstString(source.raw_readback_bin, source.rawReadbackBin));
+  const schemaPath = fileArtifactPath(firstString(source.readback_schema_json, source.readbackSchemaJson));
+  const enriched = { ...source };
+  const verification = {
+    ...objectOrNull(source.raw_readback_verification),
+    ...objectOrNull(source.rawReadbackVerification),
+    ...objectOrNull(source.byte_verification),
+    ...objectOrNull(source.byteVerification),
+  };
+
+  if (schemaPath) {
+    try {
+      const schemaBytes = await readFile(schemaPath);
+      const schemaHash = sha256BufferHash(schemaBytes);
+      enriched.readback_schema_hash = schemaHash;
+      verification.readback_schema_hash = schemaHash;
+      verification.readback_schema_byte_length = schemaBytes.length;
+    } catch (error) {
+      verification.readback_schema_read_error = error?.message ? String(error.message) : String(error);
+    }
+  }
+
+  if (rawPath) {
+    try {
+      const rawBytes = await readFile(rawPath);
+      const actualHash = sha256BufferHash(rawBytes);
+      const declaredHash = firstString(source.raw_readback_hash, source.rawReadbackHash);
+      enriched.raw_readback_hash = declaredHash ?? actualHash;
+      enriched.raw_readback_byte_length = rawBytes.length;
+      verification.byte_length = rawBytes.length;
+      verification.raw_readback_hash = actualHash;
+      verification.hash_verified = !declaredHash || declaredHash.toLowerCase() === actualHash.toLowerCase();
+      const slice = objectOrNull(source.deterministic_slice ?? source.deterministicSlice);
+      const offset = finiteOffset(slice.offset ?? slice.byte_offset ?? slice.byteOffset);
+      const length = finiteOffset(slice.length ?? slice.byte_length ?? slice.byteLength);
+      if (offset !== null && length !== null && length > 0 && offset + length <= rawBytes.length) {
+        const sliceHash = sha256BufferHash(rawBytes.subarray(offset, offset + length));
+        enriched.deterministic_slice = {
+          ...slice,
+          offset,
+          length,
+          hash: firstString(slice.hash, slice.sha256, slice.slice_hash, slice.sliceHash) ?? sliceHash,
+        };
+        enriched.deterministic_slice_hash = enriched.deterministic_slice.hash;
+        verification.deterministic_slice_hash = sliceHash;
+        verification.deterministic_slice_hash_verified =
+          String(enriched.deterministic_slice.hash).toLowerCase() === sliceHash.toLowerCase();
+        verification.slice_bounds_verified = true;
+      } else {
+        verification.slice_bounds_verified = false;
+      }
+    } catch (error) {
+      verification.raw_readback_read_error = error?.message ? String(error.message) : String(error);
+    }
+  }
+
+  if (Object.keys(verification).length > 0) {
+    enriched.raw_readback_verification = verification;
+    if (verification.hash_verified === true) enriched.raw_readback_hash_verified = true;
+    if (verification.deterministic_slice_hash_verified === true) {
+      enriched.deterministic_slice_hash_verified = true;
+    }
+  }
+
+  return enriched;
+}
+
+async function imageRawRgb(imagePath) {
+  const { data, info } = await sharp(imagePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height, channels: info.channels };
+}
+
+function visiblePixelCount(raw) {
+  let visible = 0;
+  for (let i = 0; i < raw.data.length; i += raw.channels) {
+    const r = raw.data[i] ?? 0;
+    const g = raw.data[i + 1] ?? 0;
+    const b = raw.data[i + 2] ?? 0;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (luma > 24 || Math.max(r, g, b) - Math.min(r, g, b) > 30) visible += 1;
+  }
+  return visible;
+}
+
+export async function visualOracleArtifactsFromFiles(visualArtifacts = null) {
+  const source = objectOrNull(visualArtifacts);
+  if (!source) return null;
+  const beforePath = fileArtifactPath(firstString(source.before_image, source.beforeImage));
+  const afterPath = fileArtifactPath(firstString(source.after_image, source.afterImage));
+  const diffPath = fileArtifactPath(firstString(source.diff_image, source.diffImage));
+  const enriched = { ...source };
+  const verification = {
+    ...objectOrNull(source.visual_pixel_verification),
+    ...objectOrNull(source.visualPixelVerification),
+    ...objectOrNull(source.pixel_verification),
+    ...objectOrNull(source.pixelVerification),
+  };
+
+  try {
+    if (beforePath) {
+      const beforeBytes = await readFile(beforePath);
+      enriched.before_image_hash = sha256BufferHash(beforeBytes);
+      verification.before_image_hash = enriched.before_image_hash;
+      verification.before_image_hash_verified = true;
+    }
+    if (afterPath) {
+      const afterBytes = await readFile(afterPath);
+      enriched.after_image_hash = sha256BufferHash(afterBytes);
+      verification.after_image_hash = enriched.after_image_hash;
+      verification.after_image_hash_verified = true;
+    }
+    if (diffPath) {
+      const diffBytes = await readFile(diffPath);
+      enriched.diff_image_hash = sha256BufferHash(diffBytes);
+      verification.diff_image_hash = enriched.diff_image_hash;
+      verification.diff_image_hash_verified = true;
+    }
+    if (beforePath && afterPath) {
+      const before = await imageRawRgb(beforePath);
+      const after = await imageRawRgb(afterPath);
+      if (before.width !== after.width || before.height !== after.height) {
+        verification.pixel_metric_error = 'visual_dimensions_mismatch';
+      } else {
+        let changedPixels = 0;
+        let absoluteDelta = 0;
+        const pixels = Math.max(1, before.width * before.height);
+        const length = Math.min(before.data.length, after.data.length);
+        for (let i = 0; i < length; i += before.channels) {
+          const dr = Math.abs((before.data[i] ?? 0) - (after.data[i] ?? 0));
+          const dg = Math.abs((before.data[i + 1] ?? 0) - (after.data[i + 1] ?? 0));
+          const db = Math.abs((before.data[i + 2] ?? 0) - (after.data[i + 2] ?? 0));
+          if (dr + dg + db > 0) changedPixels += 1;
+          absoluteDelta += dr + dg + db;
+        }
+        const changedPixelRatio = changedPixels / pixels;
+        const perceptualDiff = absoluteDelta / (pixels * 3 * 255);
+        const visiblePixels = visiblePixelCount(after);
+        enriched.changed_pixel_ratio = changedPixelRatio;
+        enriched.perceptual_diff = perceptualDiff;
+        enriched.visible_pixel_count = visiblePixels;
+        enriched.swapchain_size = enriched.swapchain_size ?? [after.width, after.height];
+        enriched.pixel_metrics_verified = true;
+        verification.metrics_verified = true;
+        verification.changed_pixel_ratio_recomputed = changedPixelRatio;
+        verification.perceptual_diff_recomputed = perceptualDiff;
+        verification.visible_pixel_count_recomputed = visiblePixels;
+        verification.width = after.width;
+        verification.height = after.height;
+      }
+    }
+  } catch (error) {
+    verification.pixel_metric_error = error?.message ? String(error.message) : String(error);
+  }
+
+  if (Object.keys(verification).length > 0) {
+    enriched.visual_pixel_verification = verification;
+  }
+  return enriched;
+}
+
 export async function writeValidationRuntimeProofArtifact(outputDir, input = {}) {
   const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(
     input.visualEvidenceRefs,
     input.visualEvidenceArtifacts,
   );
+  const visualOracleArtifacts = await visualOracleArtifactsFromFiles(
+    input.visualOracleArtifacts
+    ?? input.visual_oracle_artifacts
+    ?? objectOrNull(input.oracleArtifacts)?.visualOracleArtifacts
+    ?? objectOrNull(input.oracleArtifacts)?.visual_oracle_artifacts
+    ?? objectOrNull(input.oracle_artifacts)?.visualOracleArtifacts
+    ?? objectOrNull(input.oracle_artifacts)?.visual_oracle_artifacts
+    ?? visualOracleArtifactsFromOutputProof(input.outputProof),
+  );
+  const computeOracleArtifacts = await computeOracleArtifactsFromFiles(
+    input.computeOracleArtifacts
+    ?? input.compute_oracle_artifacts
+    ?? objectOrNull(input.oracleArtifacts)?.computeOracleArtifacts
+    ?? objectOrNull(input.oracleArtifacts)?.compute_oracle_artifacts
+    ?? objectOrNull(input.oracle_artifacts)?.computeOracleArtifacts
+    ?? objectOrNull(input.oracle_artifacts)?.compute_oracle_artifacts
+    ?? computeOracleArtifactsFromOutputProof(input.outputProof),
+  );
   const artifact = buildValidationRuntimeProofArtifact({
     ...input,
     visualEvidenceArtifacts,
+    visualOracleArtifacts,
+    computeOracleArtifacts,
   });
   await mkdir(outputDir, { recursive: true });
   const workspace = safeToken(input.workspaceSlug);

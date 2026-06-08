@@ -7,6 +7,7 @@ pub const RELOAD_PLAN_SCHEMA_VERSION: &str = "synthi.gpu.reload_plan.v1";
 pub const RUN_REPORT_SCHEMA_VERSION: &str = "synthi.gpu.run_report.v1";
 pub const TOOLCHAIN_PROFILE_SCHEMA_VERSION: &str = "synthi.gpu.toolchain_capability.v1";
 pub const SELECTED_COMPILE_COMMAND_SCHEMA_VERSION: &str = "synthi.gpu.selected_compile_command.v1";
+pub const FISSION_READINESS_SCHEMA_VERSION: &str = "synthi.gpu.fission_readiness.v1";
 
 pub fn normalize_split_sidecar(meta: &Value) -> Value {
     let mut root = meta.as_object().cloned().unwrap_or_default();
@@ -222,12 +223,15 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .cloned()
         .unwrap_or(Value::Null);
     if let Some(fission_verifier_report) = fission_verifier_report_from_root(&root) {
-        root.insert(
-            "fissionVerifierReport".to_string(),
-            fission_verifier_report,
-        );
+        root.insert("fissionVerifierReport".to_string(), fission_verifier_report);
     }
     let fission_verifier_report = root.get("fissionVerifierReport").cloned();
+    let fission_readiness_report =
+        fission_readiness_report(&root, fission_verifier_report.as_ref());
+    root.insert(
+        "fissionReadinessReport".to_string(),
+        fission_readiness_report.clone(),
+    );
 
     if !root.contains_key("runReport") {
         let mut report = run_report(
@@ -243,6 +247,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
             device_fast_path_verifier_report,
             gpu_ai_delta_verifier_report,
         );
+        promote_fission_readiness_report_into_run_report(&mut report, fission_readiness_report);
         promote_fission_verifier_report_into_run_report(&mut report, fission_verifier_report);
         root.insert("runReport".to_string(), report);
     } else if let Some(report) = root.get_mut("runReport") {
@@ -251,6 +256,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
             device_fast_path_verifier_report,
             gpu_ai_delta_verifier_report,
         );
+        promote_fission_readiness_report_into_run_report(report, fission_readiness_report);
         promote_fission_verifier_report_into_run_report(report, fission_verifier_report);
     }
 
@@ -2523,6 +2529,12 @@ fn run_report(
     if let Some(report) = report.as_object_mut() {
         report.insert("memoryRefreshPolicy".to_string(), memory_refresh_policy);
         report.insert("gpuFaultPolicy".to_string(), gpu_fault_policy);
+        report.insert(
+            "fissionReadinessReport".to_string(),
+            root.get("fissionReadinessReport")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
     }
     report
 }
@@ -2557,12 +2569,257 @@ fn promote_fission_verifier_report_into_run_report(
     }
 }
 
+fn promote_fission_readiness_report_into_run_report(report: &mut Value, readiness_report: Value) {
+    let Some(report) = report.as_object_mut() else {
+        return;
+    };
+    report.insert("fissionReadinessReport".to_string(), readiness_report);
+}
+
 fn fission_verifier_report_from_root(root: &Map<String, Value>) -> Option<Value> {
     let candidates = collect_fission_candidates(root);
     if candidates.is_empty() {
         return None;
     }
     Some(verify_fission_candidates(&Value::Array(candidates)))
+}
+
+fn fission_readiness_report(
+    root: &Map<String, Value>,
+    fission_verifier_report: Option<&Value>,
+) -> Value {
+    let fission_candidates = collect_fission_candidates(root);
+    let candidate_count = fission_candidates.len();
+    let accepted_count = fission_verifier_report
+        .and_then(|report| report.get("acceptedCount"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut checks = Vec::new();
+    let mut reason_codes = Vec::new();
+
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "selected_compile_command",
+        selected_compile_command_ready(root.get("selectedCompileCommand")),
+        "fission.selected_compile_command_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "effective_flags_hash",
+        non_empty_string(root.get("effectiveFlagsHash")),
+        "fission.effective_flags_hash_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "toolchain_capability_current",
+        root.get("toolchainCapabilities")
+            .and_then(|profile| profile.get("status"))
+            .and_then(Value::as_str)
+            == Some("current"),
+        "fission.toolchain_capability_not_current",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "device_mapping",
+        device_mapping_ready(root),
+        "fission.device_mapping_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "source_baseline_hashes",
+        non_empty_object(root.get("sourceBaselineHashes")),
+        "fission.source_baseline_hashes_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "generated_device_role",
+        generated_device_role_ready(root.get("generatedRoles")),
+        "fission.generated_device_role_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "generated_artifact_catalog",
+        generated_artifact_catalog_ready(root),
+        "fission.generated_artifact_catalog_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "launch_indirection",
+        launch_indirection_ok(root),
+        "fission.launch_indirection_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "fission_candidate",
+        candidate_count > 0,
+        "fission.candidate_missing",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "deterministic_fission_verifier",
+        accepted_count > 0,
+        "fission.verifier_not_accepted",
+    );
+    push_readiness_check(
+        &mut checks,
+        &mut reason_codes,
+        "content_addressed_artifact_identity",
+        selected_fission_artifact_identity_ready(fission_verifier_report),
+        "fission.artifact_identity_not_ready",
+    );
+
+    let ready = reason_codes.is_empty();
+    json!({
+        "schemaVersion": FISSION_READINESS_SCHEMA_VERSION,
+        "status": if ready { "ready" } else { "not_ready" },
+        "ready": ready,
+        "candidateCount": candidate_count,
+        "acceptedCandidateCount": accepted_count,
+        "selectedIslandId": fission_verifier_report
+            .and_then(|report| report.get("selectedIslandId"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "checks": checks,
+        "reasonCodes": reason_codes,
+    })
+}
+
+fn push_readiness_check(
+    checks: &mut Vec<Value>,
+    reason_codes: &mut Vec<Value>,
+    name: &str,
+    pass: bool,
+    reason_code: &str,
+) {
+    if !pass {
+        push_reason_code(reason_codes, reason_code);
+    }
+    checks.push(json!({
+        "name": name,
+        "status": if pass { "pass" } else { "fail" },
+        "reasonCode": if pass { Value::Null } else { Value::String(reason_code.to_string()) },
+    }));
+}
+
+fn selected_compile_command_ready(value: Option<&Value>) -> bool {
+    let Some(command) = value else {
+        return false;
+    };
+    non_empty_string(command.get("identity"))
+        && non_empty_array(command.get("arguments"))
+        && command
+            .get("source")
+            .and_then(Value::as_str)
+            .map(|source| source != "missing")
+            .unwrap_or(false)
+}
+
+fn device_mapping_ready(root: &Map<String, Value>) -> bool {
+    let status = root
+        .get("deviceMappingStatus")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    status != "missing" && non_empty_array(root.get("deviceMappings"))
+}
+
+fn generated_device_role_ready(value: Option<&Value>) -> bool {
+    let Some(roles) = value else {
+        return false;
+    };
+    if roles
+        .get("deviceRoles")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("path")
+                    .and_then(Value::as_str)
+                    .map(|path| !path.trim().is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    roles
+        .get("device")
+        .and_then(|device| device.get("path"))
+        .and_then(Value::as_str)
+        .map(|path| !path.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn generated_artifact_catalog_ready(root: &Map<String, Value>) -> bool {
+    let Some(report) = root.get("generatedArtifactReport") else {
+        return false;
+    };
+    let internal = report
+        .get("rolesAreInternal")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || root
+            .get("noUserTreePollutionVerified")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    internal
+        && (non_empty_array(report.get("mappings"))
+            || non_empty_array(root.get("partialArtifacts"))
+            || non_empty_array(root.get("partialArtifactCatalog")))
+}
+
+fn selected_fission_artifact_identity_ready(fission_verifier_report: Option<&Value>) -> bool {
+    fission_verifier_report
+        .and_then(|report| report.get("candidates"))
+        .and_then(Value::as_array)
+        .map(|candidates| {
+            candidates.iter().any(|candidate| {
+                candidate.get("selected").and_then(Value::as_bool) == Some(true)
+                    && candidate.get("status").and_then(Value::as_str) == Some("pass")
+                    && candidate
+                        .get("artifactIdentityContract")
+                        .and_then(|contract| contract.get("idsMatchHashes"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    && candidate
+                        .get("artifactIdentityContract")
+                        .and_then(|contract| contract.get("artifactIds"))
+                        .and_then(Value::as_array)
+                        .map(|ids| !ids.is_empty())
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn non_empty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn non_empty_array(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+}
+
+fn non_empty_object(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_object)
+        .map(|object| !object.is_empty())
+        .unwrap_or(false)
 }
 
 fn collect_fission_candidates(root: &Map<String, Value>) -> Vec<Value> {
@@ -2821,6 +3078,95 @@ mod tests {
                 "reasonCodes": ["launch_indirection.runtime_generation_checked"]
             },
             "reasonCodes": ["launch_indirection.host_roles_use_public_wrapper"]
+        })
+    }
+
+    fn generic_device_mapping_report() -> Value {
+        json!({
+            "schemaVersion": "synthi.gpu.device_mapping.v1",
+            "generatedDevicePath": "internal/device.hip",
+            "mappingStatus": "mapped",
+            "deviceMappings": [
+                {
+                    "kind": "kernel",
+                    "symbol": "render_step",
+                    "sourcePath": "src/render.kernel",
+                    "generatedRole": "device",
+                    "generatedPath": "internal/device.hip",
+                    "mappingConfidence": "same_name_signature",
+                    "signatureHash": "0xabc",
+                    "sourceBodyRange": {"startByte": 10, "endByte": 24},
+                    "generatedBodyRange": {"startByte": 20, "endByte": 34}
+                }
+            ],
+            "unmappedKernels": [],
+            "sourceBaselineHashes": {"src/render.kernel": "hash1"},
+            "sourceBaselineContents": {"src/render.kernel": "kernel void render_step() {}"},
+            "kernelSignatureHashes": {"render_step": "0xabc"},
+            "constantGlobalLayoutHashes": {
+                "src/render.kernel": "0xc1",
+                "generated:device": "0xc1"
+            }
+        })
+    }
+
+    fn generated_artifact_report() -> Value {
+        json!({
+            "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
+            "rolesAreInternal": true,
+            "internalRoot": ".synthi/generated/gpu",
+            "userWorkspaceMaterialization": "forbidden",
+            "mappings": [
+                {
+                    "role": "device",
+                    "internalPath": ".synthi/generated/gpu/device.hip",
+                    "userPath": null
+                }
+            ],
+            "missingRoles": [],
+            "droppedExtraGeneratedFiles": []
+        })
+    }
+
+    fn content_addressed_fission_candidate(digest: &str) -> Value {
+        json!({
+            "islandId": "island:sha256:abc",
+            "sourceEditId": "edit:abc",
+            "sourcePaths": ["src/render.kernel"],
+            "sourceSpans": [{"path": "src/render.kernel", "startByte": 10, "endByte": 24}],
+            "generatedRolePath": ".synthi/generated/gpu/render.kernel",
+            "targetSymbols": ["render_step"],
+            "exportedSymbolsExpected": ["render_step"],
+            "artifactKind": "partial_device_artifact",
+            "selectedArtifactId": format!("artifact:sha256:{digest}"),
+            "artifactHash": format!("sha256:{digest}"),
+            "includeClosure": [],
+            "dependencyClosureHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "abiMembraneId": "abi:membrane",
+            "compileRecipeHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "loaderCapabilityRequirement": {
+                "transportClass": "content_addressed_blob",
+                "selectedArtifactId": format!("artifact:sha256:{digest}"),
+                "contentHash": format!("sha256:{digest}")
+            },
+            "requiredOracleId": "oracle:render-step",
+            "sourceMappingEvidenceIds": ["evidence:source-map"],
+            "includeClosureEvidenceIds": ["evidence:include-closure"],
+            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
+            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
+            "outputOracleEvidenceIds": ["evidence:output-oracle"],
+            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
+            "narrowerCandidateRejections": [
+                {
+                    "scopeRank": 0,
+                    "reasonCode": "fission.edit_crosses_body_boundary",
+                    "verifierEvidenceIds": ["evidence:source-map"]
+                }
+            ]
         })
     }
 
@@ -4111,6 +4457,79 @@ mod tests {
     }
 
     #[test]
+    fn fission_readiness_report_passes_with_generic_metadata() {
+        let manifest = gpu_compile_manifest();
+        let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "device_mapping_report": generic_device_mapping_report(),
+            "generated_artifact_report": generated_artifact_report(),
+            "launch_indirection_report": launch_indirection_report(),
+            "fissionCandidate": content_addressed_fission_candidate(digest),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/fissionReadinessReport/status")
+                .and_then(Value::as_str),
+            Some("ready")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/fissionReadinessReport/ready")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/fissionReadinessReport/status")
+                .and_then(Value::as_str),
+            Some("ready")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/fissionReadinessReport/acceptedCandidateCount")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn fission_readiness_report_explains_missing_mapping_and_baseline() {
+        let manifest = gpu_compile_manifest();
+        let digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "generated_artifact_report": generated_artifact_report(),
+            "launch_indirection_report": launch_indirection_report(),
+            "fissionCandidate": content_addressed_fission_candidate(digest),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/fissionReadinessReport/status")
+                .and_then(Value::as_str),
+            Some("not_ready")
+        );
+        assert!(migrated
+            .pointer("/fissionReadinessReport/reasonCodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.device_mapping_missing"));
+        assert!(migrated
+            .pointer("/runReport/fissionReadinessReport/reasonCodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.source_baseline_hashes_missing"));
+    }
+
+    #[test]
     fn ai_fission_candidate_missing_oracle_is_rejected_by_deterministic_report() {
         let manifest = gpu_compile_manifest();
         let fission_candidate = json!({
@@ -4160,14 +4579,12 @@ mod tests {
                 .and_then(Value::as_str),
             Some("reject")
         );
-        assert!(
-            migrated
-                .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
-                .and_then(Value::as_array)
-                .unwrap()
-                .iter()
-                .any(|code| code == "fission.output_oracle_missing")
-        );
+        assert!(migrated
+            .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_missing"));
     }
 
     #[test]
@@ -4223,14 +4640,12 @@ mod tests {
                 .map(Vec::len),
             Some(0)
         );
-        assert!(
-            migrated
-                .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
-                .and_then(Value::as_array)
-                .unwrap()
-                .iter()
-                .any(|code| code == "fission.deterministic_verifier_evidence_missing")
-        );
+        assert!(migrated
+            .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
     }
 
     #[test]

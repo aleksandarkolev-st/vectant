@@ -144,7 +144,7 @@ class RetrievalConfig:
 
     # LLM reranker (optional)
     enable_llm_rerank: bool = False
-    llm_rerank_model: str = "gemini-3.1-flash-lite-preview"
+    llm_rerank_model: str = "gemini-3.1-flash-lite"
     llm_rerank_top_k: int = 20
     llm_rerank_min_score: float = 0.15
     llm_rerank_timeout_ms: int = 6000
@@ -234,7 +234,7 @@ class SummaryConfig:
 
     # LLM summarization (Gemini)
     enable_llm_summaries: bool = True
-    gemini_summary_model: str = "gemini-3.1-flash-lite-preview"
+    gemini_summary_model: str = "gemini-3.1-flash-lite"
     module_summary_max_tokens: int = 400
     symbol_summary_max_tokens: int = 150
 
@@ -244,7 +244,7 @@ class RoutingConfig:
     """Configuration for query routing."""
     enable_router: bool = True
     use_gemini_intent: bool = True
-    gemini_intent_model: str = "gemini-3.1-flash-lite-preview"
+    gemini_intent_model: str = "gemini-3.1-flash-lite"
     max_seed_symbols: int = 12
     max_seed_files: int = 12
     max_seed_chunks: int = 25

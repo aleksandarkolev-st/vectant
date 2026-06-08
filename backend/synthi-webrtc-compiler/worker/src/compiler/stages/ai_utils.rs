@@ -24,16 +24,30 @@ fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap
     AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+fn first_nonempty_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn gpu_split_model_override() -> Option<String> {
+    first_nonempty_env(&["SYNTHI_GPU_SPLIT_MODEL", "SYNTHI_GEMINI_MODEL"])
+}
+
+fn gpu_delta_model_override() -> Option<String> {
+    first_nonempty_env(&["SYNTHI_GPU_DELTA_MODEL", "SYNTHI_GEMINI_DELTA_MODEL"])
+}
+
 fn ai_split_cache_key(req: &CompileRequest) -> u64 {
     let gpu_mode = req
         .gpu_mode
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let split_model = std::env::var("SYNTHI_GEMINI_MODEL")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let split_model = gpu_split_model_override();
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
@@ -219,6 +233,34 @@ fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
                         format!("targetResolution.reasonCodes={}", codes.join(",")),
                     );
                 }
+            }
+            if let Some(model) = value
+                .get("provider_model")
+                .or_else(|| value.get("model_provenance"))
+            {
+                let requested = model
+                    .get("requested_model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unspecified");
+                let status = model
+                    .get("provider_model_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let actual = model
+                    .get("actual_model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unresolved");
+                let hard_failure = model
+                    .get("hard_infra_failure")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                push_summary_part(
+                    &mut parts,
+                    format!(
+                        "model requested={} actual={} provider_status={} hard_infra_failure={}",
+                        requested, actual, status, hard_failure
+                    ),
+                );
             }
             if parts.is_empty() {
                 Some(value.to_string())
@@ -529,10 +571,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
-    let split_model = std::env::var("SYNTHI_GEMINI_MODEL")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let split_model = gpu_split_model_override();
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
@@ -889,6 +928,21 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
+    if let Some(model_provenance) = raw_response
+        .get("model_provenance")
+        .or_else(|| raw_response.get("provider_model"))
+    {
+        if !model_provenance.is_null() {
+            eprintln!("[AI Split] model provenance captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_model_provenance".to_string(),
+                    model_provenance.clone(),
+                );
+            }
+        }
+    }
+
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
     // already carries `host_runner` as a sibling of `core`/`gui`/`shared`
     // (because the universal split prompt outputs all four fields inside
@@ -1026,6 +1080,7 @@ pub struct GpuDiffPatchResult {
     pub reload_plan: String,
     pub edits: Vec<crate::hmr::edit_applier::Edit>,
     pub fission_candidate: Option<serde_json::Value>,
+    pub model_provenance: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1038,6 +1093,75 @@ struct GpuDiffPatchResponse {
     fission_candidate: Option<serde_json::Value>,
     #[serde(default)]
     elapsed_seconds: Option<f64>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    requested_model: Option<String>,
+    #[serde(default)]
+    actual_model: Option<String>,
+    #[serde(default)]
+    model_fallback_used: Option<bool>,
+    #[serde(default)]
+    model_role: Option<String>,
+    #[serde(default)]
+    provider_model: Option<serde_json::Value>,
+    #[serde(default)]
+    model_provenance: Option<serde_json::Value>,
+}
+
+fn gpu_diff_patch_model_provenance(
+    parsed: &GpuDiffPatchResponse,
+) -> Option<serde_json::Value> {
+    parsed
+        .model_provenance
+        .clone()
+        .or_else(|| parsed.provider_model.clone())
+}
+
+fn model_provenance_hard_infra_failure(model_provenance: Option<&serde_json::Value>) -> bool {
+    let Some(model) = model_provenance else {
+        return false;
+    };
+    model
+        .get("hard_infra_failure")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || model
+            .get("provider_model_status")
+            .and_then(|v| v.as_str())
+            .map(|status| status.eq_ignore_ascii_case("shutdown"))
+            .unwrap_or(false)
+}
+
+fn summarize_model_provenance(model_provenance: &serde_json::Value) -> String {
+    let requested = model_provenance
+        .get("requested_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unspecified");
+    let actual = model_provenance
+        .get("actual_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unresolved");
+    let status = model_provenance
+        .get("provider_model_status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let checked_at = model_provenance
+        .get("model_availability_checked_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unchecked");
+    let alias = model_provenance
+        .get("provider_model_alias_resolved_to")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none");
+    let hard_failure = model_provenance
+        .get("hard_infra_failure")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    format!(
+        "requested={} actual={} provider_status={} alias={} checked_at={} hard_infra_failure={}",
+        requested, actual, status, alias, checked_at, hard_failure
+    )
 }
 
 /// GPU-aware AI delta path. Unlike the generic diff patch endpoint, this sends
@@ -1060,16 +1184,18 @@ pub async fn perform_gpu_ai_diff_patch(
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/diff_patch/gpu", backend_url);
 
+    let delta_model = gpu_delta_model_override();
     eprintln!(
-        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={}",
+        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={} model={}",
         url,
         diff.len(),
         architecture.map(|s| s.len()).unwrap_or(0),
         device_content.len(),
         reload_plan_hint.unwrap_or("none"),
+        delta_model.as_deref().unwrap_or("ai-engine-default"),
     );
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "diff": diff,
         "core_content": core_content,
         "gui_content": gui_content,
@@ -1082,14 +1208,11 @@ pub async fn perform_gpu_ai_diff_patch(
         "reload_plan_report": reload_plan_report.cloned().unwrap_or(serde_json::Value::Null),
         "reload_plan": reload_plan_hint,
     });
+    if let Some(model) = &delta_model {
+        payload["model"] = serde_json::Value::String(model.clone());
+    }
 
-    let res: serde_json::Value = add_ai_auth(client.post(&url))
-        .json(&payload)
-        .timeout(ai_http_timeout())
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+    let res = post_ai_json(&client, &url, &payload).await?;
 
     let parsed: GpuDiffPatchResponse = serde_json::from_value(res.clone()).map_err(|e| {
         anyhow::anyhow!(
@@ -1098,18 +1221,48 @@ pub async fn perform_gpu_ai_diff_patch(
             res.to_string().chars().take(300).collect::<String>()
         )
     })?;
+    let model_provenance = gpu_diff_patch_model_provenance(&parsed);
+    if model_provenance_hard_infra_failure(model_provenance.as_ref()) {
+        let summary = model_provenance
+            .as_ref()
+            .map(summarize_model_provenance)
+            .unwrap_or_else(|| "missing model provenance".to_string());
+        anyhow::bail!(
+            "[GPU AI Delta] provider model infrastructure failure: {}",
+            summary
+        );
+    }
     let reload_plan = parsed.reload_plan.unwrap_or_else(|| "mixed".to_string());
     eprintln!(
-        "[GPU AI Delta] Completed in {:.2}s plan={} edit(s)={}",
+        "[GPU AI Delta] Completed in {:.2}s plan={} edit(s)={} model={} actual_model={} fallback_used={} role={} provider_status={} model_checked_at={}",
         parsed.elapsed_seconds.unwrap_or(0.0),
         reload_plan,
-        parsed.edits.len()
+        parsed.edits.len(),
+        parsed
+            .requested_model
+            .as_deref()
+            .or(parsed.model.as_deref())
+            .unwrap_or("unspecified"),
+        parsed.actual_model.as_deref().unwrap_or("unspecified"),
+        parsed.model_fallback_used.unwrap_or(false),
+        parsed.model_role.as_deref().unwrap_or("gpu_delta"),
+        model_provenance
+            .as_ref()
+            .and_then(|v| v.get("provider_model_status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown"),
+        model_provenance
+            .as_ref()
+            .and_then(|v| v.get("model_availability_checked_at"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unchecked"),
     );
 
     Ok(GpuDiffPatchResult {
         reload_plan,
         edits: parsed.edits,
         fission_candidate: parsed.fission_candidate,
+        model_provenance,
     })
 }
 
@@ -1590,6 +1743,48 @@ mod tests {
         assert_eq!(candidate["islandId"], "island:proposal");
         assert_eq!(candidate["targetSymbols"], json!(["step"]));
         assert_eq!(candidate["proposalSource"], "ai_delta");
+    }
+
+    #[test]
+    fn gpu_diff_patch_response_detects_shutdown_model_provenance() {
+        let parsed: GpuDiffPatchResponse = serde_json::from_value(json!({
+            "reload_plan": "device_only",
+            "edits": [],
+            "provider_model": {
+                "requested_model": "gemini-3.1-flash-lite-preview",
+                "actual_model": null,
+                "provider_model_status": "shutdown",
+                "provider_model_alias_resolved_to": null,
+                "provider_shutdown_or_deprecation_detected": true,
+                "model_availability_checked_at": "2026-06-07T00:00:00Z",
+                "hard_infra_failure": true
+            }
+        }))
+        .unwrap();
+        let provenance = gpu_diff_patch_model_provenance(&parsed);
+        assert!(model_provenance_hard_infra_failure(provenance.as_ref()));
+    }
+
+    #[test]
+    fn ai_error_summary_includes_model_provenance() {
+        let body = json!({
+            "detail": {
+                "message": "GPU delta provider failed",
+                "provider_model": {
+                    "requested_model": "gemini-3.1-flash-lite-preview",
+                    "actual_model": null,
+                    "provider_model_status": "shutdown",
+                    "hard_infra_failure": true
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("GPU delta provider failed"));
+        assert!(summary.contains("provider_status=shutdown"));
+        assert!(summary.contains("hard_infra_failure=true"));
     }
 
     #[test]

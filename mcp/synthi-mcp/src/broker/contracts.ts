@@ -19,6 +19,7 @@ export interface BrokerFrameEvent {
   ingest_ts_ms: number;
   viewport: BrokerViewport;
   is_keyframe: boolean;
+  content_hash?: string;
 }
 
 export interface BrokerLifecycleEvent {
@@ -70,6 +71,7 @@ export function makeBrokerFrameEvent(input: {
   viewport: BrokerViewport;
   ingest_ts_ms?: number;
   is_keyframe?: boolean;
+  content_hash?: string;
 }): BrokerFrameEvent {
   return {
     type: "frame",
@@ -80,6 +82,7 @@ export function makeBrokerFrameEvent(input: {
     ingest_ts_ms: input.ingest_ts_ms ?? Date.now(),
     viewport: input.viewport,
     is_keyframe: input.is_keyframe ?? false,
+    ...(input.content_hash ? { content_hash: input.content_hash } : {}),
   };
 }
 

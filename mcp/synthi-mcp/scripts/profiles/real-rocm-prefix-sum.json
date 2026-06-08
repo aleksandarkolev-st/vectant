@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-prefix-sum",
+  "repo": {
+    "url": "https://github.com/ROCm/rocm-examples.git"
+  },
+  "target": {
+    "entryFile": "Applications/prefix_sum/main.hip",
+    "deltaFile": "Applications/prefix_sum/main.hip",
+    "targetName": "applications_prefix_sum",
+    "buildSubdir": "Applications/prefix_sum"
+  },
+  "sourceDelta": {
+    "before": "parser.set_optional(\"n\", \"size\", 256);",
+    "after": "parser.set_optional(\"n\", \"size\", 512);"
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

@@ -4,6 +4,5 @@ dist
 .live-test-artifacts
 tests
 docs
-scripts
 *.log
 .git

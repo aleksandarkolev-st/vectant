@@ -895,6 +895,24 @@ function proofArtifactPath(record) {
   return nonEmptyString(record?.proofArtifactPath) ?? nonEmptyString(record?.containerPath);
 }
 
+function artifactKindRank(kind) {
+  const normalized = String(kind ?? '').trim().toLowerCase();
+  if (!normalized) return 99;
+  if (/source[_-]?include|kernel[_-]?region|partial/.test(normalized)) return 0;
+  if (/kernel[_-]?translation[_-]?unit|direct[_-]?device[_-]?translation[_-]?unit/.test(normalized)) return 1;
+  if (/multi[_-]?artifact|region/.test(normalized)) return 2;
+  if (/full[_-]?device|device[_-]?module/.test(normalized)) return 3;
+  return 2;
+}
+
+function preferredArtifactKind(kinds) {
+  const unique = uniqueStrings(kinds);
+  return unique
+    .slice()
+    .sort((left, right) => artifactKindRank(left) - artifactKindRank(right))
+    .at(0) ?? null;
+}
+
 export function sourceProofFromProofArtifacts(records, fallbackProof = null) {
   const proofArtifactPaths = [];
   const evidenceRefs = [];
@@ -1044,8 +1062,10 @@ export function sourceProofFromProofArtifacts(records, fallbackProof = null) {
     partialArtifactReplacement,
     partialModule: partialArtifactReplacement,
     label: fallbackLabel,
-    selectedArtifactKind: uniqueStrings(selectedArtifactKinds)[0] ?? null,
-    requestedArtifactKind: uniqueStrings(requestedArtifactKinds)[0] ?? null,
+    selectedArtifactKind: preferredArtifactKind(selectedArtifactKinds),
+    selectedArtifactKinds: uniqueStrings(selectedArtifactKinds),
+    requestedArtifactKind: preferredArtifactKind(requestedArtifactKinds),
+    requestedArtifactKinds: uniqueStrings(requestedArtifactKinds),
   };
 }
 
@@ -1159,6 +1179,7 @@ export function abiProofFromProofArtifacts(records) {
   const extractorProvenance = [];
   const kernelAbiFingerprintHashes = [];
   const constantGlobalLayoutHashes = [];
+  const abiCompatibilityClasses = [];
   let extractorProvenanceComplete = true;
   let layoutSizeAlignmentVerified = false;
   let degradedReason = null;
@@ -1176,6 +1197,16 @@ export function abiProofFromProofArtifacts(records) {
       evidenceRefs.push(abiEvidenceId(evidence, artifact, record));
       if (metadata.layoutSizeAlignmentVerified === true) {
         layoutSizeAlignmentVerified = true;
+      }
+      const metadataAbiClass =
+        metadata.abiCompatibilityClass
+        ?? metadata.abi_compatibility_class
+        ?? metadata.compatibilityClass
+        ?? metadata.compatibility_class;
+      if (metadataAbiClass && typeof metadataAbiClass === 'object' && !Array.isArray(metadataAbiClass)) {
+        abiCompatibilityClasses.push(metadataAbiClass.value ?? metadataAbiClass.class);
+      } else {
+        abiCompatibilityClasses.push(metadataAbiClass);
       }
       acceptedExtractorEvidenceRefs.push(...uniqueStrings(metadata.acceptedExtractorEvidenceRefs ?? []));
       acceptedExtractorSources.push(...uniqueStrings(metadata.acceptedExtractorSources ?? []));
@@ -1214,6 +1245,7 @@ export function abiProofFromProofArtifacts(records) {
   return classifyGpuHmrAbiProof({
     metadataObserved: evidenceRefs.length > 0,
     layoutSizeAlignmentVerified,
+    abiCompatibilityClass: uniqueStrings(abiCompatibilityClasses)[0],
     degradedReason,
     evidenceRefs: uniqueStrings(evidenceRefs),
     acceptedExtractorEvidenceRefs: uniqueStrings(acceptedExtractorEvidenceRefs),
@@ -1374,6 +1406,7 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
   let ramTransportProven = false;
   let degradedState = null;
   let degradedReason = null;
+  let processId = null;
 
   for (const record of Array.isArray(records) ? records : []) {
     const artifact = record?.artifact;
@@ -1474,6 +1507,12 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
         degradedReason = runtimeDegradedReason.trim();
       }
     }
+    if (!processId) {
+      const runtimeProcessId = runtimeEvidence.process_id ?? runtimeEvidence.processId ?? null;
+      if (typeof runtimeProcessId === 'string' && runtimeProcessId.trim()) {
+        processId = runtimeProcessId.trim();
+      }
+    }
   }
 
   return {
@@ -1490,6 +1529,7 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
     loaderTransports: uniqueStrings(loaderTransports),
     reloadRequestTransports: uniqueStrings(reloadRequestTransports),
     evidenceRefs: uniqueStrings(evidenceRefs),
+    processId,
     degradedState: ramTransportProven ? null : degradedState ?? 'gpu-hmr-ram-io-unavailable',
     degradedReason: ramTransportProven
       ? null

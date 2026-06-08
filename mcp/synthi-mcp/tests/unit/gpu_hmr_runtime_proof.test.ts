@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import {
   classifyGpuHmrAbiProof,
@@ -42,11 +47,25 @@ import {
   REAL_ROCM_VALIDATION_COMMAND_ENV_KEYS,
 } from "../../scripts/lib/real-rocm-validation-command-env.mjs";
 import {
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+} from "../../scripts/lib/gpu-hmr-acceptance-contract.mjs";
+import {
   buildValidationRuntimeProofArtifact,
+  computeOracleArtifactsFromFiles,
+  visualOracleArtifactsFromFiles,
 } from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
 import {
   buildGpuHmrValidationProofSummary,
 } from "../../scripts/lib/gpu-hmr-validation-proof-summary.mjs";
+import {
+  evaluateGpuHmrDeterministicVisualMode,
+} from "../../scripts/lib/gpu-hmr-visual-evidence.mjs";
+import {
+  evaluateGpuHmrProofLedger,
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from "../../scripts/lib/gpu-hmr-proof-ledger.mjs";
 import {
   classifyFreshAiSplitProvenance,
   countAiSplitEvidenceLines,
@@ -72,6 +91,7 @@ function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
     metadataObserved: true,
     layoutSizeAlignmentVerified: true,
+    abiCompatibilityClass: "compatible",
     kernelAbiFingerprintHash: "d".repeat(64),
     constantGlobalLayoutHash: "e".repeat(64),
     evidenceRefs: ["evidence:device-abi-metadata:test"],
@@ -92,6 +112,203 @@ const TEST_CAPSULE_HASH = "c".repeat(64);
 const TEST_ABI_HASH = "d".repeat(64);
 const TEST_DEPENDENCY_HASH = "e".repeat(64);
 const TEST_PROOF_HASH = "f".repeat(64);
+
+function acceptedGpuClassification() {
+  return {
+    project_kind: "gpu_project",
+    edit_kind: "gpu_artifact_edit",
+    route: "gpu_hmr",
+    confidence: 0.95,
+    blocking_gaps: [],
+  };
+}
+
+function acceptedGpuFirewallEvidence() {
+  return {
+    route: "gpu_device_sidecar_reload",
+    evidence_source: "test:verified-route-classifier",
+    evidence_refs: ["test:verified-route-classifier"],
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: "pid1",
+    process_id_after: "pid1",
+  };
+}
+
+function acceptedGpuRouteEvidence() {
+  return {
+    classification: acceptedGpuClassification(),
+    firewallEvidence: acceptedGpuFirewallEvidence(),
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  };
+}
+
+function backendFieldEvidenceRefsFor(backend: string) {
+  const fieldsByBackend: Record<string, string[]> = {
+    hiprt: [
+      "kernel_entry",
+      "scene_or_bvh_handles",
+      "framebuffer_handle",
+      "material_or_geometry_buffers",
+      "camera_state_hash",
+      "same_process_reload_hook",
+      "visual_oracle",
+    ],
+    opencl: [
+      "program_hash_before",
+      "program_hash_after",
+      "kernel_name",
+      "command_queue",
+      "work_dim",
+      "global_work_size",
+      "local_work_size",
+      "event_trace",
+      "output_buffer_readback",
+    ],
+    vulkan: [
+      "shader_module_hash_before",
+      "shader_module_hash_after",
+      "entry_point",
+      "descriptor_set_layout_hash",
+      "pipeline_layout_hash",
+      "pipeline_state_hash",
+      "command_buffer_re_record_required",
+      "command_buffer_re_record_proven",
+      "frame_used_new_pipeline_trace",
+    ],
+    webgpu: [
+      "wgsl_hash_before",
+      "wgsl_hash_after",
+      "shader_module_epoch",
+      "entry_points",
+      "bind_group_layout_hash",
+      "pipeline_layout_hash",
+      "vertex_buffer_layout_hash",
+      "color_target_state_hash",
+      "pipeline_recreate_required",
+      "pipeline_recreate_proven",
+      "frame_used_new_pipeline_trace",
+    ],
+    bevy_wgsl: [
+      "wgsl_hash_before",
+      "wgsl_hash_after",
+      "shader_module_epoch",
+      "entry_points",
+      "bind_group_layout_hash",
+      "pipeline_layout_hash",
+      "vertex_buffer_layout_hash",
+      "color_target_state_hash",
+      "pipeline_recreate_required",
+      "pipeline_recreate_proven",
+      "frame_used_new_pipeline_trace",
+      "bevy_shader_asset_source",
+      "asset_watched",
+    ],
+  };
+  return Object.fromEntries(
+    (fieldsByBackend[backend] ?? []).map((field) => [
+      field,
+      [`evidence:backend-contract-field:${backend}:${field}`],
+    ]),
+  );
+}
+
+function acceptedTimingMetrics() {
+  return {
+    metric_clock: "monotonic_ns",
+    metric_scope: "hot_delta_1",
+    cache_state: "compiler_cache_warm",
+    static_discovery_time: 1_000_000,
+    ai_contract_synthesis_time: 2_000_000,
+    model_availability_check_time: 500_000,
+    artifact_hash_time: 300_000,
+    adapter_generation_time: 3_000_000,
+    device_compile_wall_time: 24_000_000,
+    artifact_load_time: 1_000_000,
+    epoch_publish_time: 500_000,
+    dispatch_trace_time: 700_000,
+    runtime_probe_time: 1_000_000,
+    oracle_analysis_time: 1_000_000,
+    trigger_to_visible_time: 34_000_000,
+    screenshot_capture_time: 0,
+    dispatch_to_output_proof_time: 2_000_000,
+    total_validator_wall_time: 71_000_000,
+  };
+}
+
+function acceptedModelProvenance() {
+  const checkedAt = "2026-06-07T00:00:00.000Z";
+  const availability = {
+    model_availability_source: "https://ai.google.dev/gemini-api/docs/deprecations",
+    model_availability_basis: "static_registry",
+    model_availability_check_time_ms: 0,
+  };
+  return {
+    split: {
+      provider: "google_gemini",
+      requested_model: "gemini-3.5-flash",
+      provider_model_status: "available",
+      provider_model_alias_resolved_to: "gemini-3.5-flash",
+      provider_shutdown_or_deprecation_detected: false,
+      model_availability_checked_at: checkedAt,
+      ...availability,
+      actual_model: "gemini-3.5-flash",
+      fallback_model: null,
+      fallback_used: false,
+      request_mode: "split",
+      hard_infra_failure: false,
+    },
+    gpu_delta: {
+      provider: "google_gemini",
+      requested_model: "gemini-3.1-flash-lite",
+      provider_model_status: "available",
+      provider_model_alias_resolved_to: "gemini-3.1-flash-lite",
+      provider_shutdown_or_deprecation_detected: false,
+      model_availability_checked_at: checkedAt,
+      ...availability,
+      actual_model: "gemini-3.1-flash-lite",
+      fallback_model: null,
+      fallback_used: false,
+      request_mode: "gpu_delta",
+      hard_infra_failure: false,
+    },
+  };
+}
+
+function acceptedStrictLedgerEvidence() {
+  const timings = acceptedTimingMetrics();
+  return {
+    sourceEditId: "edit-1",
+    metricClock: "monotonic_ns",
+    metricScope: "hot_delta_1",
+    cacheState: "compiler_cache_warm",
+    timings,
+    timingMetrics: timings,
+    modelProvenance: acceptedModelProvenance(),
+    adversarialPreflight: acceptedAdversarialPreflight(),
+    evidenceRefs: ["test:strict-ledger"],
+  };
+}
+
+function acceptedAdversarialPreflight(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "synthi.gpu_hmr.adversarial_preflight.v1",
+    ok: true,
+    skipped: false,
+    scriptPath: "/workspace/mcp/synthi-mcp/scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs",
+    exitCode: 0,
+    elapsedMs: 42.5,
+    stdoutHash: `sha256:${"8".repeat(64)}`,
+    stderrHash: `sha256:${"0".repeat(64)}`,
+    stdoutTail: "GPU HMR adversarial proof ledger self-check passed",
+    stderrTail: "",
+    error: null,
+    ...overrides,
+  };
+}
 
 function epochCapsuleMetadata({
   oldHash = TEST_OLD_ARTIFACT_HASH,
@@ -140,7 +357,11 @@ function epochRetirementFields({
 function epochGenerationGraph({
   previousGeneration = 2,
   activeGeneration = 3,
+  publishEventId = "epoch-publish:test:2->3",
   publishTimestampMs = 1779979998000,
+  publishTimestampMonotonicNs = 1779979998600,
+  retirementEventId = "epoch-retire:test:2->3",
+  retirementTimestampMonotonicNs = 1779980000100,
   dispatchTableHashBefore = "0xaaa",
   dispatchTableHashAfter = "0xabc",
   dispatchTableHash = dispatchTableHashAfter,
@@ -154,14 +375,24 @@ function epochGenerationGraph({
 } = {}) {
   const runtimeSessionFields = runtimeSession ? { runtimeSession } : {};
   const capsuleFields = capsuleMetadata ? epochCapsuleMetadata() : {};
-  const publicationFields = { publishTimestampMs };
+  const publicationFields = {
+    id: publishEventId,
+    publishTimestampMs,
+    timestamp_monotonic_ns: publishTimestampMonotonicNs,
+  };
   const dispatchTableFields = {
     dispatchTableHashBefore,
     dispatchTableHashAfter,
     dispatchTableHash,
     changedEntries,
   };
-  const retirementFields = { retirementFenceIds, delayedUnloadResult, retirementStrategy };
+  const retirementFields = {
+    retirement_event_id: retirementEventId,
+    retirement_timestamp_monotonic_ns: retirementTimestampMonotonicNs,
+    retirementFenceIds,
+    delayedUnloadResult,
+    retirementStrategy,
+  };
   return {
     schemaVersion: "synthi.gpu.epoch_graph.v1",
     runtimeSessionIds: runtimeSession ? [runtimeSession] : [],
@@ -212,6 +443,7 @@ function epochGenerationGraph({
 function retiredEpochProof() {
   return classifyGpuHmrEpochSwapProof({
     published: true,
+    processId: "pid1",
     runtimeSessionIds: ["runtime-session:test"],
     epochGenerationGraph: epochGenerationGraph(),
     dispatchTableHashObserved: true,
@@ -234,9 +466,15 @@ function safeDispatchProof({
   runtimeSession = "runtime-session:test",
   artifactId = TEST_ARTIFACT_ID,
   dispatchTimestamp = 1779979999000,
+  dispatchId = "dispatch:test:1",
+  processId = "pid1",
+  epoch = "3",
 } = {}) {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    dispatchId,
+    processId,
+    epoch,
     dispatchEvidenceRefs: dispatchEvidenceRefs(runtimeSession),
     sessionScoped: true,
     runtimeSessionIds: [runtimeSession],
@@ -277,6 +515,9 @@ function safeDispatchProof({
 function deterministicOutputOracle({
   runtimeSession = "runtime-session:test",
   artifactId = TEST_ARTIFACT_ID,
+  dispatchId = "dispatch:test:1",
+  processId = "pid1",
+  epoch = "3",
 } = {}) {
   return {
     oracleId: "oracle:required:test-output",
@@ -287,14 +528,129 @@ function deterministicOutputOracle({
     actual: "expected-sentinel",
     passed: true,
     outputTargetId: "output:sentinel",
+    processId,
+    epoch,
     readbackTimestamp: "1779980000000",
     runtimeSessionId: runtimeSession,
     artifactId,
+    dispatchId,
+    afterDispatchId: dispatchId,
     probeMode: "fixed_validation_probe",
     probeConfigHash: `sha256:${"a".repeat(64)}`,
     probeEvidenceRefs: ["evidence:output-oracle:readback:abc"],
     evidenceRefs: ["evidence:output-oracle:readback:abc"],
+    oracleArtifacts: {
+      computeOracleArtifacts: {
+        raw_readback_bin: "artifacts/readback.bin",
+        readback_schema_json: "artifacts/readback.schema.json",
+        checksum_before: `sha256:${"1".repeat(64)}`,
+        checksum_after: `sha256:${"2".repeat(64)}`,
+        deterministic_slice: {
+          offset: 0,
+          length: 16,
+          hash: `sha256:${"5".repeat(64)}`,
+        },
+        raw_readback_hash: `sha256:${"4".repeat(64)}`,
+        raw_readback_hash_verified: true,
+        raw_readback_byte_length: 32,
+        raw_readback_source: "runtime_readback_sample",
+        deterministic_slice_hash: `sha256:${"5".repeat(64)}`,
+        deterministic_slice_hash_verified: true,
+        raw_readback_verification: {
+          hash_verified: true,
+          byte_length: 32,
+          deterministic_slice_hash: `sha256:${"5".repeat(64)}`,
+          deterministic_slice_hash_verified: true,
+          slice_bounds_verified: true,
+        },
+        oracle_code_hash: `sha256:${"3".repeat(64)}`,
+        rendered_card_png: "artifacts/compute-proof.png",
+        producer: "deterministic_probe",
+        timestamp_after_dispatch: 1779980000000,
+        epoch,
+      },
+    },
   };
+}
+
+function acceptedValidationRuntimeInput(overrides: Record<string, unknown> = {}) {
+  const dispatchProof = safeDispatchProof();
+  const sourceProof = acceptedSourceProof();
+  const fissionProof = acceptedBackendFissionProof({
+    artifactKind: "hsaco",
+    compilerName: "hipcc",
+    launchApi: "hipModuleLaunchKernel",
+    sourcePaths: ["src/gpu/kernel.hip"],
+    entryPoints: ["kernel_main"],
+  });
+  const abiProof = acceptedAbiProof();
+  const artifactTransportProof = acceptedArtifactTransportProof();
+  const epochProof = retiredEpochProof();
+  const outputProof = classifyGpuHmrOutputProof({
+    dispatchProof,
+    deterministicOutputObserved: true,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: true,
+    outputOracle: deterministicOutputOracle(),
+  });
+  const hostPreservationProof = preservedHostProof();
+  const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+    sourceProofs: [sourceProof],
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+  });
+  const strictLedgerEvidence = acceptedStrictLedgerEvidence();
+  return {
+    workspaceSlug: "workspace",
+    sourceEditId: "edit-1",
+    editId: "edit-1",
+    backend: "hip",
+    gpuArch: "amdgcn-amd-amdhsa",
+    compiler: "hipcc",
+    processId: "pid1",
+    deviceUuid: "device:test",
+    contextHandle: "gpu-context:test",
+    outputOracleTarget: {
+      kind: "compute",
+      target_id: "compute-target:runtime-proof-fixture",
+      compute_only_target_verified: true,
+      evidence_refs: ["oracle-target:compute-only:runtime-proof-fixture"],
+    },
+    metricClock: strictLedgerEvidence.metricClock,
+    metricScope: strictLedgerEvidence.metricScope,
+    cacheState: strictLedgerEvidence.cacheState,
+    timings: strictLedgerEvidence.timings,
+    timingMetrics: strictLedgerEvidence.timingMetrics,
+    modelProvenance: strictLedgerEvidence.modelProvenance,
+    adversarialPreflight: strictLedgerEvidence.adversarialPreflight,
+    evidenceRefs: strictLedgerEvidence.evidenceRefs,
+    ...acceptedGpuRouteEvidence(),
+    sourceProofs: [sourceProof],
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+    fullRuntimeProof,
+    validationContext: {
+      processId: "pid1",
+      deviceIdentity: {
+        device_uuid: "device:test",
+      },
+    },
+    ...overrides,
+  };
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function preservedHostIdentityRefs() {
@@ -375,6 +731,8 @@ function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
     targetSymbols: ["kernel_main"],
     exportedSymbolsExpected: ["kernel_main"],
     artifactKind: "source_include_bridge",
+    compilerName: "hipcc",
+    launchApi: "hipModuleLaunchKernel",
     includeClosure: [{ path: "src/gpu/kernel.hpp" }],
     dependencyClosureHash: "b".repeat(64),
     abiMembraneId: "abi-membrane:abc",
@@ -466,6 +824,38 @@ function acceptedFissionProof() {
   });
 }
 
+function acceptedBackendFissionProof({
+  artifactKind,
+  compilerName,
+  launchApi,
+  sourcePaths,
+  entryPoints,
+}: {
+  artifactKind: string;
+  compilerName: string;
+  launchApi: string;
+  sourcePaths: string[];
+  entryPoints: string[];
+}) {
+  return {
+    ...acceptedFissionProof(),
+    selectedIslandContracts: [{
+      ...acceptedSelectedIslandContract(),
+      artifactKind,
+      compilerName,
+      launchApi,
+      sourcePaths,
+      sourceSpans: sourcePaths.map((path) => ({
+        path,
+        startLine: 1,
+        endLine: 32,
+      })),
+      targetSymbols: entryPoints,
+      exportedSymbolsExpected: entryPoints,
+    }],
+  };
+}
+
 function acceptedFissionVerifierMetadata() {
   const metadata = {
     schemaVersion: "synthi.gpu.fission_verifier.v1",
@@ -549,6 +939,9 @@ function acceptedArtifactTransportProof() {
   return {
     schemaVersion: "synthi.gpu.hmr.artifact_transport_proof.v1",
     resultState: "gpu-hmr-artifact-transport-proven",
+    eventId: "loader:test:1",
+    processId: "pid1",
+    timestampMonotonicNs: 1779979998500,
     transportEvidenceObserved: true,
     ramTransportProven: true,
     ramArtifactReferenceProvided: true,
@@ -1793,6 +2186,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("treats metadata-only ABI evidence as symbol-bound but unverified", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
+      abiCompatibilityClass: "compatible",
       evidenceRefs: ["evidence:device-abi-metadata:abc"],
     });
 
@@ -1801,6 +2195,29 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("abi_layout_size_alignment_unverified");
     expect(proof.evidenceRefs).toEqual(["evidence:device-abi-metadata:abc"]);
     expect(summarizeGpuHmrAbiProof(proof)).toContain("layout=unverified");
+  });
+
+  it("does not prove ABI when compatibility class is absent", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      evidenceRefs: ["evidence:device-abi-metadata:test"],
+      extractorProvenance: [{
+        extractorKind: "clang_ast",
+        evidenceId: "evidence:clang-ast:abc",
+        extractorName: "test_clang_ast",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -ast-dump=json",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_compatibility_class_missing");
+    expect(proof.abiCompatibilityClass).toBe("unknown");
   });
 
   it("reports ABI-proven only when layout, size, and alignment were verified", () => {
@@ -1819,6 +2236,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       evidenceRefs: ["evidence:device-abi-layout:abc"],
     });
 
@@ -1832,6 +2250,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       acceptedExtractorEvidenceRefs: ["evidence:clang-ast:abc"],
       acceptedExtractorSources: ["clang_ast"],
     });
@@ -1846,6 +2265,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const missingCommand = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       kernelAbiFingerprintHash: "d".repeat(64),
       constantGlobalLayoutHash: "e".repeat(64),
       extractorProvenance: [{
@@ -1859,6 +2279,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const invalidInputHash = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       kernelAbiFingerprintHash: "d".repeat(64),
       constantGlobalLayoutHash: "e".repeat(64),
       extractorProvenance: [{
@@ -1881,6 +2302,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       extractorProvenance: [{
         extractorKind: "clang_record_layout",
         evidenceId: "evidence:clang-record-layout:abc",
@@ -1901,6 +2323,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       kernelAbiFingerprintHash: "unknown",
       constantGlobalLayoutHash: "0",
       extractorProvenance: [{
@@ -1920,10 +2343,91 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.constantGlobalLayoutHashes).toEqual([]);
   });
 
+  it("does not prove layout-changing ABI without backend-specific adapter safety", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "layout_changed",
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      evidenceRefs: ["evidence:device-abi-metadata:test"],
+      extractorProvenance: [{
+        extractorKind: "clang_record_layout",
+        evidenceId: "evidence:clang-record-layout:abc",
+        extractorName: "test_clang_record_layout",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -fdump-record-layouts",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_compatibility_class_unaccepted");
+    expect(proof.abiCompatibilityClass).toBe("layout_changed");
+    expect(proof.backendSpecificAdapterSafetyProven).toBe(false);
+  });
+
+  it("does not prove layout-changing ABI from a bare adapter safety flag", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "layout_changed",
+      backendSpecificAdapterSafetyProven: true,
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      evidenceRefs: ["evidence:device-abi-metadata:test"],
+      extractorProvenance: [{
+        extractorKind: "clang_record_layout",
+        evidenceId: "evidence:clang-record-layout:abc",
+        extractorName: "test_clang_record_layout",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -fdump-record-layouts",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("backend_specific_adapter_safety_evidence_missing");
+    expect(proof.abiCompatibilityClass).toBe("layout_changed");
+    expect(proof.backendSpecificAdapterSafetyProven).toBe(false);
+    expect(proof.backendSpecificAdapterSafetyEvidenceRefs).toEqual([]);
+  });
+
+  it("proves layout-changing ABI only with explicit backend adapter safety evidence", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "layout_changed",
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      backendSpecificAdapterSafetyEvidenceRefs: ["evidence:abi-adapter-safety:layout-change"],
+      evidenceRefs: ["evidence:device-abi-metadata:test"],
+      extractorProvenance: [{
+        extractorKind: "clang_record_layout",
+        evidenceId: "evidence:clang-record-layout:abc",
+        extractorName: "test_clang_record_layout",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -fdump-record-layouts",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.abiCompatibilityClass).toBe("layout_changed");
+    expect(proof.backendSpecificAdapterSafetyProven).toBe(true);
+    expect(proof.backendSpecificAdapterSafetyEvidenceRefs).toEqual([
+      "evidence:abi-adapter-safety:layout-change",
+    ]);
+  });
+
   it("rejects extractor provenance explicitly rejected by the runtime correctness plan", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "compatible",
       extractorProvenance: [{
         extractorKind: "clang_ast",
         evidenceId: "evidence:clang-ast:abc",
@@ -2023,6 +2527,7 @@ describe("GPU HMR runtime output proof classification", () => {
           metadata: {
             schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
             layoutSizeAlignmentVerified: true,
+            abiCompatibilityClass: "compatible",
             kernelAbiFingerprintHash: "d".repeat(64),
             constantGlobalLayoutHash: "3476900567878811119",
             acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
@@ -2051,6 +2556,44 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.acceptedExtractorInputHashes).toEqual([`sha256:${"d".repeat(64)}`]);
     expect(proof.kernelAbiFingerprintHashes).toEqual(["d".repeat(64)]);
     expect(proof.constantGlobalLayoutHashes).toEqual(["3476900567878811119"]);
+  });
+
+  it("does not prove ABI from artifact metadata without compatibility class", () => {
+    const proof = abiProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-abi-metadata",
+          evidenceId: "evidence:device-abi-metadata:def",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
+            layoutSizeAlignmentVerified: true,
+            kernelAbiFingerprintHash: "d".repeat(64),
+            constantGlobalLayoutHash: "3476900567878811119",
+            acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
+            acceptedExtractorSources: ["clang_record_layout"],
+            extractorProvenance: [{
+              extractorKind: "clang_record_layout",
+              evidenceId: "evidence:clang-record-layout:def",
+              extractorName: "test_clang_record_layout",
+              extractorVersion: "v1",
+              command: "clang++ -Xclang -fdump-record-layouts",
+              inputHash: `sha256:${"d".repeat(64)}`,
+            }],
+          },
+        }],
+        stageResults: [{
+          stageId: "abi-compatibility",
+          status: "passed",
+        }],
+      },
+    }]);
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_compatibility_class_missing");
+    expect(proof.abiCompatibilityClass).toBe("unknown");
   });
 
   it("proves fission only from verifier stages with evidence", () => {
@@ -5107,6 +5650,22 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("dispatch_timestamp_not_observed");
   });
 
+  it("does not prove dispatch safety without observed dispatch epoch identity", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      epoch: null,
+      activeEpoch: null,
+      activeGeneration: null,
+      active_generation: null,
+      generation: null,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("dispatch_epoch_identity_not_observed");
+    expect(proof.epoch).toBeNull();
+  });
+
   it("does not prove dispatch safety from malformed artifact identities", () => {
     const proof = classifyGpuHmrDispatchProof({
       ...safeDispatchProof(),
@@ -5303,6 +5862,7 @@ describe("GPU HMR runtime output proof classification", () => {
       sourceProofs: [acceptedSourceProof()],
       abiProof: classifyGpuHmrAbiProof({
         metadataObserved: true,
+        abiCompatibilityClass: "compatible",
         evidenceRefs: ["evidence:device-abi-metadata:abc"],
       }),
       outputProof: classifyGpuHmrOutputProof({
@@ -5589,6 +6149,686 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.componentStates.originalHostPathProven).toBe(true);
   });
 
+  it("derives GPU HMR acceptance contracts from verified proof fields only", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const accepted = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.contract.classification.route).toBe("gpu_hmr");
+    expect(accepted.contract.artifact_identity.source_paths).toEqual(["src/gpu/kernel.hpp"]);
+    expect(accepted.contract.artifact_identity.entry_points).toEqual(
+      expect.arrayContaining(["kernel_main", "shade"]),
+    );
+    expect(accepted.contract.abi_compatibility_class.value).toBe("compatible");
+
+    const rejected = evaluateGpuHmrAcceptanceContract(
+      deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+        projectId: "workspace",
+        editId: "edit-2",
+        backend: "hip",
+        sourceProofs: [acceptedSourceProof({ compileOnly: true })],
+        fissionProof: classifyGpuHmrFissionProof({ required: true }),
+      }),
+    );
+
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.contract.classification.route).toBe("reject");
+    expect(rejected.contract.classification.blocking_gaps).toEqual(
+      expect.arrayContaining([
+        "source_proof_not_verified",
+        "fission_not_verified",
+        "abi_not_verified",
+        "full_runtime_not_verified",
+      ]),
+    );
+    expect(rejected.failedGates.map((gate) => gate.code)).toContain(
+      "classification_blocking_gaps_present",
+    );
+  });
+
+  it("preserves verified ABI compatibility classes in derived acceptance contracts", () => {
+    const abiFixture = (abiCompatibilityClass: string, adapterSafety = false) =>
+      classifyGpuHmrAbiProof({
+        metadataObserved: true,
+        layoutSizeAlignmentVerified: true,
+        abiCompatibilityClass,
+        kernelAbiFingerprintHash: "d".repeat(64),
+        constantGlobalLayoutHash: "e".repeat(64),
+        backendSpecificAdapterSafetyEvidenceRefs: adapterSafety
+          ? ["evidence:abi-adapter-safety:fixture"]
+          : [],
+        evidenceRefs: ["evidence:device-abi-metadata:test"],
+        extractorProvenance: [{
+          kind: "clang_ast",
+          evidenceId: "evidence:clang-ast:abc",
+          extractorName: "test_clang_ast",
+          extractorVersion: "v1",
+          command: "clang++ -Xclang -ast-dump=json",
+          inputHash: `sha256:${"a".repeat(64)}`,
+        }],
+      });
+    const deriveForAbi = (abiProof: ReturnType<typeof classifyGpuHmrAbiProof>) => {
+      const dispatchProof = safeDispatchProof();
+      const outputProof = classifyGpuHmrOutputProof({
+        dispatchProof,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      });
+      const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+        sourceProofs: [acceptedSourceProof()],
+        fissionProof: acceptedFissionProof(),
+        abiProof,
+        artifactTransportProof: acceptedArtifactTransportProof(),
+        epochProof: retiredEpochProof(),
+        dispatchProof,
+        outputProof,
+        hostPreservationProof: preservedHostProof(),
+      });
+      return deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+        projectId: "workspace",
+        editId: `edit-${abiProof.abiCompatibilityClass}`,
+        backend: "hip",
+        gpuArch: "gfx1201",
+        processId: "pid1",
+        deviceUuid: "device:test",
+        contextHandle: "hip-context:test",
+        ...acceptedGpuRouteEvidence(),
+        sourceProofs: [acceptedSourceProof()],
+        fissionProof: acceptedFissionProof(),
+        abiProof,
+        artifactTransportProof: acceptedArtifactTransportProof(),
+        epochProof: retiredEpochProof(),
+        dispatchProof,
+        outputProof,
+        hostPreservationProof: preservedHostProof(),
+        fullRuntimeProof,
+      });
+    };
+
+    const additiveContract = deriveForAbi(abiFixture("additive"));
+    const layoutChangedContract = deriveForAbi(abiFixture("layout_changed", true));
+
+    expect(additiveContract.abi_compatibility_class.value).toBe("additive");
+    expect(evaluateGpuHmrAcceptanceContract(additiveContract).accepted).toBe(true);
+    expect(layoutChangedContract.abi_compatibility_class.value).toBe("layout_changed");
+    expect(layoutChangedContract.abi_compatibility_class.backend_specific_adapter_safety_proven).toBe(true);
+    expect(layoutChangedContract.abi_compatibility_class.backend_specific_adapter_safety_evidence_refs).toEqual([
+      "evidence:abi-adapter-safety:fixture",
+    ]);
+    expect(evaluateGpuHmrAcceptanceContract(layoutChangedContract).accepted).toBe(true);
+  });
+
+  it("does not default malformed proven ABI payloads to compatible contracts", () => {
+    const abiProof = {
+      ...acceptedAbiProof(),
+      abiCompatibilityClass: "not-a-valid-abi-class",
+    };
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof,
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const contract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-malformed-abi",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof,
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(contract);
+
+    expect(contract.abi_compatibility_class.value).toBe("unknown");
+    expect(evaluation.accepted).toBe(false);
+    expect(evaluation.failedGates.map((gate) => gate.code)).toContain(
+      "abi_compatibility_not_proven",
+    );
+  });
+
+  it("rejects acceptance contracts that claim ABI adapter safety without evidence refs", () => {
+    const abiProof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: "layout_changed",
+      kernelAbiFingerprintHash: "d".repeat(64),
+      constantGlobalLayoutHash: "e".repeat(64),
+      backendSpecificAdapterSafetyEvidenceRefs: ["evidence:abi-adapter-safety:contract"],
+      evidenceRefs: ["evidence:device-abi-metadata:test"],
+      extractorProvenance: [{
+        kind: "clang_ast",
+        evidenceId: "evidence:clang-ast:abc",
+        extractorName: "test_clang_ast",
+        extractorVersion: "v1",
+        command: "clang++ -Xclang -ast-dump=json",
+        inputHash: `sha256:${"a".repeat(64)}`,
+      }],
+    });
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof,
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+    const contract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-layout-changed",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof,
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const forged = {
+      ...contract,
+      abi_compatibility_class: {
+        ...contract.abi_compatibility_class,
+        backend_specific_adapter_safety_proven: true,
+        backend_specific_adapter_safety_evidence_refs: [],
+      },
+    };
+
+    const evaluation = evaluateGpuHmrAcceptanceContract(forged);
+
+    expect(evaluation.accepted).toBe(false);
+    expect(evaluation.failedGates.map((gate) => gate.code)).toContain(
+      "abi_backend_specific_adapter_safety_evidence_refs_missing",
+    );
+    expect(evaluation.failedGates.map((gate) => gate.code)).toContain(
+      "abi_compatibility_not_proven",
+    );
+  });
+
+  it("rejects runtime proof artifacts with contradictory firewall process identities", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      firewallEvidence: {
+        ...acceptedGpuFirewallEvidence(),
+        process_restarted: false,
+        process_id_before: "pid-before",
+        process_id_after: "pid-after",
+      },
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(false);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract",
+          degraded_reason: "process_restart_identity_contradiction",
+        }),
+      ]),
+    );
+  });
+
+  it("does not infer HIP from vendor-only ROCm code-object evidence", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "hsaco",
+      compilerName: "clang++",
+      launchApi: "module_dispatch",
+      sourcePaths: ["src/gpu/kernel.hip"],
+      entryPoints: ["shade"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-rocm-generic",
+      backend: "rocm",
+      gpuArch: "amdgcn-amd-amdhsa",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "runtime-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(derived.backend).toBe("unknown");
+    expect(evaluation.accepted).toBe(false);
+    expect(derived.classification.blocking_gaps).toContain("backend_unknown");
+    expect(evaluation.failedGates.map((gate) => gate.code)).toContain("backend_unknown");
+  });
+
+  it("infers HIP from ROCm only when concrete HIP launch evidence is verified", () => {
+    const dispatchProof = {
+      ...safeDispatchProof(),
+      launchApi: "hipModuleLaunchKernel",
+    };
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "hsaco",
+      compilerName: "clang++",
+      launchApi: "hipModuleLaunchKernel",
+      sourcePaths: ["src/gpu/kernel.hip"],
+      entryPoints: ["shade"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-rocm-hip",
+      backend: "rocm",
+      gpuArch: "amdgcn-amd-amdhsa",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(derived.backend).toBe("hip");
+    expect(evaluation.accepted).toBe(true);
+  });
+
+  it("treats backend-specific top-level fields as hints until a backend contract proof verifies them", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "spirv",
+      compilerName: "glslc",
+      launchApi: "vkCmdDispatch",
+      sourcePaths: ["shaders/lighting.comp"],
+      entryPoints: ["main"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-vulkan-hints",
+      backend: "vulkan",
+      gpuArch: "vulkan-device:test",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "vk-device:test",
+      ...acceptedGpuRouteEvidence(),
+      descriptorSetLayoutHash: `sha256:${"6".repeat(64)}`,
+      pipelineLayoutHash: `sha256:${"7".repeat(64)}`,
+      pipelineStateHash: `sha256:${"8".repeat(64)}`,
+      commandBufferReRecordRequired: true,
+      commandBufferReRecordProven: true,
+      frameUsedNewPipelineTrace: {
+        frame_id: "frame:3",
+        pipeline_epoch: "3",
+      },
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(evaluation.accepted).toBe(false);
+    expect(derived.classification.blocking_gaps).toContain("backend_contract_not_verified");
+    expect(derived.vulkan_contract.descriptor_set_layout_hash).toBeNull();
+    expect(derived.vulkan_contract.pipeline_layout_hash).toBeNull();
+    expect(evaluation.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "classification_blocking_gaps_present",
+        "vulkan_contract_descriptor_set_layout_hash_missing",
+        "vulkan_contract_command_buffer_re_record_requirement_unproven",
+      ]),
+    );
+  });
+
+  it("rejects backend contract values without field-level evidence refs", () => {
+    const dispatchProof = safeDispatchProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "spirv",
+      compilerName: "glslc",
+      launchApi: "vkCmdDispatch",
+      sourcePaths: ["shaders/lighting.comp"],
+      entryPoints: ["main"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-vulkan-field-evidence",
+      backend: "vulkan",
+      gpuArch: "vulkan-device:test",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "vk-device:test",
+      ...acceptedGpuRouteEvidence(),
+      backendContractProof: {
+        resultState: "gpu-hmr-backend-contract-proven",
+        backend: "vulkan",
+        evidenceRefs: ["evidence:backend-contract:vulkan"],
+        contract: {
+          descriptorSetLayoutHash: `sha256:${"6".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"7".repeat(64)}`,
+          pipelineStateHash: `sha256:${"8".repeat(64)}`,
+          commandBufferReRecordRequired: true,
+          commandBufferReRecordProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            pipeline_epoch: "3",
+          },
+        },
+      },
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof,
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      fullRuntimeProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(evaluation.accepted).toBe(false);
+    expect(evaluation.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "vulkan_contract_entry_point_evidence_refs_missing",
+        "vulkan_contract_descriptor_set_layout_hash_evidence_refs_missing",
+        "vulkan_contract_frame_used_new_pipeline_trace_evidence_refs_missing",
+      ]),
+    );
+  });
+
+  it("does not let caller-supplied artifact hashes override proof identity", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      artifactHashAfter: TEST_OTHER_ARTIFACT_ID,
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+    });
+
+    expect(derived.artifact_hash_after).toBe(TEST_ARTIFACT_ID);
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      artifactHashAfter: TEST_OTHER_ARTIFACT_ID,
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContract.artifact_hash_after).toBe(TEST_ARTIFACT_ID);
+    expect(artifact.proofLedgerQuery.record.artifactAfterHash).toBe(TEST_ARTIFACT_ID);
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(true);
+  });
+
   it("materializes runtime proof ladder as a structured validation artifact", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
@@ -5615,6 +6855,13 @@ describe("GPU HMR runtime output proof classification", () => {
 
     const artifact = buildValidationRuntimeProofArtifact({
       workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
       runtimeSessionIds: ["runtime-session:test"],
       sourceProofs: [sourceProof],
       fissionProof: acceptedFissionProof(),
@@ -5638,10 +6885,15 @@ describe("GPU HMR runtime output proof classification", () => {
         },
       },
       validationContext: {
+        processId: "pid1",
         command: {
           cwd: "/repo/mcp/synthi-mcp",
           argv: ["node", "scripts/gpu-hmr-test.mjs"],
           env: { SYNTHI_GPU_VENDOR: "rocm" },
+        },
+        deviceIdentity: {
+          device_uuid: "device:test",
+          backend: "hip",
         },
         docker: {
           enabled: true,
@@ -5666,6 +6918,23 @@ describe("GPU HMR runtime output proof classification", () => {
         },
       },
       visualEvidenceRefs: ["artifacts/frame.png"],
+      visualEvidenceArtifacts: [{
+        path: "artifacts/frame.png",
+        contentHash: `sha256:${"4".repeat(64)}`,
+        acceptedAsVisualEvidence: true,
+        visualQuality: "gpu-hmr-visual-rich",
+      }],
+      deterministicVisualMode: {
+        fixed_seed: true,
+        frozen_camera: true,
+        temporal_accumulation_disabled: true,
+        taa_disabled: true,
+        denoiser_disabled: true,
+        fixed_resolution: true,
+        fixed_swapchain_image_count: true,
+        frame_capture_after_epoch_dispatch: true,
+        presentation_fence_or_frame_boundary: true,
+      },
       createdAt: "2026-05-28T00:00:00.000Z",
     });
 
@@ -5754,7 +7023,10 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.validationContext.target_progression.phase).toBe("small-oracle");
     expect(artifact.targetProgression.phase).toBe("small-oracle");
     expect(artifact.target_progression.targetName).toBe("small-target");
+    expect(artifact.adversarialPreflight.accepted).toBe(true);
+    expect(artifact.adversarialPreflight.strictGate.status).toBe("pass");
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
+    expect(artifact.proofMaterial.adversarialPreflight.accepted).toBe(true);
     expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
       "worker-log:host_identity:renderer_state",
     ]);
@@ -5763,6 +7035,915 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("does not mark runtime artifacts successful without adversarial refusal preflight proof", () => {
+    const artifact = buildValidationRuntimeProofArtifact(
+      acceptedValidationRuntimeInput({
+        adversarialPreflight: undefined,
+        adversarial_preflight: undefined,
+      }),
+    );
+
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.adversarialPreflight).toBeNull();
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "adversarial-refusal-preflight",
+          degraded_reason: "adversarial_preflight_missing",
+        }),
+      ]),
+    );
+  });
+
+  it("does not mark runtime artifacts successful when adversarial refusal preflight evidence is malformed", () => {
+    const artifact = buildValidationRuntimeProofArtifact(
+      acceptedValidationRuntimeInput({
+        adversarialPreflight: acceptedAdversarialPreflight({
+          stdoutHash: "",
+        }),
+      }),
+    );
+
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.adversarialPreflight.accepted).toBe(false);
+    expect(artifact.adversarialPreflight.strictGate.failures).toContain(
+      "adversarial_preflight_stdout_hash_missing",
+    );
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "adversarial-refusal-preflight",
+          degraded_reason: "adversarial_preflight_stdout_hash_missing",
+        }),
+      ]),
+    );
+  });
+
+  it("materializes compute oracle proof from raw readback bytes", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gpu-hmr-compute-oracle-"));
+    const rawPath = path.join(dir, "readback.bin");
+    const schemaPath = path.join(dir, "readback.schema.json");
+    const rawBytes = Buffer.from([1, 3, 5, 7, 11, 13, 17, 19]);
+    const schemaBytes = Buffer.from(JSON.stringify({ elementType: "u8", count: rawBytes.length }));
+    await writeFile(rawPath, rawBytes);
+    await writeFile(schemaPath, schemaBytes);
+    const rawHash = `sha256:${createHash("sha256").update(rawBytes).digest("hex")}`;
+    const sliceHash = `sha256:${createHash("sha256").update(rawBytes.subarray(2, 6)).digest("hex")}`;
+
+    const artifacts = await computeOracleArtifactsFromFiles({
+      raw_readback_bin: rawPath,
+      readback_schema_json: schemaPath,
+      checksum_before: `sha256:${"1".repeat(64)}`,
+      checksum_after: `sha256:${"2".repeat(64)}`,
+      deterministic_slice: { offset: 2, length: 4 },
+      raw_readback_source: "runtime_readback_sample",
+      oracle_code_hash: `sha256:${"3".repeat(64)}`,
+      rendered_card_png: "artifacts/compute-proof.png",
+      producer: "unit-test",
+      timestamp_after_dispatch: 1779980000000,
+      epoch: "3",
+    });
+
+    expect(artifacts?.raw_readback_hash).toBe(rawHash);
+    expect(artifacts?.raw_readback_hash_verified).toBe(true);
+    expect(artifacts?.raw_readback_byte_length).toBe(rawBytes.length);
+    expect(artifacts?.deterministic_slice_hash).toBe(sliceHash);
+    expect(artifacts?.deterministic_slice_hash_verified).toBe(true);
+    expect(artifacts?.raw_readback_verification).toEqual(expect.objectContaining({
+      byte_length: rawBytes.length,
+      hash_verified: true,
+      deterministic_slice_hash: sliceHash,
+      deterministic_slice_hash_verified: true,
+      slice_bounds_verified: true,
+    }));
+  });
+
+  it("materializes visual oracle proof from image pixels", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gpu-hmr-visual-oracle-"));
+    const beforePath = path.join(dir, "before.png");
+    const afterPath = path.join(dir, "after.png");
+    const diffPath = path.join(dir, "diff.png");
+    await sharp({
+      create: { width: 2, height: 2, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).png().toFile(beforePath);
+    await sharp(Buffer.from([
+      255, 255, 255,
+      0, 0, 0,
+      0, 0, 0,
+      0, 0, 0,
+    ]), { raw: { width: 2, height: 2, channels: 3 } }).png().toFile(afterPath);
+    await sharp({
+      create: { width: 2, height: 2, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    }).png().toFile(diffPath);
+
+    const artifacts = await visualOracleArtifactsFromFiles({
+      before_image: beforePath,
+      after_image: afterPath,
+      diff_image: diffPath,
+      blank_frame_rejection: true,
+      same_frame_rejection: true,
+      new_epoch_watermark_or_trace: "dispatch:test:1:3",
+      camera_state_hash: `sha256:${"6".repeat(64)}`,
+      swapchain_size: [2, 2],
+      capture_backend: "unit-test",
+      frame_number: 3,
+      timestamp_after_dispatch: 1779980000000,
+    });
+
+    expect(artifacts?.before_image_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(artifacts?.after_image_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(artifacts?.diff_image_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(artifacts?.pixel_metrics_verified).toBe(true);
+    expect(artifacts?.changed_pixel_ratio).toBeGreaterThan(0);
+    expect(artifacts?.perceptual_diff).toBeGreaterThan(0);
+    expect(artifacts?.visible_pixel_count).toBeGreaterThan(0);
+    expect(artifacts?.visual_pixel_verification).toEqual(expect.objectContaining({
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
+    }));
+  });
+
+  it("rejects accepted visual artifacts without deterministic visual mode proof", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualFrameObserved: true,
+      visualEvidenceRefs: ["artifacts/frame.png"],
+    });
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+      visualEvidenceRefs: ["artifacts/frame.png"],
+      visualEvidenceArtifacts: [{
+        path: "artifacts/frame.png",
+        contentHash: `sha256:${"4".repeat(64)}`,
+        acceptedAsVisualEvidence: true,
+        visualQuality: "gpu-hmr-visual-rich",
+      }],
+    });
+
+    expect(artifact.proofMaterial.visualEvidenceRequired).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "deterministic-visual-mode",
+          degraded_reason: "deterministic_visual_mode_missing",
+        }),
+      ]),
+    );
+  });
+
+  it("requires visual evidence for visual engine backends unless compute-only target proof is verified", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedBackendFissionProof({
+      artifactKind: "hip_source_bridge",
+      compilerName: "hipcc",
+      launchApi: "hipModuleLaunchKernel",
+      sourcePaths: ["src/ray/trace_scene.hip"],
+      entryPoints: ["trace_scene"],
+    });
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      sourceEditId: "edit-1",
+      editId: "edit-1",
+      backend: "hiprt",
+      gpuArch: "gfx1201",
+      compiler: "hipcc",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hiprt-context:test",
+      engineSceneHandles: ["scene:bvh:main"],
+      cameraStateHash: `sha256:${"4".repeat(64)}`,
+      swapchainOrFramebufferIdentity: "framebuffer:main",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      backendContractProof: {
+        resultState: "gpu-hmr-backend-contract-proven",
+        backend: "hiprt",
+        evidenceRefs: ["evidence:backend-contract:hiprt"],
+        fieldEvidenceRefs: backendFieldEvidenceRefsFor("hiprt"),
+        contract: {
+          kernelEntry: "trace_scene",
+          sceneOrBvhHandles: ["scene:bvh:main"],
+          framebufferHandle: "framebuffer:main",
+          materialOrGeometryBuffers: ["buffer:materials", "buffer:geometry"],
+          cameraStateHash: `sha256:${"4".repeat(64)}`,
+          sameProcessReloadHook: "hiprt-runtime:reload-kernel",
+          visualOracle: {
+            oracle_id: "oracle:hiprt:framebuffer-diff",
+            framebuffer_handle: "framebuffer:main",
+          },
+        },
+      },
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.proofMaterial.visualEvidenceRequired).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.proofLedgerQuery.failedInvariants.map((failure: any) => failure.code)).toContain(
+      "visual_backend_requires_visual_oracle",
+    );
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "visual-evidence",
+          degraded_reason: "visual_evidence_artifacts_missing",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects explicit acceptance contracts that disagree with verified proof material", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+    const verifiedContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+    });
+    const forgedContract = {
+      ...verifiedContract,
+      artifact_identity: {
+        ...verifiedContract.artifact_identity,
+        source_paths: ["src/forged/not-the-verified-kernel.hip"],
+      },
+    };
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      acceptanceContract: forgedContract,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.acceptanceContractConsistency.accepted).toBe(false);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+          degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+          field: "source_paths",
+        }),
+      ]),
+    );
+
+    const forgedBackendContract = {
+      ...verifiedContract,
+      hip_contract: {
+        ...verifiedContract.hip_contract,
+        kernel_name: "forged_kernel",
+      },
+    };
+    const backendForgedArtifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      acceptanceContract: forgedBackendContract,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(backendForgedArtifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(backendForgedArtifact.acceptanceContractConsistency.accepted).toBe(false);
+    expect(backendForgedArtifact.gpuHmrSuccess).toBe(false);
+    expect(backendForgedArtifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+          degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+          field: "hip_contract_kernel_name",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects forged backend-specific contract fields for every implemented backend family", () => {
+    const backendCases = [
+      {
+        backend: "hiprt",
+        gpuArch: "gfx1201",
+        compiler: "hipcc",
+        artifactKind: "hip_source_bridge",
+        launchApi: "hipModuleLaunchKernel",
+        sourcePaths: ["src/ray/trace_scene.hip"],
+        entryPoints: ["trace_scene"],
+        backendInput: {
+          kernelEntry: "trace_scene",
+          sceneOrBvhHandles: ["scene:bvh:main"],
+          framebufferHandle: "framebuffer:main",
+          materialOrGeometryBuffers: ["buffer:materials", "buffer:geometry"],
+          cameraStateHash: `sha256:${"4".repeat(64)}`,
+          sameProcessReloadHook: "hiprt-runtime:reload-kernel",
+          visualOracle: {
+            oracle_id: "oracle:hiprt:framebuffer-diff",
+            framebuffer_handle: "framebuffer:main",
+            deterministic_visual_mode: "fixed-camera-fixed-seed",
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          hiprt_contract: {
+            ...contract.hiprt_contract,
+            camera_state_hash: `sha256:${"5".repeat(64)}`,
+          },
+        }),
+        expectedField: "hiprt_contract_camera_state_hash",
+      },
+      {
+        backend: "opencl",
+        gpuArch: "opencl-device:test",
+        compiler: "clang",
+        artifactKind: "opencl_program",
+        launchApi: "clEnqueueNDRangeKernel",
+        sourcePaths: ["src/kernels/scan.cl"],
+        entryPoints: ["scan_kernel"],
+        backendInput: {
+          kernelName: "scan_kernel",
+          commandQueue: "cl-command-queue:main",
+          workDim: 1,
+          globalWorkSize: [256],
+          localWorkSize: [64],
+          eventTrace: {
+            enqueue_event: "cl-event:epoch-3",
+            completed_after_epoch_dispatch: true,
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          opencl_contract: {
+            ...contract.opencl_contract,
+            command_queue: "cl-command-queue:forged",
+          },
+        }),
+        expectedField: "opencl_contract_command_queue",
+      },
+      {
+        backend: "vulkan",
+        gpuArch: "vulkan-device:test",
+        compiler: "glslc",
+        artifactKind: "spirv",
+        launchApi: "vkCmdDispatch",
+        sourcePaths: ["shaders/lighting.comp"],
+        entryPoints: ["main"],
+        backendInput: {
+          descriptorSetLayoutHash: `sha256:${"6".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"7".repeat(64)}`,
+          pipelineStateHash: `sha256:${"8".repeat(64)}`,
+          commandBufferReRecordRequired: true,
+          commandBufferReRecordProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            pipeline_epoch: "3",
+            command_buffer_re_recorded: true,
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          vulkan_contract: {
+            ...contract.vulkan_contract,
+            pipeline_layout_hash: `sha256:${"9".repeat(64)}`,
+          },
+        }),
+        expectedField: "vulkan_contract_pipeline_layout_hash",
+      },
+      {
+        backend: "webgpu",
+        gpuArch: "webgpu-adapter:test",
+        compiler: "naga",
+        artifactKind: "wgsl",
+        launchApi: "createRenderPipeline",
+        sourcePaths: ["assets/shaders/flow.wgsl"],
+        entryPoints: ["fs_main"],
+        backendInput: {
+          shaderModuleEpoch: "3",
+          bindGroupLayoutHash: `sha256:${"a".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"b".repeat(64)}`,
+          vertexBufferLayoutHash: `sha256:${"c".repeat(64)}`,
+          colorTargetStateHash: `sha256:${"d".repeat(64)}`,
+          pipelineRecreateRequired: true,
+          pipelineRecreateProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            shader_module_epoch: "3",
+          },
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          webgpu_contract: {
+            ...contract.webgpu_contract,
+            bind_group_layout_hash: `sha256:${"e".repeat(64)}`,
+          },
+        }),
+        expectedField: "webgpu_contract_bind_group_layout_hash",
+      },
+      {
+        backend: "bevy_wgsl",
+        gpuArch: "wgpu-adapter:test",
+        compiler: "bevy_asset_server",
+        artifactKind: "wgsl",
+        launchApi: "bevy_asset_reload",
+        sourcePaths: ["assets/shaders/custom_material.wgsl"],
+        entryPoints: ["fragment"],
+        backendInput: {
+          shaderModuleEpoch: "3",
+          bindGroupLayoutHash: `sha256:${"f".repeat(64)}`,
+          pipelineLayoutHash: `sha256:${"1".repeat(64)}`,
+          vertexBufferLayoutHash: `sha256:${"2".repeat(64)}`,
+          colorTargetStateHash: `sha256:${"3".repeat(64)}`,
+          pipelineRecreateRequired: true,
+          pipelineRecreateProven: true,
+          frameUsedNewPipelineTrace: {
+            frame_id: "frame:3",
+            shader_module_epoch: "3",
+            asset_reload_observed: true,
+          },
+          bevyShaderAssetSource: "file_loaded",
+          assetWatched: true,
+        },
+        forge: (contract: any) => ({
+          ...contract,
+          webgpu_contract: {
+            ...contract.webgpu_contract,
+            pipeline_layout_hash: `sha256:${"4".repeat(64)}`,
+          },
+        }),
+        expectedField: "webgpu_contract_pipeline_layout_hash",
+      },
+    ] as const;
+
+    for (const testCase of backendCases) {
+      const dispatchProof = safeDispatchProof();
+      const sourceProof = acceptedSourceProof();
+      const fissionProof = acceptedBackendFissionProof({
+        artifactKind: testCase.artifactKind,
+        compilerName: testCase.compiler,
+        launchApi: testCase.launchApi,
+        sourcePaths: [...testCase.sourcePaths],
+        entryPoints: [...testCase.entryPoints],
+      });
+      const abiProof = acceptedAbiProof();
+      const artifactTransportProof = acceptedArtifactTransportProof();
+      const epochProof = retiredEpochProof();
+      const outputProof = classifyGpuHmrOutputProof({
+        dispatchProof,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      });
+      const hostPreservationProof = preservedHostProof();
+      const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+      });
+      const baseInput = {
+        workspaceSlug: "workspace",
+        sourceEditId: "edit-1",
+        editId: "edit-1",
+        backend: testCase.backend,
+        gpuArch: testCase.gpuArch,
+        compiler: testCase.compiler,
+        processId: "pid1",
+        deviceUuid: "device:test",
+        contextHandle: "gpu-context:test",
+        engineSceneHandles: ["scene:validation-main"],
+        cameraStateHash: `sha256:${"0".repeat(64)}`,
+        swapchainOrFramebufferIdentity: "surface:validation-main",
+        outputOracleTarget: {
+          kind: "compute",
+          target_id: "compute-target:backend-contract-fixture",
+          compute_only_target_verified: true,
+          evidence_refs: ["oracle-target:compute-only:backend-contract-fixture"],
+        },
+        ...acceptedGpuRouteEvidence(),
+        backendContractProof: {
+          resultState: "gpu-hmr-backend-contract-proven",
+          backend: testCase.backend,
+          evidenceRefs: [`evidence:backend-contract:${testCase.backend}`],
+          fieldEvidenceRefs: backendFieldEvidenceRefsFor(testCase.backend),
+          contract: testCase.backendInput,
+        },
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+        fullRuntimeProof,
+        validationContext: {
+          processId: "pid1",
+          deviceIdentity: {
+            device_uuid: "device:test",
+          },
+        },
+      };
+      const verifiedArtifact = buildValidationRuntimeProofArtifact(baseInput);
+      if (!verifiedArtifact.acceptanceContractEvaluation.accepted) {
+        throw new Error(
+          `${testCase.backend} verified contract fixture was rejected: ${
+            verifiedArtifact.acceptanceContractEvaluation.failedGates
+              .map((gate: any) => gate.code)
+              .join(",")
+          }`,
+        );
+      }
+      expect(verifiedArtifact.acceptanceContractEvaluation.accepted).toBe(true);
+      expect(verifiedArtifact.acceptanceContractConsistency.accepted).toBe(true);
+
+      const forgedArtifact = buildValidationRuntimeProofArtifact({
+        ...baseInput,
+        acceptanceContract: testCase.forge(verifiedArtifact.acceptanceContract),
+      });
+
+      expect(forgedArtifact.acceptanceContractEvaluation.accepted).toBe(true);
+      expect(forgedArtifact.acceptanceContractConsistency.accepted).toBe(false);
+      expect(forgedArtifact.gpuHmrSuccess).toBe(false);
+      expect(forgedArtifact.limitations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage_id: "acceptance-contract-consistency",
+            degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+            field: testCase.expectedField,
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("rejects runtime artifacts for backends without implemented contracts", () => {
+    for (const backend of ["cuda", "sycl"] as const) {
+      const dispatchProof = safeDispatchProof();
+      const sourceProof = acceptedSourceProof();
+      const fissionProof = acceptedFissionProof();
+      const abiProof = acceptedAbiProof();
+      const artifactTransportProof = acceptedArtifactTransportProof();
+      const epochProof = retiredEpochProof();
+      const outputProof = classifyGpuHmrOutputProof({
+        dispatchProof,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      });
+      const hostPreservationProof = preservedHostProof();
+      const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+      });
+
+      const artifact = buildValidationRuntimeProofArtifact({
+        workspaceSlug: "workspace",
+        backend,
+        gpuArch: backend === "cuda" ? "sm_90" : "amdgcn-amd-amdhsa",
+        compiler: backend === "cuda" ? "nvcc" : "clang++",
+        processId: "pid1",
+        deviceUuid: "device:test",
+        contextHandle: "gpu-context:test",
+        ...acceptedGpuRouteEvidence(),
+        sourceProofs: [sourceProof],
+        fissionProof,
+        abiProof,
+        artifactTransportProof,
+        epochProof,
+        dispatchProof,
+        outputProof,
+        hostPreservationProof,
+        fullRuntimeProof,
+        validationContext: {
+          processId: "pid1",
+          deviceIdentity: {
+            device_uuid: "device:test",
+          },
+        },
+      });
+
+      expect(artifact.acceptanceContractEvaluation.accepted).toBe(false);
+      expect(artifact.gpuHmrSuccess).toBe(false);
+      expect(artifact.acceptanceContractEvaluation.failedGates.map((gate) => gate.code)).toContain(
+        "backend_specific_contract_not_implemented",
+      );
+      expect(artifact.limitations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage_id: "acceptance-contract",
+            degraded_reason: "backend_specific_contract_not_implemented",
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("rejects explicit proof ledger records that forge derived oracle and provenance fields", () => {
+    const baseInput = acceptedValidationRuntimeInput();
+    const verifiedArtifact = buildValidationRuntimeProofArtifact(baseInput);
+    expect(verifiedArtifact.gpuHmrSuccess).toBe(true);
+    expect(verifiedArtifact.proofLedgerSourceConsistency.accepted).toBe(true);
+
+    const cases = [
+      {
+        name: "compute oracle raw readback hash",
+        expectedCode: "proof_ledger_source_compute_oracle_raw_readback_hash_mismatch",
+        mutate: (record: any) => {
+          record.oracle_artifacts.compute_oracle_artifacts.raw_readback_hash = `sha256:${"6".repeat(64)}`;
+        },
+      },
+      {
+        name: "model provenance",
+        expectedCode: "proof_ledger_source_model_provenance_mismatch",
+        mutate: (record: any) => {
+          record.model_provenance.gpu_delta.actual_model = "gemini-3.5-flash";
+        },
+      },
+      {
+        name: "timing evidence",
+        expectedCode: "proof_ledger_source_timings_mismatch",
+        mutate: (record: any) => {
+          record.timings.total_validator_wall_time = 1;
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const explicitRecord = cloneJson(verifiedArtifact.derivedProofLedgerRecord);
+      testCase.mutate(explicitRecord);
+      const forgedArtifact = buildValidationRuntimeProofArtifact({
+        ...baseInput,
+        proofLedgerRecord: explicitRecord,
+      });
+
+      expect(forgedArtifact.gpuHmrSuccess, testCase.name).toBe(false);
+      expect(forgedArtifact.proofLedgerSourceConsistency.accepted, testCase.name).toBe(false);
+      expect(
+        forgedArtifact.proofLedgerSourceConsistency.failures.map((failure: any) => failure.code),
+        testCase.name,
+      ).toContain(testCase.expectedCode);
+      expect(forgedArtifact.limitations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage_id: "proof-ledger-source-consistency",
+            degraded_reason: testCase.expectedCode,
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("does not mark runtime artifacts successful without full runtime proof", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const provenFullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+    const acceptanceContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      projectId: "workspace",
+      editId: "edit-1",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof: provenFullRuntimeProof,
+    });
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      sourceProofs: [sourceProof],
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof: {
+        ...provenFullRuntimeProof,
+        resultState: "gpu-hmr-output-oracle-proven",
+        fullRuntimeProven: false,
+      },
+      acceptanceContract,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "full-runtime",
+          degraded_reason: "full_runtime_proof_not_proven",
+        }),
+      ]),
+    );
   });
 
   it("materializes native original-host diagnostics as runtime proof facets", () => {
@@ -6066,6 +8247,107 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summary.full_runtime_proven).toBe(false);
   });
 
+  it("recomputes acceptance contract consistency from runtime proof material in summaries", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+    const validArtifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+    const forgedContract = {
+      ...validArtifact.acceptanceContract,
+      artifact_identity: {
+        ...validArtifact.acceptanceContract.artifact_identity,
+        source_paths: ["src/forged/summary-kernel.hip"],
+      },
+    };
+    const forgedRecord = {
+      ...validArtifact,
+      path: "logs/runtime-proof.json",
+      acceptanceContract: forgedContract,
+      acceptance_contract: forgedContract,
+      acceptanceContractConsistency: {
+        accepted: true,
+        checked: true,
+        failedGates: [],
+      },
+      acceptance_contract_consistency: {
+        accepted: true,
+        checked: true,
+        failedGates: [],
+      },
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      limitations: [],
+    };
+
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      runtimeProofArtifactRecords: [forgedRecord],
+    });
+
+    expect(summary.gpu_hmr_success).toBe(false);
+    expect(summary.proof_states.acceptance_contract_consistency).toEqual(
+      expect.objectContaining({
+        accepted: false,
+        checked_count: 1,
+      }),
+    );
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+          degraded_reason: "explicit_acceptance_contract_verified_field_mismatch",
+          field: "source_paths",
+        }),
+      ]),
+    );
+  });
+
   it("summarizes flat Docker snapshots and separates blank screenshot attempts", () => {
     const summary = buildGpuHmrValidationProofSummary({
       workspaceSlug: "workspace",
@@ -6235,6 +8517,364 @@ describe("GPU HMR runtime output proof classification", () => {
           degraded_reason: "visual_evidence_not_accepted",
         }),
       ])
+    );
+  });
+
+  it("requires deterministic visual controls beyond a raw pixel diff", () => {
+    const weakMode = evaluateGpuHmrDeterministicVisualMode({
+      fixed_seed: true,
+      frozen_camera: true,
+      frame_capture_after_epoch_dispatch: true,
+    });
+
+    expect(weakMode.accepted).toBe(false);
+    expect(weakMode.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "fixed_resolution_unproven",
+        "presentation_boundary_unproven",
+        "temporal_visual_requires_convergence_window",
+        "taa_control_unproven",
+        "denoiser_control_unproven",
+      ])
+    );
+
+    const strictSingleFrame = evaluateGpuHmrDeterministicVisualMode({
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    });
+
+    expect(strictSingleFrame.accepted).toBe(true);
+    expect(strictSingleFrame.proofMode).toBe("single_frame_deterministic");
+  });
+
+  it("accepts convergence-window visual proof for temporal renderers", () => {
+    const convergenceMode = evaluateGpuHmrDeterministicVisualMode({
+      frozen_camera: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      convergence_window: {
+        frame_start: 12,
+        frame_end: 20,
+        metric: {
+          value: "window_mean_delta",
+        },
+        sample_count: 9,
+        metric_delta: 0.42,
+        convergence_proven: true,
+        evidence_refs: ["mcp:visual-window:post-epoch-frames"],
+      },
+    });
+
+    expect(convergenceMode.accepted).toBe(true);
+    expect(convergenceMode.proofMode).toBe("convergence_window");
+    expect(convergenceMode.warnings.map((warning) => warning.code)).toContain(
+      "convergence_window_without_fixed_seed_policy",
+    );
+  });
+
+  it("surfaces deterministic visual-mode failures in the proof summary", () => {
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      deterministicVisualMode: {
+        fixed_seed: true,
+        frozen_camera: true,
+        frame_capture_after_epoch_dispatch: true,
+      },
+    });
+
+    expect(summary.proof_states.deterministic_visual_mode?.accepted).toBe(false);
+    expect(summary.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "deterministic-visual-mode",
+          degraded_reason: "fixed_resolution_unproven",
+        }),
+      ])
+    );
+  });
+
+  it("rejects GPU HMR ledger records missing required safety identity", () => {
+    const strictLedgerEvidence = acceptedStrictLedgerEvidence();
+    const baseRecord = {
+      project_id: "workspace",
+      edit_id: "edit-1",
+      backend: "hip",
+      classification: {
+        project_kind: "gpu_project",
+        edit_kind: "gpu_artifact_edit",
+        route: "gpu_hmr",
+      },
+      contract_hash: `sha256:${TEST_PROOF_HASH}`,
+      artifact_before_hash: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
+      artifact_after_hash: TEST_ARTIFACT_ID,
+      loader_event: {
+        id: "load-1",
+        artifact_hash: TEST_ARTIFACT_ID,
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 100,
+      },
+      epoch_publish_event: {
+        id: "publish-1",
+        artifact_hash: TEST_ARTIFACT_ID,
+        epoch: "epoch-3",
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 200,
+      },
+      dispatch_event: {
+        id: "dispatch-1",
+        artifact_hash: TEST_ARTIFACT_ID,
+        epoch: "epoch-3",
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 300,
+      },
+      output_event: {
+        id: "output-1",
+        kind: "buffer_checksum",
+        artifact_hash: TEST_ARTIFACT_ID,
+        epoch: "epoch-3",
+        after_dispatch_id: "dispatch-1",
+        passed: true,
+        process_id: "pid-1",
+        timestamp_monotonic_ns: 400,
+      },
+      retirement_event: {
+        id: "retire-1",
+        epoch: "epoch-2",
+        status: "retired",
+        timestamp_monotonic_ns: 500,
+      },
+      process_identity: {
+        process_id: "pid-1",
+      },
+      device_identity: {
+        device_uuid: "device:test",
+      },
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      metric_clock: strictLedgerEvidence.metricClock,
+      metric_scope: strictLedgerEvidence.metricScope,
+      cache_state: strictLedgerEvidence.cacheState,
+      timings: strictLedgerEvidence.timings,
+      timing_metrics: strictLedgerEvidence.timingMetrics,
+      model_provenance: strictLedgerEvidence.modelProvenance,
+      oracle_artifacts: {
+        compute_oracle_artifacts: deterministicOutputOracle({
+          epoch: "epoch-3",
+        }).oracleArtifacts.computeOracleArtifacts,
+      },
+      evidence_refs: strictLedgerEvidence.evidenceRefs,
+    };
+
+    expect(evaluateGpuHmrProofLedger(baseRecord).gpuHmrSuccess).toBe(true);
+    expect(evaluateGpuHmrProofLedger({
+      ...baseRecord,
+      backend: "vulkan",
+      output_oracle_target: {
+        kind: "compute",
+        target_id: "compute-target:validation-buffer",
+        compute_only_target_verified: true,
+        evidence_refs: ["oracle-target:compute-only:validation-buffer"],
+      },
+    }).gpuHmrSuccess).toBe(true);
+
+    const cases = [
+      [
+        (() => {
+          const { backend: _backend, ...record } = baseRecord;
+          return record;
+        })(),
+        "backend_missing",
+      ],
+      [
+        {
+          ...baseRecord,
+          backend: "unknown",
+        },
+        "backend_unsupported",
+      ],
+      [
+        (() => {
+          const { cpu_hmr_used: _cpuHmrUsed, ...record } = baseRecord;
+          return record;
+        })(),
+        "cpu_hmr_absence_evidence_missing",
+      ],
+      [
+        (() => {
+          const { full_rebuild_used: _fullRebuildUsed, ...record } = baseRecord;
+          return record;
+        })(),
+        "full_rebuild_absence_evidence_missing",
+      ],
+      [
+        (() => {
+          const { process_restarted: _processRestarted, ...record } = baseRecord;
+          return record;
+        })(),
+        "process_restart_absence_evidence_missing",
+      ],
+      [{ ...baseRecord, contract_hash: null }, "contract_hash_missing"],
+      [{ ...baseRecord, artifact_before_hash: null }, "artifact_before_hash_missing"],
+      [
+        {
+          ...baseRecord,
+          artifact_before_hash: TEST_ARTIFACT_ID,
+        },
+        "artifact_hash_unchanged",
+      ],
+      [{ ...baseRecord, device_identity: {} }, "device_identity_missing"],
+      [{ ...baseRecord, retirement_event: {} }, "retirement_event_missing"],
+      [
+        {
+          ...baseRecord,
+          retirement_event: { id: "retire-1", epoch: "epoch-2", timestamp_monotonic_ns: 500 },
+        },
+        "retirement_proof_missing",
+      ],
+      [
+        {
+          ...baseRecord,
+          dispatch_event: {
+            ...baseRecord.dispatch_event,
+            artifact_hash: `artifact:sha256:${TEST_OLD_ARTIFACT_HASH}`,
+          },
+        },
+        "dispatch_artifact_hash_mismatch",
+      ],
+      [
+        (() => {
+          const computeArtifacts = {
+            ...baseRecord.oracle_artifacts.compute_oracle_artifacts,
+          };
+          delete computeArtifacts.raw_readback_hash;
+          delete computeArtifacts.raw_readback_source;
+          return {
+            ...baseRecord,
+            oracle_artifacts: {
+              compute_oracle_artifacts: computeArtifacts,
+            },
+          };
+        })(),
+        "compute_oracle_raw_readback_unproven",
+      ],
+      [
+        {
+          ...baseRecord,
+          oracle_artifacts: {
+            compute_oracle_artifacts: {
+              ...baseRecord.oracle_artifacts.compute_oracle_artifacts,
+              raw_readback_source: "runtime_checksum_digest",
+              deterministic_slice: {
+                ...baseRecord.oracle_artifacts.compute_oracle_artifacts.deterministic_slice,
+                source: "runtime_checksum_digest",
+              },
+            },
+          },
+        },
+        "compute_oracle_raw_readback_digest_derived",
+      ],
+      [
+        {
+          ...baseRecord,
+          oracle_artifacts: {
+            compute_oracle_artifacts: {
+              ...baseRecord.oracle_artifacts.compute_oracle_artifacts,
+              raw_readback_source: "unit_test_fixture",
+            },
+          },
+        },
+        "compute_oracle_raw_readback_source_unaccepted",
+      ],
+      [{ ...baseRecord, backend: "hiprt" }, "visual_backend_requires_visual_oracle"],
+      [
+        {
+          ...baseRecord,
+          backend: "vulkan",
+          output_oracle_target: {
+            kind: "compute",
+            target_id: "compute-target:unverified",
+          },
+        },
+        "visual_backend_compute_target_unverified",
+      ],
+    ] as const;
+
+    for (const [record, expectedCode] of cases) {
+      const result = evaluateGpuHmrProofLedger(record);
+      expect(result.gpuHmrSuccess).toBe(false);
+      expect(result.failedInvariants.map((failure) => failure.code)).toContain(expectedCode);
+    }
+
+    const rejectedRecord = {
+      ...baseRecord,
+      cpu_hmr_used: true,
+    };
+    const forgedLedger = buildGpuHmrProofLedger(rejectedRecord);
+    forgedLedger.query = {
+      ...forgedLedger.query,
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    };
+    const recomputed = queryGpuHmrLedgerInvariants(forgedLedger);
+    expect(recomputed.gpuHmrSuccess).toBe(false);
+    expect(recomputed.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining(["cpu_hmr_used", "supplied_ledger_query_mismatch"]),
+    );
+  });
+
+  it("does not synthesize dispatch or output epochs from epoch publication", () => {
+    const dispatchProof = {
+      ...safeDispatchProof(),
+      epoch: null,
+      activeEpoch: null,
+      activeGeneration: null,
+      active_generation: null,
+      generation: null,
+    };
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle({ epoch: null }),
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      runtimeSessionIds: ["runtime-session:test"],
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(artifact.proofLedgerQuery.record.epochPublishEvent.epoch).toBe("3");
+    expect(artifact.proofLedgerQuery.record.dispatchEvent.epoch).toBeNull();
+    expect(artifact.proofLedgerQuery.record.outputEvent.epoch).toBeNull();
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(false);
+    expect(artifact.proofLedgerQuery.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining(["dispatch_epoch_missing", "output_epoch_missing"]),
     );
   });
 

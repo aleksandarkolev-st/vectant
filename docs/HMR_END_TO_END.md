@@ -967,13 +967,19 @@ The Gemini provider is hardcoded in
 [ai-backend/ai-engine/llm/providers/factory.py](../ai-backend/ai-engine/llm/providers/factory.py)
 as a literal `return GeminiProvider()`. The `chatgpt.py` provider in the same
 directory is unreachable; passing `provider_name='chatgpt'` silently still
-returns Gemini. Default model is `gemini-3.1-flash-lite-preview`, overridable
-via `SYNTHI_GEMINI_MODEL`.
+returns Gemini.
 
-**Heal uses pro, split uses lite, diff_patch uses lite** — the route handlers
-in `main.py` choose model tier internally; the worker / gateway do not pick
-it. If your mental model is "flash-lite always", check the route handlers
-before debugging latency.
+GPU split and GPU delta deliberately use different Gemini defaults. GPU split
+uses `SYNTHI_GPU_SPLIT_MODEL`, then `SYNTHI_GEMINI_MODEL`, then
+`gemini-3.5-flash`. GPU delta uses `SYNTHI_GPU_DELTA_MODEL`, then
+`SYNTHI_GEMINI_DELTA_MODEL`, then `gemini-3.1-flash-lite`. The old
+`gemini-3.1-flash-lite-preview` name is a shutdown preview model and must only
+appear in negative infrastructure-failure tests.
+
+**Heal, split, and diff_patch choose model tier at the route handlers** in
+`main.py`; the worker / gateway only pass explicit overrides for the GPU paths.
+If your mental model is "flash-lite always", check the route handlers before
+debugging latency.
 
 `GEMINI_API_KEY` is required. Missing → every endpoint above raises
 `ValueError`, FastAPI returns 500, gateway returns a generic error frame to

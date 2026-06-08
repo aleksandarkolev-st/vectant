@@ -45,7 +45,13 @@ const CFG = {
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
-  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? process.env.SYNTHI_GPU_SPLIT_MODEL ?? 'gemini-3.5-flash',
+  gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
+    ?? process.env.SYNTHI_GEMINI_MODEL
+    ?? 'gemini-3.5-flash',
+  gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
+    ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
+    ?? 'gemini-3.1-flash-lite',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -307,6 +313,8 @@ async function startMcp() {
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
       '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
       '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
+      '-e', `SYNTHI_GPU_SPLIT_MODEL=${CFG.gpuSplitModel}`,
+      '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
       CFG.mcpContainer,
       'node',
       '/app/dist/index.js',
@@ -324,6 +332,8 @@ async function startMcp() {
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
         SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+        SYNTHI_GPU_SPLIT_MODEL: CFG.gpuSplitModel,
+        SYNTHI_GPU_DELTA_MODEL: CFG.gpuDeltaModel,
       },
     });
   }
@@ -753,6 +763,44 @@ function sourceFiles(vendor, paths, manifest) {
   ];
 }
 
+function cleanRel(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+}
+
+function manifestRoleForPath(manifest, filePath) {
+  const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
+    ? manifest.module_files
+    : {};
+  const normalizedPath = cleanRel(filePath);
+  for (const [role, rolePath] of Object.entries(moduleFiles)) {
+    if (cleanRel(rolePath) === normalizedPath) return role;
+  }
+  return null;
+}
+
+function waitContractForCompile({ manifest, primaryPath, compile, timeoutMs }) {
+  const role = manifestRoleForPath(manifest, primaryPath);
+  const isGpuDeviceEdit = role === 'device' || (
+    manifest?.gpu && /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(primaryPath)
+  );
+  const module = process.env.SYNTHI_GPU_HMR_WAIT_MODULE
+    ?? (isGpuDeviceEdit ? 'device' : role ?? undefined);
+  const waitArgs = {
+    timeoutMs,
+    ...(Number.isFinite(compile?.dispatched_at)
+      ? { since_ts: compile.dispatched_at }
+      : {}),
+    ...(module ? { module } : {}),
+  };
+  const requiredState = process.env.SYNTHI_GPU_HMR_REQUIRED_PROOF_STATE;
+  if (requiredState && requiredState.trim()) {
+    waitArgs.requiredGpuProofState = requiredState.trim();
+  } else if (isGpuDeviceEdit && process.env.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF !== '0') {
+    waitArgs.requireGpuFullRuntimeProof = true;
+  }
+  return { waitArgs, role, isGpuDeviceEdit };
+}
+
 async function seedWorkspace(vendor, arch) {
   const paths = makePaths(vendor);
   const manifest = manifestFor(vendor, paths, arch);
@@ -795,9 +843,24 @@ async function compileViaMcp(ctx, primaryPath, content) {
   });
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 400)}`);
   const waitTimeout = Math.min(CFG.hmrTimeoutMs, CFG.hmrWaitTimeoutMs);
-  const hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: waitTimeout }, waitTimeout + 5000)
+  const waitContract = waitContractForCompile({
+    manifest: ctx.manifest,
+    primaryPath,
+    compile,
+    timeoutMs: waitTimeout,
+  });
+  const hmr = await state.client.toolCall('synthi_wait_hmr', waitContract.waitArgs, waitTimeout + 5000)
     .catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  return { compile, hmr };
+  record('mcp wait_hmr proof gate', hmr?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+    role: waitContract.role,
+    module: waitContract.waitArgs.module ?? null,
+    since_ts: waitContract.waitArgs.since_ts ?? null,
+    requireGpuFullRuntimeProof: waitContract.waitArgs.requireGpuFullRuntimeProof === true,
+    requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
+    status: hmr?.status ?? null,
+    frame_gate: hmr?.frame_gate ?? null,
+  }));
+  return { compile, hmr, waitContract };
 }
 
 async function run() {

@@ -109,9 +109,22 @@ describe("wait({condition:\"hmr\"}) frame_gate evidence", () => {
     // Arrange a late advance that satisfies the budget.
     setTimeout(() => session.setFrameAdvance(2, Date.now() + budget + 50), 10);
     const outcome = await runWait({ condition: "hmr" }, 2_000);
-    const evidence = (outcome as { evidence: { frame_gate: { status: string; frame_seq: number } } }).evidence;
+    const evidence = (outcome as {
+      evidence: {
+        frame_gate: {
+          status: string;
+          frame_seq: number;
+          session_id?: string;
+          gate_token?: string;
+          capture_binding_required?: boolean;
+        };
+      };
+    }).evidence;
     expect(evidence.frame_gate.status).toBe("satisfied");
     expect(evidence.frame_gate.frame_seq).toBe(2);
+    expect(evidence.frame_gate.session_id).toBe("fixture");
+    expect(evidence.frame_gate.gate_token).toMatch(/^frame-gate:/);
+    expect(evidence.frame_gate.capture_binding_required).toBe(true);
   });
 
   it("reports frame_gate:timeout when no post-budget advance lands in time", async () => {

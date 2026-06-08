@@ -27,6 +27,9 @@
     "reload": {
       "kernelName": "Fill G-Buffer",
       "kernelSymbol": "CameraRays"
+    },
+    "backend": {
+      "orochiApi": "hip"
     }
   },
   "source": {
