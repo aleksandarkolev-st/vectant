@@ -105,6 +105,7 @@ export class BrowserPlaywrightAdapter {
   private readonly pages = new Map<string, PageRecord>();
   private readonly popupOpeners = new Map<string, { opener_tab_id: string; opener_origin: string }>();
   private readonly instrumented = new WeakSet<Page>();
+  private readonly workflowOverlayInitScriptInstalled = new WeakSet<Page>();
   private readonly workflowOverlayInstalled = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
@@ -833,9 +834,13 @@ export class BrowserPlaywrightAdapter {
       });
       await this.installTeachCapture(page, tab_id);
     }
-    if (this.workflowOverlayEnabled && !this.workflowOverlayInstalled.has(page)) {
-      this.workflowOverlayInstalled.add(page);
-      await this.installWorkflowOverlay(page, tab_id);
+    if (this.workflowOverlayEnabled) {
+      const visible = await this.installWorkflowOverlay(page, tab_id);
+      if (visible) {
+        this.workflowOverlayInstalled.add(page);
+      } else {
+        this.workflowOverlayInstalled.delete(page);
+      }
     }
   }
 
@@ -995,7 +1000,7 @@ export class BrowserPlaywrightAdapter {
     return metadata ? enrichCapturedFramePayload(payload, metadata, page.url()) : payload;
   }
 
-  private async installWorkflowOverlay(page: Page, tab_id: string): Promise<void> {
+  private async installWorkflowOverlay(page: Page, tab_id: string): Promise<boolean> {
     const bindingName = `__synthiWorkflowOverlayAction_${tab_id.replace(/[^a-zA-Z0-9_]/g, "_")}_${Date.now().toString(36)}`;
     await page.exposeBinding(bindingName, async (_source, payload: unknown) => {
       const request = workflowOverlayRequestOpt(payload);
@@ -1016,8 +1021,12 @@ export class BrowserPlaywrightAdapter {
       }
     }).catch(() => undefined);
     const script = workflowOverlayInitScript(bindingName, workflowOverlayBridgeUrl(), workflowOverlayBridgeToken());
-    await page.addInitScript(script).catch(() => undefined);
+    if (!this.workflowOverlayInitScriptInstalled.has(page)) {
+      await page.addInitScript(script).catch(() => undefined);
+      this.workflowOverlayInitScriptInstalled.add(page);
+    }
     await page.evaluate(script).catch(() => undefined);
+    return await page.evaluate(() => Boolean(document.getElementById("synthi-workflow-toolbox-host"))).catch(() => false);
   }
 
   private requireBrowser(): Browser {

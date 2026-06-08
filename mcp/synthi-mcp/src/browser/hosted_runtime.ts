@@ -77,7 +77,6 @@ export async function attachHostedBrowserRuntime(
     allTabs = await deps.listTabs();
   }
 
-  const tabs = broker.registerTabs(allTabs);
   const runtime = broker.setRuntimeAttachment({
     kind: "hosted",
     workspace_id: config.workspace_id,
@@ -85,6 +84,8 @@ export async function attachHostedBrowserRuntime(
     workspace_url: config.workspace_url,
     adapter: config.adapter,
   });
+  allTabs = await deps.listTabs();
+  const tabs = broker.registerTabs(allTabs);
   return {
     ok: true,
     runtime,
