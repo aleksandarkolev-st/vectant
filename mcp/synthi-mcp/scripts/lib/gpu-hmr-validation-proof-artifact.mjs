@@ -1157,6 +1157,11 @@ function proofOutputKind(outputProof) {
 function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visualEvidenceArtifacts) {
   const proof = objectOrNull(outputProof) ?? {};
   const kind = proofOutputKind(proof);
+  const primaryVisualArtifacts = compactObjects(visualEvidenceArtifacts).filter(
+    (artifact) =>
+      artifact.visualEvidenceSupplementalOnly !== true
+      && artifact.visual_evidence_supplemental_only !== true,
+  );
   return proof.visualEvidenceRequired === true
     || proof.visual_evidence_required === true
     || proof.renderVisualEvidenceRequired === true
@@ -1169,7 +1174,7 @@ function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visu
     || kind.includes('pixel')
     || visualOracleArtifactsFromOutputProof(proof) !== null
     || compactStringList(visualEvidenceRefs).length > 0
-    || compactObjects(visualEvidenceArtifacts).length > 0;
+    || primaryVisualArtifacts.length > 0;
 }
 
 function outputOracleTargetFromSources(...sources) {

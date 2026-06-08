@@ -1225,6 +1225,28 @@ function artifactHashBeforeFromProofs(input, epochProof) {
   );
 }
 
+function hipLaunchApiFromVerifiedDispatch(dispatchProof, selectedIsland) {
+  const explicit = firstText(
+    dispatchProof?.launchApi,
+    dispatchProof?.launch_api,
+    selectedIsland?.launchApi,
+    selectedIsland?.launch_api,
+  );
+  if (explicit) return explicit;
+  const evidenceText = compactStringList([
+    ...(asArray(dispatchProof?.dispatchEvidenceRefs)),
+    ...(asArray(dispatchProof?.dispatch_evidence_refs)),
+    ...(asArray(dispatchProof?.evidenceRefs)),
+    ...(asArray(dispatchProof?.evidence_refs)),
+  ]).join(' ').toLowerCase();
+  if (evidenceText.includes('worker-log:synthi_gpu_launch')) return 'synthi_gpu_launch';
+  if (/hipmodulelaunchkernel|hipmodulelaunch|hiplaunchkernel/.test(evidenceText)) {
+    return 'hipModuleLaunchKernel';
+  }
+  if (/\bhip[_-]?launch\b|\bhiplaunch\b/.test(evidenceText)) return 'hip_launch';
+  return null;
+}
+
 function hipContractFromVerifiedProofs({
   entryPoints,
   dispatchProof,
@@ -1255,7 +1277,7 @@ function hipContractFromVerifiedProofs({
       selectedIsland?.kernel_name,
       entryPoints[0],
     ),
-    launch_api: firstText(dispatchProof?.launchApi, dispatchProof?.launch_api, selectedIsland?.launchApi),
+    launch_api: hipLaunchApiFromVerifiedDispatch(dispatchProof, selectedIsland),
     grid_dim:
       dispatchProof?.gridDim
       ?? dispatchProof?.grid_dim

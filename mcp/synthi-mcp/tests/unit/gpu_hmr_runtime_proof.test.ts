@@ -6786,6 +6786,22 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evaluation.accepted).toBe(true);
   });
 
+  it("derives HIP launch API from runtime launch-boundary evidence", () => {
+    const input = acceptedValidationRuntimeInput();
+    const fissionProof = cloneJson((input as any).fissionProof);
+    delete fissionProof.selectedIslandContracts[0].launchApi;
+
+    const derived = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+      ...input,
+      fissionProof,
+    });
+    const evaluation = evaluateGpuHmrAcceptanceContract(derived);
+
+    expect(derived.backend).toBe("hip");
+    expect(derived.hip_contract.launch_api).toBe("synthi_gpu_launch");
+    expect(evaluation.accepted).toBe(true);
+  });
+
   it("treats backend-specific top-level fields as hints until a backend contract proof verifies them", () => {
     const dispatchProof = safeDispatchProof();
     const outputProof = classifyGpuHmrOutputProof({
@@ -7423,6 +7439,24 @@ describe("GPU HMR runtime output proof classification", () => {
           degraded_reason: "deterministic_visual_mode_missing",
         }),
       ]),
+    );
+  });
+
+  it("does not require deterministic visual mode for supplemental compute proof cards", () => {
+    const artifact = buildValidationRuntimeProofArtifact(acceptedValidationRuntimeInput({
+      visualEvidenceArtifacts: [{
+        path: "artifacts/compute-proof-card.png",
+        contentHash: `sha256:${"6".repeat(64)}`,
+        acceptedAsVisualEvidence: true,
+        visualQuality: "gpu-hmr-visual-varied-frame",
+        visualEvidenceSupplementalOnly: true,
+      }],
+    }));
+
+    expect(artifact.proofMaterial.visualEvidenceRequired).toBe(false);
+    expect(artifact.gpuHmrSuccess).toBe(true);
+    expect(artifact.limitations.map((limitation: any) => limitation.degraded_reason)).not.toContain(
+      "deterministic_visual_mode_missing",
     );
   });
 
