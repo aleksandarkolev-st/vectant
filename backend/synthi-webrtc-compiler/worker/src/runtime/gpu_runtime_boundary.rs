@@ -1922,7 +1922,7 @@ fn synthi_gpu_launch_raw_impl(
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} error={}",
             kernel_name,
             grid,
             block,
@@ -1930,6 +1930,7 @@ fn synthi_gpu_launch_raw_impl(
             stream_token,
             shared_bytes,
             dispatch_label,
+            active_generation,
             runtime_session_id,
             log_token(active_artifact_id),
             log_token(dispatcher_registration_id),
@@ -1942,7 +1943,7 @@ fn synthi_gpu_launch_raw_impl(
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={}",
             kernel_name,
             grid,
             block,
@@ -1950,6 +1951,7 @@ fn synthi_gpu_launch_raw_impl(
             stream_token,
             shared_bytes,
             dispatch_label,
+            active_generation,
             runtime_session_id,
             log_token(active_artifact_id),
             log_token(dispatcher_registration_id),

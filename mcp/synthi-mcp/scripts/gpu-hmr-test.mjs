@@ -2107,6 +2107,8 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     const dispatcherRegistrationId = logField(line, 'dispatcher_registration_id');
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
+    const generation = logField(line, 'generation') ?? logField(line, 'active_generation');
+    const epoch = logField(line, 'epoch') ?? logField(line, 'active_epoch');
     const streamId = logField(line, 'stream');
     const gridDimensions = logDim3Field(line, 'grid');
     const blockDimensions = logDim3Field(line, 'block');
@@ -2124,6 +2126,8 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
       dispatchTableEntryId: dispatchTableEntryId && dispatchTableEntryId !== 'none'
         ? dispatchTableEntryId
         : null,
+      generation: generation && generation !== 'none' ? generation : null,
+      epoch: epoch && epoch !== 'none' ? epoch : null,
       streamId: streamId && streamId !== 'none' ? streamId : null,
       gridDimensions,
       blockDimensions,
@@ -2150,6 +2154,10 @@ function runtimeDispatchArtifactEvidence(logText, expectedKernels = []) {
     dispatchTableEntryIds: [
       ...new Set(records.map((record) => record.dispatchTableEntryId).filter(Boolean)),
     ],
+    generations: [...new Set(records.map((record) => record.generation).filter(Boolean))],
+    generation: records.at(-1)?.generation ?? null,
+    epochs: [...new Set(records.map((record) => record.epoch).filter(Boolean))],
+    epoch: records.at(-1)?.epoch ?? records.at(-1)?.generation ?? null,
     dispatchStreamIds: [...new Set(records.map((record) => record.streamId).filter(Boolean))],
     gridDimensions: [...new Set(records.map((record) => record.gridDimensions).filter(Boolean))],
     blockDimensions: [...new Set(records.map((record) => record.blockDimensions).filter(Boolean))],
@@ -3079,6 +3087,8 @@ async function awaitRuntimeDispatchProof(
     blockDimensions: runtimeDispatchArtifacts.blockDimensions,
     sharedMemoryBytes: runtimeDispatchArtifacts.sharedMemoryBytes,
     dispatchTimestamps: runtimeDispatchArtifacts.dispatchTimestamps,
+    epoch: runtimeDispatchArtifacts.epoch,
+    generation: runtimeDispatchArtifacts.generation,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
       runtimeDispatchArtifacts,
       selectedArtifactIds,
@@ -4774,11 +4784,11 @@ async function selfCheck() {
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=x expected_symbols=kernel_a,kernel_b touched_symbols=kernel_a,kernel_b retired_modules=1 replaced_primary=false\n',
   );
   const sessionEvidence = runtimeSessionEvidence(
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0 details=0:device-allocation:self:alloc_bytes=8:alloc_offset=0:size=8\n',
   );
   const dispatchArtifacts = runtimeDispatchArtifactEvidence(
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 runtime_session=session-1 artifact_id=${selfArtifactId} dispatcher_registration_id=${selfDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1 dispatch_timestamp=1779979999000\n`,
     ['kernel_a'],
   );
   const selectedDispatchRegex = selectedArtifactDispatchLineRegex(
@@ -4786,9 +4796,9 @@ async function selfCheck() {
     [selectedArtifactId],
   );
   const staleDispatchLine =
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-1 artifact_id=${staleArtifactId} dispatcher_registration_id=${staleDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`;
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(1, 1, 1) block=(32, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=1 runtime_session=session-1 artifact_id=${staleArtifactId} dispatcher_registration_id=${staleDispatcherId} dispatch_table_hash=0x1 dispatch_table_entry_id=kernel_a:0x1\n`;
   const selectedDispatchLine =
-    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(2, 1, 1) block=(64, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=session-2 artifact_id=${selectedArtifactId} dispatcher_registration_id=${selectedDispatcherId} dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n`;
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a grid=(2, 1, 1) block=(64, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 runtime_session=session-2 artifact_id=${selectedArtifactId} dispatcher_registration_id=${selectedDispatcherId} dispatch_table_hash=0x2 dispatch_table_entry_id=kernel_a:0x2\n`;
   const selectedDispatchScope = scopeRuntimeDispatchWindowToSelectedArtifact(
     staleDispatchLine
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=1 complete=true known_args=1 unknown_args=0\n'
@@ -4815,6 +4825,8 @@ async function selfCheck() {
     || dispatchArtifacts.runtimeArtifactIds[0] !== selfArtifactId
     || dispatchArtifacts.dispatchEvidenceRefs[0] !== 'worker-log:synthi_gpu_launch:session-1:kernel_a'
     || dispatchArtifacts.dispatchTimestamps[0] !== 1779979999000
+    || dispatchArtifacts.generation !== '2'
+    || dispatchArtifacts.epoch !== '2'
     || dispatchArtifacts.gridDimensions[0] !== '1x1x1'
     || dispatchArtifacts.blockDimensions[0] !== '32x1x1'
     || dispatchArtifacts.dispatchStreamIds[0] !== '0'
@@ -4869,6 +4881,8 @@ async function selfCheck() {
     blockDimensions: dispatchArtifacts.blockDimensions,
     sharedMemoryBytes: dispatchArtifacts.sharedMemoryBytes,
     dispatchTimestamps: dispatchArtifacts.dispatchTimestamps,
+    epoch: dispatchArtifacts.epoch,
+    generation: dispatchArtifacts.generation,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
       dispatchArtifacts,
       [selfArtifactId],

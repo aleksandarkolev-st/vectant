@@ -5286,6 +5286,22 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("dispatch_timestamp_not_observed");
   });
 
+  it("does not prove dispatch safety without observed dispatch epoch identity", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof(),
+      epoch: null,
+      activeEpoch: null,
+      activeGeneration: null,
+      active_generation: null,
+      generation: null,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("dispatch_epoch_identity_not_observed");
+    expect(proof.epoch).toBeNull();
+  });
+
   it("does not prove dispatch safety from malformed artifact identities", () => {
     const proof = classifyGpuHmrDispatchProof({
       ...safeDispatchProof(),
@@ -7727,6 +7743,52 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(recomputed.gpuHmrSuccess).toBe(false);
     expect(recomputed.failedInvariants.map((failure) => failure.code)).toEqual(
       expect.arrayContaining(["cpu_hmr_used", "supplied_ledger_query_mismatch"]),
+    );
+  });
+
+  it("does not synthesize dispatch or output epochs from epoch publication", () => {
+    const dispatchProof = {
+      ...safeDispatchProof(),
+      epoch: null,
+      activeEpoch: null,
+      activeGeneration: null,
+      active_generation: null,
+      generation: null,
+    };
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle({ epoch: null }),
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      runtimeSessionIds: ["runtime-session:test"],
+      sourceProofs: [acceptedSourceProof()],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(artifact.proofLedgerQuery.record.epochPublishEvent.epoch).toBe("3");
+    expect(artifact.proofLedgerQuery.record.dispatchEvent.epoch).toBeNull();
+    expect(artifact.proofLedgerQuery.record.outputEvent.epoch).toBeNull();
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(false);
+    expect(artifact.proofLedgerQuery.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining(["dispatch_epoch_missing", "output_epoch_missing"]),
     );
   });
 

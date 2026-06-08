@@ -1626,6 +1626,21 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     dispatchProof?.dispatchId,
     dispatchProof?.dispatch_id,
   );
+  const oracleEpoch = stringField(
+    rawOracle.epoch,
+    rawOracle.epoch_id,
+    rawOracle.outputEpoch,
+    rawOracle.output_epoch,
+    rawOracle.outputGeneration,
+    rawOracle.output_generation,
+    rawOracle.generation,
+    Number.isFinite(rawOracle.epoch) ? String(rawOracle.epoch) : null,
+    Number.isFinite(rawOracle.outputEpoch) ? String(rawOracle.outputEpoch) : null,
+    Number.isFinite(rawOracle.output_epoch) ? String(rawOracle.output_epoch) : null,
+    Number.isFinite(rawOracle.outputGeneration) ? String(rawOracle.outputGeneration) : null,
+    Number.isFinite(rawOracle.output_generation) ? String(rawOracle.output_generation) : null,
+    Number.isFinite(rawOracle.generation) ? String(rawOracle.generation) : null,
+  );
   const dispatchArtifactIds = dispatchRuntimeArtifactIdsFromProof(dispatchProof);
   const epochProof = observation.epochProof && typeof observation.epochProof === 'object'
     ? observation.epochProof
@@ -1737,6 +1752,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     runtimeSessionId: oracleRuntimeSessionId,
     processId: oracleProcessId,
     artifactId: oracleArtifactId,
+    epoch: oracleEpoch,
+    generation: oracleEpoch,
     dispatchId: oracleDispatchId,
     afterDispatchId: oracleDispatchId,
     artifactMatchesDispatch: oracleArtifactMatchesDispatch,
@@ -2218,10 +2235,18 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
   const dispatchEpoch = stringField(
     observation.epoch,
     observation.epoch_id,
+    observation.dispatchEpoch,
+    observation.dispatch_epoch,
+    observation.dispatchGeneration,
+    observation.dispatch_generation,
+    observation.generation,
     observation.activeEpoch,
     observation.active_epoch,
     observation.activeGeneration,
     observation.active_generation,
+    Number.isFinite(observation.generation) ? String(observation.generation) : null,
+    Number.isFinite(observation.dispatchGeneration) ? String(observation.dispatchGeneration) : null,
+    Number.isFinite(observation.dispatch_generation) ? String(observation.dispatch_generation) : null,
     Number.isFinite(observation.activeGeneration) ? String(observation.activeGeneration) : null,
     Number.isFinite(observation.active_generation) ? String(observation.active_generation) : null,
   );
@@ -2602,6 +2627,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     if (!dispatchTableEntryIds.length) return 'dispatch_table_entry_identity_not_observed';
     if (!dispatchTableHashes.length) return 'dispatch_table_hash_not_observed';
     if (!dispatchTimestamps.length) return 'dispatch_timestamp_not_observed';
+    if (!dispatchEpoch) return 'dispatch_epoch_identity_not_observed';
     if (!dispatchStreamIds.length) return 'dispatch_stream_identity_not_observed';
     if (!gridDimensions.length) return 'dispatch_grid_dimensions_not_observed';
     if (!blockDimensions.length) return 'dispatch_block_dimensions_not_observed';
@@ -2650,6 +2676,9 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       blockDimensions,
       sharedMemoryBytes,
       dispatchTimestamps,
+      dispatchId,
+      epoch: dispatchEpoch,
+      processId,
     };
   }
 

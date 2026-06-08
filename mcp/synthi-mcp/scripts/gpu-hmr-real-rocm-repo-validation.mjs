@@ -4814,6 +4814,8 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
     const dispatchId = logField(line, 'dispatch_id');
+    const generation = logField(line, 'generation') ?? logField(line, 'active_generation');
+    const epoch = logField(line, 'epoch') ?? logField(line, 'active_epoch');
     const streamId = logField(line, 'stream');
     const gridDimensions = logDim3Field(line, 'grid');
     const blockDimensions = logDim3Field(line, 'block');
@@ -4832,6 +4834,8 @@ function runtimeDispatchEvidence(workerEvidence) {
         ? dispatchTableEntryId
         : null,
       dispatchId: dispatchId && dispatchId !== 'none' ? dispatchId : null,
+      generation: generation && generation !== 'none' ? generation : null,
+      epoch: epoch && epoch !== 'none' ? epoch : null,
       streamId: streamId && streamId !== 'none' ? streamId : null,
       gridDimensions,
       blockDimensions,
@@ -4860,6 +4864,10 @@ function runtimeDispatchEvidence(workerEvidence) {
     runtime_artifact_id: latestSuccessRecord?.artifactId ?? null,
     dispatch_ids: [...new Set(successRecords.map((record) => record.dispatchId).filter(Boolean))],
     dispatch_id: latestSuccessRecord?.dispatchId ?? null,
+    generations: [...new Set(successRecords.map((record) => record.generation).filter(Boolean))],
+    generation: latestSuccessRecord?.generation ?? null,
+    epochs: [...new Set(successRecords.map((record) => record.epoch).filter(Boolean))],
+    epoch: latestSuccessRecord?.epoch ?? latestSuccessRecord?.generation ?? null,
     dispatcher_registration_ids: [
       ...new Set(successRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
     ],
@@ -4905,8 +4913,18 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     api: logField(line, 'api'),
     runtimeSession: runtimeSessionIdFromLine(line),
     sequence: logField(line, 'sequence'),
+    generation: logField(line, 'generation') ?? logField(line, 'active_generation'),
+    epoch: logField(line, 'epoch') ?? logField(line, 'active_epoch'),
+    dispatchTimestamp: logField(line, 'dispatch_timestamp') ?? logField(line, 'dispatch_timestamp_ms'),
     functionPtr: logField(line, 'function_ptr'),
     kernelSymbol: logField(line, 'kernel_symbol') ?? logField(line, 'kernel') ?? logField(line, 'symbol'),
+    gridDimensions: logDim3Field(line, 'grid'),
+    blockDimensions: logDim3Field(line, 'block'),
+    streamId: logField(line, 'stream'),
+    sharedMemoryBytes: logField(line, 'shared_bytes'),
+    dispatcherRegistrationId: logField(line, 'dispatcher_registration_id'),
+    dispatchTableHash: logField(line, 'dispatch_table_hash'),
+    dispatchTableEntryId: logField(line, 'dispatch_table_entry_id'),
     dispatch: logField(line, 'dispatch'),
     realLaunchResolved: logField(line, 'real_launch_resolved'),
   }));
@@ -4999,8 +5017,18 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
     api: logField(line, 'api'),
     runtimeSession: runtimeSessionIdFromLine(line),
     sequence: logField(line, 'sequence'),
+    generation: logField(line, 'generation') ?? logField(line, 'active_generation'),
+    epoch: logField(line, 'epoch') ?? logField(line, 'active_epoch'),
+    dispatchTimestamp: logField(line, 'dispatch_timestamp') ?? logField(line, 'dispatch_timestamp_ms'),
     functionPtr: logField(line, 'function_ptr'),
     kernelSymbol: logField(line, 'kernel_symbol') ?? logField(line, 'kernel') ?? logField(line, 'symbol'),
+    gridDimensions: logDim3Field(line, 'grid'),
+    blockDimensions: logDim3Field(line, 'block'),
+    streamId: logField(line, 'stream'),
+    sharedMemoryBytes: logField(line, 'shared_bytes'),
+    dispatcherRegistrationId: logField(line, 'dispatcher_registration_id'),
+    dispatchTableHash: logField(line, 'dispatch_table_hash'),
+    dispatchTableEntryId: logField(line, 'dispatch_table_entry_id'),
     result: logField(line, 'result'),
     dispatch: logField(line, 'dispatch'),
   }));
@@ -5363,6 +5391,52 @@ function buildHiprtNativeDispatchProof({
   const argProvenanceEvidenceRefs = acceptedRecords.map((record) =>
     hiprtNativeEvidenceRef(record, 'launch_arg_provenance'),
   );
+  const observedEpochs = [
+    ...new Set(acceptedRecords.map((record) => record.epoch ?? record.generation).filter(Boolean)),
+  ];
+  const dispatchTimestamps = acceptedRecords
+    .map((record) => Number(record.dispatchTimestamp))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const dispatcherRegistrationIds = [
+    ...new Set(acceptedRecords.map((record) => record.dispatcherRegistrationId).filter(Boolean)),
+  ];
+  const dispatchTableEntryIds = [
+    ...new Set(acceptedRecords.map((record) => record.dispatchTableEntryId).filter(Boolean)),
+  ];
+  const dispatchTableHashes = [
+    ...new Set(acceptedRecords.map((record) => record.dispatchTableHash).filter(Boolean)),
+  ];
+  const dispatchIds = acceptedRecords
+    .map((record) => record.runtimeSession && record.sequence
+      ? `native:${record.runtimeSession}:${record.sequence}`
+      : null)
+    .filter(Boolean);
+  const dispatchStreamIds = [
+    ...new Set(acceptedRecords.map((record) => record.streamId).filter(Boolean)),
+  ];
+  const gridDimensions = [
+    ...new Set(acceptedRecords.map((record) => record.gridDimensions).filter(Boolean)),
+  ];
+  const blockDimensions = [
+    ...new Set(acceptedRecords.map((record) => record.blockDimensions).filter(Boolean)),
+  ];
+  const sharedMemoryBytes = [
+    ...new Set(acceptedRecords
+      .map((record) => Number(record.sharedMemoryBytes))
+      .filter((value) => Number.isFinite(value) && value >= 0)),
+  ];
+  if (
+    observedEpochs.length === 0
+    || dispatchTimestamps.length === 0
+    || dispatchIds.length === 0
+    || dispatcherRegistrationIds.length === 0
+    || dispatchTableEntryIds.length === 0
+    || dispatchTableHashes.length === 0
+    || dispatchStreamIds.length === 0
+    || gridDimensions.length === 0
+    || blockDimensions.length === 0
+    || sharedMemoryBytes.length === 0
+  ) return null;
   return {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
     resultState: 'gpu-hmr-dispatch-safe-proven',
@@ -5404,15 +5478,17 @@ function buildHiprtNativeDispatchProof({
     runtimeArtifactMatchesSelected: artifactId !== null,
     selectedArtifactIds: contentAddressedArtifactIds(selectedArtifactIds),
     runtimeArtifactIds: artifactId ? [artifactId] : [],
-    dispatcherRegistrationIds: ['native-hip-module-launch-observer'],
-    dispatchTableEntryIds: acceptedRecords.map((record) =>
-      `native-launch-observer:${record.sequence}`,
-    ),
-    dispatchTableHashes: [],
-    dispatchStreamIds: [],
-    gridDimensions: [],
-    blockDimensions: [],
-    sharedMemoryBytes: [],
+    dispatcherRegistrationIds,
+    dispatchTableEntryIds,
+    dispatchTableHashes,
+    dispatchStreamIds,
+    gridDimensions,
+    blockDimensions,
+    sharedMemoryBytes,
+    dispatchTimestamps,
+    dispatchId: dispatchIds.at(-1) ?? null,
+    epoch: observedEpochs.at(-1) ?? null,
+    generation: observedEpochs.at(-1) ?? null,
     nativeLaunchObserved: true,
     nativeLaunchTargetSymbols: targetSymbols,
     nativeLaunchRecords: acceptedRecords,
@@ -5799,7 +5875,7 @@ async function selfCheckRuntimeDispatchEvidence() {
     throw new Error('upstream run exit code parser did not preserve the recorded status');
   }
   const evidence = runtimeDispatchEvidence([
-    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok dispatch_timestamp=1779979999000',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok generation=2 dispatch_timestamp=1779979999000',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=second grid=(1, 1, 1) dispatch=failed',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=third grid=(1, 1, 1) dispatch=stale-pointer',
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=fourth grid=(1, 1, 1) dispatch=missing-dispatcher',
@@ -5816,6 +5892,9 @@ async function selfCheckRuntimeDispatchEvidence() {
   }
   if (evidence.dispatch_timestamps[0] !== 1779979999000) {
     throw new Error('dispatch timestamp evidence parser failed');
+  }
+  if (evidence.generation !== '2' || evidence.epoch !== '2') {
+    throw new Error('dispatch generation evidence parser failed');
   }
   const scoped = scopeLogTextToSession(
     [
@@ -6061,7 +6140,7 @@ async function selfCheckRuntimeDispatchEvidence() {
     slug: 'target-session',
     workerLogs: '',
     upstreamRunLog: [
-      `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok runtime_session=pid-original artifact_id=${syntheticArtifactId} dispatcher_registration_id=${syntheticDispatcherId} dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1 dispatch_timestamp=1779979999000`,
+      `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=3 runtime_session=pid-original artifact_id=${syntheticArtifactId} dispatcher_registration_id=${syntheticDispatcherId} dispatch_table_hash=0x123 dispatch_table_entry_id=kernel:0x1 dispatch_timestamp=1779979999000`,
       '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=3 runtime_session=pid-original complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
     ].join('\n'),
   });
@@ -6108,6 +6187,8 @@ async function selfCheckRuntimeDispatchEvidence() {
     blockDimensions: upstreamOnlyDispatch.block_dimensions,
     sharedMemoryBytes: upstreamOnlyDispatch.shared_memory_bytes,
     dispatchTimestamps: upstreamOnlyDispatch.dispatch_timestamps,
+    epoch: upstreamOnlyDispatch.epoch,
+    generation: upstreamOnlyDispatch.generation,
     runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected({
       runtimeDispatch: upstreamOnlyDispatch,
       selectedArtifactIds: [syntheticArtifactId],
@@ -7357,6 +7438,8 @@ async function collectRuntimeEvidence() {
     sharedMemoryBytes: runtimeDispatch.shared_memory_bytes,
     dispatchTimestamps: runtimeDispatch.dispatch_timestamps,
     dispatchId: runtimeDispatch.dispatch_id,
+    generation: runtimeDispatch.generation,
+    epoch: runtimeDispatch.epoch,
     processId: runtimeDispatch.process_id,
     runtimeArtifactMatchesSelected: report.evidence.runtime_dispatch.runtime_artifact_matches_selected,
   });

@@ -1643,6 +1643,19 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     dispatchProof?.dispatchTimestamp,
     dispatchProof?.dispatch_timestamp,
   );
+  const dispatchEpoch = firstStringOrFiniteNumber(
+    dispatchProof?.epoch,
+    dispatchProof?.epoch_id,
+    dispatchProof?.dispatchEpoch,
+    dispatchProof?.dispatch_epoch,
+    dispatchProof?.dispatchGeneration,
+    dispatchProof?.dispatch_generation,
+    dispatchProof?.generation,
+    dispatchProof?.activeEpoch,
+    dispatchProof?.active_epoch,
+    dispatchProof?.activeGeneration,
+    dispatchProof?.active_generation,
+  );
   const outputTimestamp = latestTimestamp(
     outputOracle.readbackTimestamp,
     outputOracle.readback_timestamp,
@@ -1650,6 +1663,26 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     outputOracle.timestamp_monotonic_ns,
     outputProof?.outputTimestamp,
     outputProof?.output_timestamp,
+  );
+  const outputEpoch = firstStringOrFiniteNumber(
+    outputProof?.epoch,
+    outputProof?.epoch_id,
+    outputProof?.outputEpoch,
+    outputProof?.output_epoch,
+    outputProof?.outputGeneration,
+    outputProof?.output_generation,
+    outputProof?.generation,
+    outputProof?.activeEpoch,
+    outputProof?.active_epoch,
+    outputProof?.activeGeneration,
+    outputProof?.active_generation,
+    outputOracle.epoch,
+    outputOracle.epoch_id,
+    outputOracle.outputEpoch,
+    outputOracle.output_epoch,
+    outputOracle.outputGeneration,
+    outputOracle.output_generation,
+    outputOracle.generation,
   );
   const publishTimestamp = latestTimestamp(
     publication.publishTimestamp,
@@ -1733,7 +1766,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     dispatch_event: {
       id: dispatchId,
       artifact_hash: dispatchArtifactHash,
-      epoch: firstString(dispatchProof?.epoch, dispatchProof?.epoch_id, dispatchProof?.activeEpoch, epoch),
+      epoch: dispatchEpoch,
       process_id: firstString(dispatchProof?.processId, dispatchProof?.process_id),
       timestamp_monotonic_ns: dispatchTimestamp,
     },
@@ -1741,7 +1774,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       id: firstString(outputProof?.eventId, outputProof?.event_id, outputOracle.id, outputOracle.oracleId),
       kind: firstString(outputOracle.kind, outputProof?.kind, outputProof?.oracleKind),
       artifact_hash: outputArtifactHash,
-      epoch: firstString(outputProof?.epoch, outputProof?.epoch_id, outputOracle.epoch, epoch),
+      epoch: outputEpoch,
       process_id: firstString(
         outputProof?.processId,
         outputProof?.process_id,
