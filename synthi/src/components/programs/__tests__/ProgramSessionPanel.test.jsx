@@ -177,4 +177,17 @@ describe('ProgramSessionPanel', () => {
     expect(badge).not.toBeNull();
     expect(badge.getAttribute('data-health')).toBe('unhealthy');
   });
+
+  it('renders a stubbed GUI surface for a gui runtime instead of the web iframe', async () => {
+    h.fetchProgramSession.mockResolvedValue({ id: 'ps-1', state: 'running', runtimeType: 'gui', activePorts: [], webPort: null });
+    await act(async () => {
+      root.render(React.createElement(ProgramSessionPanel, { workspaceSlug: 'team', sessionId: 'ps-1', title: 'Paint' }));
+    });
+    await flush();
+
+    const gui = container.querySelector('[data-testid="gui-surface"]');
+    expect(gui).not.toBeNull();
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('[data-testid="app-waiting"]')).toBeNull();
+  });
 });

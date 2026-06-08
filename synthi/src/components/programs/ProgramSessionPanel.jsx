@@ -119,6 +119,7 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
   const ports = Array.isArray(session?.activePorts) ? session.activePorts : [];
   const healthState = session?.lastHealthState || 'unknown';
   const isStarting = ['starting', 'restarting'].includes(String(session?.state || '').toLowerCase());
+  const runtimeType = session?.runtimeType || 'cli';
 
   const handleStop = useCallback(async () => {
     if (!workspaceSlug || !sessionId) return;
@@ -222,7 +223,13 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
         ) : error ? (
           <div className="h-full flex items-center justify-center text-sm px-6 text-center" style={{ color: 'var(--text-muted)' }}>{error}</div>
         ) : activeTab === 'app' ? (
-          appUrl ? (
+          runtimeType === 'gui' ? (
+            <div data-testid="gui-surface" className="h-full flex flex-col items-center justify-center gap-2 text-sm px-6 text-center" style={{ color: 'var(--text-muted)' }}>
+              <Globe className="w-5 h-5 opacity-60" />
+              <div>GUI stream surface</div>
+              <div className="text-xs">Live visual capture (WebRTC via the broker) is not yet wired — coming in a later phase.</div>
+            </div>
+          ) : appUrl ? (
             <iframe
               title={`${title} app`}
               src={appUrl}
