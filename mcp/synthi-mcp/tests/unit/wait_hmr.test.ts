@@ -345,7 +345,7 @@ function passingRuntimeProofArtifact(ledger = passingProofLedger(), overrides: R
 function installFakeAttached(
   waitForTerminal: (opts?: FakeWaitOpts) => Promise<{
     status: "applied";
-    source: "hmr_status";
+    source: "hmr_status" | "gpu_proof";
     elapsedMs: number;
     observedAt?: number;
     retained?: boolean;
@@ -577,6 +577,53 @@ describe("synthi_wait_hmr", () => {
         runtimeProofArtifactValidation?: { accepted?: boolean };
       };
     };
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+  });
+
+  it("treats a valid full runtime proof as terminal-equivalent when applied is missing", async () => {
+    const ledger = passingProofLedger();
+    const fake = installFakeAttached(async () =>
+      new Promise((resolve) => {
+        setTimeout(
+          () =>
+            fake.feedHmr({
+              status: "gpu-proof-state",
+              module: "device",
+              resultState: "gpu-hmr-full-runtime-proven",
+              proofLedger: ledger,
+              runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+            }),
+          25
+        );
+        setTimeout(
+          () => resolve({ status: "applied", source: "hmr_status", elapsedMs: 250 }),
+          250
+        );
+      })
+    );
+
+    const started = Date.now();
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      module: "device",
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      status?: string;
+      source?: string;
+      detail?: { terminal_equivalent?: string };
+      gpu_proof_validation?: {
+        satisfied?: boolean;
+        runtimeProofArtifactValidation?: { accepted?: boolean };
+      };
+    };
+    expect(body.status).toBe("applied");
+    expect(body.source).toBe("gpu_proof");
+    expect(body.detail?.terminal_equivalent).toBe("gpu_hmr_full_runtime_proof");
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
     expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
   });

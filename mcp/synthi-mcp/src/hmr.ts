@@ -44,6 +44,7 @@ export type HmrTerminalSource =
   | "hmr_status"
   | "rollback_notification"
   | "compile_diagnostics"
+  | "gpu_proof"
   | "timeout";
 
 export interface HmrTerminalEvent {

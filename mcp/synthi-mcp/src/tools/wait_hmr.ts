@@ -14,6 +14,7 @@ import {
   GPU_HMR_PROOF_STATES,
   classifyGpuHmrProofMessage,
   gpuHmrProofMatches,
+  gpuHmrProofStateRank,
   type GpuHmrProofMatchOpts,
   isKnownGpuHmrProofState,
   validateGpuHmrProofState,
@@ -52,6 +53,24 @@ function terminalEventFromClassification(
     source: cls.source,
     elapsedMs,
     detail: cls.detail,
+  };
+}
+
+function terminalEventFromGpuProof(
+  proof: GpuHmrProofTelemetry,
+  elapsedMs: number
+): HmrTerminalEvent {
+  return {
+    status: "applied",
+    source: "gpu_proof",
+    elapsedMs,
+    detail: {
+      terminal_equivalent: "gpu_hmr_full_runtime_proof",
+      proofId: proof.proofId,
+      resultState: proof.resultState,
+      source: proof.source,
+    },
+    observedAt: proof.observedAt,
   };
 }
 
@@ -155,8 +174,10 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   const previewId = typeof previewIdValue === "string" && previewIdValue.trim()
     ? previewIdValue.trim()
     : undefined;
-  const requiredProofState = requiredGpuProofState(a);
-  const waitContract: Record<string, unknown> = {
+    const requiredProofState = requiredGpuProofState(a);
+    const proofCanSatisfyTerminal = requiredProofState !== null
+      && gpuHmrProofStateRank(requiredProofState) >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+    const waitContract: Record<string, unknown> = {
     timeout_ms: timeoutMs,
     module: module ?? null,
     since_ts: sinceTs ?? null,
@@ -266,12 +287,30 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       return { promise, cancel };
     };
 
-    const result = await attached.channels.hmr.waitForTerminal({
+    const terminalWait = attached.channels.hmr.waitForTerminal({
       timeoutMs,
       module,
       sinceTs,
       previewId,
     });
+    let result: HmrTerminalEvent;
+    if (proofCanSatisfyTerminal) {
+      const proofWait = waitForRequiredGpuProof(timeoutMs);
+      const outcome = await Promise.race([
+        terminalWait.then((terminal) => ({ kind: "terminal" as const, terminal })),
+        proofWait.promise.then((proofStatus) => ({ kind: "proof" as const, proofStatus })),
+      ]);
+      proofWait.cancel();
+      if (outcome.kind === "proof" && outcome.proofStatus === "satisfied" && latestGpuProof !== null) {
+        result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
+      } else {
+        result = outcome.kind === "terminal"
+          ? outcome.terminal
+          : await terminalWait;
+      }
+    } else {
+      result = await terminalWait;
+    }
     let frameGate: Record<string, unknown> | undefined;
 
     if (result.status === "applied") {
