@@ -68,7 +68,7 @@ export function rankedLocatorCandidates(element: BrowserElementMetadata | undefi
     });
   }
 
-  if (stableText(element.text)) {
+  if (stableText(element.text) && !isAggregateOptionControl(element)) {
     candidates.push({
       kind: "text",
       locator: `page.getByText(${quote(element.text!.trim())})`,
@@ -100,6 +100,12 @@ export function rankedLocatorCandidates(element: BrowserElementMetadata | undefi
 
 export function bestLocator(element: BrowserElementMetadata | undefined): LocatorCandidate | undefined {
   return rankedLocatorCandidates(element)[0];
+}
+
+function isAggregateOptionControl(element: BrowserElementMetadata): boolean {
+  const tag = element.tag?.toLowerCase();
+  const role = element.role?.toLowerCase();
+  return tag === "select" || role === "combobox" || role === "listbox";
 }
 
 function stableText(text: string | undefined): boolean {

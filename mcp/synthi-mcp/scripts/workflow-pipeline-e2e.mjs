@@ -907,6 +907,57 @@ const CASES = [
     },
   },
   {
+    id: "parameterized-form-data",
+    minSteps: 2,
+    expectedActions: ["fill", "select"],
+    expectedReplayCode: [
+      "const inputValue1 = readRequiredEnv(\"EMAIL\", \"browser_evt_1\");",
+      "const selectValue2 = readRequiredEnv(\"SEGMENT\", \"browser_evt_2\");",
+      "await target1.fill(inputValue1);",
+      "await target2.selectOption(selectValue2);",
+      "parameterizedTextRegex([\"Preview ready for \",\" in \",\"\"], inputValue1, selectValue2)",
+    ],
+    forbiddenReplayCode: [
+      "taught@example.test",
+      "enterprise",
+    ],
+    replayEnv: () => ({ EMAIL: "agent@example.test", SEGMENT: "startup" }),
+    files: () => commonFiles({
+      title: "Parameterized Form Data Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Parameterized Form Data Workflow</h1>",
+        "      <label for=\"email\">Email</label>",
+        "      <input id=\"email\" name=\"email\" aria-label=\"Email\" data-synthi-source-id=\"parameter.email\" placeholder=\"ada@example.test\">",
+        "      <label for=\"segment\">Segment</label>",
+        "      <select id=\"segment\" aria-label=\"Segment\" data-synthi-source-id=\"parameter.segment\">",
+        "        <option value=\"standard\">standard</option>",
+        "        <option value=\"startup\">startup</option>",
+        "        <option value=\"enterprise\">enterprise</option>",
+        "      </select>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const email = document.querySelector('#email');",
+        "const segment = document.querySelector('#segment');",
+        "const status = document.querySelector('#status');",
+        "function renderPreview() {",
+        "  status.textContent = email.value ? `Preview ready for ${email.value} in ${segment.value}` : 'Waiting';",
+        "}",
+        "email.addEventListener('input', renderPreview);",
+        "segment.addEventListener('change', renderPreview);",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByLabel("Email").fill("taught@example.test");
+      await page.getByText("Preview ready for taught@example.test in standard").waitFor();
+      await page.getByLabel("Segment").selectOption("enterprise");
+      await page.getByText("Preview ready for taught@example.test in enterprise").waitFor();
+    },
+  },
+  {
     id: "clipboard-paste-textbox",
     minSteps: 2,
     expectedActions: ["fill", "click"],

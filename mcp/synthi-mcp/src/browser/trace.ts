@@ -210,9 +210,13 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const mode = options.mode === undefined
     ? defaultScriptReplayMode(contract)
     : normalizeReplayMode(options.mode);
+  const valueParameterByEventId = new Map(contract.steps.flatMap((step) =>
+    step.action.valueRef ? [[step.stepId, step.action.valueRef] as const] : []
+  ));
   const baseOrigin = firstHttpOrigin(events);
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const usesClipboardDrop = events.some(isClipboardDropEvent);
+  const usesValueParameters = events.some((event) => scriptValueParameterName(event, valueParameterByEventId) !== undefined);
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
     ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
@@ -241,6 +245,28 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   lines.push("    if (fallback) return fallback;");
   lines.push("    throw new Error('No locator candidate matched');");
   lines.push("  }");
+  if (usesValueParameters) {
+    lines.push("  function readRequiredEnv(name, stepId) {");
+    lines.push("    const value = process.env[name];");
+    lines.push("    test.skip(value === undefined, `Set ${name} for workflow parameter ${stepId}.`);");
+    lines.push("    if (value === undefined) throw new Error(`missing workflow parameter ${name} for ${stepId}`);");
+    lines.push("    return value;");
+    lines.push("  }");
+    lines.push("  function readRequiredEnvList(name, stepId) {");
+    lines.push("    const raw = readRequiredEnv(name, stepId);");
+    lines.push("    try {");
+    lines.push("      const parsed = JSON.parse(raw);");
+    lines.push("      if (Array.isArray(parsed)) return parsed.map((value) => String(value));");
+    lines.push("    } catch {}");
+    lines.push("    return raw.split(',').map((value) => value.trim()).filter(Boolean);");
+    lines.push("  }");
+    lines.push("  function escapeRegExp(value) {");
+    lines.push("    return String(value).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');");
+    lines.push("  }");
+    lines.push("  function parameterizedTextRegex(parts, ...values) {");
+    lines.push("    return new RegExp(`^${parts.map((part, index) => `${escapeRegExp(part)}${index < values.length ? escapeRegExp(values[index]) : ''}`).join('')}$`);");
+    lines.push("  }");
+  }
   if (usesFileDrop) {
     lines.push("  async function dropFile(page, target, filePath, mimeType = 'application/octet-stream') {");
     lines.push("    const buffer = await fs.readFile(filePath);");
@@ -332,6 +358,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   let targetSeq = 0;
   const popupPageByTab = new Map<string, string>();
   const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
+  const scalarValueReplacements: ScriptValueReplacement[] = [];
 
   if (replayBlocked) {
     const reason = contract.generatedOutputs.find((output) => output.kind === "playwright")?.notes.join(" ") ||
@@ -374,6 +401,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     const target = `target${targetSeq}`;
     lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
     lines.push(`  await expect(${target}).toBeVisible();`);
+    let effectValueExpr: string | undefined;
     if ((mode === "prefixOnly" || mode === "coldSession") && firstMutationStepId === event.event_id) {
       lines.push(`  // Mutation boundary: ${event.event_id}. Prefix-only replay verifies reachability but does not commit this action.`);
       lines.push(`  await expect(${target}).toBeEnabled();`);
@@ -525,25 +553,57 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           }
           warnings.push(`event ${event.event_id} clipboard paste replay is parameterized by ${envName}`);
         } else if (isRangeControlFill(event)) {
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "inputValue");
+          const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
+          if (valueParameter) {
+            pushRequiredValueParameter(lines, valueParameter);
+            effectValueExpr = valueParameter.valueVar;
+            rememberScalarValueReplacement(scalarValueReplacements, event, valueParameter.valueVar);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
           lines.push(`  await ${target}.evaluate((element, value) => {`);
           lines.push("    if (!(element instanceof HTMLInputElement) || element.type !== 'range') throw new Error('target_not_range_input');");
           lines.push("    element.value = String(value);");
           lines.push("    element.dispatchEvent(new Event('input', { bubbles: true }));");
           lines.push("    element.dispatchEvent(new Event('change', { bubbles: true }));");
-          lines.push(`  }, ${JSON.stringify(event.value ?? "")});`);
-          lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+          lines.push(`  }, ${valueExpr});`);
+          lines.push(`  await expect(${target}).toHaveValue(${valueExpr});`);
         } else if (isKeyboardEditorFill(event)) {
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "inputValue");
+          const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
+          if (valueParameter) {
+            pushRequiredValueParameter(lines, valueParameter);
+            effectValueExpr = valueParameter.valueVar;
+            rememberScalarValueReplacement(scalarValueReplacements, event, valueParameter.valueVar);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
           lines.push(`  await ${target}.click();`);
           lines.push("  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');");
           lines.push("  await page.keyboard.press('Backspace');");
-          lines.push(`  await page.keyboard.insertText(${JSON.stringify(event.value ?? "")});`);
+          lines.push(`  await page.keyboard.insertText(${valueExpr});`);
           warnings.push(`event ${event.event_id} uses keyboard insertion for a custom code-editor surface`);
         } else if (isContentEditableFill(event)) {
-          lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
-          lines.push(`  await expect(${target}).toContainText(${JSON.stringify(event.value ?? "")});`);
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "inputValue");
+          const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
+          if (valueParameter) {
+            pushRequiredValueParameter(lines, valueParameter);
+            effectValueExpr = valueParameter.valueVar;
+            rememberScalarValueReplacement(scalarValueReplacements, event, valueParameter.valueVar);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
+          lines.push(`  await ${target}.fill(${valueExpr});`);
+          lines.push(`  await expect(${target}).toContainText(${valueExpr});`);
         } else {
-          lines.push(`  await ${target}.fill(${JSON.stringify(event.value ?? "")});`);
-          lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "inputValue");
+          const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
+          if (valueParameter) {
+            pushRequiredValueParameter(lines, valueParameter);
+            effectValueExpr = valueParameter.valueVar;
+            rememberScalarValueReplacement(scalarValueReplacements, event, valueParameter.valueVar);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
+          lines.push(`  await ${target}.fill(${valueExpr});`);
+          lines.push(`  await expect(${target}).toHaveValue(${valueExpr});`);
         }
         break;
       case "press":
@@ -558,12 +618,25 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       case "select":
         if (isMultipleSelectEvent(event)) {
-          const values = selectValuesForEvent(event);
-          lines.push(`  await ${target}.selectOption(${JSON.stringify(values)});`);
-          lines.push(`  await expect(${target}).toHaveValues(${JSON.stringify(values)});`);
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "selectValues");
+          const valuesExpr = valueParameter?.valueVar ?? JSON.stringify(selectValuesForEvent(event));
+          if (valueParameter) {
+            pushRequiredValueListParameter(lines, valueParameter);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
+          lines.push(`  await ${target}.selectOption(${valuesExpr});`);
+          lines.push(`  await expect(${target}).toHaveValues(${valuesExpr});`);
         } else {
-          lines.push(`  await ${target}.selectOption(${JSON.stringify(event.value ?? "")});`);
-          lines.push(`  await expect(${target}).toHaveValue(${JSON.stringify(event.value ?? "")});`);
+          const valueParameter = scriptValueParameterForEvent(event, valueParameterByEventId, targetSeq, "selectValue");
+          const valueExpr = valueParameter?.valueVar ?? JSON.stringify(event.value ?? "");
+          if (valueParameter) {
+            pushRequiredValueParameter(lines, valueParameter);
+            effectValueExpr = valueParameter.valueVar;
+            rememberScalarValueReplacement(scalarValueReplacements, event, valueParameter.valueVar);
+            warnings.push(`event ${event.event_id} value replay is parameterized by ${valueParameter.envName}`);
+          }
+          lines.push(`  await ${target}.selectOption(${valueExpr});`);
+          lines.push(`  await expect(${target}).toHaveValue(${valueExpr});`);
         }
         break;
       case "check":
@@ -582,9 +655,14 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
     }
     for (const effectText of observedEffectTexts(event)) {
+      const effectLocatorSource = parameterizedEffectLocatorSource(effectText, [
+        ...scalarValueReplacements,
+        ...(effectValueExpr && typeof event.value === "string" ? [{ taughtValue: event.value, valueExpr: effectValueExpr }] : []),
+      ]) ??
+        `page.getByText(${JSON.stringify(effectText)}, { exact: true })`;
       const effectLocator = locatorExpressionForEvent(
         event,
-        `page.getByText(${JSON.stringify(effectText)}, { exact: true })`,
+        effectLocatorSource,
         pageVar
       );
       lines.push(`  await expect(${effectLocator}).toBeVisible();`);
@@ -599,6 +677,85 @@ function defaultScriptReplayMode(contract: WorkflowContractV7): WorkflowReplayMo
   if (contract.mutationBoundaryPlan.defaultReplayMode === "prefixOnly") return "prefixOnly";
   if (contract.mutationBoundaryPlan.defaultReplayMode === "ciIsolated") return "coldSession";
   return "sameSession";
+}
+
+type ScriptValueParameter = {
+  envName: string;
+  stepId: string;
+  valueVar: string;
+};
+
+type ScriptValueReplacement = {
+  taughtValue: string;
+  valueExpr: string;
+};
+
+function scriptValueParameterName(event: BrowserTraceEvent, valueParameterByEventId: Map<string, string>): string | undefined {
+  if (event.action !== "fill" && event.action !== "select") return undefined;
+  if (event.action === "fill" && isClipboardPasteEvent(event)) return undefined;
+  const valueRef = valueParameterByEventId.get(event.event_id);
+  if (!valueRef) return undefined;
+  return valueParameterEnvName(valueRef, event.event_seq || 0);
+}
+
+function scriptValueParameterForEvent(
+  event: BrowserTraceEvent,
+  valueParameterByEventId: Map<string, string>,
+  ordinal: number,
+  valueVarPrefix: string
+): ScriptValueParameter | undefined {
+  const envName = scriptValueParameterName(event, valueParameterByEventId);
+  if (!envName) return undefined;
+  return {
+    envName,
+    stepId: event.event_id,
+    valueVar: `${valueVarPrefix}${ordinal}`,
+  };
+}
+
+function valueParameterEnvName(valueRef: string, fallbackOrdinal: number): string {
+  const normalized = valueRef.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized : `SYNTHI_WORKFLOW_VALUE_${fallbackOrdinal || 1}`;
+}
+
+function pushRequiredValueParameter(lines: string[], parameter: ScriptValueParameter): void {
+  lines.push(`  const ${parameter.valueVar} = readRequiredEnv(${JSON.stringify(parameter.envName)}, ${JSON.stringify(parameter.stepId)});`);
+}
+
+function pushRequiredValueListParameter(lines: string[], parameter: ScriptValueParameter): void {
+  lines.push(`  const ${parameter.valueVar} = readRequiredEnvList(${JSON.stringify(parameter.envName)}, ${JSON.stringify(parameter.stepId)});`);
+}
+
+function rememberScalarValueReplacement(
+  replacements: ScriptValueReplacement[],
+  event: BrowserTraceEvent,
+  valueExpr: string
+): void {
+  if (typeof event.value !== "string" || event.value.length === 0) return;
+  if (replacements.some((replacement) => replacement.taughtValue === event.value && replacement.valueExpr === valueExpr)) return;
+  replacements.push({ taughtValue: event.value, valueExpr });
+}
+
+function parameterizedEffectLocatorSource(effectText: string, replacements: ScriptValueReplacement[]): string | undefined {
+  const matches = replacements
+    .filter((candidate) => candidate.taughtValue.length > 0)
+    .map((candidate) => ({ ...candidate, index: effectText.indexOf(candidate.taughtValue) }))
+    .filter((candidate) => candidate.index >= 0)
+    .sort((a, b) => a.index - b.index);
+  if (matches.length === 0) return undefined;
+  const parts: string[] = [];
+  const values: string[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    const index = effectText.indexOf(match.taughtValue, cursor);
+    if (index < cursor) continue;
+    parts.push(effectText.slice(cursor, index));
+    values.push(match.valueExpr);
+    cursor = index + match.taughtValue.length;
+  }
+  if (values.length === 0) return undefined;
+  parts.push(effectText.slice(cursor));
+  return `page.getByText(parameterizedTextRegex(${JSON.stringify(parts)}, ${values.join(", ")}))`;
 }
 
 function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] {

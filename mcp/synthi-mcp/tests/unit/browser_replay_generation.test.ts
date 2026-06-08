@@ -73,7 +73,7 @@ describe("browser replay generation scenarios", () => {
       event({
         action: "fill",
         frame_id: "checkout-frame",
-        detail: { frame_locator: "iframe[name=\"checkout\"]", observed_effects: ["Saved Ada"] },
+        detail: { frame_locator: "iframe[name=\"checkout\"]", observed_effects: ["Saved Ada"], element: { label: "Cardholder" } },
         value: "Ada",
         locator_candidates: [
           { kind: "label", locator: "page.getByLabel(\"Cardholder\")", confidence: 0.94, reason: "form_label" },
@@ -82,8 +82,10 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.code).toContain("page.frameLocator(\"iframe[name=\\\"checkout\\\"]\").getByLabel(\"Cardholder\")");
-    expect(generated.code).toContain("await target1.fill(\"Ada\");");
-    expect(generated.code).toContain("page.frameLocator(\"iframe[name=\\\"checkout\\\"]\").getByText(\"Saved Ada\", { exact: true })");
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"CARDHOLDER\", \"evt\");");
+    expect(generated.code).toContain("await target1.fill(inputValue1);");
+    expect(generated.code).toContain("page.frameLocator(\"iframe[name=\\\"checkout\\\"]\").getByText(parameterizedTextRegex([\"Saved \",\"\"], inputValue1))");
+    expect(generated.code).not.toContain("Saved Ada");
   });
 
   it("uses assertions as delayed-hydration waits before actions", () => {
@@ -403,8 +405,10 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("const [popup1] = await Promise.all([");
     expect(generated.code).toContain("page.waitForEvent('popup')");
     expect(generated.code).toContain("const target2 = await firstVisible(popup1.getByLabel(\"Search help\"));");
-    expect(generated.code).toContain("await target2.fill(\"contracts\");");
-    expect(generated.code).toContain("await expect(popup1.getByText(\"Filtered help for contracts\", { exact: true })).toBeVisible();");
+    expect(generated.code).toContain("const inputValue2 = readRequiredEnv(\"SEARCH_HELP\", \"search-help\");");
+    expect(generated.code).toContain("await target2.fill(inputValue2);");
+    expect(generated.code).toContain("await expect(popup1.getByText(parameterizedTextRegex([\"Filtered help for \",\"\"], inputValue2))).toBeVisible();");
+    expect(generated.code).not.toContain("Filtered help for contracts");
     expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
   });
 
@@ -430,9 +434,11 @@ describe("browser replay generation scenarios", () => {
       }),
     ], { mode: "sameSession" });
 
-    expect(generated.code).toContain("await target1.fill(\"Release notes ready\");");
-    expect(generated.code).toContain("await expect(target1).toContainText(\"Release notes ready\");");
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"RELEASE_NOTES\", \"rich-notes\");");
+    expect(generated.code).toContain("await target1.fill(inputValue1);");
+    expect(generated.code).toContain("await expect(target1).toContainText(inputValue1);");
     expect(generated.code).not.toContain("toHaveValue(\"Release notes ready\")");
+    expect(generated.code).not.toContain("Release notes ready");
   });
 
   it("keeps textarea-backed code editor replay on durable fill", () => {
@@ -465,8 +471,10 @@ describe("browser replay generation scenarios", () => {
       }),
     ]);
 
-    expect(generated.code).toContain(`await target1.fill(${JSON.stringify(code)});`);
-    expect(generated.code).toContain(`await expect(target1).toHaveValue(${JSON.stringify(code)});`);
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"AUTOMATION_SCRIPT\", \"code-textarea\");");
+    expect(generated.code).toContain("await target1.fill(inputValue1);");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(inputValue1);");
+    expect(generated.code).not.toContain(code);
     expect(generated.warnings).not.toContain("event code-textarea uses keyboard insertion for a custom code-editor surface");
   });
 
@@ -499,8 +507,10 @@ describe("browser replay generation scenarios", () => {
 
     expect(generated.code).toContain("await target1.click();");
     expect(generated.code).toContain("await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');");
-    expect(generated.code).toContain(`await page.keyboard.insertText(${JSON.stringify(code)});`);
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"QUERY_EDITOR\", \"custom-editor\");");
+    expect(generated.code).toContain("await page.keyboard.insertText(inputValue1);");
     expect(generated.code).not.toContain(`await target1.fill(${JSON.stringify(code)});`);
+    expect(generated.code).not.toContain(code);
     expect(generated.warnings).toContain("event custom-editor uses keyboard insertion for a custom code-editor surface");
   });
 
@@ -560,12 +570,14 @@ describe("browser replay generation scenarios", () => {
       }),
     ], { mode: "sameSession" });
 
-    expect(generated.code).toContain("await target1.selectOption(\"enterprise\");");
-    expect(generated.code).toContain("await expect(target1).toHaveValue(\"enterprise\");");
+    expect(generated.code).toContain("const selectValue1 = readRequiredEnv(\"SEGMENT\", \"select-segment\");");
+    expect(generated.code).toContain("await target1.selectOption(selectValue1);");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(selectValue1);");
     expect(generated.code).toContain("await expect(page.getByText(\"Searched revenue\", { exact: true })).toBeVisible();");
     expect(generated.code).toContain("await expect(dropTarget3).toContainText(\"Revenue audit\");");
     expect(generated.code).toContain("await expect(page.getByText(\"Moved Revenue audit to Done lane\", { exact: true })).toBeVisible();");
-    expect(generated.code).toContain("await expect(page.getByText(\"Applied enterprise urgent; card done; search revenue\", { exact: true })).toBeVisible();");
+    expect(generated.code).toContain("await expect(page.getByText(parameterizedTextRegex([\"Applied \",\" urgent; card done; search revenue\"], selectValue1))).toBeVisible();");
+    expect(generated.code).not.toContain("Applied enterprise urgent");
   });
 
   it("generates range slider replay with input and change events", () => {
@@ -594,7 +606,8 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("element.type !== 'range'");
     expect(generated.code).toContain("element.dispatchEvent(new Event('input', { bubbles: true }));");
     expect(generated.code).toContain("element.dispatchEvent(new Event('change', { bubbles: true }));");
-    expect(generated.code).toContain("await expect(target1).toHaveValue(\"75\");");
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"BUDGET\", \"budget-range\");");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(inputValue1);");
     expect(generated.code).not.toContain("await target1.fill(\"75\");");
   });
 
@@ -957,7 +970,7 @@ describe("browser replay generation scenarios", () => {
         detail: {
           multiple_select: true,
           select_values: ["qa", "design"],
-          element: { tag: "select", role: "listbox", label: "Teams", source_id: "settings.teams" },
+          element: { tag: "select", role: "listbox", label: "Teams", text: "qa design", source_id: "settings.teams" },
         },
         locator_candidates: [
           { kind: "role", locator: "page.getByRole(\"listbox\", { name: \"Teams\" })", confidence: 0.96, reason: "accessible_role_and_name" },
@@ -967,8 +980,10 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.code).toContain("page.getByRole(\"listbox\", { name: \"Teams\" })");
-    expect(generated.code).toContain("await target1.selectOption([\"qa\",\"design\"]);");
-    expect(generated.code).toContain("await expect(target1).toHaveValues([\"qa\",\"design\"]);");
+    expect(generated.code).toContain("const selectValues1 = readRequiredEnvList(\"TEAMS\", \"teams\");");
+    expect(generated.code).toContain("await target1.selectOption(selectValues1);");
+    expect(generated.code).toContain("await expect(target1).toHaveValues(selectValues1);");
+    expect(generated.code).not.toContain("page.getByText(\"qa design\")");
   });
 
   it("asserts selected state for custom ARIA option clicks", () => {
