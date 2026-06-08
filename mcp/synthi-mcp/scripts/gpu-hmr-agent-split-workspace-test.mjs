@@ -757,7 +757,7 @@ function rayLightSource(vendor) {
   const target = vendor === 'rocm' ? 'rocm' : 'cuda';
   return `// User-authored single-file GPU ray-light visual app.
 // Deterministic validation fixture: fixed camera, fixed seed, no temporal
-// accumulation, and GPU-authored framebuffer pixels.
+// accumulation, and GPU-authored ray sample positions.
 // GPU_TARGET: ${target}
 // LINK: -lSDL2 ${api.link}
 // BUILD: ${api.build} main.cpp -lSDL2 ${api.link}
@@ -769,85 +769,48 @@ ${runtimeInclude(vendor)}
 
 constexpr int WIDTH = 800;
 constexpr int HEIGHT = 600;
-constexpr int PIXELS = WIDTH * HEIGHT;
+constexpr int BEAMS = 13;
+constexpr int STEPS = 128;
+constexpr int RAY_SAMPLES = BEAMS * STEPS;
 
-__device__ float clamp_unit(float v) {
-    if (v < 0.0f) return 0.0f;
-    if (v > 1.0f) return 1.0f;
-    return v;
-}
-
-__device__ unsigned int pack_argb(float r, float g, float b) {
-    unsigned int rr = (unsigned int)(clamp_unit(r) * 255.0f);
-    unsigned int gg = (unsigned int)(clamp_unit(g) * 255.0f);
-    unsigned int bb = (unsigned int)(clamp_unit(b) * 255.0f);
-    return 0xff000000u | (rr << 16) | (gg << 8) | bb;
-}
-
-extern "C" __global__ void render_light_rays(unsigned int* pixels) {
+extern "C" __global__ void trace_light_rays(float* sampleX, float* sampleY, float* sampleEnergy, int samples) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= PIXELS) return;
+    if (idx >= samples) return;
 
-    int x = idx % WIDTH;
-    int y = idx / WIDTH;
-    float fx = (float)x;
-    float fy = (float)y;
-    float nx = (fx / (float)WIDTH) * 2.0f - 1.0f;
-    float ny = (fy / (float)HEIGHT) * 2.0f - 1.0f;
+    int beam = idx % BEAMS;
+    int step = idx / BEAMS;
+    float lane = (float)beam - (float)(BEAMS - 1) * 0.5f;
+    float t = (float)step / (float)(STEPS - 1);
 
-    float ground = fy > 340.0f ? 1.0f : 0.0f;
-    float horizon = clamp_unit((fy - 230.0f) / 150.0f);
-    float vignette = clamp_unit(1.0f - 0.28f * fabsf(nx) - 0.08f * fabsf(ny));
-    float r = 0.015f + 0.05f * horizon;
-    float g = 0.020f + 0.075f * horizon;
-    float b = 0.045f + 0.110f * (1.0f - horizon);
-
-    if (ground > 0.0f) {
-        float grid = (fmodf(fabsf(fx * 0.030f) + fabsf(fy * 0.016f), 1.0f) < 0.055f) ? 0.035f : 0.0f;
-        r = 0.070f + grid;
-        g = 0.082f + grid;
-        b = 0.075f + grid;
-    }
-
-    const float pathDirection = 1.0f; // SYNTHI_HMR_DIRECTION_TOKEN
-    float emitterX = 400.0f + pathDirection * 155.0f;
+    const float direction = 1.0f; // SYNTHI_HMR_DIRECTION_TOKEN
+    float emitterX = 400.0f + direction * 155.0f;
     float emitterY = 78.0f;
-    float beamEnergy = 0.0f;
+    float y = emitterY + t * 468.0f;
+    float slope = direction * (0.24f + lane * 0.015f);
+    float spread = lane * (10.0f + 34.0f * t);
+    float caustic = sinf(t * 18.0f + lane * 1.7f) * (3.0f + 11.0f * t);
+    float x = emitterX + spread + slope * (y - emitterY) + caustic;
 
-    for (int beam = -5; beam <= 5; ++beam) {
-        float lane = (float)beam;
-        float slope = pathDirection * (0.22f + 0.020f * lane);
-        float targetX = emitterX + lane * 26.0f + (fy - emitterY) * slope;
-        float width = 7.0f + 0.022f * fmaxf(fy - emitterY, 0.0f);
-        float dist = fabsf(fx - targetX);
-        float ray = expf(-(dist * dist) / (2.0f * width * width));
-        float falloff = clamp_unit((fy - 68.0f) / 440.0f) * clamp_unit((610.0f - fy) / 420.0f);
-        beamEnergy += ray * falloff * (0.68f + 0.045f * lane);
-    }
-
-    float emitterDist = sqrtf((fx - emitterX) * (fx - emitterX) + (fy - emitterY) * (fy - emitterY));
-    float emitterGlow = expf(-(emitterDist * emitterDist) / (2.0f * 34.0f * 34.0f));
-    float groundSpotX = emitterX + pathDirection * 118.0f;
-    float groundSpot = expf(-((fx - groundSpotX) * (fx - groundSpotX)) / (2.0f * 150.0f * 150.0f))
-        * expf(-((fy - 470.0f) * (fy - 470.0f)) / (2.0f * 68.0f * 68.0f));
-
-    float light = clamp_unit(beamEnergy * 1.35f + emitterGlow * 2.1f + groundSpot * 0.85f);
-    r += light * (1.00f + 0.10f * ground);
-    g += light * (0.80f + 0.22f * ground);
-    b += light * (0.34f + 0.10f * ground);
-
-    pixels[idx] = pack_argb(r * vignette, g * vignette, b * vignette);
+    float focus = expf(-((t - 0.84f) * (t - 0.84f)) / (2.0f * 0.13f * 0.13f));
+    sampleX[idx] = x;
+    sampleY[idx] = y;
+    sampleEnergy[idx] = 0.22f + (1.0f - t) * 0.58f + focus * 0.72f;
 }
 
 int main(int, char**) {
     SDL_Init(SDL_INIT_VIDEO);
     SDL_Window* window = SDL_CreateWindow("Synthi GPU Ray Light HMR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
 
-    unsigned int* hostPixels = (unsigned int*)std::malloc(sizeof(unsigned int) * PIXELS);
-    unsigned int* devicePixels = nullptr;
-    ${api.malloc}(&devicePixels, sizeof(unsigned int) * PIXELS);
+    float hostX[RAY_SAMPLES];
+    float hostY[RAY_SAMPLES];
+    float hostEnergy[RAY_SAMPLES];
+    float* deviceX = nullptr;
+    float* deviceY = nullptr;
+    float* deviceEnergy = nullptr;
+    ${api.malloc}(&deviceX, sizeof(float) * RAY_SAMPLES);
+    ${api.malloc}(&deviceY, sizeof(float) * RAY_SAMPLES);
+    ${api.malloc}(&deviceEnergy, sizeof(float) * RAY_SAMPLES);
 
     bool running = true;
     unsigned long long frame = 0;
@@ -858,14 +821,41 @@ int main(int, char**) {
         }
 
         dim3 block(256);
-        dim3 grid((PIXELS + block.x - 1) / block.x);
-        render_light_rays<<<grid, block>>>(devicePixels);
+        dim3 grid((RAY_SAMPLES + block.x - 1) / block.x);
+        trace_light_rays<<<grid, block>>>(deviceX, deviceY, deviceEnergy, RAY_SAMPLES);
         ${api.sync}();
-        ${api.memcpy}(hostPixels, devicePixels, sizeof(unsigned int) * PIXELS, ${api.d2h});
+        ${api.memcpy}(hostX, deviceX, sizeof(float) * RAY_SAMPLES, ${api.d2h});
+        ${api.memcpy}(hostY, deviceY, sizeof(float) * RAY_SAMPLES, ${api.d2h});
+        ${api.memcpy}(hostEnergy, deviceEnergy, sizeof(float) * RAY_SAMPLES, ${api.d2h});
 
-        SDL_UpdateTexture(texture, nullptr, hostPixels, sizeof(unsigned int) * WIDTH);
+        SDL_SetRenderDrawColor(renderer, 5, 8, 18, 255);
         SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+
+        SDL_SetRenderDrawColor(renderer, 20, 30, 34, 255);
+        SDL_Rect ground{0, 340, WIDTH, HEIGHT - 340};
+        SDL_RenderFillRect(renderer, &ground);
+        SDL_SetRenderDrawColor(renderer, 38, 55, 58, 255);
+        for (int gx = 0; gx < WIDTH; gx += 40) {
+            SDL_RenderDrawLine(renderer, gx, 340, gx - 90, HEIGHT);
+        }
+        for (int gy = 360; gy < HEIGHT; gy += 42) {
+            SDL_RenderDrawLine(renderer, 0, gy, WIDTH, gy);
+        }
+
+        for (int i = 0; i < RAY_SAMPLES; ++i) {
+            int e = (int)(hostEnergy[i] * 255.0f);
+            if (e < 0) e = 0;
+            if (e > 255) e = 255;
+            SDL_SetRenderDrawColor(renderer, 255, 210, 80 + e / 3, 255);
+            int size = 2 + e / 96;
+            SDL_Rect sample{(int)hostX[i], (int)hostY[i], size, size};
+            SDL_RenderFillRect(renderer, &sample);
+        }
+
+        SDL_SetRenderDrawColor(renderer, 255, 236, 154, 255);
+        SDL_Rect emitter{392, 68, 16, 16};
+        SDL_RenderFillRect(renderer, &emitter);
+
         SDL_RenderPresent(renderer);
         SDL_Delay(16);
 
@@ -874,9 +864,9 @@ int main(int, char**) {
         }
     }
 
-    ${api.free}(devicePixels);
-    std::free(hostPixels);
-    SDL_DestroyTexture(texture);
+    ${api.free}(deviceX);
+    ${api.free}(deviceY);
+    ${api.free}(deviceEnergy);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
