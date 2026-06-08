@@ -530,6 +530,69 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects output oracle proof when a content-addressed ledger field is tampered", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    record.proofId = ledger.proofId;
+    record.model_provenance.gpu_delta.actual_model = "gemini-3.1-flash-lite-tampered";
+
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_rejected");
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining([
+        "record_proof_id_mismatch",
+        "ledger_proof_id_mismatch",
+        "supplied_ledger_query_mismatch",
+      ])
+    );
+  });
+
+  it("rejects a multi-record ledger when an earlier record fails", () => {
+    const rejectedLedger = proofLedger({ cpu_hmr_used: true });
+    const acceptedLedger = proofLedger({ edit_id: "gpu-edit-2" });
+    const ledger = {
+      schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
+      records: [rejectedLedger.records[0], acceptedLedger.records[0]],
+      gpuHmrSuccess: true,
+    };
+
+    const validation = queryGpuHmrLedgerInvariants(ledger);
+
+    expect(validation.gpuHmrSuccess).toBe(false);
+    expect(validation.failedInvariants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "cpu_hmr_used", record_index: 0 }),
+        expect.objectContaining({ code: "ledger_success_flag_mismatch" }),
+      ])
+    );
+  });
+
+  it("rejects a multi-record ledger whose top proof id only names the last record", () => {
+    const firstLedger = proofLedger();
+    const lastLedger = proofLedger({ edit_id: "gpu-edit-2" });
+    const ledger = {
+      schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
+      proofId: lastLedger.proofId,
+      records: [firstLedger.records[0], lastLedger.records[0]],
+      gpuHmrSuccess: true,
+    };
+
+    const validation = queryGpuHmrLedgerInvariants(ledger);
+
+    expect(validation.gpuHmrSuccess).toBe(false);
+    expect(validation.failedInvariants.map((failure) => failure.code)).toContain(
+      "ledger_proof_id_mismatch"
+    );
+  });
+
   it("rejects output oracle proof when event chronology is invalid", () => {
     const cases = [
       {

@@ -208,6 +208,17 @@ function canonicalLedgerProofId(input: Record<string, unknown>): string {
   return `gpu-ledger-proof:sha256:${sha256Hex(stableJson(input))}`;
 }
 
+function canonicalLedgerRootProofId(recordProofIds: Array<string | null>): string | null {
+  if (recordProofIds.length === 0 || recordProofIds.some((proofId) => !proofId)) {
+    return null;
+  }
+  if (recordProofIds.length === 1) return recordProofIds[0]!;
+  return canonicalLedgerProofId({
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    records: recordProofIds,
+  });
+}
+
 function eventId(event: Record<string, unknown>): string | null {
   return firstText(event.id, event.event_id, event.dispatch_id, event.proof_id, event.proofId);
 }
@@ -888,9 +899,11 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const metricScope = firstText(input.metric_scope, input.metricScope, timings.metric_scope, timings.metricScope, timingMetrics.metric_scope, timingMetrics.metricScope);
   const cacheState = firstText(input.cache_state, input.cacheState, timings.cache_state, timings.cacheState, timingMetrics.cache_state, timingMetrics.cacheState);
   const recomputedProofId = canonicalLedgerProofId({
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     projectId,
     editId,
     backend,
+    classification,
     contractHash,
     artifactBeforeHash,
     artifactAfterHash,
@@ -899,7 +912,18 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     dispatchEvent,
     outputEvent,
     retirementEvent,
+    processIdentity,
+    deviceIdentity,
+    oracleArtifacts,
+    deterministicVisualMode,
     outputOracleTarget,
+    metricClock,
+    metricScope,
+    cacheState,
+    timings,
+    timingMetrics,
+    modelProvenance,
+    evidenceRefs,
     cpuHmrUsed: cpuHmrUsed.value === true,
     fullRebuildUsed: fullRebuildUsed.value === true,
     processRestarted: processRestarted.value === true,
@@ -1387,15 +1411,40 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
 
 export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidation {
   const ledger = asObject(input);
-  const records = Array.isArray(ledger.records) ? ledger.records.filter(isObject) : [];
-  const recomputed = validateRecord(records.length > 0 ? records[records.length - 1]! : ledger);
-  const failures = [...recomputed.failedInvariants];
+  const records = Array.isArray(ledger.records) ? ledger.records : null;
+  const validations = records && records.length > 0
+    ? records.map((record, index) => ({
+        index,
+        result: isObject(record)
+          ? validateRecord(record)
+          : {
+              schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+              proofId: null,
+              gpuHmrSuccess: false,
+              failedInvariants: [{ code: "ledger_record_not_object" }],
+            },
+      }))
+    : [{ index: 0, result: validateRecord(ledger) }];
+  const recomputed = validations[validations.length - 1]!.result;
+  const proofId = records && records.length > 0
+    ? canonicalLedgerRootProofId(validations.map(({ result }) => result.proofId))
+    : recomputed.proofId;
+  const failures: GpuHmrLedgerFailure[] = validations.flatMap(({ index, result }) =>
+    result.failedInvariants.map((failure) => ({
+      ...failure,
+      record_index: failure.record_index ?? index,
+    }))
+  );
+  if (records && records.length === 0) {
+    failures.push({ code: "ledger_records_empty" });
+  }
+  const recordSuccess = failures.length === 0;
   const topLevelProofId = firstText(ledger.proofId, ledger.proof_id);
-  if (topLevelProofId && topLevelProofId !== recomputed.proofId) {
-    failures.push({ code: "ledger_proof_id_mismatch", suppliedProofId: topLevelProofId, recomputedProofId: recomputed.proofId });
+  if (topLevelProofId && topLevelProofId !== proofId) {
+    failures.push({ code: "ledger_proof_id_mismatch", suppliedProofId: topLevelProofId, recomputedProofId: proofId });
   }
   const successFlag = firstPresent([ledger, "gpuHmrSuccess"], [ledger, "gpu_hmr_success"]);
-  if (successFlag.present && successFlag.value !== recomputed.gpuHmrSuccess) {
+  if (successFlag.present && successFlag.value !== recordSuccess) {
     failures.push({ code: "ledger_success_flag_mismatch" });
   }
   const suppliedQuery = asObject(ledger.query);
@@ -1408,10 +1457,10 @@ export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidat
           ? suppliedQuery.failedInvariants.map((failure) => isObject(failure) ? failure.code : null)
           : []
       ).sort();
-      const recomputedFailures = recomputed.failedInvariants.map((failure) => failure.code).sort();
+      const recomputedFailures = failures.map((failure) => failure.code).sort();
       if (
-        suppliedQuery.gpuHmrSuccess !== recomputed.gpuHmrSuccess
-        || firstText(suppliedQuery.proofId, suppliedQuery.proof_id) !== recomputed.proofId
+        suppliedQuery.gpuHmrSuccess !== recordSuccess
+        || firstText(suppliedQuery.proofId, suppliedQuery.proof_id) !== proofId
         || suppliedFailures.join("|") !== recomputedFailures.join("|")
       ) {
         failures.push({ code: "supplied_ledger_query_mismatch" });
@@ -1420,6 +1469,7 @@ export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidat
   }
   return {
     ...recomputed,
+    proofId,
     gpuHmrSuccess: failures.length === 0,
     failedInvariants: failures,
   };

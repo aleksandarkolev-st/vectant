@@ -61,6 +61,21 @@ function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
 
+function canonicalLedgerProofId(input) {
+  return `gpu-ledger-proof:sha256:${sha256Hex(stableJson(input))}`;
+}
+
+function canonicalLedgerRootProofId(recordProofIds) {
+  if (recordProofIds.length === 0 || recordProofIds.some((proofId) => !proofId)) {
+    return null;
+  }
+  if (recordProofIds.length === 1) return recordProofIds[0];
+  return canonicalLedgerProofId({
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+    records: recordProofIds,
+  });
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -692,6 +707,7 @@ function modelMatchesRequiredModel(record, expectedModel) {
 
 export function normalizeGpuHmrProofLedgerRecord(input = {}) {
   const record = asObject(input);
+  const suppliedProofId = firstText(record.proof_id, record.proofId);
   const artifactAfterHash = firstText(
     record.artifact_after_hash,
     record.artifactAfterHash,
@@ -734,7 +750,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
   );
   const normalized = {
     schemaVersion: record.schemaVersion ?? record.schema_version ?? GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-    proofId: firstText(record.proof_id, record.proofId),
+    proofId: null,
     projectId: firstText(record.project_id, record.projectId),
     editId: firstText(record.edit_id, record.editId),
     backend: firstText(record.backend, record.gpu_backend, record.gpuBackend),
@@ -803,10 +819,12 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     modelProvenance: asObject(record.model_provenance ?? record.modelProvenance),
     evidenceRefs: compactStringList(record.evidence_refs ?? record.evidenceRefs),
   };
-  normalized.proofId ??= `gpu-ledger-proof:sha256:${sha256Hex(stableJson({
+  normalized.proofId = canonicalLedgerProofId({
+    schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     projectId: normalized.projectId,
     editId: normalized.editId,
     backend: normalized.backend,
+    classification: normalized.classification,
     contractHash: normalized.contractHash,
     artifactBeforeHash: normalized.artifactBeforeHash,
     artifactAfterHash: normalized.artifactAfterHash,
@@ -815,7 +833,18 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     dispatchEvent: normalized.dispatchEvent,
     outputEvent: normalized.outputEvent,
     retirementEvent: normalized.retirementEvent,
+    processIdentity: normalized.processIdentity,
+    deviceIdentity: normalized.deviceIdentity,
+    oracleArtifacts: normalized.oracleArtifacts,
+    deterministicVisualMode: normalized.deterministicVisualMode,
     outputOracleTarget: normalized.outputOracleTarget,
+    metricClock: normalized.metricClock,
+    metricScope: normalized.metricScope,
+    cacheState: normalized.cacheState,
+    timings: normalized.timings,
+    timingMetrics: normalized.timingMetrics,
+    modelProvenance: normalized.modelProvenance,
+    evidenceRefs: normalized.evidenceRefs,
     cpuHmrUsed: normalized.cpuHmrUsed,
     fullRebuildUsed: normalized.fullRebuildUsed,
     processRestarted: normalized.processRestarted,
@@ -824,7 +853,11 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
       fullRebuildUsedEvidencePresent: normalized.fullRebuildUsedEvidencePresent,
       processRestartedEvidencePresent: normalized.processRestartedEvidencePresent,
     },
-  }))}`;
+  });
+  Object.defineProperty(normalized, 'suppliedProofId', {
+    value: suppliedProofId,
+    enumerable: false,
+  });
   return normalized;
 }
 
@@ -836,6 +869,12 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   const record = normalizeGpuHmrProofLedgerRecord(input);
   const failures = [];
   const warnings = [];
+  if (record.suppliedProofId && record.suppliedProofId !== record.proofId) {
+    addFailure(failures, 'record_proof_id_mismatch', {
+      suppliedProofId: record.suppliedProofId,
+      recomputedProofId: record.proofId,
+    });
+  }
   const artifactAfterHash = record.artifactAfterHash;
   const loadedArtifactHash = eventArtifactHash(record.loaderEvent);
   const publishedArtifactHash = eventArtifactHash(record.epochPublishEvent);
@@ -1486,11 +1525,15 @@ export function evaluateGpuHmrProofLedger(input = {}) {
 export function buildGpuHmrProofLedger(input = {}) {
   const record = normalizeGpuHmrProofLedgerRecord(input);
   const query = evaluateGpuHmrProofLedger(record);
+  const proofId = canonicalLedgerRootProofId([record.proofId]);
   return {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-    proofId: record.proofId,
+    proofId,
     records: [record],
-    query,
+    query: {
+      ...query,
+      proofId,
+    },
     gpuHmrSuccess: query.gpuHmrSuccess,
     gpu_hmr_success: query.gpuHmrSuccess,
   };
@@ -1499,16 +1542,42 @@ export function buildGpuHmrProofLedger(input = {}) {
 export function queryGpuHmrLedgerInvariants(input = {}) {
   const ledger = asObject(input);
   const records = Array.isArray(ledger.records) ? ledger.records : null;
-  const recomputed = records && records.length > 0
-    ? evaluateGpuHmrProofLedger(records[records.length - 1])
-    : evaluateGpuHmrProofLedger(input);
-  const consistencyFailures = [];
+  const evaluations = records && records.length > 0
+    ? records.map((record, index) => ({
+      index,
+      result: record && typeof record === 'object' && !Array.isArray(record)
+        ? evaluateGpuHmrProofLedger(record)
+        : {
+          schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+          proofId: null,
+          gpuHmrSuccess: false,
+          failedInvariants: [{ code: 'ledger_record_not_object' }],
+          warnings: [],
+          record: null,
+          invariantSummary: {},
+        },
+    }))
+    : [{ index: 0, result: evaluateGpuHmrProofLedger(input) }];
+  const recomputed = evaluations[evaluations.length - 1].result;
+  const proofId = records && records.length > 0
+    ? canonicalLedgerRootProofId(evaluations.map(({ result }) => result.proofId))
+    : recomputed.proofId;
+  const failures = evaluations.flatMap(({ index, result }) =>
+    result.failedInvariants.map((failure) => ({
+      ...failure,
+      record_index: failure.record_index ?? index,
+    }))
+  );
+  if (records && records.length === 0) {
+    failures.push({ code: 'ledger_records_empty' });
+  }
+  const recordSuccess = failures.length === 0;
   const topLevelProofId = firstText(ledger.proofId, ledger.proof_id);
-  if (records && records.length > 0 && topLevelProofId && topLevelProofId !== recomputed.proofId) {
-    consistencyFailures.push({
+  if (topLevelProofId && topLevelProofId !== proofId) {
+    failures.push({
       code: 'ledger_proof_id_mismatch',
       suppliedProofId: topLevelProofId,
-      recomputedProofId: recomputed.proofId,
+      recomputedProofId: proofId,
     });
   }
   const topLevelSuccess = firstPresent(
@@ -1516,57 +1585,54 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
     [ledger, 'gpu_hmr_success'],
   );
   if (
-    records
-    && records.length > 0
-    && topLevelSuccess.present
-    && topLevelSuccess.value !== recomputed.gpuHmrSuccess
+    topLevelSuccess.present
+    && topLevelSuccess.value !== recordSuccess
   ) {
-    consistencyFailures.push({
+    failures.push({
       code: 'ledger_success_flag_mismatch',
       suppliedGpuHmrSuccess: topLevelSuccess.value,
-      recomputedGpuHmrSuccess: recomputed.gpuHmrSuccess,
+      recomputedGpuHmrSuccess: recordSuccess,
     });
   }
   const suppliedQuery = asObject(ledger.query);
-  if (suppliedQuery.schemaVersion === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
-    const suppliedFailures = compactStringList(asObject(suppliedQuery).failedInvariants?.map?.((failure) => failure?.code));
-    const recomputedFailures = compactStringList(recomputed.failedInvariants.map((failure) => failure.code));
+  if (firstText(suppliedQuery.schemaVersion, suppliedQuery.schema_version) === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
+    const suppliedFailures = compactStringList(
+      Array.isArray(suppliedQuery.failedInvariants)
+        ? suppliedQuery.failedInvariants.map((failure) => asObject(failure).code)
+        : [],
+    ).sort();
+    const recomputedFailures = compactStringList(failures.map((failure) => failure.code)).sort();
     const suppliedConsistent =
-      suppliedQuery.gpuHmrSuccess === recomputed.gpuHmrSuccess
-      && firstText(suppliedQuery.proofId, suppliedQuery.proof_id) === recomputed.proofId
+      suppliedQuery.gpuHmrSuccess === recordSuccess
+      && firstText(suppliedQuery.proofId, suppliedQuery.proof_id) === proofId
       && stableJson(suppliedFailures) === stableJson(recomputedFailures);
     if (!suppliedConsistent) {
       return {
         ...recomputed,
+        proofId,
         gpuHmrSuccess: false,
         failedInvariants: [
-          ...recomputed.failedInvariants,
+          ...failures,
           {
             code: 'supplied_ledger_query_mismatch',
             suppliedGpuHmrSuccess: suppliedQuery.gpuHmrSuccess,
-            recomputedGpuHmrSuccess: recomputed.gpuHmrSuccess,
+            recomputedGpuHmrSuccess: recordSuccess,
           },
-          ...consistencyFailures,
         ],
       };
     }
   } else if (Object.keys(suppliedQuery).length > 0) {
-    consistencyFailures.push({
+    failures.push({
       code: 'supplied_ledger_query_schema_mismatch',
       suppliedSchemaVersion: suppliedQuery.schemaVersion ?? suppliedQuery.schema_version ?? null,
     });
   }
-  if (consistencyFailures.length > 0) {
-    return {
-      ...recomputed,
-      gpuHmrSuccess: false,
-      failedInvariants: [
-        ...recomputed.failedInvariants,
-        ...consistencyFailures,
-      ],
-    };
-  }
-  return recomputed;
+  return {
+    ...recomputed,
+    proofId,
+    gpuHmrSuccess: failures.length === 0,
+    failedInvariants: failures,
+  };
 }
 
 export function assertGpuHmrProofLedgerSuccess(input = {}) {

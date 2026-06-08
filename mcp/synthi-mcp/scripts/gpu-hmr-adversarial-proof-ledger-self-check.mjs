@@ -1354,6 +1354,47 @@ assert.ok(
   `forged proof id expected ledger_proof_id_mismatch, got ${forgedProofIdResult.failedInvariants.map((f) => f.code).join(',')}`,
 );
 
+const forgedRecordProofIdLedger = buildGpuHmrProofLedger(baselineRecord());
+forgedRecordProofIdLedger.records[0].proofId = 'gpu-ledger-proof:sha256:forged';
+const forgedRecordProofIdResult = queryGpuHmrLedgerInvariants(forgedRecordProofIdLedger);
+assert.equal(forgedRecordProofIdResult.gpuHmrSuccess, false);
+assert.ok(
+  forgedRecordProofIdResult.failedInvariants.some((failure) => failure.code === 'record_proof_id_mismatch'),
+  `forged record proof id expected record_proof_id_mismatch, got ${forgedRecordProofIdResult.failedInvariants.map((f) => f.code).join(',')}`,
+);
+
+const hiddenBadHistoryLedger = {
+  schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  records: [
+    buildGpuHmrProofLedger(baselineRecord({ cpu_hmr_used: true })).records[0],
+    buildGpuHmrProofLedger(baselineRecord({ edit_id: 'edit-history-2' })).records[0],
+  ],
+  gpuHmrSuccess: true,
+};
+const hiddenBadHistoryResult = queryGpuHmrLedgerInvariants(hiddenBadHistoryLedger);
+assert.equal(hiddenBadHistoryResult.gpuHmrSuccess, false);
+assert.ok(
+  hiddenBadHistoryResult.failedInvariants.some((failure) =>
+    failure.code === 'cpu_hmr_used' && failure.record_index === 0
+  ),
+  `hidden bad history expected cpu_hmr_used on record 0, got ${hiddenBadHistoryResult.failedInvariants.map((f) => `${f.code}:${f.record_index ?? ''}`).join(',')}`,
+);
+
+const historyFirst = buildGpuHmrProofLedger(baselineRecord({ edit_id: 'edit-history-root-1' })).records[0];
+const historyLast = buildGpuHmrProofLedger(baselineRecord({ edit_id: 'edit-history-root-2' })).records[0];
+const lastRecordOnlyProofLedger = {
+  schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  proofId: historyLast.proofId,
+  records: [historyFirst, historyLast],
+  gpuHmrSuccess: true,
+};
+const lastRecordOnlyProofResult = queryGpuHmrLedgerInvariants(lastRecordOnlyProofLedger);
+assert.equal(lastRecordOnlyProofResult.gpuHmrSuccess, false);
+assert.ok(
+  lastRecordOnlyProofResult.failedInvariants.some((failure) => failure.code === 'ledger_proof_id_mismatch'),
+  `last-record-only proof expected ledger_proof_id_mismatch, got ${lastRecordOnlyProofResult.failedInvariants.map((f) => f.code).join(',')}`,
+);
+
 const unversionedQueryLedger = buildGpuHmrProofLedger(baselineRecord());
 unversionedQueryLedger.query = { gpuHmrSuccess: true, failedInvariants: [] };
 const unversionedQueryResult = queryGpuHmrLedgerInvariants(unversionedQueryLedger);
