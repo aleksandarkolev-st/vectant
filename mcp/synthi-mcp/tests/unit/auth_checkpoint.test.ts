@@ -58,6 +58,41 @@ describe("auth checkpoint manager", () => {
     }));
   });
 
+  it("does not let checkpoint enrollment claim provider-backed unattended durability", async () => {
+    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com");
+    const result = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      ttl_ms: 60_000,
+      durability: "refreshProvider" as never,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unexpected auth finish failure");
+    expect(result.checkpoint).toEqual(expect.objectContaining({
+      durability: "interactiveCheckpoint",
+      unattended_allowed: false,
+    }));
+    expect(authCheckpointManager.readiness("https://app.example.com/dashboard", true)).toEqual(expect.objectContaining({
+      ready: false,
+      status: "unattendedBlocked",
+      durability: "interactiveCheckpoint",
+    }));
+
+    const begun = await dispatchAuthTool("synthi_auth_begin_checkpoint_enrollment", {
+      url: "https://tool.example.com",
+    });
+    const enrollmentId = (begun?.structuredContent as { enrollment: { enrollment_id: string } }).enrollment.enrollment_id;
+    const finished = await dispatchAuthTool("synthi_auth_finish_checkpoint_enrollment", {
+      enrollment_id: enrollmentId,
+      ttl_ms: 60_000,
+      durability: "ciTestAuth",
+    });
+    expect(finished?.isError).toBeUndefined();
+    expect((finished?.structuredContent as { checkpoint: { durability: string; unattended_allowed: boolean } }).checkpoint).toEqual(expect.objectContaining({
+      durability: "interactiveCheckpoint",
+      unattended_allowed: false,
+    }));
+  });
+
   it("allows unattended readiness for refresh-provider metadata", () => {
     const configured = authCheckpointManager.configureRefreshProvider({
       url: "https://app.example.com",

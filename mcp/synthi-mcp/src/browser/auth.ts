@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { normalizeOrigin } from "./security.js";
 import type { AuthDurabilityV7 } from "./workflow.js";
 
+export type AuthCheckpointDurability = Extract<AuthDurabilityV7, "interactiveCheckpoint" | "idpCheckpoint">;
+
 export interface AuthCheckpointEnrollment {
   enrollment_id: string;
   app_origin: string;
@@ -67,7 +69,7 @@ export class AuthCheckpointManager {
     app_url?: string;
     redirect_chain?: string[];
     ttl_ms?: number;
-    durability?: AuthDurabilityV7;
+    durability?: AuthCheckpointDurability;
   }): { ok: true; checkpoint: AuthCheckpointMetadata } | { ok: false; error: string } {
     const enrollment = this.enrollments.get(input.enrollment_id);
     if (!enrollment) return { ok: false, error: "auth_enrollment_not_found" };
@@ -78,7 +80,7 @@ export class AuthCheckpointManager {
     const idpOrigins = [...new Set((input.redirect_chain ?? [])
       .map((url) => safeOrigin(url))
       .filter((origin): origin is string => origin !== null && origin !== appOrigin))];
-    const durability = input.durability ?? (idpOrigins.length > 0 ? "idpCheckpoint" : "interactiveCheckpoint");
+    const durability = checkpointDurabilityOpt(input.durability) ?? (idpOrigins.length > 0 ? "idpCheckpoint" : "interactiveCheckpoint");
     const checkpoint: AuthCheckpointMetadata = {
       checkpoint_id: `auth_ckpt_${randomUUID()}`,
       app_origin: appOrigin,
@@ -87,7 +89,7 @@ export class AuthCheckpointManager {
       created_at: now,
       expires_at: now + ttl,
       status: "valid",
-      unattended_allowed: durability === "refreshProvider" || durability === "ciTestAuth",
+      unattended_allowed: false,
       cookie_domain_audit: {
         app_origin: appOrigin,
         idp_origin_count: idpOrigins.length,
@@ -243,6 +245,11 @@ export class AuthCheckpointManager {
   private snapshotProvider(provider: AuthRefreshProviderMetadata): AuthRefreshProviderMetadata {
     return { ...provider };
   }
+}
+
+function checkpointDurabilityOpt(value: unknown): AuthCheckpointDurability | undefined {
+  if (value === "interactiveCheckpoint" || value === "idpCheckpoint") return value;
+  return undefined;
 }
 
 function clampTtl(value: number | undefined): number {

@@ -1,6 +1,5 @@
-import { authCheckpointManager } from "../browser/auth.js";
+import { authCheckpointManager, type AuthCheckpointDurability } from "../browser/auth.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
-import type { AuthDurabilityV7 } from "../browser/workflow.js";
 
 export const AUTH_TOOL_NAMES = [
   "synthi_auth_begin_checkpoint_enrollment",
@@ -39,7 +38,7 @@ export const AUTH_TOOLS = [
         ttl_ms: { type: "number" },
         durability: {
           type: "string",
-          enum: ["interactiveCheckpoint", "idpCheckpoint", "refreshProvider", "ciTestAuth"],
+          enum: ["interactiveCheckpoint", "idpCheckpoint"],
         },
       },
       required: ["enrollment_id"],
@@ -205,15 +204,8 @@ function stringArrayOpt(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
 }
 
-function authDurabilityOpt(value: unknown): AuthDurabilityV7 | undefined {
-  if (
-    value === "interactiveCheckpoint" ||
-    value === "idpCheckpoint" ||
-    value === "refreshProvider" ||
-    value === "ciTestAuth"
-  ) {
-    return value;
-  }
+function authDurabilityOpt(value: unknown): AuthCheckpointDurability | undefined {
+  if (value === "interactiveCheckpoint" || value === "idpCheckpoint") return value;
   return undefined;
 }
 
