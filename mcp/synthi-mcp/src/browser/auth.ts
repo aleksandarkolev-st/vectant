@@ -48,10 +48,72 @@ export interface AuthReadiness {
   notes: string[];
 }
 
-export class AuthCheckpointManager {
+export interface AuthCheckpointStore {
+  saveEnrollment(enrollment: AuthCheckpointEnrollment): void;
+  getEnrollment(enrollment_id: string): AuthCheckpointEnrollment | null;
+  deleteEnrollment(enrollment_id: string): void;
+  saveCheckpoint(checkpoint: AuthCheckpointMetadata): void;
+  getCheckpoint(checkpoint_id: string): AuthCheckpointMetadata | null;
+  listCheckpoints(): AuthCheckpointMetadata[];
+  saveRefreshProvider(provider: AuthRefreshProviderMetadata): void;
+  getRefreshProvider(provider_id: string): AuthRefreshProviderMetadata | null;
+  listRefreshProviders(): AuthRefreshProviderMetadata[];
+  clear(): void;
+}
+
+export class InMemoryAuthCheckpointStore implements AuthCheckpointStore {
   private readonly enrollments = new Map<string, AuthCheckpointEnrollment>();
   private readonly checkpoints = new Map<string, AuthCheckpointMetadata>();
   private readonly refreshProviders = new Map<string, AuthRefreshProviderMetadata>();
+
+  saveEnrollment(enrollment: AuthCheckpointEnrollment): void {
+    this.enrollments.set(enrollment.enrollment_id, { ...enrollment });
+  }
+
+  getEnrollment(enrollment_id: string): AuthCheckpointEnrollment | null {
+    const enrollment = this.enrollments.get(enrollment_id);
+    return enrollment ? { ...enrollment } : null;
+  }
+
+  deleteEnrollment(enrollment_id: string): void {
+    this.enrollments.delete(enrollment_id);
+  }
+
+  saveCheckpoint(checkpoint: AuthCheckpointMetadata): void {
+    this.checkpoints.set(checkpoint.checkpoint_id, cloneCheckpointMetadata(checkpoint));
+  }
+
+  getCheckpoint(checkpoint_id: string): AuthCheckpointMetadata | null {
+    const checkpoint = this.checkpoints.get(checkpoint_id);
+    return checkpoint ? cloneCheckpointMetadata(checkpoint) : null;
+  }
+
+  listCheckpoints(): AuthCheckpointMetadata[] {
+    return [...this.checkpoints.values()].map(cloneCheckpointMetadata);
+  }
+
+  saveRefreshProvider(provider: AuthRefreshProviderMetadata): void {
+    this.refreshProviders.set(provider.provider_id, { ...provider });
+  }
+
+  getRefreshProvider(provider_id: string): AuthRefreshProviderMetadata | null {
+    const provider = this.refreshProviders.get(provider_id);
+    return provider ? { ...provider } : null;
+  }
+
+  listRefreshProviders(): AuthRefreshProviderMetadata[] {
+    return [...this.refreshProviders.values()].map((provider) => ({ ...provider }));
+  }
+
+  clear(): void {
+    this.enrollments.clear();
+    this.checkpoints.clear();
+    this.refreshProviders.clear();
+  }
+}
+
+export class AuthCheckpointManager {
+  constructor(private readonly store: AuthCheckpointStore = new InMemoryAuthCheckpointStore()) {}
 
   beginEnrollment(url: string, reason?: string): AuthCheckpointEnrollment {
     const enrollment: AuthCheckpointEnrollment = {
@@ -60,7 +122,7 @@ export class AuthCheckpointManager {
       started_at: Date.now(),
       reason,
     };
-    this.enrollments.set(enrollment.enrollment_id, enrollment);
+    this.store.saveEnrollment(enrollment);
     return { ...enrollment };
   }
 
@@ -71,7 +133,7 @@ export class AuthCheckpointManager {
     ttl_ms?: number;
     durability?: AuthCheckpointDurability;
   }): { ok: true; checkpoint: AuthCheckpointMetadata } | { ok: false; error: string } {
-    const enrollment = this.enrollments.get(input.enrollment_id);
+    const enrollment = this.store.getEnrollment(input.enrollment_id);
     if (!enrollment) return { ok: false, error: "auth_enrollment_not_found" };
     const appOrigin = normalizeOrigin(input.app_url ?? enrollment.app_origin).origin;
     if (appOrigin !== enrollment.app_origin) return { ok: false, error: "auth_enrollment_origin_mismatch" };
@@ -96,24 +158,25 @@ export class AuthCheckpointManager {
         has_third_party_idp: idpOrigins.length > 0,
       },
     };
-    this.enrollments.delete(input.enrollment_id);
-    this.checkpoints.set(checkpoint.checkpoint_id, checkpoint);
+    this.store.deleteEnrollment(input.enrollment_id);
+    this.store.saveCheckpoint(checkpoint);
     return { ok: true, checkpoint: { ...checkpoint, idp_origins: [...checkpoint.idp_origins] } };
   }
 
   list(url?: string): AuthCheckpointMetadata[] {
     const origin = url ? normalizeOrigin(url).origin : null;
-    return [...this.checkpoints.values()]
+    return this.store.listCheckpoints()
       .filter((checkpoint) => !origin || checkpoint.app_origin === origin)
       .map((checkpoint) => this.snapshot(checkpoint));
   }
 
   revoke(checkpoint_id: string): { ok: true; checkpoint: AuthCheckpointMetadata } | { ok: false; error: string } {
-    const checkpoint = this.checkpoints.get(checkpoint_id);
+    const checkpoint = this.store.getCheckpoint(checkpoint_id);
     if (!checkpoint) return { ok: false, error: "auth_checkpoint_not_found" };
     checkpoint.revoked_at = Date.now();
     checkpoint.status = "revoked";
     checkpoint.unattended_allowed = false;
+    this.store.saveCheckpoint(checkpoint);
     return { ok: true, checkpoint: this.snapshot(checkpoint) };
   }
 
@@ -131,34 +194,36 @@ export class AuthCheckpointManager {
       configured_at: Date.now(),
       status: "configured",
     };
-    this.refreshProviders.set(provider.provider_id, provider);
+    this.store.saveRefreshProvider(provider);
     return { ok: true, provider: this.snapshotProvider(provider) };
   }
 
   testRefreshProvider(provider_id: string): { ok: true; provider: AuthRefreshProviderMetadata; can_mint_replay_state: boolean } | { ok: false; error: string } {
-    const provider = this.refreshProviders.get(provider_id);
+    const provider = this.store.getRefreshProvider(provider_id);
     if (!provider) return { ok: false, error: "auth_refresh_provider_not_found" };
     provider.last_tested_at = Date.now();
     if (!isSecretRef(provider.secret_ref)) {
       provider.status = "failed";
       provider.failure_class = "missingSecretRef";
+      this.store.saveRefreshProvider(provider);
       return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
     }
     provider.status = "validated";
     delete provider.failure_class;
+    this.store.saveRefreshProvider(provider);
     return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: true };
   }
 
   listRefreshProviders(url?: string): AuthRefreshProviderMetadata[] {
     const origin = url ? normalizeOrigin(url).origin : null;
-    return [...this.refreshProviders.values()]
+    return this.store.listRefreshProviders()
       .filter((provider) => !origin || provider.app_origin === origin)
       .map((provider) => this.snapshotProvider(provider));
   }
 
   readiness(url: string, unattended: boolean = false): AuthReadiness {
     const origin = normalizeOrigin(url).origin;
-    const provider = [...this.refreshProviders.values()]
+    const provider = this.store.listRefreshProviders()
       .filter((candidate) => candidate.app_origin === origin && candidate.status !== "revoked")
       .sort((a, b) => b.configured_at - a.configured_at)[0];
     if (unattended && provider?.status === "validated") {
@@ -170,7 +235,7 @@ export class AuthCheckpointManager {
         notes: ["Refresh provider can mint replay auth for unattended runs."],
       };
     }
-    const checkpoint = [...this.checkpoints.values()]
+    const checkpoint = this.store.listCheckpoints()
       .filter((candidate) => candidate.app_origin === origin)
       .sort((a, b) => b.created_at - a.created_at)[0];
     if (!checkpoint) {
@@ -225,18 +290,16 @@ export class AuthCheckpointManager {
   }
 
   resetForTests(): void {
-    this.enrollments.clear();
-    this.checkpoints.clear();
-    this.refreshProviders.clear();
+    this.store.clear();
   }
 
   private snapshot(checkpoint: AuthCheckpointMetadata): AuthCheckpointMetadata {
     const status = checkpoint.status === "revoked"
       ? "revoked"
       : checkpoint.expires_at <= Date.now() ? "expired" : "valid";
-    checkpoint.status = status;
     return {
       ...checkpoint,
+      status,
       idp_origins: [...checkpoint.idp_origins],
       cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
     };
@@ -267,6 +330,14 @@ function safeOrigin(url: string): string | null {
 
 function isSecretRef(value: string): boolean {
   return /^synthi:\/\/secrets\/[A-Za-z0-9_.:/-]+$/.test(value);
+}
+
+function cloneCheckpointMetadata(checkpoint: AuthCheckpointMetadata): AuthCheckpointMetadata {
+  return {
+    ...checkpoint,
+    idp_origins: [...checkpoint.idp_origins],
+    cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
+  };
 }
 
 export const authCheckpointManager = new AuthCheckpointManager();

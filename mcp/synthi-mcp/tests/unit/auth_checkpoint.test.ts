@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { authCheckpointManager } from "../../src/browser/auth.js";
+import { AuthCheckpointManager, InMemoryAuthCheckpointStore, authCheckpointManager } from "../../src/browser/auth.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { AUTH_TOOL_NAMES, AUTH_TOOLS, dispatchAuthTool } from "../../src/tools/auth.js";
 
@@ -35,6 +35,36 @@ describe("auth checkpoint manager", () => {
       }),
     }));
     expect(JSON.stringify(result.checkpoint)).not.toMatch(/hunter2|secret-token|localStorage|sessionStorage/i);
+  });
+
+  it("can share durable metadata through an auth checkpoint store without leaking mutable objects", () => {
+    const store = new InMemoryAuthCheckpointStore();
+    const firstManager = new AuthCheckpointManager(store);
+    const enrollment = firstManager.beginEnrollment("https://app.example.com/settings");
+    const result = firstManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/settings",
+      redirect_chain: ["https://idp.example.com/login"],
+      ttl_ms: 60_000,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unexpected auth finish failure");
+
+    const secondManager = new AuthCheckpointManager(store);
+    expect(secondManager.readiness("https://app.example.com/settings", false)).toEqual(expect.objectContaining({
+      ready: true,
+      status: "ready",
+      durability: "idpCheckpoint",
+    }));
+
+    const listed = secondManager.list("https://app.example.com");
+    listed[0]?.idp_origins.push("https://mutated.example.com");
+    listed[0]!.cookie_domain_audit.idp_origin_count = 99;
+
+    expect(firstManager.list("https://app.example.com")[0]).toEqual(expect.objectContaining({
+      idp_origins: ["https://idp.example.com"],
+      cookie_domain_audit: expect.objectContaining({ idp_origin_count: 1 }),
+    }));
   });
 
   it("blocks unattended runs unless checkpoint durability is refresh-provider or CI auth", () => {
