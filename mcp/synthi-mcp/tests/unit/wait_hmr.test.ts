@@ -8,6 +8,7 @@ import {
   type GpuHmrProofMatchOpts,
   type GpuHmrProofTelemetry,
 } from "../../src/gpu_proof.js";
+import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -57,7 +58,6 @@ function timingMetrics() {
 
 function passingProofLedger() {
   const record = {
-    proofId: "gpu-ledger-proof:wait-fixture",
     project_id: "wait-generic-gpu-project",
     edit_id: "gpu-edit",
     backend: "hip",
@@ -134,18 +134,28 @@ function passingProofLedger() {
     },
     evidence_refs: ["runtime:load", "runtime:dispatch", "runtime:output"],
   };
-  return {
+  const ledger = {
     schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
-    proofId: "gpu-ledger-proof:wait-fixture",
     records: [record],
     gpuHmrSuccess: true,
-    query: {
-      schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
-      proofId: "gpu-ledger-proof:wait-fixture",
-      gpuHmrSuccess: true,
-      failedInvariants: [],
-    },
   };
+  const query = queryGpuHmrLedgerInvariants(ledger);
+  return {
+    ...ledger,
+    proofId: query.proofId,
+    gpuHmrSuccess: query.gpuHmrSuccess,
+    query,
+  };
+}
+
+function refreshLedgerIdentity(ledger: Record<string, any>) {
+  const query = queryGpuHmrLedgerInvariants({
+    schemaVersion: ledger.schemaVersion,
+    records: ledger.records,
+  });
+  ledger.proofId = query.proofId;
+  ledger.gpuHmrSuccess = query.gpuHmrSuccess;
+  ledger.query = query;
 }
 
 function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Record<string, unknown> = {}) {
@@ -930,6 +940,7 @@ describe("synthi_wait_hmr", () => {
       compute_only_target_verified: true,
       evidence_refs: ["oracle-target:compute:a"],
     };
+    refreshLedgerIdentity(ledger);
     const otherLedger = passingProofLedger();
     const otherRecord = otherLedger.records[0] as Record<string, any>;
     otherRecord.output_oracle_target = {
@@ -938,6 +949,7 @@ describe("synthi_wait_hmr", () => {
       compute_only_target_verified: true,
       evidence_refs: ["oracle-target:compute:b"],
     };
+    refreshLedgerIdentity(otherLedger);
     const fake = installFakeAttached(async () => {
       fake.feedHmr({
         status: "gpu-proof-state",

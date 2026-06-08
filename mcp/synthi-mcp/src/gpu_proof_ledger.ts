@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = "synthi.gpu.hmr.proof_ledger.v1";
 
 const GPU_PROJECT_KINDS = new Set(["gpu_project", "mixed_project"]);
@@ -177,6 +179,23 @@ function finiteNumber(value: unknown): number | null {
 function finiteNonNegativeNumber(value: unknown): number | null {
   const n = finiteNumber(value);
   return n !== null && n >= 0 ? n : null;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(object[key])}`
+  ).join(",")}}`;
+}
+
+function sha256Hex(value: unknown): string {
+  return createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function canonicalLedgerProofId(input: Record<string, unknown>): string {
+  return `gpu-ledger-proof:sha256:${sha256Hex(stableJson(input))}`;
 }
 
 function eventId(event: Record<string, unknown>): string | null {
@@ -753,6 +772,35 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const metricClock = firstText(input.metric_clock, input.metricClock, timings.metric_clock, timings.metricClock, timingMetrics.metric_clock, timingMetrics.metricClock);
   const metricScope = firstText(input.metric_scope, input.metricScope, timings.metric_scope, timings.metricScope, timingMetrics.metric_scope, timingMetrics.metricScope);
   const cacheState = firstText(input.cache_state, input.cacheState, timings.cache_state, timings.cacheState, timingMetrics.cache_state, timingMetrics.cacheState);
+  const recomputedProofId = canonicalLedgerProofId({
+    projectId,
+    editId,
+    backend,
+    contractHash,
+    artifactBeforeHash,
+    artifactAfterHash,
+    loaderEvent,
+    epochPublishEvent,
+    dispatchEvent,
+    outputEvent,
+    outputOracleTarget,
+    cpuHmrUsed: cpuHmrUsed.value === true,
+    fullRebuildUsed: fullRebuildUsed.value === true,
+    processRestarted: processRestarted.value === true,
+    firewallEvidence: {
+      cpuHmrUsedEvidencePresent: cpuHmrUsed.present,
+      fullRebuildUsedEvidencePresent: fullRebuildUsed.present,
+      processRestartedEvidencePresent: processRestarted.present,
+    },
+  });
+  const suppliedRecordProofId = firstText(input.proof_id, input.proofId);
+  if (suppliedRecordProofId && suppliedRecordProofId !== recomputedProofId) {
+    failures.push({
+      code: "record_proof_id_mismatch",
+      suppliedProofId: suppliedRecordProofId,
+      recomputedProofId,
+    });
+  }
 
   if (!projectId) failures.push({ code: "project_id_missing" });
   if (!editId) failures.push({ code: "edit_id_missing" });
@@ -1064,7 +1112,7 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
 
   return {
     schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
-    proofId: firstText(input.proof_id, input.proofId),
+    proofId: recomputedProofId,
     gpuHmrSuccess: failures.length === 0,
     failedInvariants: failures,
   };

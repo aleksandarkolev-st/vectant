@@ -5,6 +5,7 @@ import {
   gpuHmrProofStateRank,
   validateGpuHmrProofState,
 } from "../../src/gpu_proof.js";
+import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -47,7 +48,6 @@ function timingMetrics() {
 
 function proofLedger(overrides: Record<string, unknown> = {}) {
   const record = {
-    proofId: "gpu-ledger-proof:fixture",
     project_id: "generic-gpu-project",
     edit_id: "gpu-edit",
     backend: "hip",
@@ -129,17 +129,17 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
     evidence_refs: ["runtime:load", "runtime:dispatch", "runtime:output"],
     ...overrides,
   };
-  return {
+  const ledger = {
     schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
-    proofId: "gpu-ledger-proof:fixture",
     records: [record],
     gpuHmrSuccess: true,
-    query: {
-      schemaVersion: "synthi.gpu.hmr.proof_ledger.v1",
-      proofId: "gpu-ledger-proof:fixture",
-      gpuHmrSuccess: true,
-      failedInvariants: [],
-    },
+  };
+  const query = queryGpuHmrLedgerInvariants(ledger);
+  return {
+    ...ledger,
+    proofId: query.proofId,
+    gpuHmrSuccess: query.gpuHmrSuccess,
+    query,
   };
 }
 
@@ -486,6 +486,31 @@ describe("GPU HMR proof-state validation", () => {
       "cpu_hmr_used"
     );
     expect(validation.runtimeProofArtifactValidation).toBeUndefined();
+  });
+
+  it("rejects output oracle proof when the ledger proof id is not content-addressed", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, unknown>;
+    const forgedProofId = "gpu-ledger-proof:not-content-addressed";
+    record.proofId = forgedProofId;
+    ledger.proofId = forgedProofId;
+    ledger.query = {
+      ...ledger.query,
+      proofId: forgedProofId,
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-output-oracle-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("proof_ledger_rejected");
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toEqual(
+      expect.arrayContaining(["record_proof_id_mismatch", "ledger_proof_id_mismatch"])
+    );
   });
 
   it("rejects output oracle proof with a recomputed accepted ledger and no runtime artifact", () => {
