@@ -558,7 +558,7 @@ describe("browser replay generation scenarios", () => {
           { kind: "role", locator: "page.getByRole(\"button\", { name: \"Apply dashboard\" })", confidence: 0.98, reason: "role" },
         ],
       }),
-    ]);
+    ], { mode: "sameSession" });
 
     expect(generated.code).toContain("await target1.selectOption(\"enterprise\");");
     expect(generated.code).toContain("await expect(target1).toHaveValue(\"enterprise\");");
@@ -821,6 +821,30 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(target2).toBeEnabled();");
     expect(generated.code).not.toContain("await target2.click();");
     expect(generated.warnings).toContain("prefixOnly stopped before mutation boundary save");
+  });
+
+  it("defaults exported mutation workflows to prefix-only replay", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "run",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          network_method: "POST",
+          network_url: "https://app.example.com/api/query",
+          element: { role: "button", name: "Run query" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Run query\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.mode).toBe("prefixOnly");
+    expect(generated.code).toContain("// Mutation mode: prefixOnly");
+    expect(generated.code).toContain("// Mutation boundary: run");
+    expect(generated.code).toContain("await expect(target1).toBeEnabled();");
+    expect(generated.code).not.toContain("await target1.click();");
   });
 
   it("treats cold-session script generation as prefix-safe around mutation", () => {

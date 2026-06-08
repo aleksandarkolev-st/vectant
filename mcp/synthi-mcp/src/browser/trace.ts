@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rankedLocatorCandidates } from "./locator.js";
 import { redactUrl, redactValue } from "./security.js";
-import { compileWorkflowContract, normalizeReplayMode, type WorkflowReplayModeV7 } from "./workflow.js";
+import { compileWorkflowContract, normalizeReplayMode, type WorkflowContractV7, type WorkflowReplayModeV7 } from "./workflow.js";
 import type {
   BrowserActionKind,
   BrowserElementMetadata,
@@ -205,9 +205,11 @@ export interface GeneratedScript {
 }
 
 export function generatePlaywrightScript(events: BrowserTraceEvent[], options: { mode?: WorkflowReplayModeV7 } = {}): GeneratedScript {
-  const mode = normalizeReplayMode(options.mode);
   const workflow = compileWorkflowContract(events);
   const contract = workflow.contract;
+  const mode = options.mode === undefined
+    ? defaultScriptReplayMode(contract)
+    : normalizeReplayMode(options.mode);
   const baseOrigin = firstHttpOrigin(events);
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const usesClipboardDrop = events.some(isClipboardDropEvent);
@@ -591,6 +593,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
 
   lines.push("});");
   return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
+}
+
+function defaultScriptReplayMode(contract: WorkflowContractV7): WorkflowReplayModeV7 {
+  if (contract.mutationBoundaryPlan.defaultReplayMode === "prefixOnly") return "prefixOnly";
+  if (contract.mutationBoundaryPlan.defaultReplayMode === "ciIsolated") return "coldSession";
+  return "sameSession";
 }
 
 function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] {

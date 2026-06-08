@@ -306,6 +306,36 @@ describe("browser MCP tool surface", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("exports saved mutation workflows in prefix-only mode by default", async () => {
+    const url = "https://app.example.com/query";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Query", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        network_method: "POST",
+        network_url: "https://app.example.com/api/query",
+      },
+      element: { tag: "button", role: "button", name: "Run query" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+
+    const generated = await dispatchBrowserTool("synthi_browser_generate_script", {
+      workflow_id: workflowId,
+    });
+
+    expect(generated?.isError).toBeUndefined();
+    const body = generated?.structuredContent as { mode: string; code: string };
+    expect(body.mode).toBe("prefixOnly");
+    expect(body.code).toContain("// Mutation boundary:");
+    expect(body.code).toContain("await expect(target1).toBeEnabled();");
+    expect(body.code).not.toContain("await target1.click();");
+  });
+
   it("replays native drag workflows whose drop target is stored in event detail", async () => {
     const url = "https://app.example.com/board";
     const dropLocator = "page.getByRole(\"list\", { name: \"Done\" })";
@@ -409,7 +439,7 @@ describe("browser MCP tool surface", () => {
         }),
       }),
       "drag",
-      expect.stringContaining("Revenue audit"),
+      expect.stringContaining("board.revenue"),
       dropLocator
     );
   });
@@ -575,7 +605,7 @@ describe("browser MCP tool surface", () => {
         detail: expect.objectContaining({ control_kind: "range", range_control: true }),
       }),
       "fill",
-      expect.stringContaining("Budget"),
+      expect.stringContaining("settings.budget"),
       "75"
     );
   });
@@ -630,7 +660,7 @@ describe("browser MCP tool surface", () => {
         }),
       }),
       "select",
-      expect.stringContaining("Teams"),
+      expect.stringContaining("settings.teams"),
       "[\"qa\",\"design\"]"
     );
   });

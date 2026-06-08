@@ -992,7 +992,7 @@ function browserEndTeachTool(args: unknown): ToolResponse {
 
 function browserGenerateScriptTool(args: unknown): ToolResponse {
   const a = obj(args);
-  const mode = normalizeReplayMode(a["mode"]);
+  const mode = a["mode"] === undefined ? undefined : normalizeReplayMode(a["mode"]);
   const result = browserBroker.generatedScriptFor(stringOpt(a["workflow_id"]), mode);
   if (!result.ok) return errorResponse(result.error, result.workflow_id ? { workflow_id: result.workflow_id } : undefined);
   return jsonResponse({ ok: true, ...result.generated, workflow_id: result.artifact.workflow_id });

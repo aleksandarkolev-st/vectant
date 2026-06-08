@@ -1959,6 +1959,42 @@ const CASES = [
     },
   },
   {
+    id: "network-mutation-unlabeled-action",
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayCode: [
+      "Mutation boundary: browser_evt_1. Prefix-only replay verifies reachability but does not commit this action.",
+      "await expect(target1).toBeEnabled();",
+    ],
+    files: () => commonFiles({
+      title: "Network Mutation Boundary Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Network Mutation Boundary Workflow</h1>",
+        "      <button type=\"button\" data-testid=\"run-query\" data-synthi-source-id=\"query.run\">Run query</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const status = document.querySelector('#status');",
+        "document.querySelector('[data-testid=\"run-query\"]').addEventListener('click', async () => {",
+        "  status.textContent = 'Running query';",
+        "  await fetch('/api/query', {",
+        "    method: 'POST',",
+        "    headers: { 'content-type': 'application/json' },",
+        "    body: JSON.stringify({ intent: 'teach-network-mutation-boundary' }),",
+        "  }).catch(() => undefined);",
+        "  status.textContent = 'Query run requested';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("button", { name: "Run query" }).click();
+      await page.getByText("Query run requested").waitFor();
+    },
+  },
+  {
     id: "native-confirm-dialog",
     minSteps: 1,
     expectedActions: ["click"],

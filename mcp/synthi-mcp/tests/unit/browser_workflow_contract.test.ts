@@ -195,6 +195,52 @@ describe("browser workflow contract compiler", () => {
     }));
   });
 
+  it("treats write-method network evidence as a mutation boundary", () => {
+    const url = "https://app.example.com/query";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Run query", test_id: "run-query" },
+    }).ok).toBe(true);
+
+    const annotated = browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      actions: ["click"],
+      detail: {
+        network_event: true,
+        network_method: "POST",
+        network_url: "https://app.example.com/api/query",
+        resource_type: "fetch",
+      },
+      within_ms: 5000,
+    });
+
+    expect(annotated.ok).toBe(true);
+    const workflow = browserBroker.compiledWorkflow();
+    const step = workflow.contract.steps[0];
+
+    expect(step?.mutation).toEqual(expect.objectContaining({
+      kind: "unknown",
+      evidence: ["network_method_implies_mutation"],
+      requiresIsolation: true,
+    }));
+    expect(workflow.contract.mutationBoundaryPlan.firstMutationStepId).toBe(step?.stepId);
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("prefixOnly");
+    expect(workflow.contract.limitations).toContain("mutationRequiresIsolation");
+    expect(workflow.contract.failureClasses).toContain("mutationBlocked");
+    expect(planWorkflowReplay(browserBroker.traceSnapshot(), "prefixOnly")).toEqual(expect.objectContaining({
+      status: "stoppedAtMutationBoundary",
+      stoppedBeforeStepId: step?.stepId,
+    }));
+  });
+
   it("marks redacted inputs as secret parameters without leaking values", () => {
     const workflow = compileWorkflowContract([
       {

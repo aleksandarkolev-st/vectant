@@ -713,12 +713,38 @@ export class BrowserPlaywrightAdapter {
       });
       page.on("request", (request) => {
         const redacted = redactUrl(request.url());
+        const method = request.method().toUpperCase();
         this.pushEvent(this.networkEvents, tab_id, {
           kind: "network",
           url: redacted.url,
           redacted: redacted.redacted,
-          detail: { method: request.method(), resource_type: request.resourceType() },
+          detail: { method, resource_type: request.resourceType() },
         });
+        if (/^(POST|PUT|PATCH|DELETE)$/i.test(method)) {
+          let origin: string;
+          try {
+            origin = normalizeOrigin(page.url()).origin;
+          } catch {
+            return;
+          }
+          const detail: Record<string, unknown> = {
+            network_event: true,
+            network_method: method,
+            network_url: redacted.url,
+            network_url_redacted: redacted.redacted,
+            resource_type: request.resourceType(),
+          };
+          setTimeout(() => {
+            this.teachEventAnnotationSink?.({
+              tab_id,
+              url: page.url(),
+              origin,
+              actions: ["click", "dblclick", "press", "select"],
+              detail,
+              within_ms: 5000,
+            });
+          }, 100);
+        }
       });
       page.on("dialog", () => {
         // Keep this adapter from auto-dismissing user/runtime-owned dialogs.
