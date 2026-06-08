@@ -1484,6 +1484,118 @@ function proofArtifactFileName(proofArtifactPath) {
   return /^gpu-proof_[a-f0-9]{32,}\.json$/i.test(fileName) ? fileName : null;
 }
 
+function proofArtifactPathFromProofId(proofId) {
+  const match = String(proofId ?? '').trim().match(/^gpu-proof:([a-f0-9]{32,})$/i);
+  return match ? `.synthi/gpu-hmr/proofs/gpu-proof_${match[1].toLowerCase()}.json` : null;
+}
+
+function structuredLogJsonPayload(line) {
+  const text = String(line ?? '');
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const payload = JSON.parse(text.slice(start, end + 1));
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function proofRefLooksLikeGpuProof(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const schemaVersion = stringField(value, ['schemaVersion', 'schema_version']);
+  const type = stringField(value, ['type']);
+  const proofId = stringField(value, ['proofId', 'proof_id']);
+  const resultState = stringField(value, ['resultState', 'result_state']);
+  return schemaVersion === 'synthi.gpu.hmr.proof.v1'
+    || type === 'gpu_hmr_proof'
+    || /^gpu-proof:/i.test(proofId)
+    || /^gpu-hmr-/i.test(resultState);
+}
+
+function proofArtifactPathFromProofRef(value) {
+  if (typeof value === 'string') {
+    if (proofArtifactFileName(value)) return value;
+    return proofArtifactPathFromProofId(value);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const proofPath = stringField(value, ['proofArtifactPath', 'proof_artifact_path']);
+  if (proofPath && proofArtifactFileName(proofPath)) return proofPath;
+  return proofArtifactPathFromProofId(stringField(value, ['proofId', 'proof_id']));
+}
+
+function proofArtifactPathFromStructuredLogLine(line) {
+  const payload = structuredLogJsonPayload(line);
+  if (!proofRefLooksLikeGpuProof(payload)) return null;
+  return proofArtifactPathFromProofRef(payload);
+}
+
+function proofArtifactPathCandidatesFromValue(value, source, phase = null, depth = 0, out = []) {
+  if (depth > 5 || value == null) return out;
+  if (typeof value === 'string') {
+    const proofPath = proofArtifactPathFromProofRef(value);
+    if (proofPath) out.push({ proofPath, source, phase });
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      proofArtifactPathCandidatesFromValue(item, source, phase, depth + 1, out);
+    }
+    return out;
+  }
+  if (proofRefLooksLikeGpuProof(value)) {
+    const proofPath = proofArtifactPathFromProofRef(value);
+    if (proofPath) out.push({ proofPath, source, phase });
+  }
+  for (const nested of Object.values(value)) {
+    if (nested && typeof nested === 'object') {
+      proofArtifactPathCandidatesFromValue(nested, source, phase, depth + 1, out);
+    }
+  }
+  return out;
+}
+
+function proofArtifactPathCandidatesFromRuntimeEvidence() {
+  const lines = [
+    ...new Set([
+      ...((Array.isArray(report.evidence?.worker_log_lines) ? report.evidence.worker_log_lines : [])),
+      ...((Array.isArray(report.evidence?.worker_service_log_lines) ? report.evidence.worker_service_log_lines : [])),
+      ...((Array.isArray(report.evidence?.upstream_run_log_lines) ? report.evidence.upstream_run_log_lines : [])),
+    ]),
+  ];
+  return lines
+    .map((line) => proofArtifactPathFromStructuredLogLine(line))
+    .filter((proofPath) => typeof proofPath === 'string' && proofPath.trim())
+    .map((proofPath) => ({
+      proofPath,
+      source: 'runtime_structured_gpu_proof_log',
+    }));
+}
+
+function proofArtifactPathCandidatesFromPhases() {
+  const candidates = [];
+  for (const phase of report.phases) {
+    proofArtifactPathCandidatesFromValue(phase?.gpu_proof, 'phase_gpu_proof', phase, 0, candidates);
+    proofArtifactPathCandidatesFromValue(
+      phase?.gpu_proof_telemetry,
+      'phase_gpu_proof_telemetry',
+      phase,
+      0,
+      candidates,
+    );
+    proofArtifactPathCandidatesFromValue(
+      phase?.wait_hmr_detail,
+      'phase_wait_hmr_detail',
+      phase,
+      0,
+      candidates,
+    );
+  }
+  return candidates;
+}
+
 async function readWorkerProofArtifact(proofArtifactPath) {
   if (CFG.mcpTransport !== 'docker') {
     return { proofArtifactPath, found: false, reason: 'docker_transport_required' };
@@ -1543,17 +1655,29 @@ async function readWorkerProofArtifact(proofArtifactPath) {
 async function collectGpuProofArtifacts() {
   const records = [];
   const seen = new Set();
-  for (const phase of report.phases) {
-    const proofPath = phase?.gpu_proof?.proofArtifactPath;
+  const candidates = [
+    ...proofArtifactPathCandidatesFromPhases(),
+    ...proofArtifactPathCandidatesFromRuntimeEvidence(),
+  ];
+  report.proof_artifact_candidates = candidates.map((candidate) => ({
+    proofArtifactPath: candidate.proofPath,
+    source: candidate.source,
+    phase: candidate.phase?.name ?? null,
+  }));
+  for (const candidate of candidates) {
+    const proofPath = candidate.proofPath;
     if (typeof proofPath !== 'string' || !proofPath.trim() || seen.has(proofPath)) continue;
     seen.add(proofPath);
     const record = await readWorkerProofArtifact(proofPath);
+    record.source = candidate.source;
     records.push(record);
-    phase.gpu_proof_artifact = record.found
+    if (candidate.phase) {
+      candidate.phase.gpu_proof_artifact = record.found
       ? {
           found: true,
           proofId: record.artifact?.proofId ?? null,
           containerPath: record.containerPath,
+          source: candidate.source,
           evidenceKinds: Array.isArray(record.artifact?.evidenceRefs)
             ? record.artifact.evidenceRefs.map((evidence) => evidence?.kind).filter(Boolean)
             : [],
@@ -1561,7 +1685,9 @@ async function collectGpuProofArtifacts() {
       : {
           found: false,
           reason: record.reason,
+          source: candidate.source,
         };
+    }
   }
   report.proof_artifacts = records;
   return records;
@@ -3598,6 +3724,7 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
     wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
     wait_hmr_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
     gpu_proof: wait?.gpu_proof ?? null,
+    gpu_proof_telemetry: wait?.gpu_proof_telemetry ?? null,
     gpu_proof_validation: wait?.gpu_proof_validation ?? null,
     runtime_identity: phaseRuntimeIdentitySummary(identityMonitor),
     wait_call_wall_ms: Date.now() - waitStart,
@@ -3733,6 +3860,26 @@ function hmrStatusFromEvent(entry) {
   return null;
 }
 
+function latestGpuProofTelemetryFromEventLogEntries(entries) {
+  for (const entry of Array.isArray(entries) ? entries.slice().reverse() : []) {
+    const raw = entry?.raw && typeof entry.raw === 'object' ? entry.raw : {};
+    const previewId = hmrPreviewId(raw);
+    if (previewId && previewId !== CFG.slug) continue;
+    const candidates = [
+      ...proofArtifactPathCandidatesFromValue(raw, 'event_log_gpu_proof'),
+      ...proofArtifactPathCandidatesFromValue(entry, 'event_log_gpu_proof'),
+    ];
+    const proofPath = candidates.find((candidate) => proofArtifactFileName(candidate.proofPath))?.proofPath;
+    if (proofPath) {
+      return {
+        proofArtifactPath: proofPath,
+        source: 'event_log_gpu_proof',
+      };
+    }
+  }
+  return null;
+}
+
 async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null, waitContract = null) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
@@ -3740,6 +3887,7 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
     10000,
   ).catch(() => null);
   const entries = Array.isArray(log?.entries) ? log.entries : [];
+  const latestGpuProofTelemetry = latestGpuProofTelemetryFromEventLogEntries(entries);
   for (const entry of entries.slice().reverse()) {
     const raw = entry?.raw && typeof entry.raw === 'object' ? entry.raw : {};
     const previewId = hmrPreviewId(raw);
@@ -3759,6 +3907,7 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
       detail: raw.data && typeof raw.data === 'object' ? raw.data : raw,
       wait_args: waitArgs,
       wait_contract: waitContract ?? waitContractFromArgs(waitArgs ?? {}),
+      gpu_proof_telemetry: latestGpuProofTelemetry,
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered after ignoring a stale wait_hmr event',
@@ -6386,6 +6535,27 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !hostIdentityEvidence.required_roles_observed
   ) {
     throw new Error('runtime host identity evidence parser failed');
+  }
+  const structuredProofLine =
+    '[compile-device] {"schemaVersion":"synthi.gpu.hmr.proof.v1","type":"gpu_hmr_proof","resultState":"gpu-hmr-symbol-bound","proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"}';
+  const structuredProofPath = proofArtifactPathFromStructuredLogLine(structuredProofLine);
+  if (structuredProofPath !== '.synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json') {
+    throw new Error('structured GPU proof log artifact path parser failed');
+  }
+  const proofIdOnlyPath = proofArtifactPathFromStructuredLogLine(
+    '[compile-device] {"type":"gpu_hmr_proof","proofId":"gpu-proof:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","resultState":"gpu-hmr-symbol-bound"}',
+  );
+  if (proofIdOnlyPath !== '.synthi/gpu-hmr/proofs/gpu-proof_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json') {
+    throw new Error('structured GPU proof log proofId fallback parser failed');
+  }
+  const nonProofPath = proofArtifactPathFromStructuredLogLine(
+    '[compile-device] {"schemaVersion":"other.v1","proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"}',
+  );
+  const invalidProofPath = proofArtifactPathFromStructuredLogLine(
+    '[compile-device] {"schemaVersion":"synthi.gpu.hmr.proof.v1","proofArtifactPath":".synthi/gpu-hmr/proofs/not-a-proof.json"}',
+  );
+  if (nonProofPath !== null || invalidProofPath !== null) {
+    throw new Error('structured GPU proof log artifact path parser accepted an invalid line');
   }
   const outputOracleEvidence = runtimeOutputOracleEvidence([
     '[gpu-runtime-boundary] output_oracle id=probe.checksum required_oracle_id=probe.checksum kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1',
