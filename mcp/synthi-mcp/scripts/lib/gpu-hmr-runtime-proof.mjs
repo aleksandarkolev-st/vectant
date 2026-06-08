@@ -986,6 +986,11 @@ function backendSpecificAdapterSafetyEvidence(observation = {}) {
   ]);
 }
 
+function backendSpecificAdapterSafetyDeclared(observation = {}) {
+  return observation.backendSpecificAdapterSafetyProven === true
+    || observation.backend_specific_adapter_safety_proven === true;
+}
+
 function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degradedState, degradedReason) {
   const requiredRank = proofStateRank(requiredState);
   const passed = evidenceRank >= requiredRank;
@@ -2804,10 +2809,10 @@ export function classifyGpuHmrAbiProof(observation = {}) {
   const layoutSizeAlignmentVerified = observation.layoutSizeAlignmentVerified === true;
   const compatibilityClass = abiCompatibilityClass(observation) ?? 'compatible';
   const backendSpecificAdapterSafetyEvidenceRefs = backendSpecificAdapterSafetyEvidence(observation);
-  const backendSpecificAdapterSafetyProven =
-    observation.backendSpecificAdapterSafetyProven === true
-    || observation.backend_specific_adapter_safety_proven === true
-    || backendSpecificAdapterSafetyEvidenceRefs.length > 0;
+  const adapterSafetyDeclared = backendSpecificAdapterSafetyDeclared(observation);
+  const adapterSafetyDeclaredWithoutEvidence =
+    adapterSafetyDeclared && backendSpecificAdapterSafetyEvidenceRefs.length === 0;
+  const backendSpecificAdapterSafetyProven = backendSpecificAdapterSafetyEvidenceRefs.length > 0;
   const compatibilityClassAccepted =
     ['compatible', 'additive'].includes(compatibilityClass)
     || backendSpecificAdapterSafetyProven;
@@ -2865,7 +2870,9 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     degradedReason: metadataObserved
       ? (typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
         ? observation.degradedReason.trim()
-        : !compatibilityClassAccepted
+        : adapterSafetyDeclaredWithoutEvidence
+          ? 'backend_specific_adapter_safety_evidence_missing'
+          : !compatibilityClassAccepted
           ? 'abi_compatibility_class_unaccepted'
           : !layoutSizeAlignmentVerified
           ? 'abi_layout_size_alignment_unverified'

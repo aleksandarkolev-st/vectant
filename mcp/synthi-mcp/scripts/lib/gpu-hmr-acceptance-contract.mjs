@@ -402,6 +402,12 @@ function normalizeAbi(value = {}) {
     notes: text(abi.notes),
     backend_specific_adapter_safety_proven:
       boolValue(abi.backend_specific_adapter_safety_proven ?? abi.backendSpecificAdapterSafetyProven),
+    backend_specific_adapter_safety_evidence_refs: compactStringList(
+      abi.backend_specific_adapter_safety_evidence_refs
+      ?? abi.backendSpecificAdapterSafetyEvidenceRefs
+      ?? abi.adapter_safety_evidence_refs
+      ?? abi.adapterSafetyEvidenceRefs,
+    ),
   };
 }
 
@@ -627,7 +633,18 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     addFailure(failures, 'ai_hint_used_as_authoritative_contract_field', marker);
   }
   const abi = contract.abi_compatibility_class;
-  if (!['compatible', 'additive'].includes(abi.value) && !abi.backend_specific_adapter_safety_proven) {
+  const backendSpecificAdapterSafetyProven =
+    abi.backend_specific_adapter_safety_proven
+    && abi.backend_specific_adapter_safety_evidence_refs.length > 0;
+  if (
+    abi.backend_specific_adapter_safety_proven
+    && abi.backend_specific_adapter_safety_evidence_refs.length === 0
+  ) {
+    addFailure(failures, 'abi_backend_specific_adapter_safety_evidence_refs_missing', {
+      abi: abi.value,
+    });
+  }
+  if (!['compatible', 'additive'].includes(abi.value) && !backendSpecificAdapterSafetyProven) {
     addFailure(failures, 'abi_compatibility_not_proven', { abi: abi.value });
   }
   if (!abi.evidence_refs.length) addFailure(failures, 'abi_evidence_refs_missing');
@@ -1565,6 +1582,16 @@ function abiCompatibilityClassFromProof(abiProof = {}) {
   return 'compatible';
 }
 
+function abiAdapterSafetyEvidenceRefsFromProof(abiProof = {}) {
+  const proof = asObject(abiProof);
+  return compactStringList(
+    proof.backendSpecificAdapterSafetyEvidenceRefs
+    ?? proof.backend_specific_adapter_safety_evidence_refs
+    ?? proof.adapterSafetyEvidenceRefs
+    ?? proof.adapter_safety_evidence_refs,
+  );
+}
+
 export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const validationContext = asObject(input.validationContext ?? input.validation_context);
   const sourceProofs = asArray(input.sourceProofs ?? input.source_proofs ?? (
@@ -1640,6 +1667,11 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const fullDeviceFallback = /full[_-]?device|device[_-]?module/.test(
     String(selectedIsland.artifactKind ?? selectedIsland.artifact_kind ?? ''),
   );
+  const abiAdapterSafetyEvidenceRefs = abiAdapterSafetyEvidenceRefsFromProof(abiProof);
+  const abiAdapterSafetyProven = (
+    abiProof.backendSpecificAdapterSafetyProven === true
+    || abiProof.backend_specific_adapter_safety_proven === true
+  ) && abiAdapterSafetyEvidenceRefs.length > 0;
   const contract = normalizeGpuHmrAcceptanceContract({
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
     project_id: firstText(input.projectId, input.project_id, input.workspaceSlug, validationContext.workspaceSlug),
@@ -1676,9 +1708,8 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     abi_compatibility_class: {
       value: abiCompatibilityClassFromProof(abiProof),
       evidence_refs: compactStringList(abiProof.evidenceRefs ?? abiProof.evidence_refs),
-      backend_specific_adapter_safety_proven:
-        abiProof.backendSpecificAdapterSafetyProven === true
-        || abiProof.backend_specific_adapter_safety_proven === true,
+      backend_specific_adapter_safety_proven: abiAdapterSafetyProven,
+      backend_specific_adapter_safety_evidence_refs: abiAdapterSafetyEvidenceRefs,
     },
     abi_metadata: {
       args: uniqueObjectsByPath([
