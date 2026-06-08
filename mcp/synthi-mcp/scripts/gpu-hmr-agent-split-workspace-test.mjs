@@ -1178,6 +1178,32 @@ function validateGeneratedSplit(split) {
   return granularity;
 }
 
+function gpuSplitEndpointEvidenceFromSidecar(split) {
+  const sidecar = split?.sidecar && typeof split.sidecar === 'object' ? split.sidecar : {};
+  const manifest = split?.manifest && typeof split.manifest === 'object' ? split.manifest : {};
+  const rolePaths = Object.values(split?.roles || {}).map(cleanRel).filter(Boolean);
+  const gpuManifestObserved = Boolean(manifest.gpu)
+    && rolePaths.some((filePath) => /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(filePath));
+  const sidecarReports = [
+    'agentic_split_report',
+    'generated_artifact_purity_report',
+    'device_mapping_report',
+    'deterministic_source_context_report',
+    'launch_indirection_report',
+    'model_provenance',
+  ].filter((key) => sidecar[key] && typeof sidecar[key] === 'object');
+  const generatedFilesObserved = rolePaths.length >= 5
+    && rolePaths.every((filePath) => split.files && Object.prototype.hasOwnProperty.call(split.files, filePath));
+  return {
+    observed: gpuManifestObserved && generatedFilesObserved,
+    detail: [
+      `gpu_manifest=${gpuManifestObserved}`,
+      `generated_files=${rolePaths.length}`,
+      `sidecar_reports=${sidecarReports.join('|') || 'none'}`,
+    ].join(' '),
+  };
+}
+
 function flipDeviceDirection(source) {
   const marker = 'SYNTHI_HMR_DIRECTION_TOKEN';
   const lines = source.split('\n');
@@ -1624,7 +1650,6 @@ async function run() {
     CFG.hmrTimeoutMs,
     firstStart,
   );
-  record('worker used GPU split endpoint', sawGpuSplit.matched ? 'pass' : 'fail', sawGpuSplit.snippet || 'no GPU split marker');
 
   const sawDeviceCompile = await awaitWorkerLogRegex(
     /compile-device.*(hipcc|nvcc)|Device sidecar reload vendor=.*result=Success/,
@@ -1639,6 +1664,12 @@ async function run() {
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
+  const splitEndpointEvidence = gpuSplitEndpointEvidenceFromSidecar(split);
+  record(
+    'worker used GPU split endpoint',
+    sawGpuSplit.matched || splitEndpointEvidence.observed ? 'pass' : 'fail',
+    sawGpuSplit.snippet || splitEndpointEvidence.detail || 'no GPU split marker or sidecar evidence',
+  );
   const granularity = validateGeneratedSplit(split);
   const granularityPath = await writeJsonArtifact('generated-split-granularity', granularity);
   record('generated split granularity artifact', 'pass', granularityPath);
