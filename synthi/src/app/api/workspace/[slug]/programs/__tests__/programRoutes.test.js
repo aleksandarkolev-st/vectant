@@ -102,9 +102,9 @@ describe('POST /programs/install', () => {
       packageId: 'web', version: '1.0.0', displayName: 'Web', runtimeType: 'web',
       workingDir: '', install: ['npm ci'], launch: 'npm run dev', env: {}, ports: [3000],
       surfaces: [], health: null, permissions: ['program.launch', 'network.outbound'],
-      source: 'synthi.program.json', sourceHints: {},
+      source: 'vectant.program.json', sourceHints: {},
     },
-    source: 'synthi.program.json',
+    source: 'vectant.program.json',
   };
 
   it('installs for an owner/admin once consent covers the manifest scopes', async () => {

@@ -46,7 +46,7 @@ describe('parseProgramManifest — valid manifests', () => {
     expect(cfg.ports).toEqual([3000, 9229]);
     expect(cfg.surfaces).toEqual(['app', 'logs', 'terminal', 'ports', 'health', 'settings']);
     expect(cfg.health).toEqual({ type: 'http', target: 'http://localhost:3000/health', intervalMs: 5000 });
-    expect(cfg.source).toBe('synthi.program.json');
+    expect(cfg.source).toBe('vectant.program.json');
     expect(cfg.sourceHints).toEqual({});
   });
 

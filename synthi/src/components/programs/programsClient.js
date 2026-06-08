@@ -66,7 +66,7 @@ export async function fetchInstalledPrograms(workspaceSlug) {
 }
 
 /**
- * Install the workspace recipe (synthi.program.json / devcontainer.json).
+ * Install the workspace recipe (vectant.program.json / devcontainer.json).
  * Throws with `error.status === 409` and `error.body.requested` (scopes) when
  * consent is required; pass `{ grantScopes }` to approve and re-submit.
  */

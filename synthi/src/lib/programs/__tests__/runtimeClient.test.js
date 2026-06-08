@@ -18,19 +18,19 @@ afterEach(() => {
 });
 
 describe('discoverManifest', () => {
-  it('parses a synthi.program.json manifest returned by collab-server', async () => {
+  it('parses a vectant.program.json manifest returned by collab-server', async () => {
     mockFetch({
       found: true,
-      source: 'synthi.program.json',
+      source: 'vectant.program.json',
       raw: JSON.stringify({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', ports: [3000], runtimeType: 'web' }),
     });
 
     const result = await discoverManifest('team');
 
-    expect(result.source).toBe('synthi.program.json');
+    expect(result.source).toBe('vectant.program.json');
     expect(result.config.launch).toBe('npm run dev');
     expect(result.config.ports).toEqual([3000]);
-    expect(result.config.source).toBe('synthi.program.json');
+    expect(result.config.source).toBe('vectant.program.json');
   });
 
   it('imports a devcontainer.json when that is what the workspace has', async () => {
@@ -57,7 +57,7 @@ describe('discoverManifest', () => {
 describe('launchInstalledProgram', () => {
   it('posts the recipe config to the collab launch-program endpoint and returns the session', async () => {
     const fetchFn = mockFetch({ session: { sessionId: 'ps-1', state: 'starting' } });
-    const config = { packageId: 'web', version: '1.0.0', launch: 'npm run dev', source: 'synthi.program.json' };
+    const config = { packageId: 'web', version: '1.0.0', launch: 'npm run dev', source: 'vectant.program.json' };
 
     const session = await launchInstalledProgram({ workspaceSlug: 'team', sessionId: 'ps-1', config, userId: 'u1', title: 'Web' });
 

@@ -427,7 +427,7 @@ test('launchManagedProgram composes the recipe, scrubs declared env, and seeds d
       surfaces: [],
       health: null,
       permissions: ['program.launch'],
-      source: 'synthi.program.json',
+      source: 'vectant.program.json',
       sourceHints: {},
     },
   });
