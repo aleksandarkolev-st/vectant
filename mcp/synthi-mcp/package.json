@@ -9,6 +9,17 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./source-identity": {
+      "types": "./dist/browser/source_identity.d.ts",
+      "import": "./dist/browser/source_identity.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "README.md"
@@ -27,6 +38,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "browser:workflow:bridge": "node dist/browser_workflow_bridge/standalone.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
@@ -41,6 +53,10 @@
     "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
     "soak": "node tests/soak/soak_loop.mjs",
     "live:phase3": "node scripts/live-test-phase3.mjs",
+    "live:browser": "node scripts/live-browser-smoke.mjs",
+    "live:browser:workspace": "node scripts/live-browser-smoke.mjs --workspace",
+    "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
+    "live:browser:install": "npx playwright-core install chromium",
     "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs",
     "live:lease-contention": "node scripts/live-lease-contention.mjs",
     "proof:real-rocm": "node scripts/gpu-hmr-real-rocm-repo-validation.mjs",
@@ -62,6 +78,7 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "playwright-core": "^1.60.0",
     "sharp": "^0.33.0",
     "werift": "^0.22.9",
     "ws": "^8.18.0"

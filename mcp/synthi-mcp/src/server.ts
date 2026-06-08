@@ -63,6 +63,10 @@ import { snapshotTool } from "./tools/snapshot.js";
 import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
+import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
+import { BROWSER_TOOLS, dispatchBrowserTool } from "./tools/browser.js";
+import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
+import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 
@@ -72,6 +76,10 @@ export interface SynthiServerOptions {
 }
 
 const TOOLS = [
+  ...BROWSER_TOOLS,
+  ...AUTH_TOOLS,
+  ...SOURCE_TOOLS,
+  ...SAFETY_TOOLS,
   {
     name: "synthi_attach",
     description:
@@ -416,7 +424,7 @@ const TOOLS = [
   {
     name: "synthi_get_event_log",
     description:
-      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
+      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/browser/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
     inputSchema: {
       type: "object",
       properties: {
@@ -430,7 +438,7 @@ const TOOLS = [
         },
         kind: {
           oneOf: [
-            { type: "string", enum: ["lifecycle", "hmr", "input", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
+            { type: "string", enum: ["lifecycle", "hmr", "input", "browser", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
             { type: "array", items: { type: "string" } },
           ],
           description: "Filter by one kind or an array of kinds.",
@@ -1190,6 +1198,14 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     args: unknown,
     signal: AbortSignal | undefined
   ): Promise<CallToolResult> {
+    const browserResponse = await dispatchBrowserTool(toolName, args);
+    if (browserResponse) return browserResponse as CallToolResult;
+    const authResponse = await dispatchAuthTool(toolName, args);
+    if (authResponse) return authResponse as CallToolResult;
+    const sourceResponse = await dispatchSourceTool(toolName, args);
+    if (sourceResponse) return sourceResponse as CallToolResult;
+    const safetyResponse = await dispatchSafetyTool(toolName, args);
+    if (safetyResponse) return safetyResponse as CallToolResult;
     switch (toolName) {
       case "synthi_attach":
         return (await attachTool(args, ctx)) as CallToolResult;

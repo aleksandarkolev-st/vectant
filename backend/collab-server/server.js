@@ -1222,7 +1222,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /ports — list active dev-server ports
-  if (req.url === '/ports' && req.method === 'GET') {
+  if (req.method === 'GET' && (req.url === '/ports' || req.url.startsWith('/ports?'))) {
     proxyService.handlePortsStatus(req, res);
     return;
   }
@@ -3896,6 +3896,13 @@ server.on('upgrade', (request, socket, head) => {
   // Use replace to safely strip the prefix
   request.url = request.url.replace(/^\/collab/, '');
   if (!request.url.startsWith('/')) request.url = '/' + request.url;
+  if (request.url.startsWith('/port/')) {
+    if (!proxyService.proxyWsUpgrade(request, socket, head)) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+    return;
+  }
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
 
@@ -4233,6 +4240,7 @@ process.on('uncaughtException', (err) => {
       ySweetUrl: config.YSWEET_URL,
       persistence: persistence.isAvailable() ? 'redis' : 'memory',
     });
+    proxyService.startScanner(PORT);
 
     // Start the idle-workspace culler (only inside K8s).
     if (process.env.KUBERNETES_SERVICE_HOST) {
@@ -4244,4 +4252,3 @@ process.on('uncaughtException', (err) => {
     shadowContinuousProducer.start();
   });
 })();
-

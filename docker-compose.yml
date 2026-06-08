@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: synthi
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -62,6 +62,7 @@ services:
         NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
         NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
     env_file:
       - path: ./.env.local
         required: false
@@ -90,6 +91,7 @@ services:
       CODE_INTEL_URL: "http://ai-engine:8000"
       NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+      NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
     depends_on:
       postgres:
         condition: service_healthy

@@ -35,6 +35,10 @@ import {
   resolveOperatorBridgePort,
   startOperatorBridge,
 } from "./operator_bridge/server.js";
+import {
+  resolveBrowserWorkflowBridgePort,
+  startBrowserWorkflowBridge,
+} from "./browser_workflow_bridge/server.js";
 import { performShutdown } from "./shutdown.js";
 import {
   FileSnapshotPersistor,
@@ -127,6 +131,26 @@ async function main(): Promise<void> {
     );
   }
 
+  // Optional: Browser workflow HTTP bridge exposing the teach-to-tool state
+  // and dispatching browser workflow tools for the workspace IDE panel.
+  // Opt-in via SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT; token-gated via
+  // SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN when needed.
+  let browserWorkflowBridge: ReturnType<typeof startBrowserWorkflowBridge> | undefined;
+  const workflowBridgePort = resolveBrowserWorkflowBridgePort(process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT"]);
+  if (workflowBridgePort !== undefined) {
+    const workflowBridgeHost = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST"];
+    const workflowBridgeToken = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN"];
+    browserWorkflowBridge = startBrowserWorkflowBridge({
+      port: workflowBridgePort,
+      ...(workflowBridgeHost ? { host: workflowBridgeHost } : {}),
+      ...(workflowBridgeToken ? { token: workflowBridgeToken } : {}),
+    });
+    const auth = workflowBridgeToken ? " (token-gated)" : " (no auth - local only)";
+    process.stderr.write(
+      `synthi-mcp browser workflow bridge: http://${workflowBridgeHost ?? "127.0.0.1"}:${workflowBridgePort}/browser-workflows/state${auth}\n`
+    );
+  }
+
   const shutdown = async (): Promise<void> => {
     await performShutdown({
       requestRegistry,
@@ -135,6 +159,7 @@ async function main(): Promise<void> {
       ...(unbindMetrics ? { unbindMetrics } : {}),
       ...(metricsServer ? { metricsServer } : {}),
       ...(operatorBridge ? { operatorBridge: { close: operatorBridge.close } } : {}),
+      ...(browserWorkflowBridge ? { browserWorkflowBridge: { close: browserWorkflowBridge.close } } : {}),
       logError: (step, err) => {
         process.stderr.write(
           `synthi-mcp shutdown[${step}]: ${err instanceof Error ? err.message : String(err)}\n`
