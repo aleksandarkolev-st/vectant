@@ -6611,6 +6611,25 @@ int main()
     hostRestartObserved: true,
   });
   const hostUnprovenProof = classifyGpuHmrHostPreservationProof({});
+  const selfCheckHostPreservationProof = classifyGpuHmrHostPreservationProof({
+    identityChecksPassed: true,
+    identitySnapshotObserved: true,
+    identitySnapshotLineageObserved: true,
+    requiredIdentityRolesObserved: true,
+    identityEvidenceRefs: [
+      'worker-log:host_identity:runner_process',
+      'worker-log:host_identity:host_state',
+      'worker-log:host_identity:stream_context',
+    ],
+    identitySnapshotEvidenceRefs: [
+      'worker-log:host_identity_snapshot:before:runner_process:sha256-runner',
+      'worker-log:host_identity_snapshot:after:runner_process:sha256-runner',
+      'worker-log:host_identity_snapshot:before:host_state:sha256-host',
+      'worker-log:host_identity_snapshot:after:host_state:sha256-host',
+      'worker-log:host_identity_snapshot:before:stream_context:sha256-resource',
+      'worker-log:host_identity_snapshot:after:stream_context:sha256-resource',
+    ],
+  });
   const abiMetadataOnlyProof = classifyGpuHmrAbiProof({
     metadataObserved: true,
     evidenceRefs: ['evidence:device-abi-metadata:test'],
@@ -6647,13 +6666,14 @@ int main()
       argProvenanceComplete: true,
     }),
     outputProof: visualOnlyProof,
-    hostPreservationProof: classifyGpuHmrHostPreservationProof({ identityChecksPassed: true }),
+    hostPreservationProof: selfCheckHostPreservationProof,
   });
   if (
     hostReplacedProof.degradedState !== 'gpu-hmr-host-replaced'
     || hostUnprovenProof.degradedReason !== 'host_identity_checks_not_collected'
+    || selfCheckHostPreservationProof.resultState !== 'gpu-hmr-host-preservation-proven'
     || fullRuntimeBlockedProof.degradedState !== 'gpu-hmr-abi-unverified'
-    || fullRuntimeBlockedProof.degradedReason !== 'abi_layout_size_alignment_unverified'
+    || fullRuntimeBlockedProof.degradedReason !== 'abi_compatibility_class_missing'
   ) {
     throw new Error('host preservation proof classifier failed');
   }
