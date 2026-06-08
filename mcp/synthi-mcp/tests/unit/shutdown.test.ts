@@ -3,7 +3,7 @@
  *
  * What we test:
  *   - Teardown order: cancel_in_flight -> close_session -> close_server
- *     -> unbind_metrics -> close_metrics_server.
+ *     -> unbind_metrics -> close_metrics_server -> HTTP bridges.
  *   - Each step is try-isolated; an error in one does not prevent later
  *     steps from running.
  *   - Optional targets can be omitted.
@@ -39,6 +39,8 @@ describe("performShutdown — happy path", () => {
       order.push("unbind");
     };
     const metricsServer = { close: (): void => void order.push("metrics") };
+    const operatorBridge = makeStub("operator", order);
+    const browserWorkflowBridge = makeStub("workflows", order);
 
     const ran = await performShutdown({
       requestRegistry: reg,
@@ -46,6 +48,8 @@ describe("performShutdown — happy path", () => {
       server,
       unbindMetrics,
       metricsServer,
+      operatorBridge,
+      browserWorkflowBridge,
     });
 
     expect(ran).toEqual<ShutdownStep[]>([
@@ -54,8 +58,10 @@ describe("performShutdown — happy path", () => {
       "close_server",
       "unbind_metrics",
       "close_metrics_server",
+      "close_operator_bridge",
+      "close_browser_workflow_bridge",
     ]);
-    expect(order).toEqual(["session", "server", "unbind", "metrics"]);
+    expect(order).toEqual(["session", "server", "unbind", "metrics", "operator", "workflows"]);
   });
 
   it("requestRegistry.cancelAll aborts in-flight signals", async () => {

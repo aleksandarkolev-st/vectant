@@ -207,6 +207,9 @@ export function resourceUrisForEvent(entry: EventLogEntry): string[] {
     case "source_state":
       uris.push(RESOURCE_URIS.source);
       break;
+    case "browser":
+      uris.push(RESOURCE_URIS.state);
+      break;
     case "lifecycle":
     case "security":
       uris.push(RESOURCE_URIS.state);

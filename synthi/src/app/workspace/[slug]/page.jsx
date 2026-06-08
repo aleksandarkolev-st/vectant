@@ -188,6 +188,7 @@ const SIDEBAR_DOCK_PANEL_TYPES = new Set([
     IDE_PANEL.EXTENSIONS,
     IDE_PANEL.EXTENSION_VIEW,
     IDE_PANEL.CHAT,
+    IDE_PANEL.AGENT_WORKFLOWS,
     IDE_PANEL.SETTINGS,
     IDE_PANEL.PULL_REQUESTS,
     IDE_PANEL.AI_HEALING,
@@ -291,13 +292,14 @@ export default function EditorPage({ params }) {
     const store = useAppStore();
     const { data: authSession, status: authStatus } = useSession();
     const router = useRouter();
+    const devWorkspaceAuthBypass = process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS === '1';
 
     // ── Auth guard: redirect unauthenticated users to the home page ─────
     useEffect(() => {
-        if (authStatus === 'unauthenticated') {
+        if (!devWorkspaceAuthBypass && authStatus === 'unauthenticated') {
             router.replace('/');
         }
-    }, [authStatus, router]);
+    }, [authStatus, router, devWorkspaceAuthBypass]);
 
     // ── Persist auth identity into localStorage so getCurrentUser() works ──
     // Guest pages set this for guest users; workspace pages must do the same
@@ -1082,7 +1084,7 @@ export default function EditorPage({ params }) {
     }, [slug, dispatch]);
 
     useEffect(() => {
-        if (!slug || workspaceMissing || authStatus === 'loading') return undefined;
+        if (!slug || workspaceMissing || (!devWorkspaceAuthBypass && authStatus === 'loading')) return undefined;
 
         let cancelled = false;
         let timer = null;
@@ -1142,7 +1144,7 @@ export default function EditorPage({ params }) {
             workspacePrepToastIdRef.current = null;
             workspacePrepStateRef.current = null;
         };
-    }, [slug, workspaceMissing, authStatus]);
+    }, [slug, workspaceMissing, authStatus, devWorkspaceAuthBypass]);
 
     // Subscribe to server-side file-tree-changed notifications so
     // all connected clients stay in sync when any teammate mutates the tree.
@@ -3185,7 +3187,7 @@ export default function EditorPage({ params }) {
     }
 
     // While auth is loading or redirect is pending, show nothing
-    if (authStatus !== 'authenticated') {
+    if (!devWorkspaceAuthBypass && authStatus !== 'authenticated') {
         return null;
     }
 

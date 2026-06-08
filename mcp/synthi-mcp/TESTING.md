@@ -67,6 +67,45 @@ current MCP lease registry is process-local; cross-process lease
 arbitration requires the worker-side lease gate to be integrated into the
 input dispatch path.
 
+General browser MCP live smoke (collaborator local-dev harness):
+
+```bash
+cd mcp/synthi-mcp
+npm install
+npm run build
+npm run live:browser:install   # one-time if no local Chromium is available
+npm run live:browser
+```
+
+This starts a local HTML fixture, launches or reuses a Chromium-family
+browser with CDP, spawns `dist/index.js` over stdio, then calls the
+`synthi_browser_*` tools through the same JSON-RPC path a real agent host
+uses. It verifies the broker, exact-origin consent, authorized tab listing,
+screenshot+DOM capture, control lease actions, redacted console/network
+events, teach-mode bridge events, workflow compilation, replay script
+generation, and same-session/prefix/cold replay planning. This is not the
+normal product path; normal workflow teaching uses
+`synthi_browser_attach_current_workspace` against a Synthi-hosted runtime.
+
+To reuse a browser a developer already started:
+
+```bash
+SYNTHI_BROWSER_CDP_URL=http://127.0.0.1:9222 npm run live:browser
+```
+
+To launch a specific browser executable:
+
+```bash
+SYNTHI_BROWSER_EXECUTABLE=/path/to/chrome npm run live:browser
+```
+
+The CDP endpoint must be reachable from the same environment that runs the
+MCP process. For WSL users, Windows Chrome bound to Windows
+`127.0.0.1` is often not reachable from WSL; either run the MCP on the
+Windows side, install Playwright Chromium inside WSL with
+`npm run live:browser:install`, or provide a reachable CDP proxy URL via
+`SYNTHI_BROWSER_CDP_URL`.
+
 ---
 
 ## The 15 steps
@@ -82,8 +121,10 @@ tools.
 - **Gemini CLI:** `~/.gemini/mcp.json` — same shape.
 - **Windsurf:** Settings → MCP servers → add with `node ... --session $SID`.
 
-**Pass:** the client's tool list shows 23 `synthi_*` tools. Not more,
-not fewer.
+**Pass:** the client's tool list includes the advertised `synthi_*` tools from
+`src/tool_registry.ts`, including the primary browser workflow tools
+`synthi_browser_attach_current_workspace`, `synthi_browser_observe`,
+`synthi_browser_begin_teach`, and `synthi_browser_end_teach`.
 
 ### 2. Probe the manifest
 

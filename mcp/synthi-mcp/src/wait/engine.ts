@@ -236,6 +236,7 @@ async function waitSourceState(args: SourceStateArgs, timeoutMs: number, start: 
 }
 
 async function waitPixel(args: PixelArgs, timeoutMs: number, start: number): Promise<WaitOutcome> {
+  if (!session.get()) return timeout("pixel", Date.now() - start, { reason: "not_attached" });
   const interval = args.sample_interval_ms ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const tolerance = args.tolerance ?? 0;
   while (Date.now() - start < timeoutMs) {
@@ -276,6 +277,7 @@ function colorClose(a: [number, number, number], b: [number, number, number], to
 }
 
 async function waitMotionSettled(args: MotionSettledArgs, timeoutMs: number, start: number): Promise<WaitOutcome> {
+  if (!session.get()) return timeout("motion_settled", Date.now() - start, { reason: "not_attached" });
   const interval = args.sample_interval_ms ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const stillFor = args.still_for_ms ?? 300;
   const threshold = args.threshold ?? 4;
@@ -305,6 +307,7 @@ async function waitMotionSettled(args: MotionSettledArgs, timeoutMs: number, sta
 }
 
 async function waitSceneChange(args: SceneChangeArgs, timeoutMs: number, start: number): Promise<WaitOutcome> {
+  if (!session.get()) return timeout("scene_change", Date.now() - start, { reason: "not_attached" });
   const interval = args.sample_interval_ms ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const minHamming = args.min_hamming ?? 8;
   let baseline: string | null = null;
