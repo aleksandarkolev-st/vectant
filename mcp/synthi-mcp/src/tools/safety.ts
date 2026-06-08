@@ -43,6 +43,7 @@ export const SAFETY_TOOLS = [
         base_url: { type: "string" },
         ci_command: { type: "string" },
         data_reset_command: { type: "string" },
+        working_directory: { type: "string", description: "Optional workspace/repo directory used as cwd for reset and CI replay commands." },
         auth_provider_id: { type: "string" },
         allow_mutation_replay: { type: "boolean", default: false },
       },
@@ -136,6 +137,7 @@ function setReplayIsolationProfileTool(args: unknown): ToolResponse {
     base_url: stringOpt(a["base_url"]),
     ci_command: stringOpt(a["ci_command"]),
     data_reset_command: stringOpt(a["data_reset_command"]),
+    working_directory: stringOpt(a["working_directory"]),
     auth_provider_id: stringOpt(a["auth_provider_id"]),
     allow_mutation_replay: boolOpt(a["allow_mutation_replay"]),
   });

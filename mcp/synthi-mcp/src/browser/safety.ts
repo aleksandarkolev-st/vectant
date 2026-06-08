@@ -12,6 +12,7 @@ export interface ReplayIsolationProfileInput {
   base_url?: string;
   ci_command?: string;
   data_reset_command?: string;
+  working_directory?: string;
   auth_provider_id?: string;
   allow_mutation_replay?: boolean;
 }
@@ -24,6 +25,7 @@ export interface ReplayIsolationProfileV7 {
   base_url: string | null;
   ci_command: string | null;
   data_reset_command: string | null;
+  working_directory: string | null;
   auth_provider_id: string | null;
   allow_mutation_replay: boolean;
   missing: string[];
@@ -83,6 +85,7 @@ export class ReplayIsolationProfileManager {
       base_url: stringOpt(input.base_url) ?? null,
       ci_command: stringOpt(input.ci_command) ?? null,
       data_reset_command: stringOpt(input.data_reset_command) ?? null,
+      working_directory: stringOpt(input.working_directory) ?? null,
       auth_provider_id: stringOpt(input.auth_provider_id) ?? null,
       allow_mutation_replay: input.allow_mutation_replay === true,
       missing,
@@ -234,6 +237,7 @@ function emptyProfile(workspaceId: string): ReplayIsolationProfileV7 {
     base_url: null,
     ci_command: null,
     data_reset_command: null,
+    working_directory: null,
     auth_provider_id: null,
     allow_mutation_replay: false,
     missing: [],

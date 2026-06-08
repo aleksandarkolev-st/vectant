@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { browserBroker } from "../../src/browser/broker.js";
@@ -9,6 +9,7 @@ import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { SAFETY_TOOL_NAMES, SAFETY_TOOLS, dispatchSafetyTool } from "../../src/tools/safety.js";
 
 const originalCiMarkerPath = process.env["CI_MARKER_PATH"];
+const originalExpectedCiCwd = process.env["EXPECTED_CI_CWD"];
 
 beforeEach(() => {
   browserBroker.resetForTests();
@@ -21,6 +22,11 @@ afterEach(() => {
     delete process.env["CI_MARKER_PATH"];
   } else {
     process.env["CI_MARKER_PATH"] = originalCiMarkerPath;
+  }
+  if (originalExpectedCiCwd === undefined) {
+    delete process.env["EXPECTED_CI_CWD"];
+  } else {
+    process.env["EXPECTED_CI_CWD"] = originalExpectedCiCwd;
   }
 });
 
@@ -128,17 +134,21 @@ describe("safety MCP tool surface", () => {
   it("runs reset before full mutation replay in a configured isolated profile", async () => {
     teachSaveWorkflow();
     const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-"));
+    const workingDirectory = path.join(artifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
     const markerPath = path.join(artifactRoot, "marker.json");
     process.env["CI_MARKER_PATH"] = markerPath;
     const resetScript = path.join(artifactRoot, "reset.mjs");
     const ciScript = path.join(artifactRoot, "ci.mjs");
     await writeFile(resetScript, [
       "import { writeFile } from 'node:fs/promises';",
+      "if (process.cwd() !== process.env.EXPECTED_CI_CWD) throw new Error('reset_wrong_cwd');",
       "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL }));",
       "",
     ].join("\n"));
     await writeFile(ciScript, [
       "import { readFile, writeFile } from 'node:fs/promises';",
+      "if (process.cwd() !== process.env.EXPECTED_CI_CWD) throw new Error('ci_wrong_cwd');",
       "const marker = JSON.parse(await readFile(process.env.CI_MARKER_PATH, 'utf8'));",
       "if (!marker.reset) throw new Error('reset_not_run');",
       "if (marker.baseUrl !== 'https://ci.example.test') throw new Error('base_url_not_available_to_reset');",
@@ -156,11 +166,13 @@ describe("safety MCP tool surface", () => {
       workspace_id: "workspace-a",
       kind: "ciIsolated",
       base_url: "https://ci.example.test",
+      working_directory: workingDirectory,
       data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
       ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
       allow_mutation_replay: true,
     });
 
+    process.env["EXPECTED_CI_CWD"] = workingDirectory;
     const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
       workspace_id: "workspace-a",
       parameters: { email: "ada@example.test" },
@@ -174,6 +186,7 @@ describe("safety MCP tool surface", () => {
         status: string;
         mutation_executed: boolean;
         commands: { reset_exit_code: number; ci_exit_code: number };
+        isolation_profile: { working_directory: string | null };
         artifacts: { spec_path: string };
         report: { parameter_env: string[] };
       };
@@ -182,6 +195,7 @@ describe("safety MCP tool surface", () => {
     expect(body.replay).toEqual(expect.objectContaining({
       status: "passed",
       mutation_executed: true,
+      isolation_profile: expect.objectContaining({ working_directory: workingDirectory }),
       commands: expect.objectContaining({ reset_exit_code: 0, ci_exit_code: 0 }),
       report: expect.objectContaining({ parameter_env: ["EMAIL"] }),
     }));

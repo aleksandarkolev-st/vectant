@@ -29,6 +29,7 @@ export interface CiIsolatedReplayResult {
   isolation_profile: {
     readiness: ReplayIsolationProfileV7["readiness"];
     base_url: string | null;
+    working_directory: string | null;
     allow_mutation_replay: boolean;
   };
   blockers: string[];
@@ -81,6 +82,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   ];
   const uniqueBlockers = [...new Set(blockers)];
   const parameterEnv = parameterEnvForWorkflow(input.workflow, input.parameters ?? {});
+  const commandCwd = input.profile.working_directory ?? process.cwd();
 
   if (uniqueBlockers.length > 0) {
     await writeFile(resetLogPath, "", "utf8");
@@ -112,7 +114,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     ALLOW_WORKFLOW_MUTATION: "1",
   };
   const timeoutMs = clampTimeout(input.timeout_ms);
-  const reset = await runCommand(input.profile.data_reset_command!, { cwd: process.cwd(), env, timeoutMs });
+  const reset = await runCommand(input.profile.data_reset_command!, { cwd: commandCwd, env, timeoutMs });
   await writeFile(resetLogPath, reset.output, "utf8");
   if (reset.exitCode !== 0) {
     await writeFile(ciLogPath, "", "utf8");
@@ -133,7 +135,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     });
   }
 
-  const ci = await runCommand(input.profile.ci_command!, { cwd: process.cwd(), env, timeoutMs });
+  const ci = await runCommand(input.profile.ci_command!, { cwd: commandCwd, env, timeoutMs });
   await writeFile(ciLogPath, ci.output, "utf8");
   return resultFor(input, {
     workflowId,
@@ -179,6 +181,7 @@ function resultFor(
     isolation_profile: {
       readiness: input.profile.readiness,
       base_url: input.profile.base_url,
+      working_directory: input.profile.working_directory,
       allow_mutation_replay: input.profile.allow_mutation_replay,
     },
     blockers: options.blockers,
@@ -210,12 +213,19 @@ interface CommandResult {
 
 async function runCommand(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
-      cwd: options.cwd,
-      env: options.env,
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child;
+    try {
+      child = spawn(command, {
+        cwd: options.cwd,
+        env: options.env,
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      resolve({ exitCode: 1, output: bounded(message) });
+      return;
+    }
     let output = "";
     const append = (chunk: Buffer) => {
       output = bounded(output + chunk.toString("utf8"));

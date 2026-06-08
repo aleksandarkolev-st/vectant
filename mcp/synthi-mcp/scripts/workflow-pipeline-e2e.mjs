@@ -357,6 +357,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
   const markerPath = path.join(caseDir, "ci-reset-marker.json");
   await writeFile(resetScript, [
     "import { writeFile } from 'node:fs/promises';",
+    `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('reset_wrong_cwd');`,
     `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL }));`,
     "",
   ].join("\n"));
@@ -369,6 +370,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     `const runnerConfig = ${JSON.stringify(runner.configPath)};`,
     `const chromiumExecutable = ${JSON.stringify(chromium.executablePath())};`,
     "const playwrightBin = `${runnerRoot}/node_modules/.bin/${process.platform === 'win32' ? 'playwright.cmd' : 'playwright'}`;",
+    "if (process.cwd() !== runnerRoot) throw new Error('ci_wrong_cwd');",
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
     "if (!marker.reset) throw new Error('reset_not_run');",
     "const spec = await readFile(process.env.SYNTHI_WORKFLOW_SPEC, 'utf8');",
@@ -398,6 +400,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     workspace_id: workspaceId,
     kind: "ciIsolated",
     base_url: trimSlash(previewUrl),
+    working_directory: runner.root,
     data_reset_command: `${shellQuote(process.execPath)} ${shellQuote(resetScript)}`,
     ci_command: `${shellQuote(process.execPath)} ${shellQuote(ciScript)}`,
     allow_mutation_replay: true,
