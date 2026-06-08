@@ -25,6 +25,7 @@ import { BROWSER_ACTION_KINDS } from "../browser/types.js";
 import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
+import { dispatchSafetyTool } from "./safety.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
@@ -492,7 +493,7 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: {
         workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. When supplied, generation uses that immutable artifact." },
-        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], description: "Use prefixOnly or coldSession to stop before the first mutation boundary." },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession", "ciIsolated"], description: "Use prefixOnly/coldSession to stop before mutation boundaries, or ciIsolated to emit a full mutation script guarded by ALLOW_WORKFLOW_MUTATION=1." },
       },
       required: [],
     },
@@ -1224,6 +1225,11 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const leaseId = requiredString(a, "lease_id");
   const mode = normalizeReplayMode(a["mode"] ?? "coldSession");
+  if (mode === "ciIsolated") {
+    return errorResponse("ci_isolated_replay_requires_safety_tool", {
+      required_tool: "synthi_safety_run_ci_isolated_replay",
+    });
+  }
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
@@ -1515,7 +1521,33 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
 
   const requestedMode = privateWorkflowRunMode(a["run_mode"]);
   const confirmMutation = boolOpt(a["confirm_mutation"]) === true;
-  const mode: WorkflowReplayModeV7 = requestedMode ??
+  if (requestedMode === "ciOnly") {
+    const response = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: stringOpt(a["workspace_id"]),
+      workflow_id: registration.workflow_id,
+      parameters,
+      timeout_ms: numberOpt(a["timeout_ms"]),
+      artifact_root: stringOpt(a["artifact_root"]),
+    });
+    if (!response) return errorResponse("ci_isolated_replay_tool_unavailable", { tool_name: toolName });
+    const structuredContent = {
+      ...(response.structuredContent ?? {}),
+      private_tool: {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        run_mode: "ciOnly",
+        mutation_confirmed: false,
+      },
+    };
+    return {
+      ...response,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    };
+  }
+  const mode: WorkflowReplayModeV7 = requestedMode === "confirmBeforeCommit"
+    ? "sameSession"
+    : requestedMode ??
     (manifest.mutation.requires_confirmation ? "prefixOnly" : "sameSession");
 
   if (manifest.mutation.requires_confirmation && mode === "sameSession" && !confirmMutation) {
@@ -1523,7 +1555,7 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
       tool_name: toolName,
       workflow_id: manifest.workflow_id,
       first_mutation_step_id: manifest.mutation.first_mutation_step_id,
-      safe_run_modes: ["prefixOnly", "coldSession"],
+      safe_run_modes: ["prefixOnly", "coldSession", "ciOnly"],
       confirmation_field: "confirm_mutation",
     });
   }
@@ -1560,8 +1592,11 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   }
 }
 
-function privateWorkflowRunMode(value: unknown): WorkflowReplayModeV7 | undefined {
+type PrivateWorkflowRunMode = WorkflowReplayModeV7 | "confirmBeforeCommit" | "ciOnly";
+
+function privateWorkflowRunMode(value: unknown): PrivateWorkflowRunMode | undefined {
   if (value === undefined) return undefined;
+  if (value === "confirmBeforeCommit" || value === "ciOnly") return value;
   return normalizeReplayMode(value);
 }
 

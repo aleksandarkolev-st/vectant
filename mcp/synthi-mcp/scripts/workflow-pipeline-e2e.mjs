@@ -197,13 +197,26 @@ async function runCase({ testCase, container, context, runner }) {
     await writeJson(caseDir, "contract.json", contract);
 
     const exportBody = await clickWorkflowButton(idePage, /^Export$/);
-    const generated = exportBody.result;
+    let generated = exportBody.result;
     record(
       testCase.id,
       "click export",
       exportBody.ok === true && typeof generated?.code === "string" && generated.code.includes("@playwright/test"),
       `locators=${generated?.used_locators?.length ?? 0}`
     );
+    if (testCase.exportMode) {
+      const modeExportBody = await workflowBridgeTool("synthi_browser_generate_script", {
+        workflow_id: contract?.workflowId,
+        mode: testCase.exportMode,
+      });
+      generated = modeExportBody.result;
+      record(
+        testCase.id,
+        `generate ${testCase.exportMode} script`,
+        modeExportBody.ok === true && generated?.mode === testCase.exportMode && typeof generated?.code === "string",
+        `mode=${generated?.mode || "missing"} locators=${generated?.used_locators?.length ?? 0}`
+      );
+    }
     const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
     await writeFile(specPath, generated.code);
     await writeJson(caseDir, "export.json", generated);
@@ -299,6 +312,27 @@ async function runCase({ testCase, container, context, runner }) {
     const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir }) : {};
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
+
+    if (testCase.ciIsolatedReplay === true) {
+      const ciReplay = await runCiIsolatedWorkflowReplay({
+        caseId: testCase.id,
+        workflowId: contract?.workflowId,
+        workspaceId: slug,
+        runner,
+        previewUrl,
+        caseDir,
+        parameters: replayParameters,
+      });
+      await writeJson(caseDir, "ci-isolated-replay.json", ciReplay);
+      record(
+        testCase.id,
+        "run CI isolated replay",
+        ciReplay.ok === true && ciReplay.replay?.status === "passed" && ciReplay.replay?.mutation_executed === true,
+        ciReplay.ok === true
+          ? `status=${ciReplay.replay?.status} mutation=${ciReplay.replay?.mutation_executed}`
+          : `status=${ciReplay.replay?.status || "missing"} error=${ciReplay.replay?.failure_class || ciReplay.error || "unknown"}`
+      );
+    }
   } finally {
     if (previewPage && !previewPage.isClosed()) {
       await resetHostedRuntimePage(previewPage);
@@ -313,6 +347,69 @@ async function runCase({ testCase, container, context, runner }) {
       await dockerExec(container, ["sh", "-lc", `rm -rf ${shellQuote(`/data/repos/${slug}`)}`]).catch(() => undefined);
     }
   }
+}
+
+async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, runner, previewUrl, caseDir, parameters }) {
+  if (!workflowId) return { ok: false, error: "missing_workflow_id" };
+  const resetScript = path.join(caseDir, "ci-reset.mjs");
+  const ciScript = path.join(caseDir, "ci-run.mjs");
+  const ciSpecTarget = path.join(runner.root, `${slugPart(caseId)}-ci-isolated.spec.mjs`);
+  const markerPath = path.join(caseDir, "ci-reset-marker.json");
+  await writeFile(resetScript, [
+    "import { writeFile } from 'node:fs/promises';",
+    `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL }));`,
+    "",
+  ].join("\n"));
+  await writeFile(ciScript, [
+    "import { spawn } from 'node:child_process';",
+    "import { copyFile, readFile } from 'node:fs/promises';",
+    `const markerPath = ${JSON.stringify(markerPath)};`,
+    `const specTarget = ${JSON.stringify(ciSpecTarget)};`,
+    `const runnerRoot = ${JSON.stringify(runner.root)};`,
+    `const runnerConfig = ${JSON.stringify(runner.configPath)};`,
+    `const chromiumExecutable = ${JSON.stringify(chromium.executablePath())};`,
+    "const playwrightBin = `${runnerRoot}/node_modules/.bin/${process.platform === 'win32' ? 'playwright.cmd' : 'playwright'}`;",
+    "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
+    "if (!marker.reset) throw new Error('reset_not_run');",
+    "const spec = await readFile(process.env.SYNTHI_WORKFLOW_SPEC, 'utf8');",
+    "if (spec.includes('Mutation boundary:')) throw new Error('ci_script_stopped_at_mutation_boundary');",
+    "if (!spec.includes('ALLOW_WORKFLOW_MUTATION')) throw new Error('ci_script_missing_mutation_guard');",
+    "await copyFile(process.env.SYNTHI_WORKFLOW_SPEC, specTarget);",
+    "const proc = spawn(playwrightBin, ['test', specTarget, '--config', runnerConfig, '--reporter=line'], {",
+    "  cwd: runnerRoot,",
+    "  env: {",
+    "    ...process.env,",
+    "    PLAYWRIGHT_BASE_URL: process.env.PLAYWRIGHT_BASE_URL,",
+    "    PLAYWRIGHT_CHROMIUM_EXECUTABLE: chromiumExecutable,",
+    "    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',",
+    "    ALLOW_WORKFLOW_MUTATION: '1',",
+    "  },",
+    "  stdio: 'inherit',",
+    "});",
+    "const code = await new Promise((resolve, reject) => {",
+    "  proc.on('error', reject);",
+    "  proc.on('exit', (exitCode) => resolve(exitCode ?? 1));",
+    "});",
+    "process.exit(code);",
+    "",
+  ].join("\n"));
+
+  await workflowBridgeTool("synthi_safety_set_replay_isolation_profile", {
+    workspace_id: workspaceId,
+    kind: "ciIsolated",
+    base_url: trimSlash(previewUrl),
+    data_reset_command: `${shellQuote(process.execPath)} ${shellQuote(resetScript)}`,
+    ci_command: `${shellQuote(process.execPath)} ${shellQuote(ciScript)}`,
+    allow_mutation_replay: true,
+  });
+  const body = await workflowBridgeTool("synthi_safety_run_ci_isolated_replay", {
+    workspace_id: workspaceId,
+    workflow_id: workflowId,
+    parameters,
+    artifact_root: path.join(caseDir, "ci-artifacts"),
+    timeout_ms: CFG.timeoutMs,
+  });
+  return body.result ?? body;
 }
 
 async function seedWorkspace(slug, files) {
@@ -2690,6 +2787,57 @@ const CASES = [
     teach: async (page) => {
       await page.getByRole("button", { name: "Run query" }).click();
       await page.getByText("Query run requested").waitFor();
+    },
+  },
+  {
+    id: "ci-isolated-visual-mutation",
+    minSteps: 1,
+    expectedActions: ["click"],
+    exportMode: "ciIsolated",
+    ciIsolatedReplay: true,
+    expectedReplayText: [
+      "Published release card",
+    ],
+    expectedReplayCode: [
+      "ALLOW_WORKFLOW_MUTATION",
+      "await target1.click();",
+    ],
+    forbiddenReplayCode: [
+      "Mutation boundary:",
+      "/port/",
+    ],
+    replayEnv: () => ({ ALLOW_WORKFLOW_MUTATION: "1" }),
+    files: () => commonFiles({
+      title: "CI Isolated Visual Mutation Workflow",
+      body: [
+        "    <main>",
+        "      <h1>CI Isolated Visual Mutation Workflow</h1>",
+        "      <section class=\"release-card\" data-testid=\"release-card\" data-state=\"draft\" aria-label=\"Release card\" data-synthi-source-id=\"visual.release.card\">",
+        "        <strong data-testid=\"release-label\">Draft release</strong>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"publish-release\" data-synthi-source-id=\"visual.release.publish\" data-synthi-mutation-boundary=\"release.publish\">Publish release</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".release-card { border: 2px solid #777; padding: 18px; background: #fff; }",
+        ".release-card[data-state='published'] { border-color: #17663a; background: #e7f6ed; }",
+      ],
+      script: [
+        "const card = document.querySelector('[data-testid=\"release-card\"]');",
+        "const label = document.querySelector('[data-testid=\"release-label\"]');",
+        "const status = document.querySelector('#status');",
+        "document.querySelector('[data-testid=\"publish-release\"]').addEventListener('click', () => {",
+        "  card.dataset.state = 'published';",
+        "  label.textContent = 'Published release';",
+        "  status.textContent = 'Published release card';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("button", { name: "Publish release" }).click();
+      await page.getByText("Published release card").waitFor();
     },
   },
   {

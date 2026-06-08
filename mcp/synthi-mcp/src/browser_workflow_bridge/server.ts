@@ -76,6 +76,7 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_source_identity_open: "synthi_source_get_mapping_status",
   synthi_workflow_compile_contract: "synthi_browser_compile_workflow",
   synthi_workflow_prefix_validate: "synthi_safety_run_prefix_validation",
+  synthi_workflow_ci_replay: "synthi_safety_run_ci_isolated_replay",
   synthi_workflow_generate_playwright: "synthi_browser_generate_script",
   synthi_workflow_generate_tool_manifest: "synthi_browser_generate_private_tool_manifest",
   synthi_workflow_publish_tool: "synthi_browser_publish_private_tool",
@@ -91,6 +92,8 @@ const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
   "synthi_source_get_mapping_status",
   "synthi_browser_compile_workflow",
   "synthi_safety_run_prefix_validation",
+  "synthi_safety_set_replay_isolation_profile",
+  "synthi_safety_run_ci_isolated_replay",
   "synthi_browser_acquire_lease",
   "synthi_browser_run_workflow",
   "synthi_browser_release_lease",
@@ -366,12 +369,16 @@ function updateBridgeState(
       ...state.history,
     ].slice(0, MAX_HISTORY);
   }
-  if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow") {
+  if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow" || toolName === "synthi_safety_run_ci_isolated_replay") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
     const replay = payload["replay"] as Record<string, unknown> | undefined;
     const entry: BridgeHistoryEntry = {
       id: `workflow_run_${Date.now()}`,
-      label: toolName === "synthi_safety_run_prefix_validation" ? "Prefix validation" : "Workflow replay",
+      label: toolName === "synthi_safety_run_prefix_validation"
+        ? "Prefix validation"
+        : toolName === "synthi_safety_run_ci_isolated_replay"
+        ? "CI isolated replay"
+        : "Workflow replay",
       detail: stringOpt(validation?.["status"]) ?? stringOpt(replay?.["status"]) ?? (ok ? "Completed" : "Blocked"),
       status: ok ? "passed" : "blocked",
       statusLabel: ok ? "Passed" : "Blocked",

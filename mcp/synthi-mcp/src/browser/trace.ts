@@ -219,6 +219,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const usesClipboardDrop = events.some(isClipboardDropEvent);
   const usesValueParameters = events.some((event) => scriptValueParameterName(event, valueParameterByEventId) !== undefined);
   const usesAriaOptionParameters = events.some((event) => scriptAriaOptionParameterName(event, valueParameterByEventId) !== undefined);
+  const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
     ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
@@ -226,7 +227,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     `// Workflow: ${contract.name}`,
     `// Status: ${workflow.card.status}`,
     `// Auth: ${contract.authPlan.durability}`,
-    `// Mutation mode: ${contract.mutationBoundaryPlan.defaultReplayMode}`,
+    `// Replay mode: ${mode}`,
+    `// Default mutation mode: ${contract.mutationBoundaryPlan.defaultReplayMode}`,
     `// Limitations: ${contract.limitations.length ? contract.limitations.join(", ") : "none"}`,
     "",
     "test('replayed browser workflow', async ({ page }) => {",
@@ -398,7 +400,6 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const currentUrlByPage = new Map<string, string>();
   let targetSeq = 0;
   const popupPageByTab = new Map<string, string>();
-  const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
   const scalarValueReplacements: ScriptValueReplacement[] = [];
 
   if (replayBlocked) {
@@ -407,6 +408,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push(`  test.skip(true, ${JSON.stringify(reason)});`);
     lines.push("});");
     return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
+  }
+
+  if (mode === "ciIsolated" && firstMutationStepId) {
+    lines.push("  test.skip(process.env.ALLOW_WORKFLOW_MUTATION !== '1', 'Set ALLOW_WORKFLOW_MUTATION=1 only inside an isolated resettable replay environment.');");
+    lines.push("  if (process.env.ALLOW_WORKFLOW_MUTATION !== '1') throw new Error('missing ALLOW_WORKFLOW_MUTATION=1 for CI-isolated mutation replay');");
+    warnings.push(`ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary ${firstMutationStepId}`);
   }
 
   for (const event of coalesceReplayEvents(events)) {
@@ -815,9 +822,13 @@ function scriptAriaOptionParameterForEvent(
   };
 }
 
-function valueParameterEnvName(valueRef: string, fallbackOrdinal: number): string {
+export function workflowParameterEnvName(valueRef: string, fallbackOrdinal: number = 1): string {
   const normalized = valueRef.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
   return normalized.length > 0 ? normalized : `SYNTHI_WORKFLOW_VALUE_${fallbackOrdinal || 1}`;
+}
+
+function valueParameterEnvName(valueRef: string, fallbackOrdinal: number): string {
+  return workflowParameterEnvName(valueRef, fallbackOrdinal);
 }
 
 function pushRequiredValueParameter(lines: string[], parameter: ScriptValueParameter): void {

@@ -218,7 +218,7 @@ export interface CompiledWorkflowV7 {
   card: WorkflowCardV7;
 }
 
-export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly" | "coldSession";
+export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly" | "coldSession" | "ciIsolated";
 
 export interface WorkflowReplayPlanV7 {
   mode: WorkflowReplayModeV7;
@@ -766,7 +766,9 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
     status: "ready",
     workflowId: workflow.contract.workflowId,
     events: ordered,
-    warnings: mode === "coldSession"
+    warnings: mode === "ciIsolated"
+      ? ["CI-isolated replay executes mutation steps only in a resettable environment with explicit mutation permission."]
+      : mode === "coldSession"
       ? ["Cold-session replay starts from a fresh browser context."]
       : workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0
       ? ["Same-session replay includes mutation steps and must not be used for background hardening."]
@@ -803,6 +805,7 @@ export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTra
 }
 
 export function normalizeReplayMode(value: unknown): WorkflowReplayModeV7 {
+  if (value === "ciIsolated") return "ciIsolated";
   if (value === "coldSession") return "coldSession";
   return value === "prefixOnly" ? "prefixOnly" : "sameSession";
 }

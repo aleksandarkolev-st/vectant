@@ -68,7 +68,7 @@ export function privateWorkflowToolDefinition(registration: PrivateWorkflowToolR
     description: [
       manifest.description,
       manifest.mutation.requires_confirmation
-        ? "Defaults to prefix-only replay. Full same-session mutation replay requires confirm_mutation=true."
+        ? "Defaults to prefix-only replay. Use ciOnly for a configured isolated mutation replay, or sameSession with confirm_mutation=true for an explicit human-approved live session."
         : "Runs the taught workflow through the Synthi-hosted browser runtime.",
     ].join(" "),
     inputSchema: privateWorkflowToolInputSchema(manifest),
@@ -79,9 +79,11 @@ function privateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7)
   const properties: Record<string, unknown> = {
     run_mode: {
       type: "string",
-      enum: ["sameSession", "prefixOnly", "coldSession"],
+      enum: manifest.mutation.requires_confirmation
+        ? ["prefixOnly", "confirmBeforeCommit", "ciOnly", "sameSession", "coldSession"]
+        : ["sameSession", "prefixOnly", "coldSession"],
       description: manifest.mutation.requires_confirmation
-        ? "Defaults to prefixOnly for mutation workflows. sameSession requires confirm_mutation=true."
+        ? "Defaults to prefixOnly for mutation workflows. ciOnly runs through the configured isolated replay profile. sameSession/confirmBeforeCommit require confirm_mutation=true."
         : "Optional replay mode. Defaults to sameSession for non-mutating workflows.",
     },
     confirm_mutation: {
@@ -92,9 +94,17 @@ function privateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7)
       type: "string",
       description: "Optional authorized browser tab id. Defaults to the selected Synthi browser tab.",
     },
+    workspace_id: {
+      type: "string",
+      description: "Optional workspace scope for ciOnly replay isolation profile lookup.",
+    },
     lease_ms: {
       type: "number",
       description: "Optional browser control lease duration in milliseconds.",
+    },
+    timeout_ms: {
+      type: "number",
+      description: "Optional timeout for ciOnly reset and replay commands.",
     },
   };
   const required = new Set<string>();

@@ -52,6 +52,7 @@ export interface PrivateWorkflowToolManifestV7 {
   backing_tools: {
     compile_workflow: "synthi_browser_compile_workflow";
     run_workflow: "synthi_browser_run_workflow";
+    ci_isolated_replay: "synthi_safety_run_ci_isolated_replay";
     auth_readiness: "synthi_auth_get_tool_auth_readiness";
     mutation_plan: "synthi_safety_get_mutation_plan";
     source_lookup: "synthi_source_lookup_token";
@@ -106,6 +107,7 @@ export function generatePrivateWorkflowToolManifest(contract: WorkflowContractV7
     backing_tools: {
       compile_workflow: "synthi_browser_compile_workflow",
       run_workflow: "synthi_browser_run_workflow",
+      ci_isolated_replay: "synthi_safety_run_ci_isolated_replay",
       auth_readiness: "synthi_auth_get_tool_auth_readiness",
       mutation_plan: "synthi_safety_get_mutation_plan",
       source_lookup: "synthi_source_lookup_token",

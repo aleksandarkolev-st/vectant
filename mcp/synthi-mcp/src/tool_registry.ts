@@ -66,6 +66,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_safety_get_mutation_plan",
   "synthi_safety_set_replay_isolation_profile",
   "synthi_safety_run_prefix_validation",
+  "synthi_safety_run_ci_isolated_replay",
   "synthi_safety_explain_blocked_hardening",
   // Lifecycle
   "synthi_attach",

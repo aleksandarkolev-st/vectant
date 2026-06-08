@@ -1,14 +1,27 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { browserBroker } from "../../src/browser/broker.js";
 import { replayIsolationProfiles } from "../../src/browser/safety.js";
 import { eventLog } from "../../src/events/index.js";
 import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 import { SAFETY_TOOL_NAMES, SAFETY_TOOLS, dispatchSafetyTool } from "../../src/tools/safety.js";
 
+const originalCiMarkerPath = process.env["CI_MARKER_PATH"];
+
 beforeEach(() => {
   browserBroker.resetForTests();
   replayIsolationProfiles.resetForTests();
   eventLog._resetForTests();
+});
+
+afterEach(() => {
+  if (originalCiMarkerPath === undefined) {
+    delete process.env["CI_MARKER_PATH"];
+  } else {
+    process.env["CI_MARKER_PATH"] = originalCiMarkerPath;
+  }
 });
 
 describe("safety MCP tool surface", () => {
@@ -109,6 +122,91 @@ describe("safety MCP tool surface", () => {
     }).mutation_plan).toEqual(expect.objectContaining({
       background_hardening: expect.objectContaining({ allowed: true, mode: "ciOnly" }),
       ci_full_replay: expect.objectContaining({ allowed: true, blockers: [] }),
+    }));
+  });
+
+  it("runs reset before full mutation replay in a configured isolated profile", async () => {
+    teachSaveWorkflow();
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-"));
+    const markerPath = path.join(artifactRoot, "marker.json");
+    process.env["CI_MARKER_PATH"] = markerPath;
+    const resetScript = path.join(artifactRoot, "reset.mjs");
+    const ciScript = path.join(artifactRoot, "ci.mjs");
+    await writeFile(resetScript, [
+      "import { writeFile } from 'node:fs/promises';",
+      "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL }));",
+      "",
+    ].join("\n"));
+    await writeFile(ciScript, [
+      "import { readFile, writeFile } from 'node:fs/promises';",
+      "const marker = JSON.parse(await readFile(process.env.CI_MARKER_PATH, 'utf8'));",
+      "if (!marker.reset) throw new Error('reset_not_run');",
+      "if (marker.baseUrl !== 'https://ci.example.test') throw new Error('base_url_not_available_to_reset');",
+      "if (process.env.PLAYWRIGHT_BASE_URL !== 'https://ci.example.test') throw new Error('base_url_not_available_to_ci');",
+      "if (process.env.ALLOW_WORKFLOW_MUTATION !== '1') throw new Error('mutation_not_allowed');",
+      "if (process.env.EMAIL !== 'ada@example.test') throw new Error('workflow_parameter_missing');",
+      "const spec = await readFile(process.env.SYNTHI_WORKFLOW_SPEC, 'utf8');",
+      "if (spec.includes('Mutation boundary:')) throw new Error('prefix_only_script_generated');",
+      "if (!spec.includes('await target2.click();')) throw new Error('mutation_click_not_generated');",
+      "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ ...marker, ci: true, workflowId: process.env.SYNTHI_WORKFLOW_ID }));",
+      "",
+    ].join("\n"));
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-a",
+      kind: "ciIsolated",
+      base_url: "https://ci.example.test",
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-a",
+      parameters: { email: "ada@example.test" },
+      artifact_root: artifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    const body = replay?.structuredContent as {
+      ok: boolean;
+      replay: {
+        status: string;
+        mutation_executed: boolean;
+        commands: { reset_exit_code: number; ci_exit_code: number };
+        artifacts: { spec_path: string };
+        report: { parameter_env: string[] };
+      };
+    };
+    expect(body).toEqual(expect.objectContaining({ ok: true }));
+    expect(body.replay).toEqual(expect.objectContaining({
+      status: "passed",
+      mutation_executed: true,
+      commands: expect.objectContaining({ reset_exit_code: 0, ci_exit_code: 0 }),
+      report: expect.objectContaining({ parameter_env: ["EMAIL"] }),
+    }));
+    const generatedSpec = await readFile(body.replay.artifacts.spec_path, "utf8");
+    expect(generatedSpec).toContain("ALLOW_WORKFLOW_MUTATION");
+    expect(generatedSpec).toContain("await target2.click();");
+    expect(generatedSpec).not.toContain("Mutation boundary:");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { reset?: boolean; ci?: boolean; workflowId?: string };
+    expect(marker).toEqual(expect.objectContaining({ reset: true, ci: true, workflowId: expect.any(String) }));
+  });
+
+  it("blocks CI isolated replay before profile readiness instead of executing mutation steps", async () => {
+    teachSaveWorkflow();
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", { workspace_id: "workspace-a" });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "blocked",
+        mutation_executed: false,
+        failure_class: "mutationBlocked",
+        blockers: expect.arrayContaining(["ci_isolation_profile_not_ready", "mutation_replay_not_explicitly_allowed"]),
+      }),
     }));
   });
 });

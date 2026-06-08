@@ -50,6 +50,37 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("/port/37797");
   });
 
+  it("emits full mutation replay for CI-isolated scripts behind an explicit mutation guard", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "email",
+        event_seq: 1,
+        action: "fill",
+        value: "ada@example.test",
+        detail: { field_name: "email", element: { tag: "input", label: "Email", source_id: "settings.email" } },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Email\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "save",
+        event_seq: 2,
+        action: "click",
+        detail: { element: { tag: "button", role: "button", name: "Save settings", source_id: "settings.save" } },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save settings\" })", confidence: 0.98, reason: "accessible_role_and_name" },
+        ],
+      }),
+    ], { mode: "ciIsolated" });
+
+    expect(generated.mode).toBe("ciIsolated");
+    expect(generated.code).toContain("ALLOW_WORKFLOW_MUTATION");
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"EMAIL\", \"email\");");
+    expect(generated.code).toContain("await target2.click();");
+    expect(generated.code).not.toContain("Mutation boundary:");
+    expect(generated.warnings).toContain("ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary save");
+  });
+
   it("keeps stable CSS fallbacks for shadow DOM-capable Playwright locators", () => {
     const generated = generatePlaywrightScript([
       event({
@@ -1082,7 +1113,8 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.mode).toBe("prefixOnly");
-    expect(generated.code).toContain("// Mutation mode: prefixOnly");
+    expect(generated.code).toContain("// Replay mode: prefixOnly");
+    expect(generated.code).toContain("// Default mutation mode: prefixOnly");
     expect(generated.code).toContain("// Mutation boundary: run");
     expect(generated.code).toContain("await expect(target1).toBeEnabled();");
     expect(generated.code).not.toContain("await target1.click();");

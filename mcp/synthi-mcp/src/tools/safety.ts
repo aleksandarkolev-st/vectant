@@ -6,6 +6,7 @@ import {
   type ReplayIsolationKindV7,
 } from "../browser/safety.js";
 import { browserBroker } from "../browser/broker.js";
+import { runCiIsolatedReplay } from "../browser/ci_replay.js";
 import { classifyWorkflowReplayBlock } from "../browser/workflow.js";
 import { errorFromException, jsonResponse, type ToolResponse } from "./shared.js";
 
@@ -13,6 +14,7 @@ export const SAFETY_TOOL_NAMES = [
   "synthi_safety_get_mutation_plan",
   "synthi_safety_set_replay_isolation_profile",
   "synthi_safety_run_prefix_validation",
+  "synthi_safety_run_ci_isolated_replay",
   "synthi_safety_explain_blocked_hardening",
 ] as const;
 
@@ -60,6 +62,26 @@ export const SAFETY_TOOLS = [
     },
   },
   {
+    name: "synthi_safety_run_ci_isolated_replay",
+    description:
+      "Run the full workflow, including mutation steps, only through a configured resettable CI isolation profile. Requires base URL, reset command, CI command, and explicit mutation replay permission.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: { type: "string" },
+        workflow_id: { type: "string" },
+        parameters: {
+          type: "object",
+          description: "Workflow parameters keyed by contract parameter name or generated env variable name.",
+          additionalProperties: { type: "string" },
+        },
+        timeout_ms: { type: "number" },
+        artifact_root: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_safety_explain_blocked_hardening",
     description:
       "Explain why background hardening or CI full replay is blocked, with the safest next action.",
@@ -82,6 +104,8 @@ export async function dispatchSafetyTool(toolName: string, args: unknown): Promi
         return setReplayIsolationProfileTool(args);
       case "synthi_safety_run_prefix_validation":
         return prefixValidationTool(args);
+      case "synthi_safety_run_ci_isolated_replay":
+        return ciIsolatedReplayTool(args);
       case "synthi_safety_explain_blocked_hardening":
         return explainBlockedHardeningTool(args);
       default:
@@ -131,6 +155,37 @@ function prefixValidationTool(_args: unknown): ToolResponse {
   });
 }
 
+async function ciIsolatedReplayTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const workspaceId = stringOpt(a["workspace_id"]);
+  const workflowId = stringOpt(a["workflow_id"]);
+  const artifact = browserBroker.workflowArtifact(workflowId);
+  if (!artifact.ok) {
+    return jsonResponse({
+      ok: false,
+      error: artifact.error,
+      workflow_id: artifact.workflow_id ?? workflowId ?? null,
+    });
+  }
+  const profile = replayIsolationProfiles.get(workspaceId);
+  const plan = mutationSafetyPlanFor(artifact.artifact.workflow.contract, profile);
+  const replay = await runCiIsolatedReplay({
+    workspace_id: workspaceId,
+    workflow_id: artifact.artifact.workflow_id,
+    workflow: artifact.artifact.workflow,
+    events: artifact.artifact.events,
+    profile,
+    blockers: plan.ci_full_replay.blockers,
+    parameters: stringMap(a["parameters"]),
+    timeout_ms: numberOpt(a["timeout_ms"]),
+    artifact_root: stringOpt(a["artifact_root"]),
+  });
+  return jsonResponse({
+    ok: replay.status === "passed",
+    replay,
+  });
+}
+
 function explainBlockedHardeningTool(args: unknown): ToolResponse {
   const workspaceId = stringOpt(obj(args)["workspace_id"]);
   const workflow = browserBroker.compiledWorkflow();
@@ -157,4 +212,17 @@ function boolOpt(value: unknown): boolean | undefined {
 function isolationKind(value: unknown): ReplayIsolationKindV7 | undefined {
   if (value === "readOnlyPrefix" || value === "ciIsolated" || value === "none") return value;
   return undefined;
+}
+
+function numberOpt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === "string") result[key] = raw;
+  }
+  return result;
 }

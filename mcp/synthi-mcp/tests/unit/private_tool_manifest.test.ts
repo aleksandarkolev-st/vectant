@@ -42,6 +42,7 @@ describe("private browser workflow MCP tool manifest", () => {
       run_modes: ["sameSession"],
       backing_tools: expect.objectContaining({
         run_workflow: "synthi_browser_run_workflow",
+        ci_isolated_replay: "synthi_safety_run_ci_isolated_replay",
         auth_readiness: "synthi_auth_get_tool_auth_readiness",
       }),
     }));
@@ -336,7 +337,7 @@ describe("private browser workflow MCP tool manifest", () => {
       error: "mutation_confirmation_required",
       tool_name: "synthi_app_save_settings",
       confirmation_field: "confirm_mutation",
-      safe_run_modes: ["prefixOnly", "coldSession"],
+      safe_run_modes: expect.arrayContaining(["prefixOnly", "coldSession", "ciOnly"]),
     }));
   });
 
@@ -406,6 +407,53 @@ describe("private browser workflow MCP tool manifest", () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it("advertises ciOnly for mutation tools and routes private tool execution through isolated replay", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("settings.save");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Save settings", source_id: "settings.save" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save settings\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(published?.isError).toBeUndefined();
+    const manifest = (published?.structuredContent as { manifest: ReturnType<typeof generatePrivateWorkflowToolManifest> }).manifest;
+
+    const tool = browserPrivateWorkflowTools().find((candidate) => candidate.name === manifest.tool_name);
+    expect(tool?.inputSchema.properties?.["run_mode"]).toEqual(expect.objectContaining({
+      enum: expect.arrayContaining(["prefixOnly", "confirmBeforeCommit", "ciOnly"]),
+    }));
+
+    const run = await dispatchBrowserTool(manifest.tool_name, {
+      run_mode: "ciOnly",
+      workspace_id: "manifest-tests",
+    });
+
+    expect(run?.isError).toBeUndefined();
+    expect(run?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      private_tool: expect.objectContaining({
+        tool_name: manifest.tool_name,
+        run_mode: "ciOnly",
+      }),
+      replay: expect.objectContaining({
+        status: "blocked",
+        failure_class: "mutationBlocked",
+        mutation_executed: false,
+      }),
+    }));
   });
 });
 
