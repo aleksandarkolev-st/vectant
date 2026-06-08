@@ -1638,11 +1638,14 @@ const server = http.createServer(async (req, res) => {
   const manifestMatch = /^\/program-runtime\/([^/]+)\/manifest$/.exec(programRuntimeUrl.pathname);
   if (manifestMatch && req.method === 'GET') {
     const slug = decodeURIComponent(manifestMatch[1]);
+    // userId is required to resolve a per-user workspace repo (repos/<slug>/<userId>);
+    // without it we'd read the shared slug dir and miss the user's manifest.
+    const manifestUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
     try {
       const fs = require('fs');
       const path = require('path');
       const { resolveWorkspaceCwd } = require('./terminalService');
-      const cwd = await resolveWorkspaceCwd(slug);
+      const cwd = await resolveWorkspaceCwd(slug, manifestUserId);
       const candidates = [
         { source: 'vectant.programs.json', file: path.join(cwd, 'vectant.programs.json') },
         { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer', 'devcontainer.json') },

@@ -18,15 +18,18 @@ afterEach(() => {
 });
 
 describe('discoverManifest', () => {
-  it('parses a vectant.programs.json manifest returned by collab-server', async () => {
-    mockFetch({
+  it('parses a vectant.programs.json manifest returned by collab-server and forwards userId', async () => {
+    const fetchFn = mockFetch({
       found: true,
       source: 'vectant.programs.json',
       raw: JSON.stringify({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', ports: [3000], runtimeType: 'web' }),
     });
 
-    const result = await discoverManifest('team');
+    const result = await discoverManifest('team', 'u-42');
 
+    const [url] = fetchFn.mock.calls[0];
+    expect(url).toContain('/program-runtime/team/manifest');
+    expect(url).toContain('userId=u-42');
     expect(result.source).toBe('vectant.programs.json');
     expect(result.config.launch).toBe('npm run dev');
     expect(result.config.ports).toEqual([3000]);

@@ -123,6 +123,8 @@ describe('POST /programs/install', () => {
     expect(body.install).toMatchObject({ id: 'inst1', packageId: 'local:team:web' });
     expect(body.grant).toMatchObject({ id: 'g1' });
     expect(h.createInstall).toHaveBeenCalledWith(expect.objectContaining({ programId: 'prog1', version: '1.0.0', grantId: 'g1', status: 'installed' }));
+    // Per-user repos require the actor's userId to resolve the workspace cwd.
+    expect(h.discoverManifest).toHaveBeenCalledWith('team', 'u1');
   });
 
   it('reuses an existing grant that already covers the manifest scopes', async () => {
@@ -162,6 +164,25 @@ describe('POST /programs/install', () => {
     h.discoverManifest.mockResolvedValue(null);
     const res = await POST_INSTALL(req('http://x/api/workspace/team/programs/install', { grantScopes: ['program.launch'] }, 'POST'), ctx({ slug: 'team' }));
     expect(res.status).toBe(404);
+  });
+
+  it('returns 422 manifest_invalid when the manifest fails validation', async () => {
+    h.discoverManifest.mockRejectedValue(Object.assign(new Error('Invalid packageId'), {
+      name: 'ProgramManifestError', code: 'invalid_field', field: 'packageId',
+    }));
+    const res = await POST_INSTALL(req('http://x/api/workspace/team/programs/install', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error).toBe('manifest_invalid');
+    expect(body.message).toBe('Invalid packageId');
+  });
+
+  it('returns 502 program_runtime_unreachable when discovery fails for a non-manifest reason', async () => {
+    h.discoverManifest.mockRejectedValue(Object.assign(new Error('Collab runtime request failed (500)'), { status: 500 }));
+    const res = await POST_INSTALL(req('http://x/api/workspace/team/programs/install', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toBe('program_runtime_unreachable');
   });
 });
 

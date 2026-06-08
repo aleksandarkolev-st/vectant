@@ -34,9 +34,21 @@ export async function POST(req, { params }) {
 
   let discovered;
   try {
-    discovered = await discoverManifest(slug);
+    // Pass the actor's userId so per-user workspace repos resolve correctly.
+    discovered = await discoverManifest(slug, actor.userId);
   } catch (error) {
-    return NextResponse.json({ error: 'manifest_invalid', message: error?.message || 'invalid manifest' }, { status: 422 });
+    // A manifest that fails validation is the caller's problem (422); any other
+    // failure (collab unreachable, cwd/fs error) is infrastructure (502).
+    if (error?.name === 'ProgramManifestError') {
+      return NextResponse.json(
+        { error: 'manifest_invalid', code: error.code, field: error.field, message: error.message },
+        { status: 422 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'program_runtime_unreachable', message: error?.message || 'program runtime error' },
+      { status: 502 },
+    );
   }
   if (!discovered) {
     return NextResponse.json({ error: 'manifest_not_found' }, { status: 404 });

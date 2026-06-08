@@ -83,8 +83,9 @@ export async function listProgramRuntimeSessionEvents(workspaceSlug, sessionId) 
  *
  * @returns {Promise<{ config: object, source: string } | null>}
  */
-export async function discoverManifest(workspaceSlug) {
-  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/manifest`);
+export async function discoverManifest(workspaceSlug, userId = '') {
+  const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/manifest${query}`);
   if (!data || !data.found || !data.raw) {
     return null;
   }
