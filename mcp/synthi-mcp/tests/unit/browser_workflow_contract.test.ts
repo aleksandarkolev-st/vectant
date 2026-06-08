@@ -446,6 +446,107 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("allows consented cross-origin popup continuation when opener linkage is captured", () => {
+    const events = [
+      baseEvent({
+        event_id: "open-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        detail: {
+          popup_event: true,
+          popup_url: "https://billing.example.com/help",
+          popup_origin_approved: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open help", source_id: "src_open_help" },
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: false,
+          popup_origin_approved: true,
+        },
+      }),
+      baseEvent({
+        event_id: "popup-search",
+        event_seq: 2,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://billing.example.com/help",
+        origin: "https://billing.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: false,
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    expect(workflow.contract.limitations).not.toContain("popupOrMultiTab");
+    expect(replay.status).toBe("ready");
+  });
+
+  it("blocks cross-origin popup continuation without popup origin consent metadata", () => {
+    const events = [
+      baseEvent({
+        event_id: "open-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        detail: {
+          popup_event: true,
+          popup_url: "https://billing.example.com/help",
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open help", source_id: "src_open_help" },
+        },
+      }),
+      baseEvent({
+        event_id: "popup-search",
+        event_seq: 2,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://billing.example.com/help",
+        origin: "https://billing.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toEqual(expect.arrayContaining(["crossOriginTrace", "popupOrMultiTab"]));
+    expect(replay.status).toBe("blocked");
+  });
+
   it("blocks popup continuation when the opener event is missing", () => {
     const events = [
       baseEvent({

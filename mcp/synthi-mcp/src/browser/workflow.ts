@@ -1116,14 +1116,14 @@ function workflowLimitations(
     .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
     .map((event) => event.tab_id)
     .filter(Boolean));
-  if ((actionTabIds.size > 1 && !isSameOriginPopupChain(events, appOrigin)) ||
+  if ((actionTabIds.size > 1 && !isLinkedPopupChain(events, appOrigin)) ||
     events.some((event) => event.detail?.["surface"] === "popup")) {
     limitations.add("popupOrMultiTab");
   }
   return [...limitations];
 }
 
-function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string): boolean {
+function isLinkedPopupChain(events: BrowserTraceEvent[], appOrigin: string): boolean {
   if (appOrigin === "unknown") return false;
   const actionEvents = events.filter((event) =>
     event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation"
@@ -1134,12 +1134,11 @@ function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string):
   const popupTabs = new Set<string>();
   let openerEventSeen = false;
   for (const event of actionEvents) {
-    if (event.origin !== appOrigin) return false;
     const opener = stringDetail(event, "opener_tab_id");
     const popup = stringDetail(event, "popup_tab_id");
     const popupUrl = stringDetail(event, "popup_url");
     if (event.detail?.["popup_event"] === true && opener && popup && event.tab_id === opener) {
-      if (popupUrl && originFor(popupUrl) !== appOrigin) return false;
+      if (popupUrl && !eventTargetOriginApproved(event, popupUrl, appOrigin, "popup")) return false;
       allowedTabs.add(opener);
       allowedTabs.add(popup);
       popupTabs.add(popup);
@@ -1152,8 +1151,26 @@ function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string):
     if (popupTabs.has(event.tab_id) && event.detail?.["popup_context"] !== true && event.detail?.["popup_event"] !== true) {
       return false;
     }
+    if (!eventTargetOriginApproved(event, event.origin, appOrigin, popupTabs.has(event.tab_id) ? "page" : "root")) {
+      return false;
+    }
   }
   return true;
+}
+
+function eventTargetOriginApproved(
+  event: BrowserTraceEvent,
+  urlOrOrigin: string,
+  appOrigin: string,
+  target: "root" | "page" | "popup"
+): boolean {
+  const origin = originFor(urlOrOrigin);
+  if (!origin) return false;
+  if (origin === appOrigin) return true;
+  if (target === "popup") {
+    return event.security?.popup_origin_approved === true || event.detail?.["popup_origin_approved"] === true;
+  }
+  return event.security?.exact_origin_approved === true;
 }
 
 function eventHasCrossOriginTarget(event: BrowserTraceEvent, appOrigin: string): boolean {
