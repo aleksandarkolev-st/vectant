@@ -7,6 +7,9 @@ const {
   createProgramRuntimeManager,
   DEFAULT_HEADLESS_TTL_MS,
   composeProgramCommand,
+  attributeSessionPorts,
+  selectWebPort,
+  samePorts,
 } = require('../programRuntimeManager');
 
 function createTimerHarness() {
@@ -420,4 +423,63 @@ test('launchManagedProgram composes the recipe, scrubs declared env, and seeds d
   assert.equal(session.title, 'Web');
   assert.deepEqual(session.activePorts, [3000]);
   assert.equal(session.webPort, 3000);
+});
+
+// ── Phase 3: port attribution + web-port selection (pure helpers) ──
+
+test('attributeSessionPorts assigns declared∩detected ports per session', () => {
+  const sessions = [
+    { sessionId: 'a', state: 'running', declaredPorts: [3000] },
+    { sessionId: 'b', state: 'running', declaredPorts: [5173] },
+  ];
+  const map = attributeSessionPorts({ sessions, detectedPorts: [3000, 5173, 9999] });
+  assert.deepEqual(map.get('a'), [3000]);
+  assert.deepEqual(map.get('b'), [5173]);
+});
+
+test('attributeSessionPorts gives undeclared detected ports to the single no-declared running session', () => {
+  const sessions = [
+    { sessionId: 'a', state: 'running', declaredPorts: [3000] },
+    { sessionId: 'b', state: 'running', declaredPorts: [] },
+  ];
+  const map = attributeSessionPorts({ sessions, detectedPorts: [3000, 5173] });
+  assert.deepEqual(map.get('a'), [3000]);
+  assert.deepEqual(map.get('b'), [5173]);
+});
+
+test('attributeSessionPorts leaves undeclared ports unattributed when ambiguous', () => {
+  const sessions = [
+    { sessionId: 'a', state: 'running', declaredPorts: [] },
+    { sessionId: 'b', state: 'running', declaredPorts: [] },
+  ];
+  const map = attributeSessionPorts({ sessions, detectedPorts: [5173] });
+  assert.deepEqual(map.get('a'), []);
+  assert.deepEqual(map.get('b'), []);
+});
+
+test('attributeSessionPorts ignores stopped sessions', () => {
+  const sessions = [
+    { sessionId: 'a', state: 'stopped', declaredPorts: [3000] },
+    { sessionId: 'b', state: 'running', declaredPorts: [] },
+  ];
+  const map = attributeSessionPorts({ sessions, detectedPorts: [3000] });
+  assert.equal(map.has('a'), false);
+  // 3000 is declared by a stopped session → not claimed → undeclared fallback to b
+  assert.deepEqual(map.get('b'), [3000]);
+});
+
+test('selectWebPort prefers a declared-live port, else the lowest attributed port', () => {
+  assert.equal(selectWebPort({ declaredPorts: [8080] }, [3000, 8080]), 8080);
+  assert.equal(selectWebPort({ declaredPorts: [] }, [5173, 3000]), 3000);
+});
+
+test('selectWebPort returns null only when there are no attributed ports', () => {
+  assert.equal(selectWebPort({ declaredPorts: [] }, []), null);
+  assert.equal(selectWebPort({ declaredPorts: [3000] }, [3000]), 3000);
+});
+
+test('samePorts compares ordered port lists', () => {
+  assert.equal(samePorts([3000, 5173], [3000, 5173]), true);
+  assert.equal(samePorts([3000], [3000, 5173]), false);
+  assert.equal(samePorts([5173, 3000], [3000, 5173]), false);
 });

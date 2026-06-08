@@ -70,6 +70,59 @@ function normalizePorts(value) {
   return [...new Set(ports.filter((port) => Number.isInteger(port) && port > 0))].sort((left, right) => left - right);
 }
 
+const RUNNING_STATES = ['starting', 'running', 'unhealthy'];
+
+function samePorts(a = [], b = []) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Attribute a globally-detected port set to managed sessions.
+ *   1. Each running session claims its declared ports that are currently live.
+ *   2. Any still-unclaimed live port is given to the single running session that
+ *      declared NO ports (the auto-binding dev-server case); ambiguous → dropped.
+ * @returns {Map<string, number[]>} sessionId → attributed ports (sorted, deduped)
+ */
+function attributeSessionPorts({ sessions = [], detectedPorts = [] } = {}) {
+  const detected = new Set(normalizePorts(detectedPorts));
+  const running = sessions.filter((s) => RUNNING_STATES.includes(s.state));
+  const result = new Map();
+  const claimed = new Set();
+
+  for (const session of running) {
+    const declared = normalizePorts(session.declaredPorts || []);
+    const live = declared.filter((port) => detected.has(port));
+    result.set(session.sessionId, live);
+    live.forEach((port) => claimed.add(port));
+  }
+
+  const undeclaredLive = [...detected].filter((port) => !claimed.has(port));
+  const noDeclared = running.filter((s) => normalizePorts(s.declaredPorts || []).length === 0);
+  if (undeclaredLive.length && noDeclared.length === 1) {
+    const target = noDeclared[0].sessionId;
+    result.set(target, normalizePorts([...(result.get(target) || []), ...undeclaredLive]));
+  }
+
+  return result;
+}
+
+/**
+ * Choose the primary web port for the App surface from a session's attributed
+ * ports: null when there are none, else the first declared port that is live,
+ * else the lowest attributed port. Port ownership is already decided by
+ * attributeSessionPorts, so no runtime-type gate is applied here.
+ */
+function selectWebPort({ declaredPorts = [] } = {}, attributedPorts = []) {
+  const ports = normalizePorts(attributedPorts);
+  if (!ports.length) return null;
+  const declaredLive = normalizePorts(declaredPorts).find((port) => ports.includes(port));
+  return declaredLive ?? ports[0];
+}
+
 function cloneEvent(event) {
   return {
     ...event,
@@ -561,4 +614,7 @@ module.exports = {
   DEFAULT_OUTPUT_CAP,
   buildManagedRuntimeEnv,
   composeProgramCommand,
+  attributeSessionPorts,
+  selectWebPort,
+  samePorts,
 };
