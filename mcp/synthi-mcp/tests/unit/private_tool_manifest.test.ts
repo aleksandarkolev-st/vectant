@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -310,6 +310,7 @@ describe("private browser workflow MCP tool manifest", () => {
     const provider = authCheckpointManager.configureRefreshProvider({
       url,
       secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: await writeRefreshMintCommand(await mkdtemp(path.join(os.tmpdir(), "synthi-private-tool-refresh-"))),
     });
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected provider failure");
@@ -694,4 +695,26 @@ function registerSourceToken(token: string): void {
     transformVersion: "unit_source_identity_v1",
     tokens: [{ token, file: filePath, tag: "button", line: 1, column: 1 }],
   });
+}
+
+async function writeRefreshMintCommand(directory: string): Promise<string> {
+  const scriptPath = path.join(directory, `mint-refresh-${Date.now()}.mjs`);
+  await writeFile(scriptPath, `
+const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
+if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
+const host = new URL(origin).hostname;
+process.stdout.write(JSON.stringify({
+  ok: true,
+  storage_state: {
+    cookies: [{ name: "sid", value: "private-tool-cookie-secret", domain: host, path: "/", httpOnly: true, secure: true }],
+    origins: [{ origin, localStorage: [{ name: "session", value: "private-tool-local-secret" }], sessionStorage: [] }]
+  },
+  ttl_ms: 60000
+}));
+`, "utf8");
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }

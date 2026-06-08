@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -18,6 +19,7 @@ export interface AuthCheckpointMetadata {
   app_origin: string;
   idp_origins: string[];
   durability: AuthDurabilityV7;
+  refresh_provider_id?: string;
   created_at: number;
   expires_at: number;
   revoked_at?: number;
@@ -78,15 +80,25 @@ export interface AuthStorageArtifact {
   };
 }
 
+export interface AuthRefreshProviderCommand {
+  command: string;
+  working_directory?: string;
+  timeout_ms: number;
+}
+
 export interface AuthRefreshProviderMetadata {
   provider_id: string;
   app_origin: string;
   provider_type: "projectRefreshProvider" | "ciTestAuth";
   secret_ref: string;
+  mint_command?: AuthRefreshProviderCommand;
+  mint_command_configured?: boolean;
   configured_at: number;
   last_tested_at?: number;
+  last_minted_at?: number;
+  last_mint_artifact?: AuthStorageArtifactMetadata;
   status: "configured" | "validated" | "failed" | "revoked";
-  failure_class?: "missingSecretRef" | "providerUnavailable" | "unknown";
+  failure_class?: "missingSecretRef" | "missingMintCommand" | "invalidMintCommand" | "mintCommandFailed" | "invalidMintResult" | "providerUnavailable" | "unknown";
 }
 
 export interface AuthReadiness {
@@ -160,16 +172,16 @@ export class InMemoryAuthCheckpointStore implements AuthCheckpointStore {
   }
 
   saveRefreshProvider(provider: AuthRefreshProviderMetadata): void {
-    this.refreshProviders.set(provider.provider_id, { ...provider });
+    this.refreshProviders.set(provider.provider_id, cloneRefreshProvider(provider));
   }
 
   getRefreshProvider(provider_id: string): AuthRefreshProviderMetadata | null {
     const provider = this.refreshProviders.get(provider_id);
-    return provider ? { ...provider } : null;
+    return provider ? cloneRefreshProvider(provider) : null;
   }
 
   listRefreshProviders(): AuthRefreshProviderMetadata[] {
-    return [...this.refreshProviders.values()].map((provider) => ({ ...provider }));
+    return [...this.refreshProviders.values()].map(cloneRefreshProvider);
   }
 
   clear(): void {
@@ -270,17 +282,17 @@ export class EncryptedFileAuthCheckpointStore implements AuthCheckpointStore {
 
   saveRefreshProvider(provider: AuthRefreshProviderMetadata): void {
     this.updateScope((scope) => {
-      scope.refreshProviders[provider.provider_id] = { ...provider };
+      scope.refreshProviders[provider.provider_id] = cloneRefreshProvider(provider);
     });
   }
 
   getRefreshProvider(provider_id: string): AuthRefreshProviderMetadata | null {
     const provider = this.scope().refreshProviders[provider_id];
-    return provider ? { ...provider } : null;
+    return provider ? cloneRefreshProvider(provider) : null;
   }
 
   listRefreshProviders(): AuthRefreshProviderMetadata[] {
-    return Object.values(this.scope().refreshProviders).map((provider) => ({ ...provider }));
+    return Object.values(this.scope().refreshProviders).map(cloneRefreshProvider);
   }
 
   clear(): void {
@@ -467,13 +479,19 @@ export class AuthCheckpointManager {
     url: string;
     secret_ref: string;
     provider_type?: AuthRefreshProviderMetadata["provider_type"];
+    mint_command?: string;
+    working_directory?: string;
+    timeout_ms?: number;
   }): { ok: true; provider: AuthRefreshProviderMetadata } | { ok: false; error: string } {
     if (!isSecretRef(input.secret_ref)) return { ok: false, error: "auth_refresh_provider_secret_ref_required" };
+    const mintCommand = normalizeRefreshProviderCommand(input);
+    if (!mintCommand.ok) return { ok: false, error: mintCommand.error };
     const provider: AuthRefreshProviderMetadata = {
       provider_id: `auth_refresh_${randomUUID()}`,
       app_origin: normalizeOrigin(input.url).origin,
       provider_type: input.provider_type ?? "projectRefreshProvider",
       secret_ref: input.secret_ref,
+      ...(mintCommand.command ? { mint_command: mintCommand.command } : {}),
       configured_at: Date.now(),
       status: "configured",
     };
@@ -491,7 +509,29 @@ export class AuthCheckpointManager {
       this.store.saveRefreshProvider(provider);
       return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
     }
+    if (!provider.mint_command?.command.trim()) {
+      provider.status = "failed";
+      provider.failure_class = "missingMintCommand";
+      this.store.saveRefreshProvider(provider);
+      return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
+    }
+    const minted = runRefreshProviderCommand(provider);
+    if (!minted.ok) {
+      provider.status = "failed";
+      provider.failure_class = minted.failure_class;
+      this.store.saveRefreshProvider(provider);
+      return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
+    }
+    const saved = this.saveMintedRefreshProviderCheckpoint(provider, minted.output);
+    if (!saved.ok) {
+      provider.status = "failed";
+      provider.failure_class = "invalidMintResult";
+      this.store.saveRefreshProvider(provider);
+      return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
+    }
     provider.status = "validated";
+    provider.last_minted_at = saved.storage_artifact.captured_at;
+    provider.last_mint_artifact = saved.storage_artifact;
     delete provider.failure_class;
     this.store.saveRefreshProvider(provider);
     return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: true };
@@ -506,15 +546,19 @@ export class AuthCheckpointManager {
 
   readiness(url: string, unattended: boolean = false): AuthReadiness {
     const origin = normalizeOrigin(url).origin;
-    const provider = this.store.listRefreshProviders()
+    const providers = this.store.listRefreshProviders()
       .filter((candidate) => candidate.app_origin === origin && candidate.status !== "revoked")
-      .sort((a, b) => b.configured_at - a.configured_at)[0];
-    if (unattended && provider?.status === "validated") {
+      .sort((a, b) => b.configured_at - a.configured_at);
+    const provider = providers[0];
+    const readyProvider = providers
+      .filter((candidate) => this.refreshProviderHasUsableMint(candidate))
+      .sort((a, b) => (b.last_minted_at ?? b.configured_at) - (a.last_minted_at ?? a.configured_at))[0];
+    if (unattended && readyProvider) {
       return {
         ready: true,
-        durability: provider.provider_type === "ciTestAuth" ? "ciTestAuth" : "refreshProvider",
+        durability: readyProvider.provider_type === "ciTestAuth" ? "ciTestAuth" : "refreshProvider",
         status: "ready",
-        refresh_provider: this.snapshotProvider(provider),
+        refresh_provider: this.snapshotProvider(readyProvider),
         notes: ["Refresh provider can mint replay auth for unattended runs."],
       };
     }
@@ -599,7 +643,60 @@ export class AuthCheckpointManager {
   }
 
   private snapshotProvider(provider: AuthRefreshProviderMetadata): AuthRefreshProviderMetadata {
-    return { ...provider };
+    const snapshot = cloneRefreshProvider(provider);
+    delete snapshot.mint_command;
+    snapshot.mint_command_configured = Boolean(provider.mint_command?.command.trim());
+    if (snapshot.last_mint_artifact) snapshot.last_mint_artifact = { ...snapshot.last_mint_artifact };
+    return snapshot;
+  }
+
+  private refreshProviderHasUsableMint(provider: AuthRefreshProviderMetadata): boolean {
+    if (provider.status !== "validated" || !provider.last_mint_artifact) return false;
+    const checkpoint = this.store.getCheckpoint(provider.last_mint_artifact.checkpoint_id);
+    if (!checkpoint?.storage_artifact) return false;
+    return this.snapshot(checkpoint).status === "valid";
+  }
+
+  private saveMintedRefreshProviderCheckpoint(
+    provider: AuthRefreshProviderMetadata,
+    output: AuthRefreshProviderMintOutput
+  ): { ok: true; storage_artifact: AuthStorageArtifactMetadata } | { ok: false; error: string } {
+    const appOrigin = normalizeOrigin(provider.app_origin).origin;
+    const idpOrigins = [...new Set((output.redirect_chain ?? [])
+      .map((url) => safeOrigin(url))
+      .filter((origin): origin is string => origin !== null && origin !== appOrigin))];
+    const now = Date.now();
+    const checkpoint: AuthCheckpointMetadata = {
+      checkpoint_id: `auth_ckpt_${randomUUID()}`,
+      app_origin: appOrigin,
+      idp_origins: idpOrigins,
+      durability: idpOrigins.length > 0 ? "idpCheckpoint" : "interactiveCheckpoint",
+      refresh_provider_id: provider.provider_id,
+      created_at: now,
+      expires_at: now + clampTtl(output.ttl_ms),
+      status: "valid",
+      unattended_allowed: true,
+      cookie_domain_audit: {
+        app_origin: appOrigin,
+        idp_origin_count: idpOrigins.length,
+        has_third_party_idp: idpOrigins.length > 0,
+      },
+    };
+    this.store.saveCheckpoint(checkpoint);
+    const saved = this.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint_id,
+      storage_state: output.storage_state,
+      captured_at: output.captured_at ?? now,
+    });
+    if (!saved.ok) {
+      this.revoke(checkpoint.checkpoint_id);
+      return saved;
+    }
+    if (!hasStoredAuthState(saved.storage_artifact)) {
+      this.revoke(checkpoint.checkpoint_id);
+      return { ok: false, error: "auth_refresh_provider_empty_storage_state" };
+    }
+    return { ok: true, storage_artifact: saved.storage_artifact };
   }
 }
 
@@ -625,12 +722,43 @@ function isSecretRef(value: string): boolean {
   return /^synthi:\/\/secrets\/[A-Za-z0-9_.:/-]+$/.test(value);
 }
 
+function normalizeRefreshProviderCommand(input: {
+  mint_command?: string;
+  working_directory?: string;
+  timeout_ms?: number;
+}): { ok: true; command?: AuthRefreshProviderCommand } | { ok: false; error: string } {
+  if (input.mint_command === undefined) return { ok: true };
+  const command = input.mint_command.trim();
+  if (command.length === 0) return { ok: false, error: "auth_refresh_provider_mint_command_required" };
+  return {
+    ok: true,
+    command: {
+      command,
+      ...(input.working_directory?.trim() ? { working_directory: input.working_directory.trim() } : {}),
+      timeout_ms: clampCommandTimeout(input.timeout_ms),
+    },
+  };
+}
+
+function clampCommandTimeout(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 30_000;
+  return Math.min(Math.max(Math.floor(value), 1_000), 120_000);
+}
+
 function cloneCheckpointMetadata(checkpoint: AuthCheckpointMetadata): AuthCheckpointMetadata {
   return {
     ...checkpoint,
     idp_origins: [...checkpoint.idp_origins],
     cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
     ...(checkpoint.storage_artifact ? { storage_artifact: { ...checkpoint.storage_artifact } } : {}),
+  };
+}
+
+function cloneRefreshProvider(provider: AuthRefreshProviderMetadata): AuthRefreshProviderMetadata {
+  return {
+    ...provider,
+    ...(provider.mint_command ? { mint_command: { ...provider.mint_command } } : {}),
+    ...(provider.last_mint_artifact ? { last_mint_artifact: { ...provider.last_mint_artifact } } : {}),
   };
 }
 
@@ -752,7 +880,7 @@ function clonePersistedScope(scope: PersistedAuthScope): PersistedAuthScope {
     enrollments: Object.fromEntries(Object.entries(scope.enrollments ?? {}).map(([key, value]) => [key, { ...value }])),
     checkpoints: Object.fromEntries(Object.entries(scope.checkpoints ?? {}).map(([key, value]) => [key, cloneCheckpointMetadata(value)])),
     storageArtifacts: Object.fromEntries(Object.entries(scope.storageArtifacts ?? {}).map(([key, value]) => [key, cloneStorageArtifact(value)])),
-    refreshProviders: Object.fromEntries(Object.entries(scope.refreshProviders ?? {}).map(([key, value]) => [key, { ...value }])),
+    refreshProviders: Object.fromEntries(Object.entries(scope.refreshProviders ?? {}).map(([key, value]) => [key, cloneRefreshProvider(value)])),
   };
 }
 
@@ -769,6 +897,173 @@ function normalizeDocument(document: EncryptedAuthStoreDocument): EncryptedAuthS
 function normalizeScopeId(scopeId: string | undefined): string {
   const trimmed = scopeId?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : "default";
+}
+
+interface AuthRefreshProviderMintOutput {
+  storage_state: AuthBrowserStorageState;
+  redirect_chain?: string[];
+  ttl_ms?: number;
+  captured_at?: number;
+}
+
+function runRefreshProviderCommand(
+  provider: AuthRefreshProviderMetadata
+): { ok: true; output: AuthRefreshProviderMintOutput } | { ok: false; failure_class: NonNullable<AuthRefreshProviderMetadata["failure_class"]> } {
+  if (!provider.mint_command) return { ok: false, failure_class: "missingMintCommand" };
+  const argv = parseCommandLine(provider.mint_command.command);
+  if (!argv || argv.length === 0) return { ok: false, failure_class: "invalidMintCommand" };
+  const result = spawnSync(argv[0]!, argv.slice(1), {
+    cwd: provider.mint_command.working_directory,
+    shell: false,
+    encoding: "utf8",
+    timeout: provider.mint_command.timeout_ms,
+    env: {
+      ...process.env,
+      SYNTHI_AUTH_APP_ORIGIN: provider.app_origin,
+      SYNTHI_AUTH_PROVIDER_ID: provider.provider_id,
+      SYNTHI_AUTH_PROVIDER_TYPE: provider.provider_type,
+      SYNTHI_AUTH_SECRET_REF: provider.secret_ref,
+    },
+  });
+  if (result.error || result.status !== 0) return { ok: false, failure_class: "mintCommandFailed" };
+  return parseRefreshProviderMintOutput(result.stdout);
+}
+
+function parseCommandLine(command: string): string[] | null {
+  const argv: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== "\"") {
+      quote = quote === "'" ? null : "'";
+      continue;
+    }
+    if (char === "\"" && quote !== "'") {
+      quote = quote === "\"" ? null : "\"";
+      continue;
+    }
+    if (/\s/.test(char) && quote === null) {
+      if (current.length > 0) {
+        argv.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (escaped) current += "\\";
+  if (quote !== null) return null;
+  if (current.length > 0) argv.push(current);
+  return argv;
+}
+
+function parseRefreshProviderMintOutput(
+  stdout: string
+): { ok: true; output: AuthRefreshProviderMintOutput } | { ok: false; failure_class: "invalidMintResult" } {
+  const text = stdout.trim();
+  if (text.length === 0) return { ok: false, failure_class: "invalidMintResult" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, failure_class: "invalidMintResult" };
+  }
+  const result = asRecord(parsed);
+  if (!result || result["ok"] !== true) return { ok: false, failure_class: "invalidMintResult" };
+  const storageState = asRecord(result["storage_state"]);
+  if (!storageState) return { ok: false, failure_class: "invalidMintResult" };
+  const output: AuthRefreshProviderMintOutput = {
+    storage_state: {
+      cookies: authStorageCookieArray(storageState["cookies"]),
+      origins: authStorageOriginArray(storageState["origins"]),
+    },
+    redirect_chain: stringArray(result["redirect_chain"]),
+    ttl_ms: finiteNumber(result["ttl_ms"]),
+    captured_at: finiteNumber(result["captured_at"]),
+  };
+  if (!hasRawAuthState(output.storage_state)) return { ok: false, failure_class: "invalidMintResult" };
+  return { ok: true, output };
+}
+
+function hasRawAuthState(storageState: AuthBrowserStorageState): boolean {
+  return (storageState.cookies?.length ?? 0) > 0 ||
+    (storageState.origins ?? []).some((origin) =>
+      (origin.localStorage?.length ?? 0) > 0 || (origin.sessionStorage?.length ?? 0) > 0
+    );
+}
+
+function hasStoredAuthState(metadata: AuthStorageArtifactMetadata): boolean {
+  return metadata.cookie_count + metadata.local_storage_entry_count + metadata.session_storage_entry_count > 0;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function authStorageCookieArray(value: unknown): AuthStorageCookie[] {
+  return Array.isArray(value)
+    ? value
+      .map((item) => asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({
+        name: typeof item["name"] === "string" ? item["name"] : "",
+        value: typeof item["value"] === "string" ? item["value"] : "",
+        domain: typeof item["domain"] === "string" ? item["domain"] : "",
+        ...(typeof item["path"] === "string" ? { path: item["path"] } : {}),
+        ...(typeof item["expires"] === "number" ? { expires: item["expires"] } : {}),
+        ...(typeof item["httpOnly"] === "boolean" ? { httpOnly: item["httpOnly"] } : {}),
+        ...(typeof item["secure"] === "boolean" ? { secure: item["secure"] } : {}),
+        ...(typeof item["sameSite"] === "string" ? { sameSite: item["sameSite"] } : {}),
+        ...(typeof item["partitionKey"] === "string" ? { partitionKey: item["partitionKey"] } : {}),
+      }))
+      .filter((cookie) => cookie.name.length > 0 && cookie.domain.length > 0)
+    : [];
+}
+
+function authStorageOriginArray(value: unknown): AuthStorageOriginState[] {
+  return Array.isArray(value)
+    ? value
+      .map((item) => asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({
+        origin: typeof item["origin"] === "string" ? item["origin"] : "",
+        localStorage: authStorageEntryArray(item["localStorage"]),
+        sessionStorage: authStorageEntryArray(item["sessionStorage"]),
+      }))
+      .filter((origin) => origin.origin.length > 0)
+    : [];
+}
+
+function authStorageEntryArray(value: unknown): AuthStorageEntry[] {
+  return Array.isArray(value)
+    ? value
+      .map((item) => asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({
+        name: typeof item["name"] === "string" ? item["name"] : "",
+        value: typeof item["value"] === "string" ? item["value"] : "",
+      }))
+      .filter((entry) => entry.name.length > 0)
+    : [];
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export const authCheckpointManager = new AuthCheckpointManager(createDefaultAuthCheckpointStore());

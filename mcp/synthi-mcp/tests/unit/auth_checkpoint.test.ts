@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -106,6 +106,7 @@ describe("auth checkpoint manager", () => {
     const provider = managerA.configureRefreshProvider({
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: await writeRefreshMintCommand(directory),
     });
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected refresh provider failure");
@@ -130,7 +131,6 @@ describe("auth checkpoint manager", () => {
     expect(reloadedA.readiness("https://app.example.com/settings", false)).toEqual(expect.objectContaining({
       ready: true,
       status: "ready",
-      durability: "idpCheckpoint",
     }));
     expect(reloadedA.readiness("https://app.example.com/settings", true)).toEqual(expect.objectContaining({
       ready: true,
@@ -324,7 +324,7 @@ describe("auth checkpoint manager", () => {
     }));
   });
 
-  it("allows unattended readiness for refresh-provider metadata", () => {
+  it("requires a refresh-provider mint command before unattended readiness", () => {
     const configured = authCheckpointManager.configureRefreshProvider({
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
@@ -333,16 +333,54 @@ describe("auth checkpoint manager", () => {
     if (!configured.ok) throw new Error("unexpected refresh provider config failure");
     const tested = authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
     expect(tested.ok).toBe(true);
+    if (!tested.ok) throw new Error("unexpected refresh provider test failure");
 
     expect(authCheckpointManager.readiness("https://app.example.com", true)).toEqual(expect.objectContaining({
+      ready: false,
+      status: "checkpointMissing",
+    }));
+    expect(tested).toEqual(expect.objectContaining({
+      can_mint_replay_state: false,
+      provider: expect.objectContaining({
+        status: "failed",
+        failure_class: "missingMintCommand",
+        mint_command_configured: false,
+      }),
+    }));
+  });
+
+  it("allows unattended readiness after a refresh-provider command mints approved storage state", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-refresh-"));
+    const configured = authCheckpointManager.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: await writeRefreshMintCommand(directory),
+      timeout_ms: 5_000,
+    });
+    expect(configured.ok).toBe(true);
+    if (!configured.ok) throw new Error("unexpected refresh provider config failure");
+    const tested = authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
+    expect(tested.ok).toBe(true);
+    if (!tested.ok) throw new Error("unexpected refresh provider test failure");
+
+    const readiness = authCheckpointManager.readiness("https://app.example.com", true);
+    expect(readiness).toEqual(expect.objectContaining({
       ready: true,
       status: "ready",
       durability: "refreshProvider",
       refresh_provider: expect.objectContaining({
         status: "validated",
         secret_ref: "synthi://secrets/workspace/auth-refresh",
+        mint_command_configured: true,
+        last_mint_artifact: expect.objectContaining({
+          app_origin: "https://app.example.com",
+          cookie_count: 1,
+          local_storage_entry_count: 1,
+        }),
       }),
     }));
+    expect(JSON.stringify(readiness)).not.toMatch(/minted-cookie-secret|minted-local-secret|mint-refresh|\.mjs|\/node/);
+    expect(tested).toEqual(expect.objectContaining({ can_mint_replay_state: true }));
   });
 
   it("rejects raw refresh-provider secret values", () => {
@@ -385,6 +423,7 @@ describe("auth checkpoint manager", () => {
     const provider = await dispatchAuthTool("synthi_auth_configure_refresh_provider", {
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: await writeRefreshMintCommand(await mkdtemp(path.join(os.tmpdir(), "synthi-auth-tool-refresh-"))),
     });
     const providerId = (provider?.structuredContent as { provider: { provider_id: string } }).provider.provider_id;
     const tested = await dispatchAuthTool("synthi_auth_test_refresh_provider", { provider_id: providerId });
@@ -394,7 +433,31 @@ describe("auth checkpoint manager", () => {
     }));
 
     const listed = await dispatchAuthTool("synthi_auth_list_checkpoints", { url: "https://app.example.com" });
-    expect((listed?.structuredContent as { checkpoints: unknown[] }).checkpoints).toHaveLength(1);
+    expect((listed?.structuredContent as { checkpoints: unknown[] }).checkpoints).toHaveLength(2);
     expect(JSON.stringify(listed?.structuredContent)).not.toMatch(/hunter2|secret-token|localStorage|sessionStorage/);
   });
 });
+
+async function writeRefreshMintCommand(directory: string): Promise<string> {
+  const scriptPath = path.join(directory, `mint-refresh-${Date.now()}.mjs`);
+  await writeFile(scriptPath, `
+const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
+if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
+const host = new URL(origin).hostname;
+process.stdout.write(JSON.stringify({
+  ok: true,
+  storage_state: {
+    cookies: [{ name: "sid", value: "minted-cookie-secret", domain: host, path: "/", httpOnly: true, secure: true }],
+    origins: [{ origin, localStorage: [{ name: "session", value: "minted-local-secret" }], sessionStorage: [] }]
+  },
+  redirect_chain: [origin + "/login"],
+  ttl_ms: 60000,
+  captured_at: 1234
+}));
+`, "utf8");
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}

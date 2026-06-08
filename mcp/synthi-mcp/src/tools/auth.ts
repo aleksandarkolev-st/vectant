@@ -72,6 +72,13 @@ export const AUTH_TOOLS = [
         url: { type: "string" },
         secret_ref: { type: "string", description: "Synthi secret URI, for example synthi://secrets/workspace/auth-refresh." },
         provider_type: { type: "string", enum: ["projectRefreshProvider", "ciTestAuth"] },
+        mint_command: {
+          type: "string",
+          description:
+            "Deployment-controlled command that prints JSON { ok: true, storage_state, redirect_chain?, ttl_ms? }. Receives only secret references in env.",
+        },
+        working_directory: { type: "string" },
+        timeout_ms: { type: "number" },
       },
       required: ["url", "secret_ref"],
     },
@@ -159,6 +166,9 @@ function configureRefreshProviderTool(args: unknown): ToolResponse {
     url: requiredString(a, "url"),
     secret_ref: requiredString(a, "secret_ref"),
     provider_type: refreshProviderTypeOpt(a["provider_type"]),
+    mint_command: stringOpt(a["mint_command"]),
+    working_directory: stringOpt(a["working_directory"]),
+    timeout_ms: numberOpt(a["timeout_ms"]),
   });
   if (!result.ok) return errorResponse(result.error);
   return jsonResponse({ ok: true, provider: result.provider });
