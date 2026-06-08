@@ -1415,6 +1415,14 @@ function latestPublicationFromEpochProof(proof) {
   return publishEdges[publishEdges.length - 1] ?? null;
 }
 
+function latestRetirementFromEpochProof(proof) {
+  const graph = epochGraphFromProof(proof);
+  if (!graph) return null;
+  const retireEdges = firstArray(graph.edges)
+    .filter((edge) => objectOrNull(edge) && String(edge.kind ?? '').toLowerCase() === 'retire');
+  return retireEdges[retireEdges.length - 1] ?? null;
+}
+
 function epochIdFromProof(proof) {
   const p = objectOrNull(proof) ?? {};
   const publication = latestPublicationFromEpochProof(proof) ?? {};
@@ -1665,6 +1673,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     [firewallEvidence, 'process_restarted'],
   );
   const publication = latestPublicationFromEpochProof(epochProof) ?? {};
+  const retirement = latestRetirementFromEpochProof(epochProof) ?? {};
   const artifactAfterHash = firstArtifactId(
     proofArtifactId(outputProof),
     proofArtifactId(dispatchProof),
@@ -1752,6 +1761,10 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     outputOracle.generation,
   );
   const publishTimestamp = latestTimestamp(
+    publication.timestampMonotonicNs,
+    publication.timestamp_monotonic_ns,
+    publication.publishTimestampMonotonicNs,
+    publication.publish_timestamp_monotonic_ns,
     publication.publishTimestamp,
     publication.publish_timestamp,
     publication.timestamp,
@@ -1829,7 +1842,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       ),
     },
     epoch_publish_event: {
-      id: firstString(epochProof?.eventId, epochProof?.event_id, publication.id, publication.event_id),
+      id: firstString(epochProof?.eventId, epochProof?.event_id, publication.id, publication.eventId, publication.event_id),
       artifact_hash: publishedArtifactHash,
       epoch,
       process_id: firstString(
@@ -1870,9 +1883,35 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       passed: outputProof?.resultState === 'gpu-hmr-output-oracle-proven' || outputOracle.passed === true,
     },
     retirement_event: {
-      id: firstString(epochProof?.retirementEventId, epochProof?.retirement_event_id),
+      id: firstString(
+        epochProof?.retirementEventId,
+        epochProof?.retirement_event_id,
+        retirement.id,
+        retirement.eventId,
+        retirement.event_id,
+        retirement.retirementEventId,
+        retirement.retirement_event_id,
+      ),
       epoch,
       status: epochProof?.oldGenerationRetired === true ? 'retired' : null,
+      timestamp_monotonic_ns: latestTimestamp(
+        epochProof?.retirementTimestamp,
+        epochProof?.retirement_timestamp,
+        epochProof?.retirementTimestampMonotonicNs,
+        epochProof?.retirement_timestamp_monotonic_ns,
+        epochProof?.retirementEventTimestamp,
+        epochProof?.retirement_event_timestamp,
+        epochProof?.retirementEventTimestampMonotonicNs,
+        epochProof?.retirement_event_timestamp_monotonic_ns,
+        epochProof?.retirementFenceTimestamp,
+        epochProof?.retirement_fence_timestamp,
+        retirement.timestampMonotonicNs,
+        retirement.timestamp_monotonic_ns,
+        retirement.retirementTimestampMonotonicNs,
+        retirement.retirement_timestamp_monotonic_ns,
+        retirement.retirementEventTimestampMonotonicNs,
+        retirement.retirement_event_timestamp_monotonic_ns,
+      ),
     },
     process_identity: {
       process_id: firstString(

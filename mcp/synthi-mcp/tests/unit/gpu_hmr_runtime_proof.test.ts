@@ -324,7 +324,11 @@ function epochRetirementFields({
 function epochGenerationGraph({
   previousGeneration = 2,
   activeGeneration = 3,
+  publishEventId = "epoch-publish:test:2->3",
   publishTimestampMs = 1779979998000,
+  publishTimestampMonotonicNs = 1779979998600,
+  retirementEventId = "epoch-retire:test:2->3",
+  retirementTimestampMonotonicNs = 1779980000100,
   dispatchTableHashBefore = "0xaaa",
   dispatchTableHashAfter = "0xabc",
   dispatchTableHash = dispatchTableHashAfter,
@@ -338,14 +342,24 @@ function epochGenerationGraph({
 } = {}) {
   const runtimeSessionFields = runtimeSession ? { runtimeSession } : {};
   const capsuleFields = capsuleMetadata ? epochCapsuleMetadata() : {};
-  const publicationFields = { publishTimestampMs };
+  const publicationFields = {
+    id: publishEventId,
+    publishTimestampMs,
+    timestamp_monotonic_ns: publishTimestampMonotonicNs,
+  };
   const dispatchTableFields = {
     dispatchTableHashBefore,
     dispatchTableHashAfter,
     dispatchTableHash,
     changedEntries,
   };
-  const retirementFields = { retirementFenceIds, delayedUnloadResult, retirementStrategy };
+  const retirementFields = {
+    retirement_event_id: retirementEventId,
+    retirement_timestamp_monotonic_ns: retirementTimestampMonotonicNs,
+    retirementFenceIds,
+    delayedUnloadResult,
+    retirementStrategy,
+  };
   return {
     schemaVersion: "synthi.gpu.epoch_graph.v1",
     runtimeSessionIds: runtimeSession ? [runtimeSession] : [],
@@ -8195,6 +8209,7 @@ describe("GPU HMR runtime output proof classification", () => {
         id: "retire-1",
         epoch: "epoch-2",
         status: "retired",
+        timestamp_monotonic_ns: 500,
       },
       process_identity: {
         process_id: "pid-1",
@@ -8281,7 +8296,7 @@ describe("GPU HMR runtime output proof classification", () => {
       [
         {
           ...baseRecord,
-          retirement_event: { id: "retire-1", epoch: "epoch-2" },
+          retirement_event: { id: "retire-1", epoch: "epoch-2", timestamp_monotonic_ns: 500 },
         },
         "retirement_proof_missing",
       ],

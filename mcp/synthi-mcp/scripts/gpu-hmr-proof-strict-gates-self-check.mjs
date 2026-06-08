@@ -151,6 +151,7 @@ function ledgerRecord(overrides = {}) {
       id: 'retire-1',
       epoch: 'epoch-6',
       proof: 'stream_event_proven',
+      timestamp_monotonic_ns: 500,
     },
     process_identity: {
       process_id: 'pid-1',

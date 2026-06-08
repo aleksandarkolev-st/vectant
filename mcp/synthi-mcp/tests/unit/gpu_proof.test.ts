@@ -72,7 +72,7 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
       passed: true,
       timestamp_monotonic_ns: 400,
     },
-    retirement_event: { id: "retire-1", epoch: "epoch-1", proof: "stream_event_proven" },
+    retirement_event: { id: "retire-1", epoch: "epoch-1", proof: "stream_event_proven", timestamp_monotonic_ns: 500 },
     process_identity: { process_id: "pid-1" },
     device_identity: { device_uuid: "device-1" },
     cpu_hmr_used: false,
@@ -511,6 +511,77 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toEqual(
       expect.arrayContaining(["record_proof_id_mismatch", "ledger_proof_id_mismatch"])
     );
+  });
+
+  it("rejects output oracle proof when event chronology is invalid", () => {
+    const cases = [
+      {
+        name: "epoch publish before load",
+        ledger: proofLedger({
+          epoch_publish_event: {
+            id: "publish-1",
+            epoch: "epoch-2",
+            artifact_hash: HASH_B,
+            process_id: "pid-1",
+            timestamp_monotonic_ns: 50,
+          },
+        }),
+        expectedCode: "epoch_publish_precedes_loader",
+      },
+      {
+        name: "dispatch before epoch publish",
+        ledger: proofLedger({
+          dispatch_event: {
+            id: "dispatch-1",
+            epoch: "epoch-2",
+            artifact_hash: HASH_B,
+            process_id: "pid-1",
+            timestamp_monotonic_ns: 150,
+          },
+        }),
+        expectedCode: "dispatch_precedes_epoch_publish",
+      },
+      {
+        name: "retirement before output",
+        ledger: proofLedger({
+          retirement_event: {
+            id: "retire-1",
+            epoch: "epoch-1",
+            proof: "stream_event_proven",
+            timestamp_monotonic_ns: 350,
+          },
+        }),
+        expectedCode: "retirement_precedes_output",
+      },
+      {
+        name: "retirement timestamp missing",
+        ledger: proofLedger({
+          retirement_event: {
+            id: "retire-1",
+            epoch: "epoch-1",
+            proof: "stream_event_proven",
+          },
+        }),
+        expectedCode: "retirement_timestamp_missing",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const proof = classifyGpuHmrProofMessage({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-output-oracle-proven",
+        proofLedger: testCase.ledger,
+      });
+
+      const validation = validateGpuHmrProofState(proof, "gpu-hmr-output-oracle-proven");
+
+      expect(validation.satisfied, testCase.name).toBe(false);
+      expect(validation.reason, testCase.name).toBe("proof_ledger_rejected");
+      expect(
+        validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code),
+        testCase.name
+      ).toContain(testCase.expectedCode);
+    }
   });
 
   it("rejects output oracle proof with a recomputed accepted ledger and no runtime artifact", () => {

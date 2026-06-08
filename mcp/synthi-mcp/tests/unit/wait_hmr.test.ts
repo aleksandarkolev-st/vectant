@@ -78,7 +78,7 @@ function passingProofLedger() {
       passed: true,
       timestamp_monotonic_ns: 400,
     },
-    retirement_event: { id: "retire-1", epoch: "epoch-1", proof: "stream_event_proven" },
+    retirement_event: { id: "retire-1", epoch: "epoch-1", proof: "stream_event_proven", timestamp_monotonic_ns: 500 },
     process_identity: { process_id: "pid-1" },
     device_identity: { device_uuid: "device-1" },
     cpu_hmr_used: false,

@@ -731,6 +731,7 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     epochPublishEvent: normalized.epochPublishEvent,
     dispatchEvent: normalized.dispatchEvent,
     outputEvent: normalized.outputEvent,
+    retirementEvent: normalized.retirementEvent,
     outputOracleTarget: normalized.outputOracleTarget,
     cpuHmrUsed: normalized.cpuHmrUsed,
     fullRebuildUsed: normalized.fullRebuildUsed,
@@ -758,9 +759,16 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   const publishedEpoch = eventEpoch(record.epochPublishEvent);
   const dispatchEpoch = eventEpoch(record.dispatchEvent);
   const dispatchId = eventId(record.dispatchEvent);
+  const loaderId = eventId(record.loaderEvent);
+  const epochPublishId = eventId(record.epochPublishEvent);
+  const outputId = eventId(record.outputEvent);
+  const retirementId = eventId(record.retirementEvent);
   const outputDispatchId = outputAfterDispatchId(record.outputEvent);
+  const loaderTs = eventTimestamp(record.loaderEvent);
+  const publishTs = eventTimestamp(record.epochPublishEvent);
   const dispatchTs = eventTimestamp(record.dispatchEvent);
   const outputTs = eventTimestamp(record.outputEvent);
+  const retirementTs = eventTimestamp(record.retirementEvent);
   const identityPid = eventProcessId(record.processIdentity);
   const loaderPid = eventProcessId(record.loaderEvent);
   const epochPublishPid = eventProcessId(record.epochPublishEvent);
@@ -840,6 +848,8 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       actual: loadedArtifactHash,
     });
   }
+  if (!loaderId) addFailure(failures, 'loader_event_id_missing');
+  if (loaderTs === null) addFailure(failures, 'loader_timestamp_missing');
   if (!publishedArtifactHash) {
     addFailure(failures, 'epoch_publish_artifact_hash_missing');
   } else if (artifactAfterHash && publishedArtifactHash !== artifactAfterHash) {
@@ -848,7 +858,15 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       actual: publishedArtifactHash,
     });
   }
+  if (!epochPublishId) addFailure(failures, 'epoch_publish_event_id_missing');
   if (!publishedEpoch) addFailure(failures, 'epoch_publish_id_missing');
+  if (publishTs === null) addFailure(failures, 'epoch_publish_timestamp_missing');
+  if (loaderTs !== null && publishTs !== null && publishTs < loaderTs) {
+    addFailure(failures, 'epoch_publish_precedes_loader', {
+      loaderTimestamp: loaderTs,
+      publishTimestamp: publishTs,
+    });
+  }
   if (!dispatchEpoch) {
     addFailure(failures, 'dispatch_epoch_missing');
   } else if (publishedEpoch && dispatchEpoch !== publishedEpoch) {
@@ -868,6 +886,12 @@ export function evaluateGpuHmrProofLedger(input = {}) {
     });
   }
   if (dispatchTs === null) addFailure(failures, 'dispatch_timestamp_missing');
+  if (publishTs !== null && dispatchTs !== null && dispatchTs < publishTs) {
+    addFailure(failures, 'dispatch_precedes_epoch_publish', {
+      publishTimestamp: publishTs,
+      dispatchTimestamp: dispatchTs,
+    });
+  }
   if (!outputDispatchId) {
     addFailure(failures, 'output_after_dispatch_id_missing');
   } else if (dispatchId && outputDispatchId !== dispatchId) {
@@ -876,6 +900,7 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       actual: outputDispatchId,
     });
   }
+  if (!outputId) addFailure(failures, 'output_event_id_missing');
   if (record.outputEvent.passed !== true) addFailure(failures, 'output_oracle_not_passed');
   const outputArtifactHash = eventArtifactHash(record.outputEvent);
   if (!outputArtifactHash) {
@@ -937,6 +962,14 @@ export function evaluateGpuHmrProofLedger(input = {}) {
   if (!record.retirementEvent || Object.keys(record.retirementEvent).length === 0) {
     addFailure(failures, 'retirement_event_missing');
   } else {
+    if (!retirementId) addFailure(failures, 'retirement_event_id_missing');
+    if (retirementTs === null) addFailure(failures, 'retirement_timestamp_missing');
+    if (outputTs !== null && retirementTs !== null && retirementTs < outputTs) {
+      addFailure(failures, 'retirement_precedes_output', {
+        outputTimestamp: outputTs,
+        retirementTimestamp: retirementTs,
+      });
+    }
     const retirementStatus = firstText(
       record.retirementEvent.status,
       record.retirementEvent.proof,

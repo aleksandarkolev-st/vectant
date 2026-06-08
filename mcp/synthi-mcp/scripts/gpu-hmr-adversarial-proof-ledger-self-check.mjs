@@ -185,6 +185,7 @@ function baselineRecord(overrides = {}) {
       id: 'retire-1',
       epoch: 'epoch-6',
       proof: 'no_retirement_required',
+      timestamp_monotonic_ns: 500,
     },
     process_identity: {
       process_id: 'pid-1',
@@ -1205,7 +1206,11 @@ const cases = [
   ['output process mismatch', baselineRecord({ output_event: { id: 'output-1', kind: 'buffer_checksum', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-2', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'output_process_identity_mismatch'],
   ['missing device identity', baselineRecord({ device_identity: {} }), 'device_identity_missing'],
   ['missing retirement event', baselineRecord({ retirement_event: {} }), 'retirement_event_missing'],
-  ['missing retirement proof', baselineRecord({ retirement_event: { id: 'retire-1', epoch: 'epoch-6' } }), 'retirement_proof_missing'],
+  ['missing retirement proof', baselineRecord({ retirement_event: { id: 'retire-1', epoch: 'epoch-6', timestamp_monotonic_ns: 500 } }), 'retirement_proof_missing'],
+  ['epoch publish before load', baselineRecord({ epoch_publish_event: { id: 'publish-1', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', timestamp_monotonic_ns: 50 } }), 'epoch_publish_precedes_loader'],
+  ['dispatch before epoch publish', baselineRecord({ dispatch_event: { id: 'dispatch-1', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', timestamp_monotonic_ns: 150 } }), 'dispatch_precedes_epoch_publish'],
+  ['retirement before output', baselineRecord({ retirement_event: { id: 'retire-1', epoch: 'epoch-6', proof: 'no_retirement_required', timestamp_monotonic_ns: 350 } }), 'retirement_precedes_output'],
+  ['missing retirement timestamp', baselineRecord({ retirement_event: { id: 'retire-1', epoch: 'epoch-6', proof: 'no_retirement_required' } }), 'retirement_timestamp_missing'],
   ['host-only classification', baselineRecord({ classification: { project_kind: 'gpu_project', edit_kind: 'host_only', route: 'cpu_hmr_or_host_reload' } }), 'classification_host_only_edit'],
 ];
 

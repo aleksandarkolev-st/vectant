@@ -748,8 +748,15 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const outputDispatchId = outputAfterDispatchId(outputEvent);
   const outputArtifactHash = eventArtifactHash(outputEvent);
   const outputEpoch = eventEpoch(outputEvent);
+  const loaderId = eventId(loaderEvent);
+  const epochPublishId = eventId(epochPublishEvent);
+  const outputId = eventId(outputEvent);
+  const retirementId = eventId(retirementEvent);
+  const loaderTs = eventTimestamp(loaderEvent);
+  const publishTs = eventTimestamp(epochPublishEvent);
   const dispatchTs = eventTimestamp(dispatchEvent);
   const outputTs = eventTimestamp(outputEvent);
+  const retirementTs = eventTimestamp(retirementEvent);
   const identityPid = eventProcessId(processIdentity);
   const cpuHmrUsed = firstPresent(
     [input, "cpu_hmr_used"],
@@ -783,6 +790,7 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     epochPublishEvent,
     dispatchEvent,
     outputEvent,
+    retirementEvent,
     outputOracleTarget,
     cpuHmrUsed: cpuHmrUsed.value === true,
     fullRebuildUsed: fullRebuildUsed.value === true,
@@ -833,10 +841,17 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   if (!loadedArtifactHash || (artifactAfterHash && loadedArtifactHash !== artifactAfterHash)) {
     failures.push({ code: loadedArtifactHash ? "loader_artifact_hash_mismatch" : "loader_artifact_hash_missing" });
   }
+  if (!loaderId) failures.push({ code: "loader_event_id_missing" });
+  if (loaderTs === null) failures.push({ code: "loader_timestamp_missing" });
   if (!publishedArtifactHash || (artifactAfterHash && publishedArtifactHash !== artifactAfterHash)) {
     failures.push({ code: publishedArtifactHash ? "epoch_publish_artifact_hash_mismatch" : "epoch_publish_artifact_hash_missing" });
   }
+  if (!epochPublishId) failures.push({ code: "epoch_publish_event_id_missing" });
   if (!publishedEpoch) failures.push({ code: "epoch_publish_id_missing" });
+  if (publishTs === null) failures.push({ code: "epoch_publish_timestamp_missing" });
+  if (loaderTs !== null && publishTs !== null && publishTs < loaderTs) {
+    failures.push({ code: "epoch_publish_precedes_loader" });
+  }
   if (!dispatchEpoch || (publishedEpoch && dispatchEpoch !== publishedEpoch)) {
     failures.push({ code: dispatchEpoch ? "dispatch_epoch_mismatch" : "dispatch_epoch_missing" });
   }
@@ -845,9 +860,13 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     failures.push({ code: dispatchArtifactHash ? "dispatch_artifact_hash_mismatch" : "dispatch_artifact_hash_missing" });
   }
   if (dispatchTs === null) failures.push({ code: "dispatch_timestamp_missing" });
+  if (publishTs !== null && dispatchTs !== null && dispatchTs < publishTs) {
+    failures.push({ code: "dispatch_precedes_epoch_publish" });
+  }
   if (!outputDispatchId || (dispatchId && outputDispatchId !== dispatchId)) {
     failures.push({ code: outputDispatchId ? "output_after_dispatch_id_mismatch" : "output_after_dispatch_id_missing" });
   }
+  if (!outputId) failures.push({ code: "output_event_id_missing" });
   if (outputEvent.passed !== true) failures.push({ code: "output_oracle_not_passed" });
   if (!outputArtifactHash || (artifactAfterHash && outputArtifactHash !== artifactAfterHash)) {
     failures.push({ code: outputArtifactHash ? "output_artifact_hash_mismatch" : "output_artifact_hash_missing" });
@@ -870,8 +889,15 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   if (!identityPid) failures.push({ code: "process_identity_missing" });
   if (Object.keys(deviceIdentity).length === 0) failures.push({ code: "device_identity_missing" });
   if (Object.keys(retirementEvent).length === 0) failures.push({ code: "retirement_event_missing" });
-  else if (!firstText(retirementEvent.status, retirementEvent.proof, retirementEvent.retirement_proof, retirementEvent.retirementProof)) {
-    failures.push({ code: "retirement_proof_missing" });
+  else {
+    if (!retirementId) failures.push({ code: "retirement_event_id_missing" });
+    if (retirementTs === null) failures.push({ code: "retirement_timestamp_missing" });
+    if (outputTs !== null && retirementTs !== null && retirementTs < outputTs) {
+      failures.push({ code: "retirement_precedes_output" });
+    }
+    if (!firstText(retirementEvent.status, retirementEvent.proof, retirementEvent.retirement_proof, retirementEvent.retirementProof)) {
+      failures.push({ code: "retirement_proof_missing" });
+    }
   }
   const visualArtifacts = visualOracleArtifacts(oracleArtifacts, outputEvent);
   const visualOutput = isVisualOutput(outputEvent) || visualArtifacts !== null;
