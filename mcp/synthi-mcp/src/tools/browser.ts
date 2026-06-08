@@ -1065,7 +1065,10 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
   const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
-  const published = privateWorkflowToolRegistry.publish(manifest, { reservedToolNames: ADVERTISED_TOOLS });
+  const published = privateWorkflowToolRegistry.publish(manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact: artifact.artifact,
+  });
   if (!published.ok) {
     return errorResponse(published.error, {
       workflow_id: artifact.artifact.workflow_id,
@@ -1314,6 +1317,11 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
     return jsonResponse({ ok: false, workflow_id: replay.artifact.workflow_id, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
   }
 
+  const valueRefByStepId = new Map(
+    replay.artifact.workflow.contract.steps
+      .filter((step) => step.action.valueRef)
+      .map((step) => [step.stepId, step.action.valueRef as string])
+  );
   const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url, coldAuthStorage.storageState) : tab;
   const replayTabByTraceTab = new Map<string, string>();
   for (const event of plan.events) {
@@ -1494,7 +1502,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       }
       continue;
     }
-    const value = replayValueForEvent(event, action);
+    const value = replayValueForEvent(event, action, parameters, valueRefByStepId);
     const dialogPromptValue = dialogPromptValueFor(event, parameters);
     if (isAcceptedPromptDialogEvent(event) && dialogPromptValue === undefined) {
       return jsonResponse({
@@ -1575,7 +1583,10 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
       blockers: manifest.safety.blockers,
     });
   }
-  const artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
   if (!artifact.ok) {
     return errorResponse(artifact.error, {
       tool_name: toolName,
@@ -1835,8 +1846,17 @@ function actionForReplay(event: { kind: string; action?: BrowserActionKind }): B
   return event.action ?? null;
 }
 
-function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind): string | undefined {
+function replayValueForEvent(
+  event: BrowserTraceEvent,
+  action: BrowserActionKind,
+  parameters: Record<string, string> = {},
+  valueRefByStepId: Map<string, string> = new Map()
+): string | undefined {
   if (action === "navigate") return event.url;
+  const parameterName = valueRefByStepId.get(event.event_id);
+  if ((action === "fill" || action === "select") && parameterName && parameters[parameterName] !== undefined) {
+    return parameters[parameterName];
+  }
   if (action === "drag") return event.value ?? stringOpt(event.detail?.["drop_locator"]);
   if (action === "select") {
     const selectValues = stringArrayOpt(event.detail?.["select_values"]);

@@ -1,10 +1,17 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
-import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
+import {
+  EncryptedFilePrivateWorkflowToolStore,
+  InMemoryPrivateWorkflowToolStore,
+  privateWorkflowToolRegistry,
+} from "../../src/browser/private_tool_registry.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
@@ -13,6 +20,7 @@ import { createSynthiServer } from "../../src/server.js";
 import { browserPrivateWorkflowTools, dispatchBrowserTool } from "../../src/tools/browser.js";
 
 beforeEach(() => {
+  privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
   browserBroker.resetForTests();
   authCheckpointManager.resetForTests();
   privateWorkflowToolRegistry.resetForTests();
@@ -262,6 +270,20 @@ describe("private browser workflow MCP tool manifest", () => {
     });
     expect(checkpoint.ok).toBe(true);
     if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    const storedAuth = authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [],
+        origins: [
+          {
+            origin: "https://secure.example.test",
+            localStorage: [{ name: "session", value: "approved-session" }],
+            sessionStorage: [],
+          },
+        ],
+      },
+    });
+    expect(storedAuth.ok).toBe(true);
     expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
     registerSourceToken("s_secure");
     browserBroker.recordHumanAction({
@@ -458,6 +480,102 @@ describe("private browser workflow MCP tool manifest", () => {
         }),
       }));
       expect(replay).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("persists published private tools with encrypted workflow artifacts for later MCP discovery", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tools-"));
+    const filePath = path.join(directory, "private-tools.enc.json");
+    privateWorkflowToolRegistry.useStoreForTests(new EncryptedFilePrivateWorkflowToolStore({
+      file_path: filePath,
+      key: "unit-test-private-tool-key",
+      scope_id: "tenant-a:workspace-a",
+    }));
+    privateWorkflowToolRegistry.resetForTests();
+
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_token");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "fill",
+      value: "secret-value-that-must-not-be-plaintext",
+      element: { role: "textbox", label: "Access token", source_id: "s_token" },
+      locator_candidates: [
+        { kind: "label", locator: "page.getByLabel(\"Access token\")", confidence: 0.98, reason: "form_label" },
+      ],
+    });
+
+    const publish = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(publish?.isError).toBeUndefined();
+    const publishedToolName = (publish?.structuredContent as { tool_name: string }).tool_name;
+
+    const persisted = await readFile(filePath, "utf8");
+    expect(persisted).toContain("synthi_private_workflow_tool_store_envelope_v1");
+    expect(persisted).not.toMatch(/app\.example|Access token|secret-value-that-must-not-be-plaintext|tenant-a|workspace-a/);
+
+    browserBroker.resetForTests();
+    privateWorkflowToolRegistry.useStoreForTests(new EncryptedFilePrivateWorkflowToolStore({
+      file_path: filePath,
+      key: "unit-test-private-tool-key",
+      scope_id: "tenant-a:workspace-a",
+    }));
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-b", url, active: true }]);
+    browserBroker.selectTab("tab-b");
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "tab-b",
+      url,
+    });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
+    const client = new Client({ name: "workflow-persisted-acceptance-test", version: "0.0.0" });
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: publishedToolName,
+          inputSchema: expect.objectContaining({
+            properties: expect.objectContaining({
+              access_token: expect.objectContaining({ format: "password" }),
+            }),
+          }),
+        }),
+      ]));
+
+      const run = await client.callTool({
+        name: publishedToolName,
+        arguments: { access_token: "agent-supplied-value" },
+      });
+      expect(run.isError).not.toBe(true);
+      expect(JSON.parse(String(run.content[0]?.text))).toEqual(expect.objectContaining({
+        ok: true,
+        private_tool: expect.objectContaining({
+          tool_name: publishedToolName,
+          run_mode: "sameSession",
+        }),
+      }));
+      expect(replay).toHaveBeenCalledWith(
+        "tab-b",
+        expect.objectContaining({ action: "fill" }),
+        "fill",
+        "page.locator(\"[data-synthi-source-id=\\\"s_token\\\"]\")",
+        "agent-supplied-value"
+      );
     } finally {
       await client.close();
       await server.close();

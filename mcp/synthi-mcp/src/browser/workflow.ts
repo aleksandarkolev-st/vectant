@@ -994,18 +994,27 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
     const valueRef = step.action.valueRef;
     if (!valueRef) return [];
     const event = byStep.get(step.stepId);
+    const label = step.action.target?.label ?? valueRef;
+    const sensitive = isSensitiveParameterName(valueRef) || isSensitiveParameterName(label);
+    const redacted = event?.redacted === true ||
+      event?.detail?.["pasted_text_redacted"] === true ||
+      event?.detail?.["dropped_text_redacted"] === true ||
+      event?.detail?.["dialog_prompt_value_redacted"] === true ||
+      sensitive;
     return [{
       name: valueRef,
-      label: step.action.target?.label ?? valueRef,
+      label,
       sourceStepId: step.stepId,
-      valueShape: parameterValueShape(event),
+      valueShape: redacted ? "secret" : parameterValueShape(event),
       required: true,
-      redacted: event?.redacted === true ||
-        event?.detail?.["pasted_text_redacted"] === true ||
-        event?.detail?.["dropped_text_redacted"] === true ||
-        event?.detail?.["dialog_prompt_value_redacted"] === true,
+      redacted,
     }];
   });
+}
+
+function isSensitiveParameterName(value: string | undefined): boolean {
+  if (!value) return false;
+  return /(?:^|[_\-\s])(?:api[_\-\s]?key|access[_\-\s]?token|auth|bearer|cookie|credential|key|pass(?:word)?|secret|session|token)(?:$|[_\-\s])/i.test(value);
 }
 
 function parameterNameForAction(

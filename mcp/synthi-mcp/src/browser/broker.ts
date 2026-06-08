@@ -521,6 +521,17 @@ export class BrowserBroker {
     return { ok: true, artifact: this.currentWorkflowArtifact() };
   }
 
+  registerWorkflowArtifact(artifact: BrowserWorkflowArtifact): { ok: true; artifact: BrowserWorkflowArtifact } | { ok: false; error: string; workflow_id?: string } {
+    if (artifact.workflow_id !== artifact.workflow.contract.workflowId) {
+      return { ok: false, error: "workflow_artifact_id_mismatch", workflow_id: artifact.workflow_id };
+    }
+    if (artifact.workflow.card.stepCount <= 0 || artifact.events.length <= 0) {
+      return { ok: false, error: "workflow_artifact_empty", workflow_id: artifact.workflow_id };
+    }
+    this.workflows.set(artifact.workflow_id, cloneWorkflowArtifact(artifact));
+    return { ok: true, artifact: cloneWorkflowArtifact(artifact) };
+  }
+
   validateBridgeMessage(message: BrowserBridgeMessage): { ok: true } | { ok: false; error: string } {
     if (!bridgeTokenMatches(this.bridgeToken, message.bridge_token)) {
       return { ok: false, error: "bad_bridge_token" };
