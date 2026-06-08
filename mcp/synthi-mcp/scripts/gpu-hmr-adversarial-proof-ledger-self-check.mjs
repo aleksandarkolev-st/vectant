@@ -436,6 +436,24 @@ function baselineRuntimeMetricInput() {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     timings: baselineTimingMetrics(),
+    adversarialPreflight: baselineAdversarialPreflight(),
+  };
+}
+
+function baselineAdversarialPreflight(overrides = {}) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.adversarial_preflight.v1',
+    ok: true,
+    skipped: false,
+    scriptPath: '/workspace/mcp/synthi-mcp/scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs',
+    exitCode: 0,
+    elapsedMs: 42.5,
+    stdoutHash: `sha256:${'8'.repeat(64)}`,
+    stderrHash: `sha256:${'0'.repeat(64)}`,
+    stdoutTail: 'GPU HMR adversarial proof ledger self-check passed',
+    stderrTail: '',
+    error: null,
+    ...overrides,
   };
 }
 

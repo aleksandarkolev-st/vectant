@@ -288,7 +288,25 @@ function acceptedStrictLedgerEvidence() {
     timings,
     timingMetrics: timings,
     modelProvenance: acceptedModelProvenance(),
+    adversarialPreflight: acceptedAdversarialPreflight(),
     evidenceRefs: ["test:strict-ledger"],
+  };
+}
+
+function acceptedAdversarialPreflight(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "synthi.gpu_hmr.adversarial_preflight.v1",
+    ok: true,
+    skipped: false,
+    scriptPath: "/workspace/mcp/synthi-mcp/scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs",
+    exitCode: 0,
+    elapsedMs: 42.5,
+    stdoutHash: `sha256:${"8".repeat(64)}`,
+    stderrHash: `sha256:${"0".repeat(64)}`,
+    stdoutTail: "GPU HMR adversarial proof ledger self-check passed",
+    stderrTail: "",
+    error: null,
+    ...overrides,
   };
 }
 
@@ -609,6 +627,7 @@ function acceptedValidationRuntimeInput(overrides: Record<string, unknown> = {})
     timings: strictLedgerEvidence.timings,
     timingMetrics: strictLedgerEvidence.timingMetrics,
     modelProvenance: strictLedgerEvidence.modelProvenance,
+    adversarialPreflight: strictLedgerEvidence.adversarialPreflight,
     evidenceRefs: strictLedgerEvidence.evidenceRefs,
     ...acceptedGpuRouteEvidence(),
     sourceProofs: [sourceProof],
@@ -7004,7 +7023,10 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.validationContext.target_progression.phase).toBe("small-oracle");
     expect(artifact.targetProgression.phase).toBe("small-oracle");
     expect(artifact.target_progression.targetName).toBe("small-target");
+    expect(artifact.adversarialPreflight.accepted).toBe(true);
+    expect(artifact.adversarialPreflight.strictGate.status).toBe("pass");
     expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
+    expect(artifact.proofMaterial.adversarialPreflight.accepted).toBe(true);
     expect(artifact.proofMaterial.runtimeEvidence.hostIdentitySnapshots.evidence_refs).toEqual([
       "worker-log:host_identity:renderer_state",
     ]);
@@ -7013,6 +7035,52 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("does not mark runtime artifacts successful without adversarial refusal preflight proof", () => {
+    const artifact = buildValidationRuntimeProofArtifact(
+      acceptedValidationRuntimeInput({
+        adversarialPreflight: undefined,
+        adversarial_preflight: undefined,
+      }),
+    );
+
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.adversarialPreflight).toBeNull();
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "adversarial-refusal-preflight",
+          degraded_reason: "adversarial_preflight_missing",
+        }),
+      ]),
+    );
+  });
+
+  it("does not mark runtime artifacts successful when adversarial refusal preflight evidence is malformed", () => {
+    const artifact = buildValidationRuntimeProofArtifact(
+      acceptedValidationRuntimeInput({
+        adversarialPreflight: acceptedAdversarialPreflight({
+          stdoutHash: "",
+        }),
+      }),
+    );
+
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.adversarialPreflight.accepted).toBe(false);
+    expect(artifact.adversarialPreflight.strictGate.failures).toContain(
+      "adversarial_preflight_stdout_hash_missing",
+    );
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "adversarial-refusal-preflight",
+          degraded_reason: "adversarial_preflight_stdout_hash_missing",
+        }),
+      ]),
+    );
   });
 
   it("materializes compute oracle proof from raw readback bytes", async () => {

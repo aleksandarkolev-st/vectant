@@ -18,6 +18,9 @@ import {
   evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
 } from './gpu-hmr-visual-evidence.mjs';
+import {
+  adversarialPreflightStrictGate,
+} from './gpu-hmr-proof-strict-gates.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -106,6 +109,26 @@ function runtimeCapabilityPreflightFacet(preflight) {
     exitCode: Number.isFinite(preflight.exitCode) ? preflight.exitCode : null,
     degradedState: preflight.degradedState ?? null,
     degradedReason: preflight.degradedReason ?? null,
+  };
+}
+
+function adversarialPreflightFacet(preflight) {
+  if (!preflight || typeof preflight !== 'object' || Array.isArray(preflight)) return null;
+  const strictGate = adversarialPreflightStrictGate(preflight);
+  return {
+    schemaVersion: preflight.schemaVersion ?? null,
+    ok: preflight.ok === true,
+    skipped: preflight.skipped === true,
+    scriptPath: typeof preflight.scriptPath === 'string' ? preflight.scriptPath : null,
+    exitCode: Number.isFinite(preflight.exitCode) ? preflight.exitCode : null,
+    elapsedMs: Number.isFinite(preflight.elapsedMs) ? preflight.elapsedMs : null,
+    stdoutHash: typeof preflight.stdoutHash === 'string' ? preflight.stdoutHash : null,
+    stderrHash: typeof preflight.stderrHash === 'string' ? preflight.stderrHash : null,
+    error: preflight.error ?? null,
+    reason: preflight.reason ?? null,
+    strictGate,
+    strict_gate: strictGate,
+    accepted: strictGate.accepted === true,
   };
 }
 
@@ -1353,6 +1376,40 @@ function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
+function adversarialPreflightFromInput(input = {}, validationContext = null) {
+  return objectOrNull(input.adversarialPreflight)
+    ?? objectOrNull(input.adversarial_preflight)
+    ?? objectOrNull(validationContext?.adversarialPreflight)
+    ?? objectOrNull(validationContext?.adversarial_preflight)
+    ?? null;
+}
+
+function adversarialPreflightLimitations(facet) {
+  if (facet?.accepted === true) return [];
+  const failures = compactStringList(
+    facet?.strictGate?.failures
+      ?? facet?.strict_gate?.failures
+      ?? ['adversarial_preflight_missing'],
+  );
+  return (failures.length ? failures : ['adversarial_preflight_missing']).map((failure) => ({
+    stageId: 'adversarial-refusal-preflight',
+    stage_id: 'adversarial-refusal-preflight',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-false-positive-refusal-preflight-passed',
+    required_state: 'gpu-hmr-false-positive-refusal-preflight-passed',
+    observedState: facet?.strictGate?.status ?? facet?.strict_gate?.status ?? null,
+    observed_state: facet?.strictGate?.status ?? facet?.strict_gate?.status ?? null,
+    degradedState: 'gpu-hmr-adversarial-preflight-rejected',
+    degraded_state: 'gpu-hmr-adversarial-preflight-rejected',
+    degradedReason: failure,
+    degraded_reason: failure,
+    proofArtifactPath: facet?.scriptPath ?? null,
+    proof_artifact_path: facet?.scriptPath ?? null,
+    phase: null,
+    name: null,
+  }));
+}
+
 function hasOwn(object, key) {
   return object && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
 }
@@ -2194,6 +2251,9 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
+  const adversarialPreflight = adversarialPreflightFacet(
+    adversarialPreflightFromInput(input, validationContext),
+  );
   const explicitAcceptanceContract = objectOrNull(input.acceptanceContract)
     ?? objectOrNull(input.acceptance_contract)
     ?? objectOrNull(validationContext?.acceptanceContract)
@@ -2281,6 +2341,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
       visualEvidenceArtifacts,
       visualEvidenceRequired,
     }),
+    ...adversarialPreflightLimitations(adversarialPreflight),
     ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
     ...proofLedgerLimitations(proofLedgerQuery),
     ...targetProgressionGateLimitations(targetProgressionGates),
@@ -2292,6 +2353,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(fullRuntimeProof),
     ...evidenceStringsFromValue(runtimeEvidence),
     ...evidenceStringsFromValue(targetProgressionLedger),
+    ...evidenceStringsFromValue(adversarialPreflight),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) =>
     evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
@@ -2326,6 +2388,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
     derivedAcceptanceContract,
@@ -2356,6 +2419,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
     derivedAcceptanceContract,
@@ -2380,6 +2444,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     && proofLedgerQuery.gpuHmrSuccess === true
     && acceptanceContractEvaluation.accepted === true
     && acceptanceContractConsistency.accepted === true
+    && adversarialPreflight?.accepted === true
     && (
       deterministicVisualModeEvaluation
         ? deterministicVisualModeEvaluation.accepted === true
@@ -2412,6 +2477,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_ledger: targetProgressionLedger,
     targetProgressionGates,
     target_progression_gates: targetProgressionGates,
+    adversarialPreflight,
+    adversarial_preflight: adversarialPreflight,
     acceptanceContract,
     acceptance_contract: acceptanceContract,
     acceptanceContractEvaluation,
