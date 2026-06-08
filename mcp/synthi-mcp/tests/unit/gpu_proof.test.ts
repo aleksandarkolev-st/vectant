@@ -130,6 +130,123 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function acceptanceContract(ledger = proofLedger(), overrides: Record<string, unknown> = {}) {
+  const record = ledger.records[0] as Record<string, any>;
+  const artifactBeforeHash = record.artifact_before_hash ?? HASH_A;
+  const artifactAfterHash = record.artifact_after_hash ?? HASH_B;
+  const contractHash = record.contract_hash ?? HASH_C;
+  return {
+    contract_version: "synthi.gpu_hmr.contract.v1",
+    project_id: record.project_id ?? "generic-gpu-project",
+    edit_id: record.edit_id ?? "gpu-edit",
+    contract_hash: contractHash,
+    backend: "hip",
+    confidence: 0.95,
+    evidence_refs: ["static:hip-launch", "runtime:module-load"],
+    classification: {
+      project_kind: "gpu_project",
+      edit_kind: "gpu_artifact_edit",
+      route: "gpu_hmr",
+      confidence: 0.95,
+      blocking_gaps: [],
+    },
+    artifact_identity: {
+      source_paths: ["src/gpu/kernel.hip"],
+      artifact_kind: "hsaco",
+      entry_points: ["kernel_main"],
+      compile_target: "gfx1201",
+      compiler: "hipcc",
+      compiler_args_hash: HASH_C,
+    },
+    artifact_hash_before: artifactBeforeHash,
+    artifact_hash_after: artifactAfterHash,
+    unaffected_artifacts_hash_unchanged: true,
+    abi_compatibility_class: {
+      value: "compatible",
+      evidence_refs: ["code-object:metadata"],
+    },
+    abi_metadata: {
+      args: [{
+        name: "output",
+        type: "float*",
+        size: 8,
+        offset: 0,
+        value_kind: "device_pointer",
+        access: "write",
+        address_space: "global",
+        source: "code_object",
+      }],
+      workgroup_or_launch_shape: {
+        grid_dim: [64, 1, 1],
+        block_dim: [256, 1, 1],
+        shared_mem_bytes: 0,
+      },
+      stream_or_queue_requirements: { stream: "stream-1" },
+      extractor_sources: ["clang_ast"],
+    },
+    reload_mechanism: "generated_adapter",
+    adapter_outcome: "adapter_generated",
+    reload_evidence_refs: ["runtime:module-load"],
+    firewall_evidence: {
+      route: "gpu_device_sidecar_reload",
+      evidence_source: "test:gpu-route-classifier",
+      evidence_refs: ["test:gpu-route-classifier"],
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: "pid-1",
+      process_id_after: "pid-1",
+    },
+    dispatch_trace_required: true,
+    oracle_trace_required: true,
+    state_preservation_checks: {
+      process_id: "pid-1",
+      device_uuid: "device-1",
+      context_or_device_handle: "hip-context-1",
+      queue_or_stream_handle: "stream-1",
+      persistent_gpu_allocations: ["allocation-output"],
+    },
+    epoch_policy: {
+      publish_mechanism: "runtime_epoch_publish",
+      dispatch_binding: "dispatch_table_epoch_binding",
+      retirement_mechanism: "stream_event",
+    },
+    epoch_retirement_proof: {
+      value: "stream_event_proven",
+      evidence_refs: ["runtime:stream-event"],
+    },
+    fission_report: {
+      selected_island: "device-kernel",
+      selected_reason: "verified_fission_contract",
+      artifact_hash_before: artifactBeforeHash,
+      artifact_hash_after: artifactAfterHash,
+      full_device_fallback: false,
+      host_relinked: false,
+      process_restarted: false,
+      full_rebuild_used: false,
+    },
+    hip_contract: {
+      kernel_name: "kernel_main",
+      launch_api: "hipModuleLaunchKernel",
+      grid_dim: [64, 1, 1],
+      block_dim: [256, 1, 1],
+      shared_mem_bytes: 0,
+      stream: "stream-1",
+      kernel_params: [{ name: "output", kind: "device_pointer" }],
+      code_object_metadata: {
+        source: "amd_code_object_metadata",
+        args_hash: HASH_C,
+      },
+      output_buffers: ["allocation-output"],
+      readback_oracle: {
+        kind: "raw_readback",
+        schema_hash: HASH_C,
+      },
+    },
+    ...overrides,
+  };
+}
+
 function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, unknown> = {}) {
   return {
     schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
@@ -152,10 +269,7 @@ function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, 
     limitations: [],
     proofLedger: ledger,
     proofLedgerQuery: ledger.query,
-    acceptanceContract: {
-      contract_version: "synthi.gpu_hmr.contract.v1",
-      contract_hash: HASH_C,
-    },
+    acceptanceContract: acceptanceContract(ledger),
     acceptanceContractEvaluation: {
       accepted: true,
       failedGates: [],
@@ -381,6 +495,36 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.reason).toBe("runtime_proof_artifact_rejected");
     expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toEqual(
       expect.arrayContaining(["proof_ledger_recomputed_query_rejected", "proof_ledger_query_mismatch"])
+    );
+  });
+
+  it("rejects full runtime artifact with forged acceptance contract evaluation", () => {
+    const ledger = proofLedger();
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger, {
+        acceptanceContract: {
+          contract_version: "synthi.gpu_hmr.contract.v1",
+          contract_hash: HASH_C,
+        },
+        acceptanceContractEvaluation: {
+          accepted: true,
+          failedGates: [],
+        },
+      }),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toEqual(
+      expect.arrayContaining([
+        "acceptance_contract_recomputed_rejected",
+        "acceptance_contract_evaluation_mismatch",
+      ])
     );
   });
 

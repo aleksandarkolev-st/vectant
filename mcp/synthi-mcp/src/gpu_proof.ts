@@ -3,6 +3,9 @@ import {
   queryGpuHmrLedgerInvariants,
   type GpuHmrLedgerValidation,
 } from "./gpu_proof_ledger.js";
+import {
+  evaluateGpuHmrAcceptanceContract,
+} from "../scripts/lib/gpu-hmr-acceptance-contract.mjs";
 
 export const GPU_HMR_PROOF_SCHEMA_VERSION = "synthi.gpu.hmr.proof.v1";
 
@@ -166,6 +169,23 @@ function proofLedgerQueriesMatch(
     && suppliedCodes.join("|") === recomputedCodes.join("|");
 }
 
+function acceptanceContractFailureCodes(value: unknown): string[] {
+  const object = objectOrNull(value);
+  if (object === null) return [];
+  return failureCodes(object.failedGates ?? object.failed_gates);
+}
+
+function acceptanceContractEvaluationsMatch(
+  supplied: Record<string, unknown>,
+  recomputed: { accepted: boolean; failedGates?: Array<{ code?: string }> }
+): boolean {
+  const suppliedAccepted = boolField(supplied, "accepted");
+  const suppliedCodes = failureCodes(supplied.failedGates ?? supplied.failed_gates);
+  const recomputedCodes = acceptanceContractFailureCodes(recomputed);
+  return suppliedAccepted === recomputed.accepted
+    && suppliedCodes.join("|") === recomputedCodes.join("|");
+}
+
 function ledgerRecord(ledger: Record<string, unknown> | null): Record<string, unknown> | null {
   if (ledger === null) return null;
   const records = Array.isArray(ledger.records)
@@ -317,6 +337,9 @@ function validateRuntimeProofArtifactAcceptance(
   const recomputedProofLedgerQuery = proofLedger === null
     ? null
     : queryGpuHmrLedgerInvariants(proofLedger);
+  const recomputedAcceptanceContractEvaluation = acceptanceContract === null
+    ? null
+    : evaluateGpuHmrAcceptanceContract(acceptanceContract);
   if (recomputedProofLedgerQuery !== null && !recomputedProofLedgerQuery.gpuHmrSuccess) {
     failures.push({ code: "proof_ledger_recomputed_query_rejected" });
   }
@@ -331,10 +354,24 @@ function validateRuntimeProofArtifactAcceptance(
     failures.push({ code: "proof_ledger_query_mismatch" });
   }
   if (acceptanceContract === null) failures.push({ code: "acceptance_contract_missing" });
+  if (
+    recomputedAcceptanceContractEvaluation !== null
+    && recomputedAcceptanceContractEvaluation.accepted !== true
+  ) {
+    failures.push({ code: "acceptance_contract_recomputed_rejected" });
+  }
   if (acceptanceContractEvaluation === null) {
     failures.push({ code: "acceptance_contract_evaluation_missing" });
   } else if (boolField(acceptanceContractEvaluation, "accepted") !== true) {
     failures.push({ code: "acceptance_contract_rejected" });
+  } else if (
+    recomputedAcceptanceContractEvaluation !== null
+    && !acceptanceContractEvaluationsMatch(
+      acceptanceContractEvaluation,
+      recomputedAcceptanceContractEvaluation
+    )
+  ) {
+    failures.push({ code: "acceptance_contract_evaluation_mismatch" });
   }
   if (acceptanceContractConsistency === null) {
     failures.push({ code: "acceptance_contract_consistency_missing" });
