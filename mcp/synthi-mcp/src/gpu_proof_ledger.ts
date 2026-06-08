@@ -8,6 +8,13 @@ const METRIC_CLOCKS = new Set(["monotonic_ns"]);
 const METRIC_SCOPES = new Set(["cold", "warm", "hot_delta_1", "hot_delta_2"]);
 const CACHE_STATES = new Set(["clean", "compiler_cache_warm", "pipeline_cache_warm"]);
 const MODEL_PROVIDER_STATUSES = new Set(["available", "deprecated", "private_alias"]);
+const MODEL_AVAILABILITY_BASES = new Set([
+  "static_registry",
+  "static_registry+live_model_list",
+  "live_model_list",
+  "live_model_list_registry_override",
+  "private_alias_env",
+]);
 const REQUIRED_MODEL_PROVIDER = "google_gemini";
 const REQUIRED_MODEL_BY_ROLE: Record<"split" | "gpu_delta", string> = {
   split: "gemini-3.5-flash",
@@ -98,6 +105,9 @@ const REQUIRED_MODEL_FIELDS = [
     "provider_shutdown_or_deprecation_detected_missing",
   ],
   ["model_availability_checked_at", "modelAvailabilityCheckedAt", "model_availability_checked_at_missing"],
+  ["model_availability_source", "modelAvailabilitySource", "model_availability_source_missing"],
+  ["model_availability_basis", "modelAvailabilityBasis", "model_availability_basis_missing"],
+  ["model_availability_check_time_ms", "modelAvailabilityCheckTimeMs", "model_availability_check_time_ms_missing"],
   ["actual_model", "actualModel", "actual_model_missing"],
   ["fallback_model", "fallbackModel", "fallback_model_missing"],
   ["fallback_used", "fallbackUsed", "fallback_used_missing"],
@@ -742,6 +752,14 @@ function modelShutdownOrDeprecationDetected(record: Record<string, unknown>): bo
   ) === true;
 }
 
+function modelAvailabilitySource(record: Record<string, unknown>): string | null {
+  return modelFieldText(record, "model_availability_source", "modelAvailabilitySource");
+}
+
+function modelAvailabilityBasis(record: Record<string, unknown>): string | null {
+  return modelFieldText(record, "model_availability_basis", "modelAvailabilityBasis");
+}
+
 function modelRequestMode(entry: [string, Record<string, unknown>]): string | null {
   const [key, record] = entry;
   return firstText(record.request_mode, record.requestMode, key);
@@ -1250,6 +1268,29 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
         provider_model_status: status,
       });
     }
+    const availabilitySource = modelAvailabilitySource(model);
+    if (!availabilitySource || availabilitySource === "provider_not_checked") {
+      failures.push({
+        code: "model_availability_source_untrusted",
+        record: prefix,
+        model_availability_source: availabilitySource,
+      });
+    }
+    const availabilityBasis = modelAvailabilityBasis(model);
+    if (!MODEL_AVAILABILITY_BASES.has(availabilityBasis ?? "")) {
+      failures.push({
+        code: "model_availability_basis_not_accepted",
+        record: prefix,
+        model_availability_basis: availabilityBasis,
+      });
+    }
+    if (status === "private_alias" && !["private_alias_env", "live_model_list_registry_override"].includes(availabilityBasis ?? "")) {
+      failures.push({
+        code: "model_private_alias_basis_unproven",
+        record: prefix,
+        model_availability_basis: availabilityBasis,
+      });
+    }
     const role = requiredModelRole(models[index]!);
     if (role) {
       const provider = modelFieldText(model, "provider", "provider");
@@ -1301,8 +1342,10 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       for (const [snakeKey, camelKey, code] of [
         ["actual_provider_model_status", "actualProviderModelStatus", "actual_provider_model_status_missing"],
         ["actual_model_availability_checked_at", "actualModelAvailabilityCheckedAt", "actual_model_availability_checked_at_missing"],
+        ["actual_model_availability_basis", "actualModelAvailabilityBasis", "actual_model_availability_basis_missing"],
         ["fallback_provider_model_status", "fallbackProviderModelStatus", "fallback_provider_model_status_missing"],
         ["fallback_model_availability_checked_at", "fallbackModelAvailabilityCheckedAt", "fallback_model_availability_checked_at_missing"],
+        ["fallback_model_availability_basis", "fallbackModelAvailabilityBasis", "fallback_model_availability_basis_missing"],
       ] as const) {
         if (!modelFieldRecorded(model, snakeKey, camelKey)) {
           failures.push({ code, record: prefix });

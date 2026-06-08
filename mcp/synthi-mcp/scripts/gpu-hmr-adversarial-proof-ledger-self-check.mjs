@@ -31,6 +31,18 @@ const REQUIRED_TIMING_FIELDS = [
   'dispatch_to_output_proof_time',
   'total_validator_wall_time',
 ];
+const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
+
+function modelAvailabilityFields({
+  basis = 'static_registry',
+  checkTimeMs = 0,
+} = {}) {
+  return {
+    model_availability_source: MODEL_AVAILABILITY_SOURCE,
+    model_availability_basis: basis,
+    model_availability_check_time_ms: checkTimeMs,
+  };
+}
 
 function baselineModelProvenance(overrides = {}) {
   return {
@@ -41,6 +53,7 @@ function baselineModelProvenance(overrides = {}) {
       provider_model_alias_resolved_to: null,
       provider_shutdown_or_deprecation_detected: false,
       model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      ...modelAvailabilityFields(),
       actual_model: 'gemini-3.5-flash',
       fallback_model: null,
       fallback_used: false,
@@ -54,6 +67,7 @@ function baselineModelProvenance(overrides = {}) {
       provider_model_alias_resolved_to: null,
       provider_shutdown_or_deprecation_detected: true,
       model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      ...modelAvailabilityFields(),
       actual_model: 'gemini-3.1-flash-lite',
       fallback_model: null,
       fallback_used: false,
@@ -1232,6 +1246,35 @@ const cases = [
       })(),
     }),
   }), 'model_availability_checked_at_missing'],
+  ['missing model availability source', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: (() => {
+        const model = { ...baselineModelProvenance().last_gpu_delta };
+        delete model.model_availability_source;
+        return model;
+      })(),
+    }),
+  }), 'model_availability_source_missing'],
+  ['untrusted model availability source', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        model_availability_source: 'provider_not_checked',
+      },
+    }),
+  }), 'model_availability_source_untrusted'],
+  ['private alias without provider-backed basis', baselineRecord({
+    model_provenance: baselineModelProvenance({
+      last_gpu_delta: {
+        ...baselineModelProvenance().last_gpu_delta,
+        requested_model: 'internal-fast-delta',
+        actual_model: 'internal-fast-delta',
+        provider_model_status: 'private_alias',
+        provider_model_alias_resolved_to: 'gemini-3.1-flash-lite',
+        model_availability_basis: 'static_registry',
+      },
+    }),
+  }), 'model_private_alias_basis_unproven'],
   ['fallback missing actual provider status', baselineRecord({
     model_provenance: baselineModelProvenance({
       last_gpu_delta: {

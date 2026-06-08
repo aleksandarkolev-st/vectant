@@ -156,6 +156,8 @@ const hiprt = hiprtWarmTimingMetrics({
     split: {
       requested_model: 'gemini-3.5-flash',
       provider_model_status: 'available',
+      model_availability_source: 'https://ai.google.dev/gemini-api/docs/deprecations',
+      model_availability_basis: 'static_registry',
       model_availability_check_time_ms: 3,
     },
   },
@@ -188,6 +190,8 @@ const rocm = realRocmTimingMetrics({
       gpu_delta: {
         requested_model: 'gemini-3.1-flash-lite',
         provider_model_status: 'deprecated',
+        model_availability_source: 'https://ai.google.dev/gemini-api/docs/deprecations',
+        model_availability_basis: 'static_registry',
         modelAvailabilityCheckTimeMs: 4,
       },
     },

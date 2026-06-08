@@ -229,7 +229,11 @@ def _provider_model_status(
             "model_availability_checked_at": _utc_now_iso(),
             "model_availability_source": _MODEL_AVAILABILITY_SOURCE,
             "model_availability_source_last_updated": _MODEL_AVAILABILITY_SOURCE_LAST_UPDATED,
+            "model_availability_basis": (
+                "static_registry" if normalized_lower in _MODEL_STATUS_REGISTRY else "unknown"
+            ),
             "provider_model_alias_resolved_to": None,
+            "provider_private_alias_configured": False,
             "provider_live_model_list_checked": False,
             "provider_live_model_list_has_requested": None,
             "provider_live_model_list_error": None,
@@ -242,6 +246,8 @@ def _provider_model_status(
     if private_alias:
         base["provider_model_status"] = "private_alias"
         base["provider_model_alias_resolved_to"] = private_alias
+        base["provider_private_alias_configured"] = True
+        base["model_availability_basis"] = "private_alias_env"
 
     should_live_check = _live_model_check_enabled() if live_check is None else live_check
     if should_live_check and not private_alias:
@@ -260,10 +266,14 @@ def _provider_model_status(
         if live_error is None and live_has_requested:
             if base["provider_model_status"] == "unknown":
                 base["provider_model_status"] = "available"
+                base["model_availability_basis"] = "live_model_list"
             elif base["provider_model_status"] == "shutdown":
                 base["provider_model_status"] = "private_alias"
                 base["provider_model_alias_resolved_to"] = normalized
                 base["provider_live_model_list_overrode_registry"] = True
+                base["model_availability_basis"] = "live_model_list_registry_override"
+            else:
+                base["model_availability_basis"] = "static_registry+live_model_list"
 
     base["provider_shutdown_or_deprecation_detected"] = bool(
         normalized_lower in _MODEL_STATUS_REGISTRY
@@ -313,6 +323,10 @@ def _provider_status_metadata(status: Optional[Mapping[str, Any]], prefix: str =
         f"{prefix}model_availability_source": status.get("model_availability_source"),
         f"{prefix}model_availability_source_last_updated": status.get(
             "model_availability_source_last_updated"
+        ),
+        f"{prefix}model_availability_basis": status.get("model_availability_basis"),
+        f"{prefix}provider_private_alias_configured": status.get(
+            "provider_private_alias_configured"
         ),
         f"{prefix}provider_live_model_list_checked": status.get(
             "provider_live_model_list_checked"

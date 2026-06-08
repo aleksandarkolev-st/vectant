@@ -19,6 +19,13 @@ const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wg
 const METRIC_CLOCKS = new Set(['monotonic_ns']);
 const METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
+const MODEL_AVAILABILITY_BASES = new Set([
+  'static_registry',
+  'static_registry+live_model_list',
+  'live_model_list',
+  'live_model_list_registry_override',
+  'private_alias_env',
+]);
 const REQUIRED_MODEL_PROVIDER = 'google_gemini';
 const REQUIRED_MODEL_BY_ROLE = {
   split: 'gemini-3.5-flash',
@@ -1309,6 +1316,10 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       ['provider_shutdown_or_deprecation_detected', 'providerShutdownOrDeprecationDetected',
         'provider_shutdown_or_deprecation_detected_missing'],
       ['model_availability_checked_at', 'modelAvailabilityCheckedAt', 'model_availability_checked_at_missing'],
+      ['model_availability_source', 'modelAvailabilitySource', 'model_availability_source_missing'],
+      ['model_availability_basis', 'modelAvailabilityBasis', 'model_availability_basis_missing'],
+      ['model_availability_check_time_ms', 'modelAvailabilityCheckTimeMs',
+        'model_availability_check_time_ms_missing'],
       ['actual_model', 'actualModel', 'actual_model_missing'],
       ['fallback_model', 'fallbackModel', 'fallback_model_missing'],
       ['fallback_used', 'fallbackUsed', 'fallback_used_missing'],
@@ -1329,6 +1340,29 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       addFailure(failures, 'model_provider_status_not_accepted', {
         record: prefix,
         provider_model_status: status,
+      });
+    }
+    const availabilitySource = modelFieldText(model, 'model_availability_source', 'modelAvailabilitySource');
+    if (!availabilitySource || availabilitySource === 'provider_not_checked') {
+      addFailure(failures, 'model_availability_source_untrusted', {
+        record: prefix,
+        model_availability_source: availabilitySource,
+      });
+    }
+    const availabilityBasis = modelFieldText(model, 'model_availability_basis', 'modelAvailabilityBasis');
+    if (!MODEL_AVAILABILITY_BASES.has(availabilityBasis ?? '')) {
+      addFailure(failures, 'model_availability_basis_not_accepted', {
+        record: prefix,
+        model_availability_basis: availabilityBasis,
+      });
+    }
+    if (
+      status === 'private_alias'
+      && !['private_alias_env', 'live_model_list_registry_override'].includes(availabilityBasis ?? '')
+    ) {
+      addFailure(failures, 'model_private_alias_basis_unproven', {
+        record: prefix,
+        model_availability_basis: availabilityBasis,
       });
     }
     const role = requiredModelRole(modelEntries[index]);
@@ -1381,9 +1415,13 @@ export function evaluateGpuHmrProofLedger(input = {}) {
         ['actual_provider_model_status', 'actualProviderModelStatus', 'actual_provider_model_status_missing'],
         ['actual_model_availability_checked_at', 'actualModelAvailabilityCheckedAt',
           'actual_model_availability_checked_at_missing'],
+        ['actual_model_availability_basis', 'actualModelAvailabilityBasis',
+          'actual_model_availability_basis_missing'],
         ['fallback_provider_model_status', 'fallbackProviderModelStatus', 'fallback_provider_model_status_missing'],
         ['fallback_model_availability_checked_at', 'fallbackModelAvailabilityCheckedAt',
           'fallback_model_availability_checked_at_missing'],
+        ['fallback_model_availability_basis', 'fallbackModelAvailabilityBasis',
+          'fallback_model_availability_basis_missing'],
       ]) {
         if (!modelFieldRecorded(model, snakeKey, camelKey)) {
           addFailure(failures, code, { record: prefix });

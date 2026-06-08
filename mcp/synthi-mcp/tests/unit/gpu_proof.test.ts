@@ -117,6 +117,9 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
         provider_model_alias_resolved_to: null,
         provider_shutdown_or_deprecation_detected: false,
         model_availability_checked_at: "2026-06-07T00:00:00.000Z",
+        model_availability_source: "https://ai.google.dev/gemini-api/docs/deprecations",
+        model_availability_basis: "static_registry",
+        model_availability_check_time_ms: 0,
         actual_model: "gemini-3.5-flash",
         fallback_model: null,
         fallback_used: false,
@@ -130,6 +133,9 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
         provider_model_alias_resolved_to: null,
         provider_shutdown_or_deprecation_detected: true,
         model_availability_checked_at: "2026-06-07T00:00:00.000Z",
+        model_availability_source: "https://ai.google.dev/gemini-api/docs/deprecations",
+        model_availability_basis: "static_registry",
+        model_availability_check_time_ms: 0,
         actual_model: "gemini-3.1-flash-lite",
         fallback_model: null,
         fallback_used: false,
@@ -1166,6 +1172,24 @@ describe("GPU HMR proof-state validation", () => {
           record.model_provenance.gpu_delta.provider_model_alias_resolved_to = null;
         },
         expectedCode: "model_private_alias_unresolved",
+      },
+      {
+        name: "untrusted model availability source",
+        mutate(record: Record<string, any>) {
+          record.model_provenance.gpu_delta.model_availability_source = "provider_not_checked";
+        },
+        expectedCode: "model_availability_source_untrusted",
+      },
+      {
+        name: "private alias without provider-backed basis",
+        mutate(record: Record<string, any>) {
+          record.model_provenance.gpu_delta.requested_model = "internal-fast-delta";
+          record.model_provenance.gpu_delta.actual_model = "internal-fast-delta";
+          record.model_provenance.gpu_delta.provider_model_status = "private_alias";
+          record.model_provenance.gpu_delta.provider_model_alias_resolved_to = "gemini-3.1-flash-lite";
+          record.model_provenance.gpu_delta.model_availability_basis = "static_registry";
+        },
+        expectedCode: "model_private_alias_basis_unproven",
       },
     ];
 

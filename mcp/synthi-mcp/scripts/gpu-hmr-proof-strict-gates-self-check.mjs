@@ -15,6 +15,15 @@ import {
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const HASH_C = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
+
+function modelAvailabilityFields() {
+  return {
+    model_availability_source: MODEL_AVAILABILITY_SOURCE,
+    model_availability_basis: 'static_registry',
+    model_availability_check_time_ms: 0,
+  };
+}
 
 const passingPreflight = {
   ok: true,
@@ -36,6 +45,7 @@ function modelProvenance() {
       provider_model_alias_resolved_to: null,
       provider_shutdown_or_deprecation_detected: false,
       model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      ...modelAvailabilityFields(),
       actual_model: 'gemini-3.5-flash',
       fallback_model: null,
       fallback_used: false,
@@ -49,6 +59,7 @@ function modelProvenance() {
       provider_model_alias_resolved_to: null,
       provider_shutdown_or_deprecation_detected: true,
       model_availability_checked_at: '2026-06-07T00:00:00.000Z',
+      ...modelAvailabilityFields(),
       actual_model: 'gemini-3.1-flash-lite',
       fallback_model: null,
       fallback_used: false,

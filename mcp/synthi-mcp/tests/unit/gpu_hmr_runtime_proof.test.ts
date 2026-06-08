@@ -240,6 +240,11 @@ function acceptedTimingMetrics() {
 
 function acceptedModelProvenance() {
   const checkedAt = "2026-06-07T00:00:00.000Z";
+  const availability = {
+    model_availability_source: "https://ai.google.dev/gemini-api/docs/deprecations",
+    model_availability_basis: "static_registry",
+    model_availability_check_time_ms: 0,
+  };
   return {
     split: {
       provider: "google_gemini",
@@ -248,6 +253,7 @@ function acceptedModelProvenance() {
       provider_model_alias_resolved_to: "gemini-3.5-flash",
       provider_shutdown_or_deprecation_detected: false,
       model_availability_checked_at: checkedAt,
+      ...availability,
       actual_model: "gemini-3.5-flash",
       fallback_model: null,
       fallback_used: false,
@@ -261,6 +267,7 @@ function acceptedModelProvenance() {
       provider_model_alias_resolved_to: "gemini-3.1-flash-lite",
       provider_shutdown_or_deprecation_detected: false,
       model_availability_checked_at: checkedAt,
+      ...availability,
       actual_model: "gemini-3.1-flash-lite",
       fallback_model: null,
       fallback_used: false,
