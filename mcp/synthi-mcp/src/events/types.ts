@@ -62,6 +62,7 @@ export interface FrameEvent extends BaseEventFields {
     dpr: number;
   };
   is_keyframe: boolean;
+  content_hash?: string;
 }
 
 export interface LocatorResolutionEvent extends BaseEventFields {

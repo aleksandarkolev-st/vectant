@@ -137,28 +137,72 @@ assert.equal(mcpFrameGateSatisfied({
   gpu_proof_validation: { satisfied: false },
 }), false);
 assert.equal(mcpFrameGateSatisfied({ frame_gate: { status: 'timeout' } }), false);
+const mcpGate = {
+  status: 'satisfied',
+  frame_seq: 12,
+  ts_ms: 1200,
+  session_id: 'runtime-session:visual-smoke',
+  gate_token: 'frame-gate:visual-smoke',
+};
+const mcpAfterScreenshot = {
+  seq: 12,
+  ts: 1200,
+  width: 640,
+  height: 480,
+  image_sha256: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  capture_manifest: {
+    schema_version: 'synthi.mcp.capture_manifest.v1',
+    session_id: 'runtime-session:visual-smoke',
+    capture_backend: 'mcp_screenshot',
+    capture_event_id: 'screenshot:visual-smoke:12',
+    frame_event_id: 7,
+    frame_seq: 12,
+    frame_ts_ms: 1200,
+    source_frame_hash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    image_sha256: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    image_byte_length: 1024,
+    gate_token: 'frame-gate:visual-smoke',
+    gate_token_verified: true,
+  },
+};
 assert.equal(mcpFrameGateSatisfiedByScreenshot({
-  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },
-}, { seq: 12, ts: 1200 }), true);
+}, mcpAfterScreenshot), true);
 assert.equal(mcpFrameGateSatisfiedByScreenshot({
-  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },
-}, { seq: 11, ts: 1199 }), false);
+}, { ...mcpAfterScreenshot, seq: 11, ts: 1199 }), false);
 assert.deepEqual(mcpFrameGateForScreenshot({
-  frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200, extra: 'ignored' },
+  frame_gate: { ...mcpGate, extra: 'ignored' },
   gpu_proof_validation: { satisfied: true },
-}), { status: 'satisfied', frame_seq: 12, ts_ms: 1200 });
+}), {
+  status: 'satisfied',
+  frame_seq: 12,
+  ts_ms: 1200,
+  gate_token: 'frame-gate:visual-smoke',
+  session_id: 'runtime-session:visual-smoke',
+});
 assert.equal(mcpFrameGateForScreenshot({
   frame_gate: { status: 'event_log_recovered', frame_seq: 12, ts_ms: 1200 },
   gpu_proof_validation: { satisfied: true },
 }), null);
-assert.deepEqual(mcpScreenshotArgsForFrameGate({
+assert.equal(mcpFrameGateForScreenshot({
   frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  gpu_proof_validation: { satisfied: true },
+}), null);
+assert.deepEqual(mcpScreenshotArgsForFrameGate({
+  frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },
 }, { freshnessMaxMs: 5000 }), {
   freshness_max_ms: 5000,
-  after_frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+  after_frame_gate: {
+    status: 'satisfied',
+    frame_seq: 12,
+    ts_ms: 1200,
+    gate_token: 'frame-gate:visual-smoke',
+    session_id: 'runtime-session:visual-smoke',
+  },
   frame_gate_timeout_ms: DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
 });
 assert.deepEqual(mcpScreenshotArgsForFrameGate({
@@ -185,9 +229,9 @@ const mcpDerived = deterministicVisualModeFromMcpEvidence({
     warmup_frames: 1,
   },
   before: { width: 640, height: 480, seq: 10, ts: 1000 },
-  after: { width: 640, height: 480, seq: 12, ts: 1200 },
+  after: mcpAfterScreenshot,
   wait: {
-    frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+    frame_gate: mcpGate,
     gpu_proof_validation: { satisfied: true },
   },
 });
@@ -229,9 +273,9 @@ const mcpStaleScreenshot = evaluateGpuHmrDeterministicVisualMode(
       fixed_swapchain_image_count: true,
     },
     before: { width: 640, height: 480, seq: 10, ts: 1000 },
-    after: { width: 640, height: 480, seq: 11, ts: 1199 },
+    after: { ...mcpAfterScreenshot, seq: 11, ts: 1199 },
     wait: {
-      frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+      frame_gate: mcpGate,
       gpu_proof_validation: { satisfied: true },
     },
   }),
@@ -255,9 +299,9 @@ const mcpFailedGpuProofValidation = evaluateGpuHmrDeterministicVisualMode(
       fixed_swapchain_image_count: true,
     },
     before: { width: 640, height: 480, seq: 10, ts: 1000 },
-    after: { width: 640, height: 480, seq: 12, ts: 1200 },
+    after: mcpAfterScreenshot,
     wait: {
-      frame_gate: { status: 'satisfied', frame_seq: 12, ts_ms: 1200 },
+      frame_gate: mcpGate,
       gpu_proof_validation: { satisfied: false, reason: 'proof_state_below_required' },
     },
   }),

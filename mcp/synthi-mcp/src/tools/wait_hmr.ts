@@ -266,11 +266,23 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         }
         if (outcome.kind === "frame") {
           const satisfiedBy = outcome.satisfiedBy;
+          const gateToken = satisfiedBy
+            ? session.issueFrameGateToken({
+                session_id: attached.sessionId,
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+              })
+            : null;
           frameGate = satisfiedBy
             ? {
                 status: "satisfied",
                 frame_seq: satisfiedBy.frame_seq,
                 ts_ms: satisfiedBy.ts_ms,
+                session_id: attached.sessionId,
+                gate_token: gateToken?.token,
+                gate_token_issued_at_ms: gateToken?.issued_at_ms,
+                gate_token_expires_at_ms: gateToken?.expires_at_ms,
+                capture_binding_required: true,
                 pipeline_budget_ms: budget,
               }
             : {

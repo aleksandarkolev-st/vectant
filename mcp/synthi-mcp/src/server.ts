@@ -102,7 +102,7 @@ const TOOLS = [
   {
     name: "synthi_screenshot",
     description:
-      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms,after_frame_gate,frame_gate_timeout_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. after_frame_gate requires capture at or after a satisfied synthi_wait_hmr frame_gate. Emits a `usage` event for every call.",
+      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms,after_frame_gate,frame_gate_timeout_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. after_frame_gate must be the satisfied synthi_wait_hmr frame_gate including its one-time gate_token; screenshot returns a capture_manifest with frame/image hashes. Emits a `usage` event for every call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -131,10 +131,12 @@ const TOOLS = [
             status: { type: "string", enum: ["satisfied"] },
             frame_seq: { type: "number" },
             ts_ms: { type: "number" },
+            session_id: { type: "string" },
+            gate_token: { type: "string" },
           },
-          required: ["status"],
+          required: ["status", "gate_token"],
           description:
-            "Satisfied frame_gate returned by synthi_wait_hmr. When provided, screenshot waits until the decoded frame seq/timestamp is at or after this gate before capturing.",
+            "Satisfied frame_gate returned by synthi_wait_hmr, including the one-time gate_token. When provided, screenshot waits until the decoded frame seq/timestamp is at or after this gate, consumes the token, and returns a capture_manifest bound to image bytes.",
         },
         frame_gate_timeout_ms: {
           type: "number",

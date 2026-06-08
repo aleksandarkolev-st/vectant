@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
@@ -71,10 +72,26 @@ export interface FrameAdvance {
   observed_at: number;
 }
 
+export interface FrameGateToken {
+  token: string;
+  session_id: string;
+  frame_seq?: number;
+  ts_ms?: number;
+  issued_at_ms: number;
+  expires_at_ms: number;
+}
+
+export interface FrameGateTokenValidation {
+  accepted: boolean;
+  reason?: string;
+  token?: FrameGateToken;
+}
+
 /** Watch window beyond which a stale frame_advance no longer counts as "live".
  *  If the worker hasn't emitted in this long, the gate is disabled rather
  *  than blocking on a signal that will never arrive. */
 export const FRAME_ADVANCE_FRESHNESS_WINDOW_MS = 10_000;
+export const FRAME_GATE_TOKEN_TTL_MS = 20 * 60_000;
 
 type FrameAdvanceListener = (fa: FrameAdvance) => void;
 
@@ -141,6 +158,7 @@ class SessionManager {
   private unsubscribers: Array<() => void> = [];
   private lastFrameAdvance: FrameAdvance | null = null;
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
+  private frameGateTokens = new Map<string, FrameGateToken>();
   private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
   private warmingProgress: WarmingProgress | null = null;
   private frameTiming: FrameTimingSnapshot | null = null;
@@ -342,6 +360,62 @@ class SessionManager {
       });
       const timer = setTimeout(() => settle(null), timeoutMs);
     });
+  }
+
+  issueFrameGateToken(input: {
+    session_id: string;
+    frame_seq?: number;
+    ts_ms?: number;
+    ttl_ms?: number;
+    now?: number;
+  }): FrameGateToken {
+    const now = input.now ?? Date.now();
+    const ttlMs = Math.max(1, input.ttl_ms ?? FRAME_GATE_TOKEN_TTL_MS);
+    this.pruneFrameGateTokens(now);
+    const token: FrameGateToken = {
+      token: `frame-gate:${randomUUID()}`,
+      session_id: input.session_id,
+      ...(input.frame_seq !== undefined ? { frame_seq: input.frame_seq } : {}),
+      ...(input.ts_ms !== undefined ? { ts_ms: input.ts_ms } : {}),
+      issued_at_ms: now,
+      expires_at_ms: now + ttlMs,
+    };
+    this.frameGateTokens.set(token.token, token);
+    return { ...token };
+  }
+
+  consumeFrameGateToken(input: {
+    token: string;
+    session_id: string;
+    frame_seq?: number;
+    ts_ms?: number;
+    now?: number;
+  }): FrameGateTokenValidation {
+    const now = input.now ?? Date.now();
+    this.pruneFrameGateTokens(now);
+    const token = this.frameGateTokens.get(input.token);
+    if (!token) return { accepted: false, reason: "frame_gate_token_unknown" };
+    if (token.expires_at_ms < now) {
+      this.frameGateTokens.delete(input.token);
+      return { accepted: false, reason: "frame_gate_token_expired" };
+    }
+    if (token.session_id !== input.session_id) {
+      return { accepted: false, reason: "frame_gate_token_session_mismatch" };
+    }
+    if (token.frame_seq !== undefined && input.frame_seq !== token.frame_seq) {
+      return { accepted: false, reason: "frame_gate_token_frame_seq_mismatch" };
+    }
+    if (token.ts_ms !== undefined && input.ts_ms !== token.ts_ms) {
+      return { accepted: false, reason: "frame_gate_token_timestamp_mismatch" };
+    }
+    this.frameGateTokens.delete(input.token);
+    return { accepted: true, token: { ...token } };
+  }
+
+  private pruneFrameGateTokens(now: number = Date.now()): void {
+    for (const [token, gate] of this.frameGateTokens) {
+      if (gate.expires_at_ms < now) this.frameGateTokens.delete(token);
+    }
   }
 
   get(): AttachedSession | null {
@@ -897,6 +971,7 @@ class SessionManager {
     this.lastActivityAt = Date.now();
     this.lastFrameAdvance = null;
     this.frameAdvanceListeners.clear();
+    this.frameGateTokens.clear();
     this.presenceCounts = { humans: 0, agents: 1 };
     for (const unsub of this.unsubscribers) {
       try { unsub(); } catch { /* ignored */ }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { session } from "../session.js";
 import { eventLog } from "../events/index.js";
@@ -29,19 +30,37 @@ interface BBox {
 interface FrameGateRequirement {
   frameSeq?: number;
   tsMs?: number;
+  gateToken: string;
+  sessionId?: string;
 }
 
 interface FrameGateSatisfiedMeta {
   status: "satisfied";
   required_frame_seq?: number;
   required_ts_ms?: number;
+  gate_token: string;
+  gate_token_verified: true;
+  gate_token_issued_at_ms?: number;
+  gate_token_expires_at_ms?: number;
+  session_id: string;
   captured_frame_seq: number;
   captured_ts_ms: number;
   timeout_ms: number;
 }
 
+interface ScreenshotFrame {
+  data: Buffer;
+  width: number;
+  height: number;
+  dpr?: number;
+  ts: number;
+  seq: number;
+  contentHash?: string;
+}
+
 const DEFAULT_FRAME_GATE_TIMEOUT_MS = 20 * 60 * 1000;
 const FRAME_GATE_POLL_MS = 50;
+const CAPTURE_MANIFEST_SCHEMA_VERSION = "synthi.mcp.capture_manifest.v1";
 
 function parseBBox(v: unknown): BBox | "invalid" | undefined {
   if (v === undefined) return undefined;
@@ -65,7 +84,9 @@ function parseNonNegativeInteger(value: unknown): number | "invalid" | undefined
   return Number.isInteger(parsed) ? parsed : "invalid";
 }
 
-function parseFrameGate(value: unknown): FrameGateRequirement | "invalid" | { unsatisfied: Record<string, unknown> } | undefined {
+function parseFrameGate(
+  value: unknown
+): FrameGateRequirement | "invalid" | { unsatisfied: Record<string, unknown> } | { unverified: Record<string, unknown> } | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object") return "invalid";
   const gate = value as Record<string, unknown>;
@@ -84,10 +105,25 @@ function parseFrameGate(value: unknown): FrameGateRequirement | "invalid" | { un
   const tsMs = parseNonNegativeNumber(gate["ts_ms"] ?? gate["tsMs"]);
   if (tsMs === "invalid") return "invalid";
   if (frameSeq === undefined && tsMs === undefined) return "invalid";
+  const gateToken = gate["gate_token"] ?? gate["gateToken"];
+  if (typeof gateToken !== "string" || gateToken.trim().length === 0) {
+    return {
+      unverified: {
+        status: "unverified",
+        reason: "satisfied after_frame_gate must include a one-time wait_hmr gate_token",
+      },
+    };
+  }
+  const sessionId = gate["session_id"] ?? gate["sessionId"];
+  if (sessionId !== undefined && (typeof sessionId !== "string" || sessionId.trim().length === 0)) {
+    return "invalid";
+  }
 
   return {
     ...(frameSeq !== undefined ? { frameSeq } : {}),
     ...(tsMs !== undefined ? { tsMs } : {}),
+    gateToken: gateToken.trim(),
+    ...(typeof sessionId === "string" ? { sessionId: sessionId.trim() } : {}),
   };
 }
 
@@ -100,12 +136,19 @@ function frameSatisfiesGate(frame: { seq: number; ts: number }, gate: FrameGateR
 function frameGateMeta(
   frame: { seq: number; ts: number },
   gate: FrameGateRequirement,
-  timeoutMs: number
+  timeoutMs: number,
+  sessionId: string,
+  token: { issued_at_ms?: number; expires_at_ms?: number } | null
 ): FrameGateSatisfiedMeta {
   return {
     status: "satisfied",
     ...(gate.frameSeq !== undefined ? { required_frame_seq: gate.frameSeq } : {}),
     ...(gate.tsMs !== undefined ? { required_ts_ms: gate.tsMs } : {}),
+    gate_token: gate.gateToken,
+    gate_token_verified: true,
+    ...(token?.issued_at_ms !== undefined ? { gate_token_issued_at_ms: token.issued_at_ms } : {}),
+    ...(token?.expires_at_ms !== undefined ? { gate_token_expires_at_ms: token.expires_at_ms } : {}),
+    session_id: sessionId,
     captured_frame_seq: frame.seq,
     captured_ts_ms: frame.ts,
     timeout_ms: timeoutMs,
@@ -113,10 +156,10 @@ function frameGateMeta(
 }
 
 async function waitForFrameGate(
-  getFrame: () => Promise<{ data: Buffer; width: number; height: number; dpr?: number; ts: number; seq: number }>,
+  getFrame: () => Promise<ScreenshotFrame>,
   gate: FrameGateRequirement,
   timeoutMs: number
-): Promise<{ data: Buffer; width: number; height: number; dpr?: number; ts: number; seq: number } | null> {
+): Promise<ScreenshotFrame | null> {
   const start = Date.now();
   for (;;) {
     const frame = await getFrame();
@@ -135,6 +178,10 @@ function readOnlyScreenshotDpr(dpr: unknown): { dpr: number; inferred: boolean }
   // still reject missing producer DPR; observation can safely report CSS-pixel
   // parity when the worker video stream lacks viewport metadata.
   return { dpr: 1, inferred: true };
+}
+
+function sha256(data: Buffer): string {
+  return `sha256:${createHash("sha256").update(data).digest("hex")}`;
 }
 
 /**
@@ -184,6 +231,9 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
   if (afterFrameGate && "unsatisfied" in afterFrameGate) {
     return errorResponse("frame_gate_unsatisfied", afterFrameGate.unsatisfied);
   }
+  if (afterFrameGate && "unverified" in afterFrameGate) {
+    return errorResponse("frame_gate_unverified", afterFrameGate.unverified);
+  }
 
   const frameGateTimeoutValue = a.frame_gate_timeout_ms ?? a.frameGateTimeoutMs;
   let frameGateTimeoutMs = DEFAULT_FRAME_GATE_TIMEOUT_MS;
@@ -223,7 +273,41 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         latest_ts_ms: latest?.ts ?? null,
       });
     }
-    const frameGate = afterFrameGate ? frameGateMeta(frame, afterFrameGate, frameGateTimeoutMs) : undefined;
+    if (afterFrameGate?.sessionId !== undefined && afterFrameGate.sessionId !== attached.sessionId) {
+      return errorResponse("frame_gate_unverified", {
+        status: "unverified",
+        reason: "frame_gate_session_mismatch",
+        session_id: attached.sessionId,
+        requested_session_id: afterFrameGate.sessionId,
+      });
+    }
+    const gateTokenValidation = afterFrameGate
+      ? session.consumeFrameGateToken({
+          token: afterFrameGate.gateToken,
+          session_id: attached.sessionId,
+          frame_seq: afterFrameGate.frameSeq,
+          ts_ms: afterFrameGate.tsMs,
+        })
+      : null;
+    if (afterFrameGate && gateTokenValidation?.accepted !== true) {
+      return errorResponse("frame_gate_unverified", {
+        status: "unverified",
+        reason: gateTokenValidation?.reason ?? "frame_gate_token_rejected",
+        session_id: attached.sessionId,
+        requested_session_id: afterFrameGate.sessionId ?? null,
+        requested_frame_seq: afterFrameGate.frameSeq ?? null,
+        requested_ts_ms: afterFrameGate.tsMs ?? null,
+      });
+    }
+    const frameGate = afterFrameGate
+      ? frameGateMeta(
+          frame,
+          afterFrameGate,
+          frameGateTimeoutMs,
+          attached.sessionId,
+          gateTokenValidation?.token ?? null,
+        )
+      : undefined;
 
     if (freshnessMaxMs !== undefined) {
       const now = Date.now();
@@ -275,6 +359,8 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     }
 
     const png = await pipeline.png({ compressionLevel: 6, adaptiveFiltering: false }).toBuffer();
+    const imageHash = sha256(png);
+    const sourceFrameHash = frame.contentHash ?? sha256(frame.data);
     const scaledMeta = resultMeta.scaled ? await sharp(png).metadata() : null;
     if (scaledMeta) {
       resultMeta.w = scaledMeta.width ?? resultMeta.w;
@@ -285,10 +371,40 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     const screenshotDpr = readOnlyScreenshotDpr(frame.dpr);
     const brokerFrame = recordBrokerFrameObservation({
       session_id: attached.sessionId,
-      frame,
+      frame: { ...frame, contentHash: sourceFrameHash },
       dpr: screenshotDpr.dpr,
     });
     const responseTs = Date.now();
+    const captureManifest = {
+      schema_version: CAPTURE_MANIFEST_SCHEMA_VERSION,
+      session_id: attached.sessionId,
+      capture_backend: "mcp_screenshot",
+      capture_event_id: `screenshot:${attached.sessionId}:${frame.seq}:${responseTs}`,
+      frame_event_id: brokerFrame.event_id,
+      frame_seq: frame.seq,
+      frame_ts_ms: frame.ts,
+      capture_ts_ms: responseTs,
+      source_frame_hash: sourceFrameHash,
+      broker_frame_hash: brokerFrame.content_hash ?? sourceFrameHash,
+      image_sha256: imageHash,
+      image_byte_length: png.length,
+      width: resultMeta.w,
+      height: resultMeta.h,
+      original_width: frame.width,
+      original_height: frame.height,
+      dpr: screenshotDpr.dpr,
+      ...(frameGate !== undefined
+        ? {
+            frame_gate: frameGate,
+            gate_token: frameGate.gate_token,
+            gate_token_verified: true,
+            required_frame_seq: frameGate.required_frame_seq ?? null,
+            required_ts_ms: frameGate.required_ts_ms ?? null,
+          }
+        : {
+            gate_token_verified: false,
+          }),
+    };
     brokerSloRecorder.recordDuration("screenshot_age_p95", responseTs - frame.ts, responseTs);
     eventLog.push({
       kind: "usage",
@@ -300,6 +416,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         response_ts: responseTs,
         screenshot_age_ms: responseTs - frame.ts,
         dpr_inferred: screenshotDpr.inferred,
+        capture_manifest: captureManifest,
         ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
         ...(resultMeta.crop !== undefined ? { cropped: true } : {}),
         ...(resultMeta.scaled === true ? { scaled: true } : {}),
@@ -317,6 +434,10 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       dpr_inferred: screenshotDpr.inferred,
       viewport: { w: frame.width, h: frame.height, dpr: screenshotDpr.dpr },
       broker_frame: brokerFrame,
+      image_sha256: imageHash,
+      image_byte_length: png.length,
+      source_frame_hash: sourceFrameHash,
+      capture_manifest: captureManifest,
       ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),

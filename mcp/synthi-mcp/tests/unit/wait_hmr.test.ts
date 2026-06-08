@@ -408,9 +408,20 @@ describe("synthi_wait_hmr", () => {
     setTimeout(() => session.setFrameAdvance(2, Date.now() + budget + 50), 10);
     const res = await waitHmrTool({ timeoutMs: 2_000 });
     expect(res.isError).toBeUndefined();
-    const body = res.structuredContent as { frame_gate: { status: string; frame_seq: number } };
+    const body = res.structuredContent as {
+      frame_gate: {
+        status: string;
+        frame_seq: number;
+        session_id?: string;
+        gate_token?: string;
+        capture_binding_required?: boolean;
+      };
+    };
     expect(body.frame_gate.status).toBe("satisfied");
     expect(body.frame_gate.frame_seq).toBe(2);
+    expect(body.frame_gate.session_id).toBe("fixture");
+    expect(body.frame_gate.gate_token).toMatch(/^frame-gate:/);
+    expect(body.frame_gate.capture_binding_required).toBe(true);
   });
 
   it("reports frame_gate:timeout when no post-budget frame arrives", async () => {

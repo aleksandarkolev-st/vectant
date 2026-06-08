@@ -205,6 +205,72 @@ function screenshotTimestampMs(shot) {
   );
 }
 
+function screenshotCaptureManifest(shot) {
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+    : {};
+  return isObject(shot?.capture_manifest ?? shot?.captureManifest)
+    ? (shot.capture_manifest ?? shot.captureManifest)
+    : isObject(meta.capture_manifest ?? meta.captureManifest)
+      ? (meta.capture_manifest ?? meta.captureManifest)
+      : null;
+}
+
+function screenshotImageHash(shot) {
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+    : {};
+  return textOrNull(
+    shot?.image_sha256
+    ?? shot?.imageSha256
+    ?? shot?.sha256
+    ?? meta.image_sha256
+    ?? meta.imageSha256
+    ?? meta.sha256,
+  );
+}
+
+function captureManifestImageHash(manifest) {
+  return textOrNull(
+    manifest?.image_sha256
+    ?? manifest?.imageSha256
+    ?? manifest?.image_hash
+    ?? manifest?.imageHash,
+  );
+}
+
+function captureManifestFrameHash(manifest) {
+  return textOrNull(
+    manifest?.source_frame_hash
+    ?? manifest?.sourceFrameHash
+    ?? manifest?.broker_frame_hash
+    ?? manifest?.brokerFrameHash,
+  );
+}
+
+function captureManifestVerified(shot, gate = null) {
+  const manifest = screenshotCaptureManifest(shot);
+  if (!manifest) return false;
+  const imageHash = screenshotImageHash(shot);
+  const manifestImageHash = captureManifestImageHash(manifest);
+  if (!manifestImageHash) return false;
+  if (imageHash && imageHash !== manifestImageHash) return false;
+  if (!captureManifestFrameHash(manifest)) return false;
+  if (!textOrNull(manifest.session_id ?? manifest.sessionId)) return false;
+  if (!textOrNull(manifest.capture_event_id ?? manifest.captureEventId)) return false;
+  if (finiteNumberOrNull(manifest.frame_event_id ?? manifest.frameEventId) === null) return false;
+  if (gate) {
+    const gateToken = textOrNull(gate.gate_token ?? gate.gateToken);
+    if (!gateToken) return false;
+    if (manifest.gate_token_verified !== true && manifest.gateTokenVerified !== true) return false;
+    if (textOrNull(manifest.gate_token ?? manifest.gateToken) !== gateToken) return false;
+    const gateSession = textOrNull(gate.session_id ?? gate.sessionId);
+    const manifestSession = textOrNull(manifest.session_id ?? manifest.sessionId);
+    if (gateSession && gateSession !== manifestSession) return false;
+  }
+  return true;
+}
+
 function mcpFrameGateObject(waitOrGate) {
   return isObject(waitOrGate?.frame_gate ?? waitOrGate?.frameGate)
     ? (waitOrGate.frame_gate ?? waitOrGate.frameGate)
@@ -225,11 +291,16 @@ export function mcpFrameGateForScreenshot(waitOrGate) {
   const gate = mcpFrameGateObject(waitOrGate);
   const frameSeq = finiteNumberOrNull(gate.frame_seq ?? gate.frameSeq);
   const tsMs = finiteNumberOrNull(gate.ts_ms ?? gate.tsMs ?? gate.ts);
+  const gateToken = textOrNull(gate.gate_token ?? gate.gateToken);
   if (frameSeq === null && tsMs === null) return null;
+  if (!gateToken) return null;
+  const sessionId = textOrNull(gate.session_id ?? gate.sessionId);
   return {
     status: 'satisfied',
     ...(frameSeq !== null ? { frame_seq: frameSeq } : {}),
     ...(tsMs !== null ? { ts_ms: tsMs } : {}),
+    gate_token: gateToken,
+    ...(sessionId ? { session_id: sessionId } : {}),
   };
 }
 
@@ -262,6 +333,8 @@ export function mcpScreenshotMetadataFromToolResult(result) {
     || result.h !== undefined
     || result.width !== undefined
     || result.height !== undefined
+    || result.capture_manifest !== undefined
+    || result.captureManifest !== undefined
   ) {
     return result;
   }
@@ -279,6 +352,7 @@ export function mcpScreenshotMetadataFromToolResult(result) {
 export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {
   if (!mcpFrameGateSatisfied(waitOrGate)) return false;
   const gate = mcpFrameGateObject(waitOrGate);
+  if (!captureManifestVerified(afterScreenshot, gate)) return false;
   const gateSeq = finiteNumberOrNull(gate.frame_seq ?? gate.frameSeq);
   const gateTs = finiteNumberOrNull(gate.ts_ms ?? gate.tsMs ?? gate.ts);
   if (gateSeq === null && gateTs === null) return false;
@@ -575,6 +649,15 @@ export function classifyGpuHmrVisualEvidenceStats(stats = {}) {
 
 export function screenshotQualifiesAsVisualEvidence(shot) {
   const quality = shot?.visual_quality ?? shot?.visualQuality ?? classifyGpuHmrVisualEvidenceStats(shot);
+  const manifest = screenshotCaptureManifest(shot);
+  const captureBackend = textOrNull(
+    shot?.capture_backend
+    ?? shot?.captureBackend
+    ?? manifest?.capture_backend
+    ?? manifest?.captureBackend,
+  );
+  const manifestRequired = captureBackend === 'mcp_screenshot' || manifest !== null;
+  const manifestAccepted = !manifestRequired || captureManifestVerified(shot);
   return Boolean(
     shot
       && Number(shot.width) >= MIN_VISUAL_WIDTH
@@ -582,7 +665,8 @@ export function screenshotQualifiesAsVisualEvidence(shot) {
       && Number(shot.visible_pixels ?? shot.visiblePixels) > MIN_VISIBLE_PIXELS
       && quality === 'gpu-hmr-visual-varied-frame'
       && typeof (shot.path ?? shot.filePath ?? shot.file_path) === 'string'
-      && String(shot.path ?? shot.filePath ?? shot.file_path).trim(),
+      && String(shot.path ?? shot.filePath ?? shot.file_path).trim()
+      && manifestAccepted
   );
 }
 

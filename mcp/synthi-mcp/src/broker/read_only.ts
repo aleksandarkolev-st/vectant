@@ -1,4 +1,5 @@
 import type { FrameSnapshot } from "../frames.js";
+import { createHash } from "node:crypto";
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
 import {
@@ -34,6 +35,7 @@ export function recordBrokerFrameObservation(input: {
 }): BrokerFrameEvent {
   const ingestTs = Date.now();
   const dpr = requireProducerDpr(input.dpr ?? input.frame.dpr);
+  const contentHash = input.frame.contentHash ?? sha256(input.frame.data);
   const viewport: BrokerViewport = {
     w: input.frame.width,
     h: input.frame.height,
@@ -47,6 +49,7 @@ export function recordBrokerFrameObservation(input: {
     ingest_ts_ms: ingestTs,
     viewport,
     is_keyframe: input.is_keyframe ?? false,
+    content_hash: contentHash,
   });
   sharedFrameCache.putFrame({
     session_id: input.session_id,
@@ -65,7 +68,12 @@ export function recordBrokerFrameObservation(input: {
     ingest_ts_ms: ingestTs,
     viewport,
     is_keyframe: input.is_keyframe ?? false,
+    content_hash: contentHash,
   });
+}
+
+function sha256(data: Buffer): string {
+  return `sha256:${createHash("sha256").update(data).digest("hex")}`;
 }
 
 export function currentBrokerLifecycleEvent(): BrokerLifecycleEvent {

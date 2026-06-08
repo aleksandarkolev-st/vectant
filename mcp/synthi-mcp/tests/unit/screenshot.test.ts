@@ -72,6 +72,23 @@ function installFakeFrameSequence(frames: Array<{
   };
 }
 
+function fakeFrameGate(frameSeq: number, tsMs: number): Record<string, unknown> {
+  const token = session.issueFrameGateToken({
+    session_id: "fake-session",
+    frame_seq: frameSeq,
+    ts_ms: tsMs,
+  });
+  return {
+    status: "satisfied",
+    frame_seq: frameSeq,
+    ts_ms: tsMs,
+    session_id: "fake-session",
+    gate_token: token.token,
+    gate_token_issued_at_ms: token.issued_at_ms,
+    gate_token_expires_at_ms: token.expires_at_ms,
+  };
+}
+
 describe("synthi_screenshot", () => {
   beforeEach(() => {
     session._resetForTests();
@@ -179,6 +196,18 @@ describe("synthi_screenshot", () => {
     expect((res.structuredContent as { error?: string }).error).toBe("frame_gate_unsatisfied");
   });
 
+  it("rejects a satisfied HMR frame gate without a wait_hmr token", async () => {
+    const png = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: Date.now(), seq: 1 });
+
+    const res = await screenshotTool({
+      after_frame_gate: { status: "satisfied", frame_seq: 1, ts_ms: 1_000 },
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error?: string }).error).toBe("frame_gate_unverified");
+  });
+
   it("waits until the decoded frame satisfies the HMR frame gate", async () => {
     const before = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
     const after = await solidPng(100, 100, { r: 40, g: 80, b: 120 });
@@ -186,9 +215,10 @@ describe("synthi_screenshot", () => {
       { data: before, width: 100, height: 100, ts: 1_000, seq: 1 },
       { data: after, width: 100, height: 100, ts: 1_200, seq: 2 },
     ]);
+    const gate = fakeFrameGate(2, 1_200);
 
     const res = await screenshotTool({
-      after_frame_gate: { status: "satisfied", frame_seq: 2, ts_ms: 1_200 },
+      after_frame_gate: gate,
       frame_gate_timeout_ms: 100,
     });
 
@@ -196,10 +226,20 @@ describe("synthi_screenshot", () => {
     const meta = res.structuredContent as {
       seq: number;
       ts: number;
+      image_sha256: string;
+      source_frame_hash: string;
+      capture_manifest?: {
+        schema_version?: string;
+        gate_token_verified?: boolean;
+        gate_token?: string;
+        image_sha256?: string;
+        source_frame_hash?: string;
+      };
       frame_gate?: {
         status?: string;
         required_frame_seq?: number;
         required_ts_ms?: number;
+        gate_token_verified?: boolean;
         captured_frame_seq?: number;
         captured_ts_ms?: number;
       };
@@ -210,8 +250,18 @@ describe("synthi_screenshot", () => {
       status: "satisfied",
       required_frame_seq: 2,
       required_ts_ms: 1_200,
+      gate_token_verified: true,
       captured_frame_seq: 2,
       captured_ts_ms: 1_200,
+    });
+    expect(meta.image_sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(meta.source_frame_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(meta.capture_manifest).toMatchObject({
+      schema_version: "synthi.mcp.capture_manifest.v1",
+      gate_token_verified: true,
+      gate_token: gate.gate_token,
+      image_sha256: meta.image_sha256,
+      source_frame_hash: meta.source_frame_hash,
     });
   });
 
@@ -220,9 +270,10 @@ describe("synthi_screenshot", () => {
     installFakeFrameSequence([
       { data: stale, width: 100, height: 100, ts: 1_000, seq: 1 },
     ]);
+    const gate = fakeFrameGate(2, 1_200);
 
     const res = await screenshotTool({
-      after_frame_gate: { status: "satisfied", frame_seq: 2, ts_ms: 1_200 },
+      after_frame_gate: gate,
       frame_gate_timeout_ms: 0,
     });
 
