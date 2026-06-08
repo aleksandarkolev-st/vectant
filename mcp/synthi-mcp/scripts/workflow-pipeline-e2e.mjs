@@ -1598,12 +1598,15 @@ const CASES = [
     id: "range-slider",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: ["Applied budget 75"],
+    expectedReplayText: [],
     expectedReplayCode: [
+      "const inputValue1 = readRequiredEnv(\"BUDGET\"",
       "element.dispatchEvent(new Event('input', { bubbles: true }));",
       "element.dispatchEvent(new Event('change', { bubbles: true }));",
+      "await expect(target1).toHaveValue(inputValue1);",
     ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({ BUDGET: "75" }),
     files: () => commonFiles({
       title: "Range Slider Workflow",
       body: [
