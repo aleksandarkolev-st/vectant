@@ -936,6 +936,36 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
   });
 
+  it("rejects a retained GPU proof that predates an unanchored proof wait", async () => {
+    const staleProof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: passingProofLedger(),
+      runtimeProofArtifact: passingRuntimeProofArtifact(),
+    }, Date.now() - 1000);
+    installFakeAttached(
+      async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10, observedAt: Date.now() }),
+      () => staleProof
+    );
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_telemetry?: unknown;
+      gpu_proof_validation?: { reason?: string };
+      wait_contract?: { proof_since_ts?: number };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_telemetry).toBeUndefined();
+    expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
+    expect(typeof body.wait_contract?.proof_since_ts).toBe("number");
+  });
+
   it("rejects a fresh full GPU proof from the wrong module during a device wait", async () => {
     const sinceTs = Date.now();
     const fake = installFakeAttached(async () => {

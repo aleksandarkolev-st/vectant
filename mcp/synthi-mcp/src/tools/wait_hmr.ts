@@ -156,7 +156,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     ? previewIdValue.trim()
     : undefined;
   const requiredProofState = requiredGpuProofState(a);
-  const waitContract = {
+  const waitContract: Record<string, unknown> = {
     timeout_ms: timeoutMs,
     module: module ?? null,
     since_ts: sinceTs ?? null,
@@ -169,11 +169,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   try {
     const start = Date.now();
     const attached = session.require();
+    const proofSinceTs = sinceTs ?? start;
     const proofMatchOpts: GpuHmrProofMatchOpts = {
-      ...(sinceTs !== undefined ? { sinceTs } : {}),
+      sinceTs: proofSinceTs,
       ...(module ? { module } : {}),
       ...(previewId ? { previewId } : {}),
     };
+    waitContract.proof_since_ts = proofSinceTs;
     let latestGpuProof = latestGpuProofFromAttached(attached, proofMatchOpts);
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
