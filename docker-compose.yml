@@ -109,6 +109,7 @@ services:
     environment:
       COLLAB_PORT: "1234"
       SPAWNER_MODE: "local"
+      SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
       # Local TURN (returned to worker via /turn-credentials)
       LOCAL_TURN_URL: "turn:coturn:3478"
       LOCAL_TURN_USERNAME: "synthi"

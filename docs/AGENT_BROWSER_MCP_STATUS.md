@@ -76,6 +76,27 @@ The in-container Codex read-only sandbox could not run because this Docker conta
 namespace creation. The handoff check was rerun with Codex's sandbox bypass flag and an explicit no-edit
 prompt. Temporary copied Codex credentials were removed after the check.
 
+Automatic repo pickup check:
+
+```text
+workspace=/data/repos/workflow-pipeline-animated-saas-dashboard-mq5h1f1m
+tool=npx -y @openai/codex exec
+prompt=discover workflows without being given any workflow script path
+```
+
+Result:
+
+```text
+Verdict: Synthi browser workflows are available.
+Workflow: Save runbook
+Script path: .synthi/workflows/wf_2vgxrm/workflow.spec.mjs
+Required env vars: PLAYWRIGHT_BASE_URL, SEARCH_ACCOUNTS, SEGMENT_ALLENTERPRISEGROWTH, RISK_THRESHOLD, RUNBOOK_NOTE
+Hardcoded forwarded preview ports: none found
+Replay: full replay should stop at mutation boundary browser_evt_7; prefix-only replay is allowed unless isolated CI or explicit confirmation is available.
+```
+
+This check started Codex from the workspace repo root and did not provide the script path. Codex discovered the workflow through `AGENTS.md` and `.synthi/workflows/index.json`.
+
 Additional verification run before the comprehensive pass:
 
 ```bash
@@ -114,6 +135,7 @@ build passed
 - Prefix-only replay for workflows that reach a mutation boundary.
 - Generated Playwright scripts that parameterize fill/select/range/terminal/custom-option values instead of baking in the taught values.
 - Generated Playwright scripts require `PLAYWRIGHT_BASE_URL` for proxied workspace previews instead of embedding the detected forwarded port.
+- Export writes an agent-discoverable handoff bundle into the workspace repo: `AGENTS.md`, `.synthi/workflows/index.json`, workflow README, manifest, and Playwright spec.
 - Hidden file inputs replayed with `setInputFiles` and `toBeAttached` instead of visibility assertions.
 - Calibrated pointer drag replay for sortable lanes, splitter resize, and custom ARIA sliders.
 - Modifier wheel replay with mouse positioning, keyboard modifiers, and real wheel deltas.
@@ -128,7 +150,7 @@ These are not blockers for the current local demo path, but they remain before c
 - Canvas/WebGL semantics need app-provided semantic affordances; generic pixel-level canvas automation is intentionally not promised.
 - Auth durability needs real IdP checkpoint and refresh-provider testing against actual SSO providers.
 - Full mutation replay should run only in an isolated CI profile with a resettable base URL and explicit mutation permission.
-- Published private MCP tool handoff should get an end-to-end agent-client acceptance test against a real configured agent; the current handoff check covers generated script inspection from inside the seeded workspace.
+- Published private MCP tool handoff should get an end-to-end MCP-agent acceptance test against a real configured agent; the current handoff checks cover generated script inspection and automatic repo discovery from inside the seeded workspace.
 - The repository has a pre-existing git maintenance issue: commits succeed, but git gc reports `fatal: bad tree object be45a9be79c6f1bc8c246ace783ac807a93ab469`.
 
 ## Demo Environment
@@ -143,8 +165,8 @@ Current local services for the verified run:
 Current kept investor demo workspace:
 
 - Workspace: `http://localhost:3000/workspace/workflow-pipeline-animated-saas-dashboard-mq5h1f1m`
-- Forwarded preview: `http://localhost:1234/port/35303/`
-- Exported script inside the workspace container: `/data/repos/workflow-pipeline-animated-saas-dashboard-mq5h1f1m/workflow-pipeline-e2e/synthi-generated-workflow.spec.mjs`
+- Forwarded preview: `http://localhost:1234/port/46735/`
+- Exported script inside the workspace container: `/data/repos/workflow-pipeline-animated-saas-dashboard-mq5h1f1m/.synthi/workflows/wf_2vgxrm/workflow.spec.mjs`
 - Visual evidence:
   - Workflows panel: `tmp/investor-demo-workflows.png`
   - Managed preview: `tmp/investor-demo-preview.png`
