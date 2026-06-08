@@ -2403,7 +2403,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return null;
       if (target.closest('[data-synthi-workflow-toolbox]')) return null;
       if (isEditableTextTarget(target)) return null;
-      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-resize-handle], [data-synthi-resize-handle], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="separator"], [role="option"], [role="listitem"]');
+      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-resize-handle], [data-synthi-resize-handle], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="separator"], [role="slider"], [role="option"], [role="listitem"]');
       if (!isElement(el)) return null;
       if (attr(el, 'role') === 'option' && el.closest('[role="listbox"]') && !attr(el, 'data-synthi-pointer-drag') && !attr(el, 'data-pointer-drag') && !attr(el, 'data-draggable') && !attr(el, 'aria-grabbed')) return null;
       if (isEditableTextTarget(el) || isRangeInput(el)) return null;
@@ -2432,6 +2432,19 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         resize_handle: true,
         resize_axis: orientation === 'horizontal' ? 'y' : 'x',
         aria_orientation: orientation || 'vertical',
+      };
+    }
+
+    function ariaSliderDetailFor(el) {
+      if (!isElement(el) || attr(el, 'role') !== 'slider') return {};
+      return {
+        control_kind: 'ariaSlider',
+        aria_slider: true,
+        aria_value_now: attr(el, 'aria-valuenow'),
+        aria_value_min: attr(el, 'aria-valuemin'),
+        aria_value_max: attr(el, 'aria-valuemax'),
+        aria_value_text: attr(el, 'aria-valuetext'),
+        aria_orientation: attr(el, 'aria-orientation') || 'horizontal',
       };
     }
 
@@ -3215,7 +3228,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         drop_element: metadata(dropTarget),
         drag_duration_ms: Math.max(0, Date.now() - drag.started_at),
         __before_effects: drag.before_effects,
-      }, resizeDetailFor(drag.el)));
+      }, resizeDetailFor(drag.el), ariaSliderDetailFor(drag.el)));
     }, true);
 
     document.addEventListener('pointercancel', (event) => {

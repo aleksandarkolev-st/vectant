@@ -560,7 +560,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           lines.push("  await page.mouse.down();");
           lines.push(`  await page.mouse.move(${dropBox}.x + ${dropBox}.width * ${clampedRatioLiteral(end.x)}, ${dropBox}.y + ${dropBox}.height * ${clampedRatioLiteral(end.y)}, { steps: ${steps} });`);
           lines.push("  await page.mouse.up();");
-          const draggedText = isResizeHandleDrag(event) ? null : draggedElementText(event);
+          const draggedText = shouldAssertDraggedText(event) ? draggedElementText(event) : null;
           if (draggedText) {
             lines.push(`  await expect(${dropTarget}).toContainText(${JSON.stringify(draggedText)});`);
           }
@@ -1219,6 +1219,19 @@ function isCalibratedPointerDrag(event: BrowserTraceEvent): boolean {
 
 function isResizeHandleDrag(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && (event.detail?.["resize_handle"] === true || event.detail?.["resizeHandle"] === true);
+}
+
+function isAriaSliderDrag(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "drag" && (
+    event.detail?.["aria_slider"] === true ||
+    event.detail?.["control_kind"] === "ariaSlider" ||
+    element?.role === "slider"
+  );
+}
+
+function shouldAssertDraggedText(event: BrowserTraceEvent): boolean {
+  return !isResizeHandleDrag(event) && !isAriaSliderDrag(event);
 }
 
 function clampedRatioLiteral(value: number): string {

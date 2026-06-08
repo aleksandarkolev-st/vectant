@@ -1141,6 +1141,46 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
 
+  it("emits calibrated mouse replay for custom ARIA slider drags", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "aria-slider",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByTestId(\"risk-track\")",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          pointer_drag: true,
+          pointer_replay: "calibrated",
+          pointer_start_x_ratio: 0.5,
+          pointer_start_y_ratio: 0.5,
+          pointer_end_x_ratio: 0.75,
+          pointer_end_y_ratio: 0.5,
+          pointer_steps: 10,
+          drop_locator: "page.getByTestId(\"risk-track\")",
+          control_kind: "ariaSlider",
+          aria_slider: true,
+          aria_value_now: "75",
+          aria_value_min: "0",
+          aria_value_max: "100",
+          observed_effects: ["Risk 75"],
+          element: { role: "slider", name: "Risk threshold", source_id: "ariaSlider.thumb" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"slider\", { name: \"Risk threshold\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).not.toContain(".dragTo(");
+    expect(generated.code).toContain("page.getByRole(\"slider\", { name: \"Risk threshold\" })");
+    expect(generated.code).toContain("await page.mouse.move(dropBox1.x + dropBox1.width * 0.75, dropBox1.y + dropBox1.height * 0.5, { steps: 10 });");
+    expect(generated.code).toContain("await expect(page.getByText(\"Risk 75\", { exact: true })).toBeVisible();");
+    expect(generated.code).not.toContain("toContainText(\"Risk threshold\")");
+    expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
+  });
+
   it("emits multi-value select replay for native multiple selects", () => {
     const generated = generatePlaywrightScript([
       event({

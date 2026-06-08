@@ -1644,6 +1644,88 @@ const CASES = [
     },
   },
   {
+    id: "custom-aria-slider",
+    minSteps: 2,
+    expectedActions: ["drag", "click"],
+    expectedReplayText: [
+      "Risk 75",
+      "Viewport risk 75",
+    ],
+    expectedReplayCode: [
+      "page.mouse.down()",
+      "page.mouse.up()",
+      "pointer drag target not visible",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Custom ARIA Slider Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Custom ARIA Slider Workflow</h1>",
+        "      <section class=\"slider-shell\" aria-label=\"Risk controls\">",
+        "        <div class=\"slider-track\" data-testid=\"risk-track\" data-synthi-source-id=\"ariaSlider.track\">",
+        "          <div role=\"slider\" tabindex=\"0\" aria-label=\"Risk threshold\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"25\" aria-valuetext=\"Risk 25\" class=\"slider-thumb\" data-synthi-source-id=\"ariaSlider.thumb\"></div>",
+        "        </div>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"inspect-risk\" data-synthi-source-id=\"ariaSlider.inspect\">Inspect risk</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Risk 25</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".slider-shell { width: min(560px, calc(100vw - 48px)); display: grid; gap: 12px; }",
+        ".slider-track { position: relative; height: 44px; border: 1px solid #222; background: linear-gradient(90deg, #d9e8df 0 25%, #f7f7f4 25%); }",
+        ".slider-thumb { position: absolute; left: calc(25% - 14px); top: 7px; width: 28px; height: 28px; border-radius: 50%; background: #202020; cursor: grab; }",
+        ".slider-thumb:focus { outline: 2px solid #17663a; outline-offset: 3px; }",
+      ],
+      script: [
+        "const track = document.querySelector('[data-testid=\"risk-track\"]');",
+        "const thumb = document.querySelector('[role=\"slider\"]');",
+        "const status = document.querySelector('#status');",
+        "let dragging = false;",
+        "let value = 25;",
+        "function update(next) {",
+        "  value = Math.max(0, Math.min(100, Math.round(next / 5) * 5));",
+        "  thumb.setAttribute('aria-valuenow', String(value));",
+        "  thumb.setAttribute('aria-valuetext', `Risk ${value}`);",
+        "  thumb.style.left = `calc(${value}% - 14px)`;",
+        "  track.style.background = `linear-gradient(90deg, #d9e8df 0 ${value}%, #f7f7f4 ${value}%)`;",
+        "  status.textContent = `Risk ${value}`;",
+        "}",
+        "function valueFromClientX(clientX) {",
+        "  const rect = track.getBoundingClientRect();",
+        "  return ((clientX - rect.left) / Math.max(1, rect.width)) * 100;",
+        "}",
+        "thumb.addEventListener('pointerdown', (event) => {",
+        "  dragging = true;",
+        "  thumb.setPointerCapture(event.pointerId);",
+        "});",
+        "thumb.addEventListener('pointermove', (event) => {",
+        "  if (!dragging) return;",
+        "  update(valueFromClientX(event.clientX));",
+        "});",
+        "thumb.addEventListener('pointerup', () => { dragging = false; });",
+        "document.querySelector('[data-testid=\"inspect-risk\"]').addEventListener('click', () => {",
+        "  status.textContent = `Viewport risk ${value}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const track = page.getByTestId("risk-track");
+      const thumb = page.getByRole("slider", { name: "Risk threshold" });
+      const trackBox = await track.boundingBox();
+      const thumbBox = await thumb.boundingBox();
+      if (!trackBox || !thumbBox) throw new Error("custom slider target not visible");
+      await page.mouse.move(thumbBox.x + thumbBox.width / 2, thumbBox.y + thumbBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(trackBox.x + trackBox.width * 0.75, trackBox.y + trackBox.height / 2, { steps: 10 });
+      await page.mouse.up();
+      await page.getByText("Risk 75").waitFor();
+      await page.getByRole("button", { name: "Inspect risk" }).click();
+      await page.getByText("Viewport risk 75").waitFor();
+    },
+  },
+  {
     id: "pointer-sortable",
     minSteps: 2,
     expectedActions: ["drag", "click"],
