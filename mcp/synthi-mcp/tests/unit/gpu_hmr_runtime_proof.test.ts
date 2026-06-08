@@ -8047,6 +8047,32 @@ describe("GPU HMR runtime output proof classification", () => {
     }
   });
 
+  it("canonicalizes Gemini provider aliases without accepting unrelated providers", () => {
+    const aliasedInput = acceptedValidationRuntimeInput();
+    const aliasedModelProvenance = cloneJson((aliasedInput as any).modelProvenance);
+    aliasedModelProvenance.split.provider = "gemini";
+    aliasedModelProvenance.gpu_delta.provider = "gemini_api";
+    const aliasedArtifact = buildValidationRuntimeProofArtifact({
+      ...aliasedInput,
+      modelProvenance: aliasedModelProvenance,
+    });
+
+    expect(aliasedArtifact.gpuHmrSuccess).toBe(true);
+    expect(aliasedArtifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+
+    const rejectedModelProvenance = cloneJson((aliasedInput as any).modelProvenance);
+    rejectedModelProvenance.split.provider = "anthropic";
+    const rejectedArtifact = buildValidationRuntimeProofArtifact({
+      ...aliasedInput,
+      modelProvenance: rejectedModelProvenance,
+    });
+
+    expect(rejectedArtifact.gpuHmrSuccess).toBe(false);
+    expect(rejectedArtifact.proofLedgerQuery.failedInvariants.map((failure: any) => failure.code)).toContain(
+      "model_provider_not_allowed",
+    );
+  });
+
   it("does not mark runtime artifacts successful without full runtime proof", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();

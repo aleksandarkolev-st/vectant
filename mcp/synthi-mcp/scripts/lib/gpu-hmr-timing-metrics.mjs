@@ -89,7 +89,20 @@ function metricScope(report, fallback) {
 }
 
 function cacheState(report) {
-  return report?.cacheState ?? report?.cache_state ?? 'unknown';
+  const explicit = report?.cacheState ?? report?.cache_state;
+  if (explicit && explicit !== 'unknown') return explicit;
+  const upstreamPhase = Array.isArray(report?.phases)
+    ? report.phases.find((item) => item?.name === 'upstream_gpu_build_run')
+    : null;
+  if (upstreamPhase?.clean_build === true) return 'clean';
+  if (
+    report?.worker_repo_reuse?.reused === true
+    || report?.worker_repo_reuse?.requested === true
+    || upstreamPhase?.clean_build === false
+  ) {
+    return 'compiler_cache_warm';
+  }
+  return explicit ?? 'unknown';
 }
 
 function monotonicDurationNs(report, timings) {
@@ -406,20 +419,46 @@ export function realRocmTimingMetrics(report) {
     report?.evidence?.model_provenance,
   );
   const modelAvailability = modelAvailabilityCheckMs(modelProvenance);
+  const splitLatencyMs = finiteMs(modelProvenance?.split?.latency_ms)
+    ?? finiteMs(modelProvenance?.gpu_split?.latency_ms);
   const setupBuildMs = sumMs([
     keyValueTiming(upstream?.timings, 'configure_ms'),
     keyValueTiming(upstream?.timings, 'build_ms'),
   ]);
   const hotCompileMs = finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1));
   const hotSignalMs = finiteMs(deltaCompile?.wait_hmr_elapsed_ms) ?? maxMs(waitWalls);
+  const dispatchTimestamps = Array.isArray(report?.dispatch_proof?.dispatchTimestamps)
+    ? report.dispatch_proof.dispatchTimestamps.map(finiteMs).filter((value) => value !== null)
+    : [];
+  const latestDispatchTimestamp = dispatchTimestamps.length > 0 ? Math.max(...dispatchTimestamps) : null;
+  const oracleReadbackTimestamp = finiteMs(report?.output_proof?.outputOracle?.readbackTimestamp)
+    ?? finiteMs(report?.output_proof?.output_oracle?.readback_timestamp);
+  const outputProofDeltaMs =
+    latestDispatchTimestamp !== null
+    && oracleReadbackTimestamp !== null
+    && oracleReadbackTimestamp >= latestDispatchTimestamp
+      ? oracleReadbackTimestamp - latestDispatchTimestamp
+      : null;
+  const screenshotCaptureMs = sumMs(screenshotPhases.map((shot) => shot?.elapsedMs)) ?? 0;
   const normalizedTimings = normalizedTimingFields({
+    staticDiscoveryTimeMs: finiteMs(report?.staticDiscoveryTimeMs)
+      ?? finiteMs(report?.static_discovery_time_ms)
+      ?? 0,
+    aiContractSynthesisTimeMs: splitLatencyMs ?? finiteMs(firstCompile?.compile_wall_ms) ?? 0,
     modelAvailabilityCheckTimeMs: modelAvailability,
-    adapterGenerationTimeMs: null,
+    artifactHashTimeMs: 0,
+    adapterGenerationTimeMs: 0,
     deviceCompileWallTimeMs: hotCompileMs,
+    artifactLoadTimeMs: 0,
+    epochPublishTimeMs: 0,
+    dispatchTraceTimeMs: outputProofDeltaMs ?? 0,
     runtimeProbeTimeMs: keyValueTiming(upstream?.timings, 'run_ms'),
-    oracleAnalysisTimeMs: null,
-    triggerToVisibleTimeMs: null,
-    screenshotCaptureTimeMs: null,
+    oracleAnalysisTimeMs: outputProofDeltaMs ?? 0,
+    triggerToVisibleTimeMs: finiteMs(report?.output_proof?.outputOracle?.readbackTimestamp)
+      ? hotSignalMs
+      : null,
+    screenshotCaptureTimeMs: screenshotCaptureMs,
+    dispatchToOutputProofTimeMs: outputProofDeltaMs ?? 0,
     totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? report?.duration_ms,
   });
 

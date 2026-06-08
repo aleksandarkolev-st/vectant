@@ -1765,6 +1765,8 @@ function parseUpstreamRunExitCode(timings) {
 function parseRocmArrayAllocationPreflightOutput(output) {
   const text = String(output ?? '');
   const device = /\bdevice_count result=(\d+)\s+error=(.*?)\s+count=(\d+)/.exec(text);
+  const deviceIdentityMatch =
+    /\bdevice_identity result=(\d+)\s+error=(.*?)\s+index=(\d+)\s+name="([^"]*)"\s+pci_domain=(-?\d+)\s+pci_bus=(-?\d+)\s+pci_device=(-?\d+)\s+gcn_arch="([^"]*)"\s+multiprocessors=(\d+)/.exec(text);
   const allocationRecords = [...text.matchAll(
     /\b(hipMalloc(?:3D)?Array)\s+label=([^\s]+)\s+x=(\d+)\s+y=(\d+)\s+z=(\d+)\s+w=(\d+)\s+kind=(\d+)\s+result=(\d+)\s+error=(.*?)\s+array=([^\s]+)/g,
   )].map((match) => ({
@@ -1826,6 +1828,26 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     textureResourceRecords.filter((record) => !record.available).length;
   const textureResourceFallbackAvailable =
     textureResourceRecords.some((record) => record.available);
+  let deviceIdentity = null;
+  if (deviceIdentityMatch) {
+    const identityMaterial = {
+      backend: 'hip',
+      device_index: Number(deviceIdentityMatch[3]),
+      name: deviceIdentityMatch[4],
+      pci_domain_id: Number(deviceIdentityMatch[5]),
+      pci_bus_id: Number(deviceIdentityMatch[6]),
+      pci_device_id: Number(deviceIdentityMatch[7]),
+      gcn_arch_name: deviceIdentityMatch[8],
+      multiprocessor_count: Number(deviceIdentityMatch[9]),
+    };
+    const identityHash = createHash('sha256').update(stableJson(identityMaterial)).digest('hex');
+    deviceIdentity = {
+      ...identityMaterial,
+      device_uuid: `hip-device:sha256:${identityHash}`,
+      device_identity_key: `hip-device:sha256:${identityHash}`,
+      evidence_refs: ['runtime-capability-preflight:rocm:device_identity'],
+    };
+  }
   return {
     schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
     backend: 'rocm',
@@ -1835,6 +1857,8 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     deviceCountResult: device ? Number(device[1]) : null,
     deviceCountError: device?.[2] ?? null,
     deviceCount: device ? Number(device[3]) : null,
+    deviceIdentity,
+    device_identity: deviceIdentity,
     allocationFormat: allocation?.label ?? null,
     allocationWidth: allocation ? 32 : null,
     allocationHeight: allocation ? 32 : null,
@@ -1976,6 +2000,19 @@ int main() {
   int count = 0;
   hipError_t count_result = hipGetDeviceCount(&count);
   std::printf("device_count result=%d error=%s count=%d\\n", (int)count_result, hipGetErrorString(count_result), count);
+  if (count_result == hipSuccess && count > 0) {
+    hipDeviceProp_t props = {};
+    hipError_t props_result = hipGetDeviceProperties(&props, 0);
+    std::printf("device_identity result=%d error=%s index=0 name=\\"%s\\" pci_domain=%d pci_bus=%d pci_device=%d gcn_arch=\\"%s\\" multiprocessors=%d\\n",
+      static_cast<int>(props_result),
+      hipGetErrorString(props_result),
+      props_result == hipSuccess ? props.name : "",
+      props_result == hipSuccess ? props.pciDomainID : -1,
+      props_result == hipSuccess ? props.pciBusID : -1,
+      props_result == hipSuccess ? props.pciDeviceID : -1,
+      props_result == hipSuccess ? props.gcnArchName : "",
+      props_result == hipSuccess ? props.multiProcessorCount : -1);
+  }
   test2d("u8x1", hipCreateChannelDesc(8, 0, 0, 0, hipChannelFormatKindUnsigned));
   test2d("u8x2", hipCreateChannelDesc(8, 8, 0, 0, hipChannelFormatKindUnsigned));
   test2d("u8x4", hipCreateChannelDesc(8, 8, 8, 8, hipChannelFormatKindUnsigned));
@@ -3622,6 +3659,11 @@ function deriveCpuGpuFirewallEvidence({
   const firewall = {
     schemaVersion: 'synthi.gpu.hmr.cpu_gpu_firewall_evidence.v1',
     source: 'real_rocm_runtime_proofs',
+    route: dispatchProven
+      && outputProven
+      && proofHasResultState(report.epoch_swap_proof, 'gpu-hmr-epoch-swap-proven')
+      ? 'gpu_runtime_epoch_reload'
+      : null,
     cpu_hmr_absence_basis: dispatchProven && outputProven
       ? 'gpu_artifact_dispatch_and_output_oracle_proven'
       : null,
@@ -7032,6 +7074,7 @@ int main()
   ].join('\n'));
   const arrayCapabilityMatrix = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',
+    'device_identity result=0 error=no error index=0 name="AMD Radeon Test" pci_domain=0 pci_bus=3 pci_device=0 gcn_arch="gfx1201" multiprocessors=64',
     'hipMallocArray label=u8x1 x=8 y=0 z=0 w=0 kind=1 result=1 error=invalid argument array=(nil)',
     'hipMallocArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
     'hipMalloc3DArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
@@ -7057,6 +7100,8 @@ int main()
     || arrayCapabilityMatrix.textureResourceFallbackAvailable !== false
     || arrayCapabilityMatrix.textureResourceMatrix[0]?.resourceType !== 'linear'
     || arrayCapabilityMatrix.textureResourceMatrix[2]?.resourceType !== 'pitch2D'
+    || arrayCapabilityMatrix.deviceIdentity?.gcn_arch_name !== 'gfx1201'
+    || !arrayCapabilityMatrix.deviceIdentity?.device_uuid?.startsWith('hip-device:sha256:')
     || arrayCapabilityMatrix.allocationFormat !== 'f32x4'
     || !arrayCapabilityMatrix.degradedReason.includes('matrix failed 3/3')
     || !arrayCapabilityMatrix.degradedReason.includes('texture fallback available=false')
@@ -7868,6 +7913,126 @@ async function dockerContainerSnapshot(containerName) {
   };
 }
 
+function selectedFissionIslandContract() {
+  const contracts = Array.isArray(report.fission_proof?.selectedIslandContracts)
+    ? report.fission_proof.selectedIslandContracts
+    : [];
+  return contracts[contracts.length - 1] ?? null;
+}
+
+function runtimeProofSourceEditId() {
+  const island = selectedFissionIslandContract();
+  const fromArtifacts = [...(Array.isArray(report.proof_artifacts) ? report.proof_artifacts : [])]
+    .reverse()
+    .map((record) => record?.artifact?.sourceEditId ?? record?.artifact?.source_edit_id)
+    .find((value) => typeof value === 'string' && value.trim());
+  return island?.sourceEditId
+    ?? island?.source_edit_id
+    ?? fromArtifacts
+    ?? null;
+}
+
+function runtimeProofCompiler() {
+  const island = selectedFissionIslandContract();
+  const fromArtifacts = [...(Array.isArray(report.proof_artifacts) ? report.proof_artifacts : [])]
+    .flatMap((record) => Array.isArray(record?.artifact?.evidenceRefs) ? record.artifact.evidenceRefs : [])
+    .map((evidence) =>
+      evidence?.metadata?.compileProvenance?.deviceCompiler
+      ?? evidence?.metadata?.compileProvenance?.compilerExecutable
+      ?? evidence?.metadata?.compile_provenance?.device_compiler
+      ?? evidence?.metadata?.compile_provenance?.compiler_executable
+    )
+    .find((value) => typeof value === 'string' && value.trim());
+  return island?.compiler
+    ?? island?.compilerName
+    ?? island?.compiler_name
+    ?? fromArtifacts
+    ?? null;
+}
+
+function runtimeProofBackend() {
+  const island = selectedFissionIslandContract();
+  const compiler = String(runtimeProofCompiler() ?? '').toLowerCase();
+  const launchEvidence = [
+    island?.launchApi,
+    island?.launch_api,
+    ...(Array.isArray(report.dispatch_proof?.dispatchEvidenceRefs)
+      ? report.dispatch_proof.dispatchEvidenceRefs
+      : []),
+    ...(Array.isArray(report.dispatch_proof?.evidenceRefs)
+      ? report.dispatch_proof.evidenceRefs
+      : []),
+  ].join(' ').toLowerCase();
+  if (
+    compiler.includes('hipcc')
+    || /\bhip(module|launch|stream|malloc|memcpy)?\b/.test(launchEvidence)
+  ) {
+    return 'hip';
+  }
+  return null;
+}
+
+function runtimeGpuClassification() {
+  if (report.full_runtime_proof?.fullRuntimeProven !== true) return null;
+  return {
+    project_kind: 'mixed_project',
+    edit_kind: 'gpu_artifact_edit',
+    route: 'gpu_hmr',
+    confidence: 0.95,
+    evidence_source: 'full_runtime_proof',
+    evidence_refs: compactStringList([
+      ...(Array.isArray(report.full_runtime_proof?.evidenceRefs)
+        ? report.full_runtime_proof.evidenceRefs
+        : []),
+      ...(Array.isArray(report.dispatch_proof?.evidenceRefs)
+        ? report.dispatch_proof.evidenceRefs
+        : []),
+      ...(Array.isArray(report.output_proof?.evidenceRefs)
+        ? report.output_proof.evidenceRefs
+        : []),
+    ]),
+  };
+}
+
+function runtimeContextHandleFromHostEvidence() {
+  const lines = Array.isArray(report.firewall_evidence?.host_preservation_evidence?.lines)
+    ? report.firewall_evidence.host_preservation_evidence.lines
+    : [];
+  for (const line of [...lines].reverse()) {
+    const match = /\brole=runtime_context\s+ptr=([^\s]+)/.exec(String(line ?? ''));
+    if (match?.[1]) return `runtime-context:${match[1]}`;
+  }
+  return null;
+}
+
+function runtimeOutputOracleTarget() {
+  const oracle = report.output_proof?.outputOracle ?? report.output_proof?.output_oracle ?? null;
+  const computeArtifacts =
+    report.output_proof?.oracleArtifacts?.compute_oracle_artifacts
+    ?? report.output_proof?.oracle_artifacts?.compute_oracle_artifacts
+    ?? null;
+  if (!oracle || !computeArtifacts) return null;
+  return {
+    kind: 'compute',
+    target_id:
+      oracle.outputTargetId
+      ?? oracle.output_target_id
+      ?? oracle.readbackTargetId
+      ?? oracle.readback_target_id
+      ?? oracle.oracleId
+      ?? oracle.oracle_id
+      ?? null,
+    compute_only_target_verified: oracle.passed === true
+      && report.output_proof?.resultState === 'gpu-hmr-output-oracle-proven',
+    evidence_refs: compactStringList([
+      ...(Array.isArray(oracle.evidenceRefs) ? oracle.evidenceRefs : []),
+      ...(Array.isArray(oracle.evidence_refs) ? oracle.evidence_refs : []),
+      ...(Array.isArray(report.output_proof?.evidenceRefs) ? report.output_proof.evidenceRefs : []),
+      'evidence:output-oracle:compute-readback-artifacts',
+    ]),
+  };
+}
+
 async function writeResults() {
   report.finished_at = new Date().toISOString();
   const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
@@ -7875,12 +8040,51 @@ async function writeResults() {
   report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
   report.duration_ms = timingFields.duration_ms;
   report.timingMetrics = realRocmTimingMetrics(report);
+  const runtimeBackend = runtimeProofBackend();
+  const runtimeSourceEditId = runtimeProofSourceEditId();
+  const runtimeCompiler = runtimeProofCompiler();
+  const runtimeDeviceIdentity =
+    report.runtime_capability_preflight?.deviceIdentity
+    ?? report.runtime_capability_preflight?.device_identity
+    ?? null;
+  const runtimeOutputTarget = runtimeOutputOracleTarget();
+  const runtimeClassification = runtimeGpuClassification();
+  const runtimeContextHandle = runtimeContextHandleFromHostEvidence();
   const validationContext = {
     command: report.command,
     docker: report.docker,
     containers: report.containers,
+    sourceEditId: runtimeSourceEditId,
+    source_edit_id: runtimeSourceEditId,
+    backend: runtimeBackend,
+    gpuBackend: runtimeBackend,
+    gpu_backend: runtimeBackend,
+    classification: runtimeClassification,
+    compiler: runtimeCompiler,
+    deviceIdentity: runtimeDeviceIdentity,
+    device_identity: runtimeDeviceIdentity,
+    deviceUuid:
+      runtimeDeviceIdentity?.device_uuid
+      ?? runtimeDeviceIdentity?.deviceIdentityKey
+      ?? runtimeDeviceIdentity?.device_identity_key
+      ?? null,
+    device_uuid:
+      runtimeDeviceIdentity?.device_uuid
+      ?? runtimeDeviceIdentity?.deviceIdentityKey
+      ?? runtimeDeviceIdentity?.device_identity_key
+      ?? null,
+    contextHandle: runtimeContextHandle,
+    context_handle: runtimeContextHandle,
+    contextOrDeviceHandle: runtimeContextHandle,
+    context_or_device_handle: runtimeContextHandle,
+    outputOracleTarget: runtimeOutputTarget,
+    output_oracle_target: runtimeOutputTarget,
+    proofArtifacts: report.proof_artifacts,
+    proof_artifacts: report.proof_artifacts,
     modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
     firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
+    firewallRoute: report.firewall_evidence?.route ?? null,
+    firewall_route: report.firewall_evidence?.route ?? null,
     cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
     full_rebuild_used: report.firewall_evidence?.full_rebuild_used,
     process_restarted: report.firewall_evidence?.process_restarted,
@@ -7951,6 +8155,24 @@ async function writeResults() {
   if (report.full_runtime_proof) {
     const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
       workspaceSlug: report.slug,
+      sourceEditId: runtimeSourceEditId,
+      editId: runtimeSourceEditId,
+      backend: runtimeBackend,
+      gpuBackend: runtimeBackend,
+      gpuArch: report.gpu_arch,
+      compiler: runtimeCompiler,
+      classification: runtimeClassification,
+      deviceIdentity: runtimeDeviceIdentity,
+      deviceUuid:
+        runtimeDeviceIdentity?.device_uuid
+        ?? runtimeDeviceIdentity?.deviceIdentityKey
+        ?? runtimeDeviceIdentity?.device_identity_key
+        ?? null,
+      contextHandle: runtimeContextHandle,
+      contextOrDeviceHandle: runtimeContextHandle,
+      outputOracleTarget: runtimeOutputTarget,
+      proofArtifacts: report.proof_artifacts,
+      proof_artifacts: report.proof_artifacts,
       runtimeSessionIds: report.dispatch_proof?.runtimeSessionIds ?? report.evidence?.runtime_session?.unique_ids ?? [],
       sourceProofs: report.source_proofs,
       fissionProof: report.fission_proof,
@@ -7964,6 +8186,7 @@ async function writeResults() {
       fullRuntimeProof: report.full_runtime_proof,
       runtimeEvidence: report.evidence,
       validationContext,
+      adversarialPreflight: report.adversarial_preflight,
       modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
       firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
       cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,

@@ -1159,6 +1159,12 @@ function selectedIslandKind(contract, backend) {
   const kind = firstText(contract.artifactKind, contract.artifact_kind)?.toLowerCase();
   if (!kind) return 'unknown';
   if (ARTIFACT_KINDS.has(kind)) return kind;
+  if (
+    (backend === 'hip' || backend === 'hiprt')
+    && /kernel[_-]?region|single[_-]?body|single[_-]?function|device[_-]?translation[_-]?unit/.test(kind)
+  ) {
+    return 'hsaco';
+  }
   if ((backend === 'hip' || backend === 'hiprt') && /source[_-]?include|source[_-]?bridge/.test(kind)) {
     return 'hip_source_bridge';
   }
@@ -1686,7 +1692,16 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const contract = normalizeGpuHmrAcceptanceContract({
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
     project_id: firstText(input.projectId, input.project_id, input.workspaceSlug, validationContext.workspaceSlug),
-    edit_id: firstText(input.editId, input.edit_id, input.sourceEditId, validationContext.sourceEditId),
+    edit_id: firstText(
+      input.editId,
+      input.edit_id,
+      input.sourceEditId,
+      input.source_edit_id,
+      validationContext.sourceEditId,
+      validationContext.source_edit_id,
+      selectedIsland.sourceEditId,
+      selectedIsland.source_edit_id,
+    ),
     backend,
     confidence: gpuRouteAccepted ? 0.95 : 0.25,
     evidence_refs: evidenceRefs,
@@ -1705,7 +1720,17 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       artifact_kind: artifactKind,
       entry_points: entryPoints,
       compile_target: firstText(input.gpuArch, input.gpu_arch, validationContext.gpuArch, validationContext.gpu_arch),
-      compiler: firstText(selectedIsland.compiler, selectedIsland.compilerName, input.compiler),
+      compiler: firstText(
+        selectedIsland.compiler,
+        selectedIsland.compilerName,
+        selectedIsland.compiler_name,
+        input.compiler,
+        input.deviceCompiler,
+        input.device_compiler,
+        validationContext.compiler,
+        validationContext.deviceCompiler,
+        validationContext.device_compiler,
+      ),
       compiler_args_hash: firstText(
         selectedIsland.compileCommandHash,
         selectedIsland.compile_command_hash,

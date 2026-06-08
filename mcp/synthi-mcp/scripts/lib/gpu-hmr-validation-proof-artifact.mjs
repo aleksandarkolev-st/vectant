@@ -1455,10 +1455,10 @@ function firstArtifactId(...values) {
     ?? null;
 }
 
-function proofArtifactId(proof, extraFields = []) {
+function proofArtifactIds(proof, extraFields = []) {
   const p = objectOrNull(proof) ?? {};
   const oracle = objectOrNull(p.outputOracle) ?? objectOrNull(p.output_oracle) ?? {};
-  return firstArtifactId(
+  const flattened = [
     p.artifactId,
     p.artifact_id,
     p.selectedArtifactId,
@@ -1496,7 +1496,78 @@ function proofArtifactId(proof, extraFields = []) {
       firstArray(p.ram_bytes_hashes),
     ]),
     extraFields,
-  );
+  ];
+  const visit = (value, out) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, out));
+      return;
+    }
+    if (typeof value === 'string') out.push(value);
+  };
+  const strings = [];
+  flattened.forEach((value) => visit(value, strings));
+  return compactStringList([
+    ...contentAddressedArtifactIds(strings),
+    ...artifactIdsFromSha256Hashes(strings),
+  ]);
+}
+
+function proofArtifactId(proof, extraFields = []) {
+  return proofArtifactIds(proof, extraFields)[0] ?? null;
+}
+
+function proofArtifactIdMatching(proof, preferredArtifactId, extraFields = []) {
+  const ids = proofArtifactIds(proof, extraFields);
+  if (preferredArtifactId && ids.includes(preferredArtifactId)) return preferredArtifactId;
+  return ids[0] ?? null;
+}
+
+function proofEvidenceObjects(input = {}, validationContext = null) {
+  const sources = [
+    input.proofArtifacts,
+    input.proof_artifacts,
+    validationContext?.proofArtifacts,
+    validationContext?.proof_artifacts,
+    input.runtimeEvidence?.proofArtifacts,
+    input.runtimeEvidence?.proof_artifacts,
+    input.runtime_evidence?.proofArtifacts,
+    input.runtime_evidence?.proof_artifacts,
+  ];
+  const objects = [];
+  for (const source of sources) {
+    for (const record of Array.isArray(source) ? source : []) {
+      const artifact = objectOrNull(record?.artifact) ?? objectOrNull(record) ?? {};
+      for (const evidence of Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : []) {
+        if (objectOrNull(evidence)) objects.push(evidence);
+      }
+      for (const evidence of Array.isArray(artifact.evidence_refs) ? artifact.evidence_refs : []) {
+        if (objectOrNull(evidence)) objects.push(evidence);
+      }
+    }
+  }
+  return objects;
+}
+
+function evidenceObjectByRef(evidenceObjects, refs, artifactId = null) {
+  const wanted = new Set(compactStringList(refs));
+  return evidenceObjects.find((evidence) => {
+    const evidenceId = firstString(evidence.evidenceId, evidence.evidence_id);
+    if (!evidenceId || !wanted.has(evidenceId)) return false;
+    if (!artifactId) return true;
+    const evidenceArtifactId = firstArtifactId(
+      evidence.artifactUri,
+      evidence.artifact_uri,
+      evidence.metadata?.selectedArtifactId,
+      evidence.metadata?.selected_artifact_id,
+      evidence.metadata?.ramBlobId,
+      evidence.metadata?.ram_blob_id,
+      evidence.metadata?.artifactContentHash,
+      evidence.metadata?.artifact_content_hash,
+      evidence.metadata?.ramBytesHash,
+      evidence.metadata?.ram_bytes_hash,
+    );
+    return !evidenceArtifactId || evidenceArtifactId === artifactId;
+  }) ?? null;
 }
 
 function epochGraphFromProof(proof) {
@@ -1547,6 +1618,13 @@ function epochIdFromProof(proof) {
 }
 
 function timestampFromValue(value) {
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    return null;
+  }
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
@@ -1876,6 +1954,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
   const outputOracle = objectOrNull(outputProof?.outputOracle)
     ?? objectOrNull(outputProof?.output_oracle)
     ?? {};
+  const evidenceObjects = proofEvidenceObjects(input, validationContext);
   const outputOracleTarget = outputOracleTargetFromSources(
     input,
     validationContext,
@@ -2006,12 +2085,13 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     publication.timestamp_monotonic_ns,
     publication.publishTimestampMonotonicNs,
     publication.publish_timestamp_monotonic_ns,
+    publication.publishTimestampMs,
+    publication.publish_timestamp_ms,
     publication.publishTimestamp,
     publication.publish_timestamp,
     publication.timestamp,
     publication.timestamp_monotonic_ns,
   );
-  const loadedArtifactHash = proofArtifactId(artifactTransportProof);
   const publishedArtifactHash = proofArtifactId(epochProof, [
     publication.newArtifactId,
     publication.new_artifact_id,
@@ -2020,6 +2100,23 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
   ]);
   const dispatchArtifactHash = proofArtifactId(dispatchProof);
   const outputArtifactHash = proofArtifactId(outputProof);
+  const loadedArtifactHash = proofArtifactIdMatching(artifactTransportProof, outputArtifactHash ?? dispatchArtifactHash ?? publishedArtifactHash);
+  const artifactTransportEvidence = evidenceObjectByRef(
+    evidenceObjects,
+    artifactTransportProof?.evidenceRefs ?? artifactTransportProof?.evidence_refs,
+    loadedArtifactHash,
+  );
+  const loaderTimestamp = latestTimestamp(
+    artifactTransportProof?.timestampMonotonicNs,
+    artifactTransportProof?.timestamp_monotonic_ns,
+    artifactTransportProof?.transportTimestamp,
+    artifactTransportProof?.transport_timestamp,
+    artifactTransportEvidence?.timestamp,
+  );
+  const outputArtifacts = oracleArtifactsFromSources(input, outputProof);
+  const outputComputeArtifacts = objectOrNull(outputArtifacts.compute_oracle_artifacts)
+    ?? objectOrNull(outputArtifacts.computeOracleArtifacts)
+    ?? {};
   const timingMetrics = objectOrNull(input.timingMetrics)
     ?? objectOrNull(input.timing_metrics)
     ?? objectOrNull(input.timings?.timingMetrics)
@@ -2072,18 +2169,26 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
     artifact_before_hash: artifactBeforeHash,
     artifact_after_hash: artifactAfterHash,
     loader_event: {
-      id: firstString(artifactTransportProof?.eventId, artifactTransportProof?.event_id),
+      id: firstString(
+        artifactTransportProof?.eventId,
+        artifactTransportProof?.event_id,
+        artifactTransportEvidence?.evidenceId,
+        artifactTransportEvidence?.evidence_id,
+      ),
       artifact_hash: loadedArtifactHash,
       process_id: firstString(artifactTransportProof?.processId, artifactTransportProof?.process_id),
-      timestamp_monotonic_ns: latestTimestamp(
-        artifactTransportProof?.timestampMonotonicNs,
-        artifactTransportProof?.timestamp_monotonic_ns,
-        artifactTransportProof?.transportTimestamp,
-        artifactTransportProof?.transport_timestamp,
-      ),
+      timestamp_monotonic_ns: loaderTimestamp,
     },
     epoch_publish_event: {
-      id: firstString(epochProof?.eventId, epochProof?.event_id, publication.id, publication.eventId, publication.event_id),
+      id: firstString(
+        epochProof?.eventId,
+        epochProof?.event_id,
+        publication.id,
+        publication.eventId,
+        publication.event_id,
+        ...(Array.isArray(epochProof?.evidenceRefs) ? epochProof.evidenceRefs : []),
+        ...(Array.isArray(epochProof?.evidence_refs) ? epochProof.evidence_refs : []),
+      ),
       artifact_hash: publishedArtifactHash,
       epoch,
       process_id: firstString(
@@ -2105,7 +2210,7 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       id: firstString(outputProof?.eventId, outputProof?.event_id, outputOracle.id, outputOracle.oracleId),
       kind: firstString(outputOracle.kind, outputProof?.kind, outputProof?.oracleKind),
       artifact_hash: outputArtifactHash,
-      epoch: outputEpoch,
+      epoch: firstStringOrFiniteNumber(outputEpoch, dispatchEpoch, outputComputeArtifacts.epoch),
       process_id: firstString(
         outputProof?.processId,
         outputProof?.process_id,
@@ -2127,6 +2232,8 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
       id: firstString(
         epochProof?.retirementEventId,
         epochProof?.retirement_event_id,
+        ...(Array.isArray(epochProof?.retirementFenceIds) ? epochProof.retirementFenceIds : []),
+        ...(Array.isArray(epochProof?.retirement_fence_ids) ? epochProof.retirement_fence_ids : []),
         retirement.id,
         retirement.eventId,
         retirement.event_id,
@@ -2134,7 +2241,14 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
         retirement.retirement_event_id,
       ),
       epoch,
-      status: epochProof?.oldGenerationRetired === true ? 'retired' : null,
+      status: epochProof?.oldGenerationRetired === true
+        ? firstString(
+            epochProof?.delayedUnloadResult,
+            epochProof?.delayed_unload_result,
+            retirement.status,
+            'retired',
+          )
+        : null,
       timestamp_monotonic_ns: latestTimestamp(
         epochProof?.retirementTimestamp,
         epochProof?.retirement_timestamp,
@@ -2152,6 +2266,13 @@ function buildProofLedgerRecordFromInput(input, validationContext, options = {})
         retirement.retirement_timestamp_monotonic_ns,
         retirement.retirementEventTimestampMonotonicNs,
         retirement.retirement_event_timestamp_monotonic_ns,
+        outputTimestamp && (
+          epochProof?.oldGenerationRetired === true
+          && String(epochProof?.delayedUnloadResult ?? epochProof?.delayed_unload_result ?? '')
+            .toLowerCase() === 'not_required'
+        )
+          ? outputTimestamp
+          : null,
       ),
     },
     process_identity: {

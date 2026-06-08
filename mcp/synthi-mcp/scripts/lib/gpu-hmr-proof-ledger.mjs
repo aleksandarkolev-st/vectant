@@ -647,7 +647,11 @@ function modelFieldRecorded(record, snakeKey, camelKey) {
 }
 
 function modelFieldText(record, snakeKey, camelKey) {
-  return firstText(modelField(record, snakeKey, camelKey));
+  const value = firstText(modelField(record, snakeKey, camelKey));
+  if (snakeKey === 'provider' && ['gemini', 'gemini_api', 'google_gemini'].includes(value ?? '')) {
+    return 'google_gemini';
+  }
+  return value;
 }
 
 function modelStatus(record) {
