@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
 import { browserBroker } from "../../src/browser/broker.js";
+import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import {
   buildBrowserWorkflowPanelState,
   resolveBrowserWorkflowBridgePort,
@@ -20,6 +21,7 @@ describe("browser workflow bridge", () => {
 
   beforeEach(() => {
     browserBroker.resetForTests();
+    privateWorkflowToolRegistry.resetForTests();
     eventLog._resetForTests();
   });
 
@@ -227,6 +229,51 @@ describe("browser workflow bridge", () => {
       "Fill Email",
       "Click Save settings",
     ]);
+  });
+
+  it("lets the workflow bridge fetch a published private tool manifest", async () => {
+    seedSaveWorkflow();
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool: "synthi_browser_publish_private_tool", arguments: {} }),
+    });
+    expect(publish.status).toBe(200);
+    const publishBody = await publish.json() as {
+      result?: { tool_name?: string };
+    };
+    const toolName = publishBody.result?.tool_name;
+    expect(toolName).toMatch(/^synthi_app_/);
+
+    const lookup = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_browser_get_private_tool_manifest",
+        arguments: { tool_name: toolName },
+      }),
+    });
+
+    expect(lookup.status).toBe(200);
+    const lookupBody = await lookup.json() as {
+      ok: boolean;
+      result?: {
+        manifest?: { tool_name?: string; kind?: string };
+        tool?: { name?: string; inputSchema?: unknown };
+      };
+    };
+    expect(lookupBody.ok).toBe(true);
+    expect(lookupBody.result?.manifest).toEqual(expect.objectContaining({
+      tool_name: toolName,
+      kind: "privateMcpToolManifest",
+    }));
+    expect(lookupBody.result?.tool).toEqual(expect.objectContaining({
+      name: toolName,
+      inputSchema: expect.any(Object),
+    }));
   });
 
   it("returns unknown tool errors with the current state snapshot", async () => {

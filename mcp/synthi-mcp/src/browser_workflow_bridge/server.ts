@@ -100,6 +100,7 @@ const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
   "synthi_browser_publish_private_tool",
+  "synthi_browser_get_private_tool_manifest",
 ]);
 
 const REVIEW_LIMITATIONS = new Set([
