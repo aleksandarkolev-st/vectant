@@ -1389,6 +1389,155 @@ const CASES = [
     },
   },
   {
+    id: "animated-saas-dashboard",
+    minSteps: 6,
+    expectedActions: ["fill", "select", "click", "drag"],
+    expectedReplayText: [
+      "Segment enterprise",
+      "Moved Revenue audit to Approved lane",
+      "Runbook saved for enterprise revenue",
+    ],
+    expectedReplayCode: [
+      "page.getByTestId(\"global-search\")",
+      "page.getByTestId(\"segment-select\")",
+      "await page.mouse.down();",
+      "page.getByTestId(\"save-runbook\")",
+      "element.dispatchEvent(new Event('change', { bubbles: true }));",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Animated SaaS Dashboard Workflow",
+      body: [
+        "    <main class=\"dashboard-shell\">",
+        "      <section class=\"hero-band\" aria-label=\"Revenue command center\">",
+        "        <div>",
+        "          <h1>Revenue Command Center</h1>",
+        "          <p>Live pipeline with animated signals, queue state, and deployment controls.</p>",
+        "        </div>",
+        "        <div class=\"ticker\" aria-label=\"Live signal ticker\"><span>ARR +12%</span><span>Churn -3%</span><span>NPS 64</span></div>",
+        "      </section>",
+        "      <section class=\"toolbar\" aria-label=\"Dashboard filters\">",
+        "        <label>Search accounts <input data-testid=\"global-search\" aria-label=\"Search accounts\" data-synthi-source-id=\"saas.search\" autocomplete=\"off\"></label>",
+        "        <label>Segment <select aria-label=\"Segment\" data-testid=\"segment-select\" data-synthi-source-id=\"saas.segment\"><option value=\"all\">All</option><option value=\"enterprise\">Enterprise</option><option value=\"growth\">Growth</option></select></label>",
+        "        <label for=\"risk\">Risk threshold</label>",
+        "        <input id=\"risk\" aria-label=\"Risk threshold\" type=\"range\" min=\"0\" max=\"100\" step=\"10\" value=\"40\" data-synthi-source-id=\"saas.risk\">",
+        "      </section>",
+        "      <section class=\"metrics\" aria-label=\"Executive metrics\">",
+        "        <article class=\"metric pulse\"><strong>$4.8M</strong><span>Expansion pipeline</span></article>",
+        "        <article class=\"metric drift\"><strong>37</strong><span>At-risk accounts</span></article>",
+        "        <article class=\"metric shimmer\"><strong>14</strong><span>Deploy gates</span></article>",
+        "      </section>",
+        "      <section class=\"work-area\" aria-label=\"Operations board\">",
+        "        <aside class=\"account-list\" aria-label=\"Account list\">",
+        "          <button type=\"button\" class=\"account\" data-testid=\"account-northstar\" data-synthi-source-id=\"saas.account.northstar\">Northstar Renewal</button>",
+        "          <button type=\"button\" class=\"account\" data-testid=\"account-zenith\" data-synthi-source-id=\"saas.account.zenith\">Zenith Expansion</button>",
+        "        </aside>",
+        "        <section class=\"lane\" data-drop-target=\"review\" data-testid=\"lane-review\" role=\"list\" aria-label=\"Review lane\"><h2>Review</h2><div class=\"card\" role=\"option\" tabindex=\"0\" data-draggable=\"true\" data-testid=\"card-revenue\" data-synthi-source-id=\"saas.card.revenue\">Revenue audit</div></section>",
+        "        <section class=\"lane\" data-drop-target=\"approved\" data-testid=\"lane-approved\" role=\"list\" aria-label=\"Approved lane\"><h2>Approved</h2></section>",
+        "      </section>",
+        "      <section class=\"runbook\" aria-label=\"Runbook editor\">",
+        "        <button type=\"button\" data-testid=\"open-runbook\" data-synthi-source-id=\"saas.runbook.open\">Open runbook</button>",
+        "        <div class=\"modal\" role=\"dialog\" aria-label=\"Runbook modal\" hidden>",
+        "          <label>Runbook note <textarea aria-label=\"Runbook note\" data-testid=\"runbook-note\" data-synthi-source-id=\"saas.runbook.note\"></textarea></label>",
+        "          <button type=\"button\" data-testid=\"save-runbook\" data-synthi-source-id=\"saas.runbook.save\">Save runbook</button>",
+        "        </div>",
+        "      </section>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "body { place-items: start center; overflow-x: hidden; }",
+        ".dashboard-shell { width: min(1080px, calc(100vw - 48px)); display: grid; gap: 18px; padding: 28px 0 48px; }",
+        ".hero-band { position: relative; overflow: hidden; min-height: 132px; display: flex; justify-content: space-between; gap: 24px; align-items: center; border: 1px solid #202020; padding: 20px; background: #101820; color: #f7f7f4; }",
+        ".hero-band::before { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, rgba(65, 181, 154, .16) 0 2px, transparent 2px 82px); animation: rail 6s linear infinite; pointer-events: none; }",
+        ".hero-band > * { position: relative; z-index: 1; }",
+        ".ticker { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }",
+        ".ticker span { border: 1px solid rgba(255,255,255,.34); padding: 8px 10px; background: rgba(255,255,255,.08); }",
+        ".toolbar { display: grid; grid-template-columns: 1.3fr .8fr .45fr 1fr; gap: 12px; align-items: end; }",
+        ".toolbar label { display: grid; gap: 6px; font-weight: 700; }",
+        ".toolbar input:not([type='range']), .toolbar select, textarea { min-height: 42px; border: 1px solid #9c9c92; padding: 0 12px; font: inherit; background: white; }",
+        ".toolbar input[type='range'] { width: 100%; padding: 0; }",
+        ".metrics { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; }",
+        ".metric { border: 1px solid #b9b9b2; padding: 14px; background: #fff; display: grid; gap: 6px; }",
+        ".metric strong { font-size: 28px; line-height: 1; }",
+        ".pulse { animation: pulse 1800ms ease-in-out infinite; }",
+        ".drift { animation: drift 2400ms ease-in-out infinite; }",
+        ".shimmer { background-image: linear-gradient(110deg, #fff 0%, #f1f5f3 45%, #fff 70%); background-size: 220% 100%; animation: shimmer 2300ms linear infinite; }",
+        ".work-area { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: stretch; }",
+        ".account-list, .lane, .runbook { border: 1px solid #b9b9b2; background: #fff; padding: 14px; display: grid; align-content: start; gap: 10px; min-height: 182px; }",
+        ".account, button { width: max-content; min-height: 42px; border: 0; background: #202020; color: white; padding: 0 14px; font: inherit; cursor: pointer; }",
+        ".modal[hidden] { display: none; }",
+        ".lane h2 { margin: 0; font-size: 18px; }",
+        ".card { width: max-content; border: 1px solid #202020; background: #eef4f0; padding: 10px 12px; cursor: grab; user-select: none; touch-action: none; }",
+        ".card.is-dragging { opacity: .7; cursor: grabbing; }",
+        ".modal { position: fixed; right: 28px; top: 138px; z-index: 20; border: 1px solid #202020; padding: 12px; display: grid; gap: 10px; background: #f7f7f4; box-shadow: 0 12px 36px rgba(16, 24, 32, .18); }",
+        "textarea { min-height: 76px; min-width: min(520px, calc(100vw - 96px)); padding: 10px 12px; }",
+        "#status { color: #17663a; font-weight: 800; min-height: 28px; }",
+        "@keyframes rail { from { transform: translateX(0); } to { transform: translateX(82px); } }",
+        "@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }",
+        "@keyframes drift { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }",
+        "@keyframes shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }",
+      ],
+      script: [
+        "const status = document.querySelector('#status');",
+        "const search = document.querySelector('[data-testid=\"global-search\"]');",
+        "const segment = document.querySelector('[data-testid=\"segment-select\"]');",
+        "const risk = document.querySelector('#risk');",
+        "const card = document.querySelector('[data-testid=\"card-revenue\"]');",
+        "const approved = document.querySelector('[data-testid=\"lane-approved\"]');",
+        "let dragging = null;",
+        "search.addEventListener('input', () => { status.textContent = `Search ${search.value}`; });",
+        "segment.addEventListener('change', () => { status.textContent = `Segment ${segment.value}`; });",
+        "risk.addEventListener('input', () => { status.textContent = `Risk threshold ${risk.value}`; });",
+        "risk.addEventListener('change', () => { status.textContent = `Risk threshold ${risk.value}`; });",
+        "card.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; dragging = card; card.classList.add('is-dragging'); });",
+        "document.addEventListener('pointerup', (event) => {",
+        "  if (!dragging) return;",
+        "  const target = document.elementFromPoint(event.clientX, event.clientY);",
+        "  const lane = target && target.closest ? target.closest('[data-drop-target]') : null;",
+        "  dragging.classList.remove('is-dragging');",
+        "  if (lane) { lane.appendChild(dragging); status.textContent = `Moved ${dragging.textContent.trim()} to ${lane.getAttribute('aria-label')}`; }",
+        "  dragging = null;",
+        "});",
+        "document.querySelector('[data-testid=\"open-runbook\"]').addEventListener('click', () => { document.querySelector('.modal').hidden = false; status.textContent = 'Runbook opened'; });",
+        "document.querySelector('[data-testid=\"save-runbook\"]').addEventListener('click', () => {",
+        "  const note = document.querySelector('[data-testid=\"runbook-note\"]').value.trim();",
+        "  document.querySelector('.modal').hidden = true;",
+        "  status.textContent = note ? `Runbook saved for ${note}` : 'Runbook saved';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByTestId("global-search").fill("revenue");
+      await page.getByText("Search revenue").waitFor();
+      await page.getByLabel("Segment").selectOption("enterprise");
+      await page.getByText("Segment enterprise").waitFor();
+      await page.getByLabel("Risk threshold").evaluate((element) => {
+        const input = element;
+        input.value = "80";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await page.getByText("Risk threshold 80").waitFor();
+      const card = page.getByTestId("card-revenue");
+      const approvedLane = page.getByTestId("lane-approved");
+      const cardBox = await card.boundingBox();
+      const laneBox = await approvedLane.boundingBox();
+      if (!cardBox || !laneBox) throw new Error("animated saas drag target not visible");
+      await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(laneBox.x + laneBox.width / 2, laneBox.y + Math.min(laneBox.height - 16, 84), { steps: 16 });
+      await page.mouse.up();
+      await page.getByText("Moved Revenue audit to Approved lane").waitFor();
+      await page.getByTestId("open-runbook").click();
+      await page.getByText("Runbook opened").waitFor();
+      await page.getByTestId("runbook-note").fill("enterprise revenue");
+      await page.getByTestId("save-runbook").click();
+      await page.getByText("Runbook saved for enterprise revenue").waitFor();
+    },
+  },
+  {
     id: "file-input-upload",
     minSteps: 2,
     expectedActions: ["drag", "click"],
