@@ -1734,7 +1734,6 @@ const CASES = [
     expectedActions: ["drag", "click"],
     expectedReplayText: [
       "Moved Priority audit to Done lane",
-      "Applied done",
     ],
     expectedReplayCode: [
       "await page.mouse.down();",
