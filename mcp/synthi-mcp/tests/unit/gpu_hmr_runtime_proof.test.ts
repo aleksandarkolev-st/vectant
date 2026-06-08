@@ -2596,6 +2596,147 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.abiCompatibilityClass).toBe("unknown");
   });
 
+  it("derives ABI compatibility from matching runtime launch argument provenance", () => {
+    const artifactRecord = {
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-abi-metadata",
+          evidenceId: "evidence:device-abi-metadata:def",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
+            layoutSizeAlignmentVerified: true,
+            kernelAbiFingerprintHash: "d".repeat(64),
+            constantGlobalLayoutHash: "3476900567878811119",
+            acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
+            acceptedExtractorSources: ["clang_record_layout"],
+            parameterAbiRecords: [
+              {
+                kernel: "shade_kernel",
+                argIndex: 0,
+                size: 8,
+                alignment: 8,
+                addressSpace: "generic_pointer",
+                typeIdentity: "float*",
+              },
+              {
+                kernel: "shade_kernel",
+                argIndex: 1,
+                size: 4,
+                alignment: 4,
+                addressSpace: "by_value",
+                typeIdentity: "int",
+              },
+            ],
+            extractorProvenance: [{
+              extractorKind: "clang_record_layout",
+              evidenceId: "evidence:clang-record-layout:def",
+              extractorName: "test_clang_record_layout",
+              extractorVersion: "v1",
+              command: "clang++ -Xclang -fdump-record-layouts",
+              inputHash: `sha256:${"d".repeat(64)}`,
+            }],
+          },
+        }],
+        stageResults: [{
+          stageId: "abi-compatibility",
+          status: "passed",
+        }],
+      },
+    };
+    const runtimeArgProvenance = {
+      incomplete_count: 0,
+      unknown_arg_count: 0,
+      evidence_refs: ["worker-log:launch_arg_provenance:shade_kernel:pid1:3"],
+      records: [
+        {
+          kernelName: "shade_kernel",
+          argIndex: 0,
+          category: "device_allocation",
+          allocationId: "runtime-allocation-1",
+          valueSize: 8,
+          expectedArgCount: 2,
+          launchKey: "shade_kernel:pid1:3",
+        },
+        {
+          kernelName: "shade_kernel",
+          argIndex: 1,
+          category: "literal",
+          valueSize: 4,
+          expectedArgCount: 2,
+          launchKey: "shade_kernel:pid1:3",
+        },
+      ],
+    };
+
+    const proof = abiProofFromProofArtifacts([artifactRecord], { runtimeArgProvenance });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.abiCompatibilityClass).toBe("compatible");
+    expect(proof.evidenceRefs).toContain("worker-log:launch_arg_provenance:shade_kernel:pid1:3");
+  });
+
+  it("does not derive ABI compatibility when runtime launch argument sizes mismatch metadata", () => {
+    const proof = abiProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-abi-metadata",
+          evidenceId: "evidence:device-abi-metadata:def",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
+            layoutSizeAlignmentVerified: true,
+            kernelAbiFingerprintHash: "d".repeat(64),
+            constantGlobalLayoutHash: "3476900567878811119",
+            acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
+            acceptedExtractorSources: ["clang_record_layout"],
+            parameterAbiRecords: [{
+              kernel: "shade_kernel",
+              argIndex: 0,
+              size: 8,
+              addressSpace: "generic_pointer",
+              typeIdentity: "float*",
+            }],
+            extractorProvenance: [{
+              extractorKind: "clang_record_layout",
+              evidenceId: "evidence:clang-record-layout:def",
+              extractorName: "test_clang_record_layout",
+              extractorVersion: "v1",
+              command: "clang++ -Xclang -fdump-record-layouts",
+              inputHash: `sha256:${"d".repeat(64)}`,
+            }],
+          },
+        }],
+        stageResults: [{
+          stageId: "abi-compatibility",
+          status: "passed",
+        }],
+      },
+    }], {
+      runtimeArgProvenance: {
+        incomplete_count: 0,
+        unknown_arg_count: 0,
+        evidence_refs: ["worker-log:launch_arg_provenance:shade_kernel:pid1:3"],
+        records: [{
+          kernelName: "shade_kernel",
+          argIndex: 0,
+          category: "device_allocation",
+          allocationId: "runtime-allocation-1",
+          valueSize: 4,
+          expectedArgCount: 1,
+          launchKey: "shade_kernel:pid1:3",
+        }],
+      },
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_compatibility_class_missing");
+  });
+
   it("proves fission only from verifier stages with evidence", () => {
     const proof = fissionProofFromProofArtifacts([{
       proofArtifactPath: "/tmp/gpu-hmr-proof.json",

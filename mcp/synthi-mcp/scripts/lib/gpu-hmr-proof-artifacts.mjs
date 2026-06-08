@@ -1172,7 +1172,171 @@ function fissionReportPassIntegrity(metadata) {
   return { proven: true, reason: null };
 }
 
-export function abiProofFromProofArtifacts(records) {
+function integerField(value) {
+  if (typeof value === 'number' && Number.isInteger(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    return Number.parseInt(value.trim(), 10);
+  }
+  return null;
+}
+
+function normalizedKernelName(value) {
+  return nonEmptyString(value)?.toLowerCase() ?? null;
+}
+
+function runtimeArgAbiAddressClass(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.includes('pointer')) return 'pointer';
+  if (normalized === 'by_value' || normalized.includes('value') || normalized.includes('scalar')) {
+    return 'value';
+  }
+  return null;
+}
+
+function runtimeArgCategoryClass(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.includes('allocation') || normalized.includes('pointer')) return 'pointer';
+  if (normalized === 'literal' || normalized.includes('scalar') || normalized.includes('value')) {
+    return 'value';
+  }
+  return null;
+}
+
+function parameterAbiRecordKey(record) {
+  const kernel = normalizedKernelName(record?.kernel ?? record?.kernelName ?? record?.kernel_name);
+  const argIndex = integerField(record?.argIndex ?? record?.arg_index);
+  return kernel && argIndex !== null ? `${kernel}:${argIndex}` : null;
+}
+
+function runtimeArgRecordKey(record) {
+  const kernel = normalizedKernelName(record?.kernelName ?? record?.kernel_name ?? record?.kernel);
+  const argIndex = integerField(record?.argIndex ?? record?.arg_index);
+  return kernel && argIndex !== null ? `${kernel}:${argIndex}` : null;
+}
+
+function runtimeArgLaunchKey(record) {
+  return nonEmptyString(record?.launchKey ?? record?.launch_key)
+    ?? [
+      normalizedKernelName(record?.kernelName ?? record?.kernel_name ?? record?.kernel),
+      nonEmptyString(record?.runtimeSessionId ?? record?.runtime_session_id ?? record?.runtimeSession),
+      nonEmptyString(record?.generation),
+    ].filter(Boolean).join(':');
+}
+
+function runtimeArgAbiSignature(record) {
+  return JSON.stringify({
+    size: integerField(record?.size),
+    addressClass: runtimeArgAbiAddressClass(record?.addressSpace ?? record?.address_space),
+    typeIdentity: nonEmptyString(record?.typeIdentity ?? record?.type_identity) ?? null,
+  });
+}
+
+function runtimeArgCompatibleWithParameter(runtimeRecord, parameterRecord) {
+  const runtimeSize = integerField(runtimeRecord?.valueSize ?? runtimeRecord?.value_size);
+  const parameterSize = integerField(parameterRecord?.size);
+  if (runtimeSize === null || parameterSize === null || runtimeSize !== parameterSize) return false;
+  const parameterClass = runtimeArgAbiAddressClass(
+    parameterRecord?.addressSpace ?? parameterRecord?.address_space,
+  );
+  const runtimeClass = runtimeArgCategoryClass(runtimeRecord?.category);
+  if (parameterClass === null || runtimeClass === null || parameterClass !== runtimeClass) return false;
+  if (
+    parameterClass === 'pointer'
+    && !nonEmptyString(runtimeRecord?.allocationId ?? runtimeRecord?.allocation_id)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function runtimeArgProvenanceObject(options = {}) {
+  const raw = options.runtimeArgProvenance
+    ?? options.runtime_arg_provenance
+    ?? options.runtimeArgumentProvenance
+    ?? options.runtime_argument_provenance
+    ?? null;
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+function deriveRuntimeArgAbiCompatibility(metadataRecords, options = {}) {
+  const runtimeArgProvenance = runtimeArgProvenanceObject(options);
+  const runtimeRecords = Array.isArray(runtimeArgProvenance.records)
+    ? runtimeArgProvenance.records
+    : [];
+  if (
+    runtimeRecords.length === 0
+    || runtimeArgProvenance.incomplete_count > 0
+    || runtimeArgProvenance.unknown_arg_count > 0
+  ) {
+    return { value: null, evidenceRefs: [], reason: 'runtime_arg_provenance_incomplete' };
+  }
+
+  const parametersByKey = new Map();
+  const parameterCountsByKernel = new Map();
+  let conflict = false;
+  for (const metadata of metadataRecords) {
+    const parameterRecords = Array.isArray(metadata?.parameterAbiRecords)
+      ? metadata.parameterAbiRecords
+      : [];
+    for (const parameter of parameterRecords) {
+      const key = parameterAbiRecordKey(parameter);
+      if (!key) continue;
+      const signature = runtimeArgAbiSignature(parameter);
+      const existing = parametersByKey.get(key);
+      if (existing && existing.signature !== signature) {
+        conflict = true;
+        continue;
+      }
+      parametersByKey.set(key, { parameter, signature });
+      const [kernel] = key.split(':');
+      const argIndex = integerField(parameter?.argIndex ?? parameter?.arg_index) ?? -1;
+      parameterCountsByKernel.set(kernel, Math.max(parameterCountsByKernel.get(kernel) ?? 0, argIndex + 1));
+    }
+  }
+  if (conflict || parametersByKey.size === 0) {
+    return {
+      value: null,
+      evidenceRefs: [],
+      reason: conflict ? 'parameter_abi_record_conflict' : 'parameter_abi_records_missing',
+    };
+  }
+
+  const launchGroups = new Map();
+  for (const runtimeRecord of runtimeRecords) {
+    const key = runtimeArgRecordKey(runtimeRecord);
+    const entry = key ? parametersByKey.get(key) : null;
+    if (!entry || !runtimeArgCompatibleWithParameter(runtimeRecord, entry.parameter)) {
+      return { value: null, evidenceRefs: [], reason: 'runtime_arg_abi_mismatch' };
+    }
+    const launchKey = runtimeArgLaunchKey(runtimeRecord);
+    if (!launchKey) continue;
+    const [kernel] = key.split(':');
+    const expected = integerField(runtimeRecord?.expectedArgCount ?? runtimeRecord?.expected_arg_count);
+    const group = launchGroups.get(launchKey) ?? { kernel, expected: null, count: 0 };
+    group.expected = Math.max(group.expected ?? 0, expected ?? 0);
+    group.count += 1;
+    launchGroups.set(launchKey, group);
+  }
+  for (const group of launchGroups.values()) {
+    if (group.expected !== null && group.expected > 0 && group.count !== group.expected) {
+      return { value: null, evidenceRefs: [], reason: 'runtime_launch_arg_count_mismatch' };
+    }
+    const metadataCount = parameterCountsByKernel.get(group.kernel) ?? null;
+    if (metadataCount !== null && group.expected !== null && group.expected > 0 && metadataCount < group.expected) {
+      return { value: null, evidenceRefs: [], reason: 'metadata_parameter_count_mismatch' };
+    }
+  }
+
+  return {
+    value: 'compatible',
+    evidenceRefs: uniqueStrings(runtimeArgProvenance.evidence_refs ?? runtimeArgProvenance.evidenceRefs),
+    reason: null,
+  };
+}
+
+export function abiProofFromProofArtifacts(records, options = {}) {
   const evidenceRefs = [];
   const acceptedExtractorEvidenceRefs = [];
   const acceptedExtractorSources = [];
@@ -1180,6 +1344,7 @@ export function abiProofFromProofArtifacts(records) {
   const kernelAbiFingerprintHashes = [];
   const constantGlobalLayoutHashes = [];
   const abiCompatibilityClasses = [];
+  const abiMetadataRecords = [];
   let extractorProvenanceComplete = true;
   let layoutSizeAlignmentVerified = false;
   let degradedReason = null;
@@ -1195,6 +1360,7 @@ export function abiProofFromProofArtifacts(records) {
       if (metadata?.schemaVersion !== 'synthi.gpu.hmr.abi_metadata.v1') continue;
 
       evidenceRefs.push(abiEvidenceId(evidence, artifact, record));
+      abiMetadataRecords.push(metadata);
       if (metadata.layoutSizeAlignmentVerified === true) {
         layoutSizeAlignmentVerified = true;
       }
@@ -1241,6 +1407,13 @@ export function abiProofFromProofArtifacts(records) {
       degradedReason = abiStage.degradedReason.trim();
     }
   }
+  const runtimeArgAbiCompatibility = uniqueStrings(abiCompatibilityClasses).length === 0
+    ? deriveRuntimeArgAbiCompatibility(abiMetadataRecords, options)
+    : { value: null, evidenceRefs: [], reason: null };
+  if (runtimeArgAbiCompatibility.value) {
+    abiCompatibilityClasses.push(runtimeArgAbiCompatibility.value);
+    evidenceRefs.push(...runtimeArgAbiCompatibility.evidenceRefs);
+  }
 
   return classifyGpuHmrAbiProof({
     metadataObserved: evidenceRefs.length > 0,
@@ -1254,6 +1427,9 @@ export function abiProofFromProofArtifacts(records) {
     constantGlobalLayoutHashes: uniqueStrings(constantGlobalLayoutHashes),
     extractorProvenance,
     extractorProvenanceComplete,
+    runtimeArgAbiCompatibilityProven: runtimeArgAbiCompatibility.value === 'compatible',
+    runtimeArgAbiCompatibilityEvidenceRefs: runtimeArgAbiCompatibility.evidenceRefs,
+    runtimeArgAbiCompatibilityReason: runtimeArgAbiCompatibility.reason,
   });
 }
 

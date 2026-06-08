@@ -7615,7 +7615,9 @@ async function collectRuntimeEvidence() {
     report.phases.map((phase) => phase.gpu_proof).filter(Boolean).at(-1) ?? null,
   );
   report.source_proofs = [report.source_proof].filter(Boolean);
-  report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
+  report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords, {
+    runtimeArgProvenance,
+  });
   report.fission_proof = fissionProofFromProofArtifacts(proofArtifactRecords);
   report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(
     proofArtifactRecords,
