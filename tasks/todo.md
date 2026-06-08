@@ -232,3 +232,27 @@ The TDD-able sliver of Phase 4 landed via red→green TDD, committed with the `C
 - The Program session tab routes a `gui` session's App tab to a stubbed `gui-surface` shell (placeholder for the future WebRTC `<video>`), bypassing the web iframe / waiting / no-port chain.
 - Verification: backend 21 (unchanged), targeted 8/63, full `npx vitest run` **261 passed** (1 known stub tolerated). No schema change.
 - **Deferred (by decision):** the real GUI capture — Xvfb/GStreamer/WebRTC via the Rust worker + signaling-server, broker lease/freshness for input, the live `<video>` surface — is fully enumerated in the plan's "DEFERRED — Broker / WebRTC GUI capture" section. It needs live infra + the broker rollout + (per the Slice-3 spec) its own broker-companion branch with the disk gate lifted. Revisit there.
+
+---
+
+## Mid-test fixes (2026-06-08, surfaced during live Phase-2/3 testing)
+- Recipe filename rebranded `synthi.program.json` → `vectant.program.json` → **`vectant.programs.json`** (plural, per product). Pushed.
+- ProgramsPanel surfaces the install route's `manifest_invalid` `message` on a 422 (was a generic toast). Pushed.
+- **Per-user repo discovery bug (root cause of the 422):** the Phase-2 manifest endpoint called `resolveWorkspaceCwd(slug)` without userId, so per-user-repo workspaces (`repos/<slug>/<userId>`) read the shared dir and missed the manifest. Fixed: `discoverManifest(slug, userId)` forwards the actor's id → `GET /manifest` → `resolveWorkspaceCwd(slug, userId)`. Install route now returns 422 only for real `ProgramManifestError`, 502 for infra/connectivity. Committed `17fb3290`, pushed.
+
+---
+
+# Task: Slice 3 Phase 5 v1 — Open Marketplace (Publish + Browse + Install) (2026-06-08, tool-compatibility)
+
+Plan: `docs/superpowers/plans/2026-06-08-slice3-phase5-open-marketplace-v1-plan.md`. Design approved by user.
+Scope (approved): Publish (`@<slug>/<name>`, owner/admin) + global Browse/search + Install-from-catalog + `installCount` reputation. **Deferred:** signing, ratings/reviews, abuse/takedown, private visibility (enumerated in the plan's DEFERRED section).
+Branch: `tool-compatibility` only. Disk gate: TDD only (vitest / `node --test` / `prisma generate|db push`). Schema change: +4 additive cols on `MarketplaceProgram` (Task 1 db push).
+
+## Phase-5 v1 Implementation Tasks (TDD, commit per task)
+- [ ] P5-T1 Schema (+displayName/description/publishedByUserId/installCount) + manifest optional `description`.
+- [ ] P5-T2 Store: `publishProgram` (`@slug/<name>`, publisher=slug) + `toPublicMarketplaceProgram` (redacts manifest).
+- [ ] P5-T3 Store: `listPublishedPrograms({q})` (publisher≠local, search, order by installCount) + `getPublishedProgramVersion` + `incrementInstallCount`.
+- [ ] P5-T4 API: `POST /programs/publish` (owner/admin) + `GET /programs/marketplace?q=` → global published catalog.
+- [ ] P5-T5 API: extend `POST /programs/install` to install a published `{packageId,version}` (manifest from its version) + bump installCount; local path unchanged.
+- [ ] P5-T6 UI: ProgramsPanel Publish action (gated) + Marketplace browse/search + install-from-catalog (consent reused).
+- [ ] P5-T7 Regression + security sweep + Phase-5 review.
