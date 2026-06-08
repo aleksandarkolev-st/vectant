@@ -386,6 +386,39 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_ledger_validation).toBeNull();
   });
 
+  it("rejects flat full runtime artifact fields without an explicit runtime artifact object", async () => {
+    const ledger = passingProofLedger();
+    const artifact = passingRuntimeProofArtifact(ledger);
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        fullRuntimeProven: true,
+        gpuHmrSuccess: true,
+        stageResults: artifact.stageResults,
+        limitations: [],
+        proofLedgerQuery: ledger.query,
+        acceptanceContract: artifact.acceptanceContract,
+        acceptanceContractEvaluation: artifact.acceptanceContractEvaluation,
+        acceptanceContractConsistency: artifact.acceptanceContractConsistency,
+        proofLedgerSourceConsistency: artifact.proofLedgerSourceConsistency,
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("runtime_proof_artifact_missing");
+  });
+
   it("accepts full runtime proof only with recomputed ledger and runtime artifact success", async () => {
     const ledger = passingProofLedger();
     const fake = installFakeAttached(async () => {

@@ -195,14 +195,6 @@ function runtimeProofArtifactCandidate(
       };
     }
   }
-  if (
-    objectOrNull(raw.acceptanceContract ?? raw.acceptance_contract) !== null
-    || objectOrNull(raw.acceptanceContractEvaluation ?? raw.acceptance_contract_evaluation) !== null
-    || objectOrNull(raw.proofLedgerQuery ?? raw.proof_ledger_query) !== null
-    || boolField(raw, "gpuHmrSuccess", "gpu_hmr_success") !== null
-  ) {
-    return { source: "telemetry", artifact: raw };
-  }
   return null;
 }
 

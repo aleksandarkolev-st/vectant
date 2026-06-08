@@ -331,6 +331,33 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects flat telemetry masquerading as a runtime proof artifact", () => {
+    const ledger = proofLedger();
+    const artifact = runtimeProofArtifact(ledger);
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      fullRuntimeProven: true,
+      gpuHmrSuccess: true,
+      stageResults: artifact.stageResults,
+      limitations: [],
+      proofLedgerQuery: ledger.query,
+      acceptanceContract: artifact.acceptanceContract,
+      acceptanceContractEvaluation: artifact.acceptanceContractEvaluation,
+      acceptanceContractConsistency: artifact.acceptanceContractConsistency,
+      proofLedgerSourceConsistency: artifact.proofLedgerSourceConsistency,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_missing");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_proof_artifact_missing"
+    );
+  });
+
   it("rejects full runtime artifact whose embedded ledger query is forged", () => {
     const ledger = proofLedger();
     const forgedArtifactLedger = proofLedger();
