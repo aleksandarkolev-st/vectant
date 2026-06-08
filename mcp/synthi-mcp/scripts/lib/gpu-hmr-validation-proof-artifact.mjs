@@ -2685,6 +2685,12 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
         readError: error?.message ? String(error.message) : String(error),
       };
     }
+    const acceptedAsVisualEvidence = imageEvidence
+      ? screenshotQualifiesAsVisualEvidence({
+        path: artifactPath,
+        ...imageEvidence,
+      })
+      : false;
     const imageRecord = imageEvidence ? {
       width: imageEvidence.width,
       height: imageEvidence.height,
@@ -2700,15 +2706,18 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
       unique_color_sample_count: imageEvidence.unique_color_sample_count,
       visualQuality: imageEvidence.visual_quality,
       visual_quality: imageEvidence.visual_quality,
-      acceptedAsVisualEvidence: screenshotQualifiesAsVisualEvidence({
-        path: artifactPath,
-        ...imageEvidence,
-      }),
-      accepted_as_visual_evidence: screenshotQualifiesAsVisualEvidence({
-        path: artifactPath,
-        ...imageEvidence,
-      }),
-    } : {};
+      acceptedAsVisualEvidence,
+      accepted_as_visual_evidence: acceptedAsVisualEvidence,
+    } : {
+      visualQuality: fileRecord.readError
+        ? 'gpu-hmr-visual-unreadable-artifact'
+        : 'gpu-hmr-visual-unanalyzable-artifact',
+      visual_quality: fileRecord.readError
+        ? 'gpu-hmr-visual-unreadable-artifact'
+        : 'gpu-hmr-visual-unanalyzable-artifact',
+      acceptedAsVisualEvidence: false,
+      accepted_as_visual_evidence: false,
+    };
     records.push({
       ...existing,
       ...fileRecord,

@@ -989,6 +989,29 @@ function visualOraclePaths(report) {
   ].filter((value) => typeof value === 'string' && value.trim())));
 }
 
+function visualEvidenceArtifactAccepted(artifact) {
+  return artifact?.acceptedAsVisualEvidence === true
+    && artifact?.accepted_as_visual_evidence === true
+    && !artifact?.readError
+    && !artifact?.read_error
+    && !artifact?.visualAnalysisError
+    && !artifact?.visual_analysis_error;
+}
+
+function deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts) {
+  if (report.status && report.status !== 'pass') return report.status;
+  const artifactsByPath = new Map(
+    visualEvidenceArtifacts
+      .filter((artifact) => artifact?.path)
+      .map((artifact) => [artifact.path, artifact]),
+  );
+  const requiredPaths = (Array.isArray(paths) ? paths : [])
+    .filter((value) => typeof value === 'string' && value.trim());
+  const allRequiredAccepted = requiredPaths.length > 0
+    && requiredPaths.every((artifactPath) => visualEvidenceArtifactAccepted(artifactsByPath.get(artifactPath)));
+  return allRequiredAccepted ? 'pass' : 'fail';
+}
+
 async function writeExternalVisualProofArtifact(profile, report) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const paths = visualOraclePaths(report);
@@ -1005,12 +1028,13 @@ async function writeExternalVisualProofArtifact(profile, report) {
     }));
   const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(paths, existing);
   const acceptedVisualEvidenceArtifacts = visualEvidenceArtifacts
-    .filter((artifact) => artifact.acceptedAsVisualEvidence === true);
+    .filter((artifact) => visualEvidenceArtifactAccepted(artifact));
+  const status = deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts);
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
     profileId: profile.id,
     proofMode: report.proofMode,
-    status: report.status,
+    status,
     createdAt: new Date().toISOString(),
     visualOracleArtifacts: report.visualOracleArtifacts ?? null,
     visualDiff: report.visualDiff ?? null,
@@ -1108,12 +1132,66 @@ async function selfCheckVisualProofArtifact() {
   const beforePath = path.join(ARTIFACT_DIR, `self-check-before-${stamp}.png`);
   const afterPath = path.join(ARTIFACT_DIR, `self-check-after-${stamp}.png`);
   const diffPath = path.join(ARTIFACT_DIR, `self-check-diff-${stamp}.png`);
-  const beforeBytes = Buffer.from('external-visual-proof-before');
-  const afterBytes = Buffer.from('external-visual-proof-after');
-  const diffBytes = Buffer.from('external-visual-proof-diff');
+  const invalidPath = path.join(ARTIFACT_DIR, `self-check-invalid-${stamp}.png`);
+  const selfCheckPng = async (variant) => {
+    const width = 320;
+    const height = 240;
+    const data = Buffer.alloc(width * height * 3);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 3;
+        data[i] = (x * 5 + y * 3 + variant * 41) & 0xff;
+        data[i + 1] = ((x ^ y) * 7 + variant * 53) & 0xff;
+        data[i + 2] = (255 - ((x * 2 + y * 11 + variant * 67) & 0xff)) & 0xff;
+      }
+    }
+    return sharp(data, {
+      raw: {
+        width,
+        height,
+        channels: 3,
+      },
+    }).png().toBuffer();
+  };
+  const beforeBytes = await selfCheckPng(0);
+  const afterBytes = await selfCheckPng(1);
+  const diffBytes = await selfCheckPng(2);
   await fs.writeFile(beforePath, beforeBytes);
   await fs.writeFile(afterPath, afterBytes);
   await fs.writeFile(diffPath, diffBytes);
+  await fs.writeFile(invalidPath, Buffer.from('external-visual-proof-invalid'));
+  const [invalidArtifact] = await visualEvidenceArtifactsFromFiles([invalidPath], [{
+    path: invalidPath,
+    visual_quality: 'gpu-hmr-visual-varied-frame',
+    accepted_as_visual_evidence: true,
+  }]);
+  const invalidArtifactRejected =
+    invalidArtifact?.acceptedAsVisualEvidence === false
+    && invalidArtifact?.accepted_as_visual_evidence === false
+    && typeof invalidArtifact?.visualAnalysisError === 'string'
+    && invalidArtifact.visualAnalysisError.length > 0;
+  const invalidWritten = await writeExternalVisualProofArtifact({
+    id: 'external-visual-proof-invalid-self-check',
+  }, {
+    proofMode: 'mcp_preview',
+    status: 'pass',
+    screenshots: [{
+      path: invalidPath,
+      visual_quality: 'gpu-hmr-visual-varied-frame',
+      accepted_as_visual_evidence: true,
+    }],
+    visualOracleArtifacts: {
+      before_image: invalidPath,
+      after_image: invalidPath,
+      diff_image: invalidPath,
+    },
+  });
+  const invalidProofArtifact = JSON.parse(await fs.readFile(invalidWritten.path, 'utf8'));
+  const invalidProofArtifactFailed =
+    invalidProofArtifact.status === 'fail'
+    && invalidProofArtifact.acceptedVisualEvidenceArtifactCount === 0
+    && (invalidProofArtifact.visualEvidenceArtifacts ?? [])
+      .every((row) => row.acceptedAsVisualEvidence === false);
   const expectedHashes = [beforeBytes, afterBytes, diffBytes]
     .map((bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
     .sort();
@@ -1197,17 +1275,25 @@ async function selfCheckVisualProofArtifact() {
   const waitContractPersisted =
     artifact.mcp?.after?.waitContract?.module === 'device'
     && artifact.visualOracleArtifacts?.wait_contract?.module === 'device';
+  const acceptedCount = (artifact.visualEvidenceArtifacts ?? [])
+    .filter((row) => row.acceptedAsVisualEvidence === true).length;
   return {
     ok:
       written.schemaVersion === 'synthi.gpu.hmr.external_visual_proof_artifact.v1'
       && typeof written.proofId === 'string'
       && written.proofId.startsWith('external-visual-proof:')
       && hashMatch
-      && waitContractPersisted,
+      && waitContractPersisted
+      && acceptedCount >= 2
+      && invalidArtifactRejected
+      && invalidProofArtifactFailed,
     path: written.path,
     proofId: written.proofId,
     expectedHashes,
     observedHashes,
+    acceptedCount,
+    invalidArtifactRejected,
+    invalidProofArtifactFailed,
   };
 }
 
