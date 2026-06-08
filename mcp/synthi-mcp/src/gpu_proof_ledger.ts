@@ -475,6 +475,34 @@ function visualOracleArtifacts(
   ], VISUAL_ORACLE_ARTIFACT_FIELDS);
 }
 
+function visualPixelVerification(artifacts: Record<string, unknown>): Record<string, unknown> {
+  return asObject(
+    artifacts.visual_pixel_verification
+    ?? artifacts.visualPixelVerification
+    ?? artifacts.pixel_verification
+    ?? artifacts.pixelVerification
+  );
+}
+
+function visualVerifiedBool(
+  artifacts: Record<string, unknown>,
+  verification: Record<string, unknown>,
+  artifactKeys: string[],
+  verificationKeys: string[]
+): boolean {
+  return artifactKeys.some((key) => artifacts[key] === true)
+    || verificationKeys.some((key) => verification[key] === true);
+}
+
+function visualArtifactHash(
+  artifacts: Record<string, unknown>,
+  verification: Record<string, unknown>,
+  artifactKeys: string[],
+  verificationKeys: string[]
+): string | null {
+  return firstText(...artifactKeys.map((key) => artifacts[key]), ...verificationKeys.map((key) => verification[key]));
+}
+
 function missingArtifactFields(
   artifact: Record<string, unknown>,
   fields: ReadonlyArray<readonly string[]>
@@ -994,6 +1022,67 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       }
       if (diffImage && (diffImage === beforeImage || diffImage === afterImage)) {
         failures.push({ code: "visual_diff_artifact_not_independent" });
+      }
+      const pixelVerification = visualPixelVerification(visualArtifacts);
+      const pixelMetricsVerified = visualVerifiedBool(
+        visualArtifacts,
+        pixelVerification,
+        ["pixel_metrics_verified", "pixelMetricsVerified"],
+        ["metrics_verified", "metricsVerified", "pixel_metrics_verified", "pixelMetricsVerified"]
+      );
+      if (!pixelMetricsVerified) {
+        failures.push({ code: "visual_pixel_metrics_unverified" });
+      }
+      const beforeHash = visualArtifactHash(
+        visualArtifacts,
+        pixelVerification,
+        ["before_image_hash", "beforeImageHash"],
+        ["before_image_hash", "beforeImageHash"]
+      );
+      const afterHash = visualArtifactHash(
+        visualArtifacts,
+        pixelVerification,
+        ["after_image_hash", "afterImageHash"],
+        ["after_image_hash", "afterImageHash"]
+      );
+      const diffHash = visualArtifactHash(
+        visualArtifacts,
+        pixelVerification,
+        ["diff_image_hash", "diffImageHash"],
+        ["diff_image_hash", "diffImageHash"]
+      );
+      if (!beforeHash) failures.push({ code: "visual_before_image_hash_missing" });
+      else if (!computeSha256Digest(beforeHash)) failures.push({ code: "visual_before_image_hash_invalid" });
+      if (!afterHash) failures.push({ code: "visual_after_image_hash_missing" });
+      else if (!computeSha256Digest(afterHash)) failures.push({ code: "visual_after_image_hash_invalid" });
+      if (!diffHash) failures.push({ code: "visual_diff_image_hash_missing" });
+      else if (!computeSha256Digest(diffHash)) failures.push({ code: "visual_diff_image_hash_invalid" });
+      if (beforeHash && afterHash && beforeHash === afterHash) {
+        failures.push({ code: "visual_before_after_same_frame_hash" });
+      }
+      if (!visualVerifiedBool(
+        visualArtifacts,
+        pixelVerification,
+        ["before_image_hash_verified", "beforeImageHashVerified"],
+        ["before_image_hash_verified", "beforeImageHashVerified"]
+      )) {
+        failures.push({ code: "visual_before_image_hash_unverified" });
+      }
+      if (!visualVerifiedBool(
+        visualArtifacts,
+        pixelVerification,
+        ["after_image_hash_verified", "afterImageHashVerified"],
+        ["after_image_hash_verified", "afterImageHashVerified"]
+      )) {
+        failures.push({ code: "visual_after_image_hash_unverified" });
+      }
+      if (!visualVerifiedBool(
+        visualArtifacts,
+        pixelVerification,
+        ["diff_image_hash_verified", "diffImageHashVerified"],
+        ["diff_image_hash_verified", "diffImageHashVerified"]
+      )) {
+        failures.push({ code: "visual_diff_image_hash_unverified" });
       }
       const changedPixelRatio = artifactNumber(visualArtifacts, "changed_pixel_ratio", "changedPixelRatio");
       if (changedPixelRatio !== null && changedPixelRatio <= 0) {

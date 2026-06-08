@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import {
   classifyGpuHmrAbiProof,
@@ -52,6 +53,7 @@ import {
 import {
   buildValidationRuntimeProofArtifact,
   computeOracleArtifactsFromFiles,
+  visualOracleArtifactsFromFiles,
 } from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
 import {
   buildGpuHmrValidationProofSummary,
@@ -6839,6 +6841,53 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministic_slice_hash: sliceHash,
       deterministic_slice_hash_verified: true,
       slice_bounds_verified: true,
+    }));
+  });
+
+  it("materializes visual oracle proof from image pixels", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gpu-hmr-visual-oracle-"));
+    const beforePath = path.join(dir, "before.png");
+    const afterPath = path.join(dir, "after.png");
+    const diffPath = path.join(dir, "diff.png");
+    await sharp({
+      create: { width: 2, height: 2, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).png().toFile(beforePath);
+    await sharp(Buffer.from([
+      255, 255, 255,
+      0, 0, 0,
+      0, 0, 0,
+      0, 0, 0,
+    ]), { raw: { width: 2, height: 2, channels: 3 } }).png().toFile(afterPath);
+    await sharp({
+      create: { width: 2, height: 2, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    }).png().toFile(diffPath);
+
+    const artifacts = await visualOracleArtifactsFromFiles({
+      before_image: beforePath,
+      after_image: afterPath,
+      diff_image: diffPath,
+      blank_frame_rejection: true,
+      same_frame_rejection: true,
+      new_epoch_watermark_or_trace: "dispatch:test:1:3",
+      camera_state_hash: `sha256:${"6".repeat(64)}`,
+      swapchain_size: [2, 2],
+      capture_backend: "unit-test",
+      frame_number: 3,
+      timestamp_after_dispatch: 1779980000000,
+    });
+
+    expect(artifacts?.before_image_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(artifacts?.after_image_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(artifacts?.diff_image_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(artifacts?.pixel_metrics_verified).toBe(true);
+    expect(artifacts?.changed_pixel_ratio).toBeGreaterThan(0);
+    expect(artifacts?.perceptual_diff).toBeGreaterThan(0);
+    expect(artifacts?.visible_pixel_count).toBeGreaterThan(0);
+    expect(artifacts?.visual_pixel_verification).toEqual(expect.objectContaining({
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
     }));
   });
 

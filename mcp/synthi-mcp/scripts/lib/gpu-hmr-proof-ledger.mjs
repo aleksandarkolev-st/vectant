@@ -491,6 +491,29 @@ function visualOracleArtifacts(recordOracleArtifacts, outputEvent) {
   ], VISUAL_ORACLE_ARTIFACT_FIELDS);
 }
 
+function visualPixelVerification(artifacts) {
+  const source = asObject(artifacts);
+  return asObject(
+    source.visual_pixel_verification
+    ?? source.visualPixelVerification
+    ?? source.pixel_verification
+    ?? source.pixelVerification,
+  );
+}
+
+function visualVerifiedBool(artifacts, verification, artifactKeys, verificationKeys) {
+  const source = asObject(artifacts);
+  const verified = asObject(verification);
+  return artifactKeys.some((key) => source[key] === true)
+    || verificationKeys.some((key) => verified[key] === true);
+}
+
+function visualArtifactHash(artifacts, verification, artifactKeys, verificationKeys) {
+  const source = asObject(artifacts);
+  const verified = asObject(verification);
+  return firstText(...artifactKeys.map((key) => source[key]), ...verificationKeys.map((key) => verified[key]));
+}
+
 function missingArtifactFields(artifact, fields) {
   const source = asObject(artifact);
   return fields
@@ -1065,6 +1088,67 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       }
       if (diffImage && (diffImage === beforeImage || diffImage === afterImage)) {
         addFailure(failures, 'visual_diff_artifact_not_independent');
+      }
+      const pixelVerification = visualPixelVerification(artifacts);
+      const pixelMetricsVerified = visualVerifiedBool(
+        artifacts,
+        pixelVerification,
+        ['pixel_metrics_verified', 'pixelMetricsVerified'],
+        ['metrics_verified', 'metricsVerified', 'pixel_metrics_verified', 'pixelMetricsVerified'],
+      );
+      if (!pixelMetricsVerified) {
+        addFailure(failures, 'visual_pixel_metrics_unverified');
+      }
+      const beforeHash = visualArtifactHash(
+        artifacts,
+        pixelVerification,
+        ['before_image_hash', 'beforeImageHash'],
+        ['before_image_hash', 'beforeImageHash'],
+      );
+      const afterHash = visualArtifactHash(
+        artifacts,
+        pixelVerification,
+        ['after_image_hash', 'afterImageHash'],
+        ['after_image_hash', 'afterImageHash'],
+      );
+      const diffHash = visualArtifactHash(
+        artifacts,
+        pixelVerification,
+        ['diff_image_hash', 'diffImageHash'],
+        ['diff_image_hash', 'diffImageHash'],
+      );
+      if (!beforeHash) addFailure(failures, 'visual_before_image_hash_missing');
+      else if (!computeSha256Digest(beforeHash)) addFailure(failures, 'visual_before_image_hash_invalid');
+      if (!afterHash) addFailure(failures, 'visual_after_image_hash_missing');
+      else if (!computeSha256Digest(afterHash)) addFailure(failures, 'visual_after_image_hash_invalid');
+      if (!diffHash) addFailure(failures, 'visual_diff_image_hash_missing');
+      else if (!computeSha256Digest(diffHash)) addFailure(failures, 'visual_diff_image_hash_invalid');
+      if (beforeHash && afterHash && beforeHash === afterHash) {
+        addFailure(failures, 'visual_before_after_same_frame_hash');
+      }
+      if (!visualVerifiedBool(
+        artifacts,
+        pixelVerification,
+        ['before_image_hash_verified', 'beforeImageHashVerified'],
+        ['before_image_hash_verified', 'beforeImageHashVerified'],
+      )) {
+        addFailure(failures, 'visual_before_image_hash_unverified');
+      }
+      if (!visualVerifiedBool(
+        artifacts,
+        pixelVerification,
+        ['after_image_hash_verified', 'afterImageHashVerified'],
+        ['after_image_hash_verified', 'afterImageHashVerified'],
+      )) {
+        addFailure(failures, 'visual_after_image_hash_unverified');
+      }
+      if (!visualVerifiedBool(
+        artifacts,
+        pixelVerification,
+        ['diff_image_hash_verified', 'diffImageHashVerified'],
+        ['diff_image_hash_verified', 'diffImageHashVerified'],
+      )) {
+        addFailure(failures, 'visual_diff_image_hash_unverified');
       }
       const changedPixelRatio = artifactFieldNumber(
         artifacts,

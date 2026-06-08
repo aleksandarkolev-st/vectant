@@ -115,6 +115,25 @@ function baselineVisualOracleArtifacts(overrides = {}) {
     perceptual_diff: 0.42,
     changed_pixel_ratio: 0.25,
     visible_pixel_count: 1024,
+    before_image_hash: HASH_A,
+    after_image_hash: HASH_B,
+    diff_image_hash: HASH_C,
+    before_image_hash_verified: true,
+    after_image_hash_verified: true,
+    diff_image_hash_verified: true,
+    pixel_metrics_verified: true,
+    visual_pixel_verification: {
+      before_image_hash: HASH_A,
+      after_image_hash: HASH_B,
+      diff_image_hash: HASH_C,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
+      changed_pixel_ratio_recomputed: 0.25,
+      perceptual_diff_recomputed: 0.42,
+      visible_pixel_count_recomputed: 1024,
+    },
     ...overrides,
   };
 }
@@ -1007,6 +1026,14 @@ const cases = [
       },
     },
   }), 'visual_oracle_artifacts_incomplete'],
+  ['visual pixel metrics unverified', baselineVisualRecord({
+    oracle_artifacts: {
+      visual_oracle_artifacts: baselineVisualOracleArtifacts({
+        pixel_metrics_verified: false,
+        visual_pixel_verification: null,
+      }),
+    },
+  }), 'visual_pixel_metrics_unverified'],
   ['visual blank frame rejection not proven', baselineVisualRecord({
     oracle_artifacts: {
       visual_oracle_artifacts: baselineVisualOracleArtifacts({ blank_frame_rejection: false }),

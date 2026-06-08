@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import sharp from 'sharp';
 import {
   buildGpuHmrProofLedger,
   normalizeGpuHmrProofLedgerRecord,
@@ -986,6 +987,16 @@ const VISUAL_ORACLE_ARTIFACT_HINT_FIELDS = [
   'changedPixelRatio',
   'visible_pixel_count',
   'visiblePixelCount',
+  'pixel_metrics_verified',
+  'pixelMetricsVerified',
+  'visual_pixel_verification',
+  'visualPixelVerification',
+  'before_image_hash',
+  'beforeImageHash',
+  'after_image_hash',
+  'afterImageHash',
+  'diff_image_hash',
+  'diffImageHash',
 ];
 
 const COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS = [
@@ -2450,10 +2461,112 @@ export async function computeOracleArtifactsFromFiles(computeArtifacts = null) {
   return enriched;
 }
 
+async function imageRawRgb(imagePath) {
+  const { data, info } = await sharp(imagePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height, channels: info.channels };
+}
+
+function visiblePixelCount(raw) {
+  let visible = 0;
+  for (let i = 0; i < raw.data.length; i += raw.channels) {
+    const r = raw.data[i] ?? 0;
+    const g = raw.data[i + 1] ?? 0;
+    const b = raw.data[i + 2] ?? 0;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (luma > 24 || Math.max(r, g, b) - Math.min(r, g, b) > 30) visible += 1;
+  }
+  return visible;
+}
+
+export async function visualOracleArtifactsFromFiles(visualArtifacts = null) {
+  const source = objectOrNull(visualArtifacts);
+  if (!source) return null;
+  const beforePath = fileArtifactPath(firstString(source.before_image, source.beforeImage));
+  const afterPath = fileArtifactPath(firstString(source.after_image, source.afterImage));
+  const diffPath = fileArtifactPath(firstString(source.diff_image, source.diffImage));
+  const enriched = { ...source };
+  const verification = {
+    ...objectOrNull(source.visual_pixel_verification),
+    ...objectOrNull(source.visualPixelVerification),
+    ...objectOrNull(source.pixel_verification),
+    ...objectOrNull(source.pixelVerification),
+  };
+
+  try {
+    if (beforePath) {
+      const beforeBytes = await readFile(beforePath);
+      enriched.before_image_hash = sha256BufferHash(beforeBytes);
+      verification.before_image_hash = enriched.before_image_hash;
+      verification.before_image_hash_verified = true;
+    }
+    if (afterPath) {
+      const afterBytes = await readFile(afterPath);
+      enriched.after_image_hash = sha256BufferHash(afterBytes);
+      verification.after_image_hash = enriched.after_image_hash;
+      verification.after_image_hash_verified = true;
+    }
+    if (diffPath) {
+      const diffBytes = await readFile(diffPath);
+      enriched.diff_image_hash = sha256BufferHash(diffBytes);
+      verification.diff_image_hash = enriched.diff_image_hash;
+      verification.diff_image_hash_verified = true;
+    }
+    if (beforePath && afterPath) {
+      const before = await imageRawRgb(beforePath);
+      const after = await imageRawRgb(afterPath);
+      if (before.width !== after.width || before.height !== after.height) {
+        verification.pixel_metric_error = 'visual_dimensions_mismatch';
+      } else {
+        let changedPixels = 0;
+        let absoluteDelta = 0;
+        const pixels = Math.max(1, before.width * before.height);
+        const length = Math.min(before.data.length, after.data.length);
+        for (let i = 0; i < length; i += before.channels) {
+          const dr = Math.abs((before.data[i] ?? 0) - (after.data[i] ?? 0));
+          const dg = Math.abs((before.data[i + 1] ?? 0) - (after.data[i + 1] ?? 0));
+          const db = Math.abs((before.data[i + 2] ?? 0) - (after.data[i + 2] ?? 0));
+          if (dr + dg + db > 0) changedPixels += 1;
+          absoluteDelta += dr + dg + db;
+        }
+        const changedPixelRatio = changedPixels / pixels;
+        const perceptualDiff = absoluteDelta / (pixels * 3 * 255);
+        const visiblePixels = visiblePixelCount(after);
+        enriched.changed_pixel_ratio = changedPixelRatio;
+        enriched.perceptual_diff = perceptualDiff;
+        enriched.visible_pixel_count = visiblePixels;
+        enriched.swapchain_size = enriched.swapchain_size ?? [after.width, after.height];
+        enriched.pixel_metrics_verified = true;
+        verification.metrics_verified = true;
+        verification.changed_pixel_ratio_recomputed = changedPixelRatio;
+        verification.perceptual_diff_recomputed = perceptualDiff;
+        verification.visible_pixel_count_recomputed = visiblePixels;
+        verification.width = after.width;
+        verification.height = after.height;
+      }
+    }
+  } catch (error) {
+    verification.pixel_metric_error = error?.message ? String(error.message) : String(error);
+  }
+
+  if (Object.keys(verification).length > 0) {
+    enriched.visual_pixel_verification = verification;
+  }
+  return enriched;
+}
+
 export async function writeValidationRuntimeProofArtifact(outputDir, input = {}) {
   const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(
     input.visualEvidenceRefs,
     input.visualEvidenceArtifacts,
+  );
+  const visualOracleArtifacts = await visualOracleArtifactsFromFiles(
+    input.visualOracleArtifacts
+    ?? input.visual_oracle_artifacts
+    ?? objectOrNull(input.oracleArtifacts)?.visualOracleArtifacts
+    ?? objectOrNull(input.oracleArtifacts)?.visual_oracle_artifacts
+    ?? objectOrNull(input.oracle_artifacts)?.visualOracleArtifacts
+    ?? objectOrNull(input.oracle_artifacts)?.visual_oracle_artifacts
+    ?? visualOracleArtifactsFromOutputProof(input.outputProof),
   );
   const computeOracleArtifacts = await computeOracleArtifactsFromFiles(
     input.computeOracleArtifacts
@@ -2467,6 +2580,7 @@ export async function writeValidationRuntimeProofArtifact(outputDir, input = {})
   const artifact = buildValidationRuntimeProofArtifact({
     ...input,
     visualEvidenceArtifacts,
+    visualOracleArtifacts,
     computeOracleArtifacts,
   });
   await mkdir(outputDir, { recursive: true });
