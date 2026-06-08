@@ -72,6 +72,9 @@ const ARTIFACT_DIR = path.join(
   'agent-split-artifacts',
   CFG.slug.replace(/[^a-zA-Z0-9_.-]+/g, '-'),
 );
+const EXPOSED_SPLIT_DIR = cleanVisibleWorkspaceDir(
+  process.env.SYNTHI_GPU_EXPOSED_SPLIT_DIR ?? 'gpu_hmr_demo',
+);
 
 const results = [];
 function record(name, status, detail = '') {
@@ -79,6 +82,18 @@ function record(name, status, detail = '') {
   results.push(row);
   const tag = status === 'pass' ? '[ok]' : status === 'fail' ? '[fail]' : '[warn]';
   console.log(`${tag} ${name}${detail ? ` - ${detail}` : ''}`);
+}
+
+function cleanVisibleWorkspaceDir(value) {
+  const normalized = String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+  if (!normalized || normalized.startsWith('.') || normalized.split('/').some((part) => !part || part.startsWith('.'))) {
+    return 'gpu_hmr_demo';
+  }
+  return normalized;
 }
 
 function fail(message) {
@@ -1135,10 +1150,60 @@ function flipDeviceDirection(source) {
   return `${source.trimEnd()}\n${nonceDecl}`;
 }
 
+function exposedSplitPath(filePath) {
+  const rel = cleanRel(filePath);
+  const prefix = '.synthi/generated/gpu/';
+  if (!rel.startsWith(prefix)) return null;
+  const suffix = rel.slice(prefix.length).split('/').filter(Boolean).join('/');
+  return suffix ? `${EXPOSED_SPLIT_DIR}/${suffix}` : null;
+}
+
+function exposedCompileManifest(manifest) {
+  const copy = JSON.parse(JSON.stringify(manifest || {}));
+  if (copy.module_files && typeof copy.module_files === 'object') {
+    for (const [role, filePath] of Object.entries(copy.module_files)) {
+      const exposed = exposedSplitPath(filePath);
+      if (exposed) copy.module_files[role] = exposed;
+    }
+  }
+  if (copy.gpu?.device_roles && Array.isArray(copy.gpu.device_roles)) {
+    copy.gpu.device_roles = copy.gpu.device_roles.map((role) => {
+      if (!role || typeof role !== 'object') return role;
+      const exposed = exposedSplitPath(role.path);
+      return exposed ? { ...role, path: exposed } : role;
+    });
+  }
+  return copy;
+}
+
+function visibleGpuSplitFiles(split) {
+  const files = [];
+  for (const [filePath, content] of Object.entries(split.files || {})) {
+    const exposed = exposedSplitPath(filePath);
+    if (exposed) files.push({ path: exposed, content });
+  }
+  if (!files.length) return files;
+  const manifest = exposedCompileManifest(split.manifest);
+  files.push({ path: 'synthi/build_manifest.json', content: JSON.stringify(manifest, null, 2) + '\n' });
+  files.push({
+    path: `${EXPOSED_SPLIT_DIR}/README.md`,
+    content: [
+      '# GPU HMR Split Files',
+      '',
+      'These files are the visible editor surface for the generated GPU split.',
+      'Edit the device file here for the fast GPU HMR delta path.',
+      'The internal `.synthi/` files remain implementation metadata.',
+      '',
+    ].join('\n'),
+  });
+  return files;
+}
+
 async function persistGeneratedSplitToWorkspace(split) {
   const files = Object.entries(split.files).map(([filePath, content]) => ({ path: filePath, content }));
   files.push({ path: '.synthi_split_meta.json', content: split.sidecarRaw });
   files.push({ path: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' });
+  files.push(...visibleGpuSplitFiles(split));
   await writeFilesBatch({ slug: CFG.slug, files });
   record('persist generated split to workspace', 'pass', `${files.length} files`);
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: persist generated split' })
