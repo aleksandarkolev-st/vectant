@@ -222,6 +222,13 @@ Decision: Phase 4's real GUI capture (Xvfb/GStreamer/WebRTC + broker lease/fresh
 Branch: `tool-compatibility` only. Disk gate: TDD only. No schema change (`ProgramSession.runtimeType` exists).
 
 ## Phase-4 (thin) Implementation Tasks (TDD, commit per task)
-- [ ] P4-T1 Un-defer `gui` in `manifest.js` (`SUPPORTED_RUNTIME_TYPES` + `normalizeRuntimeType` + `deriveSurfaces` gives gui an `app` surface). Flip the gui-rejection manifest test → acceptance + keep unknown-runtime rejection.
-- [ ] P4-T2 Stubbed GUI surface shell in `ProgramSessionPanel` — `runtimeType==='gui'` App tab renders `gui-surface` (placeholder for the future WebRTC `<video>`) instead of the web iframe. jsdom test.
-- [ ] P4-T3 Regression (targeted + backend unchanged + full vitest) + Phase-4 (thin) review.
+- [x] P4-T1 Un-defer `gui` in `manifest.js` (`SUPPORTED_RUNTIME_TYPES` + `normalizeRuntimeType` + `deriveSurfaces` gives gui an `app` surface). Committed `d1b3238e`; flipped the gui-rejection manifest test → acceptance + added unknown-runtime rejection (manifest 14→16... net 15 file tests).
+- [x] P4-T2 Stubbed GUI surface shell in `ProgramSessionPanel` — `runtimeType==='gui'` App tab renders `gui-surface` (placeholder for the future WebRTC `<video>`) instead of the web iframe. Committed `e087eeb2`; panel 5→6 jsdom tests.
+- [x] P4-T3 Regression (targeted + backend unchanged + full vitest) + Phase-4 (thin) review. Backend `node --test` 21 (unchanged); targeted `src/lib/programs src/components/programs` 8 files/63; full `npx vitest run` → 35 passed / **261 tests** (only the known empty `preview-store.test.js` stub tolerated).
+
+## Slice 3 Phase 4 (thin slice) — COMPLETE (P4-T1..T3, on `tool-compatibility`)
+The TDD-able sliver of Phase 4 landed via red→green TDD, committed with the `Co-Authored-By: Claude Opus 4.8` trailer (specific files staged; noise untouched):
+- `gui` is now a first-class runtime type: `manifest.js` accepts it (and devcontainer stays web/background-only, since it has no gui signal — gui is `synthi.program.json`-only), and `deriveSurfaces` gives gui an `app` (stream) surface.
+- The Program session tab routes a `gui` session's App tab to a stubbed `gui-surface` shell (placeholder for the future WebRTC `<video>`), bypassing the web iframe / waiting / no-port chain.
+- Verification: backend 21 (unchanged), targeted 8/63, full `npx vitest run` **261 passed** (1 known stub tolerated). No schema change.
+- **Deferred (by decision):** the real GUI capture — Xvfb/GStreamer/WebRTC via the Rust worker + signaling-server, broker lease/freshness for input, the live `<video>` surface — is fully enumerated in the plan's "DEFERRED — Broker / WebRTC GUI capture" section. It needs live infra + the broker rollout + (per the Slice-3 spec) its own broker-companion branch with the disk gate lifted. Revisit there.
