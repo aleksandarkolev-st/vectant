@@ -1,14 +1,21 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
+import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
+import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
-import { dispatchBrowserTool } from "../../src/tools/browser.js";
+import { createSynthiServer } from "../../src/server.js";
+import { browserPrivateWorkflowTools, dispatchBrowserTool } from "../../src/tools/browser.js";
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  privateWorkflowToolRegistry.resetForTests();
   sourceIdentityRegistry.resetForTests();
+  vi.restoreAllMocks();
 });
 
 describe("private browser workflow MCP tool manifest", () => {
@@ -170,6 +177,51 @@ describe("private browser workflow MCP tool manifest", () => {
     expect(manifest.safety.limitations).toContain("canvasCoordinateOnly");
   });
 
+  it("deduplicates repeated workflow parameters by stable parameter name", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "email-1",
+        event_seq: 1,
+        action: "fill",
+        value: "ada@example.test",
+        detail: { element: { role: "textbox", label: "Email", source_id: "s_email" } },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Email\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "segment",
+        event_seq: 2,
+        action: "select",
+        value: "enterprise",
+        detail: { element: { role: "combobox", label: "Segment", source_id: "s_segment" } },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Segment\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "email-2",
+        event_seq: 3,
+        action: "fill",
+        value: "grace@example.test",
+        detail: { element: { role: "textbox", label: "Email", source_id: "s_email" } },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Email\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+
+    expect(manifest.parameters.map((parameter) => parameter.name)).toEqual(["email", "segment"]);
+    expect(manifest.parameters).toContainEqual(expect.objectContaining({
+      name: "email",
+      label: "Email",
+      value_shape: "email",
+      required: true,
+    }));
+  });
+
   it("exposes the manifest through the browser MCP tool", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url);
@@ -194,6 +246,166 @@ describe("private browser workflow MCP tool manifest", () => {
         status: "available",
       })
     );
+  });
+
+  it("publishes a taught workflow as a callable private MCP tool", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open details", source_id: "s_open" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(published?.isError).toBeUndefined();
+    expect((published?.structuredContent as { tool_name: string }).tool_name).toBe("synthi_app_open_details");
+    expect(browserPrivateWorkflowTools()).toEqual([
+      expect.objectContaining({
+        name: "synthi_app_open_details",
+        inputSchema: expect.objectContaining({
+          type: "object",
+          properties: expect.objectContaining({
+            run_mode: expect.objectContaining({ enum: ["sameSession", "prefixOnly", "coldSession"] }),
+          }),
+        }),
+      }),
+    ]);
+
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "tab-a",
+      url,
+    });
+
+    const response = await dispatchBrowserTool("synthi_app_open_details", {});
+
+    expect(response?.isError).toBeUndefined();
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      private_tool: expect.objectContaining({
+        tool_name: "synthi_app_open_details",
+        run_mode: "sameSession",
+      }),
+    }));
+    expect(replay).toHaveBeenCalledWith(
+      "tab-a",
+      expect.objectContaining({ event_id: expect.any(String), action: "click" }),
+      "click",
+      "page.locator(\"[data-synthi-source-id=\\\"s_open\\\"]\")",
+      undefined
+    );
+  });
+
+  it("requires explicit confirmation before a private MCP tool runs mutation steps", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_save");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Save settings", source_id: "s_save" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save settings\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(published?.isError).toBeUndefined();
+    expect((published?.structuredContent as { manifest: { status: string } }).manifest.status).toBe("manualOnly");
+
+    const blocked = await dispatchBrowserTool("synthi_app_save_settings", { run_mode: "sameSession" });
+
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      error: "mutation_confirmation_required",
+      tool_name: "synthi_app_save_settings",
+      confirmation_field: "confirm_mutation",
+      safe_run_modes: ["prefixOnly", "coldSession"],
+    }));
+  });
+
+  it("lets an MCP client publish, discover, and call a generated private workflow tool", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open details", source_id: "s_open" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "tab-a",
+      url,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
+    const client = new Client({ name: "workflow-acceptance-test", version: "0.0.0" });
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const beforePublish = await client.listTools();
+      expect(beforePublish.tools.map((tool) => tool.name)).not.toContain("synthi_app_open_details");
+
+      const publish = await client.callTool({ name: "synthi_browser_publish_private_tool", arguments: {} });
+      expect(publish.isError).not.toBe(true);
+      expect(JSON.parse(String(publish.content[0]?.text))).toEqual(expect.objectContaining({
+        ok: true,
+        tool_name: "synthi_app_open_details",
+      }));
+
+      const afterPublish = await client.listTools();
+      expect(afterPublish.tools).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "synthi_app_open_details",
+          inputSchema: expect.objectContaining({
+            properties: expect.objectContaining({
+              run_mode: expect.objectContaining({ enum: ["sameSession", "prefixOnly", "coldSession"] }),
+            }),
+          }),
+        }),
+      ]));
+
+      const run = await client.callTool({ name: "synthi_app_open_details", arguments: {} });
+      expect(run.isError).not.toBe(true);
+      expect(JSON.parse(String(run.content[0]?.text))).toEqual(expect.objectContaining({
+        ok: true,
+        private_tool: expect.objectContaining({
+          tool_name: "synthi_app_open_details",
+          run_mode: "sameSession",
+        }),
+      }));
+      expect(replay).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });
 

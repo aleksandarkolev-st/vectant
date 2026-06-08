@@ -51,6 +51,7 @@ interface BrowserWorkflowBridgeState {
   compiledAt?: string;
   scriptGeneratedAt?: string;
   manifestGeneratedAt?: string;
+  publishedAt?: string;
   lastTool?: string;
   lastToolAt?: string;
   history: BridgeHistoryEntry[];
@@ -77,7 +78,7 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_workflow_prefix_validate: "synthi_safety_run_prefix_validation",
   synthi_workflow_generate_playwright: "synthi_browser_generate_script",
   synthi_workflow_generate_tool_manifest: "synthi_browser_generate_private_tool_manifest",
-  synthi_workflow_publish_tool: "synthi_browser_generate_private_tool_manifest",
+  synthi_workflow_publish_tool: "synthi_browser_publish_private_tool",
 };
 
 const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
@@ -95,6 +96,7 @@ const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
   "synthi_browser_release_lease",
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
+  "synthi_browser_publish_private_tool",
 ]);
 
 const REVIEW_LIMITATIONS = new Set([
@@ -329,12 +331,14 @@ function updateBridgeState(
     state.compiledAt = undefined;
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
+    state.publishedAt = undefined;
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_begin_teach") {
     state.compiledAt = undefined;
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
+    state.publishedAt = undefined;
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_observe") state.lastObserveAt = now;
@@ -344,6 +348,24 @@ function updateBridgeState(
   }
   if (ok && toolName === "synthi_browser_generate_script") state.scriptGeneratedAt = now;
   if (ok && toolName === "synthi_browser_generate_private_tool_manifest") state.manifestGeneratedAt = now;
+  if (ok && toolName === "synthi_browser_publish_private_tool") {
+    state.manifestGeneratedAt = state.manifestGeneratedAt ?? now;
+    state.publishedAt = now;
+    const toolNameValue = stringOpt(payload["tool_name"]) ?? "private workflow tool";
+    const entry: BridgeHistoryEntry = {
+      id: `workflow_publish_${Date.now()}`,
+      label: "Private MCP tool published",
+      detail: toolNameValue,
+      status: "passed",
+      statusLabel: "Published",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [
+      entry,
+      ...state.history,
+    ].slice(0, MAX_HISTORY);
+  }
   if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
     const replay = payload["replay"] as Record<string, unknown> | undefined;
@@ -506,10 +528,11 @@ export function buildBrowserWorkflowPanelState(
       replayWarnings: prefixPlan.warnings,
       generatedAt: {
         compiledAt: bridgeState.compiledAt ?? null,
-        scriptGeneratedAt: bridgeState.scriptGeneratedAt ?? null,
-        manifestGeneratedAt: bridgeState.manifestGeneratedAt ?? null,
-      },
+      scriptGeneratedAt: bridgeState.scriptGeneratedAt ?? null,
+      manifestGeneratedAt: bridgeState.manifestGeneratedAt ?? null,
+      publishedAt: bridgeState.publishedAt ?? null,
     },
+  },
   };
 }
 

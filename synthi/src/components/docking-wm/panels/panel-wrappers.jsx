@@ -465,8 +465,10 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           }
           break;
         case WORKFLOW_ACTIONS.GENERATE_MANIFEST:
-        case WORKFLOW_ACTIONS.PUBLISH_TOOL:
           await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
+          break;
+        case WORKFLOW_ACTIONS.PUBLISH_TOOL:
+          await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {});
           break;
         default:
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);

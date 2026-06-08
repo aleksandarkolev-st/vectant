@@ -252,6 +252,18 @@ async function runCase({ testCase, container, context, runner }) {
     );
     await writeJson(caseDir, "manifest.json", manifest);
 
+    const publishBody = await clickWorkflowButton(idePage, /^Publish$/);
+    const publishedToolName = publishBody.result?.tool_name;
+    record(
+      testCase.id,
+      "click publish private MCP tool",
+      publishBody.ok === true && typeof publishedToolName === "string" && publishedToolName.startsWith("synthi_app_"),
+      `tool=${publishedToolName || "missing"}`
+    );
+    await writeJson(caseDir, "publish.json", publishBody.result);
+    await idePage.bringToFront().catch(() => undefined);
+    await idePage.screenshot({ path: path.join(caseDir, "after-publish-panel.png"), fullPage: true });
+
     const validateBody = await clickWorkflowButton(idePage, /^Validate$/);
     const validation = validateBody.result?.validation;
     record(

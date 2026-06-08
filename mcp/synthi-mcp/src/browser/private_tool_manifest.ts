@@ -69,13 +69,7 @@ export function generatePrivateWorkflowToolManifest(contract: WorkflowContractV7
     tool_name: publish.privateToolName,
     title: contract.name,
     description: contract.description,
-    parameters: contract.parameters.map((parameter) => ({
-      name: parameter.name,
-      label: parameter.label,
-      required: parameter.required,
-      redacted: parameter.redacted,
-      value_shape: parameter.valueShape,
-    })),
+    parameters: manifestParameters(contract.parameters),
     run_modes: publish.runModes,
     default_run_mode: hasMutation ? "confirmBeforeCommit" : publish.runModes[0] ?? "sameSession",
     auth: {
@@ -117,4 +111,43 @@ export function generatePrivateWorkflowToolManifest(contract: WorkflowContractV7
       source_lookup: "synthi_source_lookup_token",
     },
   };
+}
+
+function manifestParameters(parameters: WorkflowParameterV7[]): PrivateWorkflowToolManifestV7["parameters"] {
+  const byName = new Map<string, PrivateWorkflowToolManifestV7["parameters"][number]>();
+  for (const parameter of parameters) {
+    const existing = byName.get(parameter.name);
+    const next: PrivateWorkflowToolManifestV7["parameters"][number] = {
+      name: parameter.name,
+      label: parameter.label,
+      required: parameter.required,
+      redacted: parameter.redacted,
+      value_shape: parameter.valueShape,
+    };
+    if (!existing) {
+      byName.set(parameter.name, next);
+      continue;
+    }
+    byName.set(parameter.name, {
+      name: existing.name,
+      label: existing.label || next.label,
+      required: existing.required || next.required,
+      redacted: existing.redacted || next.redacted,
+      value_shape: mergedValueShape(existing.value_shape, next.value_shape),
+    });
+  }
+  return [...byName.values()];
+}
+
+function mergedValueShape(
+  a: WorkflowParameterV7["valueShape"],
+  b: WorkflowParameterV7["valueShape"]
+): WorkflowParameterV7["valueShape"] {
+  if (a === b) return a;
+  if (a === "secret" || b === "secret") return "secret";
+  if (a === "unknown") return b;
+  if (b === "unknown") return a;
+  if (a === "empty") return b;
+  if (b === "empty") return a;
+  return "unknown";
 }

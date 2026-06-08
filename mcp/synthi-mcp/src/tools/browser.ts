@@ -2,6 +2,10 @@ import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
+import {
+  privateWorkflowToolDefinition,
+  privateWorkflowToolRegistry,
+} from "../browser/private_tool_registry.js";
 import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../browser/preview_target.js";
 import { browserPlaywrightAdapter, type BrowserWorkflowOverlayResponse } from "../browser/playwright_adapter.js";
 import {
@@ -20,6 +24,7 @@ import {
 import { BROWSER_ACTION_KINDS } from "../browser/types.js";
 import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
+import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
@@ -241,6 +246,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
+  "synthi_browser_publish_private_tool",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",
@@ -504,6 +510,18 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_publish_private_tool",
+    description:
+      "Register the generated private app-specific workflow tool with this MCP process so agents can discover and call it directly. Blocked manifests are not published; mutation workflows default to prefix-only replay until explicitly confirmed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. Defaults to the current compiled workflow." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_browser_run_workflow",
     description:
       "Replay the compiled workflow under a control lease. coldSession is the default and stops before the first mutation boundary in a fresh context.",
@@ -652,8 +670,14 @@ export const BROWSER_TOOLS = [
   },
 ] as const;
 
+export function browserPrivateWorkflowTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+  return privateWorkflowToolRegistry.list().map(privateWorkflowToolDefinition);
+}
+
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
+    const privateTool = privateWorkflowToolRegistry.get(toolName);
+    if (privateTool) return await browserRunPublishedPrivateTool(toolName, args);
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
@@ -703,6 +727,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserGenerateScriptTool(args);
       case "synthi_browser_generate_private_tool_manifest":
         return browserGeneratePrivateToolManifestTool(args);
+      case "synthi_browser_publish_private_tool":
+        return browserPublishPrivateToolTool(args);
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
       case "synthi_browser_explain_failure":
@@ -1011,6 +1037,29 @@ function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
     ok: manifest.status !== "blocked",
     workflow_id: artifact.artifact.workflow_id,
     manifest,
+  });
+}
+
+function browserPublishPrivateToolTool(args: unknown): ToolResponse {
+  const workflowId = stringOpt(obj(args)["workflow_id"]);
+  const artifact = browserBroker.workflowArtifact(workflowId);
+  if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
+  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
+  const published = privateWorkflowToolRegistry.publish(manifest, { reservedToolNames: ADVERTISED_TOOLS });
+  if (!published.ok) {
+    return errorResponse(published.error, {
+      workflow_id: artifact.artifact.workflow_id,
+      tool_name: published.tool_name,
+      manifest,
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    workflow_id: artifact.artifact.workflow_id,
+    tool_name: published.registration.tool_name,
+    registered_at: published.registration.registered_at,
+    manifest,
+    tool: privateWorkflowToolDefinition(published.registration),
   });
 }
 
@@ -1431,6 +1480,89 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
     },
   });
+}
+
+async function browserRunPublishedPrivateTool(toolName: string, args: unknown): Promise<ToolResponse> {
+  const registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
+  const manifest = registration.manifest;
+  if (manifest.status === "blocked") {
+    return errorResponse("private_workflow_tool_blocked", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      blockers: manifest.safety.blockers,
+    });
+  }
+
+  const a = obj(args);
+  const parameters: Record<string, string> = {};
+  const missingParameters: string[] = [];
+  for (const parameter of manifest.parameters) {
+    const value = stringOpt(a[parameter.name]);
+    if (value === undefined) {
+      if (parameter.required) missingParameters.push(parameter.name);
+      continue;
+    }
+    parameters[parameter.name] = value;
+  }
+  if (missingParameters.length > 0) {
+    return errorResponse("private_workflow_missing_parameters", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      missing_parameters: missingParameters,
+    });
+  }
+
+  const requestedMode = privateWorkflowRunMode(a["run_mode"]);
+  const confirmMutation = boolOpt(a["confirm_mutation"]) === true;
+  const mode: WorkflowReplayModeV7 = requestedMode ??
+    (manifest.mutation.requires_confirmation ? "prefixOnly" : "sameSession");
+
+  if (manifest.mutation.requires_confirmation && mode === "sameSession" && !confirmMutation) {
+    return errorResponse("mutation_confirmation_required", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      first_mutation_step_id: manifest.mutation.first_mutation_step_id,
+      safe_run_modes: ["prefixOnly", "coldSession"],
+      confirmation_field: "confirm_mutation",
+    });
+  }
+
+  const lease = browserBroker.acquireLease(
+    process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
+    numberOpt(a["lease_ms"]) ?? 15_000,
+    `private_tool:${toolName}`
+  );
+  try {
+    const response = await browserRunWorkflowTool({
+      lease_id: lease.lease_id,
+      workflow_id: registration.workflow_id,
+      mode,
+      parameters,
+      ...(stringOpt(a["tab_id"]) ? { tab_id: stringOpt(a["tab_id"]) } : {}),
+    });
+    const structuredContent = {
+      ...(response.structuredContent ?? {}),
+      private_tool: {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        run_mode: mode,
+        mutation_confirmed: confirmMutation,
+      },
+    };
+    return {
+      ...response,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    };
+  } finally {
+    browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
+  }
+}
+
+function privateWorkflowRunMode(value: unknown): WorkflowReplayModeV7 | undefined {
+  if (value === undefined) return undefined;
+  return normalizeReplayMode(value);
 }
 
 async function openColdReplayTab(url: string): Promise<{ tab_id: string; url: string }> {
