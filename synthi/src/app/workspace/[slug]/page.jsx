@@ -152,6 +152,18 @@ const filesHaveNativeGuiSignals = (files = []) => (
     files.some((file) => sourceHasNativeGuiSignals(file?.content || ''))
 );
 
+const DEFAULT_NATIVE_GUI_VIEWPORT = Object.freeze({
+    width: 800,
+    height: 600,
+    dpr: 1,
+    viewport: { w: 800, h: 600, dpr: 1 },
+});
+
+const pendingNativeGuiConfig = () => ({
+    type: 'run-gui-pending',
+    ...DEFAULT_NATIVE_GUI_VIEWPORT,
+});
+
 const extractCompileManifest = (rawManifestContent, path = '') => {
     if (typeof rawManifestContent !== 'string' || rawManifestContent.trim().length === 0) {
         return null;
@@ -2547,6 +2559,10 @@ export default function EditorPage({ params }) {
         if (hasNativeGuiSignals && !runInGuiMode) {
             appendBuildLog('Detected native GUI framework; opening floating preview.');
         }
+        if (effectiveGuiMode && !isMobile) {
+            setGuiConfig((current) => current || pendingNativeGuiConfig());
+            setIsGuiRunning(true);
+        }
 
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
@@ -2605,6 +2621,9 @@ export default function EditorPage({ params }) {
             }
             console.error('Compile failed', err);
             appendBuildLog(`error: ${msg}`);
+            if (effectiveGuiMode && !isMobile) {
+                setIsGuiRunning(false);
+            }
             if (isReactNative) {
                 setEmulatorForcedError(msg);
             }
@@ -2785,6 +2804,10 @@ export default function EditorPage({ params }) {
             );
             const hasNativeGuiSignals = sourceHasNativeGuiSignals(source) || filesHaveNativeGuiSignals(additionalFiles);
             const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui || hasNativeGuiSignals;
+            if (shouldRunGui) {
+                setGuiConfig((current) => current || pendingNativeGuiConfig());
+                setIsGuiRunning(true);
+            }
 
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {
