@@ -712,6 +712,17 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   const fission = contract.fission_report;
   if (!nonEmptyValue(fission.selected_island)) addFailure(failures, 'fission_selected_island_missing');
   if (!nonEmptyValue(fission.selected_reason)) addFailure(failures, 'fission_selected_reason_missing');
+  if (nonEmptyValue(fission.selected_reason) && fission.selected_reason !== 'verified_fission_contract') {
+    addFailure(failures, 'fission_selected_reason_unverified', {
+      selected_reason: fission.selected_reason,
+    });
+  }
+  if (
+    (fission.smallest_safe_island_proven === true || fission.smallestSafeIslandProven === true)
+    && fission.selected_reason !== 'verified_fission_contract'
+  ) {
+    addFailure(failures, 'fission_smallest_safe_island_without_verified_report');
+  }
   if (fission.artifact_hash_before && fission.artifact_hash_before !== contract.artifact_hash_before) {
     addFailure(failures, 'fission_artifact_before_hash_mismatch', {
       expected: contract.artifact_hash_before,

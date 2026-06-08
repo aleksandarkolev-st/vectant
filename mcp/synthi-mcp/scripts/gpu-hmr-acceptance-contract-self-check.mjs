@@ -292,6 +292,27 @@ expectReject('missing fission selected reason', {
     full_rebuild_used: false,
   },
 }, 'fission_selected_reason_missing');
+expectReject('unverified fission selected reason', {
+  fission_report: {
+    selected_island: 'device-kernel',
+    selected_reason: 'device_translation_unit_hmr',
+    full_device_fallback: false,
+    host_relinked: false,
+    process_restarted: false,
+    full_rebuild_used: false,
+  },
+}, 'fission_selected_reason_unverified');
+expectReject('smallest fission overclaim without verifier', {
+  fission_report: {
+    selected_island: 'device-kernel',
+    selected_reason: 'device_translation_unit_hmr',
+    smallest_safe_island_proven: true,
+    full_device_fallback: false,
+    host_relinked: false,
+    process_restarted: false,
+    full_rebuild_used: false,
+  },
+}, 'fission_smallest_safe_island_without_verified_report');
 expectReject('full rebuild hidden in fission', {
   fission_report: {
     selected_island: 'device-kernel',

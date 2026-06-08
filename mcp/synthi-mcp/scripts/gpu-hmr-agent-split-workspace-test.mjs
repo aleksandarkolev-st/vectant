@@ -25,6 +25,10 @@ import {
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  assessGeneratedGpuSplitGranularity,
+  assertNoGeneratedSplitFissionOverclaim,
+} from './lib/gpu-hmr-generated-split-granularity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1153,6 +1157,25 @@ function validateGeneratedSplit(split) {
   if (!device.includes('__global__')) missing.push('__global__ device kernel');
   if (missing.length) throw new Error(`generated split missing expected generated pieces: ${missing.join(', ')}`);
   record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
+  const granularity = assessGeneratedGpuSplitGranularity({
+    manifest: split.manifest,
+    files: split.files,
+    vendor: split.manifest?.gpu?.vendor,
+  });
+  assertNoGeneratedSplitFissionOverclaim(granularity);
+  record(
+    'generated split HMR granularity',
+    'pass',
+    [
+      `claim=${granularity.acceptedClaim}`,
+      `device_tus=${granularity.deviceTranslationUnitCount}`,
+      `device_roles=${granularity.deviceRoleCount}`,
+      `kernels=${granularity.kernelCount}`,
+      `smallest_safe_fission=${granularity.smallestSafeFissionIslandProven ? 'proven' : 'not_proven'}`,
+      `rejected_claims=${granularity.rejectedClaims.join('|')}`,
+    ].join(' '),
+  );
+  return granularity;
 }
 
 function flipDeviceDirection(source) {
@@ -1215,7 +1238,7 @@ function exposedCompileManifest(manifest) {
   return copy;
 }
 
-function visibleGpuSplitFiles(split) {
+function visibleGpuSplitFiles(split, granularity = null) {
   const files = [];
   for (const [filePath, content] of Object.entries(split.files || {})) {
     const exposed = exposedSplitPath(filePath);
@@ -1224,6 +1247,12 @@ function visibleGpuSplitFiles(split) {
   if (!files.length) return files;
   const manifest = exposedCompileManifest(split.manifest);
   files.push({ path: 'synthi/build_manifest.json', content: JSON.stringify(manifest, null, 2) + '\n' });
+  if (granularity) {
+    files.push({
+      path: 'synthi/gpu_hmr_granularity.json',
+      content: JSON.stringify(granularity, null, 2) + '\n',
+    });
+  }
   files.push({
     path: `${EXPOSED_SPLIT_DIR}/README.md`,
     content: [
@@ -1231,6 +1260,9 @@ function visibleGpuSplitFiles(split) {
       '',
       'These files are the visible editor surface for the generated GPU split.',
       'Edit the device file here for the fast GPU HMR delta path.',
+      '',
+      'Granularity is manifest-derived. A single device file proves device-translation-unit HMR, not per-kernel or smallest-safe fission.',
+      'Smallest-safe fission requires a deterministic fission verifier report.',
       'The internal `.synthi/` files remain implementation metadata.',
       '',
     ].join('\n'),
@@ -1238,11 +1270,17 @@ function visibleGpuSplitFiles(split) {
   return files;
 }
 
-async function persistGeneratedSplitToWorkspace(split) {
+async function persistGeneratedSplitToWorkspace(split, granularity = null) {
   const files = Object.entries(split.files).map(([filePath, content]) => ({ path: filePath, content }));
   files.push({ path: '.synthi_split_meta.json', content: split.sidecarRaw });
   files.push({ path: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' });
-  files.push(...visibleGpuSplitFiles(split));
+  if (granularity) {
+    files.push({
+      path: '.synthi/gpu_hmr_granularity.json',
+      content: JSON.stringify(granularity, null, 2) + '\n',
+    });
+  }
+  files.push(...visibleGpuSplitFiles(split, granularity));
   await writeFilesBatch({ slug: CFG.slug, files });
   record('persist generated split to workspace', 'pass', `${files.length} files`);
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: persist generated split' })
@@ -1601,8 +1639,10 @@ async function run() {
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
-  validateGeneratedSplit(split);
-  await persistGeneratedSplitToWorkspace(split);
+  const granularity = validateGeneratedSplit(split);
+  const granularityPath = await writeJsonArtifact('generated-split-granularity', granularity);
+  record('generated split granularity artifact', 'pass', granularityPath);
+  await persistGeneratedSplitToWorkspace(split, granularity);
 
   const editedDevice = flipDeviceDirection(split.files[split.roles.device]);
   const secondStart = await workerCheckpoint();

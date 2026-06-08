@@ -68,6 +68,7 @@
     "proof:acceptance-contract:self-check": "node scripts/gpu-hmr-acceptance-contract-self-check.mjs",
     "proof:strict-gates:self-check": "node scripts/gpu-hmr-proof-strict-gates-self-check.mjs",
     "proof:visual-evidence:self-check": "node scripts/tests/gpu-hmr-visual-evidence-smoke.mjs",
+    "proof:generated-split-granularity:self-check": "node scripts/tests/gpu-hmr-generated-split-granularity-smoke.mjs",
     "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
     "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
     "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
