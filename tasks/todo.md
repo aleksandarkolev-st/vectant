@@ -175,3 +175,20 @@ All seven Phase-2 tasks landed via strict red→green TDD, each committed with t
 - API + UI: marketplace/installed/install/[installId]/launch routes enforce owner-admin write vs member read with manifest-scoped consent; ProgramsPanel gains an Installed section, install-from-manifest, a scope-listing consent prompt, and launch-from-install, all hidden from plain members.
 - Verification: synthi `npx vitest run` **253 passed** (1 known empty stub tolerated); backend `node --test` **8 pass**; prisma generate ✔ + db push "already in sync" (C2 models reused, no schema delta).
 - Deviations / forward notes: C7's `selectConsentGrant` non-scope-matched note is **resolved** — install consent now scope-matches (`grantCoversScopes`). Disk-gated out (per instructions): `next build` / `docker build` — Phase 2 is TDD-only; an end-to-end docker rebuild (frontend + collab) remains the eventual live check before shipping. Branch not pushed (awaiting direction); ~13 unpushed `tool-compatibility` commits accumulated.
+
+---
+
+# Task: Slice 3 Phase 3 — Web-Port Auto-Detection + Polished Program Tab UX (2026-06-08, tool-compatibility)
+
+Plan: `docs/superpowers/plans/2026-06-08-slice3-phase3-web-port-detection-program-ux-plan.md`.
+Branch: `tool-compatibility` only. Disk gate: TDD only (vitest / `node --test` / `prisma generate|db push`); NO `next build` / `docker build`. No schema change expected (`ProgramSession.lastHealthState` exists).
+
+Existing plumbing reused: `proxyService` global scanner (`getActivePorts`/`onPortsChanged`/`/port/<N>/` proxy), manager `refreshManagedSessionPorts` + `ports_updated`, panel App/Ports/Health surfaces, `mergeProgramSession`, manifest `health` ({type,target,intervalMs}) + `surfaces`.
+
+## Phase-3 Implementation Tasks (TDD, commit per task)
+- [ ] P3-T1 Pure port-attribution + web-port-selection helpers (`attributeSessionPorts`, `selectWebPort`, `samePorts`) in programRuntimeManager.js. 6 node --test cases.
+- [ ] P3-T2 Continuous per-session port recompute (`recomputeManagedPorts`) wired to `proxyService.onPortsChanged`; thread `declaredPorts`/`surfaces` onto the record; `refreshManagedSessionPorts` delegates. 2 tests + server `node --check`.
+- [ ] P3-T3 Injectable HTTP health probing (`probeManagedSessionHealth`, path-only `healthPath`, clamp interval); start on launch / clear on stop+exit; snapshot exposes `healthState`, hides `health`/`healthTimer`. 4 tests.
+- [ ] P3-T4 `mergeProgramSession` surfaces live `healthState` as `lastHealthState`; route assertion. routeHelpers + program-sessions route tests.
+- [ ] P3-T5 ProgramSessionPanel polish — App waiting state, actionable Ports (Open / Set as App), live health badge. 3 jsdom tests.
+- [ ] P3-T6 Regression + security sweep (full vitest + backend node test + prisma; security checklist) + Phase-3 review.
