@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
@@ -1349,6 +1350,8 @@ async function assertVisualDelta(beforeShot, afterShot) {
 
 async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactPrefix = 'after-hmr', waitEvidence = null) {
   const state = await ensureMcpAttached();
+  let gateTokenConsumed = false;
+  let verifiedGateCapture = null;
   const analyzeImage = async (data) => {
     if (!data) return { bytes: 0, visiblePixels: 0, meanLuma: 0 };
     const bytes = Math.floor(data.length * 3 / 4);
@@ -1373,7 +1376,8 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     return { bytes, visiblePixels, meanLuma: lumaTotal / pixels };
   };
   const capture = async () => {
-    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+    const useFrameGate = waitEvidence && !gateTokenConsumed;
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(useFrameGate ? waitEvidence : null, {
       freshnessMaxMs: 15000,
       frameGateTimeoutMs: CFG.frameGateTimeoutMs,
     });
@@ -1382,21 +1386,38 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
       screenshotArgs,
       Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
+    if (screenshotArgs.after_frame_gate) gateTokenConsumed = true;
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
     const meta = mcpScreenshotMetadataFromToolResult(shot) || {};
+    const frameMeta = {
+      ...meta,
+      seq: Number(meta.seq || 0),
+      ts: Number(meta.ts || 0),
+    };
+    const gateTokenVerified = mcpFrameGateSatisfiedByScreenshot(waitEvidence, frameMeta);
+    if (gateTokenVerified) {
+      verifiedGateCapture = {
+        seq: frameMeta.seq,
+        ts: frameMeta.ts,
+      };
+    }
+    const frameAfterGate = !waitEvidence
+      ? false
+      : gateTokenVerified
+        || (verifiedGateCapture !== null
+          && mcpFrameAtOrAfterFrameGate(waitEvidence, frameMeta)
+          && frameMeta.seq >= verifiedGateCapture.seq
+          && frameMeta.ts >= verifiedGateCapture.ts);
     const analysis = await analyzeImage(image?.data);
     return {
       meta,
       imageData: image?.data || '',
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
-      seq: Number(meta.seq || 0),
-      ts: Number(meta.ts || 0),
-      frameCaptureAfterEpochDispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
-        ...meta,
-        seq: Number(meta.seq || 0),
-        ts: Number(meta.ts || 0),
-      }),
+      seq: frameMeta.seq,
+      ts: frameMeta.ts,
+      frameGateTokenVerified: gateTokenVerified,
+      frameCaptureAfterEpochDispatch: frameAfterGate,
       ...analysis,
     };
   };
@@ -1410,12 +1431,18 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
   while (Date.now() < deadline) {
     const shot = await capture();
     samples.push(shot);
-    if (samples.filter(isVisibleFrame).length >= 2) break;
+    const eligibleVisible = samples
+      .filter(isVisibleFrame)
+      .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
+    if (eligibleVisible.length >= 2) break;
     await sleep(500);
   }
-  const visible = samples.filter(isVisibleFrame);
+  const visible = samples
+    .filter(isVisibleFrame)
+    .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
   const first = visible[0] ?? samples[0] ?? { meta: {}, width: 0, height: 0, seq: 0, bytes: 0, visiblePixels: 0, meanLuma: 0 };
   const second = visible.find((shot) => shot.seq > first.seq) ?? visible[1] ?? samples[samples.length - 1] ?? first;
+  const frameGateVerified = !waitEvidence || samples.some((sample) => sample.frameGateTokenVerified === true);
   const ok =
     isVisibleFrame(first) &&
     second.width === first.width &&
@@ -1423,7 +1450,11 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     second.bytes > 512 &&
     second.visiblePixels > 500 &&
     second.seq > first.seq &&
-    (!waitEvidence || second.frameCaptureAfterEpochDispatch === true);
+    frameGateVerified &&
+    (!waitEvidence || (
+      first.frameCaptureAfterEpochDispatch === true &&
+      second.frameCaptureAfterEpochDispatch === true
+    ));
   let artifactDetail = '';
   if (ok && CFG.captureArtifacts) {
     const firstPath = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);

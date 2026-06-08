@@ -349,10 +349,9 @@ export function mcpScreenshotMetadataFromToolResult(result) {
           : null;
 }
 
-export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {
+export function mcpFrameAtOrAfterFrameGate(waitOrGate, afterScreenshot) {
   if (!mcpFrameGateSatisfied(waitOrGate)) return false;
   const gate = mcpFrameGateObject(waitOrGate);
-  if (!captureManifestVerified(afterScreenshot, gate)) return false;
   const gateSeq = finiteNumberOrNull(gate.frame_seq ?? gate.frameSeq);
   const gateTs = finiteNumberOrNull(gate.ts_ms ?? gate.tsMs ?? gate.ts);
   if (gateSeq === null && gateTs === null) return false;
@@ -361,6 +360,13 @@ export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {
   const seqOk = gateSeq === null || (afterSeq !== null && afterSeq >= gateSeq);
   const tsOk = gateTs === null || (afterTs !== null && afterTs >= gateTs);
   return seqOk && tsOk;
+}
+
+export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {
+  if (!mcpFrameGateSatisfied(waitOrGate)) return false;
+  const gate = mcpFrameGateObject(waitOrGate);
+  if (!captureManifestVerified(afterScreenshot, gate)) return false;
+  return mcpFrameAtOrAfterFrameGate(waitOrGate, afterScreenshot);
 }
 
 export function deterministicVisualModeFromMcpEvidence(input = {}) {
