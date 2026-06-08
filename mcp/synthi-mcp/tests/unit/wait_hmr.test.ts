@@ -547,6 +547,40 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_validation?.reason).toBe("proof_state_missing");
   });
 
+  it("waits for requested full runtime proof after applied terminal", async () => {
+    const ledger = passingProofLedger();
+    const fake = installFakeAttached(async () => {
+      setTimeout(
+        () =>
+          fake.feedHmr({
+            status: "gpu-proof-state",
+            resultState: "gpu-hmr-full-runtime-proven",
+            proofLedger: ledger,
+            runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+          }),
+        25
+      );
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const started = Date.now();
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(20);
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      gpu_proof_validation?: {
+        satisfied?: boolean;
+        runtimeProofArtifactValidation?: { accepted?: boolean };
+      };
+    };
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+  });
+
   it("rejects full runtime proof telemetry without proof ledger", async () => {
     const fake = installFakeAttached(async () => {
       fake.feedHmr({

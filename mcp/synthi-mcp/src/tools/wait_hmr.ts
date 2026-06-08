@@ -180,9 +180,17 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
+    let notifyRequiredProof: (() => void) | null = null;
+    const requiredProofSatisfied = (): boolean => {
+      return requiredProofState !== null
+        && validateGpuHmrProofState(latestGpuProof, requiredProofState).satisfied;
+    };
     unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
       const proof = classifyGpuHmrProofMessage(msg);
-      if (gpuHmrProofMatches(proof, proofMatchOpts)) latestGpuProof = proof;
+      if (gpuHmrProofMatches(proof, proofMatchOpts)) {
+        latestGpuProof = proof;
+        notifyRequiredProof?.();
+      }
       const cls = classifyHmrMessage(msg);
       if (!cls) return;
       if (cls.status === "applied") {
@@ -192,6 +200,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       if (!sawAppliedTerminal || postApplyTerminal) return;
       postApplyTerminal = cls;
       notifyPostApplyTerminal?.();
+      notifyRequiredProof?.();
     });
 
     const waitForPostApplyTerminal = (
@@ -217,6 +226,42 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         notifyPostApplyTerminal = onTerminal;
         const timer = setTimeout(() => settle(null), timeoutMs);
         cancel = (): void => settle(null);
+      });
+      return { promise, cancel };
+    };
+
+    const waitForRequiredGpuProof = (
+      timeoutMs: number
+    ): { promise: Promise<"satisfied" | "terminal" | "timeout">; cancel: () => void } => {
+      if (requiredProofState === null || requiredProofSatisfied()) {
+        return { promise: Promise.resolve("satisfied"), cancel: () => {} };
+      }
+      if (postApplyTerminal) {
+        return { promise: Promise.resolve("terminal"), cancel: () => {} };
+      }
+      if (timeoutMs <= 0) {
+        return { promise: Promise.resolve("timeout"), cancel: () => {} };
+      }
+      let cancel = (): void => {};
+      const promise = new Promise<"satisfied" | "terminal" | "timeout">((resolve) => {
+        let settled = false;
+        const settle = (value: "satisfied" | "terminal" | "timeout"): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (notifyRequiredProof === onProofOrTerminal) notifyRequiredProof = null;
+          resolve(value);
+        };
+        const onProofOrTerminal = (): void => {
+          if (requiredProofSatisfied()) {
+            settle("satisfied");
+          } else if (postApplyTerminal) {
+            settle("terminal");
+          }
+        };
+        notifyRequiredProof = onProofOrTerminal;
+        const timer = setTimeout(() => settle("timeout"), timeoutMs);
+        cancel = (): void => settle("timeout");
       });
       return { promise, cancel };
     };
@@ -312,6 +357,26 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           pipeline_budget_ms: budget,
           post_apply_observe_ms: observeMs,
         };
+      }
+    }
+
+    if (result.status === "applied" && requiredProofState !== null && !requiredProofSatisfied()) {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+      const proofWait = waitForRequiredGpuProof(remaining);
+      const proofOutcome = await proofWait.promise;
+      proofWait.cancel();
+      if (proofOutcome === "terminal" && postApplyTerminal) {
+        const late = terminalEventFromClassification(postApplyTerminal, Date.now() - start);
+        return responseWithGpuProofValidation({
+          status: late.status,
+          elapsedMs: Date.now() - start,
+          hmrElapsedMs: late.elapsedMs,
+          source: late.source,
+          detail: late.detail ?? null,
+          post_apply_terminal: true,
+          wait_contract: waitContract,
+          ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
+        }, latestGpuProof, requiredProofState);
       }
     }
 
