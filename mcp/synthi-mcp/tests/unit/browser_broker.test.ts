@@ -139,13 +139,86 @@ describe("browser broker privacy boundary", () => {
       element: { role: "button", name: "Pay" },
     })).toEqual({ ok: false, error: "teach_origin_mismatch" });
 
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      frame_id: "iframe",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada",
+      detail: {
+        frame_locator: "iframe[data-testid=\"billing\"]",
+        frame_origin: "https://billing.example.com",
+      },
+      element: { role: "textbox", label: "Cardholder" },
+    })).toEqual({ ok: false, error: "frame_origin_consent_required" });
+
     expect(browserBroker.registerTabs([
       { tab_id: "popup", opener_tab_id: "app", url: "https://billing.example.com/popup", active: true },
     ])).toHaveLength(0);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_event: true,
+        popup_url: "https://billing.example.com/popup",
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+      },
+      element: { role: "button", name: "Open billing" },
+    })).toEqual({ ok: false, error: "popup_origin_consent_required" });
+
     browserBroker.requestConsent("https://billing.example.com");
     expect(browserBroker.registerTabs([
       { tab_id: "popup", opener_tab_id: "app", url: "https://billing.example.com/popup", active: true },
     ])).toHaveLength(1);
+
+    const frameAction = browserBroker.recordHumanAction({
+      tab_id: "app",
+      frame_id: "iframe",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada",
+      detail: {
+        frame_locator: "iframe[data-testid=\"billing\"]",
+        frame_origin: "https://billing.example.com",
+      },
+      element: { role: "textbox", label: "Cardholder" },
+    });
+    expect(frameAction.ok).toBe(true);
+    if (!frameAction.ok) throw new Error("unexpected frame action failure");
+    expect(frameAction.event.detail).toEqual(expect.objectContaining({
+      frame_origin: "https://billing.example.com",
+      frame_origin_approved: true,
+    }));
+    expect(frameAction.event.security).toEqual(expect.objectContaining({
+      exact_origin_approved: true,
+      frame_origin_approved: true,
+    }));
+
+    const popupAction = browserBroker.recordHumanAction({
+      tab_id: "popup",
+      url: "https://billing.example.com/popup",
+      origin: "https://billing.example.com",
+      action: "click",
+      detail: {
+        popup_context: true,
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+        opener_origin: "https://app.example.com",
+      },
+      element: { role: "button", name: "Pay now" },
+    });
+    expect(popupAction.ok).toBe(true);
+    if (!popupAction.ok) throw new Error("unexpected popup action failure");
+    expect(popupAction.event.detail).toEqual(expect.objectContaining({
+      popup_context: true,
+      popup_tab_id: "popup",
+      opener_tab_id: "app",
+    }));
   });
 
   it("lease revocation interrupts queued actions", () => {
@@ -419,8 +492,9 @@ describe("browser locator and script policy", () => {
     const generated = browserBroker.generatedScript();
     expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? \"https://app.example.com\";");
     expect(generated.code).toContain("const target1 = await firstVisible(page.getByLabel(\"Name\")");
-    expect(generated.code).toContain("await target1.fill(\"Ada\");");
-    expect(generated.code).toContain("await expect(target1).toHaveValue(\"Ada\");");
+    expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"NAME\", \"browser_evt_1\");");
+    expect(generated.code).toContain("await target1.fill(inputValue1);");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(inputValue1);");
     expect(generated.used_locators[0]?.confidence).toBeGreaterThan(0.9);
     expect(generated.used_locators[0]?.fallbacks.map((candidate) => candidate.kind)).toContain("placeholder");
   });

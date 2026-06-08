@@ -1111,7 +1111,7 @@ function workflowLimitations(
   if (steps.some((step) => step.limitations.includes("closedShadowDomBlocked"))) limitations.add("closedShadowDomBlocked");
   if (steps.some((step) => step.limitations.includes("pointerDragUnreliable"))) limitations.add("pointerDragUnreliable");
   if (hasMutation) limitations.add("mutationRequiresIsolation");
-  if (events.some((event) => event.origin && appOrigin !== "unknown" && event.origin !== appOrigin)) limitations.add("crossOriginTrace");
+  if (events.some((event) => eventHasCrossOriginTarget(event, appOrigin))) limitations.add("crossOriginTrace");
   const actionTabIds = new Set(events
     .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
     .map((event) => event.tab_id)
@@ -1156,12 +1156,28 @@ function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string):
   return true;
 }
 
+function eventHasCrossOriginTarget(event: BrowserTraceEvent, appOrigin: string): boolean {
+  if (appOrigin === "unknown") return false;
+  if (event.origin && event.origin !== appOrigin) return true;
+  const frameOrigin = stringDetail(event, "frame_origin");
+  if (frameOrigin && originFor(frameOrigin) !== appOrigin) return true;
+  const popupOrigin = stringDetail(event, "popup_origin");
+  if (popupOrigin && originFor(popupOrigin) !== appOrigin) return true;
+  const popupUrl = stringDetail(event, "popup_url");
+  if (popupUrl && originFor(popupUrl) !== appOrigin) return true;
+  return false;
+}
+
 function originFor(url: string): string | null {
   try {
-    return new URL(url).origin;
+    return normalizeOriginForWorkflow(url);
   } catch {
     return null;
   }
+}
+
+function normalizeOriginForWorkflow(urlOrOrigin: string): string {
+  return new URL(urlOrOrigin).origin;
 }
 
 function successCriteriaFor(steps: WorkflowStepContractV7[]): WorkflowContractV7["successCriteria"] {

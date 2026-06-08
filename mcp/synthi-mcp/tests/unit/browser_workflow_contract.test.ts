@@ -521,6 +521,25 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("marks durable cross-origin iframe traces as cross-origin", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "card",
+        frame_id: "checkout-frame",
+        detail: {
+          frame_locator: "iframe[data-testid=\"checkout-frame\"]",
+          frame_origin: "https://billing.example.com",
+          frame_origin_approved: true,
+          element: { role: "textbox", label: "Cardholder", source_id: "src_cardholder" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
+  });
+
   it("treats open shadow DOM traces as durable when a piercing locator is captured", () => {
     const events = [
       baseEvent({

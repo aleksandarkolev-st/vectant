@@ -286,7 +286,7 @@ export class BrowserBroker {
     const sameTeachTab = this.teachMode.tab_id === tab_id;
     const popupTeachTab = this.isTeachPopupContext(tab_id, detail);
     if (!sameTeachTab && !popupTeachTab) return;
-    if (this.teachMode.origin !== origin) {
+    if (!popupTeachTab && this.teachMode.origin !== origin) {
       this.stopTeachMode(this.hasOriginConsent(origin) ? "origin_changed" : "unapproved_origin_change");
       return;
     }
@@ -295,13 +295,18 @@ export class BrowserBroker {
       return;
     }
     if (previousUrl === nextUrl) return;
+    const eventDetail = this.detailWithTargetSecurity(nextUrl, {
+      event_source: "page_lifecycle",
+      navigation_event: true,
+      ...(detail ?? {}),
+    });
     const event = this.trace.recordNavigation({
       tab_id,
       url: nextUrl,
       origin,
       action: "navigate",
-      detail: { event_source: "page_lifecycle", navigation_event: true, ...(detail ?? {}) },
-      security: this.securityForUrl(nextUrl),
+      detail: eventDetail,
+      security: this.securityForUrl(nextUrl, eventDetail),
     });
     eventLog.push({ kind: "browser", action: "navigation", payload: { event } });
   }
@@ -330,6 +335,7 @@ export class BrowserBroker {
     const intentGate = this.requireExplicitIntent(selection.action, selection.detail);
     if (!intentGate.ok) return intentGate;
     const lease_conflict = this.activeLease !== null && !this.activeLease.revoked;
+    const detail = this.detailWithTargetSecurity(selection.url, selection.detail);
     const event = this.trace.recordHumanAction({
       tab_id: selection.tab_id,
       frame_id: selection.frame_id,
@@ -339,8 +345,8 @@ export class BrowserBroker {
       value: selection.value,
       field_name: selection.field_name,
       element: selection.element,
-      detail: { ...(selection.detail ?? {}), lease_conflict },
-      security: this.securityForUrl(selection.url),
+      detail: { ...detail, lease_conflict },
+      security: this.securityForUrl(selection.url, detail),
     });
     eventLog.push({ kind: "browser", action: "human_action", payload: { event, lease_conflict } });
     if (lease_conflict) {
@@ -605,17 +611,17 @@ export class BrowserBroker {
   private requireTeach(tab_id: string, url: string, detail?: Record<string, unknown>): { ok: true } | { ok: false; error: string } {
     if (!this.teachMode.active) return { ok: false, error: "teach_mode_required" };
     const origin = normalizeOrigin(url).origin;
-    if (this.teachMode.tab_id !== tab_id && !this.isSameOriginPopupTeachTab(tab_id, origin, detail)) {
+    const popupContext = this.isTeachPopupContext(tab_id, detail);
+    if (this.teachMode.tab_id !== tab_id && !popupContext) {
       return { ok: false, error: "teach_tab_mismatch" };
     }
-    if (this.teachMode.origin !== origin) return { ok: false, error: "teach_origin_mismatch" };
+    if (!popupContext && this.teachMode.origin !== origin) return { ok: false, error: "teach_origin_mismatch" };
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
+    const frameGate = this.requireFrameOriginConsent(origin, detail);
+    if (!frameGate.ok) return frameGate;
+    const popupGate = this.requirePopupOriginConsent(origin, detail);
+    if (!popupGate.ok) return popupGate;
     return { ok: true };
-  }
-
-  private isSameOriginPopupTeachTab(tab_id: string, origin: string, detail: Record<string, unknown> | undefined): boolean {
-    if (!this.isTeachPopupContext(tab_id, detail)) return false;
-    return origin === this.teachMode.origin;
   }
 
   private isTeachPopupContext(tab_id: string, detail: Record<string, unknown> | undefined): boolean {
@@ -641,13 +647,70 @@ export class BrowserBroker {
     return { ok: true, origin };
   }
 
-  private securityForUrl(url: string): BrowserTraceEvent["security"] {
-    return {
+  private securityForUrl(url: string, detail?: Record<string, unknown>): BrowserTraceEvent["security"] {
+    const security: NonNullable<BrowserTraceEvent["security"]> = {
       exact_origin_approved: this.hasOriginConsent(url),
       screenshot_approved: this.hasScreenshotConsent(url),
       diagnostics_approved: this.hasDiagnosticsConsent(url),
       auth_checkpoint_approved: this.hasAuthCheckpointAccess(url),
     };
+    const frameOrigin = this.targetOriginFromDetail(detail, "frame_origin");
+    if (frameOrigin) {
+      security.frame_origin_approved = this.hasOriginConsent(frameOrigin);
+      security.frame_screenshot_approved = this.hasScreenshotConsent(frameOrigin);
+    }
+    const popupOrigin = this.popupOriginFromDetail(detail);
+    if (popupOrigin) {
+      security.popup_origin_approved = this.hasOriginConsent(popupOrigin);
+    }
+    return security;
+  }
+
+  private detailWithTargetSecurity(url: string, detail: Record<string, unknown> | undefined): Record<string, unknown> {
+    const next = { ...(detail ?? {}) };
+    const pageOrigin = normalizeOrigin(url).origin;
+    const frameOrigin = this.targetOriginFromDetail(next, "frame_origin");
+    if (frameOrigin) {
+      next["frame_origin"] = frameOrigin;
+      next["frame_origin_approved"] = frameOrigin === pageOrigin || this.hasOriginConsent(frameOrigin);
+      next["frame_screenshot_approved"] = frameOrigin === pageOrigin || this.hasScreenshotConsent(frameOrigin);
+    }
+    const popupOrigin = this.popupOriginFromDetail(next);
+    if (popupOrigin) {
+      next["popup_origin"] = popupOrigin;
+      next["popup_origin_approved"] = popupOrigin === pageOrigin || this.hasOriginConsent(popupOrigin);
+    }
+    return next;
+  }
+
+  private requireFrameOriginConsent(pageOrigin: string, detail: Record<string, unknown> | undefined): { ok: true } | { ok: false; error: string } {
+    const frameOrigin = this.targetOriginFromDetail(detail, "frame_origin");
+    if (!frameOrigin || frameOrigin === pageOrigin) return { ok: true };
+    if (!this.hasOriginConsent(frameOrigin)) return { ok: false, error: "frame_origin_consent_required" };
+    return { ok: true };
+  }
+
+  private requirePopupOriginConsent(pageOrigin: string, detail: Record<string, unknown> | undefined): { ok: true } | { ok: false; error: string } {
+    const popupOrigin = this.popupOriginFromDetail(detail);
+    if (!popupOrigin || popupOrigin === pageOrigin) return { ok: true };
+    if (!this.hasOriginConsent(popupOrigin)) return { ok: false, error: "popup_origin_consent_required" };
+    return { ok: true };
+  }
+
+  private popupOriginFromDetail(detail: Record<string, unknown> | undefined): string | null {
+    const popupUrlOrigin = this.targetOriginFromDetail(detail, "popup_url");
+    if (popupUrlOrigin) return popupUrlOrigin;
+    return this.targetOriginFromDetail(detail, "popup_origin");
+  }
+
+  private targetOriginFromDetail(detail: Record<string, unknown> | undefined, key: string): string | null {
+    const raw = detail?.[key];
+    if (typeof raw !== "string" || raw.trim().length === 0) return null;
+    try {
+      return normalizeOrigin(raw).origin;
+    } catch {
+      return null;
+    }
   }
 
   private requireExplicitIntent(

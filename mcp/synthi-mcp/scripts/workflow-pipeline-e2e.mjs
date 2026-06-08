@@ -1243,9 +1243,13 @@ const CASES = [
     id: "iframe-form",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: ["Saved Ada Lovelace"],
-    expectedReplayCode: ["page.frameLocator(\"iframe[data-testid=\\\"checkout-frame\\\"]\")"],
+    expectedReplayText: [],
+    expectedReplayCode: [
+      "page.frameLocator(\"iframe[data-testid=\\\"checkout-frame\\\"]\")",
+      "Mutation boundary:",
+    ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({ CARDHOLDER: "Ada Lovelace" }),
     files: () => commonFiles({
       title: "Iframe Form Workflow",
       body: [
@@ -2831,15 +2835,15 @@ const CASES = [
     expectedActions: ["click", "fill"],
     expectedReplayText: [
       "Popup editor opened",
-      "Saved popup query contracts",
     ],
     expectedReplayCode: [
       "page.waitForEvent('popup')",
       "popup1.getByLabel(\"Search help\")",
       "popup1.getByRole(\"button\", { name: \"Save query\" })",
-      "popup1.getByText(\"Saved popup query contracts\", { exact: true })",
+      "Mutation boundary:",
     ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({ SEARCH_HELP: "contracts" }),
     files: () => [
       ...commonFiles({
         title: "Popup Form Workflow",
