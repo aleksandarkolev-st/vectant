@@ -134,6 +134,78 @@ export async function upsertLocalProgram({ workspaceSlug, config }) {
   return { program, version };
 }
 
+// ── Published marketplace helpers (Phase 5) ──
+//
+// A *published* program is a MarketplaceProgram whose publisher is the source
+// workspace slug and whose packageId is namespaced `@<slug>/<name>` — distinct
+// from the workspace-local `publisher='local'` / `local:<slug>:<id>` rows.
+
+/** Build the published packageId for a workspace's program. */
+export function publishedPackageId(workspaceSlug, packageId) {
+  return `@${workspaceSlug}/${packageId}`;
+}
+
+/**
+ * Publish (or re-publish) a workspace program from its NormalizedProgramConfig.
+ * Idempotent upsert; re-publishing the same version updates its manifest, a new
+ * version bumps `latestVersion`.
+ */
+export async function publishProgram({ workspaceSlug, config, publishedByUserId }) {
+  const packageId = publishedPackageId(workspaceSlug, config.packageId);
+
+  const program = await prisma.marketplaceProgram.upsert({
+    where: { packageId },
+    update: {
+      latestVersion: config.version,
+      displayName: config.displayName || config.packageId,
+      description: config.description || null,
+      publishedByUserId,
+    },
+    create: {
+      packageId,
+      publisher: workspaceSlug,
+      verified: false,
+      latestVersion: config.version,
+      displayName: config.displayName || config.packageId,
+      description: config.description || null,
+      publishedByUserId,
+    },
+  });
+
+  const version = await prisma.programVersion.upsert({
+    where: { programId_version: { programId: program.id, version: config.version } },
+    update: {
+      manifestJson: JSON.stringify(config),
+      requiredTools: [],
+      ports: (config.ports || []).map((p) => String(p)),
+    },
+    create: {
+      programId: program.id,
+      version: config.version,
+      manifestJson: JSON.stringify(config),
+      requiredTools: [],
+      ports: (config.ports || []).map((p) => String(p)),
+    },
+  });
+
+  return { program, version };
+}
+
+/** Allow-listed public projection of a published program (never the manifest). */
+export function toPublicMarketplaceProgram(row) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    packageId: row.packageId,
+    publisher: row.publisher,
+    verified: row.verified,
+    latestVersion: row.latestVersion,
+    displayName: row.displayName ?? null,
+    description: row.description ?? null,
+    installCount: row.installCount ?? 0,
+  };
+}
+
 export async function createInstall({ programId, workspaceSlug, version, installedByUserId, grantId = null, status = 'installing' }) {
   return prisma.programInstall.create({
     data: { programId, workspaceSlug, version, installedByUserId, grantId, status },

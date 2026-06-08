@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
     permissionGrant: { create: vi.fn(), findMany: vi.fn() },
     programSession: { create: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     programRuntimeEvent: { create: vi.fn(), findMany: vi.fn() },
-    marketplaceProgram: { upsert: vi.fn(), findMany: vi.fn() },
+    marketplaceProgram: { upsert: vi.fn(), findMany: vi.fn(), update: vi.fn(), findUnique: vi.fn() },
     programVersion: { upsert: vi.fn(), findUnique: vi.fn() },
     programInstall: { create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
   },
@@ -25,7 +25,9 @@ import {
   listPermissionGrants,
   listProgramRuntimeEvents,
   listProgramSessions,
+  publishProgram,
   toPublicInstall,
+  toPublicMarketplaceProgram,
   updateInstallStatus,
   updateProgramSession,
   upsertLocalProgram,
@@ -364,6 +366,36 @@ describe('toPublicInstall', () => {
     expect(pub).not.toHaveProperty('program');
     expect(pub).not.toHaveProperty('manifestJson');
     expect(pub).not.toHaveProperty('env');
+    expect(JSON.stringify(pub)).not.toContain('SECRET');
+  });
+});
+
+describe('publishProgram', () => {
+  it('publishes under the @slug/<name> namespace with publisher = slug', async () => {
+    h.prisma.marketplaceProgram.upsert.mockResolvedValue({ id: 'prog1', packageId: '@team/web', publisher: 'team' });
+    h.prisma.programVersion.upsert.mockResolvedValue({ id: 'ver1' });
+    const config = { packageId: 'web', version: '1.2.0', displayName: 'Web', description: 'A dev server', launch: 'npm run dev', ports: [3000] };
+
+    const { program } = await publishProgram({ workspaceSlug: 'team', config, publishedByUserId: 'u1' });
+
+    expect(program.packageId).toBe('@team/web');
+    const upsertArg = h.prisma.marketplaceProgram.upsert.mock.calls[0][0];
+    expect(upsertArg.where).toEqual({ packageId: '@team/web' });
+    expect(upsertArg.create).toMatchObject({ packageId: '@team/web', publisher: 'team', publishedByUserId: 'u1', displayName: 'Web', description: 'A dev server', latestVersion: '1.2.0' });
+    const verArg = h.prisma.programVersion.upsert.mock.calls[0][0];
+    expect(verArg.where).toEqual({ programId_version: { programId: 'prog1', version: '1.2.0' } });
+  });
+});
+
+describe('toPublicMarketplaceProgram', () => {
+  it('allow-lists display/reputation fields and never leaks versions/manifest', () => {
+    const pub = toPublicMarketplaceProgram({
+      id: 'p1', packageId: '@team/web', publisher: 'team', verified: true, latestVersion: '1.0.0',
+      displayName: 'Web', description: 'd', installCount: 7,
+      versions: [{ manifestJson: 'SECRET' }], publishedByUserId: 'u1',
+    });
+    expect(pub).toEqual({ id: 'p1', packageId: '@team/web', publisher: 'team', verified: true, latestVersion: '1.0.0', displayName: 'Web', description: 'd', installCount: 7 });
+    expect(pub.versions).toBeUndefined();
     expect(JSON.stringify(pub)).not.toContain('SECRET');
   });
 });
