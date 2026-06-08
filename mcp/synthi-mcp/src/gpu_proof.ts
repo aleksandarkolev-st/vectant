@@ -282,7 +282,9 @@ function proofLedgerBindingFailures(
   const failures: Array<{ code: string }> = [];
   for (const [field, expectedValue] of Object.entries(expected)) {
     const actualValue = actual[field];
-    if (expectedValue !== null && actualValue !== null && expectedValue !== actualValue) {
+    if (expectedValue !== null && actualValue === null) {
+      failures.push({ code: `runtime_artifact_ledger_${field}_missing` });
+    } else if (expectedValue !== null && actualValue !== null && expectedValue !== actualValue) {
       failures.push({ code: `runtime_artifact_ledger_${field}_mismatch` });
     }
   }

@@ -771,6 +771,32 @@ describe("GPU HMR proof-state validation", () => {
     );
   });
 
+  it("rejects full runtime artifact with missing expected ledger identity", () => {
+    const ledger = proofLedger();
+    const underSpecifiedLedger = proofLedger();
+    const record = underSpecifiedLedger.records[0] as Record<string, any>;
+    record.dispatch_event = {
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      timestamp_monotonic_ns: 300,
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(underSpecifiedLedger),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "runtime_artifact_ledger_dispatch_event_id_missing"
+    );
+  });
+
   it("rejects full runtime artifact bound to a different output oracle target", () => {
     const ledger = proofLedger({
       output_oracle_target: {
