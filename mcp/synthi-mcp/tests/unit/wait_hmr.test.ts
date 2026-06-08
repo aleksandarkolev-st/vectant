@@ -78,6 +78,8 @@ function passingProofLedger() {
         checksum_before: HASH_A,
         checksum_after: HASH_B,
         deterministic_slice: { offset: 0, length: 32 },
+        raw_readback_hash: HASH_B,
+        raw_readback_source: "runtime_readback_sample",
         oracle_code_hash: HASH_C,
         rendered_card_png: "memory://card.png",
         producer: "wait_hmr.test",
@@ -409,6 +411,41 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
     expect(body.gpu_proof_ledger_validation?.gpuHmrSuccess).toBe(true);
     expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+  });
+
+  it("rejects full runtime proof when compute readback is digest-derived", async () => {
+    const ledger = passingProofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, any>;
+    artifacts.raw_readback_source = "runtime_checksum_digest";
+    artifacts.deterministic_slice = {
+      ...artifacts.deterministic_slice,
+      source: "runtime_checksum_digest",
+    };
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-full-runtime-proven",
+        proofLedger: ledger,
+        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+      });
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
+
+    expect(fake).toBeDefined();
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { reason?: string };
+      gpu_proof_ledger_validation?: { failedInvariants?: Array<{ code?: string }> };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.reason).toBe("proof_ledger_rejected");
+    expect(body.gpu_proof_ledger_validation?.failedInvariants?.map((failure) => failure.code)).toContain(
+      "compute_oracle_raw_readback_digest_derived"
+    );
   });
 
   it("rejects a retained GPU proof that predates since_ts", async () => {

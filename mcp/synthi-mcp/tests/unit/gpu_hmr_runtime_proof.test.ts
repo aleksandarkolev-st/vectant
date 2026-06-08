@@ -429,6 +429,8 @@ function deterministicOutputOracle({
         checksum_before: `sha256:${"1".repeat(64)}`,
         checksum_after: `sha256:${"2".repeat(64)}`,
         deterministic_slice: ["expected-sentinel"],
+        raw_readback_hash: `sha256:${"4".repeat(64)}`,
+        raw_readback_source: "runtime_readback_sample",
         oracle_code_hash: `sha256:${"3".repeat(64)}`,
         rendered_card_png: "artifacts/compute-proof.png",
         producer: "deterministic_probe",
@@ -7720,6 +7722,50 @@ describe("GPU HMR runtime output proof classification", () => {
           },
         },
         "dispatch_artifact_hash_mismatch",
+      ],
+      [
+        (() => {
+          const computeArtifacts = {
+            ...baseRecord.oracle_artifacts.compute_oracle_artifacts,
+          };
+          delete computeArtifacts.raw_readback_hash;
+          delete computeArtifacts.raw_readback_source;
+          return {
+            ...baseRecord,
+            oracle_artifacts: {
+              compute_oracle_artifacts: computeArtifacts,
+            },
+          };
+        })(),
+        "compute_oracle_raw_readback_unproven",
+      ],
+      [
+        {
+          ...baseRecord,
+          oracle_artifacts: {
+            compute_oracle_artifacts: {
+              ...baseRecord.oracle_artifacts.compute_oracle_artifacts,
+              raw_readback_source: "runtime_checksum_digest",
+              deterministic_slice: {
+                ...baseRecord.oracle_artifacts.compute_oracle_artifacts.deterministic_slice,
+                source: "runtime_checksum_digest",
+              },
+            },
+          },
+        },
+        "compute_oracle_raw_readback_digest_derived",
+      ],
+      [
+        {
+          ...baseRecord,
+          oracle_artifacts: {
+            compute_oracle_artifacts: {
+              ...baseRecord.oracle_artifacts.compute_oracle_artifacts,
+              raw_readback_source: "unit_test_fixture",
+            },
+          },
+        },
+        "compute_oracle_raw_readback_source_unaccepted",
       ],
     ] as const;
 

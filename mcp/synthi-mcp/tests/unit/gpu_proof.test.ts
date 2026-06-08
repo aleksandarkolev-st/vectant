@@ -72,6 +72,8 @@ function proofLedger(overrides: Record<string, unknown> = {}) {
         checksum_before: HASH_A,
         checksum_after: HASH_B,
         deterministic_slice: { offset: 0, length: 32 },
+        raw_readback_hash: HASH_B,
+        raw_readback_source: "runtime_readback_sample",
         oracle_code_hash: HASH_C,
         rendered_card_png: "memory://card.png",
         producer: "gpu_proof.test",
@@ -396,6 +398,68 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.satisfied).toBe(false);
     expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
       "compute_oracle_artifacts_missing"
+    );
+  });
+
+  it("rejects full runtime compute proof without raw readback provenance", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, unknown>;
+    delete artifacts.raw_readback_hash;
+    delete artifacts.raw_readback_source;
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "compute_oracle_raw_readback_unproven"
+    );
+  });
+
+  it("rejects full runtime compute proof derived from a checksum digest", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, any>;
+    artifacts.raw_readback_source = "runtime_checksum_digest";
+    artifacts.deterministic_slice = {
+      ...artifacts.deterministic_slice,
+      source: "runtime_checksum_digest",
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "compute_oracle_raw_readback_digest_derived"
+    );
+  });
+
+  it("rejects full runtime compute proof with an unaccepted raw readback source", () => {
+    const ledger = proofLedger();
+    const record = ledger.records[0] as Record<string, any>;
+    const artifacts = record.oracle_artifacts.compute_oracle_artifacts as Record<string, unknown>;
+    artifacts.raw_readback_source = "unit_test_fixture";
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
+      "compute_oracle_raw_readback_source_unaccepted"
     );
   });
 

@@ -76,6 +76,8 @@ function baselineComputeOracleArtifacts(overrides = {}) {
       length: 64,
       format: 'float32',
     },
+    raw_readback_hash: HASH_B,
+    raw_readback_source: 'runtime_readback_sample',
     oracle_code_hash: HASH_C,
     rendered_card_png: 'memory://compute-oracle-card.png',
     producer: 'adversarial-ledger-self-check',
@@ -900,6 +902,34 @@ const cases = [
       compute_oracle_artifacts: baselineComputeOracleArtifacts({ checksum_after: HASH_A }),
     },
   }), 'compute_oracle_checksum_unchanged'],
+  ['missing compute raw readback proof', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts({
+        raw_readback_hash: null,
+        raw_readback_source: null,
+      }),
+    },
+  }), 'compute_oracle_raw_readback_unproven'],
+  ['digest-derived compute raw readback proof', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts({
+        raw_readback_source: 'runtime_checksum_digest',
+        deterministic_slice: {
+          offset: 0,
+          length: 64,
+          format: 'float32',
+          source: 'runtime_checksum_digest',
+        },
+      }),
+    },
+  }), 'compute_oracle_raw_readback_digest_derived'],
+  ['unaccepted compute raw readback source', baselineRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: baselineComputeOracleArtifacts({
+        raw_readback_source: 'unit_test_fixture',
+      }),
+    },
+  }), 'compute_oracle_raw_readback_source_unaccepted'],
   ['visual without deterministic mode', baselineRecord({ output_event: { kind: 'render_target_hash', epoch: 'epoch-7', artifact_hash: HASH_B, process_id: 'pid-1', after_dispatch_id: 'dispatch-1', passed: true, timestamp_monotonic_ns: 400 } }), 'visual_output_without_deterministic_mode'],
   ['missing visual oracle artifacts', baselineVisualRecord({ oracle_artifacts: {} }), 'visual_oracle_artifacts_missing'],
   ['incomplete visual oracle artifacts', baselineVisualRecord({

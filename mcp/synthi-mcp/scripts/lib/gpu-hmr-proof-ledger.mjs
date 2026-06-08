@@ -332,6 +332,47 @@ function computeOracleArtifacts(recordOracleArtifacts, outputEvent) {
   ], COMPUTE_ORACLE_ARTIFACT_FIELDS);
 }
 
+const ACCEPTED_COMPUTE_RAW_READBACK_SOURCES = new Set([
+  'runtime_readback',
+  'runtime_readback_sample',
+  'runtime_raw_readback',
+  'device_readback',
+]);
+
+const DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES = new Set([
+  'runtime_checksum_digest',
+  'sha256_digest_bytes',
+  'checksum_digest',
+  'digest_bytes',
+]);
+
+function computeRawReadbackSource(artifacts) {
+  const source = artifactFieldText(
+    artifacts,
+    'raw_readback_source',
+    'rawReadbackSource',
+    'readback_source',
+    'readbackSource',
+    'encoding',
+  );
+  if (source) return source;
+  const deterministicSlice = asObject(objectFieldValue(artifacts, [
+    'deterministic_slice',
+    'deterministicSlice',
+  ]));
+  return artifactFieldText(deterministicSlice, 'source');
+}
+
+function computeRawReadbackHash(artifacts) {
+  return artifactFieldText(
+    artifacts,
+    'raw_readback_hash',
+    'rawReadbackHash',
+    'readback_sample_sha256',
+    'readbackSampleSha256',
+  );
+}
+
 function visualOracleArtifacts(recordOracleArtifacts, outputEvent) {
   const {
     ledgerArtifacts,
@@ -916,6 +957,19 @@ export function evaluateGpuHmrProofLedger(input = {}) {
       }
       const checksumBefore = artifactFieldText(artifacts, 'checksum_before', 'checksumBefore');
       const checksumAfter = artifactFieldText(artifacts, 'checksum_after', 'checksumAfter');
+      const rawReadbackSource = String(computeRawReadbackSource(artifacts) ?? '').trim().toLowerCase();
+      const rawReadbackHash = computeRawReadbackHash(artifacts);
+      if (!rawReadbackHash) {
+        addFailure(failures, 'compute_oracle_raw_readback_unproven');
+      }
+      if (
+        DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES.has(rawReadbackSource)
+        || /digest/.test(rawReadbackSource)
+      ) {
+        addFailure(failures, 'compute_oracle_raw_readback_digest_derived');
+      } else if (!ACCEPTED_COMPUTE_RAW_READBACK_SOURCES.has(rawReadbackSource)) {
+        addFailure(failures, 'compute_oracle_raw_readback_source_unaccepted');
+      }
       const outputChangeExpected = objectFieldValue(artifacts, [
         'output_change_expected',
         'outputChangeExpected',

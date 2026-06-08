@@ -70,6 +70,8 @@ function computeOracleArtifacts() {
       length: 64,
       format: 'float32',
     },
+    raw_readback_hash: HASH_B,
+    raw_readback_source: 'runtime_readback_sample',
     oracle_code_hash: HASH_C,
     rendered_card_png: 'memory://strict-compute-oracle-card.png',
     producer: 'strict-gates-self-check',

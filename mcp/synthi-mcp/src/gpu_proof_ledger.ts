@@ -12,6 +12,18 @@ const CONVERGENCE_METRICS = new Set([
   "stable_histogram_delta",
   "oracle_region_delta",
 ]);
+const ACCEPTED_COMPUTE_RAW_READBACK_SOURCES = new Set([
+  "runtime_readback",
+  "runtime_readback_sample",
+  "runtime_raw_readback",
+  "device_readback",
+]);
+const DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES = new Set([
+  "runtime_checksum_digest",
+  "sha256_digest_bytes",
+  "checksum_digest",
+  "digest_bytes",
+]);
 const REQUIRED_TIMING_FIELDS = [
   ["static_discovery_time", "staticDiscoveryTime"],
   ["ai_contract_synthesis_time", "aiContractSynthesisTime"],
@@ -288,6 +300,33 @@ function computeOracleArtifacts(
     outputOracleArtifacts,
     outputOracle,
   ], COMPUTE_ORACLE_ARTIFACT_FIELDS);
+}
+
+function computeRawReadbackSource(artifacts: Record<string, unknown>): string | null {
+  const source = artifactText(
+    artifacts,
+    "raw_readback_source",
+    "rawReadbackSource",
+    "readback_source",
+    "readbackSource",
+    "encoding"
+  );
+  if (source) return source;
+  const deterministicSlice = asObject(objectFieldValue(artifacts, [
+    "deterministic_slice",
+    "deterministicSlice",
+  ]));
+  return artifactText(deterministicSlice, "source");
+}
+
+function computeRawReadbackHash(artifacts: Record<string, unknown>): string | null {
+  return artifactText(
+    artifacts,
+    "raw_readback_hash",
+    "rawReadbackHash",
+    "readback_sample_sha256",
+    "readbackSampleSha256"
+  );
 }
 
 function visualOracleArtifacts(
@@ -773,6 +812,19 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
       }
       const checksumBefore = artifactText(computeArtifacts, "checksum_before", "checksumBefore");
       const checksumAfter = artifactText(computeArtifacts, "checksum_after", "checksumAfter");
+      const rawReadbackSource = (computeRawReadbackSource(computeArtifacts) ?? "").trim().toLowerCase();
+      const rawReadbackHash = computeRawReadbackHash(computeArtifacts);
+      if (!rawReadbackHash) {
+        failures.push({ code: "compute_oracle_raw_readback_unproven" });
+      }
+      if (
+        DIGEST_DERIVED_COMPUTE_RAW_READBACK_SOURCES.has(rawReadbackSource)
+        || /digest/.test(rawReadbackSource)
+      ) {
+        failures.push({ code: "compute_oracle_raw_readback_digest_derived" });
+      } else if (!ACCEPTED_COMPUTE_RAW_READBACK_SOURCES.has(rawReadbackSource)) {
+        failures.push({ code: "compute_oracle_raw_readback_source_unaccepted" });
+      }
       const outputChangeExpected =
         objectFieldValue(computeArtifacts, [
           "output_change_expected",

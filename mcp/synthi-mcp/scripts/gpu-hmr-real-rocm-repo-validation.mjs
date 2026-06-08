@@ -3856,13 +3856,6 @@ function xmlEscape(value) {
     .replace(/"/g, '&quot;');
 }
 
-function digestBytes(value) {
-  const text = String(value ?? '');
-  const digest = text.match(/^sha256:([0-9a-f]{64})$/i)?.[1]
-    ?? createHash('sha256').update(text).digest('hex');
-  return Buffer.from(digest, 'hex');
-}
-
 function readbackSampleBytes(oracle) {
   const hex = String(oracle?.readbackSampleHex ?? '').trim();
   if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
@@ -3993,20 +3986,25 @@ async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, opt
   const baselineChecksum = outputOracleBaselineChecksum();
   const actualChecksum = String(oracle.actual ?? '').trim();
   if (!baselineChecksum || !actualChecksum) return null;
+  const rawBytes = readbackSampleBytes(oracle);
+  const sampleSha256 = String(oracle.readbackSampleSha256 ?? '').trim();
+  const rawReadbackHash = rawBytes
+    ? `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`
+    : null;
+  if (!rawBytes || sampleSha256 !== rawReadbackHash) return null;
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const base = `${CFG.slug}-${oracle.oracleId ?? 'runtime-output-oracle'}`
     .replace(/[^A-Za-z0-9_.-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 160);
-  const rawBytes = readbackSampleBytes(oracle) ?? digestBytes(actualChecksum);
   const rawPath = path.join(ARTIFACT_DIR, `${base || CFG.slug}-compute-readback.bin`);
   await writeFile(rawPath, rawBytes);
   const schema = {
     schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
     source: 'real_rocm_runtime_output_oracle',
-    encoding: oracle.readbackSampleHex ? 'runtime_sample_hex' : 'sha256_digest_bytes',
+    encoding: 'runtime_sample_hex',
     readbackSampleStride: oracle.readbackSampleStride ?? null,
-    readbackSampleSha256: oracle.readbackSampleSha256 ?? null,
+    readbackSampleSha256: sampleSha256,
     outputTargetId: oracle.outputTargetId ?? null,
     oracleId: oracle.oracleId ?? null,
     artifactId: oracle.artifactId ?? null,
@@ -4014,7 +4012,8 @@ async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, opt
     generation: oracle.generation ?? null,
     probeMode: oracle.probeMode ?? null,
     probeConfigHash: oracle.probeConfigHash ?? null,
-    rawReadbackHash: `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`,
+    rawReadbackHash,
+    rawReadbackSource: 'runtime_readback_sample',
   };
   const schemaPath = path.join(ARTIFACT_DIR, `${base || CFG.slug}-compute-readback-schema.json`);
   await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`);
@@ -4032,8 +4031,10 @@ async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, opt
     deterministic_slice: {
       offset: 0,
       length: rawBytes.length,
-      source: oracle.readbackSampleHex ? 'runtime_readback_sample' : 'runtime_checksum_digest',
+      source: 'runtime_readback_sample',
     },
+    raw_readback_hash: rawReadbackHash,
+    raw_readback_source: 'runtime_readback_sample',
     oracle_code_hash: oracle.probeConfigHash ?? `sha256:${createHash('sha256').update(stableJson(schema)).digest('hex')}`,
     rendered_card_png: cardPath,
     producer: oracle.producer ?? 'runtime_probe',
