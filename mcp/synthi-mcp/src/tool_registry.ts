@@ -36,6 +36,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
   "synthi_browser_publish_private_tool",
+  "synthi_browser_capture_auth_checkpoint_storage",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",

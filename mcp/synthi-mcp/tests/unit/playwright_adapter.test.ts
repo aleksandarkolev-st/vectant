@@ -6,7 +6,10 @@ import {
   frameLocatorMetadataFromElementDescriptor,
   normalizeCapturedHumanAction,
   normalizeCapturedHumanActionAnnotation,
+  playwrightCookiesForAuth,
+  playwrightStorageStateForAuth,
   resolveCdpConnectTimeoutMs,
+  sessionStorageInitPayload,
 } from "../../src/browser/playwright_adapter.js";
 
 describe("browser Playwright adapter config", () => {
@@ -15,6 +18,42 @@ describe("browser Playwright adapter config", () => {
     expect(resolveCdpConnectTimeoutMs({ SYNTHI_BROWSER_CDP_CONNECT_TIMEOUT_MS: "90000" })).toBe(90_000);
     expect(resolveCdpConnectTimeoutMs({ SYNTHI_BROWSER_CDP_CONNECT_TIMEOUT_MS: "999999" })).toBe(300_000);
     expect(resolveCdpConnectTimeoutMs({ SYNTHI_BROWSER_CDP_CONNECT_TIMEOUT_MS: "bad" })).toBe(60_000);
+  });
+
+  it("splits auth storage into Playwright context state, cookies, and sessionStorage init payload", () => {
+    const storageState = {
+      cookies: [
+        { name: "sid", value: "", domain: "app.example.com", path: "/", sameSite: "None", secure: true, partitionKey: "https://app.example.com" },
+        { name: "", value: "ignored", domain: "app.example.com", path: "/" },
+      ],
+      origins: [
+        {
+          origin: "https://app.example.com",
+          localStorage: [{ name: "session", value: "local-secret" }],
+          sessionStorage: [{ name: "csrf", value: "session-secret" }],
+        },
+      ],
+    };
+
+    expect(playwrightStorageStateForAuth(storageState)).toEqual({
+      cookies: [],
+      origins: [{
+        origin: "https://app.example.com",
+        localStorage: [{ name: "session", value: "local-secret" }],
+      }],
+    });
+    expect(playwrightCookiesForAuth(storageState)).toEqual([
+      expect.objectContaining({
+        name: "sid",
+        value: "",
+        domain: "app.example.com",
+        sameSite: "None",
+        partitionKey: "https://app.example.com",
+      }),
+    ]);
+    expect(sessionStorageInitPayload(storageState)).toEqual({
+      "https://app.example.com": [{ name: "csrf", value: "session-secret" }],
+    });
   });
 });
 

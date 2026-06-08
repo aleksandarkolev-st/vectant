@@ -320,6 +320,13 @@ describe("browser MCP tool surface", () => {
     });
     expect(checkpoint.ok).toBe(true);
     if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secure-cookie", domain: "secure.example.com", path: "/" }],
+        origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "secure-local" }] }],
+      },
+    }).ok).toBe(true);
     expect(browserBroker.startTeachMode("app").ok).toBe(true);
     expect(browserBroker.recordHumanAction({
       tab_id: "app",
@@ -353,6 +360,133 @@ describe("browser MCP tool surface", () => {
       unattended: false,
     }));
     expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("captures hosted auth storage through a broker-owned artifact without returning values", async () => {
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "https://ide.example.com/workspace/a",
+      adapter: "unit-test",
+    });
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      redirect_chain: ["https://idp.example.com/login"],
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    const capture = vi.spyOn(browserPlaywrightAdapter, "captureAuthStorageState").mockResolvedValue({
+      cookies: [
+        { name: "sid", value: "secret-cookie-value", domain: "secure.example.com", path: "/" },
+        { name: "idp", value: "secret-idp-cookie", domain: "idp.example.com", path: "/" },
+      ],
+      origins: [
+        {
+          origin: "https://secure.example.com",
+          localStorage: [{ name: "session", value: "secret-local" }],
+          sessionStorage: [{ name: "csrf", value: "secret-session" }],
+        },
+      ],
+    });
+
+    const response = await dispatchBrowserTool("synthi_browser_capture_auth_checkpoint_storage", {
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      tab_id: "app",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(capture).toHaveBeenCalledWith("app", ["https://secure.example.com", "https://idp.example.com"]);
+    const bodyText = JSON.stringify(response?.structuredContent);
+    expect(bodyText).not.toMatch(/secret-cookie|secret-local|secret-session|secret-idp/);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_artifact: expect.objectContaining({
+        app_origin: "https://secure.example.com",
+        cookie_count: 2,
+        local_storage_entry_count: 1,
+        session_storage_entry_count: 1,
+      }),
+      auth_readiness: expect.objectContaining({
+        ready: true,
+        status: "ready",
+      }),
+    }));
+    expect(authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint.checkpoint_id)?.state.origins[0]?.localStorage?.[0]).toEqual({
+      name: "session",
+      value: "secret-local",
+    });
+  });
+
+  it("restores captured auth storage internally for cold workflow replay", async () => {
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie-value", domain: "secure.example.com", path: "/" }],
+        origins: [{
+          origin: "https://secure.example.com",
+          localStorage: [{ name: "session", value: "secret-local" }],
+          sessionStorage: [{ name: "csrf", value: "secret-session" }],
+        }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const openCold = vi.spyOn(browserPlaywrightAdapter, "openCold").mockResolvedValue({ tab_id: "cold", url });
+    vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([{ tab_id: "cold", url, active: true }]);
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "cold",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-cold-replay");
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "coldSession",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(openCold).toHaveBeenCalledWith(url, expect.objectContaining({
+      cookies: [expect.objectContaining({ name: "sid", value: "secret-cookie-value" })],
+      origins: [expect.objectContaining({
+        origin: "https://secure.example.com",
+        localStorage: [expect.objectContaining({ name: "session", value: "secret-local" })],
+        sessionStorage: [expect.objectContaining({ name: "csrf", value: "secret-session" })],
+      })],
+    }));
+    expect(replay).toHaveBeenCalledWith("cold", expect.any(Object), "click", expect.stringContaining("Open secure panel"), undefined);
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/secret-cookie|secret-local|secret-session/);
   });
 
   it("exports saved mutation workflows in prefix-only mode by default", async () => {

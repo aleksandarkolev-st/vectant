@@ -1,5 +1,6 @@
-import { chromium, type Browser, type Frame, type FrameLocator, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Frame, type FrameLocator, type Locator, type Page } from "playwright-core";
 import { readFile } from "node:fs/promises";
+import type { AuthBrowserStorageState, AuthStorageCookie, AuthStorageEntry, AuthStorageOriginState } from "./auth.js";
 import { normalizeOrigin, redactText, redactUrl } from "./security.js";
 import { BROWSER_ACTION_KINDS } from "./types.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
@@ -178,12 +179,38 @@ export class BrowserPlaywrightAdapter {
     return this.describePage(page);
   }
 
-  async openCold(url: string): Promise<BrowserTab> {
+  async openCold(url: string, storageState?: AuthBrowserStorageState): Promise<BrowserTab> {
     const browser = this.requireBrowser();
-    const context = await browser.newContext();
+    const context = await this.newColdContext(browser, storageState);
     const page = await context.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded" });
     return this.describePage(page);
+  }
+
+  async captureAuthStorageState(tab_id: string, allowedOrigins: string[]): Promise<AuthBrowserStorageState> {
+    const page = this.requirePage(tab_id);
+    const context = page.context();
+    const originSet = normalizedOriginSet(allowedOrigins);
+    const storageState = await context.storageState({ indexedDB: true });
+    const origins: AuthStorageOriginState[] = storageState.origins
+      .filter((originState) => originSet.has(originState.origin))
+      .map((originState) => ({
+        origin: originState.origin,
+        localStorage: originState.localStorage.map((entry) => ({ name: entry.name, value: entry.value })),
+      }));
+    const sessionStorage = await captureSessionStorageByOrigin(context, originSet);
+    for (const [origin, entries] of sessionStorage) {
+      const existing = origins.find((candidate) => candidate.origin === origin);
+      if (existing) {
+        existing.sessionStorage = entries;
+      } else {
+        origins.push({ origin, sessionStorage: entries });
+      }
+    }
+    return {
+      cookies: storageState.cookies.map((cookie) => ({ ...cookie })),
+      origins,
+    };
   }
 
   async selectTab(tab_id: string): Promise<BrowserTab> {
@@ -711,6 +738,27 @@ export class BrowserPlaywrightAdapter {
     this.workflowOverlayEnabled = false;
   }
 
+  private async newColdContext(browser: Browser, storageState?: AuthBrowserStorageState): Promise<BrowserContext> {
+    const context = storageState
+      ? await browser.newContext({ storageState: playwrightStorageStateForAuth(storageState) })
+      : await browser.newContext();
+    if (storageState) {
+      const cookies = playwrightCookiesForAuth(storageState);
+      if (cookies.length > 0) await context.addCookies(cookies);
+      const sessionStorageByOrigin = sessionStorageInitPayload(storageState);
+      if (Object.keys(sessionStorageByOrigin).length > 0) {
+        await context.addInitScript((sessionStorageByOrigin: Record<string, { name: string; value: string }[]>) => {
+          const entries = sessionStorageByOrigin[location.origin];
+          if (!entries) return;
+          for (const entry of entries) {
+            sessionStorage.setItem(entry.name, entry.value);
+          }
+        }, sessionStorageByOrigin).catch(() => undefined);
+      }
+    }
+    return context;
+  }
+
   private async describePage(page: Page): Promise<BrowserTab> {
     const tab_id = this.idForPage(page);
     this.pages.set(tab_id, { page, tab_id });
@@ -1070,6 +1118,88 @@ export class BrowserPlaywrightAdapter {
     if (!page || page.isClosed()) throw new Error("tab_not_found");
     return page;
   }
+}
+
+type BrowserContextCookie = Parameters<BrowserContext["addCookies"]>[0][number];
+
+async function captureSessionStorageByOrigin(
+  context: BrowserContext,
+  allowedOrigins: Set<string>
+): Promise<Map<string, AuthStorageEntry[]>> {
+  const byOrigin = new Map<string, AuthStorageEntry[]>();
+  for (const page of context.pages()) {
+    for (const frame of page.frames()) {
+      const captured = await frame.evaluate(() => ({
+        origin: location.origin,
+        entries: Array.from({ length: sessionStorage.length }, (_unused, index) => {
+          const name = sessionStorage.key(index) ?? "";
+          return { name, value: sessionStorage.getItem(name) ?? "" };
+        }).filter((entry) => entry.name.length > 0),
+      })).catch(() => null);
+      if (!captured || !allowedOrigins.has(captured.origin)) continue;
+      byOrigin.set(captured.origin, captured.entries);
+    }
+  }
+  return byOrigin;
+}
+
+export function playwrightStorageStateForAuth(storageState: AuthBrowserStorageState): {
+  cookies: [];
+  origins: Array<{ origin: string; localStorage: AuthStorageEntry[] }>;
+} {
+  return {
+    cookies: [],
+    origins: (storageState.origins ?? []).map((origin) => ({
+      origin: origin.origin,
+      localStorage: origin.localStorage ?? [],
+    })),
+  };
+}
+
+export function playwrightCookiesForAuth(storageState: AuthBrowserStorageState): BrowserContextCookie[] {
+  return (storageState.cookies ?? []).map(playwrightCookieForAuth).filter((cookie): cookie is BrowserContextCookie => cookie !== null);
+}
+
+function playwrightCookieForAuth(cookie: AuthStorageCookie): BrowserContextCookie | null {
+  if (!cookie.name || typeof cookie.value !== "string" || !cookie.domain) return null;
+  const sameSite = sameSiteOpt(cookie.sameSite) ?? "Lax";
+  return {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path ?? "/",
+    expires: typeof cookie.expires === "number" ? cookie.expires : -1,
+    httpOnly: cookie.httpOnly ?? false,
+    secure: cookie.secure ?? false,
+    sameSite,
+    ...(typeof cookie.partitionKey === "string" ? { partitionKey: cookie.partitionKey } : {}),
+  };
+}
+
+export function sessionStorageInitPayload(storageState: AuthBrowserStorageState): Record<string, AuthStorageEntry[]> {
+  const out: Record<string, AuthStorageEntry[]> = {};
+  for (const origin of storageState.origins ?? []) {
+    const entries = origin.sessionStorage ?? [];
+    if (entries.length > 0) out[origin.origin] = entries.map((entry) => ({ name: entry.name, value: entry.value }));
+  }
+  return out;
+}
+
+function normalizedOriginSet(origins: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const origin of origins) {
+    try {
+      out.add(normalizeOrigin(origin).origin);
+    } catch {
+      // Ignore invalid origin hints; the auth manager performs final filtering before storing.
+    }
+  }
+  return out;
+}
+
+function sameSiteOpt(value: unknown): "Strict" | "Lax" | "None" | undefined {
+  if (value === "Strict" || value === "Lax" || value === "None") return value;
+  return undefined;
 }
 
 export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): CapturedBrowserHumanAction | null {

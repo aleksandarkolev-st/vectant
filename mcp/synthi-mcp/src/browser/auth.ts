@@ -40,6 +40,7 @@ export interface AuthStorageCookie {
   httpOnly?: boolean;
   secure?: boolean;
   sameSite?: string;
+  partitionKey?: string;
 }
 
 export interface AuthStorageEntry {
@@ -91,7 +92,7 @@ export interface AuthRefreshProviderMetadata {
 export interface AuthReadiness {
   ready: boolean;
   durability: AuthDurabilityV7 | "missing";
-  status: "ready" | "checkpointMissing" | "checkpointExpired" | "checkpointRevoked" | "unattendedBlocked";
+  status: "ready" | "checkpointMissing" | "checkpointExpired" | "checkpointRevoked" | "checkpointStorageMissing" | "unattendedBlocked";
   checkpoint?: AuthCheckpointMetadata;
   refresh_provider?: AuthRefreshProviderMetadata;
   notes: string[];
@@ -547,6 +548,16 @@ export class AuthCheckpointManager {
         notes: ["Auth checkpoint expired and must be renewed."],
       };
     }
+    if (!snapshot.storage_artifact) {
+      return {
+        ready: false,
+        durability: snapshot.durability,
+        status: "checkpointStorageMissing",
+        checkpoint: snapshot,
+        ...(provider ? { refresh_provider: this.snapshotProvider(provider) } : {}),
+        notes: ["Auth checkpoint is missing a captured browser storage artifact."],
+      };
+    }
     if (unattended && !snapshot.unattended_allowed) {
       return {
         ready: false,
@@ -672,7 +683,7 @@ function storageArtifactMetadata(input: {
 }
 
 function normalizeStorageCookie(cookie: AuthStorageCookie): AuthStorageCookie | null {
-  if (!nonEmpty(cookie.name) || !nonEmpty(cookie.value) || !nonEmpty(cookie.domain)) return null;
+  if (!nonEmpty(cookie.name) || typeof cookie.value !== "string" || !nonEmpty(cookie.domain)) return null;
   return {
     name: cookie.name,
     value: cookie.value,
@@ -682,6 +693,7 @@ function normalizeStorageCookie(cookie: AuthStorageCookie): AuthStorageCookie | 
     ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
     ...(typeof cookie.secure === "boolean" ? { secure: cookie.secure } : {}),
     ...(typeof cookie.sameSite === "string" ? { sameSite: cookie.sameSite } : {}),
+    ...(typeof cookie.partitionKey === "string" ? { partitionKey: cookie.partitionKey } : {}),
   };
 }
 
@@ -706,7 +718,7 @@ function cookieMatchesAllowedOrigin(cookie: AuthStorageCookie, allowedHosts: Set
   const cookieDomain = cookie.domain.replace(/^\./, "").toLowerCase();
   if (!cookieDomain) return false;
   for (const host of allowedHosts) {
-    if (host === cookieDomain || host.endsWith(`.${cookieDomain}`) || cookieDomain.endsWith(`.${host}`)) return true;
+    if (host === cookieDomain || host.endsWith(`.${cookieDomain}`)) return true;
   }
   return false;
 }

@@ -58,6 +58,13 @@ describe("auth checkpoint manager", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unexpected auth finish failure");
+    expect(firstManager.saveStorageArtifact({
+      checkpoint_id: result.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "ready", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "ready" }] }],
+      },
+    }).ok).toBe(true);
 
     const secondManager = new AuthCheckpointManager(store);
     expect(secondManager.readiness("https://app.example.com/settings", false)).toEqual(expect.objectContaining({
@@ -103,10 +110,17 @@ describe("auth checkpoint manager", () => {
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected refresh provider failure");
     managerA.testRefreshProvider(provider.provider.provider_id);
+    expect(managerA.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "local-secret" }] }],
+      },
+    }).ok).toBe(true);
 
     const persisted = await readFile(filePath, "utf8");
     expect(persisted).toContain("synthi_auth_checkpoint_store_envelope_v1");
-    expect(persisted).not.toMatch(/app\.example|idp\.example|auth-refresh|tenant-a|workspace-a/);
+    expect(persisted).not.toMatch(/app\.example|idp\.example|auth-refresh|tenant-a|workspace-a|secret-cookie|local-secret/);
 
     const reloadedA = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
       file_path: filePath,
@@ -159,7 +173,9 @@ describe("auth checkpoint manager", () => {
       storage_state: {
         cookies: [
           { name: "sid", value: "secret-cookie-value", domain: "app.example.com", path: "/", httpOnly: true, secure: true },
+          { name: "empty", value: "", domain: "app.example.com", path: "/" },
           { name: "idp", value: "secret-idp-cookie", domain: ".idp.example.com", path: "/", secure: true },
+          { name: "child", value: "must-not-persist-child", domain: "child.app.example.com", path: "/" },
           { name: "unrelated", value: "must-not-persist", domain: "other.example.com", path: "/" },
         ],
         origins: [
@@ -185,7 +201,7 @@ describe("auth checkpoint manager", () => {
     expect(saved.storage_artifact).toEqual(expect.objectContaining({
       app_origin: "https://app.example.com",
       origin_count: 2,
-      cookie_count: 2,
+      cookie_count: 3,
       local_storage_entry_count: 2,
       session_storage_entry_count: 1,
       captured_at: 1234,
@@ -193,13 +209,13 @@ describe("auth checkpoint manager", () => {
     expect(JSON.stringify(saved.checkpoint)).not.toMatch(/secret-cookie|local-storage-secret|session-storage-secret|idp-local-secret|must-not-persist/);
 
     const artifact = manager.storageArtifactForCheckpoint(finished.checkpoint.checkpoint_id);
-    expect(artifact?.state.cookies.map((cookie) => cookie.name).sort()).toEqual(["idp", "sid"]);
+    expect(artifact?.state.cookies.map((cookie) => cookie.name).sort()).toEqual(["empty", "idp", "sid"]);
     expect(artifact?.state.origins.map((origin) => origin.origin).sort()).toEqual([
       "https://app.example.com",
       "https://idp.example.com",
     ]);
     expect(JSON.stringify(artifact)).toContain("local-storage-secret");
-    expect(JSON.stringify(artifact)).not.toContain("must-not-persist");
+    expect(JSON.stringify(artifact)).not.toMatch(/must-not-persist/);
 
     const persisted = await readFile(filePath, "utf8");
     expect(persisted).toContain("synthi_auth_checkpoint_store_envelope_v1");
@@ -245,6 +261,14 @@ describe("auth checkpoint manager", () => {
       durability: "interactiveCheckpoint",
     });
     expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unexpected auth finish failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: result.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "ready", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "ready" }] }],
+      },
+    }).ok).toBe(true);
 
     expect(authCheckpointManager.readiness("https://app.example.com/dashboard", false)).toEqual(expect.objectContaining({
       ready: true,
@@ -271,6 +295,13 @@ describe("auth checkpoint manager", () => {
       durability: "interactiveCheckpoint",
       unattended_allowed: false,
     }));
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: result.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "ready", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "ready" }] }],
+      },
+    }).ok).toBe(true);
     expect(authCheckpointManager.readiness("https://app.example.com/dashboard", true)).toEqual(expect.objectContaining({
       ready: false,
       status: "unattendedBlocked",
@@ -346,7 +377,7 @@ describe("auth checkpoint manager", () => {
       url: "https://app.example.com/dashboard",
       unattended: true,
     });
-    expect((readiness?.structuredContent as { readiness: { status: string } }).readiness.status).toBe("unattendedBlocked");
+    expect((readiness?.structuredContent as { readiness: { status: string } }).readiness.status).toBe("checkpointStorageMissing");
 
     const revoked = await dispatchAuthTool("synthi_auth_revoke_checkpoint", { checkpoint_id: checkpointId });
     expect((revoked?.structuredContent as { checkpoint: { status: string } }).checkpoint.status).toBe("revoked");

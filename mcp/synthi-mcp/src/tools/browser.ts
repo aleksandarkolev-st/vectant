@@ -1,4 +1,4 @@
-import { authCheckpointManager, type AuthReadiness } from "../browser/auth.js";
+import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
@@ -251,6 +251,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
   "synthi_browser_publish_private_tool",
+  "synthi_browser_capture_auth_checkpoint_storage",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",
@@ -526,6 +527,19 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_capture_auth_checkpoint_storage",
+    description:
+      "Capture browser cookies, localStorage, and sessionStorage for an approved auth checkpoint from the Synthi-hosted browser. Stores raw values broker-side only and returns counts, never auth values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        checkpoint_id: { type: "string", description: "Auth checkpoint id returned by synthi_auth_finish_checkpoint_enrollment." },
+        tab_id: { type: "string", description: "Optional authorized tab to capture from. Defaults to the selected tab." },
+      },
+      required: ["checkpoint_id"],
+    },
+  },
+  {
     name: "synthi_browser_run_workflow",
     description:
       "Replay the compiled workflow under a control lease. coldSession is the default and stops before the first mutation boundary in a fresh context.",
@@ -733,6 +747,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserGeneratePrivateToolManifestTool(args);
       case "synthi_browser_publish_private_tool":
         return browserPublishPrivateToolTool(args);
+      case "synthi_browser_capture_auth_checkpoint_storage":
+        return await browserCaptureAuthCheckpointStorageTool(args);
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
       case "synthi_browser_explain_failure":
@@ -1067,6 +1083,47 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
   });
 }
 
+async function browserCaptureAuthCheckpointStorageTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const checkpointId = requiredString(a, "checkpoint_id");
+  const checkpoint = authCheckpointManager.list().find((candidate) => candidate.checkpoint_id === checkpointId);
+  if (!checkpoint) return errorResponse("auth_checkpoint_not_found", { checkpoint_id: checkpointId });
+  if (checkpoint.status !== "valid") {
+    return errorResponse(`auth_checkpoint_${checkpoint.status}`, {
+      checkpoint_id: checkpointId,
+      status: checkpoint.status,
+    });
+  }
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind !== "hosted") {
+    return errorResponse("hosted_runtime_required", {
+      product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    });
+  }
+  const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
+  const allowedOrigins = [checkpoint.app_origin, ...checkpoint.idp_origins];
+  const tabOrigin = originForUrl(tab.url);
+  if (!tabOrigin || !allowedOrigins.includes(tabOrigin)) {
+    return errorResponse("auth_checkpoint_tab_origin_mismatch", {
+      checkpoint_id: checkpointId,
+      tab_origin: tabOrigin,
+      allowed_origins: allowedOrigins,
+    });
+  }
+  const storageState = await browserPlaywrightAdapter.captureAuthStorageState(tab.tab_id, allowedOrigins);
+  const saved = authCheckpointManager.saveStorageArtifact({
+    checkpoint_id: checkpointId,
+    storage_state: storageState,
+  });
+  if (!saved.ok) return errorResponse(saved.error, { checkpoint_id: checkpointId });
+  return jsonResponse({
+    ok: true,
+    checkpoint_id: checkpointId,
+    storage_artifact: publicStorageArtifactMetadata(saved.storage_artifact),
+    auth_readiness: authCheckpointManager.readiness(saved.checkpoint.app_origin, false),
+  });
+}
+
 function browserTraceStatusTool(): ToolResponse {
   const trace = browserBroker.traceSnapshot();
   const workflow = browserBroker.compiledWorkflow();
@@ -1243,12 +1300,21 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       ...authGate.detail,
     });
   }
+  const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
+    ? authStorageStateForColdReplay(replay.artifact.workflow.contract)
+    : { ok: true as const, storageState: undefined };
+  if (!coldAuthStorage.ok) {
+    return errorResponse("workflow_auth_not_ready", {
+      workflow_id: replay.artifact.workflow_id,
+      ...coldAuthStorage.detail,
+    });
+  }
   const plan = replay.plan;
   if (plan.status === "blocked") {
     return jsonResponse({ ok: false, workflow_id: replay.artifact.workflow_id, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
   }
 
-  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;
+  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url, coldAuthStorage.storageState) : tab;
   const replayTabByTraceTab = new Map<string, string>();
   for (const event of plan.events) {
     if (event.tab_id) replayTabByTraceTab.set(event.tab_id, replayTab.tab_id);
@@ -1674,13 +1740,9 @@ function replayAuthGate(
   mode: WorkflowReplayModeV7
 ): { ok: true } | { ok: false; detail: Record<string, unknown> } {
   if (!contract.authPlan.required) return { ok: true };
-  const unattended = mode === "coldSession" || mode === "ciIsolated";
+  const unattended = mode === "ciIsolated";
   const readiness = authCheckpointManager.readiness(contract.appOrigin, unattended);
   if (readiness.ready) return { ok: true };
-  if (!unattended) {
-    const providerReadiness = authCheckpointManager.readiness(contract.appOrigin, true);
-    if (providerReadiness.ready) return { ok: true };
-  }
   return {
     ok: false,
     detail: {
@@ -1691,6 +1753,38 @@ function replayAuthGate(
       notes: readiness.notes,
     },
   };
+}
+
+function authStorageStateForColdReplay(
+  contract: WorkflowContractV7
+): { ok: true; storageState: AuthBrowserStorageState } | { ok: false; detail: Record<string, unknown> } {
+  const readiness = authCheckpointManager.readiness(contract.appOrigin, false);
+  if (!readiness.ready || !readiness.checkpoint) {
+    return {
+      ok: false,
+      detail: {
+        app_origin: contract.appOrigin,
+        auth_status: readiness.status,
+        auth_durability: readiness.durability,
+        unattended: false,
+        notes: readiness.notes,
+      },
+    };
+  }
+  const artifact = authCheckpointManager.storageArtifactForCheckpoint(readiness.checkpoint.checkpoint_id);
+  if (!artifact) {
+    return {
+      ok: false,
+      detail: {
+        app_origin: contract.appOrigin,
+        auth_status: "checkpointStorageMissing",
+        auth_durability: readiness.durability,
+        unattended: false,
+        notes: ["Auth checkpoint is missing a captured browser storage artifact."],
+      },
+    };
+  }
+  return { ok: true, storageState: artifact.state };
 }
 
 function authDurabilityForManifest(readiness: AuthReadiness, fallback: AuthDurabilityV7): AuthDurabilityV7 {
@@ -1705,10 +1799,10 @@ function privateWorkflowRunMode(value: unknown): PrivateWorkflowRunMode | undefi
   return normalizeReplayMode(value);
 }
 
-async function openColdReplayTab(url: string): Promise<{ tab_id: string; url: string }> {
+async function openColdReplayTab(url: string, storageState?: AuthBrowserStorageState): Promise<{ tab_id: string; url: string }> {
   const access = browserBroker.requireSnapshotAccess(url);
   if (!access.ok) throw new Error(access.error);
-  const tab = await browserPlaywrightAdapter.openCold(url);
+  const tab = await browserPlaywrightAdapter.openCold(url, storageState);
   browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
   browserBroker.selectTab(tab.tab_id);
   return { tab_id: tab.tab_id, url: tab.url };
@@ -1975,6 +2069,16 @@ function httpUrlOpt(value: unknown): string | undefined {
   }
 }
 
+function originForUrl(value: unknown): string | null {
+  const raw = stringOpt(value);
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -1986,6 +2090,11 @@ function stringArrayOpt(value: unknown): string[] | undefined {
 
 function boolOpt(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function publicStorageArtifactMetadata(metadata: AuthStorageArtifactMetadata): Omit<AuthStorageArtifactMetadata, "artifact_id"> {
+  const { artifact_id: _artifactId, ...publicMetadata } = metadata;
+  return publicMetadata;
 }
 
 function isBrowserActionKind(value: string): value is BrowserActionKind {
