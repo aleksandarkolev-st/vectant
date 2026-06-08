@@ -249,10 +249,28 @@ Scope (approved): Publish (`@<slug>/<name>`, owner/admin) + global Browse/search
 Branch: `tool-compatibility` only. Disk gate: TDD only (vitest / `node --test` / `prisma generate|db push`). Schema change: +4 additive cols on `MarketplaceProgram` (Task 1 db push).
 
 ## Phase-5 v1 Implementation Tasks (TDD, commit per task)
-- [ ] P5-T1 Schema (+displayName/description/publishedByUserId/installCount) + manifest optional `description`.
-- [ ] P5-T2 Store: `publishProgram` (`@slug/<name>`, publisher=slug) + `toPublicMarketplaceProgram` (redacts manifest).
-- [ ] P5-T3 Store: `listPublishedPrograms({q})` (publisher≠local, search, order by installCount) + `getPublishedProgramVersion` + `incrementInstallCount`.
-- [ ] P5-T4 API: `POST /programs/publish` (owner/admin) + `GET /programs/marketplace?q=` → global published catalog.
-- [ ] P5-T5 API: extend `POST /programs/install` to install a published `{packageId,version}` (manifest from its version) + bump installCount; local path unchanged.
-- [ ] P5-T6 UI: ProgramsPanel Publish action (gated) + Marketplace browse/search + install-from-catalog (consent reused).
-- [ ] P5-T7 Regression + security sweep + Phase-5 review.
+- [x] P5-T1 Schema (+displayName/description/publishedByUserId/installCount) + manifest optional `description`. Committed `f8df7845`; manifest 16 pass + db push applied.
+- [x] P5-T2 Store: `publishProgram` (`@slug/<name>`, publisher=slug) + `toPublicMarketplaceProgram` (redacts manifest). Committed `8fed5435`; store 18 pass.
+- [x] P5-T3 Store: `listPublishedPrograms({q})` (publisher≠local, search, order by installCount) + `getPublishedProgramVersion` + `incrementInstallCount`. Committed `36a67f5e`; store 23 pass.
+- [x] P5-T4 API: `POST /programs/publish` (owner/admin) + `GET /programs/marketplace?q=` → global published catalog. Committed `c5d28d78`; programRoutes 16 pass.
+- [x] P5-T5 API: extend `POST /programs/install` to install a published `{packageId,version}` (manifest from its version) + bump installCount; local path unchanged. Committed `7e02de73`; programRoutes 19 pass.
+- [x] P5-T6 UI: ProgramsPanel Publish action (gated) + Marketplace browse/search + install-from-catalog (consent reused). Committed `f184358c`; programs components 18 pass.
+- [x] P5-T7 Regression + security sweep + Phase-5 review. Full `npx vitest run` → 35 passed / **281 tests** (only the known empty `preview-store.test.js` stub tolerated); backend `node --test` → **21 pass**; prisma generate ✔ + db push "already in sync".
+
+## Phase-5 security checklist (each invariant pinned by a committed test)
+- [x] Publish/install require owner/admin (`canWriteScope`); browse requires member (`canReadScope`). 403 otherwise. (`programRoutes.test.js`: publish-member-403, marketplace-non-member-403, install-member-403)
+- [x] Published install still gates on consent → a `PermissionGrant` covering the manifest's declared scopes; 409 `consent_required` (listing scopes) otherwise; install-count is only bumped after a successful install. (`programRoutes.test.js`: 409 consent + published-install bump)
+- [x] `toPublicMarketplaceProgram` never leaks `manifestJson`/`versions`/`publishedByUserId` — allow-listed projection only. (`store.test.js`: toPublicMarketplaceProgram leak test)
+- [x] Published manifests are parsed through `parseProgramManifest` at publish time (via `discoverManifest`) — same fail-closed validation; install reads the already-validated stored config (`getPublishedProgramVersion` parses the stored manifestJson). (`programRoutes.test.js` publish 422/502 + `store.test.js`)
+- [x] Namespace `@<slug>/...` prevents cross-workspace name squatting; `publisher != 'local'` cleanly separates the public catalog from workspace-local rows (browse + version lookup both exclude `local`). (`store.test.js`: listPublishedPrograms where-clause, getPublishedProgramVersion local→null)
+- [x] Member UI gating — Publish + install-from-catalog controls hidden when `role === 'member'`. (`programsPanelInstall.test.jsx`: hides Publish for member)
+
+## Phase-5 v1 Review — COMPLETE (P5-T1..T7, on `tool-compatibility`)
+All seven Phase-5 v1 tasks landed via strict red→green TDD, each committed with the `Co-Authored-By: Claude Opus 4.8` trailer (specific files staged; pre-existing noise files untouched). Open marketplace = publish + browse/search + install-from-catalog + `installCount` reputation.
+- Publish: an owner/admin's workspace recipe is re-discovered (`discoverManifest(slug, actor.userId)` — per-user-repo safe) and upserted as a `MarketplaceProgram` with `publisher=<slug>`, `packageId=@<slug>/<name>`; idempotent re-publish updates the version's manifest / bumps `latestVersion`.
+- Browse: `GET /programs/marketplace?q=` now returns the **global** published catalog (`publisher != 'local'`, case-insensitive contains on packageId/displayName/publisher, ordered by `installCount desc`) — replacing the Phase-2 local-only listing; `toPublicMarketplaceProgram` redacts the manifest.
+- Install: `POST /programs/install` accepts either a published `{packageId, version}` (manifest from its stored `ProgramVersion`) or the local workspace manifest (unchanged); both gate on the same consent `PermissionGrant`; published installs `incrementInstallCount` only on success. The 422/502 manifest/infra disambiguation is preserved.
+- UI: ProgramsPanel gained a gated Publish action, a Marketplace browse/search section, and install-from-catalog that reuses the existing consent prompt (`consent.published` routes approve → `handleInstallPublished`).
+- Verification: targeted `src/lib/programs` + `programs` routes + `programs` components → 9 files / 94; backend `node --test` 21 (unchanged); full `npx vitest run` **281 passed** (1 known empty stub tolerated); prisma generate ✔ + db push "already in sync" (T1 applied the 4 additive columns).
+- **Deferred (by decision, enumerated in the plan's DEFERRED section, NOT in v1):** cryptographic version signing+verify, ratings/reviews, abuse reporting + `disabled`/takedown, private/unlisted visibility, version pinning / update-available flow.
+- Disk gate (per instructions): `next build` / `docker build` not run — Phase-5 is TDD-only; an end-to-end live publish→browse→install across two workspaces remains the eventual live check before shipping.
