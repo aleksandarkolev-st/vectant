@@ -1024,7 +1024,7 @@ async function compileViaMcp(args, timeoutMs) {
     waitContract.waitArgs,
     timeoutMs + 5000,
   ).catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  record('mcp wait_hmr proof gate', wait?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+  const waitSummary = {
     role: waitContract.role,
     module: waitContract.waitArgs.module ?? null,
     since_ts: waitContract.waitArgs.since_ts ?? null,
@@ -1032,7 +1032,11 @@ async function compileViaMcp(args, timeoutMs) {
     requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
     status: wait?.status ?? null,
     frame_gate: wait?.frame_gate ?? null,
-  }));
+  };
+  if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
+  if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
+  if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
+  record('mcp wait_hmr proof gate', wait?.status === 'applied' ? 'pass' : 'warn', JSON.stringify(waitSummary));
   return { compile, wait, waitContract };
 }
 
