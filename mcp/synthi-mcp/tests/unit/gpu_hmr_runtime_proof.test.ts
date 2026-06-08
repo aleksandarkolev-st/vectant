@@ -5860,6 +5860,75 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("rejects runtime proof artifacts with contradictory firewall process identities", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+    });
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      firewallEvidence: {
+        ...acceptedGpuFirewallEvidence(),
+        process_restarted: false,
+        process_id_before: "pid-before",
+        process_id_after: "pid-after",
+      },
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+    });
+
+    expect(artifact.acceptanceContractEvaluation.accepted).toBe(false);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract",
+          degraded_reason: "process_restart_identity_contradiction",
+        }),
+      ]),
+    );
+  });
+
   it("does not infer HIP from vendor-only ROCm code-object evidence", () => {
     const dispatchProof = safeDispatchProof();
     const outputProof = classifyGpuHmrOutputProof({

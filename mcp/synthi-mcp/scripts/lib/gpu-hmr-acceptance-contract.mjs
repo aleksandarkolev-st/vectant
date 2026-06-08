@@ -222,6 +222,12 @@ function fieldProven(value) {
   return false;
 }
 
+function sameIdentityValue(left, right) {
+  if (!fieldProven(left) || !fieldProven(right)) return true;
+  if (left === right) return true;
+  return String(left) === String(right);
+}
+
 function requireBackendField(failures, backend, contract, field) {
   if (!fieldProven(contract[field])) {
     addFailure(failures, `${backend}_${field}_missing`);
@@ -527,6 +533,12 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     }
     if (firewall.process_restarted !== false) {
       addFailure(failures, 'process_restart_absence_not_verified');
+    }
+    if (!sameIdentityValue(firewall.process_id_before, firewall.process_id_after)) {
+      addFailure(failures, 'process_restart_identity_contradiction', {
+        process_id_before: firewall.process_id_before,
+        process_id_after: firewall.process_id_after,
+      });
     }
     if (!firewall.evidence_source && !firewall.evidence_refs?.length) {
       addFailure(failures, 'firewall_evidence_source_missing');
@@ -1317,6 +1329,9 @@ function firewallProofFromVerifiedProofs({ input, validationContext }) {
   }
   if (!processRestarted.present || processRestarted.value !== false) {
     blockingGaps.push('process_restart_absence_not_verified');
+  }
+  if (!sameIdentityValue(processIdBefore, processIdAfter)) {
+    blockingGaps.push('process_restart_identity_contradiction');
   }
   if (!evidenceSource && !evidenceRefs.length) {
     blockingGaps.push('firewall_evidence_source_missing');

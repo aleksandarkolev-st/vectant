@@ -164,6 +164,14 @@ expectReject('cpu route', {
     route: 'cpu_hmr_or_host_reload',
   },
 }, 'route_not_gpu_hmr');
+expectReject('contradictory firewall process identity', {
+  firewall_evidence: {
+    ...contract().firewall_evidence,
+    process_restarted: false,
+    process_id_before: 'pid-before',
+    process_id_after: 'pid-after',
+  },
+}, 'process_restart_identity_contradiction');
 expectReject('missing verified evidence refs', {
   evidence_refs: [],
 }, 'contract_evidence_refs_missing');
