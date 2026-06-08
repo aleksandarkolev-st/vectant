@@ -262,6 +262,8 @@ function acceptanceContract(ledger = proofLedger(), overrides: Record<string, un
 }
 
 function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, unknown> = {}) {
+  const contract = acceptanceContract(ledger);
+  const ledgerRecord = (ledger.records as unknown[] | undefined)?.[0] as Record<string, unknown> | undefined;
   return {
     schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
     proofId: "gpu-runtime-proof:fixture",
@@ -283,8 +285,13 @@ function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, 
     limitations: [],
     proofLedger: ledger,
     proofLedgerQuery: ledger.query,
-    acceptanceContract: acceptanceContract(ledger),
+    acceptanceContract: contract,
     acceptanceContractEvaluation: {
+      accepted: true,
+      failedGates: [],
+    },
+    derivedAcceptanceContract: contract,
+    derivedAcceptanceContractEvaluation: {
       accepted: true,
       failedGates: [],
     },
@@ -292,8 +299,11 @@ function runtimeProofArtifact(ledger = proofLedger(), overrides: Record<string, 
       accepted: true,
       failedGates: [],
     },
+    explicitProofLedgerRecord: null,
+    derivedProofLedgerRecord: ledgerRecord,
     proofLedgerSourceConsistency: {
       accepted: true,
+      failures: [],
       failedGates: [],
     },
     ...overrides,
@@ -768,6 +778,74 @@ describe("GPU HMR proof-state validation", () => {
         "acceptance_contract_recomputed_rejected",
         "acceptance_contract_evaluation_mismatch",
       ])
+    );
+  });
+
+  it("rejects full runtime artifact with forged acceptance contract consistency", () => {
+    const ledger = proofLedger();
+    const derivedContract = acceptanceContract(ledger);
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger, {
+        acceptanceContract: acceptanceContract(ledger, {
+          project_id: "forged-gpu-project",
+        }),
+        acceptanceContractEvaluation: {
+          accepted: true,
+          failedGates: [],
+        },
+        derivedAcceptanceContract: derivedContract,
+        derivedAcceptanceContractEvaluation: {
+          accepted: true,
+          failedGates: [],
+        },
+        acceptanceContractConsistency: {
+          accepted: true,
+          failedGates: [],
+        },
+      }),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "acceptance_contract_consistency_recomputed_rejected"
+    );
+  });
+
+  it("rejects full runtime artifact with forged proof ledger source consistency", () => {
+    const ledger = proofLedger();
+    const explicitRecord = {
+      ...(ledger.records[0] as Record<string, unknown>),
+      dispatch_event: {
+        ...(ledger.records[0] as Record<string, any>).dispatch_event,
+        id: "forged-dispatch",
+      },
+    };
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofLedger: ledger,
+      runtimeProofArtifact: runtimeProofArtifact(ledger, {
+        explicitProofLedgerRecord: explicitRecord,
+        proofLedgerSourceConsistency: {
+          accepted: true,
+          failures: [],
+          failedGates: [],
+        },
+      }),
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("runtime_proof_artifact_rejected");
+    expect(validation.runtimeProofArtifactValidation?.failedGates.map((gate) => gate.code)).toContain(
+      "proof_ledger_source_consistency_recomputed_rejected"
     );
   });
 

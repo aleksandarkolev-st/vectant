@@ -267,6 +267,8 @@ function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Rec
 }
 
 function passingRuntimeProofArtifact(ledger = passingProofLedger(), overrides: Record<string, unknown> = {}) {
+  const contract = passingAcceptanceContract(ledger);
+  const ledgerRecord = (ledger.records as unknown[] | undefined)?.[0] as Record<string, unknown> | undefined;
   return {
     schemaVersion: "synthi.gpu.hmr.validation-proof.v1",
     proofId: "gpu-runtime-proof:wait-fixture",
@@ -288,8 +290,13 @@ function passingRuntimeProofArtifact(ledger = passingProofLedger(), overrides: R
     limitations: [],
     proofLedger: ledger,
     proofLedgerQuery: ledger.query,
-    acceptanceContract: passingAcceptanceContract(ledger),
+    acceptanceContract: contract,
     acceptanceContractEvaluation: {
+      accepted: true,
+      failedGates: [],
+    },
+    derivedAcceptanceContract: contract,
+    derivedAcceptanceContractEvaluation: {
       accepted: true,
       failedGates: [],
     },
@@ -297,8 +304,11 @@ function passingRuntimeProofArtifact(ledger = passingProofLedger(), overrides: R
       accepted: true,
       failedGates: [],
     },
+    explicitProofLedgerRecord: null,
+    derivedProofLedgerRecord: ledgerRecord,
     proofLedgerSourceConsistency: {
       accepted: true,
+      failures: [],
       failedGates: [],
     },
     ...overrides,
