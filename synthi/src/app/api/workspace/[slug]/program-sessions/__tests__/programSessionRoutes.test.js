@@ -119,7 +119,7 @@ describe('POST /api/workspace/[slug]/program-sessions', () => {
       output: 'ready',
       exitCode: 0,
       timedOut: false,
-      runtimeSession: { sessionId: 'ps-1', workspaceSlug: 'team', state: 'running', activePorts: [5173], webPort: 5173 },
+      runtimeSession: { sessionId: 'ps-1', workspaceSlug: 'team', state: 'running', activePorts: [5173], webPort: 5173, healthState: 'ok' },
     });
     h.updateProgramSession.mockResolvedValue({
       id: 'ps-1',
@@ -141,7 +141,7 @@ describe('POST /api/workspace/[slug]/program-sessions', () => {
     expect(h.launchRuntime).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-1', command: 'npm run dev' }));
     expect(h.appendProgramRuntimeEvent).toHaveBeenCalled();
     const body = await res.json();
-    expect(body.session).toMatchObject({ id: 'ps-1', state: 'running', activePorts: [5173], webPort: 5173 });
+    expect(body.session).toMatchObject({ id: 'ps-1', state: 'running', activePorts: [5173], webPort: 5173, lastHealthState: 'ok' });
     expect(body.grant).toMatchObject({ id: 'grant-1' });
   });
 

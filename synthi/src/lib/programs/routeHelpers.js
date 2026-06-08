@@ -14,6 +14,7 @@ export function mergeProgramSession(session, runtimeSession = null) {
     ...session,
     activePorts: Array.isArray(runtimeSession?.activePorts) ? [...runtimeSession.activePorts] : [],
     webPort: runtimeSession?.webPort ?? null,
+    lastHealthState: runtimeSession?.healthState ?? session.lastHealthState ?? null,
   };
 
   if (runtimeSession?.state) {
