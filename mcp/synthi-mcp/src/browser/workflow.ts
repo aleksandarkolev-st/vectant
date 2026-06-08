@@ -1048,6 +1048,10 @@ function parameterNameForAction(
     }
     return event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal);
   }
+  if (actionKind === "click" && isAriaOptionSelectionEvent(event)) {
+    const explicit = stringDetail(event, "option_parameter") ?? stringDetail(event, "listbox_parameter");
+    return slugIdentifier(explicit || stringDetail(event, "listbox_name") || element?.label || element?.name || element?.test_id || `option_${ordinal}`);
+  }
   if (actionKind === "drag" && dragClassFor(event) === "filedrop") {
     const explicit = typeof event.detail?.["file_parameter"] === "string"
       ? event.detail["file_parameter"] as string
@@ -1076,6 +1080,7 @@ function parameterNameFor(event: BrowserTraceEvent, element: BrowserElementMetad
 function parameterValueShape(event: BrowserTraceEvent | undefined): WorkflowParameterV7["valueShape"] {
   if (event?.action === "drag" && dragClassFor(event) === "filedrop") return "filePath";
   if (event?.action === "drag" && dragClassFor(event) === "clipboarddrop") return "secret";
+  if (event && isAriaOptionSelectionEvent(event)) return valueShape(stringDetail(event, "option_value") ?? event.value, false);
   if (event && isClipboardPasteEvent(event)) return "secret";
   if (event && isAcceptedPromptDialogEvent(event)) return "secret";
   return valueShape(event?.value, event?.redacted === true);
@@ -1479,6 +1484,15 @@ function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
   return event.detail?.["dialog_event"] === true &&
     event.detail?.["dialog_type"] === "prompt" &&
     event.detail?.["dialog_accepted"] !== false;
+}
+
+function isAriaOptionSelectionEvent(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "click" && (
+    event.detail?.["option_select_event"] === true ||
+    element?.role === "option" ||
+    typeof event.detail?.["listbox_name"] === "string"
+  );
 }
 
 function dragClassFor(event: BrowserTraceEvent): string {

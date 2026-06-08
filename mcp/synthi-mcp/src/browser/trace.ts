@@ -217,6 +217,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const usesClipboardDrop = events.some(isClipboardDropEvent);
   const usesValueParameters = events.some((event) => scriptValueParameterName(event, valueParameterByEventId) !== undefined);
+  const usesAriaOptionParameters = events.some((event) => scriptAriaOptionParameterName(event, valueParameterByEventId) !== undefined);
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
     ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
@@ -266,6 +267,34 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("  function parameterizedTextRegex(parts, ...values) {");
     lines.push("    return new RegExp(`^${parts.map((part, index) => `${escapeRegExp(part)}${index < values.length ? escapeRegExp(values[index]) : ''}`).join('')}$`);");
     lines.push("  }");
+    if (usesAriaOptionParameters) {
+      lines.push("  async function ariaOptionByValue(listbox, value) {");
+      lines.push("    const needle = String(value).trim().toLowerCase();");
+      lines.push("    const options = listbox.getByRole('option');");
+      lines.push("    const count = await options.count();");
+      lines.push("    let partial = null;");
+      lines.push("    for (let index = 0; index < count; index += 1) {");
+      lines.push("      const option = options.nth(index);");
+      lines.push("      const match = await option.evaluate((element, rawValue) => {");
+      lines.push("        const value = String(rawValue).trim().toLowerCase();");
+      lines.push("        const normalize = (candidate) => String(candidate || '').trim().toLowerCase();");
+      lines.push("        const attributes = element.getAttributeNames();");
+      lines.push("        for (const attr of attributes) {");
+      lines.push("          if (!attr.startsWith('data-') && !['value', 'aria-label', 'title', 'id', 'name'].includes(attr)) continue;");
+      lines.push("          if (normalize(element.getAttribute(attr)) === value) return 'exact';");
+      lines.push("        }");
+      lines.push("        const text = normalize(element.textContent);");
+      lines.push("        if (text === value) return 'exact';");
+      lines.push("        if (text.includes(value)) return 'partial';");
+      lines.push("        return '';");
+      lines.push("      }, needle);");
+      lines.push("      if (match === 'exact') return option;");
+      lines.push("      if (match === 'partial' && !partial) partial = option;");
+      lines.push("    }");
+      lines.push("    if (partial) return partial;");
+      lines.push("    throw new Error(`No ARIA option matched ${value}`);");
+      lines.push("  }");
+    }
   }
   if (usesFileDrop) {
     lines.push("  async function dropFile(page, target, filePath, mimeType = 'application/octet-stream') {");
@@ -396,16 +425,32 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       confidence: locator.confidence,
       fallbacks: event.locator_candidates?.slice(1) ?? [],
     });
-    const locatorExpressions = (event.locator_candidates ?? [locator]).map((candidate) => locatorExpressionForEvent(event, candidate.locator, pageVar));
     targetSeq += 1;
     const target = `target${targetSeq}`;
-    lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
-    if (allowsHiddenReplayTarget(event)) {
-      lines.push(`  await expect(${target}).toBeAttached();`);
-    } else {
-      lines.push(`  await expect(${target}).toBeVisible();`);
-    }
+    const ariaOptionParameter = scriptAriaOptionParameterForEvent(event, valueParameterByEventId, targetSeq);
     let effectValueExpr: string | undefined;
+    if (ariaOptionParameter) {
+      pushRequiredValueParameter(lines, ariaOptionParameter);
+      for (const taughtOptionValue of ariaOptionTaughtValues(event)) {
+        rememberScalarValueReplacement(scalarValueReplacements, event, ariaOptionParameter.valueVar, taughtOptionValue);
+      }
+      const listbox = `listbox${targetSeq}`;
+      const listboxExpressions = ariaListboxLocatorExpressionsForEvent(event, pageVar);
+      lines.push(`  const ${listbox} = await firstVisible(${listboxExpressions.join(", ")});`);
+      lines.push(`  await expect(${listbox}).toBeVisible();`);
+      lines.push(`  const ${target} = await ariaOptionByValue(${listbox}, ${ariaOptionParameter.valueVar});`);
+      lines.push(`  await expect(${target}).toBeVisible();`);
+      effectValueExpr = ariaOptionParameter.valueVar;
+      warnings.push(`event ${event.event_id} ARIA option replay is parameterized by ${ariaOptionParameter.envName}`);
+    } else {
+      const locatorExpressions = (event.locator_candidates ?? [locator]).map((candidate) => locatorExpressionForEvent(event, candidate.locator, pageVar));
+      lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
+      if (allowsHiddenReplayTarget(event)) {
+        lines.push(`  await expect(${target}).toBeAttached();`);
+      } else {
+        lines.push(`  await expect(${target}).toBeVisible();`);
+      }
+    }
     if ((mode === "prefixOnly" || mode === "coldSession") && firstMutationStepId === event.event_id) {
       lines.push(`  // Mutation boundary: ${event.event_id}. Prefix-only replay verifies reachability but does not commit this action.`);
       lines.push(`  await expect(${target}).toBeEnabled();`);
@@ -713,7 +758,7 @@ type ScriptValueReplacement = {
 };
 
 function scriptValueParameterName(event: BrowserTraceEvent, valueParameterByEventId: Map<string, string>): string | undefined {
-  if (event.action !== "fill" && event.action !== "select") return undefined;
+  if (event.action !== "fill" && event.action !== "select" && !isAriaOptionSelectionEvent(event)) return undefined;
   if (event.action === "fill" && isClipboardPasteEvent(event)) return undefined;
   const valueRef = valueParameterByEventId.get(event.event_id);
   if (!valueRef) return undefined;
@@ -735,6 +780,25 @@ function scriptValueParameterForEvent(
   };
 }
 
+function scriptAriaOptionParameterName(event: BrowserTraceEvent, valueParameterByEventId: Map<string, string>): string | undefined {
+  if (!isAriaOptionSelectionEvent(event)) return undefined;
+  return scriptValueParameterName(event, valueParameterByEventId);
+}
+
+function scriptAriaOptionParameterForEvent(
+  event: BrowserTraceEvent,
+  valueParameterByEventId: Map<string, string>,
+  ordinal: number
+): ScriptValueParameter | undefined {
+  const envName = scriptAriaOptionParameterName(event, valueParameterByEventId);
+  if (!envName) return undefined;
+  return {
+    envName,
+    stepId: event.event_id,
+    valueVar: `optionValue${ordinal}`,
+  };
+}
+
 function valueParameterEnvName(valueRef: string, fallbackOrdinal: number): string {
   const normalized = valueRef.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
   return normalized.length > 0 ? normalized : `SYNTHI_WORKFLOW_VALUE_${fallbackOrdinal || 1}`;
@@ -751,11 +815,12 @@ function pushRequiredValueListParameter(lines: string[], parameter: ScriptValueP
 function rememberScalarValueReplacement(
   replacements: ScriptValueReplacement[],
   event: BrowserTraceEvent,
-  valueExpr: string
+  valueExpr: string,
+  taughtValue: string | undefined = event.value
 ): void {
-  if (typeof event.value !== "string" || event.value.length === 0) return;
-  if (replacements.some((replacement) => replacement.taughtValue === event.value && replacement.valueExpr === valueExpr)) return;
-  replacements.push({ taughtValue: event.value, valueExpr });
+  if (typeof taughtValue !== "string" || taughtValue.length === 0) return;
+  if (replacements.some((replacement) => replacement.taughtValue === taughtValue && replacement.valueExpr === valueExpr)) return;
+  replacements.push({ taughtValue, valueExpr });
 }
 
 function parameterizedEffectLocatorSource(effectText: string, replacements: ScriptValueReplacement[]): string | undefined {
@@ -1341,6 +1406,35 @@ function pushOptionSelectionAssertion(lines: string[], target: string, event: Br
   if (!isAriaOptionSelectionEvent(event)) return;
   const selected = event.detail?.["selected"] !== false;
   lines.push(`  await expect(${target}).toHaveAttribute('aria-selected', ${JSON.stringify(String(selected))});`);
+}
+
+function ariaListboxLocatorExpressionsForEvent(event: BrowserTraceEvent, pageVar: string): string[] {
+  const locators: string[] = [];
+  const listboxLocator = typeof event.detail?.["listbox_locator"] === "string" ? event.detail["listbox_locator"] : undefined;
+  const listboxName = typeof event.detail?.["listbox_name"] === "string" && event.detail["listbox_name"].trim().length > 0
+    ? event.detail["listbox_name"].trim()
+    : undefined;
+  if (listboxLocator) locators.push(locatorExpressionForEvent(event, listboxLocator, pageVar));
+  if (listboxName) {
+    locators.push(locatorExpressionForEvent(event, `page.getByRole("listbox", { name: ${JSON.stringify(listboxName)} })`, pageVar));
+  }
+  const element = elementForEvent(event);
+  if (element?.name) {
+    locators.push(locatorExpressionForEvent(event, `page.locator("[role=\\\"listbox\\\"]", { hasText: ${JSON.stringify(element.name)} }).first()`, pageVar));
+  }
+  locators.push(locatorExpressionForEvent(event, `page.locator("[role=\\\"listbox\\\"]").first()`, pageVar));
+  return [...new Set(locators)];
+}
+
+function ariaOptionTaughtValues(event: BrowserTraceEvent): string[] {
+  const element = elementForEvent(event);
+  return [
+    typeof event.detail?.["option_value"] === "string" ? event.detail["option_value"] : undefined,
+    event.value,
+    element?.name,
+    element?.label,
+    element?.text,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
 function pushAriaStateAssertions(lines: string[], target: string, event: BrowserTraceEvent): void {

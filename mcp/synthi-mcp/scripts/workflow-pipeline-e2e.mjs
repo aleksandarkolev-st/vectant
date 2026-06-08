@@ -1385,16 +1385,22 @@ const CASES = [
     minSteps: 4,
     expectedActions: ["select", "check", "click"],
     expectedReplayText: [
-      "Priority high",
-      "Applied qa,design via email at high",
+      "parameterizedTextRegex([\"Priority \",\"\"], optionValue3)",
     ],
     expectedReplayCode: [
-      "await target1.selectOption([\"qa\",\"design\"]);",
-      "await expect(target1).toHaveValues([\"qa\",\"design\"]);",
-      "page.getByRole(\"option\", { name: \"High priority\" })",
+      "const selectValues1 = readRequiredEnvList(\"TEAMS\"",
+      "await target1.selectOption(selectValues1);",
+      "await expect(target1).toHaveValues(selectValues1);",
+      "const optionValue3 = readRequiredEnv(\"PRIORITY\"",
+      "page.getByRole(\"listbox\", { name: \"Priority\" })",
+      "ariaOptionByValue(listbox3, optionValue3)",
       "toHaveAttribute('aria-selected', \"true\")",
     ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({
+      TEAMS: JSON.stringify(["qa", "design"]),
+      PRIORITY: "low",
+    }),
     files: () => commonFiles({
       title: "Multi Select Controls Workflow",
       body: [

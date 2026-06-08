@@ -1135,7 +1135,7 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("page.getByText(\"qa design\")");
   });
 
-  it("asserts selected state for custom ARIA option clicks", () => {
+  it("parameterizes selected custom ARIA option clicks", () => {
     const generated = generatePlaywrightScript([
       event({
         event_id: "priority",
@@ -1147,6 +1147,7 @@ describe("browser replay generation scenarios", () => {
           option_value: "high",
           listbox_name: "Priority",
           listbox_selected_values: ["high"],
+          observed_effects: ["Priority high"],
           element: { tag: "div", role: "option", name: "High priority", source_id: "settings.priority.high" },
         },
         locator_candidates: [
@@ -1155,8 +1156,12 @@ describe("browser replay generation scenarios", () => {
       }),
     ]);
 
+    expect(generated.code).toContain("const optionValue1 = readRequiredEnv(\"PRIORITY\", \"priority\");");
+    expect(generated.code).toContain("const listbox1 = await firstVisible(page.getByRole(\"listbox\", { name: \"Priority\" })");
+    expect(generated.code).toContain("const target1 = await ariaOptionByValue(listbox1, optionValue1);");
     expect(generated.code).toContain("await target1.click();");
     expect(generated.code).toContain("await expect(target1).toHaveAttribute('aria-selected', \"true\");");
+    expect(generated.code).toContain("parameterizedTextRegex([\"Priority \",\"\"], optionValue1)");
   });
 });
 
