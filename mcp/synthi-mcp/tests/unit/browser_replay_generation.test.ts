@@ -22,8 +22,32 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? \"http://localhost:5173\";");
-    expect(generated.code).toContain("await page.goto(`${baseUrl}/dashboard?framework=react`);");
+    expect(generated.code).toContain("await page.goto(workflowUrl(\"/dashboard?framework=react\"));");
     expect(generated.code).toContain("await expect(target1).toBeVisible();");
+  });
+
+  it("strips dynamic workspace preview proxy ports from generated URLs", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "nav",
+        kind: "navigation",
+        url: "http://localhost:1234/port/37797/dashboard?framework=react",
+      }),
+      event({
+        event_id: "click",
+        kind: "human_action",
+        action: "click",
+        url: "http://localhost:1234/port/37797/dashboard?framework=react",
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Create\" })", confidence: 0.98, reason: "accessible_role_and_name" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL;");
+    expect(generated.code).toContain("Set PLAYWRIGHT_BASE_URL to the app or forwarded preview URL for this workflow.");
+    expect(generated.code).toContain("await page.goto(workflowUrl(\"/dashboard?framework=react\"));");
+    expect(generated.code).not.toContain("/port/37797");
   });
 
   it("keeps stable CSS fallbacks for shadow DOM-capable Playwright locators", () => {
@@ -409,7 +433,7 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("page.waitForEvent('popup')");
     expect(generated.code).toContain("target1.click(),");
     expect(generated.code).toContain("await popup1.waitForLoadState('domcontentloaded').catch(() => undefined);");
-    expect(generated.code).toContain("await expect(popup1).toHaveURL(`${baseUrl}/help`);");
+    expect(generated.code).toContain("await expect(popup1).toHaveURL(workflowUrl(\"/help\"));");
     expect(generated.code).toContain("await expect(popup1).toHaveTitle(\"Workflow Help\");");
     expect(generated.code).toContain("await expect(page.getByText(\"Help opened\", { exact: true })).toBeVisible();");
   });

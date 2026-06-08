@@ -214,6 +214,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     step.action.valueRef ? [[step.stepId, step.action.valueRef] as const] : []
   ));
   const baseOrigin = firstHttpOrigin(events);
+  const requiresRuntimeBaseUrl = events.some((event) => isPreviewProxyUrl(event.url));
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const usesClipboardDrop = events.some(isClipboardDropEvent);
   const usesValueParameters = events.some((event) => scriptValueParameterName(event, valueParameterByEventId) !== undefined);
@@ -232,7 +233,18 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   ];
   const replayBlocked = contract.mutationBoundaryPlan.defaultReplayMode === "blocked";
   if (baseOrigin) {
-    lines.push(`  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? ${JSON.stringify(baseOrigin)};`);
+    if (requiresRuntimeBaseUrl) {
+      lines.push("  const baseUrl = process.env.PLAYWRIGHT_BASE_URL;");
+      lines.push("  test.skip(!baseUrl, 'Set PLAYWRIGHT_BASE_URL to the app or forwarded preview URL for this workflow.');");
+      lines.push("  if (!baseUrl) throw new Error('missing PLAYWRIGHT_BASE_URL for proxied workflow URL');");
+    } else {
+      lines.push(`  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? ${JSON.stringify(baseOrigin)};`);
+    }
+    lines.push("  function workflowUrl(path = '') {");
+    lines.push("    const route = String(path || '').replace(/^\\/+/, '');");
+    lines.push("    const base = String(baseUrl).replace(/\\/+$/, '');");
+    lines.push("    return route ? `${base}/${route}` : String(baseUrl);");
+    lines.push("  }");
   }
   lines.push("  async function firstVisible(...locators) {");
   lines.push("    let fallback = null;");
@@ -1032,12 +1044,26 @@ function urlExpression(url: string, baseOrigin: string | null): string {
   try {
     const parsed = new URL(url);
     if (parsed.origin === baseOrigin) {
-      return `\`\${baseUrl}${parsed.pathname}${parsed.search}${parsed.hash}\``;
+      return `workflowUrl(${JSON.stringify(routePathForGeneratedUrl(parsed))})`;
     }
   } catch {
     // Fall through to literal URL.
   }
   return JSON.stringify(url);
+}
+
+function routePathForGeneratedUrl(parsed: URL): string {
+  const proxyMatch = parsed.pathname.match(/^\/port\/\d+(\/.*)?$/);
+  const path = proxyMatch ? (proxyMatch[1] || "/") : parsed.pathname;
+  return `${path}${parsed.search}${parsed.hash}`;
+}
+
+function isPreviewProxyUrl(url: string): boolean {
+  try {
+    return /^\/port\/\d+(\/|$)/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
 }
 
 function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string, pageVar = "page"): string {

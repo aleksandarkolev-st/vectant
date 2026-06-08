@@ -207,6 +207,13 @@ async function runCase({ testCase, container, context, runner }) {
     const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
     await writeFile(specPath, generated.code);
     await writeJson(caseDir, "export.json", generated);
+    const forwardedPortLiterals = String(generated.code).match(/\/port\/\d+/g) ?? [];
+    record(
+      testCase.id,
+      "export avoids forwarded port literals",
+      forwardedPortLiterals.length === 0,
+      forwardedPortLiterals.length ? `literals=${Array.from(new Set(forwardedPortLiterals)).join(",")}` : "no forwarded port literals"
+    );
     if (Array.isArray(testCase.expectedReplayText) && testCase.expectedReplayText.length > 0) {
       const missingText = testCase.expectedReplayText.filter((text) => !String(generated?.code || "").includes(text));
       record(
@@ -640,7 +647,7 @@ async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, ca
     env: {
       ...process.env,
       ...env,
-      PLAYWRIGHT_BASE_URL: new URL(previewUrl).origin,
+      PLAYWRIGHT_BASE_URL: trimSlash(previewUrl),
       PLAYWRIGHT_CHROMIUM_EXECUTABLE: executablePath,
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
     },

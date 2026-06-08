@@ -16,6 +16,8 @@ Local CDP remains a development harness only. The tested user-facing path is the
 
 The comprehensive workflow pipeline passed 11 seeded projects. Each case seeded a workspace, detected the actual running preview port, observed through the hosted browser toolbox, taught the workflow, compiled the contract, exported Playwright, validated replay state, and ran the generated Playwright script.
 
+The latest run also asserted that exported scripts do not embed forwarded preview paths such as `/port/<runtime-port>`. Generated scripts now take the app or forwarded preview URL through `PLAYWRIGHT_BASE_URL`.
+
 Passed cases:
 
 - `clipboard-copy-cut-textarea`
@@ -46,6 +48,12 @@ Result:
 ```text
 [ok] workflow pipeline passed 11 seeded project(s)
 artifacts=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/workflow-pipeline-e2e
+```
+
+Additional artifact scan:
+
+```text
+no forwarded port literals in rerun exported specs
 ```
 
 Additional verification run before the comprehensive pass:
@@ -83,6 +91,7 @@ build passed
 - Same-session replay for non-mutating workflows.
 - Prefix-only replay for workflows that reach a mutation boundary.
 - Generated Playwright scripts that parameterize fill/select/range/terminal/custom-option values instead of baking in the taught values.
+- Generated Playwright scripts require `PLAYWRIGHT_BASE_URL` for proxied workspace previews instead of embedding the detected forwarded port.
 - Hidden file inputs replayed with `setInputFiles` and `toBeAttached` instead of visibility assertions.
 - Calibrated pointer drag replay for sortable lanes, splitter resize, and custom ARIA sliders.
 - Modifier wheel replay with mouse positioning, keyboard modifiers, and real wheel deltas.
