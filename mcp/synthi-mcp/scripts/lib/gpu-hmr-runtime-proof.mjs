@@ -950,6 +950,42 @@ function acceptedAbiExtractorEvidence(observation = {}) {
   };
 }
 
+const GPU_HMR_ABI_COMPATIBILITY_CLASSES = new Set(['compatible', 'additive', 'layout_changed', 'unknown']);
+
+function abiCompatibilityClass(observation = {}) {
+  const raw =
+    observation.abiCompatibilityClass
+    ?? observation.abi_compatibility_class
+    ?? observation.abiClass
+    ?? observation.abi_class
+    ?? observation.compatibilityClass
+    ?? observation.compatibility_class;
+  const value = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+    ? raw.value ?? raw.class ?? raw.abi_compatibility_class
+    : raw;
+  const normalized = typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
+  return GPU_HMR_ABI_COMPATIBILITY_CLASSES.has(normalized) ? normalized : null;
+}
+
+function backendSpecificAdapterSafetyEvidence(observation = {}) {
+  return compactStringList([
+    ...(Array.isArray(observation.backendSpecificAdapterSafetyEvidenceRefs)
+      ? observation.backendSpecificAdapterSafetyEvidenceRefs
+      : []),
+    ...(Array.isArray(observation.backend_specific_adapter_safety_evidence_refs)
+      ? observation.backend_specific_adapter_safety_evidence_refs
+      : []),
+    ...(Array.isArray(observation.adapterSafetyEvidenceRefs)
+      ? observation.adapterSafetyEvidenceRefs
+      : []),
+    ...(Array.isArray(observation.adapter_safety_evidence_refs)
+      ? observation.adapter_safety_evidence_refs
+      : []),
+  ]);
+}
+
 function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degradedState, degradedReason) {
   const requiredRank = proofStateRank(requiredState);
   const passed = evidenceRank >= requiredRank;
@@ -2766,6 +2802,15 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     : [];
   const metadataObserved = observation.metadataObserved === true || evidenceRefs.length > 0;
   const layoutSizeAlignmentVerified = observation.layoutSizeAlignmentVerified === true;
+  const compatibilityClass = abiCompatibilityClass(observation) ?? 'compatible';
+  const backendSpecificAdapterSafetyEvidenceRefs = backendSpecificAdapterSafetyEvidence(observation);
+  const backendSpecificAdapterSafetyProven =
+    observation.backendSpecificAdapterSafetyProven === true
+    || observation.backend_specific_adapter_safety_proven === true
+    || backendSpecificAdapterSafetyEvidenceRefs.length > 0;
+  const compatibilityClassAccepted =
+    ['compatible', 'additive'].includes(compatibilityClass)
+    || backendSpecificAdapterSafetyProven;
   const acceptedExtractor = acceptedAbiExtractorEvidence(observation);
   const acceptedExtractorProvenanceObserved = acceptedExtractor.accepted;
   const extractorProvenanceComplete = observation.extractorProvenanceComplete !== false;
@@ -2786,6 +2831,7 @@ export function classifyGpuHmrAbiProof(observation = {}) {
 
   if (
     layoutSizeAlignmentVerified
+    && compatibilityClassAccepted
     && acceptedExtractorProvenanceObserved
     && extractorProvenanceComplete
     && abiFingerprintHashesObserved
@@ -2796,6 +2842,9 @@ export function classifyGpuHmrAbiProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       layoutSizeAlignmentVerified: true,
+      abiCompatibilityClass: compatibilityClass,
+      backendSpecificAdapterSafetyProven,
+      backendSpecificAdapterSafetyEvidenceRefs,
       abiFingerprintHashesObserved: true,
       kernelAbiFingerprintHashes,
       constantGlobalLayoutHashes,
@@ -2816,7 +2865,9 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     degradedReason: metadataObserved
       ? (typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
         ? observation.degradedReason.trim()
-        : !layoutSizeAlignmentVerified
+        : !compatibilityClassAccepted
+          ? 'abi_compatibility_class_unaccepted'
+          : !layoutSizeAlignmentVerified
           ? 'abi_layout_size_alignment_unverified'
           : !acceptedExtractorProvenanceObserved
             ? 'abi_extractor_provenance_unverified'
@@ -2825,6 +2876,9 @@ export function classifyGpuHmrAbiProof(observation = {}) {
               : 'abi_fingerprint_hashes_unverified')
       : 'abi_evidence_not_collected',
     layoutSizeAlignmentVerified,
+    abiCompatibilityClass: compatibilityClass,
+    backendSpecificAdapterSafetyProven,
+    backendSpecificAdapterSafetyEvidenceRefs,
     abiFingerprintHashesObserved,
     kernelAbiFingerprintHashes,
     constantGlobalLayoutHashes,

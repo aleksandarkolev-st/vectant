@@ -1545,6 +1545,26 @@ function blockingGapsFromVerifiedProofs({
   return compactStringList(gaps);
 }
 
+function abiCompatibilityClassFromProof(abiProof = {}) {
+  const proof = asObject(abiProof);
+  if (proof.resultState !== 'gpu-hmr-abi-proven') return 'unknown';
+  const raw =
+    proof.abiCompatibilityClass
+    ?? proof.abi_compatibility_class
+    ?? proof.abiClass
+    ?? proof.abi_class
+    ?? proof.compatibilityClass
+    ?? proof.compatibility_class;
+  const value = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+    ? raw.value ?? raw.class ?? raw.abi_compatibility_class
+    : raw;
+  const normalized = typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
+  if (ABI_CLASSES.has(normalized)) return normalized;
+  return 'compatible';
+}
+
 export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const validationContext = asObject(input.validationContext ?? input.validation_context);
   const sourceProofs = asArray(input.sourceProofs ?? input.source_proofs ?? (
@@ -1654,8 +1674,11 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     artifact_hash_after: artifactHashAfter,
     unaffected_artifacts_hash_unchanged: fissionProof?.fissionProven === true && !fullDeviceFallback,
     abi_compatibility_class: {
-      value: abiProof?.resultState === 'gpu-hmr-abi-proven' ? 'compatible' : 'unknown',
+      value: abiCompatibilityClassFromProof(abiProof),
       evidence_refs: compactStringList(abiProof.evidenceRefs ?? abiProof.evidence_refs),
+      backend_specific_adapter_safety_proven:
+        abiProof.backendSpecificAdapterSafetyProven === true
+        || abiProof.backend_specific_adapter_safety_proven === true,
     },
     abi_metadata: {
       args: uniqueObjectsByPath([
@@ -1831,7 +1854,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       ),
       artifact_hash_before: artifactHashBefore,
       artifact_hash_after: artifactHashAfter,
-      abi_compatibility_class: abiProof?.resultState === 'gpu-hmr-abi-proven' ? 'compatible' : 'unknown',
+      abi_compatibility_class: abiCompatibilityClassFromProof(abiProof),
       full_device_fallback: fullDeviceFallback,
       host_relinked: input.hostRelinked === true || input.host_relinked === true,
       process_restarted: input.processRestarted === true || input.process_restarted === true,
