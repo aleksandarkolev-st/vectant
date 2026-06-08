@@ -47,6 +47,7 @@ const CFG = {
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
+  captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -1151,7 +1152,7 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     second.visiblePixels > 500 &&
     second.seq > first.seq;
   let artifactDetail = '';
-  if (ok) {
+  if (ok && CFG.captureArtifacts) {
     const firstPath = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);
     const secondPath = await writeImageArtifact(`${artifactPrefix}-second`, second.imageData);
     const metaPath = await writeJsonArtifact(`${artifactPrefix}-metadata`, {
@@ -1237,7 +1238,9 @@ async function run() {
   );
   record('generated device compiled', sawDeviceCompile.matched ? 'pass' : 'fail', sawDeviceCompile.snippet || 'no device compile marker');
 
-  const baselineShot = await assertMcpScreenshot('mcp screenshot before hmr', 'before-hmr');
+  const baselineShot = CFG.captureArtifacts
+    ? await assertMcpScreenshot('mcp screenshot before hmr', 'before-hmr')
+    : null;
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
@@ -1264,7 +1267,9 @@ async function run() {
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
   const afterShot = await assertMcpScreenshot('mcp screenshot after hmr', 'after-hmr');
-  await assertVisualDelta(baselineShot.second, afterShot.second);
+  if (CFG.captureArtifacts && baselineShot) {
+    await assertVisualDelta(baselineShot.second, afterShot.second);
+  }
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});
