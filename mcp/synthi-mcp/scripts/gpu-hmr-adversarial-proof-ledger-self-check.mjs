@@ -628,6 +628,7 @@ const runtimeArtifact = buildValidationRuntimeProofArtifact({
     process_id_after: 100,
   },
   modelProvenance: baselineModelProvenance(),
+  computeOracleArtifacts: baselineComputeOracleArtifacts(),
   ...baselineProofComponents(),
   acceptanceContract: baselineContract(),
   proofLedgerRecord: baselineRecord(),

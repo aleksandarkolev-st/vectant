@@ -1579,6 +1579,21 @@ function compareProofLedgerField(failures, label, explicitRecord, derivedRecord,
     });
     return;
   }
+  if (label === 'evidence_refs') {
+    const explicitRefs = compactStringList(explicitValue);
+    const derivedRefs = new Set(compactStringList(derivedValue));
+    const missingRefs = explicitRefs.filter((ref) => !derivedRefs.has(ref));
+    if (missingRefs.length > 0) {
+      failures.push({
+        code: proofLedgerSourceConsistencyFailureCode(label, 'mismatch'),
+        field: label,
+        explicit: explicitRefs,
+        derived: compactStringList(derivedValue),
+        missingRefs,
+      });
+    }
+    return;
+  }
   if (stableJson(explicitValue) !== stableJson(derivedValue)) {
     failures.push({
       code: proofLedgerSourceConsistencyFailureCode(label, 'mismatch'),
@@ -1630,6 +1645,129 @@ function evaluateProofLedgerSourceConsistency(explicitRecord, derivedRecord) {
     ['cpu_hmr_used', [['cpuHmrUsed']]],
     ['full_rebuild_used', [['fullRebuildUsed']]],
     ['process_restarted', [['processRestarted']]],
+    ['output_oracle_target', [['outputOracleTarget']]],
+    ['compute_oracle_raw_readback_hash', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_hash'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackHash'],
+      ['outputEvent', 'oracle_artifacts', 'compute_oracle_artifacts', 'raw_readback_hash'],
+      ['outputEvent', 'oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackHash'],
+    ]],
+    ['compute_oracle_raw_readback_hash_verified', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_hash_verified'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackHashVerified'],
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_verification', 'hash_verified'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackVerification', 'hashVerified'],
+    ]],
+    ['compute_oracle_raw_readback_byte_length', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_byte_length'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackByteLength'],
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_verification', 'byte_length'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackVerification', 'byteLength'],
+    ]],
+    ['compute_oracle_raw_readback_source', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_source'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackSource'],
+    ]],
+    ['compute_oracle_deterministic_slice', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'deterministic_slice'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'deterministicSlice'],
+    ]],
+    ['compute_oracle_deterministic_slice_hash', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'deterministic_slice_hash'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'deterministicSliceHash'],
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'raw_readback_verification', 'deterministic_slice_hash'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'rawReadbackVerification', 'deterministicSliceHash'],
+    ]],
+    ['compute_oracle_checksum_before', [[
+      'oracleArtifacts',
+      'compute_oracle_artifacts',
+      'checksum_before',
+    ], [
+      'oracleArtifacts',
+      'computeOracleArtifacts',
+      'checksumBefore',
+    ]]],
+    ['compute_oracle_checksum_after', [
+      ['oracleArtifacts', 'compute_oracle_artifacts', 'checksum_after'],
+      ['oracleArtifacts', 'computeOracleArtifacts', 'checksumAfter'],
+    ]],
+    ['visual_oracle_before_image_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'before_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'beforeImageHash'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'before_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'beforeImageHash'],
+    ]],
+    ['visual_oracle_after_image_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'after_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'afterImageHash'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'after_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'afterImageHash'],
+    ]],
+    ['visual_oracle_diff_image_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'diff_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'diffImageHash'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'diff_image_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'diffImageHash'],
+    ]],
+    ['visual_oracle_pixel_metrics_verified', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'pixel_metrics_verified'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'pixelMetricsVerified'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'metrics_verified'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'metricsVerified'],
+    ]],
+    ['visual_oracle_changed_pixel_ratio', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'changed_pixel_ratio'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'changedPixelRatio'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'changed_pixel_ratio'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'changedPixelRatio'],
+    ]],
+    ['visual_oracle_perceptual_diff', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'perceptual_diff'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'perceptualDiff'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'perceptual_diff'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'perceptualDiff'],
+    ]],
+    ['visual_oracle_visible_pixel_count', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visible_pixel_count'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visiblePixelCount'],
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'visual_pixel_verification', 'visible_pixel_count'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'visualPixelVerification', 'visiblePixelCount'],
+    ]],
+    ['visual_oracle_blank_frame_rejection', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'blank_frame_rejection'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'blankFrameRejection'],
+    ]],
+    ['visual_oracle_same_frame_rejection', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'same_frame_rejection'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'sameFrameRejection'],
+    ]],
+    ['visual_oracle_epoch_trace', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'new_epoch_watermark_or_trace'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'newEpochWatermarkOrTrace'],
+    ]],
+    ['visual_oracle_camera_state_hash', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'camera_state_hash'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'cameraStateHash'],
+    ]],
+    ['visual_oracle_swapchain_size', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'swapchain_size'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'swapchainSize'],
+    ]],
+    ['visual_oracle_frame_number', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'frame_number'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'frameNumber'],
+    ]],
+    ['visual_oracle_timestamp_after_dispatch', [
+      ['oracleArtifacts', 'visual_oracle_artifacts', 'timestamp_after_dispatch'],
+      ['oracleArtifacts', 'visualOracleArtifacts', 'timestampAfterDispatch'],
+    ]],
+    ['deterministic_visual_mode', [['deterministicVisualMode']]],
+    ['metric_clock', [['metricClock']]],
+    ['metric_scope', [['metricScope']]],
+    ['cache_state', [['cacheState']]],
+    ['timings', [['timings']]],
+    ['model_provenance', [['modelProvenance']]],
+    ['evidence_refs', [['evidenceRefs']]],
   ];
   for (const [label, paths] of fieldSpecs) {
     compareProofLedgerField(failures, label, normalizedExplicit, normalizedDerived, paths);

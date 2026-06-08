@@ -547,6 +547,85 @@ function deterministicOutputOracle({
   };
 }
 
+function acceptedValidationRuntimeInput(overrides: Record<string, unknown> = {}) {
+  const dispatchProof = safeDispatchProof();
+  const sourceProof = acceptedSourceProof();
+  const fissionProof = acceptedBackendFissionProof({
+    artifactKind: "hsaco",
+    compilerName: "hipcc",
+    launchApi: "hipModuleLaunchKernel",
+    sourcePaths: ["src/gpu/kernel.hip"],
+    entryPoints: ["kernel_main"],
+  });
+  const abiProof = acceptedAbiProof();
+  const artifactTransportProof = acceptedArtifactTransportProof();
+  const epochProof = retiredEpochProof();
+  const outputProof = classifyGpuHmrOutputProof({
+    dispatchProof,
+    deterministicOutputObserved: true,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: true,
+    outputOracle: deterministicOutputOracle(),
+  });
+  const hostPreservationProof = preservedHostProof();
+  const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+    sourceProofs: [sourceProof],
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+  });
+  const strictLedgerEvidence = acceptedStrictLedgerEvidence();
+  return {
+    workspaceSlug: "workspace",
+    sourceEditId: "edit-1",
+    editId: "edit-1",
+    backend: "hip",
+    gpuArch: "amdgcn-amd-amdhsa",
+    compiler: "hipcc",
+    processId: "pid1",
+    deviceUuid: "device:test",
+    contextHandle: "gpu-context:test",
+    outputOracleTarget: {
+      kind: "compute",
+      target_id: "compute-target:runtime-proof-fixture",
+      compute_only_target_verified: true,
+      evidence_refs: ["oracle-target:compute-only:runtime-proof-fixture"],
+    },
+    metricClock: strictLedgerEvidence.metricClock,
+    metricScope: strictLedgerEvidence.metricScope,
+    cacheState: strictLedgerEvidence.cacheState,
+    timings: strictLedgerEvidence.timings,
+    timingMetrics: strictLedgerEvidence.timingMetrics,
+    modelProvenance: strictLedgerEvidence.modelProvenance,
+    evidenceRefs: strictLedgerEvidence.evidenceRefs,
+    ...acceptedGpuRouteEvidence(),
+    sourceProofs: [sourceProof],
+    fissionProof,
+    abiProof,
+    artifactTransportProof,
+    epochProof,
+    dispatchProof,
+    outputProof,
+    hostPreservationProof,
+    fullRuntimeProof,
+    validationContext: {
+      processId: "pid1",
+      deviceIdentity: {
+        device_uuid: "device:test",
+      },
+    },
+    ...overrides,
+  };
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 function preservedHostIdentityRefs() {
   return [
     "worker-log:host_identity:runner_process",
@@ -7524,6 +7603,61 @@ describe("GPU HMR runtime output proof classification", () => {
           expect.objectContaining({
             stage_id: "acceptance-contract",
             degraded_reason: "backend_specific_contract_not_implemented",
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("rejects explicit proof ledger records that forge derived oracle and provenance fields", () => {
+    const baseInput = acceptedValidationRuntimeInput();
+    const verifiedArtifact = buildValidationRuntimeProofArtifact(baseInput);
+    expect(verifiedArtifact.gpuHmrSuccess).toBe(true);
+    expect(verifiedArtifact.proofLedgerSourceConsistency.accepted).toBe(true);
+
+    const cases = [
+      {
+        name: "compute oracle raw readback hash",
+        expectedCode: "proof_ledger_source_compute_oracle_raw_readback_hash_mismatch",
+        mutate: (record: any) => {
+          record.oracle_artifacts.compute_oracle_artifacts.raw_readback_hash = `sha256:${"6".repeat(64)}`;
+        },
+      },
+      {
+        name: "model provenance",
+        expectedCode: "proof_ledger_source_model_provenance_mismatch",
+        mutate: (record: any) => {
+          record.model_provenance.gpu_delta.actual_model = "gemini-3.5-flash";
+        },
+      },
+      {
+        name: "timing evidence",
+        expectedCode: "proof_ledger_source_timings_mismatch",
+        mutate: (record: any) => {
+          record.timings.total_validator_wall_time = 1;
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const explicitRecord = cloneJson(verifiedArtifact.derivedProofLedgerRecord);
+      testCase.mutate(explicitRecord);
+      const forgedArtifact = buildValidationRuntimeProofArtifact({
+        ...baseInput,
+        proofLedgerRecord: explicitRecord,
+      });
+
+      expect(forgedArtifact.gpuHmrSuccess, testCase.name).toBe(false);
+      expect(forgedArtifact.proofLedgerSourceConsistency.accepted, testCase.name).toBe(false);
+      expect(
+        forgedArtifact.proofLedgerSourceConsistency.failures.map((failure: any) => failure.code),
+        testCase.name,
+      ).toContain(testCase.expectedCode);
+      expect(forgedArtifact.limitations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage_id: "proof-ledger-source-consistency",
+            degraded_reason: testCase.expectedCode,
           }),
         ]),
       );
