@@ -60,6 +60,17 @@ The safer investor demo path is a deterministic ROCm/HIP visual ray-light worklo
 - proves the changed frame through MCP screenshot evidence,
 - reports hot edit timing separately from cold split timing.
 
+Update after the latest demo-prep patches:
+
+```text
+ee3903ab3 fix(preview): auto-open native gui apps
+4303ef75d test(gpu-hmr): add ray light visual fixture
+```
+
+The intended preview surface for the meeting is the floating native GUI window. The docked Preview panel is not the primary target for this demo. Play now auto-detects common native windowing frameworks such as SDL, GLFW, raylib, SFML, X11, and GLUT and opens the floating preview pipeline without requiring the user to toggle GUI mode manually.
+
+The new `ray-light` fixture is in the existing MCP agent-split GPU HMR validator. It renders a deterministic GPU-authored framebuffer with fixed camera, fixed scene, no temporal accumulation, and a device-side light-path edit token. The next proof step is to rebuild/restart the containers and run this fixture through cold split, device-only HMR, MCP wait, screenshot evidence, and timing capture.
+
 ## Plan Coverage
 
 | Plan Area | Current State | Remaining Work |
@@ -74,15 +85,15 @@ The safer investor demo path is a deterministic ROCm/HIP visual ray-light worklo
 | Deterministic visual oracle | MCP screenshot gate exists. | Add fixed seed, frozen camera, TAA/denoiser controls, presentation fence, and convergence windows for temporal renderers. |
 | Adversarial refusal harness | Planned and partially represented in tests. | Make negative refusal cases the first mandatory validator phase. |
 | Timing normalization | Flow timings can be derived; some scripts report detailed metrics. | Emit one monotonic timing schema for Flow, ray-light, HIPRT, ROCm compute, Bevy, OpenCL, Vulkan. |
-| Browser preview UX | Floating GUI widget exists; docked Preview panel was still a stub at this checkpoint. | Wire preview panel to live GUI media stream and make Run/Preview behavior visible for demos. |
+| Browser preview UX | Floating GUI widget exists and Play now auto-detects native desktop GUI signals for common frameworks. | Verify the rebuilt frontend launches the floating preview for the ray-light workspace from the normal Play button. |
 
 ## Next Implementation Steps
 
 1. Restore a concrete universal-plan file in `docs/` if it is missing from the checkout, or mark this status document as the current implementation tracker.
-2. Fix the docked Preview panel so it renders the current native GUI stream instead of always saying `No preview available`.
-3. Add a deterministic ROCm/HIP ray-light visual fixture to the MCP GPU HMR demo runner.
-4. Rebuild/restart containers after the UI/demo changes.
-5. Run the ray-light demo through MCP: cold split, device-only HMR, screenshot proof, runner-alive proof, timings.
+2. Rebuild/restart containers after the UI/demo changes.
+3. Run the ray-light demo through MCP: cold split, device-only HMR, screenshot proof, runner-alive proof, timings.
+4. Verify the normal browser Play path opens the floating native preview for SDL-style visual workloads.
+5. Capture the exact investor-demo workspace slug and timings in this document after the run.
 6. Keep the HIPRT path as a high-value proof target, but preseed or cache OIDN before using it in a live meeting.
 7. Continue implementing the universal proof ledger and adversarial refusal harness before broad production claims.
 
