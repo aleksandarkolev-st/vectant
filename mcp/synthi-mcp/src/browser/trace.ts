@@ -418,7 +418,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           const popupVar = pushPopupAction(lines, target, "click", event, targetSeq, baseOrigin, pageVar);
           rememberPopupPage(popupPageByTab, event, popupVar);
         } else {
-          lines.push(`  await ${target}.click();`);
+          lines.push(`  await ${clickActionCall(target, "click", event)};`);
         }
         pushOptionSelectionAssertion(lines, target, event);
         pushAriaStateAssertions(lines, target, event);
@@ -432,12 +432,12 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           const popupVar = pushPopupAction(lines, target, "dblclick", event, targetSeq, baseOrigin, pageVar);
           rememberPopupPage(popupPageByTab, event, popupVar);
         } else {
-          lines.push(`  await ${target}.dblclick();`);
+          lines.push(`  await ${clickActionCall(target, "dblclick", event)};`);
         }
         pushAriaStateAssertions(lines, target, event);
         break;
       case "contextmenu":
-        lines.push(`  await ${target}.click({ button: 'right' });`);
+        lines.push(`  await ${clickActionCall(target, "click", event, { button: "right" })};`);
         pushAriaStateAssertions(lines, target, event);
         break;
       case "hover":
@@ -1062,6 +1062,40 @@ function clampedRatioLiteral(value: number): string {
   return Number(clamped.toFixed(4)).toString();
 }
 
+function clickActionCall(
+  target: string,
+  method: "click" | "dblclick",
+  event: BrowserTraceEvent,
+  baseOptions: { button?: "right" } = {}
+): string {
+  const options = clickOptionsLiteral(event, baseOptions);
+  return `${target}.${method}(${options})`;
+}
+
+function clickOptionsLiteral(event: BrowserTraceEvent, baseOptions: { button?: "right" } = {}): string {
+  const modifiers = clickModifiersFor(event);
+  const parts: string[] = [];
+  if (baseOptions.button) parts.push(`button: ${JSON.stringify(baseOptions.button)}`);
+  if (modifiers.length > 0) parts.push(`modifiers: ${JSON.stringify(modifiers)}`);
+  return parts.length > 0 ? `{ ${parts.join(", ")} }` : "";
+}
+
+function clickModifiersFor(event: BrowserTraceEvent): string[] {
+  const allowed = new Set(["Alt", "Control", "Meta", "Shift"]);
+  const rawModifiers = event.detail?.["modifiers"];
+  if (Array.isArray(rawModifiers)) {
+    return rawModifiers.filter((value): value is string => typeof value === "string" && allowed.has(value));
+  }
+  const raw = event.detail?.["modifier_keys"];
+  const keys = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const modifiers: string[] = [];
+  if (keys["control"] === true) modifiers.push("Control");
+  if (keys["meta"] === true) modifiers.push("Meta");
+  if (keys["alt"] === true) modifiers.push("Alt");
+  if (keys["shift"] === true) modifiers.push("Shift");
+  return modifiers;
+}
+
 function pushDownloadAction(
   lines: string[],
   target: string,
@@ -1072,7 +1106,7 @@ function pushDownloadAction(
   const download = `download${ordinal}`;
   lines.push(`  const [${download}] = await Promise.all([`);
   lines.push("    page.waitForEvent('download'),");
-  lines.push(`    ${target}.${method}(),`);
+  lines.push(`    ${clickActionCall(target, method, event)},`);
   lines.push("  ]);");
   const filename = typeof event.detail?.["suggested_filename"] === "string" ? event.detail["suggested_filename"] : "";
   const redacted = event.detail?.["suggested_filename_redacted"] === true;
@@ -1138,7 +1172,7 @@ function pushDialogAction(
   if (method === "press") {
     lines.push(`  await ${target}.press(${JSON.stringify(pressKey ?? "Enter")});`);
   } else {
-    lines.push(`  await ${target}.${method}();`);
+    lines.push(`  await ${clickActionCall(target, method, event)};`);
   }
   lines.push(`  await ${dialogPromise};`);
   if (message && !messageRedacted) {
@@ -1162,7 +1196,7 @@ function pushPopupAction(
   if (method === "press") {
     lines.push(`    ${target}.press(${JSON.stringify(pressKey ?? "Enter")}),`);
   } else {
-    lines.push(`    ${target}.${method}(),`);
+    lines.push(`    ${clickActionCall(target, method, event)},`);
   }
   lines.push("  ]);");
   lines.push(`  await ${popup}.waitForLoadState('domcontentloaded').catch(() => undefined);`);

@@ -241,7 +241,8 @@ export class BrowserPlaywrightAdapter {
     action: BrowserActionKind,
     selector: string | undefined,
     value: string | undefined,
-    resolveLocator: (selector: string | undefined) => Locator
+    resolveLocator: (selector: string | undefined) => Locator,
+    event?: BrowserTraceEvent
   ): Promise<void> {
     switch (action) {
       case "navigate":
@@ -249,13 +250,13 @@ export class BrowserPlaywrightAdapter {
         await page.goto(value, { waitUntil: "domcontentloaded" });
         break;
       case "click":
-        await resolveLocator(selector).click();
+        await resolveLocator(selector).click(clickOptionsForEvent(event));
         break;
       case "dblclick":
-        await resolveLocator(selector).dblclick();
+        await resolveLocator(selector).dblclick(clickOptionsForEvent(event));
         break;
       case "contextmenu":
-        await resolveLocator(selector).click({ button: "right" });
+        await resolveLocator(selector).click(clickOptionsForEvent(event, { button: "right" }));
         break;
       case "hover":
         await resolveLocator(selector).hover();
@@ -324,11 +325,11 @@ export class BrowserPlaywrightAdapter {
     if (isPopupReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
       return await this.replayPopupAction(tab_id, event, action, selector, value);
     }
-    if (!stringOpt(event.detail?.["frame_locator"])) {
+    if (!needsEventAwareReplay(event, action)) {
       return await this.action(tab_id, action, selector, value);
     }
     const page = this.requirePage(tab_id);
-    await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocatorForEvent(page, event, targetSelector));
+    await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocatorForEvent(page, event, targetSelector), event);
     return { ok: true, action, tab_id, url: page.url() };
   }
 
@@ -473,7 +474,7 @@ export class BrowserPlaywrightAdapter {
     const target = this.resolveLocatorForEvent(page, event, selector);
     const [download] = await Promise.all([
       page.waitForEvent("download"),
-      action === "dblclick" ? target.dblclick() : target.click(),
+      action === "dblclick" ? target.dblclick(clickOptionsForEvent(event)) : target.click(clickOptionsForEvent(event)),
     ]);
     const expectedFilename = stringDetail(event, "suggested_filename");
     const filenameRedacted = boolDetail(event, "suggested_filename_redacted");
@@ -513,7 +514,7 @@ export class BrowserPlaywrightAdapter {
         accepted,
         value: replayPromptValue,
       });
-      await runTargetAction(target, action, value);
+      await runTargetAction(target, action, value, event);
       const promptResult = await readPromptReplayOverride(target);
       if (!promptResult.consumed) throw new Error("dialog_not_triggered");
       if (promptResult.error) throw new Error(promptResult.error);
@@ -550,7 +551,7 @@ export class BrowserPlaywrightAdapter {
         }
       });
     });
-    await Promise.all([dialogPromise, runTargetAction(target, action, value)]);
+    await Promise.all([dialogPromise, runTargetAction(target, action, value, event)]);
     return {
       ok: true,
       action,
@@ -575,7 +576,7 @@ export class BrowserPlaywrightAdapter {
     const target = this.resolveLocatorForEvent(page, event, selector);
     const [popup] = await Promise.all([
       page.waitForEvent("popup"),
-      runTargetAction(target, action, value),
+      runTargetAction(target, action, value, event),
     ]);
     const popup_tab_id = this.idForPage(popup);
     this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
@@ -1207,15 +1208,47 @@ function popupNavigationDetail(
 async function runTargetAction(
   target: Locator,
   action: "click" | "dblclick" | "press",
-  value?: string
+  value?: string,
+  event?: BrowserTraceEvent
 ): Promise<void> {
   if (action === "dblclick") {
-    await target.dblclick();
+    await target.dblclick(clickOptionsForEvent(event));
   } else if (action === "press") {
     await target.press(value ?? "Enter");
   } else {
-    await target.click();
+    await target.click(clickOptionsForEvent(event));
   }
+}
+
+type ClickModifier = "Alt" | "Control" | "Meta" | "Shift";
+
+function needsEventAwareReplay(event: BrowserTraceEvent, action: BrowserActionKind): boolean {
+  if (stringOpt(event.detail?.["frame_locator"])) return true;
+  return (action === "click" || action === "dblclick" || action === "contextmenu") && clickModifiersForEvent(event).length > 0;
+}
+
+function clickOptionsForEvent(
+  event: BrowserTraceEvent | undefined,
+  base: { button?: "right" } = {}
+): { button?: "right"; modifiers?: ClickModifier[] } {
+  const modifiers = clickModifiersForEvent(event);
+  return modifiers.length > 0 ? { ...base, modifiers } : base;
+}
+
+function clickModifiersForEvent(event: BrowserTraceEvent | undefined): ClickModifier[] {
+  const allowed = new Set<ClickModifier>(["Alt", "Control", "Meta", "Shift"]);
+  const rawModifiers = event?.detail?.["modifiers"];
+  if (Array.isArray(rawModifiers)) {
+    return rawModifiers.filter((value): value is ClickModifier => typeof value === "string" && allowed.has(value as ClickModifier));
+  }
+  const raw = event?.detail?.["modifier_keys"];
+  const keys = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const modifiers: ClickModifier[] = [];
+  if (keys["control"] === true) modifiers.push("Control");
+  if (keys["meta"] === true) modifiers.push("Meta");
+  if (keys["alt"] === true) modifiers.push("Alt");
+  if (keys["shift"] === true) modifiers.push("Shift");
+  return modifiers;
 }
 
 async function installPromptReplayOverride(
@@ -2315,6 +2348,22 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return [...modifiers, normalizedKey].join('+');
     }
 
+    function modifierDetail(event) {
+      const modifiers = [];
+      if (event.ctrlKey) modifiers.push('Control');
+      if (event.metaKey) modifiers.push('Meta');
+      if (event.altKey) modifiers.push('Alt');
+      if (event.shiftKey) modifiers.push('Shift');
+      return Object.assign({
+        modifier_keys: {
+          alt: Boolean(event.altKey),
+          control: Boolean(event.ctrlKey),
+          meta: Boolean(event.metaKey),
+          shift: Boolean(event.shiftKey),
+        },
+      }, modifiers.length > 0 ? { modifiers, modified_click: true } : {});
+    }
+
     function slug(value) {
       return text(value)
         .toLowerCase()
@@ -2630,7 +2679,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (shouldSuppressPointerDragClick(target)) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'click', undefined, Object.assign({ click_event: true }, ariaOptionDetail(el)));
+      emit(el, 'click', undefined, Object.assign({ click_event: true }, modifierDetail(event), ariaOptionDetail(el)));
     }, true);
 
     document.addEventListener('dblclick', (event) => {
@@ -2639,7 +2688,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'dblclick', undefined, { dblclick_event: true, suppresses_previous_click: true });
+      emit(el, 'dblclick', undefined, Object.assign({ dblclick_event: true, suppresses_previous_click: true }, modifierDetail(event)));
     }, true);
 
     document.addEventListener('contextmenu', (event) => {
@@ -2648,7 +2697,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'contextmenu', undefined, { contextmenu_event: true });
+      emit(el, 'contextmenu', undefined, Object.assign({ contextmenu_event: true }, modifierDetail(event)));
     }, true);
 
     document.addEventListener('pointerover', (event) => {

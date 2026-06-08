@@ -102,6 +102,29 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code.indexOf("await expect(target1).toBeVisible();")).toBeLessThan(generated.code.indexOf("await target1.click();"));
   });
 
+  it("replays taught click modifiers for range-selection workflows", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "range-select",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          click_event: true,
+          modifier_keys: { shift: true, control: false, meta: false, alt: false },
+          modifiers: ["Shift"],
+          observed_effects: ["Selected 3 invoices"],
+          element: { role: "option", name: "Invoice C", source_id: "invoice.c" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"option\", { name: \"Invoice C\" })", confidence: 0.96, reason: "accessible_role_and_name" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("await target1.click({ modifiers: [\"Shift\"] });");
+    expect(generated.code).toContain("await expect(page.getByText(\"Selected 3 invoices\", { exact: true })).toBeVisible();");
+  });
+
   it("generates hover and native drag steps only from explicit taught actions", () => {
     const generated = generatePlaywrightScript([
       event({
@@ -194,7 +217,7 @@ describe("browser replay generation scenarios", () => {
 
     expect(generated.code).not.toContain("await target1.click();");
     expect(generated.code).toContain("await target1.dblclick();");
-    expect(generated.code).toContain("await target2.click({ button: 'right' });");
+    expect(generated.code).toContain("await target2.click({ button: \"right\" });");
     expect(generated.code).toContain("await expect(page.getByText(\"Record details opened\", { exact: true })).toBeVisible();");
     expect(generated.code).toContain("await expect(page.getByText(\"Context actions visible\", { exact: true })).toBeVisible();");
   });

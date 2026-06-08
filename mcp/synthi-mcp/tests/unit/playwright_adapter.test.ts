@@ -190,6 +190,36 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("normalizes click modifier metadata for taught range selection", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/invoices",
+      origin: "https://app.example.com",
+      action: "click",
+      element: {
+        tag: "button",
+        role: "option",
+        name: "Invoice C",
+        source_id: "invoice.c",
+      },
+      detail: {
+        click_event: true,
+        modified_click: true,
+        modifiers: ["Shift"],
+        modifier_keys: { alt: false, control: false, meta: false, shift: true },
+      },
+    }, "tab-a");
+
+    expect(event).toEqual(expect.objectContaining({
+      action: "click",
+      detail: expect.objectContaining({
+        click_event: true,
+        modified_click: true,
+        modifiers: ["Shift"],
+        modifier_keys: expect.objectContaining({ shift: true }),
+      }),
+    }));
+  });
+
   it("normalizes ARIA option selection metadata", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

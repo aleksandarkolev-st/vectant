@@ -1453,6 +1453,65 @@ const CASES = [
     },
   },
   {
+    id: "modifier-range-selection",
+    minSteps: 2,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Selected 3 invoices",
+    ],
+    expectedReplayCode: [
+      "await target2.click({ modifiers: [\"Shift\"] });",
+    ],
+    files: () => commonFiles({
+      title: "Modifier Range Selection Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Modifier Range Selection Workflow</h1>",
+        "      <section role=\"listbox\" aria-label=\"Invoice queue\" aria-multiselectable=\"true\">",
+        "        <button type=\"button\" role=\"option\" aria-selected=\"false\" data-testid=\"invoice-a\" data-synthi-source-id=\"invoice.a\">Invoice A</button>",
+        "        <button type=\"button\" role=\"option\" aria-selected=\"false\" data-testid=\"invoice-b\" data-synthi-source-id=\"invoice.b\">Invoice B</button>",
+        "        <button type=\"button\" role=\"option\" aria-selected=\"false\" data-testid=\"invoice-c\" data-synthi-source-id=\"invoice.c\">Invoice C</button>",
+        "      </section>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[role='listbox'] { display: grid; gap: 8px; align-items: start; }",
+        "[role='option'] { border: 1px solid #222; background: #fff; color: #171717; }",
+        "[role='option'][aria-selected='true'] { background: #17663a; color: #fff; }",
+      ],
+      script: [
+        "const options = Array.from(document.querySelectorAll('[role=\"option\"]'));",
+        "const status = document.querySelector('#status');",
+        "let anchor = -1;",
+        "function render() {",
+        "  const selected = options.filter((option) => option.getAttribute('aria-selected') === 'true').length;",
+        "  status.textContent = selected ? `Selected ${selected} invoices` : 'Waiting';",
+        "}",
+        "options.forEach((option, index) => {",
+        "  option.addEventListener('click', (event) => {",
+        "    if (event.shiftKey && anchor >= 0) {",
+        "      const start = Math.min(anchor, index);",
+        "      const end = Math.max(anchor, index);",
+        "      options.forEach((candidate, candidateIndex) => candidate.setAttribute('aria-selected', String(candidateIndex >= start && candidateIndex <= end)));",
+        "    } else {",
+        "      anchor = index;",
+        "      options.forEach((candidate, candidateIndex) => candidate.setAttribute('aria-selected', String(candidateIndex === index)));",
+        "    }",
+        "    render();",
+        "  });",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("option", { name: "Invoice A" }).click();
+      await page.getByText("Selected 1 invoices").waitFor();
+      await page.getByRole("option", { name: "Invoice C" }).click({ modifiers: ["Shift"] });
+      await page.getByText("Selected 3 invoices").waitFor();
+    },
+  },
+  {
     id: "range-slider",
     minSteps: 2,
     expectedActions: ["fill", "click"],
