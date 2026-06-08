@@ -1,7 +1,8 @@
+import { authCheckpointManager, type AuthReadiness } from "../browser/auth.js";
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
-import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
+import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
 import {
   privateWorkflowToolDefinition,
   privateWorkflowToolRegistry,
@@ -12,6 +13,8 @@ import {
   classifyWorkflowReplayBlock,
   classifyWorkflowReplayFailure,
   normalizeReplayMode,
+  type AuthDurabilityV7,
+  type WorkflowContractV7,
   type WorkflowReplayModeV7,
   type WorkflowStepContractV7,
 } from "../browser/workflow.js";
@@ -1033,7 +1036,7 @@ function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
   const workflowId = stringOpt(obj(args)["workflow_id"]);
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
-  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
+  const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
   return jsonResponse({
     ok: manifest.status !== "blocked",
     workflow_id: artifact.artifact.workflow_id,
@@ -1045,7 +1048,7 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
   const workflowId = stringOpt(obj(args)["workflow_id"]);
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
-  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
+  const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
   const published = privateWorkflowToolRegistry.publish(manifest, { reservedToolNames: ADVERTISED_TOOLS });
   if (!published.ok) {
     return errorResponse(published.error, {
@@ -1233,6 +1236,13 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
+  const authGate = replayAuthGate(replay.artifact.workflow.contract, mode);
+  if (!authGate.ok) {
+    return errorResponse("workflow_auth_not_ready", {
+      workflow_id: replay.artifact.workflow_id,
+      ...authGate.detail,
+    });
+  }
   const plan = replay.plan;
   if (plan.status === "blocked") {
     return jsonResponse({ ok: false, workflow_id: replay.artifact.workflow_id, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
@@ -1499,6 +1509,22 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
       blockers: manifest.safety.blockers,
     });
   }
+  const artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok) {
+    return errorResponse(artifact.error, {
+      tool_name: toolName,
+      workflow_id: registration.workflow_id,
+    });
+  }
+  const liveManifest = manifestWithLiveAuthReadiness(manifest, artifact.artifact.workflow.contract);
+  if (liveManifest.status === "blocked") {
+    return errorResponse("private_workflow_tool_auth_not_ready", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      auth: liveManifest.auth,
+      notes: liveManifest.safety.notes,
+    });
+  }
 
   const a = obj(args);
   const parameters: Record<string, string> = {};
@@ -1522,6 +1548,14 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   const requestedMode = privateWorkflowRunMode(a["run_mode"]);
   const confirmMutation = boolOpt(a["confirm_mutation"]) === true;
   if (requestedMode === "ciOnly") {
+    const authGate = replayAuthGate(artifact.artifact.workflow.contract, "ciIsolated");
+    if (!authGate.ok) {
+      return errorResponse("private_workflow_tool_auth_not_ready", {
+        tool_name: toolName,
+        workflow_id: manifest.workflow_id,
+        ...authGate.detail,
+      });
+    }
     const response = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
       workspace_id: stringOpt(a["workspace_id"]),
       workflow_id: registration.workflow_id,
@@ -1590,6 +1624,77 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   } finally {
     browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
   }
+}
+
+function manifestWithLiveAuthReadiness(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): PrivateWorkflowToolManifestV7 {
+  if (!contract.authPlan.required) return manifest;
+  const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
+  const unattended = authCheckpointManager.readiness(contract.appOrigin, true);
+  const notes = [...manifest.safety.notes];
+  const authDurability = authDurabilityForManifest(unattended.ready ? unattended : interactive, manifest.auth.durability);
+  let status = manifest.status;
+  if (unattended.ready) {
+    if (
+      status === "manualOnly" &&
+      !manifest.mutation.requires_confirmation &&
+      manifest.safety.blockers.length === 0 &&
+      manifest.safety.limitations.length === 0
+    ) {
+      status = "available";
+    }
+    notes.push("Validated auth provider is ready for unattended replay.");
+  } else if (!interactive.ready) {
+    status = "blocked";
+    notes.push(`Auth readiness blocked: ${interactive.status}.`);
+  } else {
+    if (status === "available") status = "manualOnly";
+    notes.push(`Auth readiness is manual-only: ${unattended.status}.`);
+  }
+  return {
+    ...manifest,
+    status,
+    auth: {
+      ...manifest.auth,
+      durability: authDurability,
+      unattended_ready: unattended.ready,
+      required: true,
+    },
+    safety: {
+      ...manifest.safety,
+      notes,
+    },
+  };
+}
+
+function replayAuthGate(
+  contract: WorkflowContractV7,
+  mode: WorkflowReplayModeV7
+): { ok: true } | { ok: false; detail: Record<string, unknown> } {
+  if (!contract.authPlan.required) return { ok: true };
+  const unattended = mode === "coldSession" || mode === "ciIsolated";
+  const readiness = authCheckpointManager.readiness(contract.appOrigin, unattended);
+  if (readiness.ready) return { ok: true };
+  if (!unattended) {
+    const providerReadiness = authCheckpointManager.readiness(contract.appOrigin, true);
+    if (providerReadiness.ready) return { ok: true };
+  }
+  return {
+    ok: false,
+    detail: {
+      app_origin: contract.appOrigin,
+      auth_status: readiness.status,
+      auth_durability: readiness.durability,
+      unattended,
+      notes: readiness.notes,
+    },
+  };
+}
+
+function authDurabilityForManifest(readiness: AuthReadiness, fallback: AuthDurabilityV7): AuthDurabilityV7 {
+  return readiness.durability === "missing" ? fallback : readiness.durability;
 }
 
 type PrivateWorkflowRunMode = WorkflowReplayModeV7 | "confirmBeforeCommit" | "ciOnly";

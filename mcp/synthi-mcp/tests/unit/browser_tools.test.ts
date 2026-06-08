@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { browserBridgeServer } from "../../src/browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
@@ -13,6 +14,7 @@ const originalHostedBrowserCdpUrl = process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"]
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  authCheckpointManager.resetForTests();
   eventLog._resetForTests();
   delete process.env["SYNTHI_BROWSER_CDP_URL"];
   delete process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
@@ -304,6 +306,53 @@ describe("browser MCP tool surface", () => {
       workflow_id: "workflow_missing",
     });
     expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks auth-required workflow replay when live auth readiness is revoked", async () => {
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    authCheckpointManager.revoke(checkpoint.checkpoint.checkpoint_id);
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-replay");
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+    });
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "workflow_auth_not_ready",
+      workflow_id: workflowId,
+      auth_status: "checkpointRevoked",
+      unattended: false,
+    }));
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it("exports saved mutation workflows in prefix-only mode by default", async () => {

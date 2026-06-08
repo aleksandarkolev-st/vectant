@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
 import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
@@ -13,6 +14,7 @@ import { browserPrivateWorkflowTools, dispatchBrowserTool } from "../../src/tool
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  authCheckpointManager.resetForTests();
   privateWorkflowToolRegistry.resetForTests();
   sourceIdentityRegistry.resetForTests();
   vi.restoreAllMocks();
@@ -247,6 +249,59 @@ describe("private browser workflow MCP tool manifest", () => {
         status: "available",
       })
     );
+  });
+
+  it("uses live auth readiness when exposing manifests through the browser MCP tool", async () => {
+    const url = "https://secure.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_secure");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://secure.example.test",
+      action: "click",
+      element: { role: "button", name: "Open secure panel", source_id: "s_secure" },
+    });
+
+    authCheckpointManager.revoke(checkpoint.checkpoint.checkpoint_id);
+
+    const blocked = await dispatchBrowserTool("synthi_browser_generate_private_tool_manifest", {});
+    expect(blocked?.isError).toBeUndefined();
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({ ok: false }));
+    expect((blocked?.structuredContent as { manifest: { status: string; auth: { unattended_ready: boolean }; safety: { notes: string[] } } }).manifest).toEqual(expect.objectContaining({
+      status: "blocked",
+      auth: expect.objectContaining({ unattended_ready: false }),
+      safety: expect.objectContaining({
+        notes: expect.arrayContaining([expect.stringContaining("checkpointRevoked")]),
+      }),
+    }));
+
+    const provider = authCheckpointManager.configureRefreshProvider({
+      url,
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+    });
+    expect(provider.ok).toBe(true);
+    if (!provider.ok) throw new Error("unexpected provider failure");
+    authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
+
+    const available = await dispatchBrowserTool("synthi_browser_generate_private_tool_manifest", {});
+    expect(available?.isError).toBeUndefined();
+    expect((available?.structuredContent as { manifest: { status: string; auth: { durability: string; unattended_ready: boolean } } }).manifest).toEqual(expect.objectContaining({
+      status: "available",
+      auth: expect.objectContaining({
+        durability: "refreshProvider",
+        unattended_ready: true,
+      }),
+    }));
   });
 
   it("publishes a taught workflow as a callable private MCP tool", async () => {
