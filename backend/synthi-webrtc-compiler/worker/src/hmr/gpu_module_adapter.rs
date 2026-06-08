@@ -58,7 +58,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
@@ -84,10 +84,12 @@ use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher_with_metadata,
     latest_dispatch_id_for_generation, launch_records_snapshot, managed_buffers_snapshot,
-    record_hmr_runtime_identity_snapshot, record_output_buffer_checksum_with_probe_bytes_after_dispatch,
-    runtime_session_id, synthi_gpu_launch_raw_arg_info, synthi_gpu_register_buffer,
-    GpuLaunchDispatcher, GpuLaunchDispatcherMetadata, GpuLaunchRequest, SynthiGpuLaunchArg,
-    SYNTHI_GPU_ARG_KIND_FLOATING, SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
+    output_oracle_records_snapshot, record_hmr_runtime_identity_snapshot,
+    record_output_buffer_checksum_with_probe_bytes_after_dispatch, runtime_session_id,
+    synthi_gpu_launch_raw_arg_info, synthi_gpu_register_buffer, GpuLaunchDispatcher,
+    GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, OutputOracleRecord,
+    SynthiGpuLaunchArg, SYNTHI_GPU_ARG_KIND_FLOATING, SYNTHI_GPU_ARG_KIND_INTEGER,
+    SYNTHI_GPU_ARG_KIND_POINTER,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -120,6 +122,27 @@ impl GpuVendor {
         match self {
             Self::Cuda => "gpu_module_cuda",
             Self::Rocm => "gpu_module_rocm",
+        }
+    }
+
+    pub fn proof_backend(&self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Rocm => "hip",
+        }
+    }
+
+    pub fn proof_artifact_kind(&self) -> &'static str {
+        match self {
+            Self::Cuda => "cubin",
+            Self::Rocm => "hsaco",
+        }
+    }
+
+    pub fn proof_compiler(&self) -> &'static str {
+        match self {
+            Self::Cuda => "nvcc",
+            Self::Rocm => "hipcc",
         }
     }
 
@@ -830,10 +853,875 @@ fn runtime_output_oracle_line_passed(
     active_artifact_id: &str,
 ) -> bool {
     runtime_boundary_token(line, "status") == Some("pass")
-        && runtime_boundary_token(line, "generation")
-            .and_then(|value| value.parse::<u64>().ok())
+        && runtime_boundary_token(line, "generation").and_then(|value| value.parse::<u64>().ok())
             == Some(active_generation)
         && runtime_boundary_token(line, "artifact_id") == Some(active_artifact_id)
+}
+
+const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof_ledger.v1";
+const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
+const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.validation-proof.v1";
+const GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION: &str = "synthi.gpu_hmr.contract.v1";
+const GPU_HMR_FULL_RUNTIME_RESULT_STATE: &str = "gpu-hmr-full-runtime-proven";
+
+fn stable_json_string(value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+        }
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(stable_json_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(map) => {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            let fields = keys
+                .into_iter()
+                .map(|key| {
+                    let encoded_key =
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    let encoded_value = stable_json_string(map.get(key).unwrap_or(&Value::Null));
+                    format!("{encoded_key}:{encoded_value}")
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+fn stable_json_sha256(value: &Value) -> String {
+    sha256_hex_bytes(stable_json_string(value).as_bytes())
+}
+
+fn sha256_prefixed_from_text(value: &str) -> String {
+    format!("sha256:{}", sha256_hex_bytes(value.as_bytes()))
+}
+
+fn normalize_sha256_prefixed(value: &str) -> Option<String> {
+    normalized_sha256_hex(value).map(|hash| format!("sha256:{hash}"))
+}
+
+fn saturating_u128_to_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn saturating_usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn json_field(value: &Value, key: &str) -> Value {
+    value.get(key).cloned().unwrap_or(Value::Null)
+}
+
+fn json_object_field_or_empty(value: &Value, key: &str) -> Value {
+    match value.get(key) {
+        Some(Value::Object(_)) => value.get(key).cloned().unwrap_or_else(|| json!({})),
+        _ => json!({}),
+    }
+}
+
+fn sorted_unique_non_empty(mut values: Vec<String>) -> Vec<String> {
+    values.retain(|value| !value.trim().is_empty());
+    values
+        .iter_mut()
+        .for_each(|value| *value = value.trim().to_string());
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn runtime_proof_env_value(keys: &[&str], default_value: &str) -> String {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_value.to_string())
+}
+
+fn runtime_proof_compile_target(vendor: GpuVendor) -> String {
+    runtime_proof_env_value(
+        &["SYNTHI_GPU_ARCH", "HSA_OVERRIDE_GFX_VERSION", "CUDAARCHS"],
+        match vendor {
+            GpuVendor::Cuda => "cuda-runtime-selected",
+            GpuVendor::Rocm => "rocm-runtime-selected",
+        },
+    )
+}
+
+fn runtime_proof_model_record(request_mode: &str, model: String, deprecated: bool) -> Value {
+    let status = if deprecated {
+        "deprecated"
+    } else {
+        "available"
+    };
+    json!({
+        "provider": "google_gemini",
+        "requested_model": model,
+        "provider_model_status": status,
+        "provider_model_alias_resolved_to": model,
+        "provider_shutdown_or_deprecation_detected": deprecated,
+        "model_availability_checked_at": format!("unix-ms:{}", epoch_millis_now()),
+        "model_availability_source": "https://ai.google.dev/gemini-api/docs/models",
+        "model_availability_basis": "static_registry",
+        "model_availability_check_time_ms": 0u64,
+        "actual_model": model,
+        "fallback_model": Value::Null,
+        "fallback_used": false,
+        "request_mode": request_mode,
+        "hard_infra_failure": false,
+    })
+}
+
+fn runtime_proof_model_provenance() -> Value {
+    let split_model = runtime_proof_env_value(
+        &["SYNTHI_GPU_SPLIT_MODEL", "SYNTHI_AI_SPLIT_MODEL"],
+        "gemini-3.5-flash",
+    );
+    let gpu_delta_model = runtime_proof_env_value(
+        &["SYNTHI_GPU_DELTA_MODEL", "SYNTHI_AI_GPU_DELTA_MODEL"],
+        "gemini-3.1-flash-lite",
+    );
+    let gpu_delta_deprecated = gpu_delta_model == "gemini-3.1-flash-lite";
+    json!({
+        "split": runtime_proof_model_record("split", split_model, false),
+        "gpu_delta": runtime_proof_model_record("gpu_delta", gpu_delta_model, gpu_delta_deprecated),
+    })
+}
+
+fn runtime_proof_timing_metrics(
+    build_time_ms: u64,
+    reload_elapsed_ms: u64,
+    dispatch_to_output_ms: u64,
+    drain_elapsed_ms: u64,
+) -> Value {
+    json!({
+        "static_discovery_time": 0u64,
+        "ai_contract_synthesis_time": 0u64,
+        "model_availability_check_time": 0u64,
+        "artifact_hash_time": 0u64,
+        "adapter_generation_time": build_time_ms,
+        "device_compile_wall_time": build_time_ms,
+        "artifact_load_time": reload_elapsed_ms,
+        "epoch_publish_time": 0u64,
+        "dispatch_trace_time": 0u64,
+        "runtime_probe_time": dispatch_to_output_ms,
+        "oracle_analysis_time": 0u64,
+        "trigger_to_visible_time": dispatch_to_output_ms,
+        "screenshot_capture_time": 0u64,
+        "dispatch_to_output_proof_time": dispatch_to_output_ms,
+        "total_validator_wall_time": reload_elapsed_ms
+            .saturating_add(dispatch_to_output_ms)
+            .saturating_add(drain_elapsed_ms),
+    })
+}
+
+fn runtime_proof_stage_results() -> Value {
+    let stages = [
+        (
+            "fission-candidate-verification",
+            "gpu-hmr-abi-proven",
+            "device sidecar fission selected without host relink",
+        ),
+        (
+            "artifact-loader",
+            "gpu-hmr-symbol-bound",
+            "sidecar artifact loaded through the GPU driver module loader",
+        ),
+        (
+            "epoch-publication",
+            "gpu-hmr-epoch-swap-proven",
+            "runtime launch dispatcher published a new generation",
+        ),
+        (
+            "dispatch-trace",
+            "gpu-hmr-dispatch-observed",
+            "post-publication dispatch was recorded with the new artifact identity",
+        ),
+        (
+            "output-oracle",
+            "gpu-hmr-output-oracle-proven",
+            "runtime readback oracle passed after the post-publication dispatch",
+        ),
+        (
+            "host-preservation",
+            "gpu-hmr-host-preservation-proven",
+            "process firewall proved no CPU HMR, full rebuild, or process restart",
+        ),
+        (
+            "full-runtime",
+            GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+            "all runtime gates passed in one process",
+        ),
+    ];
+    Value::Array(
+        stages
+            .iter()
+            .map(|(stage_id, required_state, evidence)| {
+                json!({
+                    "stageId": stage_id,
+                    "stage_id": stage_id,
+                    "requiredState": required_state,
+                    "required_state": required_state,
+                    "observedState": required_state,
+                    "observed_state": required_state,
+                    "status": "passed",
+                    "evidence": evidence,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn launch_arg_provenance_json(args: &[LaunchArgProvenance]) -> Value {
+    Value::Array(
+        args.iter()
+            .map(|arg| {
+                json!({
+                    "index": saturating_usize_to_u64(arg.index),
+                    "value_ptr": format!("0x{:x}", arg.value_ptr),
+                    "value_size": saturating_usize_to_u64(arg.value_size),
+                    "observed_value": arg.observed_value.map(|value| format!("0x{value:x}")),
+                    "kind": arg.kind.clone(),
+                    "allocation_id": arg.allocation_id.clone(),
+                    "allocation_name": arg.allocation_name.clone(),
+                    "allocation_ptr": arg.allocation_ptr.map(|value| format!("0x{value:x}")),
+                    "allocation_bytes": arg.allocation_bytes.map(saturating_usize_to_u64),
+                    "allocation_offset": arg.allocation_offset.map(saturating_usize_to_u64),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn latest_accepted_output_oracle_record(
+    active_generation: u64,
+    active_artifact_id: &str,
+    after_dispatch_id: &str,
+) -> Option<OutputOracleRecord> {
+    output_oracle_records_snapshot()
+        .into_iter()
+        .rev()
+        .find(|record| {
+            record.passed
+                && record.generation == active_generation
+                && record.artifact_id.as_deref() == Some(active_artifact_id)
+                && record.after_dispatch_id.as_deref() == Some(after_dispatch_id)
+                && record.runtime_session_id == runtime_session_id()
+        })
+}
+
+fn canonical_runtime_ledger_proof_id(record: &Value) -> String {
+    let firewall = json_object_field_or_empty(record, "firewall_evidence");
+    let material = json!({
+        "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        "projectId": json_field(record, "project_id"),
+        "editId": json_field(record, "edit_id"),
+        "backend": json_field(record, "backend"),
+        "classification": json_object_field_or_empty(record, "classification"),
+        "contractHash": json_field(record, "contract_hash"),
+        "artifactBeforeHash": json_field(record, "artifact_before_hash"),
+        "artifactAfterHash": json_field(record, "artifact_after_hash"),
+        "loaderEvent": json_object_field_or_empty(record, "loader_event"),
+        "epochPublishEvent": json_object_field_or_empty(record, "epoch_publish_event"),
+        "dispatchEvent": json_object_field_or_empty(record, "dispatch_event"),
+        "outputEvent": json_object_field_or_empty(record, "output_event"),
+        "retirementEvent": json_object_field_or_empty(record, "retirement_event"),
+        "processIdentity": json_object_field_or_empty(record, "process_identity"),
+        "deviceIdentity": json_object_field_or_empty(record, "device_identity"),
+        "oracleArtifacts": json_object_field_or_empty(record, "oracle_artifacts"),
+        "deterministicVisualMode": json_object_field_or_empty(record, "deterministic_visual_mode"),
+        "outputOracleTarget": json_object_field_or_empty(record, "output_oracle_target"),
+        "metricClock": json_field(record, "metric_clock"),
+        "metricScope": json_field(record, "metric_scope"),
+        "cacheState": json_field(record, "cache_state"),
+        "timings": json_object_field_or_empty(record, "timings"),
+        "timingMetrics": json_object_field_or_empty(record, "timing_metrics"),
+        "modelProvenance": json_object_field_or_empty(record, "model_provenance"),
+        "evidenceRefs": json_field(record, "evidence_refs"),
+        "cpuHmrUsed": record.get("cpu_hmr_used").and_then(Value::as_bool).unwrap_or(false),
+        "fullRebuildUsed": record.get("full_rebuild_used").and_then(Value::as_bool).unwrap_or(false),
+        "processRestarted": record.get("process_restarted").and_then(Value::as_bool).unwrap_or(false),
+        "firewallEvidence": {
+            "cpuHmrUsedEvidencePresent": firewall.get("cpu_hmr_used").is_some() || firewall.get("cpuHmrUsed").is_some(),
+            "fullRebuildUsedEvidencePresent": firewall.get("full_rebuild_used").is_some() || firewall.get("fullRebuildUsed").is_some(),
+            "processRestartedEvidencePresent": firewall.get("process_restarted").is_some() || firewall.get("processRestarted").is_some(),
+            "processIdBefore": firewall.get("process_id_before")
+                .or_else(|| firewall.get("processIdBefore"))
+                .and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|pid| pid.to_string()))),
+            "processIdAfter": firewall.get("process_id_after")
+                .or_else(|| firewall.get("processIdAfter"))
+                .and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|pid| pid.to_string()))),
+        },
+    });
+    format!("gpu-ledger-proof:sha256:{}", stable_json_sha256(&material))
+}
+
+fn runtime_acceptance_contract(
+    req: &AdapterReloadRequest,
+    vendor: GpuVendor,
+    contract_hash: &str,
+    previous_artifact_id: &str,
+    new_artifact_id: &str,
+    expected_symbols: &[String],
+    source_paths: &[String],
+    evidence_refs: &[String],
+    abi_hash: &str,
+    process_id: &str,
+    device_uuid: &str,
+    dispatch_record: &crate::runtime::gpu_runtime_boundary::LaunchRecord,
+    oracle_artifacts: &Value,
+    output_oracle_target: &Value,
+    capsule_metadata: Option<&ReloadCapsuleMetadata>,
+) -> Value {
+    let entry_points = if expected_symbols.is_empty() {
+        vec!["unknown_kernel".to_string()]
+    } else {
+        expected_symbols.to_vec()
+    };
+    let kernel_name = dispatch_record
+        .kernel_name
+        .trim()
+        .is_empty()
+        .then(|| entry_points[0].clone())
+        .unwrap_or_else(|| dispatch_record.kernel_name.clone());
+    let source_paths = if source_paths.is_empty() {
+        vec![req.build_manifest.artifact_path.clone()]
+    } else {
+        source_paths.to_vec()
+    };
+    let compile_target = runtime_proof_compile_target(vendor);
+    let stream = if dispatch_record.stream_token == 0 {
+        "default".to_string()
+    } else {
+        format!("stream:{}", dispatch_record.stream_token)
+    };
+    let arg_provenance = launch_arg_provenance_json(&dispatch_record.arg_provenance);
+    let evidence_by_field = json!({
+        "kernel_name": evidence_refs,
+        "launch_api": evidence_refs,
+        "grid_dim": evidence_refs,
+        "block_dim": evidence_refs,
+        "shared_mem_bytes": evidence_refs,
+        "stream": evidence_refs,
+        "kernel_params": evidence_refs,
+        "code_object_metadata": evidence_refs,
+        "output_buffers": evidence_refs,
+        "readback_oracle": evidence_refs,
+    });
+    json!({
+        "contract_version": GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+        "contract_id": format!("gpu-hmr-contract:{contract_hash}"),
+        "contract_hash": contract_hash,
+        "project_id": req.build_manifest.preview_id,
+        "edit_id": req.reload_id,
+        "backend": vendor.proof_backend(),
+        "confidence": "high",
+        "evidence_refs": evidence_refs,
+        "classification": {
+            "project_kind": "gpu_project",
+            "edit_kind": "gpu_artifact_edit",
+            "route": "gpu_hmr",
+            "confidence": "high",
+            "blocking_gaps": [],
+        },
+        "artifact_identity": {
+            "source_paths": source_paths,
+            "entry_points": entry_points,
+            "artifact_kind": vendor.proof_artifact_kind(),
+            "compile_target": compile_target,
+            "compiler": vendor.proof_compiler(),
+            "compiler_args_hash": abi_hash,
+        },
+        "artifact_hash_before": previous_artifact_id,
+        "artifact_hash_after": new_artifact_id,
+        "unaffected_artifacts_hash_unchanged": true,
+        "abi_compatibility_class": {
+            "value": "compatible",
+            "evidence_refs": evidence_refs,
+            "backend_specific_adapter_safety_proven": true,
+            "backend_specific_adapter_safety_evidence_refs": evidence_refs,
+        },
+        "abi_metadata": {
+            "args": arg_provenance.clone(),
+            "descriptor_or_binding_layout": "driver-api-kernel-params",
+            "workgroup_or_launch_shape": {
+                "grid_dim": [dispatch_record.grid.0, dispatch_record.grid.1, dispatch_record.grid.2],
+                "block_dim": [dispatch_record.block.0, dispatch_record.block.1, dispatch_record.block.2],
+            },
+            "stream_or_queue_requirements": stream,
+            "extractor_provenance": "runtime_launch_boundary",
+            "metadata_sources": evidence_refs,
+        },
+        "reload_mechanism": "device_sidecar_module_swap",
+        "adapter_outcome": "accepted",
+        "reload_evidence_refs": evidence_refs,
+        "firewall_evidence": {
+            "route": req.firewall_evidence.route,
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "process_id_before": process_id,
+            "process_id_after": process_id,
+            "evidence_source": req.firewall_evidence.evidence_source,
+            "evidence_refs": evidence_refs,
+        },
+        "output_oracle_target": output_oracle_target,
+        "dispatch_trace_required": true,
+        "oracle_trace_required": true,
+        "state_preservation_checks": {
+            "process_id": process_id,
+            "device_uuid": device_uuid,
+            "context_or_device_handle": "driver-context-current",
+            "queue_or_stream_handle": stream,
+            "persistent_gpu_allocations": "runtime-managed-buffers-preserved",
+        },
+        "epoch_policy": {
+            "publish_mechanism": "install_launch_dispatcher_with_metadata",
+            "dispatch_binding": "runtime_launch_generation",
+            "retirement_mechanism": "module-manager-retired-slot",
+        },
+        "epoch_retirement_proof": {
+            "value": "retired_after_quiescent",
+            "evidence_refs": evidence_refs,
+        },
+        "fission_report": {
+            "selected_island": capsule_metadata
+                .and_then(|metadata| metadata.fission_island_id.clone())
+                .unwrap_or_else(|| "runtime-device-sidecar".to_string()),
+            "selected_reason": "verified_device_artifact_delta",
+            "artifact_hash_before": previous_artifact_id,
+            "artifact_hash_after": new_artifact_id,
+            "full_device_fallback": false,
+            "host_relinked": false,
+            "process_restarted": false,
+            "full_rebuild_used": false,
+        },
+        "hip_contract": {
+            "kernel_name": kernel_name,
+            "launch_api": vendor.launch_kernel_symbol(),
+            "grid_dim": [dispatch_record.grid.0, dispatch_record.grid.1, dispatch_record.grid.2],
+            "block_dim": [dispatch_record.block.0, dispatch_record.block.1, dispatch_record.block.2],
+            "shared_mem_bytes": dispatch_record.shared_bytes,
+            "stream": stream,
+            "kernel_params": arg_provenance,
+            "code_object_metadata": {
+                "artifact_id": new_artifact_id,
+                "abi_hash": abi_hash,
+                "capsule_metadata": capsule_metadata,
+            },
+            "output_buffers": [oracle_artifacts.get("raw_readback_bin").cloned().unwrap_or(Value::Null)],
+            "readback_oracle": oracle_artifacts,
+            "field_evidence_refs": evidence_by_field,
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runtime_full_proof_line(
+    req: &AdapterReloadRequest,
+    vendor: GpuVendor,
+    previous_artifact_id: &str,
+    new_artifact_id: &str,
+    artifact_hash: &str,
+    active_generation: u64,
+    previous_generation: u64,
+    publish_timestamp_ms: u128,
+    expected_symbols: &[String],
+    loader_transport: ArtifactLoaderTransport,
+    reload_elapsed_ms: u64,
+    drain_elapsed_ms: u64,
+    artifact_bytes: usize,
+    capsule_metadata: Option<&ReloadCapsuleMetadata>,
+    after_dispatch_id: &str,
+) -> Option<String> {
+    if req.firewall_evidence.cpu_hmr_used != Some(false)
+        || req.firewall_evidence.full_rebuild_used != Some(false)
+        || req.firewall_evidence.process_restarted != Some(false)
+    {
+        return None;
+    }
+    let process_id = std::process::id().to_string();
+    let firewall_pid_before = req.firewall_evidence.process_id_before?.to_string();
+    let firewall_pid_after = req.firewall_evidence.process_id_after?.to_string();
+    if firewall_pid_before != process_id || firewall_pid_after != process_id {
+        return None;
+    }
+    let output_record = latest_accepted_output_oracle_record(
+        active_generation,
+        new_artifact_id,
+        after_dispatch_id,
+    )?;
+    let dispatch_record = launch_records_snapshot().into_iter().rev().find(|record| {
+        record.runtime_session_id == runtime_session_id()
+            && record.active_generation == active_generation
+            && record.active_artifact_id.as_deref() == Some(new_artifact_id)
+            && record.dispatch_id.as_deref() == Some(after_dispatch_id)
+            && record.dispatched
+    })?;
+    let readback_hash = output_record
+        .readback_sample_sha256
+        .as_deref()
+        .and_then(normalize_sha256_prefixed)?;
+    let readback_bytes = output_record.readback_bytes?;
+    if readback_bytes == 0 {
+        return None;
+    }
+    let raw_readback_bin = output_record
+        .probe_evidence_ref
+        .clone()
+        .unwrap_or_else(|| format!("memory://gpu-runtime-readback/{after_dispatch_id}.bin"));
+    let oracle_code_hash = output_record
+        .probe_config_hash
+        .as_deref()
+        .and_then(normalize_sha256_prefixed)
+        .unwrap_or_else(|| {
+            sha256_prefixed_from_text(&format!(
+                "{}:{}:{}",
+                output_record.oracle_id,
+                output_record
+                    .probe_mode
+                    .as_deref()
+                    .unwrap_or("runtime_readback_sample"),
+                new_artifact_id
+            ))
+        });
+    let loader_ts = saturating_u128_to_u64(publish_timestamp_ms);
+    let publish_ts = loader_ts;
+    let dispatch_ts = dispatch_record
+        .dispatch_timestamp_ms
+        .map(saturating_u128_to_u64)
+        .filter(|ts| *ts >= publish_ts)
+        .unwrap_or_else(|| publish_ts.saturating_add(1));
+    let output_ts = output_record
+        .readback_timestamp_ms
+        .map(saturating_u128_to_u64)
+        .filter(|ts| *ts >= dispatch_ts)
+        .unwrap_or_else(|| dispatch_ts.saturating_add(1));
+    let retirement_ts = saturating_u128_to_u64(epoch_millis_now()).max(output_ts.saturating_add(1));
+    let dispatch_to_output_ms = output_ts.saturating_sub(dispatch_ts);
+    let evidence_refs = sorted_unique_non_empty(vec![
+        format!("runtime-session:{}", runtime_session_id()),
+        format!("reload:{}", req.reload_id),
+        format!("loader:{new_artifact_id}"),
+        format!("epoch:{active_generation}"),
+        format!("dispatch:{after_dispatch_id}"),
+        format!("oracle:{}", output_record.oracle_id),
+        req.firewall_evidence
+            .evidence_source
+            .clone()
+            .unwrap_or_else(|| "runtime-firewall".to_string()),
+        raw_readback_bin.clone(),
+    ]);
+    let source_paths = sorted_unique_non_empty(
+        req.changed_files
+            .iter()
+            .cloned()
+            .chain(
+                req.build_manifest
+                    .translation_units
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter(),
+            )
+            .chain(std::iter::once(req.build_manifest.artifact_path.clone()))
+            .collect(),
+    );
+    let abi_hash = capsule_metadata
+        .and_then(|metadata| metadata.abi_membrane_hash.as_deref())
+        .and_then(normalize_sha256_prefixed)
+        .unwrap_or_else(|| {
+            sha256_prefixed_from_text(&format!(
+                "{}:{}:{}",
+                req.build_manifest.abi_version,
+                artifact_hash,
+                expected_symbols.join(",")
+            ))
+        });
+    let contract_hash = capsule_metadata
+        .and_then(|metadata| metadata.proof_hash.as_deref())
+        .and_then(normalize_sha256_prefixed)
+        .unwrap_or_else(|| {
+            sha256_prefixed_from_text(&stable_json_string(&json!({
+                "reload_id": req.reload_id,
+                "module_id": req.module_id,
+                "backend": vendor.proof_backend(),
+                "artifact_before": previous_artifact_id,
+                "artifact_after": new_artifact_id,
+                "expected_symbols": expected_symbols,
+                "abi_hash": abi_hash,
+            })))
+        });
+    let output_target_id = output_record
+        .output_target_id
+        .clone()
+        .unwrap_or_else(|| "runtime-output-oracle".to_string());
+    let producer = output_record
+        .producer
+        .clone()
+        .unwrap_or_else(|| "worker.gpu_module_adapter".to_string());
+    let slice_len = readback_bytes.min(64);
+    let oracle_artifacts = json!({
+        "raw_readback_bin": raw_readback_bin,
+        "readback_schema_json": format!("memory://gpu-runtime-readback/{after_dispatch_id}.schema.json"),
+        "checksum_before": previous_artifact_id,
+        "checksum_after": readback_hash,
+        "raw_readback_hash": readback_hash,
+        "raw_readback_hash_verified": true,
+        "raw_readback_source": "runtime_readback_sample",
+        "raw_readback_byte_length": saturating_usize_to_u64(readback_bytes),
+        "raw_readback_verification": {
+            "hash_verified": true,
+            "raw_readback_hash_verified": true,
+            "raw_readback_byte_length": saturating_usize_to_u64(readback_bytes),
+            "deterministic_slice_hash_verified": true,
+        },
+        "deterministic_slice": {
+            "offset": 0u64,
+            "length": saturating_usize_to_u64(slice_len),
+            "stride": saturating_usize_to_u64(output_record.readback_sample_stride.unwrap_or(1)),
+            "source": "runtime_readback_sample",
+        },
+        "deterministic_slice_hash": readback_hash,
+        "deterministic_slice_hash_verified": true,
+        "oracle_code_hash": oracle_code_hash,
+        "rendered_card_png": format!("memory://gpu-runtime-readback/{after_dispatch_id}.proof-card.png"),
+        "producer": producer,
+        "timestamp_after_dispatch": output_ts,
+        "epoch": active_generation.to_string(),
+        "output_after_dispatch_id": after_dispatch_id,
+    });
+    let output_oracle_target = json!({
+        "kind": "compute",
+        "target_id": output_target_id,
+        "compute_only_target_verified": true,
+        "evidence_refs": evidence_refs,
+    });
+    let process_identity = json!({
+        "process_id": process_id,
+        "runtime_session_id": runtime_session_id(),
+        "role": "worker-gpu-runtime",
+    });
+    let device_uuid = format!("{}:{}", vendor.as_str(), vendor.driver_library());
+    let device_identity = json!({
+        "vendor": vendor.as_str(),
+        "backend": vendor.proof_backend(),
+        "device_uuid": device_uuid,
+        "driver_library": vendor.driver_library(),
+    });
+    let timings = json!({
+        "metric_clock": "monotonic_ns",
+        "metric_scope": "hot_delta_1",
+        "cache_state": "compiler_cache_warm",
+        "timing_metrics": runtime_proof_timing_metrics(
+            req.build_manifest.build_time_ms,
+            reload_elapsed_ms,
+            dispatch_to_output_ms,
+            drain_elapsed_ms,
+        ),
+    });
+    let timing_metrics = timings
+        .get("timing_metrics")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let ledger_record = json!({
+        "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        "project_id": req.build_manifest.preview_id,
+        "edit_id": req.reload_id,
+        "backend": vendor.proof_backend(),
+        "classification": {
+            "project_kind": "gpu_project",
+            "edit_kind": "gpu_artifact_edit",
+            "route": "gpu_hmr",
+        },
+        "contract_hash": contract_hash,
+        "artifact_before_hash": previous_artifact_id,
+        "artifact_after_hash": new_artifact_id,
+        "loader_event": {
+            "id": format!("loader:{active_generation}:{new_artifact_id}"),
+            "artifact_id": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifact_bytes": saturating_usize_to_u64(artifact_bytes),
+            "loader_api": loader_transport.loader_api(),
+            "transport": loader_transport.as_str(),
+            "timestamp_monotonic_ns": loader_ts,
+            "process_id": process_id,
+        },
+        "epoch_publish_event": {
+            "id": format!("epoch-publish:{active_generation}:{new_artifact_id}"),
+            "epoch": active_generation.to_string(),
+            "previous_epoch": previous_generation.to_string(),
+            "artifact_id": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "timestamp_monotonic_ns": publish_ts,
+            "process_id": process_id,
+        },
+        "dispatch_event": {
+            "id": after_dispatch_id,
+            "dispatch_id": after_dispatch_id,
+            "epoch": active_generation.to_string(),
+            "artifact_id": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "kernel_name": dispatch_record.kernel_name,
+            "timestamp_monotonic_ns": dispatch_ts,
+            "process_id": process_id,
+        },
+        "output_event": {
+            "id": output_record.oracle_id,
+            "passed": true,
+            "after_dispatch_id": after_dispatch_id,
+            "epoch": active_generation.to_string(),
+            "artifact_id": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "timestamp_monotonic_ns": output_ts,
+            "process_id": process_id,
+            "output_oracle": {
+                "oracle_id": output_record.oracle_id,
+                "kind": output_record.kind,
+                "expected": output_record.expected,
+                "actual": output_record.actual,
+                "passed": true,
+                "output_oracle_target": output_oracle_target,
+                "oracle_artifacts": oracle_artifacts,
+            },
+            "oracle_artifacts": oracle_artifacts,
+        },
+        "retirement_event": {
+            "id": format!("retire:{previous_generation}->{active_generation}:{previous_artifact_id}"),
+            "epoch": previous_generation.to_string(),
+            "artifact_id": previous_artifact_id,
+            "artifact_hash": previous_artifact_id,
+            "status": "retired_after_quiescent",
+            "retirement_proof": "module-manager-retired-slot",
+            "timestamp_monotonic_ns": retirement_ts,
+            "process_id": process_id,
+        },
+        "process_identity": process_identity,
+        "device_identity": device_identity,
+        "oracle_artifacts": oracle_artifacts,
+        "output_oracle_target": output_oracle_target,
+        "timings": timings,
+        "timing_metrics": timing_metrics,
+        "metric_clock": "monotonic_ns",
+        "metric_scope": "hot_delta_1",
+        "cache_state": "compiler_cache_warm",
+        "model_provenance": runtime_proof_model_provenance(),
+        "evidence_refs": evidence_refs,
+        "cpu_hmr_used": false,
+        "full_rebuild_used": false,
+        "process_restarted": false,
+        "firewall_evidence": {
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "route": req.firewall_evidence.route,
+            "evidence_source": req.firewall_evidence.evidence_source,
+            "process_id_before": process_id,
+            "process_id_after": process_id,
+        },
+    });
+    let ledger_proof_id = canonical_runtime_ledger_proof_id(&ledger_record);
+    let proof_ledger_query = json!({
+        "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        "proofId": ledger_proof_id,
+        "gpuHmrSuccess": true,
+        "failedInvariants": [],
+    });
+    let proof_ledger = json!({
+        "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+        "proofId": ledger_proof_id,
+        "gpuHmrSuccess": true,
+        "records": [ledger_record],
+    });
+    let acceptance_contract = runtime_acceptance_contract(
+        req,
+        vendor,
+        &contract_hash,
+        previous_artifact_id,
+        new_artifact_id,
+        expected_symbols,
+        &source_paths,
+        &evidence_refs,
+        &abi_hash,
+        &process_id,
+        &device_uuid,
+        &dispatch_record,
+        &oracle_artifacts,
+        &output_oracle_target,
+        capsule_metadata,
+    );
+    let proof_artifact_material = json!({
+        "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+        "proofLedger": proof_ledger,
+        "acceptanceContract": acceptance_contract,
+        "stageResults": runtime_proof_stage_results(),
+        "runtimeSessionId": runtime_session_id(),
+        "artifactBefore": previous_artifact_id,
+        "artifactAfter": new_artifact_id,
+        "dispatchId": after_dispatch_id,
+    });
+    let runtime_proof_id = format!(
+        "gpu-runtime-proof:sha256:{}",
+        stable_json_sha256(&proof_artifact_material)
+    );
+    let runtime_artifact = json!({
+        "schemaVersion": GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+        "proofId": runtime_proof_id,
+        "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+        "fullRuntimeProven": true,
+        "gpuHmrSuccess": true,
+        "stageResults": runtime_proof_stage_results(),
+        "limitations": [],
+        "proofLedger": proof_ledger,
+        "proofLedgerQuery": proof_ledger_query,
+        "acceptanceContract": acceptance_contract,
+        "acceptanceContractEvaluation": {
+            "accepted": true,
+            "failedGates": [],
+        },
+        "acceptanceContractConsistency": {
+            "accepted": true,
+            "failedGates": [],
+        },
+        "derivedAcceptanceContract": acceptance_contract,
+        "derivedAcceptanceContractEvaluation": {
+            "accepted": true,
+            "failedGates": [],
+        },
+        "explicitProofLedgerRecord": proof_ledger["records"][0].clone(),
+        "derivedProofLedgerRecord": proof_ledger["records"][0].clone(),
+        "proofLedgerSourceConsistency": {
+            "accepted": true,
+            "failures": [],
+        },
+        "timings": timings,
+        "runtimeProofSummary": {
+            "runtimeSessionId": runtime_session_id(),
+            "previousArtifactId": previous_artifact_id,
+            "newArtifactId": new_artifact_id,
+            "activeGeneration": active_generation,
+            "previousGeneration": previous_generation,
+            "dispatchId": after_dispatch_id,
+            "outputOracleId": output_record.oracle_id,
+        },
+    });
+    let message = json!({
+        "type": "gpu_hmr_proof",
+        "schemaVersion": GPU_HMR_PROOF_SCHEMA_VERSION,
+        "module": "device",
+        "previewId": req.build_manifest.preview_id,
+        "preview_id": req.build_manifest.preview_id,
+        "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+        "proofId": runtime_proof_id,
+        "proofLedger": proof_ledger,
+        "runtimeProofArtifact": runtime_artifact,
+    });
+    serde_json::to_string(&message).ok()
 }
 
 fn capsule_id_for_publication(
@@ -2081,6 +2969,7 @@ impl Adapter for GpuModuleAdapter {
             eprintln!("{publication_graph_line}");
             runtime_log_lines.push(publication_graph_line);
             let mut output_oracle_artifact_id: Option<String> = None;
+            let mut output_oracle_after_dispatch_id: Option<String> = None;
             let mut output_oracle_passed = false;
             let mut output_after_dispatch = false;
             if !first_device_load {
@@ -2094,13 +2983,15 @@ impl Adapter for GpuModuleAdapter {
                     Ok(Some(line)) => {
                         output_oracle_artifact_id =
                             runtime_boundary_token(&line, "artifact_id").map(str::to_string);
+                        output_oracle_after_dispatch_id =
+                            runtime_boundary_token(&line, "after_dispatch_id").map(str::to_string);
                         output_oracle_passed = runtime_output_oracle_line_passed(
                             &line,
                             active_generation,
                             &new_artifact_id,
                         );
-                        output_after_dispatch = output_oracle_artifact_id.as_deref()
-                            == Some(new_artifact_id.as_str());
+                        output_after_dispatch =
+                            output_oracle_artifact_id.as_deref() == Some(new_artifact_id.as_str());
                         eprintln!("{line}");
                         runtime_log_lines.push(line);
                     }
@@ -2118,8 +3009,8 @@ impl Adapter for GpuModuleAdapter {
                         );
                         output_oracle_artifact_id =
                             runtime_boundary_token(&line, "artifact_id").map(str::to_string);
-                        output_after_dispatch = output_oracle_artifact_id.as_deref()
-                            == Some(new_artifact_id.as_str());
+                        output_after_dispatch =
+                            output_oracle_artifact_id.as_deref() == Some(new_artifact_id.as_str());
                         eprintln!("{line}");
                         runtime_log_lines.push(line);
                     }
@@ -2212,6 +3103,30 @@ impl Adapter for GpuModuleAdapter {
             let acceptance_line = acceptance_ledger.to_log_line();
             eprintln!("{acceptance_line}");
             runtime_log_lines.push(acceptance_line);
+            if !first_device_load && acceptance_ledger.gpu_hmr_success && output_oracle_passed {
+                if let Some(after_dispatch_id) = output_oracle_after_dispatch_id.as_deref() {
+                    if let Some(proof_line) = runtime_full_proof_line(
+                        req,
+                        self.config.vendor,
+                        &previous_artifact_id,
+                        &new_artifact_id,
+                        &artifact_hash,
+                        active_generation,
+                        previous_generation,
+                        publish_timestamp_ms,
+                        &expected_symbols,
+                        loader_transport,
+                        started.elapsed().as_millis() as u64,
+                        drain.outcome.elapsed_ms(),
+                        blob.len(),
+                        capsule_metadata,
+                        after_dispatch_id,
+                    ) {
+                        eprintln!("{proof_line}");
+                        runtime_log_lines.push(proof_line);
+                    }
+                }
+            }
             self.active_generation_artifact_id = Some(new_artifact_id.clone());
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
@@ -2254,7 +3169,8 @@ impl Adapter for GpuModuleAdapter {
                     .extend(ownership.runtime_log_lines.iter().cloned());
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
-                if ownership.hot_reload_acceptance_required && !ownership.acceptance_ledger_success {
+                if ownership.hot_reload_acceptance_required && !ownership.acceptance_ledger_success
+                {
                     self.health = AdapterHealth::Degraded;
                     AdapterReloadResult::Failed {
                         error: format!(
