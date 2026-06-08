@@ -634,16 +634,18 @@ function mcpConfig(profile) {
     || previewEnv.SYNTHI_SESSION_ID
     || process.env.SYNTHI_SESSION_ID
     || profile.id;
+  const transport = process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT
+    || previewEnv.SYNTHI_MCP_TRANSPORT
+    || process.env.SYNTHI_MCP_TRANSPORT
+    || 'local';
+  const signalingUrl = process.env.SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL
+    || previewEnv.SYNTHI_SIGNALING_URL
+    || process.env.SYNTHI_SIGNALING_URL
+    || null;
   return {
     sessionId,
-    transport: process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT
-      || previewEnv.SYNTHI_MCP_TRANSPORT
-      || process.env.SYNTHI_MCP_TRANSPORT
-      || 'local',
-    signalingUrl: process.env.SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL
-      || previewEnv.SYNTHI_SIGNALING_URL
-      || process.env.SYNTHI_SIGNALING_URL
-      || 'ws://127.0.0.1:8787',
+    transport,
+    signalingUrl,
     mcpEntry: path.resolve(
       REPO_ROOT,
       process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_ENTRY
@@ -653,7 +655,11 @@ function mcpConfig(profile) {
     mcpContainer: process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER
       || previewEnv.SYNTHI_MCP_CONTAINER
       || process.env.SYNTHI_MCP_CONTAINER
-      || 'vectant-ade-mcp-1',
+      || null,
+    mcpContainerEntry: process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY
+      || previewEnv.SYNTHI_MCP_CONTAINER_ENTRY
+      || process.env.SYNTHI_MCP_CONTAINER_ENTRY
+      || null,
     googleApiKey: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || previewEnv.GOOGLE_API_KEY || '',
     splitModel: process.env.SYNTHI_GPU_SPLIT_MODEL || previewEnv.SYNTHI_GPU_SPLIT_MODEL || 'gemini-3.5-flash',
     deltaModel: process.env.SYNTHI_GPU_DELTA_MODEL || previewEnv.SYNTHI_GPU_DELTA_MODEL || 'gemini-3.1-flash-lite',
@@ -666,6 +672,27 @@ async function startMcpClient(profile) {
   const cfg = mcpConfig(profile);
   let proc;
   if (cfg.transport === 'docker') {
+    if (!cfg.signalingUrl) {
+      throw new Error(
+        'mcp_preview docker transport requires explicit signaling configuration; '
+        + 'set SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL, profile mcpPreview.env.SYNTHI_SIGNALING_URL, '
+        + 'or SYNTHI_SIGNALING_URL so the harness does not guess a project-specific endpoint',
+      );
+    }
+    if (!cfg.mcpContainer) {
+      throw new Error(
+        'mcp_preview docker transport requires explicit MCP container configuration; '
+        + 'set SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER, profile mcpPreview.env.SYNTHI_MCP_CONTAINER, '
+        + 'or SYNTHI_MCP_CONTAINER so the harness does not guess a project-specific container',
+      );
+    }
+    if (!cfg.mcpContainerEntry) {
+      throw new Error(
+        'mcp_preview docker transport requires explicit MCP container entry configuration; '
+        + 'set SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY, profile mcpPreview.env.SYNTHI_MCP_CONTAINER_ENTRY, '
+        + 'or SYNTHI_MCP_CONTAINER_ENTRY so the harness does not guess a project-specific container path',
+      );
+    }
     const args = [
       'exec',
       '-i',
@@ -677,7 +704,7 @@ async function startMcpClient(profile) {
       '-e', `SYNTHI_GPU_DELTA_MODEL=${cfg.deltaModel}`,
       cfg.mcpContainer,
       'node',
-      '/app/dist/index.js',
+      cfg.mcpContainerEntry,
     ];
     proc = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   } else {
@@ -690,7 +717,7 @@ async function startMcpClient(profile) {
       env: {
         ...process.env,
         SYNTHI_SESSION_ID: cfg.sessionId,
-        SYNTHI_SIGNALING_URL: cfg.signalingUrl,
+        ...(cfg.signalingUrl ? { SYNTHI_SIGNALING_URL: cfg.signalingUrl } : {}),
         GOOGLE_API_KEY: cfg.googleApiKey,
         GEMINI_API_KEY: cfg.googleApiKey,
         SYNTHI_GPU_SPLIT_MODEL: cfg.splitModel,
@@ -714,7 +741,11 @@ async function startMcpClient(profile) {
   }
   const attach = await client.toolCall(
     'synthi_attach',
-    { sessionId: cfg.sessionId, 'i-understand-no-auth': true, signalingUrl: cfg.signalingUrl },
+    {
+      sessionId: cfg.sessionId,
+      'i-understand-no-auth': true,
+      ...(cfg.signalingUrl ? { signalingUrl: cfg.signalingUrl } : {}),
+    },
     cfg.attachTimeoutMs,
   );
   if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach).slice(0, 2000)}`);
