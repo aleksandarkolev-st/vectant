@@ -539,3 +539,64 @@ test('recomputeManagedPorts keeps a declared port and ignores foreign detected p
   assert.deepEqual(snap.activePorts, [8080]);
   assert.equal(snap.webPort, 8080);
 });
+
+// ── Phase 3: injectable HTTP health probing ──
+
+test('probeManagedSessionHealth flips healthState to ok and emits health_changed', async () => {
+  const calls = [];
+  const manager = makeManager({
+    probeHost: '127.0.0.1',
+    httpProbe: async (url) => { calls.push(url); return { ok: true, status: 200 }; },
+  });
+  await manager.launchManagedProgram({
+    sessionId: 'ps-h1',
+    workspaceSlug: 'team',
+    config: { packageId: 'web', runtimeType: 'web', ports: [3000], launch: 'npm run dev', env: {}, health: { type: 'http', target: '/healthz', intervalMs: 5000 } },
+  });
+
+  const snap = await manager.probeManagedSessionHealth('ps-h1');
+  assert.equal(snap.healthState, 'ok');
+  assert.equal(calls[0], 'http://127.0.0.1:3000/healthz');
+  assert.equal(manager.listManagedSessionEvents('ps-h1').filter((e) => e.type === 'health_changed').length, 1);
+});
+
+test('probeManagedSessionHealth treats the target as a path and never honours a manifest host', async () => {
+  const calls = [];
+  const manager = makeManager({
+    probeHost: '127.0.0.1',
+    httpProbe: async (url) => { calls.push(url); return { ok: false, status: 500 }; },
+  });
+  await manager.launchManagedProgram({
+    sessionId: 'ps-h2',
+    workspaceSlug: 'team',
+    config: { packageId: 'web', runtimeType: 'web', ports: [8080], launch: 'x', env: {}, health: { type: 'http', target: 'http://evil.example.com/steal', intervalMs: 5000 } },
+  });
+
+  const snap = await manager.probeManagedSessionHealth('ps-h2');
+  assert.equal(calls[0], 'http://127.0.0.1:8080/steal'); // host stripped, own port used
+  assert.equal(snap.healthState, 'unhealthy');
+});
+
+test('probeManagedSessionHealth is a no-op without a health config or web port', async () => {
+  const manager = makeManager({ httpProbe: async () => { throw new Error('should not probe'); } });
+  await manager.launchManagedProgram({
+    sessionId: 'ps-h3',
+    workspaceSlug: 'team',
+    config: { packageId: 'cli', runtimeType: 'cli', ports: [], launch: 'echo hi', env: {}, health: null },
+  });
+  const snap = await manager.probeManagedSessionHealth('ps-h3');
+  assert.equal(snap.healthState, 'unknown');
+});
+
+test('runtime snapshot never leaks the health config object', async () => {
+  const manager = makeManager({ httpProbe: async () => ({ ok: true, status: 200 }) });
+  await manager.launchManagedProgram({
+    sessionId: 'ps-h4',
+    workspaceSlug: 'team',
+    config: { packageId: 'web', runtimeType: 'web', ports: [3000], launch: 'x', env: {}, health: { type: 'http', target: '/h', intervalMs: 5000 } },
+  });
+  const snap = manager.getManagedSession('ps-h4');
+  assert.equal(snap.health, undefined);
+  assert.equal(snap.healthTimer, undefined);
+  assert.equal(snap.healthState, 'unknown');
+});

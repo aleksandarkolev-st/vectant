@@ -53,6 +53,8 @@ function toPublicManagedSession(record) {
   const {
     runtime,
     idleTimer,
+    healthTimer,
+    health,
     runtimeDataDisposable,
     runtimeExitDisposable,
     launchRequest,
@@ -179,6 +181,37 @@ function composeProgramCommand({ install = [], launch, workingDir = '' } = {}) {
   return parts.join(' && ');
 }
 
+const HEALTH_MIN_INTERVAL_MS = 2000;
+const HEALTH_DEFAULT_INTERVAL_MS = 10_000;
+
+function clampHealthInterval(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return HEALTH_DEFAULT_INTERVAL_MS;
+  return Math.max(HEALTH_MIN_INTERVAL_MS, ms);
+}
+
+/** Coerce a manifest health target to a PATH only — never an absolute URL/host. */
+function healthPath(target) {
+  let path = String(target || '/').trim();
+  path = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, ''); // strip scheme://host if present
+  if (!path.startsWith('/')) path = `/${path}`;
+  return path;
+}
+
+function defaultHttpProbe(url) {
+  return new Promise((resolve) => {
+    try {
+      const req = require('http').get(url, (res) => {
+        res.resume();
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, status: res.statusCode });
+      });
+      req.setTimeout(2000, () => { req.destroy(); resolve({ ok: false, status: 0 }); });
+      req.on('error', () => resolve({ ok: false, status: 0 }));
+    } catch (_) {
+      resolve({ ok: false, status: 0 });
+    }
+  });
+}
+
 function createProgramRuntimeManager(options = {}) {
   const {
     activeSessions,
@@ -192,6 +225,10 @@ function createProgramRuntimeManager(options = {}) {
     launchRuntime = null,
     getActivePorts = () => [],
     baseEnv = process.env,
+    probeHost = process.env.PROXY_TARGET_HOST || '127.0.0.1',
+    httpProbe = defaultHttpProbe,
+    setIntervalFn = setInterval,
+    clearIntervalFn = clearInterval,
   } = options;
   const managedSessions = new Map();
 
@@ -280,6 +317,7 @@ function createProgramRuntimeManager(options = {}) {
     }
 
     clearManagedIdleTimer(record);
+    clearManagedHealthTimer(record);
     disposeManagedRuntimeListeners(record);
     record.runtime = null;
     record.exitCode = exitCode;
@@ -404,6 +442,7 @@ function createProgramRuntimeManager(options = {}) {
     title = null,
     metadata = null,
     ports = [],
+    health = null,
   } = {}) {
     if (typeof launchRuntime !== 'function') {
       throw new TypeError('launchRuntime is required');
@@ -457,6 +496,9 @@ function createProgramRuntimeManager(options = {}) {
       activePorts: declaredPorts,
       webPort: selectWebPort({ declaredPorts }, declaredPorts),
       declaredPorts,
+      health: health && typeof health === 'object' ? health : null,
+      healthState: 'unknown',
+      healthTimer: null,
       exitCode: null,
       stopReason: null,
       metadata,
@@ -472,6 +514,7 @@ function createProgramRuntimeManager(options = {}) {
         title,
         metadata,
         ports: declaredPorts,
+        health: health && typeof health === 'object' ? health : null,
       },
       runtime,
       runtimeDataDisposable: null,
@@ -482,6 +525,7 @@ function createProgramRuntimeManager(options = {}) {
     managedSessions.set(sessionId, record);
     attachManagedRuntimeListeners(record);
     record.idleTimer = scheduleManagedIdleTimer(sessionId);
+    scheduleManagedHealthCheck(record);
     appendManagedSessionEvent(record, 'launched', {
       workspaceSlug,
       runtimeType,
@@ -509,6 +553,7 @@ function createProgramRuntimeManager(options = {}) {
       runtimeType: config.runtimeType || 'cli',
       title: title || config.displayName || config.packageId || null,
       ports: Array.isArray(config.ports) ? config.ports : [],
+      health: config.health || null,
       metadata: metadata || {
         packageId: config.packageId || null,
         version: config.version || null,
@@ -524,6 +569,7 @@ function createProgramRuntimeManager(options = {}) {
     }
 
     clearManagedIdleTimer(record);
+    clearManagedHealthTimer(record);
     disposeManagedRuntimeListeners(record);
 
     const runtime = record.runtime;
@@ -594,6 +640,59 @@ function createProgramRuntimeManager(options = {}) {
     return getManagedSession(sessionId);
   }
 
+  function clearManagedHealthTimer(record) {
+    if (record?.healthTimer) {
+      clearIntervalFn(record.healthTimer);
+      record.healthTimer = null;
+    }
+  }
+
+  /**
+   * Run one HTTP health probe against the session's OWN web port. The manifest
+   * health target is treated as a path only (`healthPath` strips any scheme/host),
+   * so a manifest can never aim the probe at an arbitrary host (SSRF guard).
+   */
+  async function probeManagedSessionHealth(sessionId) {
+    const record = managedSessions.get(sessionId);
+    if (!record) {
+      return null;
+    }
+    if (!record.health || record.health.type !== 'http' || !record.webPort || !RUNNING_STATES.includes(record.state)) {
+      return toPublicManagedSession(record);
+    }
+
+    const url = `http://${probeHost}:${record.webPort}${healthPath(record.health.target)}`;
+    let ok = false;
+    try {
+      const result = await httpProbe(url);
+      ok = !!result && result.ok === true;
+    } catch (_) {
+      ok = false;
+    }
+
+    const nextState = ok ? 'ok' : 'unhealthy';
+    if (record.healthState !== nextState) {
+      record.healthState = nextState;
+      appendManagedSessionEvent(record, 'health_changed', { healthState: nextState });
+    }
+    return toPublicManagedSession(record);
+  }
+
+  function scheduleManagedHealthCheck(record) {
+    if (!record?.health || record.health.type !== 'http') {
+      return;
+    }
+    clearManagedHealthTimer(record);
+    const interval = clampHealthInterval(record.health.intervalMs);
+    const timer = setIntervalFn(() => {
+      probeManagedSessionHealth(record.sessionId).catch(() => {});
+    }, interval);
+    if (typeof timer?.unref === 'function') {
+      timer.unref();
+    }
+    record.healthTimer = timer;
+  }
+
   function getManagedSession(sessionId) {
     return toPublicManagedSession(managedSessions.get(sessionId));
   }
@@ -625,6 +724,7 @@ function createProgramRuntimeManager(options = {}) {
     launchManagedProgram,
     listManagedSessionEvents,
     listManagedSessions,
+    probeManagedSessionHealth,
     recomputeManagedPorts,
     refreshManagedSessionPorts,
     restartManagedSession,
@@ -643,4 +743,6 @@ module.exports = {
   attributeSessionPorts,
   selectWebPort,
   samePorts,
+  healthPath,
+  clampHealthInterval,
 };
