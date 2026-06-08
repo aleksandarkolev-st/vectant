@@ -87,9 +87,9 @@ use crate::runtime::gpu_runtime_boundary::{
     output_oracle_records_snapshot, record_hmr_runtime_identity_snapshot,
     record_output_buffer_checksum_with_probe_bytes_after_dispatch, runtime_session_id,
     synthi_gpu_launch_raw_arg_info, synthi_gpu_register_buffer, GpuLaunchDispatcher,
-    GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, OutputOracleRecord,
-    SynthiGpuLaunchArg, SYNTHI_GPU_ARG_KIND_FLOATING, SYNTHI_GPU_ARG_KIND_INTEGER,
-    SYNTHI_GPU_ARG_KIND_POINTER,
+    GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, LaunchRecord,
+    OutputOracleRecord, SynthiGpuLaunchArg, SYNTHI_GPU_ARG_KIND_FLOATING,
+    SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -838,6 +838,249 @@ fn run_runtime_output_oracle_profile(
         let _ = unsafe { (symbols.cu_mem_free)(*ptr) };
     }
     result.map(Some)
+}
+
+fn replayable_arg_provenance(record: &LaunchRecord) -> bool {
+    record.arg_provenance_complete
+        && !record.arg_provenance.is_empty()
+        && record.arg_provenance.iter().all(|arg| {
+            arg.value_size > 0
+                && arg.value_bytes.as_ref().is_some_and(|bytes| {
+                    !bytes.is_empty() && bytes.len() == arg.value_size
+                })
+        })
+}
+
+fn replay_readback_target(record: &LaunchRecord) -> Option<&LaunchArgProvenance> {
+    record.arg_provenance.iter().find(|arg| {
+        arg.kind == "device-allocation"
+            && arg.observed_value.is_some()
+            && arg
+                .allocation_bytes
+                .is_some_and(|bytes| bytes > arg.allocation_offset.unwrap_or(0))
+    })
+}
+
+fn latest_replayable_launch_record(
+    changed_symbols: &[String],
+    previous_generation: u64,
+) -> Option<LaunchRecord> {
+    launch_records_snapshot()
+        .into_iter()
+        .rev()
+        .find(|record| {
+            record.runtime_session_id == runtime_session_id()
+                && record.dispatched
+                && record.dispatch_error.is_none()
+                && record.active_generation == previous_generation
+                && changed_symbols.iter().any(|symbol| symbol == &record.kernel_name)
+                && replayable_arg_provenance(record)
+                && replay_readback_target(record).is_some()
+        })
+}
+
+fn run_runtime_output_oracle_replay(
+    symbols: &GpuDriverSymbolTable,
+    changed_symbols: &[String],
+    previous_generation: u64,
+    active_generation: u64,
+    active_artifact_id: &str,
+) -> Result<Option<String>, String> {
+    let Some(record) = latest_replayable_launch_record(changed_symbols, previous_generation) else {
+        return Ok(Some(format!(
+            "[gpu-runtime-boundary] runtime_output_oracle_probe status=skipped profile=runtime-dispatch-replay generation={} artifact_id={} reason=no_replayable_prior_dispatch",
+            active_generation,
+            active_artifact_id
+        )));
+    };
+    let target = replay_readback_target(&record)
+        .ok_or_else(|| "runtime replay launch lost readback target".to_string())?;
+    let readback_ptr = target
+        .observed_value
+        .ok_or_else(|| "runtime replay readback target missing device pointer".to_string())?
+        as CuDevicePtr;
+    let readback_offset = target.allocation_offset.unwrap_or(0);
+    let available_bytes = target
+        .allocation_bytes
+        .unwrap_or(0)
+        .saturating_sub(readback_offset);
+    let readback_bytes = available_bytes.min(4096);
+    if readback_ptr == 0 || readback_bytes == 0 {
+        return Err("runtime replay readback target is empty".to_string());
+    }
+    let mut before = vec![0u8; readback_bytes];
+    let before_code = unsafe {
+        (symbols.cu_memcpy_dtoh)(
+            before.as_mut_ptr().cast::<c_void>(),
+            readback_ptr,
+            before.len(),
+        )
+    };
+    if before_code != 0 {
+        return Err(format!(
+            "runtime replay pre-dispatch DtoH copy kernel={:?} failed code={before_code}",
+            record.kernel_name
+        ));
+    }
+
+    let mut arg_bytes = record
+        .arg_provenance
+        .iter()
+        .map(|arg| {
+            let bytes = arg
+                .value_bytes
+                .clone()
+                .ok_or_else(|| format!("runtime replay arg {} missing captured bytes", arg.index))?;
+            if bytes.len() != arg.value_size {
+                return Err(format!(
+                    "runtime replay arg {} byte length mismatch expected={} actual={}",
+                    arg.index,
+                    arg.value_size,
+                    bytes.len()
+                ));
+            }
+            Ok((arg.index, arg.value_kind, bytes))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    arg_bytes.sort_by_key(|(index, _, _)| *index);
+    let arg_infos = arg_bytes
+        .iter()
+        .map(|(_, value_kind, bytes)| SynthiGpuLaunchArg {
+            value_ptr: bytes.as_ptr().cast::<c_void>(),
+            value_size: bytes.len(),
+            value_kind: *value_kind,
+        })
+        .collect::<Vec<_>>();
+    let kernel_cstring = runtime_probe_cstring(&record.kernel_name)?;
+    let grid = record.grid;
+    let block = record.block;
+    let launch_ok = synthi_gpu_launch_raw_arg_info(
+        std::ptr::null_mut(),
+        kernel_cstring.as_ptr(),
+        &grid as *const (u32, u32, u32) as *const c_void,
+        std::mem::size_of_val(&grid),
+        &block as *const (u32, u32, u32) as *const c_void,
+        std::mem::size_of_val(&block),
+        record.shared_bytes,
+        record.stream_token,
+        arg_infos.as_ptr(),
+        arg_infos.len(),
+    );
+    if !launch_ok {
+        return Err(format!(
+            "runtime replay launch kernel={:?} was rejected by runtime boundary",
+            record.kernel_name
+        ));
+    }
+    let after_dispatch_id =
+        latest_dispatch_id_for_generation(active_generation, runtime_session_id()).ok_or_else(
+            || {
+                format!(
+                    "runtime replay launch kernel={:?} did not publish dispatch identity",
+                    record.kernel_name
+                )
+            },
+        )?;
+    let sync_code = unsafe { (symbols.cu_ctx_synchronize)() };
+    if sync_code != 0 {
+        return Err(format!(
+            "runtime replay context synchronize kernel={:?} failed code={sync_code}",
+            record.kernel_name
+        ));
+    }
+    let mut after = vec![0u8; readback_bytes];
+    let after_code = unsafe {
+        (symbols.cu_memcpy_dtoh)(
+            after.as_mut_ptr().cast::<c_void>(),
+            readback_ptr,
+            after.len(),
+        )
+    };
+    if after_code != 0 {
+        return Err(format!(
+            "runtime replay post-dispatch DtoH copy kernel={:?} failed code={after_code}",
+            record.kernel_name
+        ));
+    }
+    let expected = format!("sha256:{}", sha256_hex_bytes(&after));
+    let probe_material = json!({
+        "profile": "runtime-dispatch-replay",
+        "kernel": record.kernel_name.clone(),
+        "previous_generation": previous_generation,
+        "active_generation": active_generation,
+        "active_artifact_id": active_artifact_id,
+        "readback_bytes": readback_bytes,
+        "target_arg_index": target.index,
+        "target_allocation_id": target.allocation_id,
+    });
+    let probe_config_hash = sha256_prefixed_from_text(&stable_json_string(&probe_material));
+    let oracle_id = format!("runtime-replay.{}", record.kernel_name);
+    let output_target_id = format!(
+        "runtime-replay:{}:{}",
+        &record.kernel_name,
+        target
+            .allocation_id
+            .as_deref()
+            .unwrap_or("registered-device-allocation")
+    );
+    let probe_evidence_ref = format!(
+        "evidence:runtime-dispatch-replay:{}:{}",
+        &record.kernel_name, after_dispatch_id
+    );
+    let passed = record_output_buffer_checksum_with_probe_bytes_after_dispatch(
+        &oracle_id,
+        &after,
+        &expected,
+        "worker.gpu_module_adapter.runtime_replay",
+        &output_target_id,
+        Some(active_artifact_id),
+        Some(&after_dispatch_id),
+        None,
+        if before == after {
+            "runtime_replay_readback_snapshot"
+        } else {
+            "runtime_replay_readback_changed"
+        },
+        &probe_config_hash,
+        &probe_evidence_ref,
+    );
+    Ok(Some(format!(
+        "[gpu-runtime-boundary] runtime_output_oracle_probe status={} profile=runtime-dispatch-replay schema=synthi.gpu_hmr.runtime_output_oracle.v1 kernel={} generation={} output_buffer={} bytes={} changed={} artifact_id={} after_dispatch_id={}",
+        if passed { "pass" } else { "fail" },
+        record.kernel_name,
+        active_generation,
+        output_target_id,
+        after.len(),
+        before != after,
+        active_artifact_id,
+        log_optional_token(Some(&after_dispatch_id))
+    )))
+}
+
+fn run_runtime_output_oracle_probe(
+    symbols: &GpuDriverSymbolTable,
+    dispatcher_kernels: &HashMap<String, u64>,
+    changed_symbols: &[String],
+    previous_generation: u64,
+    active_generation: u64,
+    active_artifact_id: &str,
+) -> Result<Option<String>, String> {
+    match run_runtime_output_oracle_profile(
+        symbols,
+        dispatcher_kernels,
+        changed_symbols,
+        active_generation,
+        active_artifact_id,
+    )? {
+        Some(line) if runtime_boundary_token(&line, "status") != Some("skipped") => Ok(Some(line)),
+        _ => run_runtime_output_oracle_replay(
+            symbols,
+            changed_symbols,
+            previous_generation,
+            active_generation,
+            active_artifact_id,
+        ),
+    }
 }
 
 fn runtime_boundary_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -2973,10 +3216,11 @@ impl Adapter for GpuModuleAdapter {
             let mut output_oracle_passed = false;
             let mut output_after_dispatch = false;
             if !first_device_load {
-                match run_runtime_output_oracle_profile(
+                match run_runtime_output_oracle_probe(
                     &symbols,
                     &dispatcher_kernels_for_probe,
                     &expected_symbols,
+                    previous_generation,
                     active_generation,
                     &new_artifact_id,
                 ) {
