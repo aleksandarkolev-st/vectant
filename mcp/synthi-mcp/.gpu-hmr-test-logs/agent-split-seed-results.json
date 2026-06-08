@@ -3,42 +3,48 @@
     "name": "gpu vendor",
     "status": "pass",
     "detail": "rocm arch=gfx1201",
-    "ts": "2026-05-18T20:21:20.781Z"
+    "ts": "2026-06-08T05:50:53.766Z"
   },
   {
     "name": "fixture",
     "status": "pass",
     "detail": "flow",
-    "ts": "2026-05-18T20:21:20.782Z"
+    "ts": "2026-06-08T05:50:53.767Z"
   },
   {
     "name": "monolithic source has no Synthi ABI",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-18T20:21:20.783Z"
+    "ts": "2026-06-08T05:50:53.767Z"
+  },
+  {
+    "name": "validation workspace fallback",
+    "status": "warn",
+    "detail": "frontend workspace API requires auth; using collab-backed validation workspace slug=investor-gpu-hmr-flow-20260608085052",
+    "ts": "2026-06-08T05:50:53.811Z"
   },
   {
     "name": "create workspace",
     "status": "pass",
-    "detail": "id=cmpbng4yz0006o801fnujbyre slug=gpu-user-ai-split-demo-20260518232120",
-    "ts": "2026-05-18T20:21:21.626Z"
+    "detail": "id=investor-gpu-hmr-flow-20260608085052 slug=investor-gpu-hmr-flow-20260608085052",
+    "ts": "2026-06-08T05:50:53.812Z"
   },
   {
     "name": "seed monolithic user source",
     "status": "pass",
     "detail": "main.cpp",
-    "ts": "2026-05-18T20:21:21.681Z"
+    "ts": "2026-06-08T05:50:53.906Z"
   },
   {
     "name": "workspace commit seed",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-18T20:21:21.763Z"
+    "ts": "2026-06-08T05:50:53.993Z"
   },
   {
     "name": "seed-only workspace ready",
     "status": "pass",
     "detail": "open the URL and click Run to trigger AI split",
-    "ts": "2026-05-18T20:21:21.763Z"
+    "ts": "2026-06-08T05:50:53.993Z"
   }
 ]
