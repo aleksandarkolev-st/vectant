@@ -54,6 +54,11 @@ const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const RESULTS_BASENAME = CFG.mode === 'seed-only' ? 'agent-split-seed-results' : 'agent-split-results';
 const RESULTS_JSON = path.join(LOG_DIR, `${RESULTS_BASENAME}.json`);
 const RESULTS_TXT = path.join(LOG_DIR, `${RESULTS_BASENAME}.txt`);
+const ARTIFACT_DIR = path.join(
+  LOG_DIR,
+  'agent-split-artifacts',
+  CFG.slug.replace(/[^a-zA-Z0-9_.-]+/g, '-'),
+);
 
 const results = [];
 function record(name, status, detail = '') {
@@ -1014,7 +1019,72 @@ async function compileGeneratedDevice(split, editedDevice) {
   }, CFG.hotSwapTimeoutMs);
 }
 
-async function assertMcpScreenshot() {
+async function writeImageArtifact(name, imageData) {
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const file = path.join(ARTIFACT_DIR, `${name}.png`);
+  await writeFile(file, Buffer.from(imageData, 'base64'));
+  return path.relative(process.cwd(), file);
+}
+
+async function writeJsonArtifact(name, value) {
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const file = path.join(ARTIFACT_DIR, `${name}.json`);
+  await writeFile(file, JSON.stringify(value, null, 2));
+  return path.relative(process.cwd(), file);
+}
+
+function withoutImageData(shot) {
+  if (!shot || typeof shot !== 'object') return shot;
+  const { imageData, ...rest } = shot;
+  return rest;
+}
+
+async function assertVisualDelta(beforeShot, afterShot) {
+  if (!beforeShot?.imageData || !afterShot?.imageData) {
+    throw new Error('visual delta requires saved before/after screenshot data');
+  }
+  const beforeInput = Buffer.from(beforeShot.imageData, 'base64');
+  const afterInput = Buffer.from(afterShot.imageData, 'base64');
+  const before = await sharp(beforeInput).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const after = await sharp(afterInput)
+    .resize(before.info.width, before.info.height, { fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const pixelCount = Math.max(1, before.info.width * before.info.height);
+  const diff = Buffer.alloc(pixelCount * 4);
+  let changed = 0;
+  let totalAbs = 0;
+  for (let i = 0, p = 0; i < before.data.length && i < after.data.length; i += before.info.channels, p += 4) {
+    const dr = Math.abs((before.data[i] ?? 0) - (after.data[i] ?? 0));
+    const dg = Math.abs((before.data[i + 1] ?? 0) - (after.data[i + 1] ?? 0));
+    const db = Math.abs((before.data[i + 2] ?? 0) - (after.data[i + 2] ?? 0));
+    const delta = dr + dg + db;
+    totalAbs += delta / 3;
+    if (delta > 42) changed += 1;
+    diff[p] = Math.min(255, dr * 4);
+    diff[p + 1] = Math.min(255, dg * 4);
+    diff[p + 2] = Math.min(255, db * 4);
+    diff[p + 3] = 255;
+  }
+  const changedRatio = changed / pixelCount;
+  const meanAbs = totalAbs / pixelCount;
+  const diffPath = path.join(ARTIFACT_DIR, 'before-after-diff.png');
+  await sharp(diff, {
+    raw: {
+      width: before.info.width,
+      height: before.info.height,
+      channels: 4,
+    },
+  }).png().toFile(diffPath);
+  const detail = `changed=${(changedRatio * 100).toFixed(2)}% mean_abs=${meanAbs.toFixed(2)} diff=${path.relative(process.cwd(), diffPath)}`;
+  const ok = changedRatio > 0.01 && meanAbs > 1.0;
+  record('mcp screenshot visual delta', ok ? 'pass' : 'fail', detail);
+  if (!ok) throw new Error(`visual delta too small: ${detail}`);
+  return { changedRatio, meanAbs, diffPath: path.relative(process.cwd(), diffPath) };
+}
+
+async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactPrefix = 'after-hmr') {
   const state = await ensureMcpAttached();
   const analyzeImage = async (data) => {
     if (!data) return { bytes: 0, visiblePixels: 0, meanLuma: 0 };
@@ -1050,6 +1120,7 @@ async function assertMcpScreenshot() {
     const analysis = await analyzeImage(image?.data);
     return {
       meta,
+      imageData: image?.data || '',
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
       seq: Number(meta.seq || 0),
@@ -1079,14 +1150,25 @@ async function assertMcpScreenshot() {
     second.bytes > 512 &&
     second.visiblePixels > 500 &&
     second.seq > first.seq;
+  let artifactDetail = '';
+  if (ok) {
+    const firstPath = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);
+    const secondPath = await writeImageArtifact(`${artifactPrefix}-second`, second.imageData);
+    const metaPath = await writeJsonArtifact(`${artifactPrefix}-metadata`, {
+      first: withoutImageData(first),
+      second: withoutImageData(second),
+    });
+    artifactDetail = ` images=${firstPath},${secondPath} metadata=${metaPath}`;
+  }
   record(
-    'mcp screenshot after hmr',
+    label,
     ok ? 'pass' : 'fail',
     ok
-      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`
+      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}${artifactDetail}`
       : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`,
   );
-  if (!ok) throw new Error('MCP screenshot after HMR did not return a valid frame');
+  if (!ok) throw new Error(`${label} did not return a valid frame`);
+  return { first, second };
 }
 
 async function run() {
@@ -1155,6 +1237,8 @@ async function run() {
   );
   record('generated device compiled', sawDeviceCompile.matched ? 'pass' : 'fail', sawDeviceCompile.snippet || 'no device compile marker');
 
+  const baselineShot = await assertMcpScreenshot('mcp screenshot before hmr', 'before-hmr');
+
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
   validateGeneratedSplit(split);
@@ -1179,7 +1263,8 @@ async function run() {
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
-  await assertMcpScreenshot();
+  const afterShot = await assertMcpScreenshot('mcp screenshot after hmr', 'after-hmr');
+  await assertVisualDelta(baselineShot.second, afterShot.second);
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});
