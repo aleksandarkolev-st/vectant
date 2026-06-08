@@ -210,6 +210,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const contract = workflow.contract;
   const baseOrigin = firstHttpOrigin(events);
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
+  const usesClipboardDrop = events.some(isClipboardDropEvent);
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
     ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
@@ -283,6 +284,41 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("        element.textContent = `${element.textContent ?? ''}${value}`;");
     lines.push("      }");
     lines.push("      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: value }));");
+    lines.push("    }, text);");
+    lines.push("  }");
+  }
+  if (usesClipboardDrop) {
+    lines.push("  async function dropText(target, text) {");
+    lines.push("    await target.evaluate((element, value) => {");
+    lines.push("      const dataTransfer = new DataTransfer();");
+    lines.push("      dataTransfer.setData('text/plain', value);");
+    lines.push("      let dragEnterEvent;");
+    lines.push("      let dragOverEvent;");
+    lines.push("      let dropEvent;");
+    lines.push("      try {");
+    lines.push("        dragEnterEvent = new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer });");
+    lines.push("        dragOverEvent = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer });");
+    lines.push("        dropEvent = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer });");
+    lines.push("      } catch {");
+    lines.push("        dragEnterEvent = new Event('dragenter', { bubbles: true, cancelable: true });");
+    lines.push("        dragOverEvent = new Event('dragover', { bubbles: true, cancelable: true });");
+    lines.push("        dropEvent = new Event('drop', { bubbles: true, cancelable: true });");
+    lines.push("        Object.defineProperty(dragEnterEvent, 'dataTransfer', { value: dataTransfer });");
+    lines.push("        Object.defineProperty(dragOverEvent, 'dataTransfer', { value: dataTransfer });");
+    lines.push("        Object.defineProperty(dropEvent, 'dataTransfer', { value: dataTransfer });");
+    lines.push("      }");
+    lines.push("      element.dispatchEvent(dragEnterEvent);");
+    lines.push("      element.dispatchEvent(dragOverEvent);");
+    lines.push("      const notCanceled = element.dispatchEvent(dropEvent);");
+    lines.push("      if (!notCanceled) return;");
+    lines.push("      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {");
+    lines.push("        const start = element.selectionStart ?? element.value.length;");
+    lines.push("        const end = element.selectionEnd ?? start;");
+    lines.push("        element.setRangeText(value, start, end, 'end');");
+    lines.push("      } else if (element.isContentEditable || element.getAttribute('contenteditable')) {");
+    lines.push("        element.textContent = `${element.textContent ?? ''}${value}`;");
+    lines.push("      }");
+    lines.push("      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromDrop', data: value }));");
     lines.push("    }, text);");
     lines.push("  }");
   }
@@ -393,7 +429,18 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           break;
         }
         if (dragClass === "clipboarddrop") {
-          warnings.push(`event ${event.event_id} is a clipboard drop step and requires caller-provided clipboard data`);
+          const envName = clipboardDropEnvNameFor(event, targetSeq);
+          const valueVar = `dropText${targetSeq}`;
+          lines.push(`  const ${valueVar} = process.env[${JSON.stringify(envName)}];`);
+          lines.push(`  test.skip(!${valueVar}, ${JSON.stringify(`Set ${envName} for clipboard drop step ${event.event_id}.`)});`);
+          lines.push(`  if (!${valueVar}) throw new Error(${JSON.stringify(`missing clipboard drop text for ${event.event_id}`)});`);
+          lines.push(`  await dropText(${target}, ${valueVar});`);
+          if (isContentEditableTarget(event)) {
+            lines.push(`  await expect(${target}).toContainText(${valueVar});`);
+          } else if (isEditableTextTarget(event)) {
+            lines.push(`  await expect(${target}).toHaveValue(${valueVar});`);
+          }
+          warnings.push(`event ${event.event_id} clipboard drop replay is parameterized by ${envName}`);
           break;
         }
         if (isCalibratedPointerDrag(event)) {
@@ -557,6 +604,9 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
       continue;
     }
+    if (currentPrevious && shouldDropFillAfterClipboardDrop(currentPrevious, event)) {
+      continue;
+    }
     while (event.action === "dblclick" && result.length > 0) {
       const prior = result[result.length - 1];
       if (!prior || !sameActionTarget(prior, event) || prior.action !== "click") break;
@@ -583,6 +633,17 @@ function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: Br
   if (previous.kind !== next.kind) return false;
   if (!isClipboardPasteEvent(previous) || next.action !== "fill") return false;
   if (isClipboardPasteEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = actionTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function shouldDropFillAfterClipboardDrop(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (!isClipboardDropEvent(previous) || next.action !== "fill") return false;
   if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
   const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
   if (elapsedMs > 2000) return false;
@@ -702,6 +763,16 @@ function clipboardPasteEnvNameFor(event: BrowserTraceEvent, ordinal: number): st
   return normalized.length > 0 ? normalized : `SYNTHI_CLIPBOARD_PASTE_${ordinal}`;
 }
 
+function clipboardDropEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
+  const explicit = typeof event.detail?.["drop_parameter"] === "string"
+    ? event.detail["drop_parameter"]
+    : typeof event.detail?.["clipboard_parameter"] === "string"
+      ? event.detail["clipboard_parameter"]
+      : `SYNTHI_CLIPBOARD_DROP_${ordinal}`;
+  const normalized = explicit.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized : `SYNTHI_CLIPBOARD_DROP_${ordinal}`;
+}
+
 function dialogPromptEnvNameFor(event: BrowserTraceEvent, ordinal: number): string {
   const explicit = typeof event.detail?.["dialog_prompt_env"] === "string"
     ? event.detail["dialog_prompt_env"]
@@ -744,6 +815,20 @@ function isContentEditableFill(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && element?.content_editable === true;
 }
 
+function isContentEditableTarget(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return element?.content_editable === true || element?.tag?.toLowerCase() === "div" && element?.role === "textbox";
+}
+
+function isEditableTextTarget(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  const tag = element?.tag?.toLowerCase();
+  if (tag === "textarea") return true;
+  if (tag !== "input") return false;
+  const type = element?.type?.toLowerCase() ?? "";
+  return !["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(type);
+}
+
 function isRangeControlFill(event: BrowserTraceEvent): boolean {
   const element = elementForEvent(event);
   return event.action === "fill" && (
@@ -767,6 +852,10 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
   );
+}
+
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
 }
 
 function isMultipleSelectEvent(event: BrowserTraceEvent): boolean {

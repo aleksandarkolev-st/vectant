@@ -658,6 +658,53 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).toContain("event paste-token clipboard paste replay is parameterized by API_TOKEN_PASTE");
   });
 
+  it("generates parameterized clipboard drop replay without storing dropped text", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "drop-note",
+        event_seq: 1,
+        ts: 10,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "clipboardDrop",
+          clipboard_event: true,
+          clipboard_mode: "drop",
+          clipboard_drop_event: true,
+          clipboard_parameter: "RELEASE_NOTES_DROP",
+          dropped_text_length: 18,
+          dropped_text_redacted: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "src_notes" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Release notes\")", confidence: 0.96, reason: "label" },
+        ],
+      }),
+      event({
+        event_id: "drop-fill-noise",
+        event_seq: 2,
+        ts: 20,
+        action: "fill",
+        value: "secret dropped note",
+        detail: {
+          input_debounced: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "src_notes" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Release notes\")", confidence: 0.96, reason: "label" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("async function dropText(target, text)");
+    expect(generated.code).toContain("const dropText1 = process.env[\"RELEASE_NOTES_DROP\"];");
+    expect(generated.code).toContain("await dropText(target1, dropText1);");
+    expect(generated.code).toContain("await expect(target1).toHaveValue(dropText1);");
+    expect(generated.code).not.toContain("target2.fill");
+    expect(generated.code).not.toContain("secret dropped note");
+    expect(generated.warnings).toContain("event drop-note clipboard drop replay is parameterized by RELEASE_NOTES_DROP");
+  });
+
   it("uses setInputFiles for file input drop traces", () => {
     const generated = generatePlaywrightScript([
       event({

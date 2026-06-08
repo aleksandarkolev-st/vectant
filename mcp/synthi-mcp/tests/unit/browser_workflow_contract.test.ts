@@ -687,8 +687,20 @@ describe("browser workflow contract compiler", () => {
         },
       }),
       baseEvent({
-        event_id: "pointer-drag",
+        event_id: "clipboard-drop",
         event_seq: 3,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "clipboardDrop",
+          clipboard_parameter: "RELEASE_NOTES_DROP",
+          dropped_text_redacted: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "src_notes" },
+        },
+      }),
+      baseEvent({
+        event_id: "pointer-drag",
+        event_seq: 4,
         action: "drag",
         detail: {
           drag_mode: true,
@@ -701,16 +713,24 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps.map((step) => step.surfacePlan.kind)).toEqual([
       "nativeHtmlDrag",
       "fileDrop",
+      "clipboardDrop",
       "pointerDrag",
     ]);
     expect(workflow.contract.steps[0]?.surfacePlan.replay).toBe("durable");
     expect(workflow.contract.steps[1]?.surfacePlan.replay).toBe("parameterized");
-    expect(workflow.contract.steps[2]?.limitations).toContain("pointerDragUnreliable");
-    expect(workflow.contract.steps[2]?.surfacePlan.replay).toBe("blocked");
+    expect(workflow.contract.steps[2]?.surfacePlan.replay).toBe("parameterized");
+    expect(workflow.contract.steps[3]?.limitations).toContain("pointerDragUnreliable");
+    expect(workflow.contract.steps[3]?.surfacePlan.replay).toBe("blocked");
     expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
       name: "upload_file",
       sourceStepId: "file-drop",
       valueShape: "filePath",
+    }));
+    expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
+      name: "release_notes_drop",
+      sourceStepId: "clipboard-drop",
+      valueShape: "secret",
+      redacted: true,
     }));
   });
 

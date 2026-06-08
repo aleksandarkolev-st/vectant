@@ -332,6 +332,9 @@ function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
       continue;
     }
+    if (currentPrevious && shouldDropFillAfterClipboardDrop(currentPrevious, event)) {
+      continue;
+    }
     if (currentPrevious && shouldReplaceWithLatestFill(currentPrevious, event)) {
       result[result.length - 1] = event;
       continue;
@@ -366,6 +369,17 @@ function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: Br
   const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
   if (elapsedMs > 2000) return false;
   const previousTarget = fillTargetKey(previous);
+  const nextTarget = fillTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function shouldDropFillAfterClipboardDrop(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (!isClipboardDropEvent(previous) || next.action !== "fill") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
   const nextTarget = fillTargetKey(next);
   return sameOrNestedTargetKey(previousTarget, nextTarget);
 }
@@ -942,6 +956,7 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
       required: true,
       redacted: event?.redacted === true ||
         event?.detail?.["pasted_text_redacted"] === true ||
+        event?.detail?.["dropped_text_redacted"] === true ||
         event?.detail?.["dialog_prompt_value_redacted"] === true,
     }];
   });
@@ -973,6 +988,14 @@ function parameterNameForAction(
         : undefined;
     return slugIdentifier(explicit || element?.label || element?.name || element?.test_id || `file_${ordinal}`);
   }
+  if (actionKind === "drag" && dragClassFor(event) === "clipboarddrop") {
+    const explicit = typeof event.detail?.["drop_parameter"] === "string"
+      ? event.detail["drop_parameter"] as string
+      : typeof event.detail?.["clipboard_parameter"] === "string"
+        ? event.detail["clipboard_parameter"] as string
+        : undefined;
+    return slugIdentifier(explicit || element?.label || element?.name || element?.placeholder || element?.test_id || `drop_${ordinal}`);
+  }
   return undefined;
 }
 
@@ -984,6 +1007,7 @@ function parameterNameFor(event: BrowserTraceEvent, element: BrowserElementMetad
 
 function parameterValueShape(event: BrowserTraceEvent | undefined): WorkflowParameterV7["valueShape"] {
   if (event?.action === "drag" && dragClassFor(event) === "filedrop") return "filePath";
+  if (event?.action === "drag" && dragClassFor(event) === "clipboarddrop") return "secret";
   if (event && isClipboardPasteEvent(event)) return "secret";
   if (event && isAcceptedPromptDialogEvent(event)) return "secret";
   return valueShape(event?.value, event?.redacted === true);
@@ -1332,6 +1356,10 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
   );
+}
+
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
 }
 
 function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {

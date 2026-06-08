@@ -266,6 +266,37 @@ describe("browser Playwright teach capture", () => {
     expect(JSON.stringify(event)).not.toContain("secret pasted note");
   });
 
+  it("redacts editable element text for clipboard drop capture", () => {
+    const event = normalizeCapturedHumanAction({
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "drag",
+      field_name: "Release notes",
+      element: {
+        tag: "textarea",
+        role: "textbox",
+        label: "Release notes",
+        text: "secret dropped note",
+        source_id: "notes.drop",
+      },
+      detail: {
+        clipboard_event: true,
+        clipboard_mode: "drop",
+        clipboard_drop_event: true,
+        clipboard_parameter: "RELEASE_NOTES_DROP",
+        dropped_text_redacted: true,
+      },
+    }, "tab-a");
+
+    expect(event?.element).toEqual(expect.objectContaining({
+      tag: "textarea",
+      role: "textbox",
+      label: "Release notes",
+    }));
+    expect(event?.element?.text).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain("secret dropped note");
+  });
+
   it("rejects malformed hosted-browser DOM action payloads", () => {
     expect(normalizeCapturedHumanAction({ action: "click" }, "tab-a")).toBeNull();
     expect(normalizeCapturedHumanAction({

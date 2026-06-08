@@ -1014,6 +1014,75 @@ describe("browser MCP tool surface", () => {
     );
   });
 
+  it("requires and forwards clipboard drop parameters for workflow replay", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      detail: {
+        drag_mode: true,
+        drag_class: "clipboardDrop",
+        clipboard_event: true,
+        clipboard_mode: "drop",
+        clipboard_drop_event: true,
+        clipboard_parameter: "RELEASE_NOTES_DROP",
+      },
+      element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "s_notes" },
+    }).ok).toBe(true);
+    const lease = browserBroker.acquireLease("agent", 5000, "test-clipboard-drop");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "drag",
+      tab_id: "app",
+      url,
+    });
+
+    const missing = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+    });
+
+    expect((missing?.structuredContent as {
+      ok: boolean;
+      replay: { status: string; failure_class: string; failed_step_id: string; error: string };
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        failure_class: "testDataMissing",
+        failed_step_id: "browser_evt_1",
+        error: "missing_clipboard_drop_parameter:release_notes_drop",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+      parameters: { release_notes_drop: "agent dropped note" },
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({ event_id: "browser_evt_1" }),
+      "drag",
+      expect.any(String),
+      "agent dropped note"
+    );
+  });
+
   it("requires and forwards native prompt parameters for workflow replay", async () => {
     const url = "https://app.example.com/settings";
     browserBroker.requestConsent(url);

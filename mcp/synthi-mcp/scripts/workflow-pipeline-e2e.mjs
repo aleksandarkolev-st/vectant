@@ -1015,6 +1015,79 @@ const CASES = [
     },
   },
   {
+    id: "clipboard-drop-textarea",
+    minSteps: 2,
+    expectedActions: ["drag", "click"],
+    expectedReplayText: [
+      "Dropped release note from text drop",
+      "Saved dropped note",
+    ],
+    expectedReplayCode: [
+      "async function dropText(target, text)",
+      "process.env[\"RELEASE_NOTES_DROP\"]",
+      "await dropText(target1, dropText1);",
+      "await expect(target1).toHaveValue(dropText1);",
+    ],
+    forbiddenReplayCode: [
+      "taught dropped note",
+      "target2.fill",
+    ],
+    liveReplayMode: "sameSession",
+    replayParameters: { release_notes_drop: "agent dropped note" },
+    replayEnv: () => ({ RELEASE_NOTES_DROP: "agent dropped note" }),
+    files: () => commonFiles({
+      title: "Clipboard Drop Textarea Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Clipboard Drop Textarea Workflow</h1>",
+        "      <label for=\"release-notes\">Release notes</label>",
+        "      <textarea id=\"release-notes\" aria-label=\"Release notes\" data-testid=\"release-notes\" data-synthi-source-id=\"drop.notes\"></textarea>",
+        "      <button type=\"button\" data-testid=\"save-notes\" data-synthi-source-id=\"drop.notes.save\">Save dropped note</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "textarea { min-height: 112px; width: min(560px, calc(100vw - 48px)); border: 1px solid #222; background: #fff; padding: 12px; }",
+        "textarea:focus { outline: 2px solid #202020; outline-offset: 3px; }",
+      ],
+      script: [
+        "const notes = document.querySelector('[data-testid=\"release-notes\"]');",
+        "const status = document.querySelector('#status');",
+        "notes.addEventListener('dragover', (event) => event.preventDefault());",
+        "notes.addEventListener('drop', (event) => {",
+        "  event.preventDefault();",
+        "  const text = event.dataTransfer.getData('text/plain');",
+        "  notes.value = text;",
+        "  notes.dispatchEvent(new Event('input', { bubbles: true }));",
+        "  status.textContent = text ? 'Dropped release note from text drop' : 'Missing dropped text';",
+        "});",
+        "document.querySelector('[data-testid=\"save-notes\"]').addEventListener('click', () => {",
+        "  status.textContent = notes.value.trim() ? 'Saved dropped note' : 'No dropped note to save';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const droppedText = "taught dropped note";
+      const dataTransfer = await page.evaluateHandle((value) => {
+        const transfer = new DataTransfer();
+        transfer.setData("text/plain", value);
+        return transfer;
+      }, droppedText);
+      try {
+        const notes = page.getByTestId("release-notes");
+        await notes.dispatchEvent("dragenter", { dataTransfer });
+        await notes.dispatchEvent("dragover", { dataTransfer });
+        await notes.dispatchEvent("drop", { dataTransfer });
+        await page.getByText("Dropped release note from text drop").waitFor();
+        await page.getByRole("button", { name: "Save dropped note" }).click();
+        await page.getByText("Saved dropped note").waitFor();
+      } finally {
+        await dataTransfer.dispose().catch(() => undefined);
+      }
+    },
+  },
+  {
     id: "iframe-form",
     minSteps: 2,
     expectedActions: ["fill", "click"],

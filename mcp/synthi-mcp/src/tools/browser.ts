@@ -512,7 +512,7 @@ export const BROWSER_TOOLS = [
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "coldSession" },
         parameters: {
           type: "object",
-          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings; clipboard paste and native prompt steps expect caller-provided text values.",
+          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings; clipboard paste, clipboard drop, and native prompt steps expect caller-provided text values.",
           additionalProperties: { type: "string" },
         },
       },
@@ -1304,6 +1304,61 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       }
       continue;
     }
+    if (isClipboardDropEvent(event)) {
+      const dropText = clipboardDropTextFor(event, parameters);
+      if (dropText === undefined) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: "testDataMissing",
+            error: `missing_clipboard_drop_parameter:${clipboardDropParameterName(event)}`,
+          },
+        });
+      }
+      const validation = browserBroker.validateAction({
+        lease_id: leaseId,
+        action,
+        tab_id: targetTabId,
+        selector,
+        value: dropText,
+        url: event.url,
+      });
+      if (!validation.ok) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            error: validation.error,
+          },
+        });
+      }
+      try {
+        const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, dropText);
+        rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
+        stepsRun += 1;
+      } catch (err) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyWorkflowReplayFailure(err, event),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      continue;
+    }
     const value = replayValueForEvent(event, action);
     const dialogPromptValue = dialogPromptValueFor(event, parameters);
     if (isAcceptedPromptDialogEvent(event) && dialogPromptValue === undefined) {
@@ -1448,6 +1503,10 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
+}
+
 function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
   return event.detail?.["dialog_event"] === true &&
     event.detail?.["dialog_type"] === "prompt" &&
@@ -1487,6 +1546,23 @@ function clipboardPasteParameterName(event: BrowserTraceEvent): string {
       stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).test_id)
     : undefined;
   return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
+}
+
+function clipboardDropTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  const parameterName = clipboardDropParameterName(event);
+  return parameters[parameterName] ?? stringOpt(event.detail?.["fixture_text"]);
+}
+
+function clipboardDropParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["drop_parameter"]) ?? stringOpt(event.detail?.["clipboard_parameter"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown }).placeholder) ??
+      stringOpt((element as { test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_drop`);
 }
 
 function fileDropPathFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
