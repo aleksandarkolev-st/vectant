@@ -277,6 +277,18 @@ async function runCase({ testCase, container, context, runner }) {
     await idePage.bringToFront().catch(() => undefined);
     await idePage.screenshot({ path: path.join(caseDir, "after-publish-panel.png"), fullPage: true });
 
+    const privateManifestLookup = typeof publishedToolName === "string"
+      ? await workflowBridgeTool("synthi_browser_get_private_tool_manifest", { tool_name: publishedToolName })
+      : { ok: false, error: "missing_published_tool_name" };
+    const privateManifest = privateManifestLookup.result?.manifest;
+    record(
+      testCase.id,
+      "lookup published private MCP manifest",
+      privateManifestLookup.ok === true && privateManifest?.tool_name === publishedToolName && privateManifest?.kind === "privateMcpToolManifest",
+      `tool=${privateManifest?.tool_name || "missing"} status=${privateManifest?.status || "missing"}`
+    );
+    await writeJson(caseDir, "published-manifest-lookup.json", privateManifestLookup.result ?? privateManifestLookup);
+
     const validateBody = await clickWorkflowButton(idePage, /^Validate$/);
     const validation = validateBody.result?.validation;
     record(
