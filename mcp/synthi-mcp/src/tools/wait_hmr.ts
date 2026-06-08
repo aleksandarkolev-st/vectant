@@ -31,7 +31,7 @@ interface WaitHmrArgs {
   requireGpuFullRuntimeProof?: unknown;
 }
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
 
 function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {

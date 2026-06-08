@@ -153,8 +153,8 @@ const TOOLS = [
       properties: {
         timeoutMs: {
           type: "number",
-          description: "Maximum wait in milliseconds. Default 60000 (accommodates Tier 3 AI-split + compile latency).",
-          default: 60000,
+          description: "Maximum wait in milliseconds. Default 1200000 (20 minutes, accommodates cold GPU validation, AI split, compile, runtime proof, and visual capture latency).",
+          default: 1200000,
         },
         module: {
           type: "string",
