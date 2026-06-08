@@ -1157,7 +1157,23 @@ function proofOutputKind(outputProof) {
 function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visualEvidenceArtifacts) {
   const proof = objectOrNull(outputProof) ?? {};
   const kind = proofOutputKind(proof);
-  const primaryVisualArtifacts = compactObjects(visualEvidenceArtifacts).filter(
+  const artifacts = compactObjects(visualEvidenceArtifacts);
+  const supplementalVisualArtifactKeys = new Set(compactStringList(artifacts
+    .filter((artifact) =>
+      artifact.visualEvidenceSupplementalOnly === true
+      || artifact.visual_evidence_supplemental_only === true)
+    .flatMap((artifact) => [
+      artifact.path,
+      artifact.filePath,
+      artifact.file_path,
+      artifact.evidenceId,
+      artifact.evidence_id,
+      artifact.contentHash,
+      artifact.content_hash,
+    ])));
+  const primaryVisualRefs = compactStringList(visualEvidenceRefs)
+    .filter((ref) => !supplementalVisualArtifactKeys.has(ref));
+  const primaryVisualArtifacts = artifacts.filter(
     (artifact) =>
       artifact.visualEvidenceSupplementalOnly !== true
       && artifact.visual_evidence_supplemental_only !== true,
@@ -1173,7 +1189,7 @@ function outputProofRequiresVisualEvidence(outputProof, visualEvidenceRefs, visu
     || kind.includes('frame')
     || kind.includes('pixel')
     || visualOracleArtifactsFromOutputProof(proof) !== null
-    || compactStringList(visualEvidenceRefs).length > 0
+    || primaryVisualRefs.length > 0
     || primaryVisualArtifacts.length > 0;
 }
 

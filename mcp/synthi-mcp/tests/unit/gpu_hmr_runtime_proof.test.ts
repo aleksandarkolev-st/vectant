@@ -7444,6 +7444,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("does not require deterministic visual mode for supplemental compute proof cards", () => {
     const artifact = buildValidationRuntimeProofArtifact(acceptedValidationRuntimeInput({
+      visualEvidenceRefs: ["artifacts/compute-proof-card.png"],
       visualEvidenceArtifacts: [{
         path: "artifacts/compute-proof-card.png",
         contentHash: `sha256:${"6".repeat(64)}`,
