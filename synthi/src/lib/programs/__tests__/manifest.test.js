@@ -139,10 +139,18 @@ describe('parseProgramManifest — fail-closed validation', () => {
     );
   });
 
-  it('rejects the gui runtimeType (deferred to Phase 4)', () => {
+  it('accepts the gui runtimeType and derives an app (stream) surface', () => {
+    const cfg = parseProgramManifest({ packageId: 'paint', version: '1.0.0', launch: 'xeyes', runtimeType: 'gui' });
+    expect(cfg.runtimeType).toBe('gui');
+    expect(cfg.surfaces).toContain('app');
+    expect(cfg.surfaces).toContain('logs');
+    expect(cfg.surfaces).toContain('settings');
+  });
+
+  it('still rejects an unknown runtimeType', () => {
     expectManifestError(
-      () => parseProgramManifest({ packageId: 'x', version: '1', launch: 'x', runtimeType: 'gui' }),
-      'unsupported_runtime',
+      () => parseProgramManifest({ packageId: 'x', version: '1', launch: 'x', runtimeType: 'wat' }),
+      'invalid_field',
       'runtimeType',
     );
   });

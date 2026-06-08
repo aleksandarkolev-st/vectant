@@ -18,8 +18,8 @@ export const KNOWN_SCOPES = [
   'ports.expose',
 ];
 
-/** Runtime types Phase 2 can manage (gui is deferred to Phase 4). */
-export const SUPPORTED_RUNTIME_TYPES = ['web', 'cli', 'tui', 'background'];
+/** Runtime types the program runtime can manage. */
+export const SUPPORTED_RUNTIME_TYPES = ['web', 'cli', 'tui', 'background', 'gui'];
 
 /** Sub-tabs a program session can surface. */
 export const ALLOWED_SURFACES = ['app', 'logs', 'terminal', 'ports', 'health', 'settings'];
@@ -75,9 +75,6 @@ export function validateLaunch(cmd, field = 'launch') {
 
 export function normalizeRuntimeType(rt, field = 'runtimeType') {
   if (rt == null) return 'cli';
-  if (rt === 'gui') {
-    throw new ProgramManifestError('unsupported_runtime', 'gui runtime is deferred to Phase 4', field);
-  }
   if (!SUPPORTED_RUNTIME_TYPES.includes(rt)) {
     throw new ProgramManifestError('invalid_field', `Invalid ${field} '${rt}'`, field);
   }
@@ -159,7 +156,7 @@ export function normalizeCommands(cmds, field = 'install') {
 
 function deriveSurfaces(runtimeType, ports) {
   const out = [];
-  if (ports.length > 0) out.push('app');
+  if (ports.length > 0 || runtimeType === 'gui') out.push('app');
   out.push('logs');
   if (runtimeType !== 'background') out.push('terminal');
   if (ports.length > 0) out.push('ports');
