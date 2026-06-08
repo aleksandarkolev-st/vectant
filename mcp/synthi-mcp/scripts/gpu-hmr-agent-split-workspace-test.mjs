@@ -62,6 +62,9 @@ const CFG = {
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
   captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
+  visualDeltaWindowMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_WINDOW_MS ?? 6000),
+  visualDeltaSampleIntervalMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_SAMPLE_INTERVAL_MS ?? 500),
+  visualDeltaMinSamples: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_MIN_SAMPLES ?? 8),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -1303,7 +1306,7 @@ function withoutImageData(shot) {
   return rest;
 }
 
-async function assertVisualDelta(beforeShot, afterShot) {
+async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
   if (!beforeShot?.imageData || !afterShot?.imageData) {
     throw new Error('visual delta requires saved before/after screenshot data');
   }
@@ -1333,22 +1336,73 @@ async function assertVisualDelta(beforeShot, afterShot) {
   }
   const changedRatio = changed / pixelCount;
   const meanAbs = totalAbs / pixelCount;
-  const diffPath = path.join(ARTIFACT_DIR, 'before-after-diff.png');
-  await sharp(diff, {
-    raw: {
-      width: before.info.width,
-      height: before.info.height,
-      channels: 4,
-    },
-  }).png().toFile(diffPath);
-  const detail = `changed=${(changedRatio * 100).toFixed(2)}% mean_abs=${meanAbs.toFixed(2)} diff=${path.relative(process.cwd(), diffPath)}`;
-  const ok = changedRatio > 0.01 && meanAbs > 1.0;
-  record('mcp screenshot visual delta', ok ? 'pass' : 'fail', detail);
-  if (!ok) throw new Error(`visual delta too small: ${detail}`);
-  return { changedRatio, meanAbs, diffPath: path.relative(process.cwd(), diffPath) };
+  if (diffPath) {
+    await sharp(diff, {
+      raw: {
+        width: before.info.width,
+        height: before.info.height,
+        channels: 4,
+      },
+    }).png().toFile(diffPath);
+  }
+  return { changedRatio, meanAbs };
 }
 
-async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactPrefix = 'after-hmr', waitEvidence = null) {
+async function assertVisualDelta(beforeShot, afterShot) {
+  const beforeSamples = [beforeShot?.first, beforeShot?.second, ...(beforeShot?.samples ?? [])]
+    .filter((sample, index, all) => sample?.imageData && all.findIndex((candidate) => candidate?.seq === sample.seq) === index);
+  const afterSamples = [afterShot?.first, afterShot?.second, ...(afterShot?.samples ?? [])]
+    .filter((sample, index, all) => sample?.imageData && all.findIndex((candidate) => candidate?.seq === sample.seq) === index)
+    .filter((sample) => sample.frameCaptureAfterEpochDispatch !== false);
+  if (!beforeSamples.length || !afterSamples.length) {
+    throw new Error('visual delta requires saved before/after screenshot data');
+  }
+
+  const baseline = beforeShot?.second?.imageData ? beforeShot.second : beforeSamples[beforeSamples.length - 1];
+  const control = beforeSamples.length >= 2
+    ? await screenshotDelta(beforeSamples[0], beforeSamples[beforeSamples.length - 1])
+    : { changedRatio: 0, meanAbs: 0 };
+  let best = null;
+  for (const candidate of afterSamples) {
+    const stats = await screenshotDelta(baseline, candidate);
+    if (!best || stats.changedRatio > best.changedRatio || (
+      stats.changedRatio === best.changedRatio && stats.meanAbs > best.meanAbs
+    )) {
+      best = {
+        ...stats,
+        shot: candidate,
+      };
+    }
+  }
+  const minChangedRatio = Math.max(0.01, control.changedRatio * 3 + 0.0025);
+  const minMeanAbs = Math.max(1.0, control.meanAbs * 3 + 0.25);
+  const ok = best && best.changedRatio > minChangedRatio && best.meanAbs > minMeanAbs;
+  const diffPath = path.join(ARTIFACT_DIR, 'before-after-diff.png');
+  if (best) await screenshotDelta(baseline, best.shot, diffPath);
+  const firstAfterTs = afterSamples[0]?.ts || 0;
+  const selectedDeltaMs = firstAfterTs && best?.shot?.ts ? best.shot.ts - firstAfterTs : null;
+  const detail = best
+    ? `changed=${(best.changedRatio * 100).toFixed(2)}% mean_abs=${best.meanAbs.toFixed(2)} control_changed=${(control.changedRatio * 100).toFixed(2)}% control_mean_abs=${control.meanAbs.toFixed(2)} selected_seq=${best.shot.seq} selected_delta_ms=${selectedDeltaMs} diff=${path.relative(process.cwd(), diffPath)}`
+    : `no eligible post-HMR visual samples diff=${path.relative(process.cwd(), diffPath)}`;
+  record('mcp screenshot visual delta', ok ? 'pass' : 'fail', detail);
+  if (!ok) throw new Error(`visual delta too small: ${detail}`);
+  return {
+    changedRatio: best.changedRatio,
+    meanAbs: best.meanAbs,
+    controlChangedRatio: control.changedRatio,
+    controlMeanAbs: control.meanAbs,
+    selectedSeq: best.shot.seq,
+    selectedDeltaMs,
+    diffPath: path.relative(process.cwd(), diffPath),
+  };
+}
+
+async function assertMcpScreenshot(
+  label = 'mcp screenshot after hmr',
+  artifactPrefix = 'after-hmr',
+  waitEvidence = null,
+  options = {},
+) {
   const state = await ensureMcpAttached();
   let gateTokenConsumed = false;
   let verifiedGateCapture = null;
@@ -1426,7 +1480,10 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     shot.height >= 240 &&
     shot.bytes > 512 &&
     shot.visiblePixels > 500;
-  const deadline = Date.now() + 15000;
+  const minVisibleSamples = Math.max(2, Number(options.minVisibleSamples ?? 2));
+  const captureWindowMs = Math.max(1000, Number(options.captureWindowMs ?? 15000));
+  const sampleIntervalMs = Math.max(50, Number(options.sampleIntervalMs ?? 500));
+  const deadline = Date.now() + captureWindowMs;
   const samples = [];
   while (Date.now() < deadline) {
     const shot = await capture();
@@ -1434,14 +1491,14 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
     const eligibleVisible = samples
       .filter(isVisibleFrame)
       .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
-    if (eligibleVisible.length >= 2) break;
-    await sleep(500);
+    if (eligibleVisible.length >= minVisibleSamples) break;
+    await sleep(sampleIntervalMs);
   }
   const visible = samples
     .filter(isVisibleFrame)
     .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
   const first = visible[0] ?? samples[0] ?? { meta: {}, width: 0, height: 0, seq: 0, bytes: 0, visiblePixels: 0, meanLuma: 0 };
-  const second = visible.find((shot) => shot.seq > first.seq) ?? visible[1] ?? samples[samples.length - 1] ?? first;
+  const second = [...visible].reverse().find((shot) => shot.seq > first.seq) ?? visible[1] ?? samples[samples.length - 1] ?? first;
   const frameGateVerified = !waitEvidence || samples.some((sample) => sample.frameGateTokenVerified === true);
   const ok =
     isVisibleFrame(first) &&
@@ -1473,7 +1530,7 @@ async function assertMcpScreenshot(label = 'mcp screenshot after hmr', artifactP
       : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`,
   );
   if (!ok) throw new Error(`${label} did not return a valid frame`);
-  return { first, second };
+  return { first, second, samples: visible };
 }
 
 async function run() {
@@ -1570,9 +1627,20 @@ async function run() {
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
-  const afterShot = await assertMcpScreenshot('mcp screenshot after hmr', 'after-hmr', generatedDeviceResult.wait);
+  const afterShot = await assertMcpScreenshot(
+    'mcp screenshot after hmr',
+    'after-hmr',
+    generatedDeviceResult.wait,
+    CFG.captureArtifacts && baselineShot
+      ? {
+          minVisibleSamples: CFG.visualDeltaMinSamples,
+          captureWindowMs: CFG.visualDeltaWindowMs,
+          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+        }
+      : {},
+  );
   if (CFG.captureArtifacts && baselineShot) {
-    await assertVisualDelta(baselineShot.second, afterShot.second);
+    await assertVisualDelta(baselineShot, afterShot);
   }
 
   await sleep(2000);
