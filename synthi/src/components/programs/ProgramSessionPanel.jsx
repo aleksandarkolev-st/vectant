@@ -51,6 +51,17 @@ function stateTone(state) {
   }
 }
 
+function healthTone(state) {
+  switch (String(state || '').toLowerCase()) {
+    case 'ok':
+      return { background: 'color-mix(in srgb, #4ade80 16%, transparent)', color: 'var(--text-primary)' };
+    case 'unhealthy':
+      return { background: 'color-mix(in srgb, #ff5757 18%, transparent)', color: 'var(--text-primary)' };
+    default:
+      return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
+  }
+}
+
 export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 'Program Session' }) {
   const [activeTab, setActiveTab] = useState('app');
   const [session, setSession] = useState(null);
@@ -102,8 +113,12 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
     return () => window.clearInterval(timer);
   }, [load, sessionId, workspaceSlug]);
 
-  const appUrl = useMemo(() => getProgramSessionAppUrl(session?.webPort ?? null), [session?.webPort]);
+  const [appPortOverride, setAppPortOverride] = useState(null);
+  const effectiveWebPort = appPortOverride ?? session?.webPort ?? null;
+  const appUrl = useMemo(() => getProgramSessionAppUrl(effectiveWebPort), [effectiveWebPort]);
   const ports = Array.isArray(session?.activePorts) ? session.activePorts : [];
+  const healthState = session?.lastHealthState || 'unknown';
+  const isStarting = ['starting', 'restarting'].includes(String(session?.state || '').toLowerCase());
 
   const handleStop = useCallback(async () => {
     if (!workspaceSlug || !sessionId) return;
@@ -149,6 +164,14 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
                 {session.state}
               </span>
             ) : null}
+            <span
+              data-testid="health-badge"
+              data-health={healthState}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded uppercase tracking-wider"
+              style={healthTone(healthState)}
+            >
+              <HeartPulse className="w-3 h-3" /> {healthState}
+            </span>
           </div>
         </div>
 
@@ -207,9 +230,14 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
               sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads"
               allow="clipboard-read; clipboard-write"
             />
+          ) : isStarting ? (
+            <div data-testid="app-waiting" className="h-full flex flex-col items-center justify-center gap-2 text-sm px-6 text-center" style={{ color: 'var(--text-muted)' }}>
+              <Globe className="w-5 h-5 opacity-60" />
+              Waiting for the web server to start…
+            </div>
           ) : (
             <div className="h-full flex items-center justify-center text-sm px-6 text-center" style={{ color: 'var(--text-muted)' }}>
-              No web port is active for this session yet.
+              No web port is active for this session.
             </div>
           )
         ) : activeTab === 'logs' ? (
@@ -242,11 +270,33 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
             {ports.length === 0 ? (
               <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No exposed ports.</div>
             ) : ports.map((port) => (
-              <div key={port} className="rounded-md border px-3 py-2 flex items-center justify-between" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+              <div key={port} className="rounded-md border px-3 py-2 flex items-center justify-between gap-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                 <span className="text-sm">Port {port}</span>
-                {typeof session?.webPort === 'number' && port === session.webPort ? (
-                  <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, #60a5fa 18%, transparent)', color: 'var(--text-primary)' }}>App</span>
-                ) : null}
+                <div className="flex items-center gap-2">
+                  {port === effectiveWebPort ? (
+                    <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, #60a5fa 18%, transparent)', color: 'var(--text-primary)' }}>App</span>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid={`set-app-port-${port}`}
+                      onClick={() => { setAppPortOverride(port); setActiveTab('app'); }}
+                      className="h-7 px-2 rounded border text-[11px]"
+                      style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                    >
+                      Set as App
+                    </button>
+                  )}
+                  <a
+                    href={getProgramSessionAppUrl(port) || '#'}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid={`open-port-${port}`}
+                    className="h-7 px-2 rounded border text-[11px] inline-flex items-center"
+                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  >
+                    Open
+                  </a>
+                </div>
               </div>
             ))}
           </div>
@@ -258,7 +308,7 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
             </div>
             <div className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
               <div className="text-xs uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Last health signal</div>
-              <div className="mt-2 text-sm">{session?.lastHealthState || 'No health checks recorded yet'}</div>
+              <div className="mt-2 text-sm" data-testid="health-detail">{healthState === 'unknown' ? 'No health checks recorded yet' : healthState}</div>
             </div>
             <div className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
               <div className="text-xs uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Timestamps</div>

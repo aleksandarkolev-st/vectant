@@ -65,7 +65,7 @@ describe('ProgramSessionPanel', () => {
     h.fetchProgramSessionEvents.mockResolvedValue([
       { type: 'launch_ack', createdAt: '2026-06-03T12:01:00.000Z', data: { state: 'running' } },
     ]);
-    h.getProgramSessionAppUrl.mockReturnValue('http://localhost:1234/port/3000/');
+    h.getProgramSessionAppUrl.mockImplementation((port) => (typeof port === 'number' ? `http://localhost:1234/port/${port}/` : null));
     h.stopProgramSessionRuntime.mockResolvedValue({ id: 'ps-1', state: 'stopped', runtimeType: 'cli' });
     h.restartProgramSessionRuntime.mockResolvedValue({ id: 'ps-1', state: 'running', runtimeType: 'cli' });
   });
@@ -133,5 +133,48 @@ describe('ProgramSessionPanel', () => {
       stopButton.click();
     });
     expect(h.stopProgramSessionRuntime).toHaveBeenCalledWith('team', 'ps-1');
+  });
+
+  it('shows a waiting-for-web-server state on the App tab while starting with no web port', async () => {
+    h.fetchProgramSession.mockResolvedValue({ id: 'ps-1', state: 'starting', runtimeType: 'web', activePorts: [], webPort: null });
+    await act(async () => {
+      root.render(React.createElement(ProgramSessionPanel, { workspaceSlug: 'team', sessionId: 'ps-1', title: 'Web App' }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="app-waiting"]')).not.toBeNull();
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('lets the user set a detected port as the App surface', async () => {
+    h.fetchProgramSession.mockResolvedValue({ id: 'ps-1', state: 'running', runtimeType: 'web', activePorts: [3000, 5173], webPort: 3000 });
+    await act(async () => {
+      root.render(React.createElement(ProgramSessionPanel, { workspaceSlug: 'team', sessionId: 'ps-1', title: 'Web App' }));
+    });
+    await flush();
+
+    const portsTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Ports'));
+    await act(async () => { portsTab.click(); });
+
+    const setApp = container.querySelector('[data-testid="set-app-port-5173"]');
+    expect(setApp).not.toBeNull();
+    await act(async () => { setApp.click(); });
+    await flush();
+
+    const iframe = container.querySelector('iframe');
+    expect(iframe).not.toBeNull();
+    expect(iframe.getAttribute('src')).toContain('/port/5173/');
+  });
+
+  it('renders a health badge reflecting lastHealthState', async () => {
+    h.fetchProgramSession.mockResolvedValue({ id: 'ps-1', state: 'running', runtimeType: 'web', activePorts: [3000], webPort: 3000, lastHealthState: 'unhealthy' });
+    await act(async () => {
+      root.render(React.createElement(ProgramSessionPanel, { workspaceSlug: 'team', sessionId: 'ps-1', title: 'Web App' }));
+    });
+    await flush();
+
+    const badge = container.querySelector('[data-testid="health-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge.getAttribute('data-health')).toBe('unhealthy');
   });
 });
