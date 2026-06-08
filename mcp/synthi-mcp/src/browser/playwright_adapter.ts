@@ -2361,6 +2361,20 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
     }
 
+    function ariaStateDetail(el) {
+      if (!isElement(el)) return {};
+      const detail = {};
+      const checked = attr(el, 'aria-checked');
+      const pressed = attr(el, 'aria-pressed');
+      const expanded = attr(el, 'aria-expanded');
+      const selected = attr(el, 'aria-selected');
+      if (checked) detail.aria_checked = checked;
+      if (pressed) detail.aria_pressed = pressed;
+      if (expanded) detail.aria_expanded = expanded;
+      if (selected) detail.aria_selected = selected;
+      return detail;
+    }
+
     function fileDropDetail(el, extra) {
       const inputFiles = el && el.files && typeof el.files.length === 'number' ? Array.from(el.files) : [];
       const dataTransferFiles = extra && extra.dataTransfer && extra.dataTransfer.files
@@ -2446,6 +2460,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const now = Date.now();
       if (last && last.signature === signature && now - last.ts < 300) return;
       const send = () => {
+        if (['click', 'dblclick', 'contextmenu'].includes(action)) Object.assign(payload.detail, ariaStateDetail(replayEl));
         if (action === 'click') Object.assign(payload.detail, ariaOptionDetail(replayEl));
         const effects = changedEffectTexts(beforeEffects);
         if (effects.length > 0) payload.detail.observed_effects = effects;
@@ -2587,7 +2602,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (shouldSuppressPointerDragClick(target)) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [aria-selected], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'click', undefined, Object.assign({ click_event: true }, ariaOptionDetail(el)));
     }, true);
@@ -2596,7 +2611,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'dblclick', undefined, { dblclick_event: true, suppresses_previous_click: true });
     }, true);
@@ -2605,7 +2620,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
       emit(el, 'contextmenu', undefined, { contextmenu_event: true });
     }, true);
@@ -2615,7 +2630,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (!event.altKey) return;
-      const el = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el)) return;
       emit(el, 'hover', undefined, {
         hover_event: true,

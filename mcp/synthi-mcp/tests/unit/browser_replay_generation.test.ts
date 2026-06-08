@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generatePlaywrightScript } from "../../src/browser/trace.js";
+import { BrowserTraceRecorder, generatePlaywrightScript } from "../../src/browser/trace.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 
 describe("browser replay generation scenarios", () => {
@@ -39,6 +39,33 @@ describe("browser replay generation scenarios", () => {
 
     expect(generated.code).toContain("profile-card button[data-testid=\\\"save\\\"]");
     expect(generated.used_locators[0]?.fallbacks[0]?.kind).toBe("xpath");
+  });
+
+  it("prefers source identity locators and asserts custom ARIA state", () => {
+    const trace = new BrowserTraceRecorder();
+    const recorded = trace.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/widgets",
+      origin: "https://app.example.com",
+      action: "click",
+      element: {
+        tag: "div",
+        text: "Refresh",
+        source_id: "widgets.refresh",
+      },
+      detail: {
+        click_event: true,
+        aria_pressed: "true",
+        observed_effects: ["Panel refreshed"],
+      },
+    });
+
+    const generated = generatePlaywrightScript(trace.snapshot());
+
+    expect(recorded.locator_candidates?.[0]?.reason).toBe("source_identity");
+    expect(generated.code).toContain("page.locator(\"[data-synthi-source-id=\\\"widgets.refresh\\\"]\")");
+    expect(generated.code).toContain("await expect(target1).toHaveAttribute(\"aria-pressed\", \"true\");");
+    expect(generated.code).toContain("page.getByText(\"Panel refreshed\", { exact: true })");
   });
 
   it("rewrites locator expressions through frameLocator for iframe traces", () => {

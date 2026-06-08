@@ -391,6 +391,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
           lines.push(`  await ${target}.click();`);
         }
         pushOptionSelectionAssertion(lines, target, event);
+        pushAriaStateAssertions(lines, target, event);
         break;
       case "dblclick":
         if (isDownloadTrigger(event)) {
@@ -403,9 +404,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else {
           lines.push(`  await ${target}.dblclick();`);
         }
+        pushAriaStateAssertions(lines, target, event);
         break;
       case "contextmenu":
         lines.push(`  await ${target}.click({ button: 'right' });`);
+        pushAriaStateAssertions(lines, target, event);
         break;
       case "hover":
         lines.push(`  await ${target}.hover();`);
@@ -1015,6 +1018,21 @@ function pushOptionSelectionAssertion(lines: string[], target: string, event: Br
   if (!isAriaOptionSelectionEvent(event)) return;
   const selected = event.detail?.["selected"] !== false;
   lines.push(`  await expect(${target}).toHaveAttribute('aria-selected', ${JSON.stringify(String(selected))});`);
+}
+
+function pushAriaStateAssertions(lines: string[], target: string, event: BrowserTraceEvent): void {
+  const stateAttrs = [
+    ["aria_checked", "aria-checked"],
+    ["aria_pressed", "aria-pressed"],
+    ["aria_expanded", "aria-expanded"],
+    ["aria_selected", "aria-selected"],
+  ] as const;
+  for (const [detailKey, attrName] of stateAttrs) {
+    if (detailKey === "aria_selected" && isAriaOptionSelectionEvent(event)) continue;
+    const value = event.detail?.[detailKey];
+    if (typeof value !== "string" && typeof value !== "boolean") continue;
+    lines.push(`  await expect(${target}).toHaveAttribute(${JSON.stringify(attrName)}, ${JSON.stringify(String(value))});`);
+  }
 }
 
 function isAriaOptionSelectionEvent(event: BrowserTraceEvent): boolean {

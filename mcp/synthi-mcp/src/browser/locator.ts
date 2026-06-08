@@ -1,6 +1,7 @@
 import type { BrowserElementMetadata, LocatorCandidate } from "./types.js";
 
 const TEST_ID_CONFIDENCE = 0.99;
+const SOURCE_ID_CONFIDENCE = 0.975;
 const ROLE_CONFIDENCE = 0.96;
 const LABEL_CONFIDENCE = 0.94;
 const PLACEHOLDER_CONFIDENCE = 0.9;
@@ -55,6 +56,15 @@ export function rankedLocatorCandidates(element: BrowserElementMetadata | undefi
       locator: `page.getByTestId(${quote(element.test_id)})`,
       confidence: TEST_ID_CONFIDENCE,
       reason: "test_id",
+    });
+  }
+
+  if (element.source_id) {
+    candidates.push({
+      kind: "css",
+      locator: `page.locator(${quote(`[data-synthi-source-id="${cssAttributeValue(element.source_id)}"]`)})`,
+      confidence: SOURCE_ID_CONFIDENCE,
+      reason: "source_identity",
     });
   }
 
@@ -122,4 +132,8 @@ function dedupe(candidates: LocatorCandidate[]): LocatorCandidate[] {
 
 function quote(value: string): string {
   return JSON.stringify(value);
+}
+
+function cssAttributeValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
 }

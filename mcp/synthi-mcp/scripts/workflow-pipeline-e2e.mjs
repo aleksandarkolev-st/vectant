@@ -1332,6 +1332,71 @@ const CASES = [
     },
   },
   {
+    id: "custom-aria-widgets",
+    minSteps: 3,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Alerts enabled",
+      "Panel refreshed",
+      "Pipeline node selected",
+    ],
+    expectedReplayCode: [
+      "page.locator(\"[data-synthi-source-id=\\\"custom.alertSwitch\\\"]\")",
+      "page.locator(\"[data-synthi-source-id=\\\"custom.refreshPanel\\\"]\")",
+      "page.locator(\"[data-synthi-source-id=\\\"custom.pipelineNode\\\"]\")",
+      "await expect(target1).toHaveAttribute(\"aria-checked\", \"true\");",
+      "await expect(target3).toHaveAttribute(\"aria-selected\", \"true\");",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Custom ARIA Widgets Workflow",
+      body: [
+        "    <main class=\"widget-shell\">",
+        "      <h1>Custom ARIA Widgets Workflow</h1>",
+        "      <div role=\"switch\" tabindex=\"0\" aria-label=\"Alert routing\" aria-checked=\"false\" data-synthi-source-id=\"custom.alertSwitch\">Alert routing</div>",
+        "      <div tabindex=\"0\" aria-label=\"Refresh panel\" data-synthi-source-id=\"custom.refreshPanel\">Refresh</div>",
+        "      <div role=\"tree\" aria-label=\"Pipeline tree\">",
+        "        <div role=\"treeitem\" tabindex=\"0\" aria-selected=\"false\" data-synthi-source-id=\"custom.pipelineNode\">Pipeline node</div>",
+        "      </div>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".widget-shell { width: min(620px, calc(100vw - 48px)); }",
+        "[role='switch'], [role='treeitem'], [data-synthi-source-id='custom.refreshPanel'] { width: max-content; border: 1px solid #202020; background: #fff; padding: 10px 12px; cursor: pointer; user-select: none; }",
+        "[aria-checked='true'], [aria-selected='true'] { background: #202020; color: #fff; }",
+      ],
+      script: [
+        "const status = document.querySelector('#status');",
+        "const alertSwitch = document.querySelector('[data-synthi-source-id=\"custom.alertSwitch\"]');",
+        "const refresh = document.querySelector('[data-synthi-source-id=\"custom.refreshPanel\"]');",
+        "const node = document.querySelector('[data-synthi-source-id=\"custom.pipelineNode\"]');",
+        "alertSwitch.addEventListener('click', () => {",
+        "  const next = alertSwitch.getAttribute('aria-checked') !== 'true';",
+        "  alertSwitch.setAttribute('aria-checked', String(next));",
+        "  status.textContent = next ? 'Alerts enabled' : 'Alerts disabled';",
+        "});",
+        "refresh.addEventListener('click', () => {",
+        "  refresh.setAttribute('aria-pressed', 'true');",
+        "  status.textContent = 'Panel refreshed';",
+        "});",
+        "node.addEventListener('click', () => {",
+        "  node.setAttribute('aria-selected', 'true');",
+        "  status.textContent = 'Pipeline node selected';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.locator('[data-synthi-source-id="custom.alertSwitch"]').click();
+      await page.getByText("Alerts enabled").waitFor();
+      await page.locator('[data-synthi-source-id="custom.refreshPanel"]').click();
+      await page.getByText("Panel refreshed").waitFor();
+      await page.locator('[data-synthi-source-id="custom.pipelineNode"]').click();
+      await page.getByText("Pipeline node selected").waitFor();
+    },
+  },
+  {
     id: "range-slider",
     minSteps: 2,
     expectedActions: ["fill", "click"],
