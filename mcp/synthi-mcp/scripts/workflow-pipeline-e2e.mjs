@@ -2434,6 +2434,75 @@ const CASES = [
     },
   },
   {
+    id: "wheel-zoom-surface",
+    minSteps: 2,
+    expectedActions: ["scroll", "click"],
+    expectedReplayText: [
+      "Zoom 1.25 pan 0",
+      "Viewport zoom 1.25 pan 0",
+    ],
+    expectedReplayCode: [
+      "wheelBox1",
+      "page.mouse.move",
+      "page.keyboard.down(modifier)",
+      "page.mouse.wheel(0, -240)",
+    ],
+    liveReplayMode: "sameSession",
+    files: () => commonFiles({
+      title: "Wheel Zoom Surface Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Wheel Zoom Surface Workflow</h1>",
+        "      <section role=\"application\" aria-label=\"Revenue zoom surface\" data-testid=\"zoom-surface\" data-synthi-source-id=\"wheel.zoomSurface\">",
+        "        <div class=\"grid\">Revenue map</div>",
+        "      </section>",
+        "      <button type=\"button\" data-testid=\"inspect-viewport\" data-synthi-source-id=\"wheel.inspect\">Inspect viewport</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Zoom 1.00 pan 0</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "[data-testid='zoom-surface'] { width: 520px; height: 220px; overflow: hidden; border: 1px solid #222; background: #f7f7f4; display: grid; place-items: center; touch-action: none; }",
+        ".grid { width: 360px; height: 140px; display: grid; place-items: center; background: repeating-linear-gradient(90deg, #e3e3dc 0 1px, transparent 1px 36px), repeating-linear-gradient(0deg, #e3e3dc 0 1px, transparent 1px 28px); color: #171717; font-weight: 700; }",
+      ],
+      script: [
+        "const surface = document.querySelector('[data-testid=\"zoom-surface\"]');",
+        "const status = document.querySelector('#status');",
+        "let zoom = 1;",
+        "let pan = 0;",
+        "function render() {",
+        "  surface.style.setProperty('--zoom', zoom.toFixed(2));",
+        "  surface.querySelector('.grid').style.transform = `scale(${zoom.toFixed(2)}) translateY(${pan}px)`;",
+        "  status.textContent = `Zoom ${zoom.toFixed(2)} pan ${pan}`;",
+        "}",
+        "surface.addEventListener('wheel', (event) => {",
+        "  event.preventDefault();",
+        "  if (event.ctrlKey || event.metaKey) {",
+        "    zoom = Math.max(0.5, Math.min(2, zoom + (event.deltaY < 0 ? 0.25 : -0.25)));",
+        "  } else {",
+        "    pan += Math.round(event.deltaY / 20);",
+        "  }",
+        "  render();",
+        "}, { passive: false });",
+        "document.querySelector('[data-testid=\"inspect-viewport\"]').addEventListener('click', () => {",
+        "  status.textContent = `Viewport zoom ${zoom.toFixed(2)} pan ${pan}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const surface = page.getByTestId("zoom-surface");
+      const box = await surface.boundingBox();
+      if (!box) throw new Error("zoom surface was not visible");
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.keyboard.down("Control");
+      await page.mouse.wheel(0, -240);
+      await page.keyboard.up("Control");
+      await page.getByText("Zoom 1.25 pan 0").waitFor();
+      await page.getByRole("button", { name: "Inspect viewport" }).click();
+      await page.getByText("Viewport zoom 1.25 pan 0").waitFor();
+    },
+  },
+  {
     id: "download-link",
     minSteps: 1,
     expectedActions: ["click"],

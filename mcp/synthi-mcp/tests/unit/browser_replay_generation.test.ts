@@ -270,6 +270,38 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(page.getByText(\"Scrolled to approvals\", { exact: true })).toBeVisible();");
   });
 
+  it("generates wheel replay with pointer position and modifiers", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "zoom-surface",
+        event_seq: 1,
+        action: "scroll",
+        detail: {
+          wheel_event: true,
+          wheel_replay: "mouseWheel",
+          wheel_delta_x: 0,
+          wheel_delta_y: -240,
+          wheel_client_x_ratio: 0.5,
+          wheel_client_y_ratio: 0.5,
+          modifier_keys: { control: true },
+          modifiers: ["Control"],
+          observed_effects: ["Zoom 1.25 pan 0"],
+          element: { role: "application", name: "Revenue zoom surface", test_id: "zoom-surface", source_id: "src_zoom" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"zoom-surface\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("const wheelBox1 = await target1.boundingBox();");
+    expect(generated.code).toContain("await page.mouse.move(wheelBox1.x + wheelBox1.width * 0.5, wheelBox1.y + wheelBox1.height * 0.5);");
+    expect(generated.code).toContain("for (const modifier of [\"Control\"]) await page.keyboard.down(modifier);");
+    expect(generated.code).toContain("await page.mouse.wheel(0, -240);");
+    expect(generated.code).toContain("await expect(page.getByText(\"Zoom 1.25 pan 0\", { exact: true })).toBeVisible();");
+    expect(generated.code).not.toContain("element.scrollTo(position.left, position.top);");
+  });
+
   it("wraps download-triggering clicks with a Playwright download wait", () => {
     const generated = generatePlaywrightScript([
       event({

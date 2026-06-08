@@ -323,6 +323,9 @@ export class BrowserPlaywrightAdapter {
     if (action === "fill" && isKeyboardEditorFillEvent(event)) {
       return await this.replayKeyboardEditorFillAction(tab_id, event, selector, value);
     }
+    if (action === "scroll" && isWheelScrollEvent(event)) {
+      return await this.replayWheelScrollAction(tab_id, event, selector);
+    }
     if (action === "drag" && isCalibratedPointerDragEvent(event)) {
       return await this.replayCalibratedPointerDragAction(tab_id, event, selector, value);
     }
@@ -953,6 +956,34 @@ export class BrowserPlaywrightAdapter {
     }, position);
   }
 
+  private async replayWheelScrollAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const box = await target.boundingBox();
+    if (!box) throw new Error(`wheel_target_not_visible:${event.event_id}`);
+    const point = wheelPointForEvent(event);
+    await page.mouse.move(box.x + box.width * point.x, box.y + box.height * point.y);
+    const modifiers = wheelModifiersForEvent(event);
+    await withKeyboardModifiers(page, modifiers, async () => {
+      await page.mouse.wheel(wheelDeltaForEvent(event, "x"), wheelDeltaForEvent(event, "y"));
+    });
+    return {
+      ok: true,
+      action: "scroll",
+      tab_id,
+      url: page.url(),
+      detail: {
+        wheel_event: true,
+        wheel_delta_x: wheelDeltaForEvent(event, "x"),
+        wheel_delta_y: wheelDeltaForEvent(event, "y"),
+      },
+    };
+  }
+
   private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
     const bindingName = "__synthiRecordHumanAction";
     const annotationBindingName = "__synthiAnnotateHumanAction";
@@ -1304,7 +1335,39 @@ type ClickModifier = "Alt" | "Control" | "Meta" | "Shift";
 
 function needsEventAwareReplay(event: BrowserTraceEvent, action: BrowserActionKind): boolean {
   if (stringOpt(event.detail?.["frame_locator"])) return true;
+  if (action === "scroll" && isWheelScrollEvent(event)) return true;
   return (action === "click" || action === "dblclick" || action === "contextmenu") && clickModifiersForEvent(event).length > 0;
+}
+
+function isWheelScrollEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "scroll" && (
+    event.detail?.["wheel_event"] === true ||
+    event.detail?.["wheel_replay"] === "mouseWheel"
+  );
+}
+
+function wheelDeltaForEvent(event: BrowserTraceEvent, axis: "x" | "y"): number {
+  return Math.round(numberDetail(event, axis === "x" ? "wheel_delta_x" : "wheel_delta_y") ?? 0);
+}
+
+function wheelPointForEvent(event: BrowserTraceEvent): { x: number; y: number } {
+  return {
+    x: clampNumber(numberDetail(event, "wheel_client_x_ratio") ?? 0.5, 0, 1),
+    y: clampNumber(numberDetail(event, "wheel_client_y_ratio") ?? 0.5, 0, 1),
+  };
+}
+
+function wheelModifiersForEvent(event: BrowserTraceEvent): ClickModifier[] {
+  return clickModifiersForEvent(event);
+}
+
+async function withKeyboardModifiers(page: Page, modifiers: ClickModifier[], fn: () => Promise<void>): Promise<void> {
+  for (const modifier of modifiers) await page.keyboard.down(modifier);
+  try {
+    await fn();
+  } finally {
+    for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier).catch(() => undefined);
+  }
 }
 
 function clickOptionsForEvent(
@@ -1904,6 +1967,10 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const scrollPending = new WeakMap();
     const scrollPendingElements = new Set();
     const scrollBeforeEffects = new WeakMap();
+    const wheelPending = new WeakMap();
+    const wheelPendingElements = new Set();
+    const wheelBeforeEffects = new WeakMap();
+    const wheelAccumulated = new WeakMap();
     const keyboardTextPending = new WeakMap();
     const keyboardTextElements = new Set();
     const lastSent = new WeakMap();
@@ -2402,6 +2469,19 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return document.scrollingElement || document.documentElement;
     }
 
+    function wheelTargetFor(event) {
+      const target = event.target;
+      if (target === document || target === window || target === document.body || target === document.documentElement) {
+        return document.scrollingElement || document.documentElement;
+      }
+      if (isElement(target)) {
+        const durable = target.closest('[data-synthi-wheel-target], [data-synthi-source-id], [data-testid], [data-test], [role="application"], [role="region"], canvas');
+        if (isElement(durable)) return durable;
+        return target;
+      }
+      return document.scrollingElement || document.documentElement;
+    }
+
     function scrollDetail(el) {
       const viewport = el === document.scrollingElement || el === document.documentElement || el === document.body;
       const top = viewport ? window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0 : el.scrollTop || 0;
@@ -2415,6 +2495,32 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         scroll_width: Math.max(0, Math.round(el.scrollWidth || 0)),
         client_height: Math.max(0, Math.round(el.clientHeight || window.innerHeight || 0)),
         client_width: Math.max(0, Math.round(el.clientWidth || window.innerWidth || 0)),
+      };
+    }
+
+    function wheelDetail(event, el) {
+      const rect = pointerReplayRect(el);
+      const point = pointRatio(rect, event.clientX, event.clientY);
+      const modifiers = [];
+      if (event.ctrlKey) modifiers.push('Control');
+      if (event.metaKey) modifiers.push('Meta');
+      if (event.altKey) modifiers.push('Alt');
+      if (event.shiftKey) modifiers.push('Shift');
+      return {
+        wheel_event: true,
+        wheel_replay: 'mouseWheel',
+        wheel_delta_x: Math.round(Number(event.deltaX || 0)),
+        wheel_delta_y: Math.round(Number(event.deltaY || 0)),
+        wheel_delta_mode: Number(event.deltaMode || 0),
+        wheel_client_x_ratio: point.x,
+        wheel_client_y_ratio: point.y,
+        modifier_keys: {
+          alt: Boolean(event.altKey),
+          control: Boolean(event.ctrlKey),
+          meta: Boolean(event.metaKey),
+          shift: Boolean(event.shiftKey),
+        },
+        modifiers,
       };
     }
 
@@ -2780,7 +2886,22 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       emit(el, 'scroll', undefined, Object.assign(scrollDetail(el), { __before_effects: beforeEffects }));
     }
 
+    function emitWheel(el) {
+      const beforeEffects = wheelBeforeEffects.get(el) || visibleEffectTexts();
+      const accumulated = wheelAccumulated.get(el) || {};
+      wheelBeforeEffects.delete(el);
+      wheelAccumulated.delete(el);
+      emit(el, 'scroll', undefined, Object.assign(scrollDetail(el), accumulated, { __before_effects: beforeEffects }));
+    }
+
     function flushPendingScrolls() {
+      for (const el of Array.from(wheelPendingElements)) {
+        const timer = wheelPending.get(el);
+        if (timer) clearTimeout(timer);
+        wheelPending.delete(el);
+        wheelPendingElements.delete(el);
+        if (isElement(el)) emitWheel(el);
+      }
       for (const el of Array.from(scrollPendingElements)) {
         const timer = scrollPending.get(el);
         if (timer) clearTimeout(timer);
@@ -2915,10 +3036,39 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       emit(el, action, value, Object.assign({ change_event: true }, action === 'select' ? selectDetail(el) : {}));
     }, true);
 
+    document.addEventListener('wheel', (event) => {
+      const el = wheelTargetFor(event);
+      if (!isElement(el)) return;
+      if (el.closest('[data-synthi-workflow-toolbox]')) return;
+      const current = wheelAccumulated.get(el) || {};
+      const next = Object.assign({}, current, wheelDetail(event, el));
+      next.wheel_delta_x = Math.round(Number(current.wheel_delta_x || 0) + Number(event.deltaX || 0));
+      next.wheel_delta_y = Math.round(Number(current.wheel_delta_y || 0) + Number(event.deltaY || 0));
+      const modifiers = new Set([].concat(current.modifiers || [], next.modifiers || []));
+      next.modifiers = Array.from(modifiers);
+      next.modifier_keys = {
+        alt: Boolean(current.modifier_keys && current.modifier_keys.alt) || Boolean(event.altKey),
+        control: Boolean(current.modifier_keys && current.modifier_keys.control) || Boolean(event.ctrlKey),
+        meta: Boolean(current.modifier_keys && current.modifier_keys.meta) || Boolean(event.metaKey),
+        shift: Boolean(current.modifier_keys && current.modifier_keys.shift) || Boolean(event.shiftKey),
+      };
+      wheelAccumulated.set(el, next);
+      if (!wheelPendingElements.has(el)) wheelBeforeEffects.set(el, visibleEffectTexts());
+      wheelPendingElements.add(el);
+      const previous = wheelPending.get(el);
+      if (previous) clearTimeout(previous);
+      wheelPending.set(el, setTimeout(() => {
+        wheelPending.delete(el);
+        wheelPendingElements.delete(el);
+        emitWheel(el);
+      }, 200));
+    }, true);
+
     document.addEventListener('scroll', (event) => {
       const el = scrollTargetFor(event);
       if (!isElement(el)) return;
       if (el.closest('[data-synthi-workflow-toolbox]')) return;
+      if (wheelPendingElements.has(el)) return;
       const previous = scrollPending.get(el);
       if (previous) clearTimeout(previous);
       if (!scrollPendingElements.has(el)) scrollBeforeEffects.set(el, visibleEffectTexts());

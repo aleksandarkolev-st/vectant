@@ -583,14 +583,18 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         break;
       }
       case "scroll": {
-        const position = scrollPositionFor(event);
-        lines.push(`  await ${target}.evaluate((element, position) => {`);
-        lines.push("    if (element === document.body || element === document.documentElement) {");
-        lines.push("      window.scrollTo(position.left, position.top);");
-        lines.push("    } else {");
-        lines.push("      element.scrollTo(position.left, position.top);");
-        lines.push("    }");
-        lines.push(`  }, ${JSON.stringify(position)});`);
+        if (isWheelScrollEvent(event)) {
+          pushWheelScrollAction(lines, pageVar, target, event, targetSeq);
+        } else {
+          const position = scrollPositionFor(event);
+          lines.push(`  await ${target}.evaluate((element, position) => {`);
+          lines.push("    if (element === document.body || element === document.documentElement) {");
+          lines.push("      window.scrollTo(position.left, position.top);");
+          lines.push("    } else {");
+          lines.push("      element.scrollTo(position.left, position.top);");
+          lines.push("    }");
+          lines.push(`  }, ${JSON.stringify(position)});`);
+        }
         break;
       }
       case "fill":
@@ -1406,6 +1410,71 @@ function pushOptionSelectionAssertion(lines: string[], target: string, event: Br
   if (!isAriaOptionSelectionEvent(event)) return;
   const selected = event.detail?.["selected"] !== false;
   lines.push(`  await expect(${target}).toHaveAttribute('aria-selected', ${JSON.stringify(String(selected))});`);
+}
+
+function pushWheelScrollAction(
+  lines: string[],
+  pageVar: string,
+  target: string,
+  event: BrowserTraceEvent,
+  ordinal: number
+): void {
+  const box = `wheelBox${ordinal}`;
+  const point = wheelPointForEvent(event);
+  const delta = wheelDeltaForEvent(event);
+  const modifiers = wheelModifiersForEvent(event);
+  lines.push(`  const ${box} = await ${target}.boundingBox();`);
+  lines.push(`  if (!${box}) throw new Error(${JSON.stringify(`wheel target not visible for ${event.event_id}`)});`);
+  lines.push(`  await ${pageVar}.mouse.move(${box}.x + ${box}.width * ${clampedRatioLiteral(point.x)}, ${box}.y + ${box}.height * ${clampedRatioLiteral(point.y)});`);
+  if (modifiers.length > 0) {
+    lines.push(`  for (const modifier of ${JSON.stringify(modifiers)}) await ${pageVar}.keyboard.down(modifier);`);
+    lines.push("  try {");
+    lines.push(`    await ${pageVar}.mouse.wheel(${delta.x}, ${delta.y});`);
+    lines.push("  } finally {");
+    lines.push(`    for (const modifier of ${JSON.stringify([...modifiers].reverse())}) await ${pageVar}.keyboard.up(modifier).catch(() => undefined);`);
+    lines.push("  }");
+  } else {
+    lines.push(`  await ${pageVar}.mouse.wheel(${delta.x}, ${delta.y});`);
+  }
+}
+
+function isWheelScrollEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "scroll" && (
+    event.detail?.["wheel_event"] === true ||
+    event.detail?.["wheel_replay"] === "mouseWheel"
+  );
+}
+
+function wheelDeltaForEvent(event: BrowserTraceEvent): { x: number; y: number } {
+  return {
+    x: Math.round(numericDetail(event, "wheel_delta_x") ?? 0),
+    y: Math.round(numericDetail(event, "wheel_delta_y") ?? 0),
+  };
+}
+
+function wheelPointForEvent(event: BrowserTraceEvent): { x: number; y: number } {
+  return {
+    x: numericDetail(event, "wheel_client_x_ratio") ?? 0.5,
+    y: numericDetail(event, "wheel_client_y_ratio") ?? 0.5,
+  };
+}
+
+function wheelModifiersForEvent(event: BrowserTraceEvent): Array<"Alt" | "Control" | "Meta" | "Shift"> {
+  const allowed = new Set(["Alt", "Control", "Meta", "Shift"]);
+  const rawModifiers = event.detail?.["modifiers"];
+  if (Array.isArray(rawModifiers)) {
+    return rawModifiers.filter((value): value is "Alt" | "Control" | "Meta" | "Shift" =>
+      typeof value === "string" && allowed.has(value)
+    );
+  }
+  const raw = event.detail?.["modifier_keys"];
+  const keys = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  return [
+    keys["alt"] === true ? "Alt" : undefined,
+    keys["control"] === true ? "Control" : undefined,
+    keys["meta"] === true ? "Meta" : undefined,
+    keys["shift"] === true ? "Shift" : undefined,
+  ].filter((value): value is "Alt" | "Control" | "Meta" | "Shift" => value !== undefined);
 }
 
 function ariaListboxLocatorExpressionsForEvent(event: BrowserTraceEvent, pageVar: string): string[] {

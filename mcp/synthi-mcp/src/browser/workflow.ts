@@ -1319,6 +1319,13 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Open Shadow DOM can use normal Playwright locator piercing where the locator remains stable."],
     };
   }
+  if (action === "scroll" && isWheelScrollEvent(event)) {
+    return {
+      kind: "dom",
+      replay: "durable",
+      notes: ["Wheel replay preserves pointer-relative deltas and keyboard modifiers for pan/zoom surfaces."],
+    };
+  }
   if (eventIsCanvasCoordinateOnly(event)) {
     return {
       kind: "canvas",
@@ -1473,6 +1480,13 @@ function isKeyboardTextEntryEvent(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && (
     event.detail?.["keyboard_text_entry"] === true ||
     event.detail?.["text_entry_mode"] === "keyboardInsert"
+  );
+}
+
+function isWheelScrollEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "scroll" && (
+    event.detail?.["wheel_event"] === true ||
+    event.detail?.["wheel_replay"] === "mouseWheel"
   );
 }
 
