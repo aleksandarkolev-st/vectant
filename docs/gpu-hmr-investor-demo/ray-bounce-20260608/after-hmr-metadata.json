@@ -1,0 +1,78 @@
+{
+  "first": {
+    "meta": {
+      "w": 800,
+      "h": 600,
+      "ts": 1780916730408,
+      "seq": 652,
+      "original_w": 800,
+      "original_h": 600,
+      "dpr": 1,
+      "viewport": {
+        "w": 800,
+        "h": 600,
+        "dpr": 1
+      },
+      "brokered": true,
+      "broker_frame": {
+        "type": "frame",
+        "event_id": 241,
+        "session_id": "investor-ray-bounce-gpu-hmr-20260608",
+        "frame_seq": 652,
+        "frame_ts_ms": 1780916730408,
+        "ingest_ts_ms": 1780916730428,
+        "viewport": {
+          "w": 800,
+          "h": 600,
+          "dpr": 1
+        },
+        "is_keyframe": false
+      },
+      "mimeType": "image/png"
+    },
+    "width": 800,
+    "height": 600,
+    "seq": 652,
+    "bytes": 114243,
+    "visiblePixels": 210309,
+    "meanLuma": 20.343836236243686
+  },
+  "second": {
+    "meta": {
+      "w": 800,
+      "h": 600,
+      "ts": 1780916730934,
+      "seq": 668,
+      "original_w": 800,
+      "original_h": 600,
+      "dpr": 1,
+      "viewport": {
+        "w": 800,
+        "h": 600,
+        "dpr": 1
+      },
+      "brokered": true,
+      "broker_frame": {
+        "type": "frame",
+        "event_id": 243,
+        "session_id": "investor-ray-bounce-gpu-hmr-20260608",
+        "frame_seq": 668,
+        "frame_ts_ms": 1780916730934,
+        "ingest_ts_ms": 1780916730948,
+        "viewport": {
+          "w": 800,
+          "h": 600,
+          "dpr": 1
+        },
+        "is_keyframe": false
+      },
+      "mimeType": "image/png"
+    },
+    "width": 800,
+    "height": 600,
+    "seq": 668,
+    "bytes": 114210,
+    "visiblePixels": 210289,
+    "meanLuma": 20.34428385832679
+  }
+}
