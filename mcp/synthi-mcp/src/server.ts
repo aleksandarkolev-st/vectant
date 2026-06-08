@@ -181,7 +181,7 @@ const TOOLS = [
             "gpu-hmr-host-preservation-proven",
             "gpu-hmr-full-runtime-proven",
           ],
-          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness.",
+          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. Raw GPU telemetry is returned as gpu_proof_telemetry; gpu_proof is only returned after a requested proof state passes validation.",
         },
         requireGpuFullRuntimeProof: {
           type: "boolean",

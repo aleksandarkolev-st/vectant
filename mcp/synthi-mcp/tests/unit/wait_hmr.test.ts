@@ -449,7 +449,7 @@ describe("synthi_wait_hmr", () => {
     expect(body.detail?.reason).toContain("post-reload device dispatch rejected");
   });
 
-  it("returns the latest GPU proof state with wait_hmr", async () => {
+  it("returns unvalidated GPU proof telemetry with wait_hmr when no proof state is requested", async () => {
     const fake = installFakeAttached(async () => {
       fake.feedHmr({
         status: "gpu-proof-state",
@@ -469,11 +469,17 @@ describe("synthi_wait_hmr", () => {
     expect(fake).toBeDefined();
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as {
-      gpu_proof?: { resultState?: string; degradedState?: string; proofId?: string };
+      gpu_proof?: { resultState?: string };
+      gpu_proof_telemetry?: { resultState?: string; degradedState?: string; proofId?: string };
+      gpu_proof_validation?: { validated?: boolean; satisfied?: boolean; reason?: string };
     };
-    expect(body.gpu_proof?.resultState).toBe("gpu-hmr-symbol-bound");
-    expect(body.gpu_proof?.degradedState).toBe("gpu-hmr-dispatch-unobserved");
-    expect(body.gpu_proof?.proofId).toBe("gpu-proof:abc");
+    expect(body.gpu_proof).toBeUndefined();
+    expect(body.gpu_proof_telemetry?.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(body.gpu_proof_telemetry?.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(body.gpu_proof_telemetry?.proofId).toBe("gpu-proof:abc");
+    expect(body.gpu_proof_validation?.validated).toBe(false);
+    expect(body.gpu_proof_validation?.satisfied).toBe(false);
+    expect(body.gpu_proof_validation?.reason).toBe("proof_state_not_requested");
   });
 
   it("fails wait_hmr when requested GPU proof is stronger than observed", async () => {

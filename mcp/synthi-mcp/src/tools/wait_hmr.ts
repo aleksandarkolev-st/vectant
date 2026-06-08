@@ -97,9 +97,16 @@ function responseWithGpuProofValidation(
   requiredState: string | null
 ): ToolResponse {
   if (proof !== null) {
-    payload.gpu_proof = gpuProofPayload(proof);
+    payload.gpu_proof_telemetry = gpuProofPayload(proof);
   }
   if (requiredState === null) {
+    if (proof !== null) {
+      payload.gpu_proof_validation = {
+        validated: false,
+        satisfied: false,
+        reason: "proof_state_not_requested",
+      };
+    }
     return jsonResponse(payload);
   }
   if (!isKnownGpuHmrProofState(requiredState)) {
@@ -116,6 +123,9 @@ function responseWithGpuProofValidation(
   }
   if (!validation.satisfied) {
     return errorResponse("gpu_hmr_proof_insufficient", payload);
+  }
+  if (proof !== null) {
+    payload.gpu_proof = gpuProofPayload(proof);
   }
   return jsonResponse(payload);
 }
