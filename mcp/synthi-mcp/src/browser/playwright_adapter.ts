@@ -2065,6 +2065,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         if (type === 'checkbox') return 'checkbox';
         if (type === 'radio') return 'radio';
         if (type === 'range') return 'slider';
+        if (type === 'file') return '';
         if (['button', 'submit', 'reset'].includes(type)) return 'button';
         return 'textbox';
       }

@@ -363,6 +363,15 @@ function updateBridgeState(
   }
 }
 
+function consentForPanelState(url: string | null | undefined) {
+  if (!url) return undefined;
+  try {
+    return browserBroker.getConsent(url)[0];
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildBrowserWorkflowPanelState(
   bridgeState: Partial<BrowserWorkflowBridgeState> = {}
 ): Record<string, unknown> {
@@ -375,7 +384,7 @@ export function buildBrowserWorkflowPanelState(
   const workflow = browserBroker.compiledWorkflow();
   const prefixPlan = browserBroker.workflowReplayPlan("prefixOnly");
   const workspaceUrl = selected?.url ?? runtime?.workspace_url ?? null;
-  const consent = workspaceUrl ? browserBroker.getConsent(workspaceUrl)[0] : undefined;
+  const consent = consentForPanelState(workspaceUrl);
   const screenshotAllowed = consent?.status === "granted" && consent.screenshot === "granted";
   const observed = Boolean(bridgeState.lastObserveAt) || Boolean(selected && screenshotAllowed);
   const traceReady = workflow.contract.steps.length > 0;

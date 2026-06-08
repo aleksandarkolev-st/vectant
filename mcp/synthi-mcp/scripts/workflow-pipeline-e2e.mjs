@@ -2010,6 +2010,62 @@ const CASES = [
     },
   },
   {
+    id: "hidden-file-input-upload",
+    minSteps: 2,
+    expectedActions: ["drag", "click"],
+    expectedReplayText: [
+      "Queued 1 evidence file",
+    ],
+    expectedReplayCode: [
+      "process.env[\"CHOOSE_EVIDENCE_FILE\"]",
+      "await expect(target1).toBeAttached();",
+      "setInputFiles(filePath",
+    ],
+    forbiddenReplayCode: [
+      "await expect(target1).toBeVisible();",
+    ],
+    files: () => commonFiles({
+      title: "Hidden File Input Upload Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Hidden File Input Upload Workflow</h1>",
+        "      <label class=\"upload-proxy\" for=\"hidden-evidence\" data-testid=\"upload-proxy\" data-synthi-source-id=\"hiddenUpload.proxy\">Choose evidence</label>",
+        "      <input id=\"hidden-evidence\" class=\"sr-upload\" type=\"file\" aria-label=\"Upload evidence\" data-synthi-source-id=\"hiddenUpload.input\">",
+        "      <button type=\"button\" data-testid=\"submit-hidden-upload\" data-synthi-source-id=\"hiddenUpload.submit\">Submit hidden upload</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        ".upload-proxy { display: inline-grid; place-items: center; width: max-content; min-height: 42px; border: 0; background: #202020; color: white; padding: 0 14px; cursor: pointer; }",
+        ".sr-upload { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; clip-path: inset(50%); overflow: hidden; }",
+      ],
+      script: [
+        "const input = document.querySelector('#hidden-evidence');",
+        "const status = document.querySelector('#status');",
+        "input.addEventListener('change', () => {",
+        "  status.textContent = `Queued ${input.files.length} evidence file`;",
+        "});",
+        "document.querySelector('[data-testid=\"submit-hidden-upload\"]').addEventListener('click', () => {",
+        "  status.textContent = `Submitted hidden ${input.files.length} file`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    replayEnv: async ({ caseDir }) => {
+      const fixturePath = path.join(caseDir, "upload-evidence.txt");
+      await writeFile(fixturePath, "workflow hidden upload fixture\n");
+      return { CHOOSE_EVIDENCE_FILE: fixturePath };
+    },
+    teach: async (page, { caseDir }) => {
+      const fixturePath = path.join(caseDir, "upload-evidence.txt");
+      await writeFile(fixturePath, "workflow hidden upload fixture\n");
+      await page.getByLabel("Upload evidence").setInputFiles(fixturePath);
+      await page.getByText("Queued 1 evidence file").waitFor();
+      await page.getByRole("button", { name: "Submit hidden upload" }).click();
+      await page.getByText("Submitted hidden 1 file").waitFor();
+    },
+  },
+  {
     id: "hover-menu",
     minSteps: 2,
     expectedActions: ["hover", "click"],

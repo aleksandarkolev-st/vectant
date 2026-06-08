@@ -174,6 +174,29 @@ describe("browser workflow bridge", () => {
     expect(serialized).not.toMatch(/local chrome|desktop extension|C:\\\\/i);
   });
 
+  it("keeps panel state safe when the selected tab has no consentable origin", async () => {
+    const workspaceUrl = "https://app.example.test/workspace";
+    browserBroker.requestConsent(workspaceUrl, "granted", "unit", { screenshot: true, diagnostics: true });
+    browserBroker.registerTabs([{ tab_id: "tab-blank", url: "about:blank", title: "Blank", active: true }]);
+    browserBroker.selectTab("tab-blank");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: workspaceUrl,
+      adapter: "hosted-playwright-cdp",
+    });
+
+    const state = buildBrowserWorkflowPanelState() as {
+      runtime: { status: string };
+      observe: { status: string; selectedTabId: string | null; consent: unknown };
+    };
+    expect(state.runtime.status).toBe("attached");
+    expect(state.observe.status).toBe("needsConsent");
+    expect(state.observe.selectedTabId).toBe("tab-blank");
+    expect(state.observe.consent).toBeNull();
+  });
+
   it("dispatches stale panel action aliases to current MCP workflow tools", async () => {
     seedSaveWorkflow();
     bridge = startBrowserWorkflowBridge({ port: 0 });

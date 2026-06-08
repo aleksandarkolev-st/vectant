@@ -871,6 +871,8 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.code).toContain("const filePath1 = process.env[\"SYNTHI_FILE_DROP_1\"] ?? \"tests/fixtures/upload.txt\";");
+    expect(generated.code).toContain("await expect(target1).toBeAttached();");
+    expect(generated.code).not.toContain("await expect(target1).toBeVisible();");
     expect(generated.code).toContain("await target1.setInputFiles(filePath1);");
     expect(generated.code).not.toContain("await dropFile(page, target1");
   });

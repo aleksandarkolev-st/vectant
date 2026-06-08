@@ -400,7 +400,11 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     targetSeq += 1;
     const target = `target${targetSeq}`;
     lines.push(`  const ${target} = await firstVisible(${locatorExpressions.join(", ")});`);
-    lines.push(`  await expect(${target}).toBeVisible();`);
+    if (allowsHiddenReplayTarget(event)) {
+      lines.push(`  await expect(${target}).toBeAttached();`);
+    } else {
+      lines.push(`  await expect(${target}).toBeVisible();`);
+    }
     let effectValueExpr: string | undefined;
     if ((mode === "prefixOnly" || mode === "coldSession") && firstMutationStepId === event.event_id) {
       lines.push(`  // Mutation boundary: ${event.event_id}. Prefix-only replay verifies reachability but does not commit this action.`);
@@ -1373,6 +1377,10 @@ function isFileInputDrop(event: BrowserTraceEvent): boolean {
   if (!input) return event.detail?.["file_input"] === true;
   return event.detail?.["file_input"] === true ||
     (input.tag?.toLowerCase() === "input" && input.type?.toLowerCase() === "file");
+}
+
+function allowsHiddenReplayTarget(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "filedrop" && isFileInputDrop(event);
 }
 
 function elementForEvent(event: BrowserTraceEvent): BrowserElementMetadata | undefined {
