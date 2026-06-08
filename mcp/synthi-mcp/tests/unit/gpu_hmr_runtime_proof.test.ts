@@ -5721,6 +5721,23 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
   });
 
+  it("keeps dispatch ordering and artifact identity on ABI-degraded dispatch proof", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      ...safeDispatchProof({ dispatchTimestamp: 1779980000100 }),
+      abiProof: null,
+      abiProven: false,
+      abiProofEvidenceRefs: [],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.dispatchTimestamps).toEqual([1779980000100]);
+    expect(proof.runtimeArtifactIds).toContain(TEST_ARTIFACT_ID);
+    expect(proof.runtimeArtifactId).toBe(TEST_ARTIFACT_ID);
+    expect(proof.dispatchId).toBe("dispatch:test:1");
+    expect(proof.epoch).toBe("3");
+  });
+
   it("does not prove dispatch safety from an ABI boolean without proof evidence refs", () => {
     const proof = classifyGpuHmrDispatchProof({
       ...safeDispatchProof(),
