@@ -111,6 +111,11 @@ export async function launchInstalledProgram({ workspaceSlug, sessionId, config,
   return data.session || null;
 }
 
+/**
+ * Write starter files into a workspace's repo dir (only-missing, path-guarded by
+ * the collab-server). Returns the collab response verbatim: `{ written, skipped }`.
+ * `userId` must be the IDE's workspaceUserId so files land where the editor reads.
+ */
 export async function scaffoldProgram({ workspaceSlug, userId = '', files = [] }) {
   return requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/scaffold`, {
     method: 'POST',
