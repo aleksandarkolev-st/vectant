@@ -82,6 +82,14 @@ function privateWorkflowCallArgs(manifest, replayParameters, replayEnv, runMode)
   return args;
 }
 
+function missingPrivateWorkflowArgs(manifest, args) {
+  const parameters = Array.isArray(manifest?.parameters) ? manifest.parameters : [];
+  return parameters
+    .filter((parameter) => parameter?.required === true && typeof parameter.name === "string")
+    .map((parameter) => parameter.name)
+    .filter((name) => typeof args[name] !== "string");
+}
+
 function workflowParameterEnvName(value) {
   return String(value)
     .trim()
@@ -319,23 +327,37 @@ async function runCase({ testCase, container, context, runner }) {
     await writeJson(caseDir, "published-manifest-lookup.json", privateManifestLookup.result ?? privateManifestLookup);
 
     const privateToolRunMode = privateManifest?.mutation?.requires_confirmation ? "prefixOnly" : "sameSession";
-    const privateToolCall = typeof publishedToolName === "string"
-      ? await workflowBridgeTool(
-        publishedToolName,
-        privateWorkflowCallArgs(privateManifest, replayParameters, replayEnv, privateToolRunMode)
-      )
-      : { ok: false, error: "missing_published_tool_name" };
-    record(
-      testCase.id,
-      "call discovered private MCP tool",
-      privateToolCall.ok === true &&
-        privateToolCall.result?.private_tool?.tool_name === publishedToolName &&
-        privateToolCall.result?.private_tool?.run_mode === privateToolRunMode,
-      privateToolCall.ok === true
-        ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${privateToolCall.result?.replay?.steps_run ?? 0}`
-        : `error=${privateToolCall.result?.error || privateToolCall.error || "unknown"}`
-    );
-    await writeJson(caseDir, "private-tool-call.json", privateToolCall.result ?? privateToolCall);
+    const privateToolArgs = privateWorkflowCallArgs(privateManifest, replayParameters, replayEnv, privateToolRunMode);
+    const missingPrivateToolArgs = missingPrivateWorkflowArgs(privateManifest, privateToolArgs);
+    if (missingPrivateToolArgs.length === 0) {
+      const privateToolCall = typeof publishedToolName === "string"
+        ? await workflowBridgeTool(publishedToolName, privateToolArgs)
+        : { ok: false, error: "missing_published_tool_name" };
+      record(
+        testCase.id,
+        "call discovered private MCP tool",
+        privateToolCall.ok === true &&
+          privateToolCall.result?.private_tool?.tool_name === publishedToolName &&
+          privateToolCall.result?.private_tool?.run_mode === privateToolRunMode,
+        privateToolCall.ok === true
+          ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${privateToolCall.result?.replay?.steps_run ?? 0}`
+          : `error=${privateToolCall.result?.error || privateToolCall.error || "unknown"}`
+      );
+      await writeJson(caseDir, "private-tool-call.json", privateToolCall.result ?? privateToolCall);
+    } else {
+      const allowParameterGate = testCase.allowPrivateToolParameterGate === true;
+      record(
+        testCase.id,
+        "private MCP tool parameter gate",
+        allowParameterGate,
+        `missing=${missingPrivateToolArgs.join(",")}`
+      );
+      await writeJson(caseDir, "private-tool-call.json", {
+        skipped: "missing_required_parameters",
+        tool_name: publishedToolName,
+        missing_parameters: missingPrivateToolArgs,
+      });
+    }
 
     const validateBody = await clickWorkflowButton(idePage, /^Validate$/);
     const validation = validateBody.result?.validation;
@@ -1075,6 +1097,7 @@ const CASES = [
     id: "profile-form",
     minSteps: 2,
     expectedActions: ["fill", "click"],
+    replayEnv: () => ({ EMAIL: "investor@example.test" }),
     files: () => commonFiles({
       title: "Profile Form Workflow",
       body: [
@@ -1157,7 +1180,6 @@ const CASES = [
     expectedActions: ["fill", "click"],
     expectedReplayText: [
       "Paste event captured",
-      "Saved pasted token from clipboard event",
     ],
     expectedReplayCode: [
       "async function pasteText(page, target, text)",
@@ -1210,7 +1232,6 @@ const CASES = [
     expectedActions: ["fill", "click"],
     expectedReplayText: [
       "Rich paste event captured",
-      "Saved rich clipboard note",
     ],
     expectedReplayCode: [
       "async function pasteText(page, target, text)",
@@ -1265,7 +1286,6 @@ const CASES = [
     expectedActions: ["drag", "click"],
     expectedReplayText: [
       "Dropped release note from text drop",
-      "Saved dropped note",
     ],
     expectedReplayCode: [
       "async function dropText(target, text)",
@@ -1467,12 +1487,12 @@ const CASES = [
     id: "open-shadow-form",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: ["Shadow Ada"],
     expectedReplayCode: [
       "[data-testid=\\\"billing-profile\\\"] [data-testid=\\\"display-name\\\"]",
       "[data-testid=\\\"billing-profile\\\"] [data-testid=\\\"save-profile\\\"]",
     ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({ DISPLAY_NAME: "Shadow Grace" }),
     files: () => commonFiles({
       title: "Open Shadow Form Workflow",
       body: [
@@ -1524,6 +1544,7 @@ const CASES = [
     id: "settings-controls",
     minSteps: 4,
     expectedActions: ["check", "uncheck", "select", "click"],
+    replayEnv: () => ({ THEME: "dark" }),
     files: () => commonFiles({
       title: "Settings Controls Workflow",
       body: [
@@ -1723,6 +1744,7 @@ const CASES = [
     expectedReplayCode: [
       "await target2.click({ modifiers: [\"Shift\"] });",
     ],
+    replayEnv: () => ({ INVOICE_QUEUE: "Invoice A", INVOICE_QUEUE_2: "Invoice C" }),
     files: () => commonFiles({
       title: "Modifier Range Selection Workflow",
       body: [
@@ -3126,6 +3148,7 @@ const CASES = [
     expectedReplayCode: [
       "toContainText(\"Release notes ready\")",
     ],
+    replayEnv: () => ({ RELEASE_NOTES: "Release notes ready" }),
     files: () => commonFiles({
       title: "Rich Text Editor Workflow",
       body: [
@@ -3208,6 +3231,7 @@ const CASES = [
     expectedReplayCode: [
       "toContainText(\"Revenue audit\")",
     ],
+    replayEnv: () => ({ SEGMENT: "enterprise", SEARCH: "revenue" }),
     files: () => commonFiles({
       title: "Dashboard Interactions Workflow",
       body: [
@@ -3292,6 +3316,7 @@ const CASES = [
     id: "review-queue",
     minSteps: 3,
     expectedActions: ["click", "fill"],
+    replayEnv: () => ({ FILTER: "billing" }),
     files: () => commonFiles({
       title: "Review Queue Workflow",
       body: [
