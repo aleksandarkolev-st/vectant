@@ -285,6 +285,42 @@ User lifted the disk gate to rebuild + verify. Freed ~18.5 GB of Docker build ca
 
 ---
 
+# Task: Default Marketplace Programs + Programs Panel UI Redesign (2026-06-09, tool-compatibility)
+
+Spec: `docs/superpowers/specs/2026-06-09-default-marketplace-programs-and-ui-design.md`. Plan: `docs/superpowers/plans/2026-06-09-default-marketplace-programs-and-ui-plan.md`. Executed via subagent-driven development (fresh implementer per task + spec-compliance + code-quality review each).
+
+## Tasks (TDD, commit per task)
+- [x] T1 `defaultPrograms.js` — `DEFAULT_PROGRAM_RECIPES` (7: web×4 + background + tui + devcontainer) + `buildDefaultPrograms()`. Committed `777e030e`; 3 tests.
+- [x] T2 `ensureDefaultPrograms(prisma)` — idempotent upsert (publisher `vectant`, verified true; `update` omits `installCount` to preserve reputation). Committed `31d59700` (+lint `0ab9c7bb`); 5 tests.
+- [x] T3 Seed route `POST /api/programs/seed-defaults` — auth-gated + `ENABLE_PROGRAM_SEED=1`-gated (404 when off, 401 unauth). Committed `55cd922a`; 3 tests.
+- [x] T4 Marketplace card redesign + Verified badge (`verified-badge-<pkg>`) + descriptions. Committed `57c1cb79`; +1 UI test.
+- [x] T5 Cohesive panel restyle — shared `SectionHeader`, hover chrome, consistent empty states. Committed `899d492a` (+Marketplace count alignment fix `be7d504c`).
+- [x] T6 Regression + (live seed/verify PENDING) + review.
+
+## Verification
+- Targeted `src/lib/programs` + `api/programs` + `api/workspace/[slug]/programs` + `components/programs` → 11 files / **103 pass**.
+- Backend `node --test programRuntimeManager.test.js` → **21 pass** (unchanged — no backend changes).
+- Full `npx vitest run` → **290 pass** (37 files; only the known empty `preview-store.test.js` stub tolerated).
+- `prisma generate` ✔ + `db push` "already in sync" (NO schema change — defaults reuse the Phase-5 `MarketplaceProgram`/`ProgramVersion` models).
+- **Final holistic review: READY** — schema-safe (every field `ensureDefaultPrograms` writes exists on the model; `programId_version` compound key matches), validation chain unbroken (manifest recipes via `parseProgramManifest`, devcontainer via `importDevcontainer` → same fail-closed rules), security gates correct (auth before flag; `verified:true` only on `@vectant/*`; `manifestJson` never leaked), browse+install work with ZERO store/route changes (`publisher != 'local'` + `getPublishedProgramVersion`).
+
+## Security checklist
+- [x] Seed route inert by default — requires auth (401) AND `ENABLE_PROGRAM_SEED=1` (404 otherwise). (`seedDefaultsRoute.test.js`)
+- [x] Every default validated through `parseProgramManifest`/`importDevcontainer` — no bypass; host-escape rules inherited by the devcontainer default. (`defaultPrograms.test.js`)
+- [x] `installCount` never written on re-seed `update` (preserves reputation). (`defaultPrograms.test.js`)
+- [x] `verified:true` only on seeded `@vectant/*`; user `publishProgram` stays `verified:false`. (verified in final review)
+- [x] No manifest/secret leak — relies on the existing allow-listed `toPublicMarketplaceProgram`.
+
+## Live verification — PENDING (Docker engine down)
+Steps 5–6 of T6 (rebuild frontend → set `ENABLE_PROGRAM_SEED=1` → recreate → POST `/api/programs/seed-defaults` → confirm 7 `@vectant/*` Verified rows browse + install + installCount bump, in the logged-in browser) are BLOCKED: Docker Desktop's engine API returns 500 on every endpoint (`/version`, `/info`, `/containers`) — a daemon-level issue (needs a Docker Desktop restart). All code + tests are complete and committed; live seed/verify to run once the engine recovers. Host disk is healthy now (~11 GB free).
+
+## Deferred (not in this task)
+- Native Docker / container runtime (own slice — backlog below).
+- Per-card runtime-type chip/filter (needs denormalized `runtimeType` column).
+- Auto-seed on boot/deploy; per-default icons.
+
+---
+
 # BACKLOG — do AFTER all 6/7 slices are complete
 
 ## Recipe-authoring AI awareness (program scripts)
