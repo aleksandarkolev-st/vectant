@@ -65,7 +65,7 @@ export const AUTH_TOOLS = [
   {
     name: "synthi_auth_configure_refresh_provider",
     description:
-      "Configure a refresh-provider metadata record using a Synthi secret reference. Secret values are rejected and never returned.",
+      "Configure a refresh-provider metadata record using a Synthi secret reference. Mint commands require deployment approval; secret values are rejected and never returned.",
     inputSchema: {
       type: "object",
       properties: {
@@ -75,7 +75,7 @@ export const AUTH_TOOLS = [
         mint_command: {
           type: "string",
           description:
-            "Deployment-controlled command that prints JSON { ok: true, storage_state, redirect_chain?, ttl_ms? } or writes it to SYNTHI_AUTH_PROVIDER_OUTPUT_PATH. Receives only secret references in env.",
+            "Deployment-controlled command that prints JSON { ok: true, storage_state, redirect_chain?, ttl_ms? } or writes it to SYNTHI_AUTH_PROVIDER_OUTPUT_PATH. Requires SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG=true. Receives only secret references in env.",
         },
         working_directory: { type: "string" },
         timeout_ms: { type: "number" },
@@ -167,6 +167,7 @@ function configureRefreshProviderTool(args: unknown): ToolResponse {
     secret_ref: requiredString(a, "secret_ref"),
     provider_type: refreshProviderTypeOpt(a["provider_type"]),
     mint_command: stringOpt(a["mint_command"]),
+    mint_command_admin_approved: authRefreshProviderCommandConfigAllowed(),
     working_directory: stringOpt(a["working_directory"]),
     timeout_ms: numberOpt(a["timeout_ms"]),
   });
@@ -222,4 +223,9 @@ function authDurabilityOpt(value: unknown): AuthCheckpointDurability | undefined
 function refreshProviderTypeOpt(value: unknown): "projectRefreshProvider" | "ciTestAuth" | undefined {
   if (value === "projectRefreshProvider" || value === "ciTestAuth") return value;
   return undefined;
+}
+
+function authRefreshProviderCommandConfigAllowed(): boolean {
+  const value = process.env["SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG"]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }

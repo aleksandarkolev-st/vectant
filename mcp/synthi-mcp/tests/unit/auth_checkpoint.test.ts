@@ -137,6 +137,7 @@ describe("auth checkpoint manager", () => {
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
       mint_command: await writeRefreshMintCommand(directory),
+      mint_command_admin_approved: true,
     });
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected refresh provider failure");
@@ -420,6 +421,7 @@ describe("auth checkpoint manager", () => {
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
       mint_command: await writeRefreshMintCommand(directory),
+      mint_command_admin_approved: true,
       timeout_ms: 5_000,
     });
     expect(configured.ok).toBe(true);
@@ -457,6 +459,32 @@ describe("auth checkpoint manager", () => {
     expect(result).toEqual({ ok: false, error: "auth_refresh_provider_secret_ref_required" });
   });
 
+  it("requires internal approval before configuring refresh-provider mint commands", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-refresh-approval-"));
+    const command = await writeRefreshMintCommand(directory);
+
+    expect(authCheckpointManager.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: command,
+    })).toEqual({ ok: false, error: "auth_refresh_provider_mint_command_admin_approval_required" });
+
+    expect(authCheckpointManager.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: "sh -c 'echo unsafe'",
+      mint_command_admin_approved: true,
+    })).toEqual({ ok: false, error: "auth_refresh_provider_shell_command_not_allowed" });
+
+    expect(authCheckpointManager.configureRefreshProvider({
+      url: "https://app.example.com",
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: command,
+      mint_command_admin_approved: true,
+      working_directory: "relative/path",
+    })).toEqual({ ok: false, error: "auth_refresh_provider_working_directory_absolute_required" });
+  });
+
   it("exposes auth checkpoint tools through structured responses", async () => {
     for (const name of AUTH_TOOL_NAMES) {
       expect(ADVERTISED_TOOLS).toContain(name);
@@ -485,17 +513,37 @@ describe("auth checkpoint manager", () => {
     const revoked = await dispatchAuthTool("synthi_auth_revoke_checkpoint", { checkpoint_id: checkpointId });
     expect((revoked?.structuredContent as { checkpoint: { status: string } }).checkpoint.status).toBe("revoked");
 
-    const provider = await dispatchAuthTool("synthi_auth_configure_refresh_provider", {
+    const providerBeforeApproval = await dispatchAuthTool("synthi_auth_configure_refresh_provider", {
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
-      mint_command: await writeRefreshMintCommand(await mkdtemp(path.join(os.tmpdir(), "synthi-auth-tool-refresh-"))),
+      mint_command: await writeRefreshMintCommand(await mkdtemp(path.join(os.tmpdir(), "synthi-auth-tool-refresh-denied-"))),
     });
-    const providerId = (provider?.structuredContent as { provider: { provider_id: string } }).provider.provider_id;
-    const tested = await dispatchAuthTool("synthi_auth_test_refresh_provider", { provider_id: providerId });
-    expect((tested?.structuredContent as { can_mint_replay_state: boolean; provider: { status: string } })).toEqual(expect.objectContaining({
-      can_mint_replay_state: true,
-      provider: expect.objectContaining({ status: "validated" }),
+    expect(providerBeforeApproval?.isError).toBe(true);
+    expect(providerBeforeApproval?.structuredContent).toEqual(expect.objectContaining({
+      error: "auth_refresh_provider_mint_command_admin_approval_required",
     }));
+
+    const previousCommandConfig = process.env["SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG"];
+    process.env["SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG"] = "true";
+    try {
+      const provider = await dispatchAuthTool("synthi_auth_configure_refresh_provider", {
+        url: "https://app.example.com",
+        secret_ref: "synthi://secrets/workspace/auth-refresh",
+        mint_command: await writeRefreshMintCommand(await mkdtemp(path.join(os.tmpdir(), "synthi-auth-tool-refresh-"))),
+      });
+      const providerId = (provider?.structuredContent as { provider: { provider_id: string } }).provider.provider_id;
+      const tested = await dispatchAuthTool("synthi_auth_test_refresh_provider", { provider_id: providerId });
+      expect((tested?.structuredContent as { can_mint_replay_state: boolean; provider: { status: string } })).toEqual(expect.objectContaining({
+        can_mint_replay_state: true,
+        provider: expect.objectContaining({ status: "validated" }),
+      }));
+    } finally {
+      if (previousCommandConfig === undefined) {
+        delete process.env["SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG"];
+      } else {
+        process.env["SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG"] = previousCommandConfig;
+      }
+    }
 
     const listed = await dispatchAuthTool("synthi_auth_list_checkpoints", { url: "https://app.example.com" });
     expect((listed?.structuredContent as { checkpoints: unknown[] }).checkpoints).toHaveLength(2);

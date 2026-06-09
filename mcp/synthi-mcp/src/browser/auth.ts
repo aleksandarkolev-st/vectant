@@ -10,6 +10,18 @@ export type AuthCheckpointDurability = Extract<AuthDurabilityV7, "interactiveChe
 
 const REFRESH_PROVIDER_OUTPUT_LIMIT = 2 * 1024 * 1024;
 const AUTH_STORE_FILE_MODE = 0o600;
+const DISALLOWED_REFRESH_COMMAND_BASENAMES = new Set([
+  "bash",
+  "cmd",
+  "cmd.exe",
+  "fish",
+  "powershell",
+  "powershell.exe",
+  "pwsh",
+  "pwsh.exe",
+  "sh",
+  "zsh",
+]);
 
 export interface AuthIdPDomainGrant {
   checkpoint_id: string;
@@ -110,6 +122,7 @@ export interface AuthRefreshProviderMetadata {
   secret_ref: string;
   mint_command?: AuthRefreshProviderCommand;
   mint_command_configured?: boolean;
+  mint_command_admin_approved?: boolean;
   configured_at: number;
   last_tested_at?: number;
   last_minted_at?: number;
@@ -534,6 +547,7 @@ export class AuthCheckpointManager {
     secret_ref: string;
     provider_type?: AuthRefreshProviderMetadata["provider_type"];
     mint_command?: string;
+    mint_command_admin_approved?: boolean;
     working_directory?: string;
     timeout_ms?: number;
   }): { ok: true; provider: AuthRefreshProviderMetadata } | { ok: false; error: string } {
@@ -545,7 +559,7 @@ export class AuthCheckpointManager {
       app_origin: normalizeOrigin(input.url).origin,
       provider_type: input.provider_type ?? "projectRefreshProvider",
       secret_ref: input.secret_ref,
-      ...(mintCommand.command ? { mint_command: mintCommand.command } : {}),
+      ...(mintCommand.command ? { mint_command: mintCommand.command, mint_command_admin_approved: true } : {}),
       configured_at: Date.now(),
       status: "configured",
     };
@@ -927,20 +941,41 @@ function isSecretRef(value: string): boolean {
 
 function normalizeRefreshProviderCommand(input: {
   mint_command?: string;
+  mint_command_admin_approved?: boolean;
   working_directory?: string;
   timeout_ms?: number;
 }): { ok: true; command?: AuthRefreshProviderCommand } | { ok: false; error: string } {
   if (input.mint_command === undefined) return { ok: true };
   const command = input.mint_command.trim();
   if (command.length === 0) return { ok: false, error: "auth_refresh_provider_mint_command_required" };
+  if (input.mint_command_admin_approved !== true) {
+    return { ok: false, error: "auth_refresh_provider_mint_command_admin_approval_required" };
+  }
+  const commandSafety = refreshProviderCommandSafety(command);
+  if (!commandSafety.ok) return commandSafety;
+  const workingDirectory = input.working_directory?.trim();
+  if (workingDirectory && !path.isAbsolute(workingDirectory)) {
+    return { ok: false, error: "auth_refresh_provider_working_directory_absolute_required" };
+  }
   return {
     ok: true,
     command: {
       command,
-      ...(input.working_directory?.trim() ? { working_directory: input.working_directory.trim() } : {}),
+      ...(workingDirectory ? { working_directory: workingDirectory } : {}),
       timeout_ms: clampCommandTimeout(input.timeout_ms),
     },
   };
+}
+
+function refreshProviderCommandSafety(command: string): { ok: true; argv: string[] } | { ok: false; error: string } {
+  const argv = parseCommandLine(command);
+  if (!argv || argv.length === 0) return { ok: false, error: "auth_refresh_provider_invalid_mint_command" };
+  const executable = argv[0] ?? "";
+  const basename = path.basename(executable).toLowerCase();
+  if (DISALLOWED_REFRESH_COMMAND_BASENAMES.has(basename)) {
+    return { ok: false, error: "auth_refresh_provider_shell_command_not_allowed" };
+  }
+  return { ok: true, argv };
 }
 
 function clampCommandTimeout(value: number | undefined): number {
@@ -1114,8 +1149,10 @@ async function runRefreshProviderCommand(
   provider: AuthRefreshProviderMetadata
 ): Promise<{ ok: true; output: AuthRefreshProviderMintOutput } | { ok: false; failure_class: NonNullable<AuthRefreshProviderMetadata["failure_class"]> }> {
   if (!provider.mint_command) return { ok: false, failure_class: "missingMintCommand" };
-  const argv = parseCommandLine(provider.mint_command.command);
-  if (!argv || argv.length === 0) return { ok: false, failure_class: "invalidMintCommand" };
+  if (provider.mint_command_admin_approved !== true) return { ok: false, failure_class: "invalidMintCommand" };
+  const commandSafety = refreshProviderCommandSafety(provider.mint_command.command);
+  if (!commandSafety.ok) return { ok: false, failure_class: "invalidMintCommand" };
+  const argv = commandSafety.argv;
   const stdout = await runRefreshProviderProcess({
     argv,
     cwd: provider.mint_command.working_directory,
