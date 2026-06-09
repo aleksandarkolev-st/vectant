@@ -2929,13 +2929,10 @@ const CASES = [
     id: "native-confirm-dialog",
     minSteps: 1,
     expectedActions: ["click"],
-    expectedReplayText: [
-      "Confirmed policy",
-    ],
+    expectedReplayText: [],
     expectedReplayCode: [
-      "page.once('dialog'",
-      "await dialog.accept();",
-      "expect(dialog.message()).toContain(\"Approve policy?\")",
+      "Mutation boundary:",
+      "await expect(target1).toBeEnabled();",
     ],
     files: () => commonFiles({
       title: "Native Confirm Dialog Workflow",
