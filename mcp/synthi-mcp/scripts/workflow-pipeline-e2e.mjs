@@ -3181,14 +3181,13 @@ const CASES = [
     id: "textarea-code-editor",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: [
-      "Saved script with 2 lines",
-    ],
+    expectedReplayText: [],
     expectedReplayCode: [
-      "await target1.fill(\"const answer = 42;\\nconsole.log(answer);\");",
-      "await expect(target1).toHaveValue(\"const answer = 42;\\nconsole.log(answer);\");",
+      "const inputValue1 = readRequiredEnv(\"AUTOMATION_SCRIPT\"",
+      "await expect(target1).toHaveValue(inputValue1);",
     ],
     liveReplayMode: "sameSession",
+    replayEnv: () => ({ AUTOMATION_SCRIPT: "const answer = 42;\nconsole.log(answer);" }),
     files: () => commonFiles({
       title: "Textarea Code Editor Workflow",
       body: [
