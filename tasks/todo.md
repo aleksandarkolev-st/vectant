@@ -326,6 +326,46 @@ Rebuilt the frontend image (host disk dipped to ~1.2 GB during build but complet
 
 ---
 
+# Task: Make Default Programs Runnable (2026-06-09, tool-compatibility)
+
+Spec: `docs/superpowers/specs/2026-06-09-make-default-programs-runnable-design.md`. Plan: `docs/superpowers/plans/2026-06-09-make-default-programs-runnable-plan.md`. Subagent-driven (implementer + spec + code-quality review per task; final holistic review READY).
+
+## Tasks (TDD, commit per task)
+- [x] T1 `resolveActor()` += `workspaceUserId = session.user.id || email` (IDE repo-dir id; DB `userId`/cuid kept for FK records). `839881..` (+coverage `15ac79a4`); 4 tests.
+- [x] T2 Thread `workspaceUserId` into publish/install/launch **cwd resolution** (`discoverManifest`/`launchInstalledProgram`); DB-record fields stay on `actor.userId`. `dd0fd7e9` (+comment `ad9421a5`).
+- [x] T3 App-tab CSP fix — `buildContentSecurityPolicy(collabUrl)` adds the collab origin to `frame-src`; wired in `next.config.mjs` (localhost fallback non-prod-guarded). `133c4a3e` (+`04b873bb`); 4 tests.
+- [x] T4 `scaffoldTemplates.js` — minimal inline starters for 5 defaults (nextjs/vite/flask/static/worker) + `getScaffoldTemplate`/`SCAFFOLDABLE_PACKAGE_IDS` (own-property guard). `7851af75` (+proto fix `af635a59`); 5 tests.
+- [x] T5 collab `applyScaffoldFiles(cwd,files)` (write-missing, 2-layer path guard) + `POST /program-runtime/:slug/scaffold`. `5b0a36e3` (+`982f1343`); 4 node tests.
+- [x] T6 `runtimeClient.scaffoldProgram` + owner-gated `POST /api/workspace/[slug]/programs/scaffold` (server-side templates, `workspaceUserId`). `94266bef` (+`b4079c4d`); 3 route tests.
+- [x] T7 UI "Set up project" action (confirm → scaffold → launch) on scaffoldable installs. `b1414cf9` (+`409030bc`); 2 UI tests.
+- [x] T8 Regression + live verify + review.
+
+## Verification
+- Targeted `src/lib/programs|security|integrations` + `api/workspace/[slug]/programs` + `components/programs` → 18 files / **145 pass**.
+- Backend `node --test programRuntimeManager + scaffold` → **25 pass**.
+- Full `npx vitest run` → **305 pass** (only the known empty `preview-store.test.js` stub tolerated). prisma `db push` "already in sync" (no schema change).
+- **Final holistic review: READY** — cross-hop shapes consistent end-to-end (`{path,contents}` files + `{written,skipped}` return + `workspaceUserId` threaded UI→route→runtimeClient→collab→`resolveWorkspaceCwd`); security solid (owner-gated, server-side templates, path-traversal + proto guards); CSP non-regressive.
+
+## LIVE VERIFICATION — DONE (rebuilt frontend + collab-server)
+- **CSP fix proven:** live `frame-src` header now = `'self' blob: http://localhost:1234` (the collab proxy origin), so the App tab can embed a running web program (was "this content is blocked").
+- **Dir-consistency fix proven end-to-end:** authenticated `POST /programs/scaffold {@vectant/flask-api}` → `200 {written:["requirements.txt","app.py"]}`; the files landed in the **IDE's per-user dir** `/data/repos/gyo5w46k/242593757/` (where the editor reads), NOT the shared `/data/repos/gyo5w46k/` fallback the cuid used to hit. So launch/publish/install now operate on the user's real project files. (Test artifacts cleaned up afterward.)
+- Routes deployed: scaffold route 401 (gated); collab scaffold endpoint 200.
+- Note: the full launch→`npm install`→dev-server→App-tab-embed chain wasn't driven end-to-end live (long/network-bound), but its only blocker (CSP `frame-src`) is verified fixed and launches now run in the correct dir.
+
+## Security checklist
+- [x] Scaffold route owner/admin-gated (`canWriteScope`); 403 for members. (`programRoutes.test.js`)
+- [x] Server-side templates only — client `files` ignored (the route uses `getScaffoldTemplate(packageId)`). (route + final review)
+- [x] `applyScaffoldFiles` rejects path traversal/absolute (2 layers) + never clobbers existing files. (`scaffold.test.js`)
+- [x] `getScaffoldTemplate` own-property guard (no `__proto__`/`constructor` bypass). (`scaffoldTemplates.test.js`)
+- [x] CSP only extends `frame-src` (no other directive regressed); prod gets no localhost noise. (`csp.test.js` + final review)
+- [x] DB-record FK fields keep `actor.userId` (cuid); only cwd resolution uses `workspaceUserId`. (`programRoutes.test.js` + final review)
+
+## Deferred / notes
+- Empty-`workspaceUserId` → shared-dir fallback is a pre-existing low-risk edge (auth guarantees email non-null); not changed.
+- `scaffoldTemplates.js` is imported client-side for `SCAFFOLDABLE_PACKAGE_IDS` (bundles ~3KB of template strings — negligible; could split later).
+
+---
+
 # BACKLOG — do AFTER all 6/7 slices are complete
 
 ## Recipe-authoring AI awareness (program scripts)
