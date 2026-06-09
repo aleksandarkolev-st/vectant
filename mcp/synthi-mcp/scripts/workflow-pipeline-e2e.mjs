@@ -3225,10 +3225,12 @@ const CASES = [
     minSteps: 6,
     expectedActions: ["check", "select", "fill", "press", "drag", "click"],
     expectedReplayText: [
-      "Searched revenue",
-      "Applied enterprise urgent; card done; search revenue",
+      "Moved Revenue audit to Done lane",
     ],
     expectedReplayCode: [
+      "const selectValue2 = readRequiredEnv(\"SEGMENT\"",
+      "const inputValue3 = readRequiredEnv(\"SEARCH\"",
+      "parameterizedTextRegex([\"Searched \",\"\"]",
       "toContainText(\"Revenue audit\")",
     ],
     replayEnv: () => ({ SEGMENT: "enterprise", SEARCH: "revenue" }),
