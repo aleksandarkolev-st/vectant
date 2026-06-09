@@ -345,6 +345,8 @@ The Codex in-app Browser connector was available as a plugin, but `agent.browser
 Proof/fix commits are separate:
 
 ```text
+08f16a794 fix(gpu-hmr): archive agent split results per slug
+f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
 92543192f fix(gpu-hmr): preserve derived contracts in proof summaries
 302bbc238 fix(gpu-hmr): require explicit real rocm docker config
 a12e654d8 fix(gpu-hmr): require explicit agent split docker config
@@ -375,6 +377,8 @@ npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
+node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+SYNTHI_GPU_AGENT_MODE=seed-only SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=agent-split-archive-smoke-20260609-pass SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node scripts/gpu-hmr-agent-split-workspace-test.mjs
 ```
 
 ## Remaining Work
@@ -382,7 +386,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 | Plan Area | Current State | Remaining Work |
 | --- | --- | --- |
 | ROCm/HIP generated runtime | Accepted full-runtime proof exists. | Keep rerun stability high; latest failed reruns must remain rejected. |
-| Ray-light/Flow visual MCP | Accepted and visually inspected. | Archive per-slug result summaries so later runs do not overwrite the top-level result log. |
+| Ray-light/Flow visual MCP | Accepted and visually inspected; agent-split summaries now archive under each slug artifact directory. | Keep top-level result files as latest-run convenience outputs only. |
 | HIPRT | Fresh same-process CameraRays and MegaKernel proofs accepted. | Integrate HIPRT into the full MCP runtime ledger path if app hooks become available. |
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
 | External projects | ThreeJS visual profile accepted; Bevy strict proof gate rejects missing full runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |

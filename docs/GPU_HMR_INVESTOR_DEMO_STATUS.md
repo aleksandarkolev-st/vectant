@@ -291,6 +291,8 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 Relevant current commits:
 
 ```text
+08f16a794 fix(gpu-hmr): archive agent split results per slug
+f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
 92543192f fix(gpu-hmr): preserve derived contracts in proof summaries
 302bbc238 fix(gpu-hmr): require explicit real rocm docker config
 a12e654d8 fix(gpu-hmr): require explicit agent split docker config
