@@ -7,6 +7,10 @@ import {
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
 } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
+import {
+  assessGeneratedGpuSplitGranularity,
+  verifyGeneratedGpuSplitDeterministicFission,
+} from '../lib/gpu-hmr-generated-split-granularity.mjs';
 
 const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
 
@@ -73,6 +77,50 @@ await writeJson(path.join(visualDir, 'agent-split-results.json'), [
   },
   { name: 'runner stayed alive after GPU HMR', status: 'pass', detail: 'no runner crash marker' },
 ]);
+
+const fissionManifest = {
+  gpu: {
+    vendor: 'rocm',
+    device_roles: [
+      { id: 'device.integrator', path: 'gpu/integrator.hip', compiler: 'hipcc', arch: ['gfx1201'] },
+      { id: 'device.shading', path: 'gpu/shading.hip', compiler: 'hipcc', arch: ['gfx1201'] },
+    ],
+  },
+};
+const fissionFiles = {
+  'gpu/integrator.hip': '__global__ void integrate(float* out) {}',
+  'gpu/shading.hip': '__global__ void shade(float* out) {}',
+};
+const fissionAssessment = assessGeneratedGpuSplitGranularity({
+  manifest: fissionManifest,
+  files: fissionFiles,
+});
+const fissionReport = verifyGeneratedGpuSplitDeterministicFission({
+  assessment: fissionAssessment,
+  selectedPath: 'gpu/shading.hip',
+  changedPaths: ['gpu/shading.hip'],
+  selectedArtifact: {
+    sourcePath: 'gpu/shading.hip',
+    proofIds: [
+      'gpu-runtime-proof:sha256:synthetic-fission',
+      'gpu-ledger-proof:sha256:synthetic-fission',
+    ],
+    runtimeProofAccepted: true,
+  },
+  outputOracleContract: {
+    oracleId: 'oracle:generated-split-visual:sha256:synthetic-fission',
+    kind: 'visual',
+    target: 'framebuffer',
+  },
+  unaffectedArtifactHashesBefore: {
+    'gpu/integrator.hip': 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  },
+  unaffectedArtifactHashesAfter: {
+    'gpu/integrator.hip': 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  },
+  compilerArgsHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+});
+await writeJson(path.join(visualDir, 'generated-split-deterministic-fission.json'), fissionReport);
 
 await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'), {
   schema: 'synthi.gpu_hmr.opencl_preflight.v1',
@@ -145,7 +193,12 @@ const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.i
 assert.equal(coverageById.get('flow_visual_gpu_path')?.status, 'accepted');
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
-assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'missing');
+assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
+
+const fissionRow = ledger.rows.find((row) => row.matrixOutcome === 'deterministic_fission_proven');
+assert.equal(fissionRow?.acceptedForGpuHmr, false);
+assert.equal(fissionRow.proofChainAccepted, true);
+assert.equal(fissionRow.acceptanceClass, 'smallest_safe_per_kernel_fission');
 
 console.log(JSON.stringify({
   ok: true,

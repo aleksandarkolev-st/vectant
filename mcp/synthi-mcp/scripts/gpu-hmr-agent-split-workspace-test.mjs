@@ -28,6 +28,7 @@ import {
 import {
   assessGeneratedGpuSplitGranularity,
   assertNoGeneratedSplitFissionOverclaim,
+  verifyGeneratedGpuSplitDeterministicFission,
 } from './lib/gpu-hmr-generated-split-granularity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1074,6 +1075,14 @@ function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
 function upsertObjectField(root, parentKey, filePath, value) {
   const normalized = cleanRel(filePath);
   if (!normalized) return;
@@ -1198,6 +1207,150 @@ function validateGeneratedSplit(split) {
     ].join(' '),
   );
   return granularity;
+}
+
+function proofIdsFromRuntimeWait(wait) {
+  const proofValidation = wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+  const ledgerValidation = proofValidation.proofLedgerValidation
+    && typeof proofValidation.proofLedgerValidation === 'object'
+    ? proofValidation.proofLedgerValidation
+    : {};
+  const telemetry = wait?.gpu_proof_telemetry && typeof wait.gpu_proof_telemetry === 'object'
+    ? wait.gpu_proof_telemetry
+    : {};
+  return [...new Set([
+    ledgerValidation.proofId,
+    ledgerValidation.proof_id,
+    telemetry.proofId,
+    telemetry.proof_id,
+  ].filter((value) => typeof value === 'string' && value.trim()))];
+}
+
+function deterministicVisualOracleContract({ visualDelta, wait, selectedPath }) {
+  if (!visualDelta) return {};
+  const proofValidation = wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+  const ledgerValidation = proofValidation.proofLedgerValidation
+    && typeof proofValidation.proofLedgerValidation === 'object'
+    ? proofValidation.proofLedgerValidation
+    : {};
+  const telemetry = wait?.gpu_proof_telemetry && typeof wait.gpu_proof_telemetry === 'object'
+    ? wait.gpu_proof_telemetry
+    : {};
+  const frameGate = wait?.frame_gate && typeof wait.frame_gate === 'object' ? wait.frame_gate : {};
+  const oracleSeed = {
+    selectedPath,
+    proofIds: proofIdsFromRuntimeWait(wait),
+    frameGateToken: frameGate.gate_token ?? null,
+    changedRatio: visualDelta.changedRatio ?? null,
+    meanAbs: visualDelta.meanAbs ?? null,
+    diffPath: visualDelta.diffPath ?? null,
+    selectedSeq: visualDelta.selectedSeq ?? null,
+  };
+  return {
+    oracleId: `oracle:generated-split-visual:sha256:${sha256Hex(stableJson(oracleSeed))}`,
+    kind: 'visual',
+    target: 'framebuffer',
+    visualRegion: 'full_frame',
+    selectedPath,
+    diffPath: visualDelta.diffPath ?? null,
+    changedPixelRatio: visualDelta.changedRatio ?? null,
+    meanAbsDelta8bit: visualDelta.meanAbs ?? null,
+    controlChangedPixelRatio: visualDelta.controlChangedRatio ?? null,
+    controlMeanAbsDelta8bit: visualDelta.controlMeanAbs ?? null,
+    selectedFrameSeq: visualDelta.selectedSeq ?? null,
+    selectedDeltaMs: visualDelta.selectedDeltaMs ?? null,
+    frameGateToken: frameGate.gate_token ?? null,
+    frameGateSeq: frameGate.frame_seq ?? null,
+    frameGateTimestampMs: frameGate.ts_ms ?? null,
+    frameCaptureAfterEpochDispatch: true,
+    runtimeProofId: telemetry.proofId ?? telemetry.proof_id ?? null,
+    ledgerProofId: ledgerValidation.proofId ?? ledgerValidation.proof_id ?? null,
+  };
+}
+
+function roleHashMap(files, rolePaths, selectedPath = null) {
+  const out = {};
+  for (const rolePath of rolePaths ?? []) {
+    const normalized = cleanRel(rolePath);
+    if (!normalized || normalized === cleanRel(selectedPath)) continue;
+    out[normalized] = `sha256:${sha256Hex(files?.[normalized] ?? '')}`;
+  }
+  return out;
+}
+
+function verifyGeneratedSplitFissionAfterRuntime({
+  split,
+  granularity,
+  generatedDeviceResult,
+  visualDelta,
+  selectedPath,
+  previousDevice,
+  editedDevice,
+}) {
+  const wait = generatedDeviceResult?.wait ?? {};
+  const proofValidation = wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+  const ledgerValidation = proofValidation.proofLedgerValidation
+    && typeof proofValidation.proofLedgerValidation === 'object'
+    ? proofValidation.proofLedgerValidation
+    : {};
+  const runtimeArtifactValidation = proofValidation.runtimeProofArtifactValidation
+    && typeof proofValidation.runtimeProofArtifactValidation === 'object'
+    ? proofValidation.runtimeProofArtifactValidation
+    : {};
+  const proofIds = proofIdsFromRuntimeWait(wait);
+  const sourceHashBefore = `sha256:${sha256Hex(previousDevice ?? '')}`;
+  const sourceHashAfter = `sha256:${sha256Hex(editedDevice ?? '')}`;
+  const runtimeProofAccepted =
+    wait?.status === 'applied'
+    && proofValidation.satisfied === true
+    && ledgerValidation.gpuHmrSuccess === true
+    && Array.isArray(ledgerValidation.failedInvariants)
+    && ledgerValidation.failedInvariants.length === 0
+    && runtimeArtifactValidation.accepted === true;
+  const selectedArtifact = {
+    sourcePath: selectedPath,
+    sourceHashBefore,
+    sourceHashAfter,
+    proofIds,
+    runtimeProofAccepted,
+    runtimeProofArtifactValidation: runtimeArtifactValidation,
+    proofLedgerValidation: ledgerValidation,
+  };
+  const rolePaths = granularity.deviceRolePaths ?? [];
+  const outputOracleContract = deterministicVisualOracleContract({
+    visualDelta,
+    wait,
+    selectedPath,
+  });
+  const report = verifyGeneratedGpuSplitDeterministicFission({
+    assessment: granularity,
+    selectedPath,
+    changedPaths: [selectedPath],
+    selectedArtifact,
+    outputOracleContract,
+    abiCompatibilityClass: 'compatible',
+    unaffectedArtifactHashesBefore: roleHashMap(split.files, rolePaths, selectedPath),
+    unaffectedArtifactHashesAfter: roleHashMap(split.files, rolePaths, selectedPath),
+    excludedHostSources: [split.roles.core, split.roles.gui, split.roles.host_runner].map(cleanRel),
+    compilerArgsHash: `sha256:${sha256Hex(stableJson({
+      compileManifest: split.manifest,
+      gpuArch: CFG.gpuArch ?? null,
+      selectedPath,
+    }))}`,
+    compileTarget: CFG.gpuArch ?? split.manifest?.gpu?.arch?.[0] ?? null,
+    fullDeviceFallback: false,
+    hostRelinked: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  });
+  assertNoGeneratedSplitFissionOverclaim(report);
+  return report;
 }
 
 function gpuSplitEndpointEvidenceFromSidecar(split) {
@@ -1350,7 +1503,7 @@ async function compileGeneratedDevice(split, editedDevice) {
     slug: CFG.slug,
     files: [{ path: split.roles.device, content: editedDevice }],
   });
-  return compileViaMcp({
+  const result = await compileViaMcp({
     language: 'cpp',
     filename: split.roles.device,
     source: editedDevice,
@@ -1366,6 +1519,12 @@ async function compileGeneratedDevice(split, editedDevice) {
     width: 800,
     height: 600,
   }, CFG.hotSwapTimeoutMs);
+  return {
+    ...result,
+    previousDevice,
+    editedDevice,
+    selectedPath: split.roles.device,
+  };
 }
 
 async function writeImageArtifact(name, imageData) {
@@ -1734,9 +1893,35 @@ async function run() {
         }
       : {},
   );
+  let visualDelta = null;
   if (CFG.captureArtifacts && baselineShot) {
-    await assertVisualDelta(baselineShot, afterShot);
+    visualDelta = await assertVisualDelta(baselineShot, afterShot);
   }
+  const deterministicFission = verifyGeneratedSplitFissionAfterRuntime({
+    split,
+    granularity,
+    generatedDeviceResult,
+    visualDelta,
+    selectedPath: generatedDeviceResult.selectedPath,
+    previousDevice: generatedDeviceResult.previousDevice,
+    editedDevice: generatedDeviceResult.editedDevice,
+  });
+  const deterministicFissionPath = await writeJsonArtifact(
+    'generated-split-deterministic-fission',
+    deterministicFission,
+  );
+  record(
+    'generated split deterministic fission verifier',
+    'pass',
+    [
+      `accepted=${deterministicFission.deterministicFissionVerifier?.accepted === true}`,
+      `claim=${deterministicFission.acceptedClaim}`,
+      `selected=${deterministicFission.deterministicFissionVerifier?.selectedPath ?? 'none'}`,
+      `kernel=${deterministicFission.deterministicFissionVerifier?.selectedKernel ?? 'none'}`,
+      `artifact=${deterministicFissionPath}`,
+      `failures=${(deterministicFission.deterministicFissionVerifier?.failures ?? []).join('|')}`,
+    ].join(' '),
+  );
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});

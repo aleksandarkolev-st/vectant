@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
+import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 
 export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_ledger.v1';
@@ -11,6 +12,7 @@ export const GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION =
 const MATRIX_OUTCOME_PRIORITY = new Map([
   ['full_runtime_gpu_hmr', 100],
   ['visual_profile_accepted', 70],
+  ['deterministic_fission_proven', 60],
   ['preflight_only', 50],
   ['refusal_proven', 40],
   ['unproven', 0],
@@ -498,6 +500,142 @@ async function agentSplitRow(records, filePath, context) {
   });
 }
 
+function backendFromGeneratedFissionReport(report) {
+  const selectedPath = firstText(
+    report.deterministicFissionVerifier?.selectedPath,
+    report.deterministic_fission_verifier?.selectedPath,
+    report.deterministic_fission_verifier?.selected_path,
+    report.selectedIslandContract?.sourcePaths?.[0],
+    report.selectedIslandContract?.source_paths?.[0],
+  ) ?? '';
+  const lower = selectedPath.toLowerCase();
+  if (lower.endsWith('.hip')) return 'hip';
+  if (lower.endsWith('.cu')) return 'cuda';
+  if (lower.endsWith('.cl')) return 'opencl';
+  if (lower.endsWith('.wgsl')) return 'webgpu';
+  if (lower.endsWith('.spv') || lower.endsWith('.spirv')) return 'vulkan';
+  return 'gpu_fission';
+}
+
+function generatedFissionCoverageAccepted(report, classifiedProof) {
+  const verifier = compactObject(report.deterministicFissionVerifier ?? report.deterministic_fission_verifier);
+  const fissionProof = compactObject(report.fissionProof ?? report.fission_proof);
+  const selectedContracts = Array.isArray(fissionProof.selectedIslandContracts)
+    ? fissionProof.selectedIslandContracts.filter(isObject)
+    : [];
+  const selectedContract = selectedContracts[0] ?? {};
+  const coverage = compactObject(
+    selectedContract.verificationEvidenceCoverage
+    ?? selectedContract.verification_evidence_coverage
+    ?? verifier.verificationEvidenceCoverage
+    ?? verifier.verification_evidence_coverage,
+  );
+  const requiredCategories = compactStringList(coverage.requiredCategories ?? coverage.required_categories);
+  const missingCategories = compactStringList(coverage.missingCategories ?? coverage.missing_categories);
+  const categories = Array.isArray(coverage.categories) ? coverage.categories.filter(isObject) : [];
+  const evidenceByCategory = new Map(categories.map((category) => [
+    firstText(category.category),
+    compactStringList(category.evidenceIds ?? category.evidence_ids),
+  ]));
+  const required = [
+    'source_mapping',
+    'include_closure',
+    'symbol_ownership',
+    'dependency_closure',
+    'abi_membrane',
+    'compile_recipe',
+    'loader_capability',
+    'output_oracle',
+  ];
+  return report.proofBoundary === 'deterministic_fission_verifier'
+    && verifier.accepted === true
+    && report.smallestSafeFissionIslandProven === true
+    && report.perKernelHmrProven === true
+    && report.acceptedClaim === 'per_kernel_hmr'
+    && classifiedProof.fissionProven === true
+    && selectedContracts.length === 1
+    && missingCategories.length === 0
+    && required.every((category) => requiredCategories.includes(category))
+    && required.every((category) => (evidenceByCategory.get(category) ?? []).length > 0);
+}
+
+async function generatedSplitFissionRow(json, filePath, context) {
+  const verifier = compactObject(json.deterministicFissionVerifier ?? json.deterministic_fission_verifier);
+  const fissionProof = compactObject(json.fissionProof ?? json.fission_proof);
+  const classifiedProof = classifyGpuHmrFissionProof(fissionProof);
+  const accepted = generatedFissionCoverageAccepted(json, classifiedProof);
+  const selectedPath = firstText(
+    verifier.selectedPath,
+    verifier.selected_path,
+    json.selectedIslandContract?.sourcePaths?.[0],
+    json.selectedIslandContract?.source_paths?.[0],
+  );
+  const selectedKernel = firstText(
+    verifier.selectedKernel,
+    verifier.selected_kernel,
+    json.selectedIslandContract?.targetSymbols?.[0],
+    json.selectedIslandContract?.target_symbols?.[0],
+  );
+  const verifierEvidenceId = firstText(
+    verifier.verifierEvidenceId,
+    verifier.verifier_evidence_id,
+    fissionProof.verifierEvidenceRefs?.[0],
+    fissionProof.verifier_evidence_refs?.[0],
+  );
+  return finalizeRow({
+    artifactSchema: firstText(json.schemaVersion, json.schema),
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: backendFromGeneratedFissionReport(json),
+    targetId: firstText(selectedKernel, selectedPath, path.basename(path.dirname(filePath))),
+    profileId: firstText(selectedPath, selectedKernel, path.basename(path.dirname(filePath))),
+    proofMode: 'deterministic_fission_verifier',
+    evidenceKind: 'fission_verifier_report',
+    matrixOutcome: accepted ? 'deterministic_fission_proven' : 'unproven',
+    acceptanceClass: accepted ? 'smallest_safe_per_kernel_fission' : 'fission_verifier_rejected',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: false,
+    proofChainAccepted: accepted,
+    proofChain: accepted ? 'deterministic_fission_verifier' : 'deterministic_fission_verifier_rejected',
+    proofIds: proofIdsFrom(
+      verifierEvidenceId,
+      fissionProof.evidenceRefs,
+      fissionProof.verifierEvidenceRefs,
+      fissionProof.deterministicVerifierEvidenceRefs,
+    ),
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: null,
+      failedInvariants: [],
+    },
+    visual: {
+      required: false,
+      present: false,
+      accepted: true,
+      imageCount: 0,
+      existingImageCount: 0,
+      pngImageCount: 0,
+      allImagesExist: true,
+      allImagesArePng: true,
+      changedPixelRatio: null,
+      meanAbsDelta8bit: null,
+      visiblePixelCount: null,
+      images: [],
+    },
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+    reasons: accepted ? [] : compactStringList([
+      ...compactStringList(json.reasonCodes ?? json.reason_codes),
+      classifiedProof.degradedReason,
+      ...(Array.isArray(verifier.failures) ? verifier.failures : []),
+    ]),
+    openGaps: accepted ? [] : ['deterministic_fission_verifier_not_accepted'],
+  });
+}
+
 async function hiprtWarmRow(json, filePath, context) {
   const acceptance = compactObject(json.acceptance);
   const diff = compactObject(json.diff);
@@ -832,6 +970,12 @@ async function classifyJsonArtifact(json, filePath, context) {
   if (!isObject(json)) return null;
   const schema = firstText(json.schemaVersion, json.schema) ?? '';
   const proofId = firstText(json.proofId, json.proof_id) ?? '';
+  if (
+    schema === 'synthi.gpu_hmr.generated_split_granularity.v1'
+    && isObject(json.deterministicFissionVerifier ?? json.deterministic_fission_verifier)
+  ) {
+    return generatedSplitFissionRow(json, filePath, context);
+  }
   if (schema === 'synthi.gpu.hmr.proof.v1') return runtimeProofRow(json, filePath, context);
   if (schema === 'synthi.hiprt.warm_visual_proof.v2') return hiprtWarmRow(json, filePath, context);
   if (schema === 'synthi.gpu.hmr.external_project_profile.report.v1') {
@@ -976,6 +1120,10 @@ function visualProfileRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted' && predicate(row));
 }
 
+function deterministicFissionRows(rows, predicate) {
+  return rows.filter((row) => row.matrixOutcome === 'deterministic_fission_proven' && predicate(row));
+}
+
 function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, refusalPredicate, missingGap }) {
   const accepted = acceptedRows(rows, acceptedPredicate);
   if (accepted.length > 0) {
@@ -1007,6 +1155,7 @@ function planCoverage(rows) {
   const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
   const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
   const externalVisualRows = visualProfileRows(rows, (row) => row.backend === 'webgl');
+  const fissionRows = deterministicFissionRows(rows, () => true);
 
   return [
     coverageEntry({
@@ -1100,8 +1249,9 @@ function planCoverage(rows) {
     coverageEntry({
       id: 'per_kernel_smallest_safe_fission',
       requirement: 'Per-kernel or smallest-safe fission verifier proof',
-      status: 'missing',
-      openGaps: ['deterministic_smallest_safe_fission_verifier_required'],
+      status: fissionRows.length > 0 ? 'accepted' : 'missing',
+      rows: fissionRows,
+      openGaps: fissionRows.length > 0 ? [] : ['deterministic_smallest_safe_fission_verifier_required'],
     }),
   ];
 }
