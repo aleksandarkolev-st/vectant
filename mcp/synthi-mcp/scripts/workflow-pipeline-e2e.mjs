@@ -662,7 +662,7 @@ async function runCase({ testCase, container, context, runner }) {
           ? `steps=${liveReplay.replay?.steps_run ?? 0}`
           : `error=${liveReplay.replay?.error || liveReplay.error || "unknown"}`
       );
-      if (liveReplay.ok === true && Array.isArray(testCase.liveReplayExpectedText) && testCase.liveReplayExpectedText.length > 0) {
+      if (liveReplay.ok === true) {
         const replaySnapshots = await collectReplaySnapshots(liveReplay, caseDir);
         await writeJson(caseDir, "live-replay-snapshots.json", {
           tab_ids: replaySnapshots.tab_ids,
@@ -674,18 +674,30 @@ async function runCase({ testCase, container, context, runner }) {
           })),
           errors: replaySnapshots.errors,
         });
-        const snapshotText = replaySnapshots.snapshots
-          .map((entry) => JSON.stringify(entry.snapshot?.dom ?? {}))
-          .join("\n");
-        const missingLiveText = testCase.liveReplayExpectedText.filter((text) => !snapshotText.includes(text));
-        record(
-          testCase.id,
-          "visual MCP replay snapshot text",
-          replaySnapshots.snapshots.length > 0 && missingLiveText.length === 0,
-          missingLiveText.length
-            ? `missing=${missingLiveText.join(" | ")} tabs=${replaySnapshots.tab_ids.join(",") || "none"} errors=${replaySnapshots.errors.join(",") || "none"}`
-            : `texts=${testCase.liveReplayExpectedText.length} snapshots=${replaySnapshots.snapshots.length}`
-        );
+        const liveReplayExpectedText = Array.isArray(testCase.liveReplayExpectedText) ? testCase.liveReplayExpectedText : [];
+        if (liveReplayExpectedText.length > 0) {
+          const snapshotText = replaySnapshots.snapshots
+            .map((entry) => JSON.stringify(entry.snapshot?.dom ?? {}))
+            .join("\n");
+          const missingLiveText = liveReplayExpectedText.filter((text) => !snapshotText.includes(text));
+          record(
+            testCase.id,
+            "visual MCP replay snapshot text",
+            replaySnapshots.snapshots.length > 0 && missingLiveText.length === 0,
+            missingLiveText.length
+              ? `missing=${missingLiveText.join(" | ")} tabs=${replaySnapshots.tab_ids.join(",") || "none"} errors=${replaySnapshots.errors.join(",") || "none"}`
+              : `texts=${liveReplayExpectedText.length} snapshots=${replaySnapshots.snapshots.length}`
+          );
+        } else {
+          record(
+            testCase.id,
+            "visual MCP replay snapshot",
+            replaySnapshots.snapshots.length > 0,
+            replaySnapshots.snapshots.length
+              ? `snapshots=${replaySnapshots.snapshots.length}`
+              : `tabs=${replaySnapshots.tab_ids.join(",") || "none"} errors=${replaySnapshots.errors.join(",") || "none"}`
+          );
+        }
       }
     }
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
