@@ -7217,7 +7217,24 @@ int main()
   const visualSelfCheckDir = await mkdtemp(path.join(visualSelfCheckRoot, 'visual-proof-self-check-'));
   try {
     const visualPath = path.join(visualSelfCheckDir, 'frame.png');
-    const visualBytes = Buffer.from('not-a-real-png-but-proof-writer-hashes-file-bytes');
+    const visualWidth = 320;
+    const visualHeight = 240;
+    const visualRaw = Buffer.alloc(visualWidth * visualHeight * 3);
+    for (let y = 0; y < visualHeight; y += 1) {
+      for (let x = 0; x < visualWidth; x += 1) {
+        const index = (y * visualWidth + x) * 3;
+        visualRaw[index] = (x * 7 + y * 3) & 0xff;
+        visualRaw[index + 1] = (x * 5 + y * 11) & 0xff;
+        visualRaw[index + 2] = (255 - ((x * 13 + y * 17) & 0xff)) & 0xff;
+      }
+    }
+    const visualBytes = await sharp(visualRaw, {
+      raw: {
+        width: visualWidth,
+        height: visualHeight,
+        channels: 3,
+      },
+    }).png().toBuffer();
     await writeFile(visualPath, visualBytes);
     const expectedVisualHash = `sha256:${createHash('sha256').update(visualBytes).digest('hex')}`;
     const written = await writeValidationRuntimeProofArtifact(visualSelfCheckDir, {
@@ -7304,21 +7321,32 @@ int main()
     ) {
       throw new Error('target progression ledger self-check did not hash visual file bytes');
     }
-    const rejectedVisualArtifacts = await visualEvidenceArtifactsFromFiles([visualPath], [{
-      path: visualPath,
+    const rejectedVisualPath = path.join(visualSelfCheckDir, 'flat-frame.png');
+    const rejectedRaw = Buffer.alloc(visualWidth * visualHeight * 3, 3);
+    const rejectedBytes = await sharp(rejectedRaw, {
+      raw: {
+        width: visualWidth,
+        height: visualHeight,
+        channels: 3,
+      },
+    }).png().toBuffer();
+    await writeFile(rejectedVisualPath, rejectedBytes);
+    const expectedRejectedVisualHash = `sha256:${createHash('sha256').update(rejectedBytes).digest('hex')}`;
+    const rejectedVisualArtifacts = await visualEvidenceArtifactsFromFiles([rejectedVisualPath], [{
+      path: rejectedVisualPath,
       visualQuality: 'gpu-hmr-visual-flat-frame',
       acceptedAsVisualEvidence: false,
     }]);
     const rejectedLedgerEntry = buildTargetProgressionLedgerEntry({
       report: ledgerReport,
-      visualArtifactPaths: [visualPath],
+      visualArtifactPaths: [rejectedVisualPath],
       visualEvidenceArtifacts: rejectedVisualArtifacts,
     });
     const rejectedVisualArtifact = rejectedLedgerEntry.visualEvidenceArtifacts
-      ?.find((artifact) => artifact.path === visualPath);
+      ?.find((artifact) => artifact.path === rejectedVisualPath);
     if (
-      rejectedVisualArtifact?.contentHash !== expectedVisualHash
-      || !rejectedLedgerEntry.visualEvidenceContentHashes?.includes(expectedVisualHash)
+      rejectedVisualArtifact?.contentHash !== expectedRejectedVisualHash
+      || !rejectedLedgerEntry.visualEvidenceContentHashes?.includes(expectedRejectedVisualHash)
       || rejectedLedgerEntry.visualEvidenceAcceptedCount !== 0
       || rejectedLedgerEntry.visualEvidenceReadErrorCount !== 0
     ) {
