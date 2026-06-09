@@ -603,14 +603,36 @@ export default function ProgramsPanel() {
               <div
                 key={item.packageId}
                 data-testid={`marketplace-item-${item.packageId}`}
-                className="rounded-lg border px-3 py-2 flex items-center justify-between gap-3"
+                className="group rounded-lg border px-3 py-2.5 flex items-center justify-between gap-3 transition-colors"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
               >
-                <div className="min-w-0 flex items-center gap-2">
-                  <Package className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+                <div className="min-w-0 flex items-start gap-2.5">
+                  <div
+                    className="mt-0.5 h-8 w-8 shrink-0 rounded-md flex items-center justify-center"
+                    style={{ background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)' }}
+                  >
+                    <Package className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} />
+                  </div>
                   <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{item.displayName || item.packageId}</div>
-                    <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-sm font-medium truncate">{item.displayName || item.packageId}</span>
+                      {item.verified ? (
+                        <span
+                          data-testid={`verified-badge-${item.packageId}`}
+                          title="Official Vectant program"
+                          className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full shrink-0"
+                          style={{ background: 'var(--brand-gradient-horizontal)', color: '#fff' }}
+                        >
+                          <ShieldCheck className="w-3 h-3" /> Verified
+                        </span>
+                      ) : null}
+                    </div>
+                    {item.description ? (
+                      <div className="text-[11px] mt-0.5 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
+                        {item.description}
+                      </div>
+                    ) : null}
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
                       {item.packageId} · {item.installCount || 0} installs
                     </div>
                   </div>
@@ -620,8 +642,8 @@ export default function ProgramsPanel() {
                     type="button"
                     data-testid={`install-published-${item.packageId}`}
                     onClick={() => handleInstallPublished(item, undefined)}
-                    className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1"
-                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                    className="shrink-0 h-7 px-2.5 rounded-md border text-[11px] inline-flex items-center gap-1 transition-colors"
+                    style={{ borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
                   >
                     <Download className="w-3 h-3" /> Install
                   </button>

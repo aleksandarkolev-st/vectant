@@ -191,4 +191,16 @@ describe('ProgramsPanel install / launch-from-install', () => {
     await render();
     expect(byTestId(container, 'publish-program')).toBeNull();
   });
+
+  it('shows a Verified badge only on verified marketplace programs and renders descriptions', async () => {
+    h.fetchMarketplace.mockResolvedValue([
+      { id: 'p1', packageId: '@vectant/nextjs-dev', publisher: 'vectant', displayName: 'Next.js Dev Server', description: 'Next.js development server with hot reload (port 3000).', installCount: 12, verified: true, latestVersion: '1.0.0' },
+      { id: 'p2', packageId: '@other/web', publisher: 'other', displayName: 'Web', description: 'A community app', installCount: 1, verified: false, latestVersion: '1.0.0' },
+    ]);
+    await render();
+
+    expect(byTestId(container, 'verified-badge-@vectant/nextjs-dev')).not.toBeNull();
+    expect(byTestId(container, 'verified-badge-@other/web')).toBeNull();
+    expect(byTestId(container, 'marketplace-item-@vectant/nextjs-dev').textContent).toContain('Next.js development server');
+  });
 });
