@@ -108,6 +108,26 @@ describe("browser MCP tool surface", () => {
     expect(released?.structuredContent).toEqual({ ok: true, released: true });
   });
 
+  it("closes authorized browser tabs through tools", async () => {
+    const url = "https://app.example.com/preview";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "preview", url, title: "Preview", active: true }]);
+    browserBroker.selectTab("preview");
+    const closeTab = vi.spyOn(browserPlaywrightAdapter, "closeTab").mockResolvedValue({ ok: true, tab_id: "preview" });
+
+    const response = await dispatchBrowserTool("synthi_browser_close_tab", { tab_id: "preview" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(closeTab).toHaveBeenCalledWith("preview");
+    expect(response?.structuredContent).toEqual({
+      ok: true,
+      closed: { ok: true, tab_id: "preview" },
+      forgotten: true,
+    });
+    expect(browserBroker.selectedTab()).toBeNull();
+    expect(browserBroker.listTabs()).toEqual([]);
+  });
+
   it("dispatches durable pointer and scroll agent actions through Playwright", async () => {
     const url = "https://app.example.com/records";
     browserBroker.requestConsent(url);

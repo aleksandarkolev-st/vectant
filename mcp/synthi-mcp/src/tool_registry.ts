@@ -20,6 +20,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_browser_list_tabs",
   "synthi_browser_select_tab",
   "synthi_browser_open",
+  "synthi_browser_close_tab",
   "synthi_browser_request_consent",
   "synthi_browser_get_consent",
   "synthi_browser_revoke_consent",

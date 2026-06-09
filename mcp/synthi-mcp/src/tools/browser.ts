@@ -237,6 +237,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_list_tabs",
   "synthi_browser_select_tab",
   "synthi_browser_open",
+  "synthi_browser_close_tab",
   "synthi_browser_request_consent",
   "synthi_browser_get_consent",
   "synthi_browser_revoke_consent",
@@ -379,6 +380,15 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: { url: { type: "string" } },
       required: ["url"],
+    },
+  },
+  {
+    name: "synthi_browser_close_tab",
+    description: "Close a browser tab previously opened or authorized by Synthi. Use this to clean up agent-owned preview tabs after workflow execution.",
+    inputSchema: {
+      type: "object",
+      properties: { tab_id: { type: "string" } },
+      required: ["tab_id"],
     },
   },
   {
@@ -730,6 +740,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return await browserSelectTabTool(args);
       case "synthi_browser_open":
         return await browserOpenTool(args);
+      case "synthi_browser_close_tab":
+        return await browserCloseTabTool(args);
       case "synthi_browser_request_consent":
         return browserRequestConsentTool(args);
       case "synthi_browser_get_consent":
@@ -978,6 +990,15 @@ async function browserOpenTool(args: unknown): Promise<ToolResponse> {
   const tabs = browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
   browserBroker.selectTab(tab.tab_id);
   return jsonResponse({ ok: true, tab, tabs });
+}
+
+async function browserCloseTabTool(args: unknown): Promise<ToolResponse> {
+  const tabId = requiredString(obj(args), "tab_id");
+  const brokerTab = browserBroker.selectTab(tabId);
+  if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: tabId });
+  const closed = await browserPlaywrightAdapter.closeTab(tabId);
+  const forgotten = browserBroker.forgetTab(tabId);
+  return jsonResponse({ ok: true, closed, forgotten: forgotten.forgotten });
 }
 
 function browserRequestConsentTool(args: unknown): ToolResponse {

@@ -1045,6 +1045,7 @@ async function verifyFreshMcpPrivateTool({
     preview_url: previewUrl,
     steps: [],
   };
+  let openedTabId = null;
   try {
     const initialized = await client.request("initialize", {
       protocolVersion: "2024-11-05",
@@ -1100,6 +1101,7 @@ async function verifyFreshMcpPrivateTool({
 
     const opened = await client.toolCall("synthi_browser_open", { url: previewUrl });
     const tabId = opened.parsed?.tab?.tab_id;
+    openedTabId = typeof tabId === "string" ? tabId : null;
     record(
       testCase.id,
       "fresh MCP open preview",
@@ -1124,8 +1126,18 @@ async function verifyFreshMcpPrivateTool({
         : `error=${call.parsed?.error || "unknown"}`
     );
     transcript.steps.push({ name: "call", ok: toolCallOk(call), result: call.parsed });
-    await writeJson(caseDir, "fresh-mcp-private-tool-call.json", transcript);
+  } catch (err) {
+    transcript.error = err instanceof Error ? err.message : String(err);
+    throw err;
   } finally {
+    if (openedTabId) {
+      const closed = await client.toolCall("synthi_browser_close_tab", { tab_id: openedTabId }).catch((err) => ({
+        isError: true,
+        parsed: { error: err instanceof Error ? err.message : String(err) },
+      }));
+      transcript.steps.push({ name: "close_tab", ok: toolCallOk(closed), result: closed.parsed });
+    }
+    await writeJson(caseDir, "fresh-mcp-private-tool-call.json", transcript).catch(() => undefined);
     await client.close().catch(() => undefined);
     if (!proc.killed) proc.kill("SIGTERM");
   }

@@ -231,6 +231,13 @@ export class BrowserPlaywrightAdapter {
     return this.describePage(page);
   }
 
+  async closeTab(tab_id: string): Promise<{ ok: true; tab_id: string }> {
+    const page = this.requirePage(tab_id);
+    await page.close({ runBeforeUnload: false });
+    this.pages.delete(tab_id);
+    return { ok: true, tab_id };
+  }
+
   async snapshot(tab_id: string): Promise<BrowserSnapshot> {
     const page = this.requirePage(tab_id);
     const [screenshot, dom] = await Promise.all([

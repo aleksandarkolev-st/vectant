@@ -179,6 +179,12 @@ export class BrowserBroker {
     return { ...tab };
   }
 
+  forgetTab(tab_id: string): { ok: true; forgotten: boolean } {
+    const forgotten = this.tabs.delete(tab_id);
+    if (this.selectedTabId === tab_id) this.selectedTabId = null;
+    return { ok: true, forgotten };
+  }
+
   selectedTab(): BrowserTab | null {
     if (!this.selectedTabId) return null;
     const tab = this.tabs.get(this.selectedTabId);
