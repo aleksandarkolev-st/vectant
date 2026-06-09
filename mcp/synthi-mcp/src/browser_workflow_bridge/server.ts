@@ -23,10 +23,10 @@ import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import type { WorkflowStepContractV7 } from "../browser/workflow.js";
-import { dispatchAuthTool } from "../tools/auth.js";
-import { browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
-import { dispatchSafetyTool } from "../tools/safety.js";
-import { dispatchSourceTool } from "../tools/source.js";
+import { AUTH_TOOL_NAMES, dispatchAuthTool } from "../tools/auth.js";
+import { BROWSER_TOOL_NAMES, browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
+import { SAFETY_TOOL_NAMES, dispatchSafetyTool } from "../tools/safety.js";
+import { SOURCE_TOOL_NAMES, dispatchSourceTool } from "../tools/source.js";
 import type { ToolResponse } from "../tools/shared.js";
 
 export interface BrowserWorkflowBridgeOptions {
@@ -82,25 +82,11 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_workflow_publish_tool: "synthi_browser_publish_private_tool",
 };
 
-const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
-  "synthi_browser_attach_current_workspace",
-  "synthi_browser_observe_preview",
-  "synthi_browser_begin_teach",
-  "synthi_browser_end_teach",
-  "synthi_auth_get_tool_auth_readiness",
-  "synthi_source_register_tokens",
-  "synthi_source_get_mapping_status",
-  "synthi_browser_compile_workflow",
-  "synthi_safety_run_prefix_validation",
-  "synthi_safety_set_replay_isolation_profile",
-  "synthi_safety_run_ci_isolated_replay",
-  "synthi_browser_acquire_lease",
-  "synthi_browser_run_workflow",
-  "synthi_browser_release_lease",
-  "synthi_browser_generate_script",
-  "synthi_browser_generate_private_tool_manifest",
-  "synthi_browser_publish_private_tool",
-  "synthi_browser_get_private_tool_manifest",
+const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set<string>([
+  ...BROWSER_TOOL_NAMES,
+  ...AUTH_TOOL_NAMES,
+  ...SOURCE_TOOL_NAMES,
+  ...SAFETY_TOOL_NAMES,
 ]);
 
 const REVIEW_LIMITATIONS = new Set([

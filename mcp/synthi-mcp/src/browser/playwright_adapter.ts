@@ -3521,7 +3521,7 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       '<style>',
       ':host{all:initial}',
       '.box{box-sizing:border-box;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;min-height:44px;width:min(330px,calc(100vw - 32px));padding:8px;border:1px solid rgba(232,232,226,.16);border-radius:8px;background:rgba(22,22,24,.94);color:rgb(246,246,240);font:12px/1.25 Inter,ui-sans-serif,system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.34)}',
-      '.status{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:6px;min-width:0;padding:0 4px;color:rgba(246,246,240,.78)}',
+      '.status{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:6px;min-width:0;padding:0 4px;color:rgba(246,246,240,.78);cursor:grab;user-select:none;touch-action:none}',
       '.dot{width:7px;height:7px;border-radius:50%;background:#8a8a82}',
       '.label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgb(246,246,240);font-weight:700}',
       '.meta{grid-column:1/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(246,246,240,.62);font:11px/1.25 Inter,ui-sans-serif,system-ui,sans-serif}',
@@ -3547,8 +3547,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     const meta = root.querySelector('.meta');
     const observeButton = root.querySelector('.observe');
     const teachButton = root.querySelector('.teach');
+    const dragHandle = root.querySelector('.status');
     let recording = false;
     let busy = false;
+    let dragState = null;
+    const positionStorageKey = 'synthi.workflow.toolbox.position.v1';
 
     function setState(next) {
       const status = next && next.status ? String(next.status) : next && next.recording ? 'recording' : next && next.observed ? 'observed' : 'idle';
@@ -3578,6 +3581,57 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       } catch {
         return '';
       }
+    }
+
+    function clampNumber(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function readablePosition(raw) {
+      if (!raw || typeof raw !== 'object') return null;
+      const left = Number(raw.left);
+      const top = Number(raw.top);
+      return Number.isFinite(left) && Number.isFinite(top) ? { left, top } : null;
+    }
+
+    function toolboxBounds() {
+      const rect = host.getBoundingClientRect();
+      return {
+        width: Math.max(1, rect.width || 330),
+        height: Math.max(1, rect.height || 44),
+      };
+    }
+
+    function applyToolboxPosition(rawPosition, persist) {
+      const position = readablePosition(rawPosition);
+      if (!position) return;
+      const bounds = toolboxBounds();
+      const margin = 8;
+      const left = clampNumber(position.left, margin, Math.max(margin, window.innerWidth - bounds.width - margin));
+      const top = clampNumber(position.top, margin, Math.max(margin, window.innerHeight - bounds.height - margin));
+      host.style.left = String(Math.round(left)) + 'px';
+      host.style.top = String(Math.round(top)) + 'px';
+      host.style.right = 'auto';
+      host.style.bottom = 'auto';
+      host.dataset.synthiWorkflowPosition = 'custom';
+      if (persist) {
+        try {
+          window.sessionStorage.setItem(positionStorageKey, JSON.stringify({ left, top }));
+        } catch {}
+      }
+    }
+
+    function restoreToolboxPosition() {
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(positionStorageKey) || 'null');
+        applyToolboxPosition(saved, false);
+      } catch {}
+    }
+
+    function keepToolboxInViewport() {
+      if (host.dataset.synthiWorkflowPosition !== 'custom') return;
+      const rect = host.getBoundingClientRect();
+      applyToolboxPosition({ left: rect.left, top: rect.top }, true);
     }
 
     async function call(action) {
@@ -3617,6 +3671,40 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
 
     observeButton.addEventListener('click', () => call('observe'));
     teachButton.addEventListener('click', () => call(recording ? 'stop' : 'teach'));
+    dragHandle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      const rect = host.getBoundingClientRect();
+      dragState = {
+        pointerId: event.pointerId,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+      };
+      dragHandle.setPointerCapture(event.pointerId);
+      dragHandle.style.cursor = 'grabbing';
+      event.preventDefault();
+    });
+    dragHandle.addEventListener('pointermove', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      applyToolboxPosition({
+        left: event.clientX - dragState.offsetX,
+        top: event.clientY - dragState.offsetY,
+      }, false);
+    });
+    dragHandle.addEventListener('pointerup', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      const rect = host.getBoundingClientRect();
+      dragState = null;
+      dragHandle.releasePointerCapture(event.pointerId);
+      dragHandle.style.cursor = '';
+      applyToolboxPosition({ left: rect.left, top: rect.top }, true);
+    });
+    dragHandle.addEventListener('pointercancel', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      dragState = null;
+      dragHandle.style.cursor = '';
+    });
+    window.addEventListener('resize', keepToolboxInViewport);
+    restoreToolboxPosition();
     call('state');
   })();`;
 }

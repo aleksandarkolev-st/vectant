@@ -108,6 +108,11 @@ function ownString(record, key) {
   return Object.prototype.hasOwnProperty.call(record, key) && typeof record[key] === "string" ? record[key] : undefined;
 }
 
+function detailMatches(detail, expected) {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return false;
+  return Object.entries(expected).every(([key, value]) => detail[key] === value);
+}
+
 function slugPart(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
@@ -236,6 +241,16 @@ async function runCase({ testCase, container, context, runner }) {
     idePage = await openWorkflowsPanel(context, workspaceUrl, slug);
     const attachBody = await clickWorkflowButton(idePage, /^(Attach|Reattach)$/);
     record(testCase.id, "click attach", attachBody.ok === true, attachBody.result?.runtime?.adapter || "");
+    if (typeof testCase.beforeTeach === "function") {
+      await testCase.beforeTeach({
+        testCase,
+        previewPage,
+        idePage,
+        previewUrl,
+        caseDir,
+        setupContext,
+      });
+    }
 
     await waitForWorkflowOverlay(previewPage);
     const observeState = await clickWorkflowOverlay(previewPage, "observe", previewUrl);
@@ -252,6 +267,8 @@ async function runCase({ testCase, container, context, runner }) {
 
     const beginState = await clickWorkflowOverlay(previewPage, "teach");
     record(testCase.id, "click overlay teach", beginState.ok === true && beginState.recording === true, beginState.status || "");
+    const parkedToolbox = await parkWorkflowOverlay(previewPage);
+    record(testCase.id, "park workflow overlay", parkedToolbox.ok, parkedToolbox.detail);
 
     await previewPage.bringToFront().catch(() => undefined);
     const taughtVisualPage = await testCase.teach(previewPage, { caseDir });
@@ -309,6 +326,23 @@ async function runCase({ testCase, container, context, runner }) {
       );
     }
     await writeJson(caseDir, "contract.json", contract);
+    const expectedTraceDetails = typeof testCase.expectedTraceDetails === "function"
+      ? testCase.expectedTraceDetails(setupContext)
+      : testCase.expectedTraceDetails;
+    if (Array.isArray(expectedTraceDetails) && expectedTraceDetails.length > 0) {
+      const traceBody = await workflowBridgeTool("synthi_browser_get_trace", {});
+      const trace = Array.isArray(traceBody.result?.trace) ? traceBody.result.trace : [];
+      await writeJson(caseDir, "trace.json", trace);
+      for (const expectedDetail of expectedTraceDetails) {
+        const matches = trace.some((event) => detailMatches(event?.detail, expectedDetail));
+        record(
+          testCase.id,
+          "trace expected target metadata",
+          matches,
+          Object.entries(expectedDetail).map(([key, value]) => `${key}=${String(value)}`).join(" ")
+        );
+      }
+    }
 
     const exportBody = await clickWorkflowButton(idePage, /^Export$/);
     let generated = exportBody.result;
@@ -1142,6 +1176,33 @@ async function clickWorkflowOverlay(page, action, expectedUrl = "", options = {}
     await sleep(250);
   }
   throw new Error(`overlay ${action} did not settle; state=${JSON.stringify(await workflowOverlayState(page))}`);
+}
+
+async function parkWorkflowOverlay(page) {
+  await waitForWorkflowOverlay(page);
+  const toolbox = page.getByTestId("synthi-workflow-toolbox").first();
+  const box = await toolbox.boundingBox();
+  const viewport = page.viewportSize() || { width: 1280, height: 720 };
+  if (!box) return { ok: false, detail: "toolbox bounds missing" };
+  const margin = 16;
+  const targetX = margin;
+  const targetY = margin;
+  const alreadyParked = Math.abs(box.x - targetX) < 4 && Math.abs(box.y - targetY) < 4;
+  if (!alreadyParked) {
+    const handleX = box.x + Math.min(48, Math.max(16, box.width * 0.25));
+    const handleY = box.y + Math.min(24, Math.max(12, box.height * 0.35));
+    const targetHandleX = Math.min(viewport.width - margin, targetX + Math.min(48, Math.max(16, box.width * 0.25)));
+    const targetHandleY = Math.min(viewport.height - margin, targetY + Math.min(24, Math.max(12, box.height * 0.35)));
+    await page.mouse.move(handleX, handleY);
+    await page.mouse.down();
+    await page.mouse.move(targetHandleX, targetHandleY, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+  }
+  const moved = await toolbox.boundingBox();
+  if (!moved) return { ok: false, detail: "toolbox moved bounds missing" };
+  const ok = moved.x >= 0 && moved.y >= 0 && moved.x + moved.width <= viewport.width && moved.y + moved.height <= viewport.height;
+  return { ok, detail: `x=${Math.round(moved.x)} y=${Math.round(moved.y)} w=${Math.round(moved.width)} h=${Math.round(moved.height)}` };
 }
 
 async function workflowOverlayState(page) {
@@ -2099,6 +2160,115 @@ const CASES = [
       const frame = page.frameLocator('iframe[data-testid="external-frame"]');
       await frame.getByLabel("Cardholder").fill("Ada Lovelace");
       await frame.getByText("Captured Ada Lovelace").waitFor();
+    },
+  },
+  {
+    id: "cross-origin-iframe-consented",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: [
+      "External preview",
+    ],
+    expectedReplayCode: [
+      "page.frameLocator(\"iframe[data-testid=\\\"external-frame\\\"]\")",
+      "getByLabel(\"External cardholder\")",
+      "getByRole(\"button\", { name: \"Preview external cardholder\" })",
+    ],
+    forbiddenReplayCode: [
+      "Mutation boundary:",
+    ],
+    liveReplayMode: "sameSession",
+    replayEnv: () => ({ EXTERNAL_CARDHOLDER: "Grace Hopper" }),
+    setup: async ({ addCleanup }) => {
+      const externalFrameHtml = [
+        "<!doctype html>",
+        "<html>",
+        "  <head>",
+        "    <meta charset=\"UTF-8\">",
+        "    <title>External Consented Frame</title>",
+        "    <style>",
+        "      body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 18px; color: #171717; background: #f7f7f4; }",
+        "      main { display: grid; gap: 10px; }",
+        "      h1 { margin: 0; font-size: 26px; line-height: 1.12; }",
+        "      label { display: grid; gap: 8px; font-weight: 700; }",
+        "      input { height: 40px; border: 1px solid #9c9c92; padding: 0 12px; font: inherit; }",
+        "      button { width: max-content; height: 42px; border: 0; background: #202020; color: white; padding: 0 16px; font: inherit; cursor: pointer; }",
+        "      output { min-height: 24px; color: #17663a; font-weight: 700; }",
+        "    </style>",
+        "  </head>",
+        "  <body>",
+        "    <main>",
+        "      <h1>External Consented Frame</h1>",
+        "      <label for=\"cardholder\">External cardholder</label>",
+        "      <input id=\"cardholder\" aria-label=\"External cardholder\" data-synthi-source-id=\"external.iframe.cardholder\" placeholder=\"Name on card\">",
+        "      <button type=\"button\" data-testid=\"preview-external-cardholder\" data-synthi-source-id=\"external.iframe.preview\">Preview external cardholder</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+        "    <script>",
+        "      const input = document.querySelector('#cardholder');",
+        "      document.querySelector('[data-testid=\"preview-external-cardholder\"]').addEventListener('click', () => {",
+        "        document.querySelector('#status').textContent = `External preview for ${input.value}`;",
+        "      });",
+        "    </script>",
+        "  </body>",
+        "</html>",
+        "",
+      ].join("\n");
+      const auxiliary = await startAuxiliaryOriginServer({
+        "/external-frame.html": externalFrameHtml,
+      });
+      addCleanup(auxiliary.close);
+      return { externalOrigin: auxiliary.origin, externalFrameHtml };
+    },
+    beforeTeach: async ({ testCase, setupContext }) => {
+      const consent = await workflowBridgeTool("synthi_browser_request_consent", {
+        url: setupContext.externalOrigin,
+        status: "granted",
+        screenshot: true,
+        diagnostics: false,
+        reason: "workflow-pipeline-cross-origin-iframe-consented",
+      });
+      record(
+        testCase.id,
+        "grant external iframe consent",
+        consent.ok === true && consent.result?.consent?.origin === setupContext.externalOrigin,
+        consent.result?.consent?.origin || consent.result?.error || "missing"
+      );
+    },
+    expectedTraceDetails: ({ externalOrigin }) => [
+      {
+        frame_origin: externalOrigin,
+        frame_origin_approved: true,
+        frame_screenshot_approved: true,
+      },
+    ],
+    files: ({ externalOrigin, externalFrameHtml }) => commonFiles({
+      title: "Cross-Origin Iframe Consented Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Cross-Origin Iframe Consented Workflow</h1>",
+        `      <iframe data-testid="external-frame" title="External consented checkout" src="${externalOrigin}/external-frame.html"></iframe>`,
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "iframe { width: min(660px, calc(100vw - 48px)); height: 360px; border: 1px solid #b9b9b2; background: white; }",
+      ],
+      script: "",
+      extraFiles: [
+        {
+          path: "external-frame.html",
+          encoding: "utf8",
+          content: externalFrameHtml,
+        },
+      ],
+    }),
+    teach: async (page) => {
+      const frame = page.frameLocator('iframe[data-testid="external-frame"]');
+      await frame.getByLabel("External cardholder").fill("Grace Hopper");
+      await frame.getByRole("button", { name: "Preview external cardholder" }).click();
+      const status = frame.locator("#status").filter({ hasText: "External preview for Grace Hopper" });
+      await status.waitFor({ state: "attached" });
+      await status.scrollIntoViewIfNeeded();
     },
   },
   {
