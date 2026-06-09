@@ -1024,12 +1024,15 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     }
     const currentPrevious = result[result.length - 1];
     if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
+      result[result.length - 1] = mergeObservedEffectsFromSuppressedEvent(currentPrevious, event);
       continue;
     }
     if (currentPrevious && shouldDropFillAfterClipboardDrop(currentPrevious, event)) {
+      result[result.length - 1] = mergeObservedEffectsFromSuppressedEvent(currentPrevious, event);
       continue;
     }
     if (currentPrevious && shouldDropFillAfterClipboardCut(currentPrevious, event)) {
+      result[result.length - 1] = mergeObservedEffectsFromSuppressedEvent(currentPrevious, event);
       continue;
     }
     while (event.action === "dblclick" && result.length > 0) {
@@ -1040,6 +1043,20 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     result.push(event);
   }
   return result;
+}
+
+function mergeObservedEffectsFromSuppressedEvent(target: BrowserTraceEvent, suppressed: BrowserTraceEvent): BrowserTraceEvent {
+  if (target.detail?.["observed_effects_redacted"] === true) return target;
+  const suppressedEffects = observedEffectTexts(suppressed);
+  if (suppressedEffects.length === 0) return target;
+  const merged = [...observedEffectTexts(target)];
+  for (const effect of suppressedEffects) {
+    if (!merged.includes(effect)) merged.push(effect);
+  }
+  if (merged.length === observedEffectTexts(target).length) return target;
+  const detail: Record<string, unknown> = { ...(target.detail ?? {}), observed_effects: merged };
+  delete detail["observed_effects_redacted"];
+  return { ...target, detail };
 }
 
 function shouldDropPressBeforeClipboardPaste(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {

@@ -930,6 +930,20 @@ describe("browser replay generation scenarios", () => {
           { kind: "css", locator: "page.locator(\"[data-synthi-source-id=\\\"notes.editor\\\"]\")", confidence: 0.975, reason: "source_identity" },
         ],
       }),
+      event({
+        event_id: "post-cut-value",
+        event_seq: 3,
+        action: "fill",
+        value: "alpha  gamma",
+        detail: {
+          input_debounced: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", text: "alpha beta gamma", source_id: "notes.editor" },
+          observed_effects: ["Value alpha gamma"],
+        },
+        locator_candidates: [
+          { kind: "css", locator: "page.locator(\"[data-synthi-source-id=\\\"notes.editor\\\"]\")", confidence: 0.975, reason: "source_identity" },
+        ],
+      }),
     ]);
 
     expect(generated.code).toContain("element.setSelectionRange(selection.start, selection.end, direction);");
@@ -937,6 +951,8 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("process.platform === 'darwin' ? \"Meta+X\" : \"Control+X\"");
     expect(generated.code).toContain("Copied 5 characters");
     expect(generated.code).toContain("Cut 4 characters");
+    expect(generated.code).toContain("Value alpha gamma");
+    expect(generated.code).not.toContain("await target3.fill");
     expect(generated.code).not.toContain("alpha beta gamma");
     expect(generated.code).not.toContain("beta");
   });
