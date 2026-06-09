@@ -2171,6 +2171,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const wheelAccumulated = new WeakMap();
     const keyboardTextPending = new WeakMap();
     const keyboardTextElements = new Set();
+    const controlBeforeEffects = new WeakMap();
+    const pendingEditBeforeEffects = new WeakMap();
     const lastSent = new WeakMap();
     const pasteSuppressedUntil = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
@@ -2763,6 +2765,29 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return visibleEffectTexts().filter((value) => !previous.has(value));
     }
 
+    function controlEffectTarget(target) {
+      if (!isElement(target)) return null;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return null;
+      const el = target.closest('input, textarea, select, [contenteditable], [role="textbox"]');
+      if (!isElement(el)) return null;
+      const tag = el.tagName.toLowerCase();
+      if (!editableTags.has(tag) && !el.isContentEditable && !attr(el, 'contenteditable')) return null;
+      return el;
+    }
+
+    function rememberControlBeforeEffects(target) {
+      const el = controlEffectTarget(target);
+      if (!el) return null;
+      controlBeforeEffects.set(el, visibleEffectTexts());
+      return el;
+    }
+
+    function consumeControlBeforeEffects(el) {
+      const beforeEffects = controlBeforeEffects.get(el);
+      controlBeforeEffects.delete(el);
+      return Array.isArray(beforeEffects) ? beforeEffects : visibleEffectTexts();
+    }
+
     function playwrightLocatorFor(el) {
       if (!isElement(el)) return '';
       const element = metadata(el);
@@ -3175,16 +3200,30 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       pendingElements.delete(el);
     }
 
+    function clearPendingEditState(el) {
+      clearPending(el);
+      pendingEditBeforeEffects.delete(el);
+      controlBeforeEffects.delete(el);
+    }
+
     function flushPendingEdits() {
       for (const el of Array.from(pendingElements)) {
         const timer = pending.get(el);
         if (timer) clearTimeout(timer);
         pending.delete(el);
         pendingElements.delete(el);
-        if (isElement(el)) emit(el, 'fill', editableValue(el), { input_debounced: true });
+        if (isElement(el)) {
+          const beforeEffects = pendingEditBeforeEffects.get(el);
+          pendingEditBeforeEffects.delete(el);
+          emit(el, 'fill', editableValue(el), { input_debounced: true, __before_effects: beforeEffects });
+        }
       }
       flushPendingKeyboardTextEntries();
     }
+
+    document.addEventListener('beforeinput', (event) => {
+      rememberControlBeforeEffects(eventElement(event));
+    }, true);
 
     document.addEventListener('input', (event) => {
       const el = eventElement(event);
@@ -3192,15 +3231,18 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isEditableTextTarget(el)) return;
       const suppressedUntil = pasteSuppressedUntil.get(el);
       if (suppressedUntil && Date.now() < suppressedUntil) {
-        clearPending(el);
+        clearPendingEditState(el);
         return;
       }
+      if (!pendingEditBeforeEffects.has(el)) pendingEditBeforeEffects.set(el, consumeControlBeforeEffects(el));
       clearPending(el);
       pendingElements.add(el);
       pending.set(el, setTimeout(() => {
         pending.delete(el);
         pendingElements.delete(el);
-        emit(el, 'fill', editableValue(el), { input_debounced: true });
+        const beforeEffects = pendingEditBeforeEffects.get(el);
+        pendingEditBeforeEffects.delete(el);
+        emit(el, 'fill', editableValue(el), { input_debounced: true, __before_effects: beforeEffects });
       }, 300));
     }, true);
 
@@ -3210,10 +3252,10 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const el = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-testid], [data-test]');
       if (!isElement(el) || !isEditableTextTarget(el)) return;
       const beforeEffects = visibleEffectTexts();
-      clearPending(el);
+      clearPendingEditState(el);
       pasteSuppressedUntil.set(el, Date.now() + 1000);
       setTimeout(() => {
-        clearPending(el);
+        clearPendingEditState(el);
         emit(el, 'fill', undefined, pasteDetail(el, event, beforeEffects));
       }, 0);
     }, true);
@@ -3234,13 +3276,17 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
       const suppressedUntil = pasteSuppressedUntil.get(el);
       if (suppressedUntil && Date.now() < suppressedUntil && isEditableTextTarget(el)) {
-        clearPending(el);
+        clearPendingEditState(el);
         return;
       }
+      const beforeEffects = pendingEditBeforeEffects.has(el)
+        ? pendingEditBeforeEffects.get(el)
+        : consumeControlBeforeEffects(el);
       clearPending(el);
+      pendingEditBeforeEffects.delete(el);
       const action = actionForChange(el);
       if (action === 'drag') {
-        emit(el, 'drag', undefined, fileDropDetail(el, { change_event: true }));
+        emit(el, 'drag', undefined, Object.assign(fileDropDetail(el, { change_event: true }), { __before_effects: beforeEffects }));
         return;
       }
       const value = action === 'check' || action === 'uncheck'
@@ -3248,7 +3294,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         : action === 'select' && el.multiple
           ? JSON.stringify(selectedSelectValues(el))
           : String(el.value || '');
-      emit(el, action, value, Object.assign({ change_event: true }, action === 'select' ? selectDetail(el) : {}));
+      emit(el, action, value, Object.assign({ change_event: true, __before_effects: beforeEffects }, action === 'select' ? selectDetail(el) : {}));
     }, true);
 
     document.addEventListener('wheel', (event) => {
@@ -3299,6 +3345,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      rememberControlBeforeEffects(target);
       if ((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'v' && isEditableTextTarget(target)) return;
       const keyboardTextSurface = keyboardTextEntrySurface(target);
       const typedText = keyboardTextSurface ? keyboardTextEntryValue(event) : '';
@@ -3374,7 +3421,9 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
 
     document.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
-      const el = pointerDraggableFor(eventElement(event));
+      const target = eventElement(event);
+      rememberControlBeforeEffects(target);
+      const el = pointerDraggableFor(target);
       if (!el) return;
       activePointerDrag = {
         el,

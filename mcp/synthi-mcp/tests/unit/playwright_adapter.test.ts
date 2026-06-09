@@ -79,6 +79,25 @@ describe("browser Playwright teach capture", () => {
     expect(source).toContain("}, actionEffectSettleMs);");
   });
 
+  it("samples form-control effects before value updates are observed", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/browser/playwright_adapter.ts"), "utf8");
+    const beforeInput = source.indexOf("document.addEventListener('beforeinput'");
+    const input = source.indexOf("document.addEventListener('input'");
+    const pointerDown = source.indexOf("document.addEventListener('pointerdown'");
+    const pointerRemember = source.indexOf("rememberControlBeforeEffects(target);", pointerDown);
+    const pointerDrag = source.indexOf("const el = pointerDraggableFor(target);", pointerDown);
+
+    expect(source).toContain("const controlBeforeEffects = new WeakMap();");
+    expect(source).toContain("const pendingEditBeforeEffects = new WeakMap();");
+    expect(source).toContain("function rememberControlBeforeEffects(target)");
+    expect(beforeInput).toBeGreaterThanOrEqual(0);
+    expect(input).toBeGreaterThan(beforeInput);
+    expect(source).toContain("if (!pendingEditBeforeEffects.has(el)) pendingEditBeforeEffects.set(el, consumeControlBeforeEffects(el));");
+    expect(source).toContain("Object.assign({ change_event: true, __before_effects: beforeEffects }");
+    expect(pointerRemember).toBeGreaterThan(pointerDown);
+    expect(pointerRemember).toBeLessThan(pointerDrag);
+  });
+
   it("normalizes hosted-browser DOM actions into broker teach events", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

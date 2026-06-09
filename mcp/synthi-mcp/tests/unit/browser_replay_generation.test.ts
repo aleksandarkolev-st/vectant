@@ -1017,6 +1017,7 @@ describe("browser replay generation scenarios", () => {
           min: "0",
           max: "100",
           step: "5",
+          observed_effects: ["Budget 75"],
           element: { tag: "input", type: "range", label: "Budget" },
         },
         locator_candidates: [
@@ -1032,6 +1033,7 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("element.dispatchEvent(new Event('change', { bubbles: true }));");
     expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"BUDGET\", \"budget-range\");");
     expect(generated.code).toContain("await expect(target1).toHaveValue(inputValue1);");
+    expect(generated.code).toContain("await expect(page.getByText(parameterizedTextRegex([\"Budget \",\"\"], inputValue1))).toBeVisible();");
     expect(generated.code).not.toContain("await target1.fill(\"75\");");
   });
 
