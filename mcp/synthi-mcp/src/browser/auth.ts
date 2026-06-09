@@ -7,6 +7,18 @@ import type { AuthDurabilityV7 } from "./workflow.js";
 
 export type AuthCheckpointDurability = Extract<AuthDurabilityV7, "interactiveCheckpoint" | "idpCheckpoint">;
 
+export interface AuthIdPDomainGrant {
+  checkpoint_id: string;
+  app_origin: string;
+  origin: string;
+  domain: string;
+  source: "topLevelRedirect" | "knownProviderConfig" | "userApprovedManual";
+  reason: "sessionCookie" | "silentRefresh" | "csrf" | "oauthState" | "unknown";
+  cookie_names_hashed: string[];
+  expires_at?: number;
+  approved_by_user: boolean;
+}
+
 export interface AuthCheckpointEnrollment {
   enrollment_id: string;
   app_origin: string;
@@ -18,6 +30,7 @@ export interface AuthCheckpointMetadata {
   checkpoint_id: string;
   app_origin: string;
   idp_origins: string[];
+  idp_grants: AuthIdPDomainGrant[];
   durability: AuthDurabilityV7;
   refresh_provider_id?: string;
   created_at: number;
@@ -395,17 +408,25 @@ export class AuthCheckpointManager {
     if (appOrigin !== enrollment.app_origin) return { ok: false, error: "auth_enrollment_origin_mismatch" };
     const now = Date.now();
     const ttl = clampTtl(input.ttl_ms);
-    const idpOrigins = [...new Set((input.redirect_chain ?? [])
-      .map((url) => safeOrigin(url))
-      .filter((origin): origin is string => origin !== null && origin !== appOrigin))];
+    const checkpointId = `auth_ckpt_${randomUUID()}`;
+    const expiresAt = now + ttl;
+    const idpGrants = idpGrantsFromRedirectChain({
+      checkpointId,
+      appOrigin,
+      redirectChain: input.redirect_chain ?? [],
+      approvedAt: now,
+      expiresAt,
+    });
+    const idpOrigins = idpGrants.map((grant) => grant.origin);
     const durability = checkpointDurabilityOpt(input.durability) ?? (idpOrigins.length > 0 ? "idpCheckpoint" : "interactiveCheckpoint");
     const checkpoint: AuthCheckpointMetadata = {
-      checkpoint_id: `auth_ckpt_${randomUUID()}`,
+      checkpoint_id: checkpointId,
       app_origin: appOrigin,
       idp_origins: idpOrigins,
+      idp_grants: idpGrants,
       durability,
       created_at: now,
-      expires_at: now + ttl,
+      expires_at: expiresAt,
       status: "valid",
       unattended_allowed: false,
       cookie_domain_audit: {
@@ -416,7 +437,7 @@ export class AuthCheckpointManager {
     };
     this.store.deleteEnrollment(input.enrollment_id);
     this.store.saveCheckpoint(checkpoint);
-    return { ok: true, checkpoint: { ...checkpoint, idp_origins: [...checkpoint.idp_origins] } };
+    return { ok: true, checkpoint: this.snapshot(checkpoint) };
   }
 
   list(url?: string): AuthCheckpointMetadata[] {
@@ -455,6 +476,7 @@ export class AuthCheckpointManager {
     }
     const allowedOrigins = [checkpoint.app_origin, ...checkpoint.idp_origins];
     const state = filterStorageStateForOrigins(input.storage_state, allowedOrigins);
+    checkpoint.idp_grants = idpGrantsWithCookieAudit(checkpoint, state.cookies);
     const metadata = storageArtifactMetadata({
       checkpoint_id: checkpoint.checkpoint_id,
       app_origin: checkpoint.app_origin,
@@ -657,6 +679,7 @@ export class AuthCheckpointManager {
       ...checkpoint,
       status,
       idp_origins: [...checkpoint.idp_origins],
+      idp_grants: normalizedIdpGrants(checkpoint),
       cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
     };
   }
@@ -681,18 +704,27 @@ export class AuthCheckpointManager {
     output: AuthRefreshProviderMintOutput
   ): { ok: true; storage_artifact: AuthStorageArtifactMetadata } | { ok: false; error: string } {
     const appOrigin = normalizeOrigin(provider.app_origin).origin;
-    const idpOrigins = [...new Set((output.redirect_chain ?? [])
-      .map((url) => safeOrigin(url))
-      .filter((origin): origin is string => origin !== null && origin !== appOrigin))];
     const now = Date.now();
+    const ttl = clampTtl(output.ttl_ms);
+    const checkpointId = `auth_ckpt_${randomUUID()}`;
+    const expiresAt = now + ttl;
+    const idpGrants = idpGrantsFromRedirectChain({
+      checkpointId,
+      appOrigin,
+      redirectChain: output.redirect_chain ?? [],
+      approvedAt: now,
+      expiresAt,
+    });
+    const idpOrigins = idpGrants.map((grant) => grant.origin);
     const checkpoint: AuthCheckpointMetadata = {
-      checkpoint_id: `auth_ckpt_${randomUUID()}`,
+      checkpoint_id: checkpointId,
       app_origin: appOrigin,
       idp_origins: idpOrigins,
+      idp_grants: idpGrants,
       durability: idpOrigins.length > 0 ? "idpCheckpoint" : "interactiveCheckpoint",
       refresh_provider_id: provider.provider_id,
       created_at: now,
-      expires_at: now + clampTtl(output.ttl_ms),
+      expires_at: expiresAt,
       status: "valid",
       unattended_allowed: true,
       cookie_domain_audit: {
@@ -737,6 +769,145 @@ function safeOrigin(url: string): string | null {
   }
 }
 
+function idpGrantsFromRedirectChain(input: {
+  checkpointId: string;
+  appOrigin: string;
+  redirectChain: string[];
+  approvedAt: number;
+  expiresAt: number;
+}): AuthIdPDomainGrant[] {
+  const byOrigin = new Map<string, AuthIdPDomainGrant>();
+  for (const url of input.redirectChain) {
+    const origin = safeOrigin(url);
+    if (!origin || origin === input.appOrigin) continue;
+    const existing = byOrigin.get(origin);
+    const reason = idpGrantReasonForRedirectUrl(url);
+    if (existing) {
+      byOrigin.set(origin, {
+        ...existing,
+        reason: strongestIdpGrantReason(existing.reason, reason),
+      });
+      continue;
+    }
+    byOrigin.set(origin, {
+      checkpoint_id: input.checkpointId,
+      app_origin: input.appOrigin,
+      origin,
+      domain: new URL(origin).hostname,
+      source: "topLevelRedirect",
+      reason,
+      cookie_names_hashed: [],
+      expires_at: input.expiresAt,
+      approved_by_user: true,
+    });
+  }
+  return [...byOrigin.values()];
+}
+
+function idpGrantReasonForRedirectUrl(url: string): AuthIdPDomainGrant["reason"] {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "unknown";
+  }
+  const haystack = `${parsed.pathname} ${parsed.search}`.toLowerCase();
+  if (/(^|[?&])(state|code|code_challenge|response_type|client_id)=/.test(parsed.search.toLowerCase()) || /oauth|oidc|authorize|callback/.test(haystack)) {
+    return "oauthState";
+  }
+  if (/prompt=none|silent|refresh|renew/.test(haystack)) return "silentRefresh";
+  if (/csrf|xsrf/.test(haystack)) return "csrf";
+  if (/login|session|sso|signin|sign-in/.test(haystack)) return "sessionCookie";
+  return "unknown";
+}
+
+function strongestIdpGrantReason(
+  a: AuthIdPDomainGrant["reason"],
+  b: AuthIdPDomainGrant["reason"]
+): AuthIdPDomainGrant["reason"] {
+  const rank: Record<AuthIdPDomainGrant["reason"], number> = {
+    oauthState: 5,
+    silentRefresh: 4,
+    csrf: 3,
+    sessionCookie: 2,
+    unknown: 1,
+  };
+  return rank[b] > rank[a] ? b : a;
+}
+
+function idpGrantsWithCookieAudit(checkpoint: AuthCheckpointMetadata, cookies: AuthStorageCookie[]): AuthIdPDomainGrant[] {
+  return normalizedIdpGrants(checkpoint).map((grant) => {
+    const matchingCookies = cookies.filter((cookie) => cookieMatchesDomain(cookie.domain, grant.domain));
+    const cookieNamesHashed = [...new Set(matchingCookies.map((cookie) => hashCookieName(grant.domain, cookie.name)))].sort();
+    const cookieExpiry = earliestCookieExpiry(matchingCookies);
+    return {
+      ...grant,
+      cookie_names_hashed: cookieNamesHashed,
+      ...(cookieExpiry !== undefined ? { expires_at: Math.min(grant.expires_at ?? cookieExpiry, cookieExpiry) } : {}),
+    };
+  });
+}
+
+function normalizedIdpGrants(checkpoint: AuthCheckpointMetadata): AuthIdPDomainGrant[] {
+  if (Array.isArray(checkpoint.idp_grants) && checkpoint.idp_grants.length > 0) {
+    return checkpoint.idp_grants.map((grant) => ({
+      checkpoint_id: checkpoint.checkpoint_id,
+      app_origin: checkpoint.app_origin,
+      origin: safeOrigin(grant.origin) ?? safeOrigin(`https://${grant.domain}`) ?? grant.origin,
+      domain: typeof grant.domain === "string" && grant.domain.length > 0
+        ? grant.domain
+        : safeDomain(grant.origin),
+      source: grant.source === "knownProviderConfig" || grant.source === "userApprovedManual" ? grant.source : "topLevelRedirect",
+      reason: isIdpGrantReason(grant.reason) ? grant.reason : "unknown",
+      cookie_names_hashed: Array.isArray(grant.cookie_names_hashed)
+        ? grant.cookie_names_hashed.filter((item): item is string => typeof item === "string" && item.startsWith("sha256:"))
+        : [],
+      ...(typeof grant.expires_at === "number" ? { expires_at: grant.expires_at } : {}),
+      approved_by_user: grant.approved_by_user === true,
+    }));
+  }
+  return checkpoint.idp_origins.map((origin) => ({
+    checkpoint_id: checkpoint.checkpoint_id,
+    app_origin: checkpoint.app_origin,
+    origin,
+    domain: safeDomain(origin),
+    source: "topLevelRedirect",
+    reason: "unknown",
+    cookie_names_hashed: [],
+    expires_at: checkpoint.expires_at,
+    approved_by_user: true,
+  }));
+}
+
+function isIdpGrantReason(value: unknown): value is AuthIdPDomainGrant["reason"] {
+  return value === "sessionCookie" || value === "silentRefresh" || value === "csrf" || value === "oauthState" || value === "unknown";
+}
+
+function safeDomain(origin: string): string {
+  try {
+    return new URL(origin).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function cookieMatchesDomain(cookieDomain: string, grantDomain: string): boolean {
+  const normalizedCookieDomain = cookieDomain.replace(/^\./, "").toLowerCase();
+  const normalizedGrantDomain = grantDomain.toLowerCase();
+  return normalizedCookieDomain === normalizedGrantDomain || normalizedCookieDomain.endsWith(`.${normalizedGrantDomain}`);
+}
+
+function hashCookieName(domain: string, name: string): string {
+  return `sha256:${createHash("sha256").update(`${domain.toLowerCase()}:${name}`, "utf8").digest("hex")}`;
+}
+
+function earliestCookieExpiry(cookies: AuthStorageCookie[]): number | undefined {
+  const expiries = cookies
+    .map((cookie) => cookie.expires)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+  return expiries.length > 0 ? Math.min(...expiries) : undefined;
+}
+
 function isSecretRef(value: string): boolean {
   return /^synthi:\/\/secrets\/[A-Za-z0-9_.:/-]+$/.test(value);
 }
@@ -768,6 +939,7 @@ function cloneCheckpointMetadata(checkpoint: AuthCheckpointMetadata): AuthCheckp
   return {
     ...checkpoint,
     idp_origins: [...checkpoint.idp_origins],
+    idp_grants: normalizedIdpGrants(checkpoint),
     cookie_domain_audit: { ...checkpoint.cookie_domain_audit },
     ...(checkpoint.storage_artifact ? { storage_artifact: { ...checkpoint.storage_artifact } } : {}),
   };

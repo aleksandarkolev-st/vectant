@@ -35,6 +35,17 @@ describe("auth checkpoint manager", () => {
     expect(result.checkpoint).toEqual(expect.objectContaining({
       app_origin: "https://app.example.com",
       idp_origins: ["https://auth.example-idp.com"],
+      idp_grants: [
+        expect.objectContaining({
+          app_origin: "https://app.example.com",
+          origin: "https://auth.example-idp.com",
+          domain: "auth.example-idp.com",
+          source: "topLevelRedirect",
+          reason: "oauthState",
+          approved_by_user: true,
+          cookie_names_hashed: [],
+        }),
+      ],
       durability: "idpCheckpoint",
       status: "valid",
       unattended_allowed: false,
@@ -75,10 +86,29 @@ describe("auth checkpoint manager", () => {
 
     const listed = secondManager.list("https://app.example.com");
     listed[0]?.idp_origins.push("https://mutated.example.com");
+    listed[0]?.idp_grants.push({
+      checkpoint_id: "mutated",
+      app_origin: "https://mutated.example.com",
+      origin: "https://mutated.example.com",
+      domain: "mutated.example.com",
+      source: "userApprovedManual",
+      reason: "unknown",
+      cookie_names_hashed: ["sha256:mutated"],
+      approved_by_user: true,
+    });
     listed[0]!.cookie_domain_audit.idp_origin_count = 99;
 
     expect(firstManager.list("https://app.example.com")[0]).toEqual(expect.objectContaining({
       idp_origins: ["https://idp.example.com"],
+      idp_grants: [
+        expect.objectContaining({
+          origin: "https://idp.example.com",
+          domain: "idp.example.com",
+          source: "topLevelRedirect",
+          reason: "sessionCookie",
+          cookie_names_hashed: [],
+        }),
+      ],
       cookie_domain_audit: expect.objectContaining({ idp_origin_count: 1 }),
     }));
   });
@@ -206,6 +236,16 @@ describe("auth checkpoint manager", () => {
       session_storage_entry_count: 1,
       captured_at: 1234,
     }));
+    expect(saved.checkpoint.idp_grants).toEqual([
+      expect.objectContaining({
+        origin: "https://idp.example.com",
+        domain: "idp.example.com",
+        source: "topLevelRedirect",
+        reason: "sessionCookie",
+        cookie_names_hashed: [expect.stringMatching(/^sha256:[a-f0-9]{64}$/)],
+      }),
+    ]);
+    expect(JSON.stringify(saved.checkpoint.idp_grants)).not.toMatch(/"sid"|"idp"|secret-cookie|secret-idp-cookie/);
     expect(JSON.stringify(saved.checkpoint)).not.toMatch(/secret-cookie|local-storage-secret|session-storage-secret|idp-local-secret|must-not-persist/);
 
     const artifact = manager.storageArtifactForCheckpoint(finished.checkpoint.checkpoint_id);
