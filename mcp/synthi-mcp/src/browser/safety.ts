@@ -214,6 +214,7 @@ function ciReplayBlockers(contract: WorkflowContractV7, profile: ReplayIsolation
   if (contract.steps.length === 0) blockers.push("no_actionable_steps");
   if (contract.mutationBoundaryPlan.mutationSteps.length > 0 && profile.readiness !== "ciIsolatedReady") {
     blockers.push("ci_isolation_profile_not_ready");
+    blockers.push(...profile.missing);
   }
   if (contract.mutationBoundaryPlan.mutationSteps.length > 0 && !profile.allow_mutation_replay) {
     blockers.push("mutation_replay_not_explicitly_allowed");
@@ -228,14 +229,97 @@ function missingIsolationFields(kind: ReplayIsolationKindV7, input: ReplayIsolat
   if (kind !== "ciIsolated") return [];
   const missing: string[] = [];
   if (!stringOpt(input.base_url)) missing.push("base_url");
-  if (!stringOpt(input.ci_command)) missing.push("ci_command");
-  if (!stringOpt(input.data_reset_command)) missing.push("data_reset_command");
-  if (!stringOpt(input.reset_assertion_command)) missing.push("reset_assertion_command");
-  if (!stringOpt(input.postcondition_command)) missing.push("postcondition_command");
+  validateReplayCommandField(missing, "ci_command", input.ci_command);
+  validateReplayCommandField(missing, "data_reset_command", input.data_reset_command);
+  validateReplayCommandField(missing, "reset_assertion_command", input.reset_assertion_command);
+  validateReplayCommandField(missing, "postcondition_command", input.postcondition_command);
   if (!stringOpt(input.reset_profile_id)) missing.push("reset_profile_id");
   if (!stringOpt(input.state_seed_id)) missing.push("state_seed_id");
   if (input.allow_mutation_replay !== true) missing.push("allow_mutation_replay");
   return missing;
+}
+
+function validateReplayCommandField(missing: string[], field: string, value: unknown): void {
+  const command = stringOpt(value);
+  if (!command) {
+    missing.push(field);
+    return;
+  }
+  if (replayCommandSyntaxError(command)) {
+    missing.push(`invalid_${field}`);
+  }
+}
+
+export function parseReplayCommand(command: string): string[] | null {
+  if (replayCommandSyntaxError(command)) return null;
+  const argv: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== "\"") {
+      quote = quote === "'" ? null : "'";
+      continue;
+    }
+    if (char === "\"" && quote !== "'") {
+      quote = quote === "\"" ? null : "\"";
+      continue;
+    }
+    if (/\s/.test(char) && quote === null) {
+      if (current.length > 0) {
+        argv.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (escaped) current += "\\";
+  if (quote !== null) return null;
+  if (current.length > 0) argv.push(current);
+  return argv.length > 0 ? argv : null;
+}
+
+export function replayCommandSyntaxError(command: string): string | null {
+  if (command.trim().length === 0) return "empty";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== "\"") {
+      quote = quote === "'" ? null : "'";
+      continue;
+    }
+    if (char === "\"" && quote !== "'") {
+      quote = quote === "\"" ? null : "\"";
+      continue;
+    }
+    if (quote !== null) continue;
+    if (char === "\n" || char === "\r") return "newline";
+    if (char === ";" || char === "|" || char === "&" || char === "<" || char === ">" || char === "`") {
+      return "shell_control";
+    }
+    if (char === "$" && command[index + 1] === "(") return "shell_substitution";
+  }
+  if (quote !== null) return "unclosed_quote";
+  return null;
 }
 
 function readinessFor(kind: ReplayIsolationKindV7, missing: string[], canRunFullMutationReplay: boolean): ReplayIsolationProfileV7["readiness"] {

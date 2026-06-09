@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { generatePlaywrightScript, workflowParameterEnvName } from "./trace.js";
 import { classifyWorkflowReplayFailure, type FailureClassV7 } from "./workflow.js";
-import type { ReplayIsolationProfileV7 } from "./safety.js";
+import { parseReplayCommand, type ReplayIsolationProfileV7 } from "./safety.js";
 import type { AuthBrowserStorageState } from "./auth.js";
 import type { BrowserTraceEvent } from "./types.js";
 import type { CompiledWorkflowV7 } from "./workflow.js";
@@ -110,6 +110,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const blockers = [
     ...(input.blockers ?? []),
     ...(input.profile.readiness !== "ciIsolatedReady" ? ["ci_isolation_profile_not_ready"] : []),
+    ...input.profile.missing,
     ...(!input.profile.base_url ? ["base_url"] : []),
     ...(!input.profile.ci_command ? ["ci_command"] : []),
     ...(!input.profile.data_reset_command ? ["data_reset_command"] : []),
@@ -428,12 +429,17 @@ interface CommandResult {
 
 async function runCommand(command: string, options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<CommandResult> {
   return new Promise((resolve) => {
+    const argv = parseReplayCommand(command);
+    if (!argv || argv.length === 0) {
+      resolve({ exitCode: 1, output: "invalid command line" });
+      return;
+    }
     let child;
     try {
-      child = spawn(command, {
+      child = spawn(argv[0]!, argv.slice(1), {
         cwd: options.cwd,
         env: options.env,
-        shell: true,
+        shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
