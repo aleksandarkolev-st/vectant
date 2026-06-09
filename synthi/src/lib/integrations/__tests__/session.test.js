@@ -30,4 +30,10 @@ describe('resolveActor', () => {
     h.getServerSession.mockResolvedValue(null);
     expect(await resolveActor()).toBeNull();
   });
+
+  it('returns null when the authenticated email has no matching DB user', async () => {
+    h.getServerSession.mockResolvedValue({ user: { id: '242593757', email: 'a@b.c' } });
+    h.findUnique.mockResolvedValue(null);
+    expect(await resolveActor()).toBeNull();
+  });
 });
