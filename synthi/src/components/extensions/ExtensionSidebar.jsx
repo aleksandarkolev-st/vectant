@@ -42,6 +42,16 @@ module.exports = { activate, deactivate };
 `,
 };
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 // ─── State colors ────────────────────────────────────────────
 // Style objects (not Tailwind utility strings) so the dots respect the
 // active theme — `--accent-*` are remapped by ThemeProvider on swap.
@@ -50,13 +60,15 @@ const STATE_STYLES = {
   installed:   { background: 'var(--text-muted)' },
   loaded:      { background: 'var(--brand-stop-4)' },
   activating:  { background: 'var(--accent-warning)' },
+  'pending-remote': { background: 'var(--brand-stop-4)' },
   disabled:    { background: 'var(--text-dim)' },
   crashed:     { background: 'var(--accent-danger)' },
   quarantined: { background: 'color-mix(in srgb, var(--accent-danger) 80%, black)' },
 };
-const STATE_PULSE = new Set(['activating']);
+const STATE_PULSE = new Set(['activating', 'pending-remote']);
 const STATE_LABELS = {
   active: 'Active', installed: 'Installed', loaded: 'Loaded',
+  'pending-remote': 'Remote install queued',
   activating: 'Activating…', disabled: 'Disabled',
   crashed: 'Crashed', quarantined: 'Quarantined',
 };
@@ -82,7 +94,14 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
             <span className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{ext.displayName || ext.name}</span>
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>v{ext.version}</span>
           </div>
-          <div className="text-[10px] truncate" style={{ color: 'var(--text-dim)' }}>{ext.publisher}</div>
+          <div className="text-[10px] truncate" style={{ color: 'var(--text-dim)' }}>
+            {ext.publisher}
+            {ext.state && ext.state !== 'installed' && (
+              <span style={{ color: ext.state === 'crashed' ? 'var(--accent-danger)' : 'var(--text-muted)' }}>
+                {' '}· {STATE_LABELS[ext.state] || ext.state}
+              </span>
+            )}
+          </div>
         </div>
         <span
           className={`shrink-0 inline-block w-2 h-2 rounded-full ${STATE_PULSE.has(ext.state) ? 'animate-pulse' : ''}`}
@@ -101,6 +120,11 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
           {ext.state === 'quarantined' && (
             <div className="border rounded px-2 py-1.5 text-[11px] mb-2" style={{ background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-danger) 30%, transparent)', color: 'var(--accent-danger)' }}>
               ⚠ Quarantined: {ext.quarantineReason || 'Repeated failures'}
+            </div>
+          )}
+          {ext.state === 'crashed' && (
+            <div className="border rounded px-2 py-1.5 text-[11px] mb-2" style={{ background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-danger) 30%, transparent)', color: 'var(--accent-danger)' }}>
+              Failed: {ext.failedReason || 'Extension activation failed'}
             </div>
           )}
           <div className="flex gap-1.5">
@@ -427,7 +451,7 @@ module.exports = { activate, deactivate };
 `;
     }
 
-    await onInstall(extId, manifest, code);
+    await onInstall(extId, manifest, code, { source: 'marketplace' });
   }, [onInstall]);
 
   // ─── Install sample ───────────────────────────────────
@@ -461,10 +485,11 @@ module.exports = { activate, deactivate };
     try {
       const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
       const buffer = await file.arrayBuffer();
+      const vsixBase64 = arrayBufferToBase64(buffer);
       const { manifest, code, nodeCode } = await parseVSIX(buffer);
       if (nodeCode) manifest._nodeCode = nodeCode;
       const extId = `${manifest.publisher || 'unknown'}.${manifest.name}`;
-      await onInstall(extId, manifest, code);
+      await onInstall(extId, manifest, code, { source: 'vsix', vsixBase64 });
       setShowInstall(false);
       setVsixFileName(null);
     } catch (err) {

@@ -304,6 +304,33 @@ export class MainThreadBridge {
   }
 
   /**
+   * Install a stored extension candidate on the VS Code Server using the
+   * original install source when available.
+   *
+   * @param {ExtensionInfo & {installSource?: string, vsixBase64?: string}} info
+   * @returns {Promise<{success: boolean, extensionId: string, uiBridged?: boolean, error?: string}>}
+   */
+  async _installOnVSCodeServerFromInfo(info) {
+    if (!info?.id) {
+      throw new Error('Missing extension info for VS Code Server install');
+    }
+
+    if (info.vsixBase64) {
+      return this.installExtensionOnServer(info.id, info.vsixBase64);
+    }
+
+    if (info.installSource === 'vsix') {
+      throw new Error('Local VSIX bytes are unavailable; reinstall the .vsix file to upload it to the server.');
+    }
+
+    if (info.installSource === 'manual') {
+      throw new Error('Manual code installs cannot run on the VS Code Server without a VSIX package.');
+    }
+
+    return this.installMarketplaceExtensionOnServer(info.id);
+  }
+
+  /**
    * Determine how a Node-only extension should be handled.
    * Returns 'vscode-server' if the VS Code Server is available,
    * or 'pending' if it's not connected yet.
@@ -353,7 +380,15 @@ export class MainThreadBridge {
     for (const [id, info] of this.extensions) {
       if (info.remote) continue; // already on remote
       if (info.isActive) continue; // already active locally
-      if (this.vscodeServerExtensions.has(id)) continue; // already on VS Code Server
+      if (this.vscodeServerExtensions.has(id)) {
+        // The server can announce/install an extension before Redux has
+        // restored the matching frontend row. Do not leave that row stuck in
+        // pending-remote; reconcile the bridge state and notify the UI.
+        info.isActive = true;
+        info.remote = true;
+        this.onExtensionStateChanged?.(id, 'active');
+        continue;
+      }
 
       // Eligible: Node-only extensions, OR large-bundle extensions with main entry
       const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
@@ -380,21 +415,23 @@ export class MainThreadBridge {
     for (const info of toRehydrate) {
       try {
         this.onExtensionStateChanged?.(info.id, 'activating');
-        const result = await this.installMarketplaceExtensionOnServer(info.id);
+        const result = await this._installOnVSCodeServerFromInfo(info);
         if (result.success) {
           info.isActive = true;
+          info.remote = true;
           this.onExtensionStateChanged?.(info.id, 'active');
           console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server`);
           // Emit synthetic webview events so the sidebar shows content
           // immediately while the preload bridge connects
           this._emitSyntheticWebviewEvents(info.id, info.manifest);
         } else {
-          this.onExtensionStateChanged?.(info.id, 'pending-remote');
-          console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install returned unsuccessful`);
+          const reason = result.error || 'VS Code Server install returned unsuccessful';
+          this.onExtensionStateChanged?.(info.id, 'crashed', reason);
+          console.warn(`[MainThreadBridge] ${info.id}: ${reason}`);
         }
       } catch (err) {
         console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install failed:`, err.message);
-        this.onExtensionStateChanged?.(info.id, 'pending-remote');
+        this.onExtensionStateChanged?.(info.id, 'crashed', err.message);
       }
     }
   }

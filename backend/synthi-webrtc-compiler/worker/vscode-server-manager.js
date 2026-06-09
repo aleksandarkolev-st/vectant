@@ -44,7 +44,12 @@ const VERBOSE_LOGS = process.env.SYNTHI_VSCODE_VERBOSE === '1';
 
 /** Debug log helper — only writes when verbose logging is enabled */
 function debugLog(msg) {
-  if (VERBOSE_LOGS) debugLog(msg);
+  if (!VERBOSE_LOGS) return;
+  try {
+    process.stderr.write(String(msg));
+  } catch (_) {
+    // Logging must never affect extension-host control flow.
+  }
 }
 
 /** Where to store the VS Code Server binary and data */
@@ -1750,6 +1755,8 @@ function findServerBinary() {
   // 2. Managed install
   const managedBin = path.join(VSCODE_SERVER_DIR, 'bin', SERVER_BIN_NAME);
   if (fs.existsSync(managedBin)) return managedBin;
+  const standaloneBin = findManagedStandaloneCodeServerBinary();
+  if (standaloneBin) return standaloneBin;
 
   // 3. System PATH — try `code-server`
   try {
@@ -1768,6 +1775,22 @@ function findServerBinary() {
     }
   }
 
+  return null;
+}
+
+function findManagedStandaloneCodeServerBinary() {
+  const installLibDir = path.join(VSCODE_SERVER_DIR, 'install', 'lib');
+  if (!fs.existsSync(installLibDir)) return null;
+  try {
+    const candidates = fs.readdirSync(installLibDir)
+      .filter(name => name.startsWith('code-server-'))
+      .sort()
+      .reverse();
+    for (const name of candidates) {
+      const bin = path.join(installLibDir, name, 'bin', SERVER_BIN_NAME);
+      if (fs.existsSync(bin)) return bin;
+    }
+  } catch (_) {}
   return null;
 }
 
@@ -1808,13 +1831,15 @@ async function ensureServerBinary() {
  */
 function installCodeServerUnix(binDir) {
   return new Promise((resolve, reject) => {
-    const installScript = spawn('sh', ['-c',
-      `curl -fsSL https://code-server.dev/install.sh | sh -s -- --prefix="${path.join(VSCODE_SERVER_DIR, 'install')}" --method=standalone`
+    const installDir = path.join(VSCODE_SERVER_DIR, 'install');
+    const runInstall = () => spawn('sh', ['-c',
+      `curl -fsSL https://code-server.dev/install.sh | sh -s -- --prefix="${installDir}" --method=standalone`
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
     });
 
+    const installScript = runInstall();
     let stdout = '';
     let stderr = '';
     installScript.stdout.on('data', (d) => { stdout += d; });
@@ -1822,15 +1847,20 @@ function installCodeServerUnix(binDir) {
 
     installScript.on('close', (code) => {
       if (code !== 0) {
+        try {
+          fs.rmSync(installDir, { recursive: true, force: true });
+        } catch (_) {}
         return reject(new Error(`code-server install failed (exit ${code}): ${stderr}`));
       }
       // Find the installed binary
-      const installed = path.join(VSCODE_SERVER_DIR, 'install', 'bin', 'code-server');
-      if (fs.existsSync(installed)) {
+      const installed = path.join(installDir, 'bin', 'code-server');
+      const standalone = findManagedStandaloneCodeServerBinary();
+      const resolved = fs.existsSync(installed) ? installed : standalone;
+      if (resolved && fs.existsSync(resolved)) {
         // Symlink into our bin directory
         const link = path.join(binDir, 'code-server');
         try { fs.unlinkSync(link); } catch (_) {}
-        fs.symlinkSync(installed, link);
+        fs.symlinkSync(resolved, link);
         resolve(link);
       } else {
         reject(new Error('code-server binary not found after install'));
@@ -6392,4 +6422,4 @@ rl.on('close', async () => {
 // installExtension, etc.) via stdin immediately.  The browser-side
 // VSCodeServerProxy.waitForReady() listens for this event.
 debugLog('[vscode-server-manager] VS Code Server Manager started\n');
-sendEvent('workerReady'); 
+sendEvent('workerReady');

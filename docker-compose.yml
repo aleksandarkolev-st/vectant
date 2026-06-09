@@ -59,7 +59,7 @@ services:
         NEXT_PUBLIC_YSWEET_URL: "http://localhost:8180"
         NEXT_PUBLIC_COLLAB_PORT: "1234"
         NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
-        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
         NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
@@ -85,7 +85,7 @@ services:
       LOCAL_TURN_USERNAME: "synthi"
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
-      NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+      NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
       # Inside the compose network the ai-engine is reachable as `ai-engine:8000`,
       # not localhost. Used by RAG fast-context, NEP edit-impact, shadow flows, agent.
       CODE_INTEL_URL: "http://ai-engine:8000"
@@ -194,13 +194,14 @@ services:
       context: ./ai-backend/gateway
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:7070:7070"
+      - "127.0.0.1:${AI_GATEWAY_HOST_PORT:-7071}:7070"
     environment:
       GATEWAY_PORT: "7070"
       GATEWAY_WS_PATH: "/ws"
       BACKEND_URL: "http://ai-engine:8000"
       GATEWAY_CLUSTER: "false"
       GATEWAY_AUTH_DISABLED: "true"
+      GATEWAY_AUTH_ALLOW_INSECURE_LOCAL: "true"
     depends_on:
       - ai-engine
 
