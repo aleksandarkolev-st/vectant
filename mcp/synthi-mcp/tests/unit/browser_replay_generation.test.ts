@@ -566,6 +566,7 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await target2.fill(inputValue2);");
     expect(generated.code).toContain("await expect(popup1.getByText(parameterizedTextRegex([\"Filtered help for \",\"\"], inputValue2))).toBeVisible();");
     expect(generated.code).not.toContain("Filtered help for contracts");
+    expect(generated.code).not.toContain("await popup1.goto(workflowUrl(\"/help\"));");
     expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
   });
 
@@ -621,6 +622,7 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code.indexOf("page.waitForEvent('popup')")).toBeLessThan(generated.code.indexOf("popup1.getByLabel(\"Search help\")"));
     expect(generated.code.indexOf("target1.click()")).toBeLessThan(generated.code.indexOf("target2.fill(inputValue2)"));
     expect(generated.code).not.toContain("await page.goto(workflowUrl(\"/help\"));");
+    expect(generated.code).not.toContain("await popup1.goto(workflowUrl(\"/help\"));");
   });
 
   it("returns to the opener page after popup continuation actions", () => {
@@ -686,6 +688,7 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await target3.click();");
     expect(generated.code).toContain("await expect(page.getByText(\"Summary ready\", { exact: true })).toBeVisible();");
     expect(generated.code).not.toContain("popup1.getByRole(\"button\", { name: \"Show handoff summary\" })");
+    expect(generated.code).not.toContain("await popup1.goto(workflowUrl(\"/help\"));");
     expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
   });
 

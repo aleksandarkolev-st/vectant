@@ -107,6 +107,20 @@ describe("browser Playwright teach capture", () => {
     expect(pointerRemember).toBeLessThan(pointerDrag);
   });
 
+  it("installs teach capture at browser-context scope for future popups", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/browser/playwright_adapter.ts"), "utf8");
+    const installTeach = source.indexOf("private async installTeachCapture(page: Page");
+    const contextInstallCall = source.indexOf("await this.installContextTeachCapture(page.context());", installTeach);
+    const contextInstall = source.indexOf("private async installContextTeachCapture(context: BrowserContext)");
+
+    expect(source).toContain("private readonly teachCaptureContexts = new WeakSet<BrowserContext>();");
+    expect(contextInstallCall).toBeGreaterThan(installTeach);
+    expect(contextInstall).toBeGreaterThan(contextInstallCall);
+    expect(source).toContain("await context.exposeBinding(bindingName");
+    expect(source).toContain("const sourcePage = source.page as Page | undefined;");
+    expect(source).toContain("await context.addInitScript(script).catch(() => undefined);");
+  });
+
   it("normalizes hosted-browser DOM actions into broker teach events", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

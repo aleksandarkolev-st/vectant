@@ -607,6 +607,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else if (isPopupTrigger(event)) {
           const popupVar = pushPopupAction(lines, target, "click", event, targetSeq, baseOrigin, pageVar);
           rememberPopupPage(popupPageByTab, event, popupVar);
+          rememberPopupCurrentUrl(currentUrlByPage, event, popupVar);
         } else {
           lines.push(`  await ${clickActionCall(target, "click", event)};`);
         }
@@ -621,6 +622,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else if (isPopupTrigger(event)) {
           const popupVar = pushPopupAction(lines, target, "dblclick", event, targetSeq, baseOrigin, pageVar);
           rememberPopupPage(popupPageByTab, event, popupVar);
+          rememberPopupCurrentUrl(currentUrlByPage, event, popupVar);
         } else {
           lines.push(`  await ${clickActionCall(target, "dblclick", event)};`);
         }
@@ -826,6 +828,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         } else if (isPopupTrigger(event)) {
           const popupVar = pushPopupAction(lines, target, "press", event, targetSeq, baseOrigin, pageVar, event.value ?? "Enter");
           rememberPopupPage(popupPageByTab, event, popupVar);
+          rememberPopupCurrentUrl(currentUrlByPage, event, popupVar);
         } else {
           lines.push(`  await ${target}.press(${JSON.stringify(event.value ?? "Enter")});`);
         }
@@ -1240,6 +1243,12 @@ function frameLocatorChainForEvent(event: BrowserTraceEvent): string[] {
 function rememberPopupPage(popupPageByTab: Map<string, string>, event: BrowserTraceEvent, popupVar: string): void {
   const popupTab = typeof event.detail?.["popup_tab_id"] === "string" ? event.detail["popup_tab_id"] : "";
   if (popupTab) popupPageByTab.set(popupTab, popupVar);
+}
+
+function rememberPopupCurrentUrl(currentUrlByPage: Map<string, string>, event: BrowserTraceEvent, popupVar: string): void {
+  const popupUrl = typeof event.detail?.["popup_url"] === "string" ? event.detail["popup_url"] : "";
+  const popupUrlRedacted = event.detail?.["popup_url_redacted"] === true;
+  if (popupUrl && !popupUrlRedacted) currentUrlByPage.set(popupVar, popupUrl);
 }
 
 function escapeRegExp(value: string): string {

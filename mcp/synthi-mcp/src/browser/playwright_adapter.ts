@@ -117,6 +117,7 @@ export class BrowserPlaywrightAdapter {
   private readonly pages = new Map<string, PageRecord>();
   private readonly popupOpeners = new Map<string, PopupOpenerContext>();
   private readonly instrumented = new WeakSet<Page>();
+  private readonly teachCaptureContexts = new WeakSet<BrowserContext>();
   private readonly workflowOverlayInitScriptInstalled = new WeakSet<Page>();
   private readonly workflowOverlayInstalled = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
@@ -1065,6 +1066,7 @@ export class BrowserPlaywrightAdapter {
   }
 
   private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
+    await this.installContextTeachCapture(page.context());
     const bindingName = "__synthiRecordHumanAction";
     const annotationBindingName = "__synthiAnnotateHumanAction";
     await page.exposeBinding(bindingName, async (source, payload: unknown) => {
@@ -1086,6 +1088,39 @@ export class BrowserPlaywrightAdapter {
     const script = teachCaptureInitScript(bindingName, annotationBindingName);
     await page.addInitScript(script).catch(() => undefined);
     await Promise.all(page.frames().map((frame) => frame.evaluate(script).catch(() => undefined)));
+  }
+
+  private async installContextTeachCapture(context: BrowserContext): Promise<void> {
+    if (this.teachCaptureContexts.has(context)) return;
+    this.teachCaptureContexts.add(context);
+    const bindingName = "__synthiRecordHumanAction";
+    const annotationBindingName = "__synthiAnnotateHumanAction";
+    await context.exposeBinding(bindingName, async (source, payload: unknown) => {
+      const sourcePage = source.page as Page | undefined;
+      if (!sourcePage) return;
+      const tab_id = this.idForPage(sourcePage);
+      this.pages.set(tab_id, { page: sourcePage, tab_id });
+      const event = normalizeCapturedHumanAction(
+        this.enrichCapturedPayloadWithTabContext(tab_id, await this.enrichCapturedPayloadWithFrame(sourcePage, source.frame, payload)),
+        tab_id
+      );
+      if (!event) return;
+      this.teachEventSink?.(event);
+    }).catch(() => undefined);
+    await context.exposeBinding(annotationBindingName, (source, payload: unknown) => {
+      const sourcePage = source.page as Page | undefined;
+      if (!sourcePage) return;
+      const tab_id = this.idForPage(sourcePage);
+      this.pages.set(tab_id, { page: sourcePage, tab_id });
+      const event = normalizeCapturedHumanActionAnnotation(
+        this.enrichCapturedPayloadWithTabContext(tab_id, payload),
+        tab_id
+      );
+      if (!event) return;
+      this.teachEventAnnotationSink?.(event);
+    }).catch(() => undefined);
+    const script = teachCaptureInitScript(bindingName, annotationBindingName);
+    await context.addInitScript(script).catch(() => undefined);
   }
 
   private enrichCapturedPayloadWithTabContext(tab_id: string, payload: unknown): unknown {
