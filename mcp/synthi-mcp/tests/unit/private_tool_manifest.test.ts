@@ -50,7 +50,7 @@ describe("private browser workflow MCP tool manifest", () => {
       status: "available",
       tool_name: "synthi_app_open_details",
       default_run_mode: "sameSession",
-      run_modes: ["sameSession"],
+      run_modes: ["sameSession", "coldSession", "prefixOnly"],
       backing_tools: expect.objectContaining({
         run_workflow: "synthi_browser_run_workflow",
         ci_isolated_replay: "synthi_safety_run_ci_isolated_replay",
@@ -84,7 +84,7 @@ describe("private browser workflow MCP tool manifest", () => {
 
     expect(manifest.status).toBe("manualOnly");
     expect(manifest.default_run_mode).toBe("confirmBeforeCommit");
-    expect(manifest.run_modes).toEqual(["prefixOnly", "confirmBeforeCommit", "ciOnly"]);
+    expect(manifest.run_modes).toEqual(["prefixOnly", "coldSession", "confirmBeforeCommit", "ciOnly"]);
     expect(manifest.auth.unattended_ready).toBe(false);
     expect(manifest.mutation).toEqual(expect.objectContaining({
       first_mutation_step_id: "save",

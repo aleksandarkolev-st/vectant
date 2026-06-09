@@ -167,7 +167,7 @@ export interface WorkflowContractV7 {
   }>;
   lane0: Lane0StatusV7;
   failureClasses: FailureClassV7[];
-  replayModes: Array<"sameSession" | "prefixOnly" | "ciIsolated">;
+  replayModes: Array<"sameSession" | "prefixOnly" | "coldSession" | "ciIsolated">;
   limitations: WorkflowLimitationV7[];
   counterfactualPlan: {
     mode: "readOnlyPrefix" | "sameSessionOnly" | "blocked";
@@ -192,7 +192,7 @@ export interface WorkflowContractV7 {
     unattendedReady: boolean;
     authDurability: AuthDurabilityV7;
     mutationMode: "readOnly" | "confirmBeforeCommit" | "ciOnly";
-    runModes: Array<"sameSession" | "prefixOnly" | "confirmBeforeCommit" | "ciOnly">;
+    runModes: Array<"sameSession" | "prefixOnly" | "coldSession" | "confirmBeforeCommit" | "ciOnly">;
     blockers: WorkflowLimitationV7[];
     notes: string[];
   };
@@ -260,7 +260,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
   const authPlan = authPlanFor(actionEvents);
   const replayModes: WorkflowContractV7["replayModes"] = replayBlocked
     ? []
-    : mutationSteps.length > 0 ? ["sameSession", "prefixOnly"] : ["sameSession"];
+    : mutationSteps.length > 0 ? ["sameSession", "prefixOnly", "coldSession", "ciIsolated"] : ["sameSession", "coldSession", "prefixOnly"];
   const sourceAffordancePatches = sourceAffordancePatchesFor(steps);
   const publishPlan = publishPlanFor(name, limitations, mutationSteps.length > 0, actionEvents.length, authPlan);
   const contract: WorkflowContractV7 = {
@@ -632,8 +632,8 @@ function publishPlanFor(
     : hasMutation || softBlockers.length > 0 || checkpointOnlyAuth ? "manualOnly" : "ready";
   const unattendedReady = readiness === "ready" && authDurabilityAllowsUnattended(authPlan.durability);
   const runModes: WorkflowContractV7["publishPlan"]["runModes"] = hasMutation
-    ? ["prefixOnly", "confirmBeforeCommit", "ciOnly"]
-    : ["sameSession"];
+    ? ["prefixOnly", "coldSession", "confirmBeforeCommit", "ciOnly"]
+    : ["sameSession", "coldSession", "prefixOnly"];
   return {
     privateToolName: `synthi_app_${slugIdentifier(workflowNameValue)}`,
     readiness,

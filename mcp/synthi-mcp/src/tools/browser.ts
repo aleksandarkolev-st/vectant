@@ -1644,10 +1644,11 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
     });
   }
 
+  const effectiveManifest = liveManifest;
   const a = obj(args);
   const parameters: Record<string, string> = {};
   const missingParameters: string[] = [];
-  for (const parameter of manifest.parameters) {
+  for (const parameter of effectiveManifest.parameters) {
     const value = stringOpt(a[parameter.name]);
     if (value === undefined) {
       if (parameter.required) missingParameters.push(parameter.name);
@@ -1658,7 +1659,7 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   if (missingParameters.length > 0) {
     return errorResponse("private_workflow_missing_parameters", {
       tool_name: toolName,
-      workflow_id: manifest.workflow_id,
+      workflow_id: effectiveManifest.workflow_id,
       missing_parameters: missingParameters,
     });
   }
@@ -1700,19 +1701,19 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   const mode: WorkflowReplayModeV7 = requestedMode === "confirmBeforeCommit"
     ? "sameSession"
     : requestedMode ??
-    (manifest.mutation.requires_confirmation ? "prefixOnly" : "sameSession");
+    privateWorkflowDefaultReplayMode(effectiveManifest);
 
-  const mutationConfirmationToken = privateWorkflowMutationConfirmationToken(toolName, manifest);
+  const mutationConfirmationToken = privateWorkflowMutationConfirmationToken(toolName, effectiveManifest);
   const mutationConfirmation = stringOpt(a["mutation_confirmation"]);
   if (
-    manifest.mutation.requires_confirmation &&
+    effectiveManifest.mutation.requires_confirmation &&
     mode === "sameSession" &&
     (!confirmMutation || mutationConfirmation !== mutationConfirmationToken)
   ) {
     return errorResponse("mutation_confirmation_required", {
       tool_name: toolName,
-      workflow_id: manifest.workflow_id,
-      first_mutation_step_id: manifest.mutation.first_mutation_step_id,
+      workflow_id: effectiveManifest.workflow_id,
+      first_mutation_step_id: effectiveManifest.mutation.first_mutation_step_id,
       safe_run_modes: ["prefixOnly", "coldSession", "ciOnly"],
       confirmation_field: "confirm_mutation",
       confirmation_token_field: "mutation_confirmation",
@@ -1782,6 +1783,12 @@ function manifestWithLiveAuthReadiness(
   return {
     ...manifest,
     status,
+    run_modes: unattended.ready && !manifest.mutation.requires_confirmation
+      ? orderedRunModes(manifest.run_modes, ["coldSession"])
+      : manifest.run_modes,
+    default_run_mode: unattended.ready && !manifest.mutation.requires_confirmation
+      ? "coldSession"
+      : manifest.default_run_mode,
     auth: {
       ...manifest.auth,
       durability: authDurability,
@@ -1795,56 +1802,103 @@ function manifestWithLiveAuthReadiness(
   };
 }
 
+function orderedRunModes<T extends string>(existing: T[], additions: T[]): T[] {
+  const modes = [...existing];
+  for (const mode of additions) {
+    if (!modes.includes(mode)) modes.push(mode);
+  }
+  return modes;
+}
+
 function replayAuthGate(
   contract: WorkflowContractV7,
   mode: WorkflowReplayModeV7
 ): { ok: true } | { ok: false; detail: Record<string, unknown> } {
   if (!contract.authPlan.required) return { ok: true };
-  const unattended = mode === "ciIsolated";
-  const readiness = authCheckpointManager.readiness(contract.appOrigin, unattended);
-  if (readiness.ready) return { ok: true };
-  return {
-    ok: false,
-    detail: {
-      app_origin: contract.appOrigin,
-      auth_status: readiness.status,
-      auth_durability: readiness.durability,
-      unattended,
-      notes: readiness.notes,
-    },
-  };
+  const authState = replayAuthReadiness(contract, mode);
+  if (authState.ready) return { ok: true };
+  return { ok: false, detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended) };
 }
 
 function authStorageStateForColdReplay(
   contract: WorkflowContractV7
 ): { ok: true; storageState: AuthBrowserStorageState } | { ok: false; detail: Record<string, unknown> } {
-  const readiness = authCheckpointManager.readiness(contract.appOrigin, false);
-  if (!readiness.ready || !readiness.checkpoint) {
+  const authState = replayAuthReadiness(contract, "coldSession");
+  if (!authState.ready) {
     return {
       ok: false,
-      detail: {
-        app_origin: contract.appOrigin,
-        auth_status: readiness.status,
-        auth_durability: readiness.durability,
-        unattended: false,
-        notes: readiness.notes,
-      },
+      detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended),
     };
   }
-  const artifact = authCheckpointManager.storageArtifactForCheckpoint(readiness.checkpoint.checkpoint_id);
+
+  const providerId = authState.readiness.refresh_provider?.provider_id;
+  if (providerId && authState.unattended) {
+    const providerArtifact = authCheckpointManager.storageArtifactForRefreshProvider(providerId);
+    if (!providerArtifact.ok || providerArtifact.artifact.metadata.app_origin !== contract.appOrigin) {
+      return {
+        ok: false,
+        detail: {
+          app_origin: contract.appOrigin,
+          auth_status: providerArtifact.ok ? "checkpointStorageMissing" : providerArtifact.error,
+          auth_durability: authState.readiness.durability,
+          unattended: true,
+          notes: ["Refresh provider did not produce broker-owned auth storage for this workflow origin."],
+        },
+      };
+    }
+    return { ok: true, storageState: providerArtifact.artifact.state };
+  }
+
+  const checkpoint = authState.readiness.checkpoint;
+  if (!checkpoint) {
+    return {
+      ok: false,
+      detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended),
+    };
+  }
+  const artifact = authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint_id);
   if (!artifact) {
     return {
       ok: false,
-      detail: {
-        app_origin: contract.appOrigin,
-        auth_status: "checkpointStorageMissing",
-        auth_durability: readiness.durability,
-        unattended: false,
+      detail: authReadinessDetail(contract.appOrigin, {
+        ...authState.readiness,
+        status: "checkpointStorageMissing",
+        ready: false,
         notes: ["Auth checkpoint is missing a captured browser storage artifact."],
-      },
+      }, authState.unattended),
     };
   }
   return { ok: true, storageState: artifact.state };
+}
+
+function replayAuthReadiness(
+  contract: WorkflowContractV7,
+  mode: WorkflowReplayModeV7
+): { ready: true; readiness: AuthReadiness; unattended: boolean } | { ready: false; readiness: AuthReadiness; unattended: boolean } {
+  if (mode === "ciIsolated") {
+    const readiness = authCheckpointManager.readiness(contract.appOrigin, true);
+    return { ready: readiness.ready, readiness, unattended: true };
+  }
+  const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
+  if (interactive.ready || mode !== "coldSession") return { ready: interactive.ready, readiness: interactive, unattended: false };
+  const providerBacked = authCheckpointManager.readiness(contract.appOrigin, true);
+  if (providerBacked.ready) return { ready: true, readiness: providerBacked, unattended: true };
+  return { ready: false, readiness: interactive, unattended: false };
+}
+
+function authReadinessDetail(appOrigin: string, readiness: AuthReadiness, unattended: boolean): Record<string, unknown> {
+  return {
+    app_origin: appOrigin,
+    auth_status: readiness.status,
+    auth_durability: readiness.durability,
+    unattended,
+    failure_class: authFailureClassForReadiness(readiness),
+    notes: readiness.notes,
+  };
+}
+
+function authFailureClassForReadiness(readiness: AuthReadiness): "authExpired" | "authMissing" {
+  return readiness.status === "checkpointExpired" ? "authExpired" : "authMissing";
 }
 
 function authDurabilityForManifest(readiness: AuthReadiness, fallback: AuthDurabilityV7): AuthDurabilityV7 {
@@ -1852,6 +1906,13 @@ function authDurabilityForManifest(readiness: AuthReadiness, fallback: AuthDurab
 }
 
 type PrivateWorkflowRunMode = WorkflowReplayModeV7 | "confirmBeforeCommit" | "ciOnly";
+
+function privateWorkflowDefaultReplayMode(manifest: PrivateWorkflowToolManifestV7): WorkflowReplayModeV7 {
+  if (manifest.mutation.requires_confirmation) return "prefixOnly";
+  if (manifest.default_run_mode === "coldSession") return "coldSession";
+  if (manifest.default_run_mode === "prefixOnly") return "prefixOnly";
+  return "sameSession";
+}
 
 function privateWorkflowRunMode(value: unknown): PrivateWorkflowRunMode | undefined {
   if (value === undefined) return undefined;

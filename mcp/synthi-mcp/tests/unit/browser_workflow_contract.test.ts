@@ -79,7 +79,7 @@ describe("browser workflow contract compiler", () => {
       unattendedReady: false,
       mutationMode: "confirmBeforeCommit",
     }));
-    expect(workflow.contract.publishPlan.runModes).toEqual(["prefixOnly", "confirmBeforeCommit", "ciOnly"]);
+    expect(workflow.contract.publishPlan.runModes).toEqual(["prefixOnly", "coldSession", "confirmBeforeCommit", "ciOnly"]);
     expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
       kind: "privateMcpToolManifest",
       status: "available",
@@ -1090,7 +1090,7 @@ describe("browser workflow contract compiler", () => {
       mutationMode: "readOnly",
       authDurability: "noneRequired",
     }));
-    expect(workflow.contract.publishPlan.runModes).toEqual(["sameSession"]);
+    expect(workflow.contract.publishPlan.runModes).toEqual(["sameSession", "coldSession", "prefixOnly"]);
     expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
       kind: "privateMcpToolManifest",
       status: "available",

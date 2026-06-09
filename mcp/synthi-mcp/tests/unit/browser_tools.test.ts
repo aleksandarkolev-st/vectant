@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { browserBridgeServer } from "../../src/browser/bridge_server.js";
@@ -21,6 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   await browserBridgeServer.stop();
   if (originalBrowserCdpUrl === undefined) {
@@ -487,6 +491,152 @@ describe("browser MCP tool surface", () => {
     }));
     expect(replay).toHaveBeenCalledWith("cold", expect.any(Object), "click", expect.stringContaining("Open secure panel"), undefined);
     expect(JSON.stringify(response?.structuredContent)).not.toMatch(/secret-cookie|secret-local|secret-session/);
+  });
+
+  it("classifies expired auth checkpoints before workflow replay", async () => {
+    const now = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      ttl_ms: 1_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "expired-cookie", domain: "secure.example.com", path: "/" }],
+        origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "expired-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    vi.setSystemTime(now + 2_000);
+    const openCold = vi.spyOn(browserPlaywrightAdapter, "openCold").mockResolvedValue({ tab_id: "cold", url });
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "cold",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-expired-replay");
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "coldSession",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "workflow_auth_not_ready",
+      workflow_id: workflowId,
+      auth_status: "checkpointExpired",
+      auth_durability: "interactiveCheckpoint",
+      unattended: false,
+      failure_class: "authExpired",
+    }));
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/expired-cookie|expired-local/);
+    expect(openCold).not.toHaveBeenCalled();
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("uses provider-minted auth storage for cold workflow replay when the interactive checkpoint expires", async () => {
+    const now = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      ttl_ms: 1_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "expired-cookie", domain: "secure.example.com", path: "/" }],
+        origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "expired-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    vi.useRealTimers();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-browser-tool-refresh-"));
+    const provider = authCheckpointManager.configureRefreshProvider({
+      url,
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: await writeRefreshMintCommand(directory, {
+        cookieValue: "provider-cookie-secret",
+        localStorageValue: "provider-local-secret",
+        sessionStorageValue: "provider-session-secret",
+      }),
+      mint_command_admin_approved: true,
+      timeout_ms: 5_000,
+    });
+    expect(provider.ok).toBe(true);
+    if (!provider.ok) throw new Error("unexpected provider config failure");
+    const providerTest = await authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
+    expect(providerTest.ok).toBe(true);
+    if (!providerTest.ok) throw new Error("unexpected provider test failure");
+    expect(providerTest.can_mint_replay_state).toBe(true);
+    vi.useFakeTimers();
+    vi.setSystemTime(now + 2_000);
+    const openCold = vi.spyOn(browserPlaywrightAdapter, "openCold").mockResolvedValue({ tab_id: "cold", url });
+    vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([{ tab_id: "cold", url, active: true }]);
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "cold",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-provider-cold-replay");
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "coldSession",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(openCold).toHaveBeenCalledWith(url, expect.objectContaining({
+      cookies: [expect.objectContaining({ name: "sid", value: "provider-cookie-secret" })],
+      origins: [expect.objectContaining({
+        origin: "https://secure.example.com",
+        localStorage: [expect.objectContaining({ name: "session", value: "provider-local-secret" })],
+        sessionStorage: [expect.objectContaining({ name: "csrf", value: "provider-session-secret" })],
+      })],
+    }));
+    expect(replay).toHaveBeenCalledWith("cold", expect.any(Object), "click", expect.stringContaining("Open secure panel"), undefined);
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/provider-cookie-secret|provider-local-secret|provider-session-secret|expired-cookie|expired-local/);
   });
 
   it("exports saved mutation workflows in prefix-only mode by default", async () => {
@@ -1459,4 +1609,34 @@ function mockPreviewAdapter(previewUrl: string): void {
   ]);
   vi.spyOn(browserPlaywrightAdapter, "selectTab").mockResolvedValue(tab);
   vi.spyOn(browserPlaywrightAdapter, "snapshot").mockResolvedValue(snapshot);
+}
+
+async function writeRefreshMintCommand(
+  directory: string,
+  values: { cookieValue: string; localStorageValue: string; sessionStorageValue: string }
+): Promise<string> {
+  const scriptPath = path.join(directory, `mint-refresh-${Date.now()}.mjs`);
+  await writeFile(scriptPath, `
+const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
+if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
+const host = new URL(origin).hostname;
+const output = JSON.stringify({
+  ok: true,
+  storage_state: {
+    cookies: [{ name: "sid", value: ${JSON.stringify(values.cookieValue)}, domain: host, path: "/", httpOnly: true, secure: true }],
+    origins: [{ origin, localStorage: [{ name: "session", value: ${JSON.stringify(values.localStorageValue)} }], sessionStorage: [{ name: "csrf", value: ${JSON.stringify(values.sessionStorageValue)} }] }]
+  },
+  ttl_ms: 60000
+});
+if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);
+}
+process.stdout.write(output);
+`, "utf8");
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }

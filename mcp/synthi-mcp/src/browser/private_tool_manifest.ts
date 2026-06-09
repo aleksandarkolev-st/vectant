@@ -19,7 +19,7 @@ export interface PrivateWorkflowToolManifestV7 {
     value_shape: WorkflowParameterV7["valueShape"];
   }>;
   run_modes: WorkflowContractV7["publishPlan"]["runModes"];
-  default_run_mode: "sameSession" | "prefixOnly" | "confirmBeforeCommit" | "ciOnly";
+  default_run_mode: "sameSession" | "prefixOnly" | "coldSession" | "confirmBeforeCommit" | "ciOnly";
   auth: {
     durability: WorkflowContractV7["publishPlan"]["authDurability"];
     unattended_ready: boolean;
