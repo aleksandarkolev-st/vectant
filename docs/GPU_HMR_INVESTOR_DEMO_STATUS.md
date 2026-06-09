@@ -266,7 +266,21 @@ mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-la
 
 Visual inspection confirmed a torus-to-sphere material/geometry change and a nonblank diff.
 
-Bevy/WGSL was tested with real Rust GNU and w64devkit, built, then failed the strict full-runtime proof gate:
+Bevy/WGSL was tested with real Rust GNU and w64devkit and remains rejected, not accepted.
+
+Fresh rejection artifact:
+
+```text
+report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
+rejection proof id: external-rejection-proof:43e4d3251e91f92d21591de7f30bee10b4a32ae31323105ace801d1beb8ace26
+rejection proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280019-rejection-proof.json
+status: fail
+reason: MCP request timed out after 1200000ms with no decoded frames
+visual evidence accepted: false
+total validator wall: 1203518.9259ms
+```
+
+Earlier strict proof-state rejection:
 
 ```text
 report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780961693506-report.json
@@ -298,11 +312,18 @@ npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 ```
 
+Expected rejection:
+
+```text
+SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL=ws://signaling-server:9000 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER=vectant-ade-mcp-1 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY=/app/dist/index.js SYNTHI_GPU_HMR_EXTERNAL_MCP_REQUEST_TIMEOUT_MS=1200000 SYNTHI_GPU_HMR_EXTERNAL_MCP_ATTACH_TIMEOUT_MS=1200000 npm --prefix mcp/synthi-mcp run proof:external-project:bevy
+```
+
 ## Commit Checkpoint
 
 Relevant current commits:
 
 ```text
+706c20799 fix(gpu-hmr): ledger external profile rejections
 fcff70032 feat(gpu-hmr): add structured OIDN HIP preflight proof
 08f16a794 fix(gpu-hmr): archive agent split results per slug
 f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status

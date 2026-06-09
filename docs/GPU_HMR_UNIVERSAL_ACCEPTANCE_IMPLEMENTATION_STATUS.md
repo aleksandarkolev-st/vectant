@@ -316,7 +316,22 @@ mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-la
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-external-diff-1780961959195.png
 ```
 
-Bevy/WGSL profile built with real Rust GNU/w64devkit toolchain but was rejected by the strict MCP proof gate:
+Bevy/WGSL profile built with real Rust GNU/w64devkit toolchain but remains rejected, not accepted.
+
+Fresh rejection artifact:
+
+```text
+profile: bevy-wgsl-shader-material
+report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
+rejection proof id: external-rejection-proof:43e4d3251e91f92d21591de7f30bee10b4a32ae31323105ace801d1beb8ace26
+rejection proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280019-rejection-proof.json
+status: fail
+reason: MCP request timed out after 1200000ms with no decoded frames
+visual evidence accepted: false
+total validator wall: 1203518.9259ms
+```
+
+Earlier strict proof-state rejection:
 
 ```text
 profile: bevy-wgsl-shader-material
@@ -353,6 +368,7 @@ The Codex in-app Browser connector was available as a plugin, but `agent.browser
 Proof/fix commits are separate:
 
 ```text
+706c20799 fix(gpu-hmr): ledger external profile rejections
 fcff70032 feat(gpu-hmr): add structured OIDN HIP preflight proof
 08f16a794 fix(gpu-hmr): archive agent split results per slug
 f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
@@ -390,6 +406,12 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 SYNTHI_GPU_AGENT_MODE=seed-only SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=agent-split-archive-smoke-20260609-pass SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
+```
+
+Expected rejection command:
+
+```text
+SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL=ws://signaling-server:9000 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER=vectant-ade-mcp-1 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY=/app/dist/index.js SYNTHI_GPU_HMR_EXTERNAL_MCP_REQUEST_TIMEOUT_MS=1200000 SYNTHI_GPU_HMR_EXTERNAL_MCP_ATTACH_TIMEOUT_MS=1200000 npm --prefix mcp/synthi-mcp run proof:external-project:bevy
 ```
 
 ## Remaining Work
