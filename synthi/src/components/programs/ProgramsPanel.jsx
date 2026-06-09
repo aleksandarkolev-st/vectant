@@ -196,10 +196,23 @@ function ConsentPrompt({ requested = [], busy, onApprove, onCancel }) {
   );
 }
 
+function SectionHeader({ icon: Icon, label, count }) {
+  return (
+    <div className="flex items-center justify-between">
+      <h3 className="text-xs font-semibold uppercase tracking-wider inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+        {Icon ? <Icon className="w-3.5 h-3.5" /> : null} {label}
+      </h3>
+      {typeof count === 'number' ? (
+        <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--bg-elevated)', color: 'var(--text-dim)' }}>{count}</span>
+      ) : null}
+    </div>
+  );
+}
+
 function InstallCard({ install, acting, canManage, onLaunch }) {
   return (
     <div
-      className="rounded-lg border px-3 py-2 flex items-center justify-between gap-3"
+      className="rounded-lg border px-3 py-2 flex items-center justify-between gap-3 transition-colors hover:bg-[var(--bg-elevated)]"
       style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
     >
       <div className="min-w-0 flex items-center gap-2">
@@ -558,12 +571,7 @@ export default function ProgramsPanel() {
         ) : null}
 
         <section className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              Installed
-            </h3>
-            <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{installs.length}</span>
-          </div>
+          <SectionHeader icon={Package} label="Installed" count={installs.length} />
           {installs.length === 0 ? (
             <div className="text-xs rounded-lg border px-3 py-4" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
               No installed programs yet.
@@ -583,9 +591,7 @@ export default function ProgramsPanel() {
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
-              <Store className="w-3.5 h-3.5" /> Marketplace
-            </h3>
+            <SectionHeader icon={Store} label="Marketplace" count={marketplace.length} />
             <input
               value={marketQuery}
               onChange={(event) => setMarketQuery(event.target.value)}
@@ -603,7 +609,7 @@ export default function ProgramsPanel() {
               <div
                 key={item.packageId}
                 data-testid={`marketplace-item-${item.packageId}`}
-                className="group rounded-lg border px-3 py-2.5 flex items-center justify-between gap-3 transition-colors"
+                className="group rounded-lg border px-3 py-2.5 flex items-center justify-between gap-3 transition-colors hover:bg-[var(--bg-elevated)]"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
               >
                 <div className="min-w-0 flex items-start gap-2.5">
@@ -654,12 +660,7 @@ export default function ProgramsPanel() {
         </section>
 
         <section className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              Running
-            </h3>
-            <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{sections.running.length}</span>
-          </div>
+          <SectionHeader label="Running" count={sections.running.length} />
           {loading ? (
             <div className="text-xs px-1 py-3" style={{ color: 'var(--text-muted)' }}>Loading…</div>
           ) : sections.running.length === 0 ? (
@@ -681,12 +682,7 @@ export default function ProgramsPanel() {
         </section>
 
         <section className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              Recent
-            </h3>
-            <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{sections.recent.length}</span>
-          </div>
+          <SectionHeader label="Recent" count={sections.recent.length} />
           {sections.recent.length === 0 ? (
             <div className="text-xs rounded-lg border px-3 py-4" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
               No recent program sessions yet.
