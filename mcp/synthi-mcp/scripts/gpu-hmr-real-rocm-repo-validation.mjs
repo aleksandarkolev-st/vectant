@@ -8261,6 +8261,8 @@ async function writeResults() {
       limitations: written.artifact.limitations,
       acceptanceContract: written.artifact.acceptanceContract,
       acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      derivedAcceptanceContract: written.artifact.derivedAcceptanceContract,
+      derivedAcceptanceContractEvaluation: written.artifact.derivedAcceptanceContractEvaluation,
       acceptanceContractConsistency: written.artifact.acceptanceContractConsistency,
       proofLedgerSourceConsistency: written.artifact.proofLedgerSourceConsistency,
       deterministicVisualMode: written.artifact.deterministicVisualMode,

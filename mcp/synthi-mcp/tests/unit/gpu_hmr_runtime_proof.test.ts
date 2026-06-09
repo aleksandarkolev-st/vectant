@@ -8593,6 +8593,55 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("summarizes compact accepted runtime proof artifacts with embedded derived contracts", () => {
+    const artifact = buildValidationRuntimeProofArtifact(acceptedValidationRuntimeInput());
+    expect(artifact.gpuHmrSuccess).toBe(true);
+    const compactRecord = {
+      schemaVersion: artifact.schemaVersion,
+      proofId: artifact.proofId,
+      path: "logs/runtime-proof.json",
+      resultState: artifact.resultState,
+      degradedState: artifact.degradedState,
+      degradedReason: artifact.degradedReason,
+      fullRuntimeProven: artifact.fullRuntimeProven,
+      stageResults: artifact.stageResults,
+      limitations: artifact.limitations,
+      acceptanceContract: artifact.acceptanceContract,
+      acceptanceContractEvaluation: artifact.acceptanceContractEvaluation,
+      derivedAcceptanceContract: artifact.derivedAcceptanceContract,
+      derivedAcceptanceContractEvaluation: artifact.derivedAcceptanceContractEvaluation,
+      acceptanceContractConsistency: artifact.acceptanceContractConsistency,
+      proofLedgerSourceConsistency: artifact.proofLedgerSourceConsistency,
+      proofLedger: artifact.proofLedger,
+      proofLedgerQuery: artifact.proofLedgerQuery,
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+    };
+
+    const summary = buildGpuHmrValidationProofSummary({
+      workspaceSlug: "workspace",
+      validationContext: {
+        acceptanceContract: artifact.acceptanceContract,
+      },
+      runtimeProofArtifactRecords: [compactRecord],
+    });
+
+    expect(summary.gpu_hmr_success).toBe(true);
+    expect(summary.limitations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "acceptance-contract-consistency",
+        }),
+      ]),
+    );
+    expect(summary.proof_states.acceptance_contract_consistency).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        failed_gate_count: 0,
+      }),
+    );
+  });
+
   it("summarizes flat Docker snapshots and separates blank screenshot attempts", () => {
     const summary = buildGpuHmrValidationProofSummary({
       workspaceSlug: "workspace",
