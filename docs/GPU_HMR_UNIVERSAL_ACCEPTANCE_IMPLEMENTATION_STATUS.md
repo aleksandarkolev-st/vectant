@@ -34,6 +34,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
 e13508d27 fix(gpu-hmr): use real visual fixtures in rocm self-check
@@ -72,6 +73,7 @@ fission acceptance rejects bare placeholder oracle ids.
 runtime visual proof artifacts are blocked when the derived proof ledger record lacks visual_oracle_artifacts.
 strict runtime artifact gates reject invented source-consistency modes and require deterministic visual-mode evaluation for visual ledgers.
 OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
+Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 ```
 
 Fresh verification after these commits:
@@ -371,8 +373,8 @@ accepted claim: device_translation_unit_hmr
 device translation units: 1
 device roles: 1
 kernels: trace_light_rays
-rejected claims: smallest_safe_fission_island
-reason: deterministic smallest-safe fission verifier not present
+rejected claims: smallest_safe_fission_island, per_kernel_hmr
+reason: deterministic smallest-safe/per-kernel fission verifier not present
 latest artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
 artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
 ```

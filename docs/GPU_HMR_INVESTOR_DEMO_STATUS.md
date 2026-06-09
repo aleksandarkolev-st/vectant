@@ -35,6 +35,7 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
 e13508d27 fix(gpu-hmr): use real visual fixtures in rocm self-check
@@ -55,6 +56,7 @@ Fission acceptance requires a verified output-oracle proposal or resolved output
 Generated device edits in the visual runner now require the MCP wait gate to apply with full GPU runtime proof before acceptance.
 The visual runner now fails immediately when no initial generated device compile marker or GPU split endpoint evidence is observed.
 The generated ray-light and Flow demos remain device-translation-unit HMR claims, not per-kernel fission claims.
+Generated split topology now rejects per-kernel HMR unless deterministic fission-verifier evidence proves it.
 ```
 
 Post-hardening verification:
@@ -171,7 +173,7 @@ The generated preview demos prove device-translation-unit HMR.
 
 ```text
 Flow: device_translation_unit_hmr, one device TU, two kernels, rejects per_kernel_hmr and smallest_safe_fission_island.
-Ray-light: device_translation_unit_hmr, one device TU, one kernel, rejects smallest_safe_fission_island because no deterministic smallest-fission verifier is present.
+Ray-light: device_translation_unit_hmr, one device TU, one kernel, rejects per_kernel_hmr and smallest_safe_fission_island because no deterministic fission verifier is present.
 ```
 
 Demo phrasing:
@@ -417,6 +419,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 Relevant current commits:
 
 ```text
+35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 f0db3c67e fix(gpu-hmr): classify external timeout rejections
 b542e7390 docs(gpu-hmr): record Bevy rejection proof artifact
