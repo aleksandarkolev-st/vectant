@@ -493,6 +493,15 @@ ThreeJS WebGL shader lava profile passed as an external runtime screenshot proof
 
 ```text
 profile: threejs-webgl-shader-lava
+latest report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1780977150053-report.json
+latest proof id: external-visual-proof:8a42ec53c94aa29844c2992782c2ca4156b9cd2c9c285b92d9b64901e4fde6cf
+latest status: pass
+latest chrome GPU: enabled
+latest total: 9330.6259ms
+latest edit to screenshot: 2836ms
+latest visual diff: 95ms
+latest changed pixel ratio: 28.3806%
+latest mean abs delta 8-bit: 12.9288
 report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1780961959963-report.json
 proof id: external-visual-proof:44d6ee855658665be4472d688f58cc2212487282b087e9a3ae420baf3574a593
 status: pass
@@ -510,6 +519,9 @@ mean abs delta 8-bit: 12.9297
 Visual artifacts:
 
 ```text
+latest before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-before-1780977142363.png
+latest after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-after-1780977147880.png
+latest diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-external-diff-1780977149507.png
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-before-1780961950497.png
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-after-1780961956056.png
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-external-diff-1780961959195.png
@@ -612,6 +624,7 @@ npx vitest run tests/unit/gpu_hmr_runtime_proof.test.ts
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_fission --lib
 docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_prod_contracts --lib
+$env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID='threejs-webgl-shader-lava'; npm --prefix mcp/synthi-mcp run proof:external-project
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
