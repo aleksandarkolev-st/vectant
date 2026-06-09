@@ -303,3 +303,8 @@ User lifted the disk gate to rebuild + verify. Freed ~18.5 GB of Docker build ca
 2. External CLI agents in the terminal: a discoverable, machine-readable context file in the workspace (e.g. `AGENTS.md` / a `.vectant/` doc, or an MCP resource the CLI can read) describing the same schema + default catalog, so terminal-linked agents don't need our gateway.
 
 **Note:** keep ONE canonical schema/catalog description and render it into both surfaces (don’t fork the docs). Depends on the seeded `@vectant/*` catalog (current task) being final.
+
+## Native Docker / container runtime (its own slice)
+**Goal:** Let programs actually run as containers (e.g. `docker compose up`, devcontainer build/run), not just as managed commands in the workspace session.
+**Why deferred:** the sandbox deliberately blocks real Docker today — devcontainer import rejects `docker.sock`/`--privileged`/host mounts/`--device`/`--cap-add` (`host_escape`), and the runtime manager scrubs `DOCKER_HOST`/`DOCKER_SOCKET` + blocks `/var/run/docker.sock`. There is no `container`/`docker` runtime type.
+**Scope (later):** add a `container`/`docker` runtime type; provide a real container runtime to the managed session (mount `docker.sock` carefully, or a rootless/DinD sidecar per workspace); a security review to safely relax the host-escape block for *this* path only; execute devcontainer `image`/`build` (currently informational `sourceHints` only); surface container logs/exec in the program tab. The current task's **Dev Container** default (`@vectant/devcontainer`) becomes natively runnable once this lands.
