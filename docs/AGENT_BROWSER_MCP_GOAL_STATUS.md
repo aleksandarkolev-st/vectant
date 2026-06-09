@@ -19,9 +19,9 @@ This run did not add fixed preview ports, fixed workspace slugs, local Chrome pa
   - The workflow pipeline now prunes stale CDP page targets before attach and closes per-case pages after each case.
   - This avoids attach slowdowns from hundreds of old tabs without relying on a fixed port or slug.
 - Full workflow matrix proof:
-  - 37 seeded projects passed.
+  - 40 seeded projects passed.
   - Every case clicked the UI buttons, compiled, exported, generated manifest, published private tool, called the discovered private tool where parameters were available, validated, and ran the exported Playwright script.
-  - Covered forms, parameterized input, clipboard paste/drop/copy/cut, iframes, open Shadow DOM, ARIA widgets, range sliders, pointer drag/sort/resize, animated SaaS dashboard, file uploads, hover menus, double-click/context menu, keyboard/control keys, terminal-like text entry, scroll/wheel surfaces, downloads, network mutation classification, CI-isolated mutation replay, native confirm/prompt dialogs, popups, rich text, textarea/code editor, dashboard workflows, and navigation/review queue.
+  - Covered forms, parameterized input, clipboard paste/drop/copy/cut, iframes, open Shadow DOM, ARIA widgets, range sliders, pointer drag/sort/resize, animated SaaS dashboard, file uploads, hover menus, double-click/context menu, keyboard/control keys, terminal-like text entry, scroll/wheel surfaces, downloads, network mutation classification, CI-isolated mutation replay, native confirm/prompt dialogs, popups, popup return-to-opener workflows, rich text, textarea/code editor, dashboard workflows, and navigation/review queue.
 - Mutation safety and isolated replay:
   - Mutation-heavy private tools defaulted to prefix-only replay unless isolation/confirmation was used.
   - CI isolated replay passed with `mutation=true` for the visual mutation fixture.
@@ -34,6 +34,9 @@ This run did not add fixed preview ports, fixed workspace slugs, local Chrome pa
   - Denied popup/iframe target origins are blocking recording issues in the Workflows panel.
   - Delayed popup annotations no longer leave provisional opener clicks as false taught steps, including the live annotation-before-click race.
   - Live fixtures cover cross-origin iframe denial and cross-origin popup denial using dynamically allocated auxiliary origins.
+- Popup/new-tab target attribution:
+  - Taught popup workflows now preserve browser-observed action timestamps so delayed popup/download/network annotations attach to the action that caused them instead of a later same-tab action.
+  - The live matrix includes a popup workflow that opens a new tab, fills/clicks inside the popup, returns to the opener page, and verifies the generated script uses `popup1` for popup actions and `page` for opener actions.
 
 ## Verification
 
@@ -54,7 +57,7 @@ TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43
 Results:
 
 - Unit suite: 70 files passed, 759 tests passed.
-- Full workflow matrix: 39 seeded projects passed.
+- Full workflow matrix: 40 seeded projects passed.
 - Stdio private-tool acceptance: passed after final build.
 - Cross-origin denied target fixtures: passed after final build.
 - CI isolated visual mutation fixture: exported Playwright passed and CI isolated replay passed with reset assertion, postcondition, state seed id, and run-bound attestation.
@@ -65,6 +68,8 @@ Visual proof artifacts:
 - `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/popup-form-window/after-validate-panel.png`
+- `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-validate-panel.png`
+- `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-teach-actions.png`
 - `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/cross-origin-iframe-denied/after-denied-origin-panel.png`
 - `tmp/workflow-pipeline-e2e/cross-origin-popup-denied/after-denied-origin-panel.png`
@@ -85,6 +90,7 @@ Generated-script proof:
 - `ecf62f31` Handle denied popup annotation races
 - `880fe397` Add denied-origin workflow pipeline fixtures
 - `68534bb3` Harden CI isolated workflow replay
+- `1b8c12cb` Preserve popup action targets during teaching
 
 Earlier commits in the same goal also covered parameter naming, private tool parameter proof, exported-script runner isolation, and expectation alignment for mutation-safe prefix exports.
 
@@ -94,6 +100,6 @@ These are not blockers for the repo-local production-grade proof, but they are s
 
 - Real LLM-agent prompt acceptance is not yet automated. We now prove the actual stdio MCP boundary with raw JSON-RPC, but not an external Codex/Synthi LLM prompt choosing the tool by natural language.
 - Real third-party IdP coverage is not yet complete. Auth storage/checkpoint/redaction paths are tested with fixtures and unit coverage; OAuth/SAML/magic-link providers against real external services still need environment-specific validation.
-- Popup and iframe coverage now includes same-origin success cases and cross-origin denial fixtures. More hostile nested iframe, multiple popup, and cross-origin return-navigation cases should still be validated under production consent policy.
+- Popup and iframe coverage now includes same-origin success cases, opener-return workflows, and cross-origin denial fixtures. More hostile nested iframe, multiple popup, and cross-origin return-navigation cases should still be validated under production consent policy.
 - CI isolated replay is proven for resettable fixture mutation workflows with reset assertion, postcondition, and run-bound attestation. Production teams still need per-workspace reset profiles, fixture users, and postcondition definitions configured for their apps.
 - Git auto-gc still reports an unrelated bad tree object during commits: `be45a9be79c6f1bc8c246ace783ac807a93ab469`.
