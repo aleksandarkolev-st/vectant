@@ -2,234 +2,213 @@
 
 Updated: 2026-06-09
 
-## Meeting-Ready Position
+## Demo Position
 
-There are three useful proof surfaces for the investor demo:
-
-1. HIPRT same-process ray-traced framebuffer proof.
-2. ROCm/HIP MCP preview proof for generated ray-light visual HMR.
-3. ROCm/HIP MCP preview proof for generated Flow visual HMR.
-
-The strongest ray-tracing visual proof is HIPRT same-process. The strongest Synthi-preview proof is ray-light because it goes through MCP compile, strict wait-HMR proof gating, MCP screenshots, persisted before/after/diff artifacts, and runner-alive validation.
-
-Safe claim:
+Safe investor-demo claim:
 
 ```text
-On the local AMD ROCm machine, Synthi can hot-reload a GPU device-artifact edit, keep the runtime alive, and prove the changed output with strict runtime-ledger evidence plus pixel-backed visual before/after/diff artifacts.
+On the local AMD ROCm machine, Synthi can hot-reload a GPU device-artifact edit, keep the runtime alive, and prove the changed output with strict runtime-ledger evidence plus pixel-backed before/after/diff visual artifacts.
 ```
+
+Best demo surfaces:
+
+1. ROCm/HIP MCP ray-light preview: strongest Synthi app preview proof.
+2. ROCm/HIP MCP Flow preview: second generated visual workload, proving this is not a one-case path.
+3. HIPRT same-process CameraRays and MegaKernel: strongest ray-traced framebuffer proof.
+4. ThreeJS WebGL external profile: concrete external runtime screenshot proof, not full ledger acceptance.
+5. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
 
 Do not claim:
 
 ```text
-Every arbitrary GPU project is production-grade accepted by the universal proof ledger.
-CUDA runtime proof was validated on this AMD GPU.
-The generated ROCm ray-light MCP fixture is HIPRT/OIDN.
-OIDN produced or validated the accepted visual delta.
-The current one-file generated .hip split proves per-kernel or smallest-island fission.
+CUDA was proven on this AMD GPU.
+Every arbitrary GPU project is production accepted.
+Bevy/WebGPU has full-runtime proof-ledger acceptance.
+OIDN HIP produced or validated the accepted visual output.
+The one-file generated .hip split proves per-kernel or smallest-safe fission.
+Any proof succeeded because of a shim or hardcoded scenario path.
 ```
 
 ## Live Preview Targets
 
-The local stack is running with frontend on `127.0.0.1:3000` and MCP on `127.0.0.1:9464`.
-
-Open these for the demo:
+The local stack is running:
 
 ```text
-Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-current
-Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-current
+frontend: 127.0.0.1:3000
+MCP: 127.0.0.1:9464
+worker: up
 ```
 
-The Codex in-app Browser backend was unavailable in this session, so the current committed proof relies on MCP screenshot artifacts and local visual inspection of the persisted PNGs. The URLs above are still the working local preview launch points.
+HTTP preview checks passed:
+
+```text
+Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-rerun2 -> HTTP 200
+Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-rerun2 -> HTTP 200
+```
+
+The Codex in-app Browser plugin had no available browser backend in this session (`agent.browsers.list()` returned `[]`). Visual proof for this checkpoint therefore comes from MCP screenshot artifacts and local image inspection of persisted PNGs.
+
+## Ray-Light Preview Proof
+
+Accepted current proof:
+
+```text
+workspace slug: ray-light-gpu-hmr-proof-20260609-rerun2
+runtime proof id: gpu-runtime-proof:sha256:2f3ece89da76d997b47cebe0d65322234b59d49fbe61064fd10db9c84e17ce34
+ledger id: gpu-ledger-proof:sha256:a4730f03c1b5da395ede415501e62b3152c2ea7d85394231739e2cd75a17d3c1
+result state: gpu-hmr-full-runtime-proven
+HMR plan: device_only
+```
+
+Artifacts:
+
+```text
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/before-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/after-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/before-after-diff.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
+```
+
+Visual/timing numbers:
+
+```text
+changed pixels: 5.87%
+mean abs delta: 10.01
+control changed: 0.00%
+control mean abs: 0.32
+selected frame seq: 993
+selected delta: 3734ms
+```
+
+Visual inspection: before renders a ray/light scene with ground grid and ray bundle; after moves the light/ray path; the diff is nonblank and high-signal.
+
+## Flow Preview Proof
+
+Accepted current proof:
+
+```text
+workspace slug: flow-gpu-hmr-proof-20260609-rerun2
+runtime proof id: gpu-runtime-proof:sha256:16d8756992bc28d03d8ed8dd1f5786b605b6c86cabc2ff2f6bc88681600ba6e9
+ledger id: gpu-ledger-proof:sha256:1de678f799fc420e489fbb4dcb5385d7f1621f47f2d78230cff3c60ed203800f
+result state: gpu-hmr-full-runtime-proven
+HMR plan: device_only
+```
+
+Artifacts:
+
+```text
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/before-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/after-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/before-after-diff.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
+```
+
+Visual/timing numbers:
+
+```text
+changed pixels: 2.59%
+mean abs delta: 3.58
+control changed: 0.00%
+control mean abs: 0.00
+selected frame seq: 8038
+selected delta: 2098ms
+```
+
+Visual inspection: before renders a sparse particle ring; after renders a gridded wave/field; the diff is nonblank.
+
+## Generated Split Claim
+
+The generated preview demos prove device-translation-unit HMR.
+
+```text
+Flow: device_translation_unit_hmr, one device TU, two kernels, rejects per_kernel_hmr and smallest_safe_fission_island.
+Ray-light: device_translation_unit_hmr, one device TU, one kernel, rejects smallest_safe_fission_island because no deterministic smallest-fission verifier is present.
+```
+
+Demo phrasing:
+
+```text
+The current generated HIP path hot-reloads the generated device translation unit. It does not claim per-kernel fission yet.
+```
 
 ## HIPRT Ray-Traced Proof
 
-HIPRT proof is not the MCP browser preview path. It is a same-process HIPRT path-tracer proof against the worker checkout:
+HIPRT is a same-process path-tracer proof, not the MCP preview path.
 
 ```text
-repo path: /tmp/synthi-real-rocm/HIPRT-Path-Tracer
+worker repo path: /tmp/synthi-real-rocm/HIPRT-Path-Tracer
 repo commit: d114ed0d4c1d4ff9ea4e2511841819ed9aa59e6e
 scene: data/GLTFs/cornell_pbr.gltf
 hdr: data/Skyspheres/evening_road_01_puresky_2k.hdr
 ```
 
-### CameraRays
-
-Accepted proof:
+CameraRays:
 
 ```text
 profile: hiprt-camera-rays-horizontal-mirror
-mode: same-process
-proof id: hiprt-warm-runtime-proof:sha256:7a667c3e8174017f01839daf15afce8ed0f0909cb8398df4a78921908076d012
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608223510-proof.json
-```
-
-Visual artifacts:
-
-```text
-before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608223510-same-process-baseline-framebuffer.png
-after:  mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608223510-same-process-changed-framebuffer.png
-diff:   mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608223510-diff-amplified.png
-```
-
-Visual result and timings:
-
-```text
+proof id: hiprt-warm-runtime-proof:sha256:94182ab06e86ef8da8c359f43b2ad4589d3e71d88ec367b8ada0b2f9989f96c6
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-diff-amplified.png
 changed pixels: 91.4019%
-mean abs delta 8-bit: 53.127
-max delta: 255
-adapter build: 85.788s
-same-process live recompile: 58ms
-trigger wait: 678ms
-baseline framebuffer capture: 54.977s
-changed framebuffer capture: 55.778s
-edit to first visual: 56.249s
-total validator wall: 424.146s
+mean abs delta 8-bit: 53.1273
+live recompile: 46ms
+edit to first visual: 2673ms
+total wall: 302713.591ms
 ```
 
-Visual inspection: the baseline and changed frames are nonblank Cornell-style ray-traced framebuffers with HDR background. The changed frame is horizontally mirrored/recomposed after the CameraRays edit, and the amplified diff is high-signal.
-
-### MegaKernel Direct Light
-
-Accepted proof:
+MegaKernel direct-light:
 
 ```text
 profile: hiprt-megakernel-direct-light-zero
-mode: same-process
-proof id: hiprt-warm-runtime-proof:sha256:23b2c93a2f449db09008e5e87bf04f182c9e7c06653e43658ff434c4b081bf20
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608224243-proof.json
-```
-
-Visual artifacts:
-
-```text
-before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608224243-same-process-baseline-framebuffer.png
-after:  mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608224243-same-process-changed-framebuffer.png
-diff:   mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260608224243-diff-amplified.png
-```
-
-Visual result and timings:
-
-```text
+proof id: hiprt-warm-runtime-proof:sha256:f881ef5c369ea0640ba0acc9ab6389ed927040e15d4a2eba6b2fff0057532984
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-diff-amplified.png
 changed pixels: 41.8229%
-mean abs delta 8-bit: 32.946
-max delta: 255
-adapter build: 10.830s
-same-process live recompile: 88ms
-trigger wait: 566ms
-baseline framebuffer capture: 1.411s
-changed framebuffer capture: 2.040s
-edit to first visual: 2.580s
-total validator wall: 15.161s
+mean abs delta 8-bit: 32.9462
+live recompile: 82ms
+edit to first visual: 2370ms
+total wall: 13908.9233ms
 ```
 
-Visual inspection: the changed frame collapses the lit scene area to black while preserving frame/background boundaries, matching the direct-light-zero kernel edit. The diff image captures the removed scene lighting.
+Visual inspection: both HIPRT diffs are readable and nonblank. CameraRays shows a mirrored/recomposed Cornell-style framebuffer; MegaKernel shows a direct-light contribution change.
 
-OIDN status: the HIPRT checkout/build includes OpenImageDenoise files and libraries. For deterministic visual evidence, the accepted CameraRays profile explicitly sets `denoiserDisabled=true`, and the proof must not be represented as OIDN-validated output.
+## OIDN Result
 
-## ROCm/HIP MCP Ray-Light Proof
-
-Accepted current proof from the MCP compile/wait/screenshot path:
+OIDN HIP was tested and rejected:
 
 ```text
-workspace slug: ray-light-gpu-hmr-proof-20260609-current
-workspace url: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-current
-gpu vendor: rocm
-gpu arch: gfx1201
-fixture: ray-light
-compile path: MCP synthi_compile
-visual proof path: MCP synthi_screenshot before/after/diff
-strict wait gate: requireGpuFullRuntimeProof=true
-ledger id: gpu-ledger-proof:sha256:0ee551b56f8e3a2bed38e7f997ff148760478facfcd116e34efe5c9d154ac54d
-runtime proof id: gpu-runtime-proof:sha256:9e7b78e1a22c61346894ffaa22c0f94db77c429a8709c38e4a0ee9ae386d9631
+oidnTest 'device creation' --device hip --success --durations yes --rng-seed 12345
+result: FAILED, bool(device) false
+
+oidnTest 'buffer read/write' --device hip --success --durations yes --rng-seed 12345
+result: FAILED, bool(device) false
+
+ldd libOpenImageDenoise_device_hip.so.2.3.0:
+libamdhip64.so.5 => not found
 ```
 
-Accepted evidence:
+OIDN CPU diagnostics passed:
 
 ```text
-PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
-PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
-PASS generated device compiled - compile-device] hipcc
-PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip
-PASS generated split HMR granularity - claim=device_translation_unit_hmr device_tus=1 device_roles=1 kernels=1 smallest_safe_fission=not_proven
-PASS mcp wait_hmr proof gate - resultState=gpu-hmr-full-runtime-proven
-PASS device edit compile via MCP - .synthi/generated/gpu/device.hip
-PASS device-only GPU HMR observed - [gpu-reload] plan=device_only
-PASS mcp screenshot visual delta - changed=5.88% mean_abs=10.00 control_changed=0.00% control_mean_abs=0.01
-PASS runner stayed alive after GPU HMR - no runner crash marker
+device creation: 8 assertions passed
+buffer read/write: 27 assertions passed
 ```
 
-Persisted visual artifacts:
+No OIDN HIP proof is accepted, and no symlink or ABI shim was added.
+
+## Strict ROCm/HIP Compute Ledger
+
+Accepted full-runtime compute/readback proof:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-current/before-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-current/after-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-current/before-after-diff.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-current/before-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-current/after-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-current/generated-split-granularity.json
-```
-
-Visual inspection: the before frame shows the ray/light scene with a light source, beams, ground grid, and geometry. The after frame moves the light and ray bundle while keeping the scene rendered. The diff is nonblank and shows the old and new ray paths.
-
-Hot-path timing derived from timestamped proof events:
-
-```text
-seed to first compile proof: 95.383s
-first compile proof to device edit proof: 10.233s
-device edit proof to HMR observed: 3.070s
-HMR observed to after screenshot: 3.787s
-device edit proof to visual delta proof: 6.987s
-```
-
-Quote for this path:
-
-```text
-device edit proof -> visual delta proof: 6.987s
-HMR observed -> after-frame capture: 3.787s
-```
-
-## ROCm/HIP MCP Flow Proof
-
-Accepted current artifact set:
-
-```text
-workspace slug: flow-gpu-hmr-proof-20260609-current
-workspace url: http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-current
-artifact directory: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/
-runtime proof id reported by run output: gpu-runtime-proof:sha256:06331edc97584bc4919ea996a4ac38d27edfee792d7a54d7ea72feb91fcd7646
-```
-
-Persisted visual artifacts:
-
-```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/before-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/after-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/before-after-diff.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/before-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/after-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-current/generated-split-granularity.json
-```
-
-Visual inspection: the before frame renders a sparse particle-ring pattern. The after frame renders a gridded wave pattern. The diff is nonblank and covers the expected changed region.
-
-Local first-frame recompute:
-
-```text
-changed_threshold4=7.76%
-mean_abs_8bit=3.61
-max=240
-```
-
-The current ray-light run overwrote `agent-split-results.*`, so Flow should be shown as persisted artifact proof unless a fresh per-slug result log is archived before the meeting.
-
-## Strict ROCm/HIP Compute Ledger Proof
-
-Strict full-runtime compute/readback proof:
-
-```text
-workspace: gpu-real-rocm-repo-20260608222512
-proof id: gpu-runtime-proof:sha256:e013fbb2bb9b95927f78352684c2fdaa526622a726d3be11c0ee62ab4f8abd40
-artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/runtime-proof-artifacts/gpu-real-rocm-repo-20260608222512-real-rocm-runtime-proof-e013fbb2bb9b95927f78352684c2fdaa526622a726d3be11c0ee62ab4f8abd40.json
+workspace: gpu-real-rocm-repo-20260609005300
+runtime proof id: gpu-runtime-proof:sha256:0eebb142e6f213a0794a4649b10ab172971a7f4552cc124ab37c5f95c7a1ebd2
+ledger proof id: gpu-ledger-proof:sha256:1cfa9927c27d63b9eadf4c96021f7d9270051519d822bfb55eb7b7f08b64b9eb
+artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/runtime-proof-artifacts/gpu-real-rocm-repo-20260609005300-real-rocm-runtime-proof-0eebb142e6f213a0794a4649b10ab172971a7f4552cc124ab37c5f95c7a1ebd2.json
 result state: gpu-hmr-full-runtime-proven
 full runtime proven: true
 limitations: []
@@ -238,61 +217,95 @@ limitations: []
 Supplemental proof card:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-real-rocm-repo-20260608222512-oracle-real-rocm-saxpy-readback-y-d6555ff7b9f8f753-compute-output-oracle.png
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-real-rocm-repo-20260609005300-oracle-real-rocm-saxpy-readback-y-d6555ff7b9f8f753-compute-output-oracle.png
 ```
 
-Visual inspection confirmed the proof card is nonblank and records matching expected/readback checksums for the GPU output oracle.
+Visual inspection confirmed the proof card is readable and shows matching expected/readback hashes. The patched summary builder also accepts this artifact with `gpu_hmr_success=true`, no limitations, accepted ledger, and accepted contract consistency.
 
-## Current Implementation Checkpoint
-
-Additional current-session proof-hardening commits:
+Rejected later reruns:
 
 ```text
-39832df72 fix(gpu-hmr): preserve degraded dispatch identity
-220d95755 fix(gpu-hmr): validate full runtime artifact summaries
-f8c82024c fix(gpu-hmr): normalize real rocm proof ledger inputs
-d600c7df3 fix(gpu-hmr): derive hip launch contract from runtime evidence
-072986aaa fix(gpu-hmr): keep compute proof cards supplemental
+gpu-real-rocm-repo-20260609010632: rejected because worker runtime session was lost.
+gpu-real-rocm-repo-20260609011410: rejected because no HMR proof was produced before first-phase timeout.
 ```
 
-Implemented proof surfaces now include:
+These are not proof. They demonstrate the harness refuses invalid runtime evidence.
 
-- Runtime proof artifacts cannot report `gpuHmrSuccess=true` unless the full runtime artifact summary is internally accepted.
-- Real ROCm ledger inputs are normalized before strict proof acceptance.
-- HIP launch-contract checks are derived from runtime evidence instead of static string shortcuts.
-- Degraded dispatch identity is preserved instead of accidentally upgrading evidence.
-- Compute proof cards remain supplemental and cannot satisfy visual proof by themselves.
-- Generated split granularity explicitly rejects `smallest_safe_fission_island` and `per_kernel_hmr` when only a device translation unit is proven.
+## External Profile Proofs
 
-## Validation Completed In This Checkpoint
-
-Accepted proof commands already run in this checkpoint:
+ThreeJS WebGL shader lava passed as an external runtime screenshot proof:
 
 ```text
-npm --prefix mcp/synthi-mcp run proof:real-rocm:warm
+profile: threejs-webgl-shader-lava
+report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1780961959963-report.json
+proof id: external-visual-proof:44d6ee855658665be4472d688f58cc2212487282b087e9a3ae420baf3574a593
+total wall: 14045.5857ms
+edit to screenshot: 4355ms
+changed pixels: 28.3778%
+mean abs delta 8-bit: 12.9297
+Chrome GPU: enabled
+```
+
+Artifacts:
+
+```text
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-before-1780961950497.png
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-after-1780961956056.png
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/external-projects/threejs-webgl-shader-lava-external-diff-1780961959195.png
+```
+
+Visual inspection confirmed a torus-to-sphere material/geometry change and a nonblank diff.
+
+Bevy/WGSL was tested with real Rust GNU and w64devkit, built, then failed the strict full-runtime proof gate:
+
+```text
+report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780961693506-report.json
+status: fail
+reason: gpu_hmr_proof_insufficient
+required state: gpu-hmr-full-runtime-proven
+observed state: missing
+```
+
+This is a correct refusal, not a demo success.
+
+## Verification Checklist
+
+Passed:
+
+```text
+npx vitest run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts
+npm --prefix mcp/synthi-mcp run build
+npm --prefix mcp/synthi-mcp run proof:external-project:self-check
+npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check
+npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check
+npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check
+npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
+npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
+npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
-node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs  # SYNTHI_GPU_AGENT_FIXTURE=flow
-node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs  # SYNTHI_GPU_AGENT_FIXTURE=ray-light
-npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check
-npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check
 ```
 
-The external-profile status is not accepted arbitrary-project proof:
+## Commit Checkpoint
+
+Relevant current commits:
 
 ```text
-Bevy report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780951937094-report.json
-Bevy status: fail, connect ECONNREFUSED 127.0.0.1:8787
-External visual self-check: status pass, but placeholder image artifacts report unsupported image format
+92543192f fix(gpu-hmr): preserve derived contracts in proof summaries
+302bbc238 fix(gpu-hmr): require explicit real rocm docker config
+a12e654d8 fix(gpu-hmr): require explicit agent split docker config
+529fce4e2 fix(gpu-hmr): keep external chrome gpu enabled
+01a2759a1 fix(gpu-hmr): require explicit docker preview config
+71e9e3dd4 fix(gpu-hmr): reject invalid visual evidence artifacts
 ```
+
+These are generic hardening changes. They are not fixture-specific, and they do not add shims.
 
 ## Honest Remaining Work
 
-Production-grade universal GPU HMR still needs:
-
-- fix invalid placeholder visual artifact acceptance in the external visual self-check,
-- re-run actual external project profiles with a live MCP/browser attach path,
-- archive per-slug result summaries so Flow results are not overwritten by later fixture runs,
-- extend backend-specific acceptance to OpenCL, WebGPU/Bevy, and Vulkan,
-- validate CUDA only on a CUDA-capable machine,
-- continue refusing broad arbitrary-project claims until backend-specific runtime and visual proofs exist.
+- Full-runtime Bevy/WebGPU acceptance is not implemented.
+- CUDA needs a CUDA machine.
+- OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
+- Per-kernel/smallest-safe fission needs a deterministic verifier.
+- Browser plugin visual proof was unavailable because no in-app browser backend was exposed.
+- OpenCL and Vulkan still need backend-specific runtime contracts and proof ledgers.
