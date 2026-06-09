@@ -573,6 +573,67 @@ function deterministicOutputOracle({
   };
 }
 
+function acceptedVisualOracleArtifacts() {
+  return {
+    before_image: "artifacts/frame-before.png",
+    after_image: "artifacts/frame-after.png",
+    diff_image: "artifacts/frame-diff.png",
+    blank_frame_rejection: true,
+    same_frame_rejection: true,
+    new_epoch_watermark_or_trace: `epoch=3 artifact=${TEST_ARTIFACT_ID} dispatch=dispatch:test:1`,
+    camera_state_hash: `sha256:${"6".repeat(64)}`,
+    swapchain_size: [640, 480],
+    capture_backend: "mcp:synthi_screenshot",
+    frame_number: 7,
+    timestamp_after_dispatch: 1779980000000,
+    perceptual_diff: 0.25,
+    changed_pixel_ratio: 0.33,
+    visible_pixel_count: 1024,
+    before_image_hash: `sha256:${"7".repeat(64)}`,
+    after_image_hash: `sha256:${"8".repeat(64)}`,
+    diff_image_hash: `sha256:${"9".repeat(64)}`,
+    before_image_hash_verified: true,
+    after_image_hash_verified: true,
+    diff_image_hash_verified: true,
+    pixel_metrics_verified: true,
+    visual_pixel_verification: {
+      before_image_hash: `sha256:${"7".repeat(64)}`,
+      after_image_hash: `sha256:${"8".repeat(64)}`,
+      diff_image_hash: `sha256:${"9".repeat(64)}`,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
+      changed_pixel_ratio: 0.33,
+      perceptual_diff: 0.25,
+      visible_pixel_count: 1024,
+    },
+  };
+}
+
+function acceptedVisualEvidenceArtifacts() {
+  return [
+    {
+      path: "artifacts/frame-before.png",
+      contentHash: `sha256:${"7".repeat(64)}`,
+      acceptedAsVisualEvidence: true,
+      visualQuality: "gpu-hmr-visual-varied-frame",
+    },
+    {
+      path: "artifacts/frame-after.png",
+      contentHash: `sha256:${"8".repeat(64)}`,
+      acceptedAsVisualEvidence: true,
+      visualQuality: "gpu-hmr-visual-varied-frame",
+    },
+    {
+      path: "artifacts/frame-diff.png",
+      contentHash: `sha256:${"9".repeat(64)}`,
+      acceptedAsVisualEvidence: true,
+      visualQuality: "gpu-hmr-visual-varied-frame",
+    },
+  ];
+}
+
 function acceptedValidationRuntimeInput(overrides: Record<string, unknown> = {}) {
   const dispatchProof = safeDispatchProof();
   const sourceProof = acceptedSourceProof();
@@ -743,6 +804,22 @@ function acceptedSelectedIslandContract(islandId = "fission-island:abc") {
       selectedArtifactId: TEST_ARTIFACT_ID,
     },
     requiredOracleId: "oracle:required:abc",
+    outputOracleContract: {
+      kind: "buffer_checksum",
+      requiredOracleId: "oracle:required:abc",
+      outputTargetId: "output:sentinel",
+      producer: "deterministic_probe",
+      expectedHash: `sha256:${"2".repeat(64)}`,
+      readbackPlan: {
+        syncPoint: "after-dispatch",
+      },
+      runtimeSessionBinding: {
+        source: "runtime-session",
+      },
+      artifactBinding: {
+        source: "selected-artifact",
+      },
+    },
     narrowerCandidateRejections: [{
       scopeRank: 0,
       reasonCode: "fission.edit_crosses_body_boundary",
@@ -3678,6 +3755,8 @@ describe("GPU HMR runtime output proof classification", () => {
   it("does not prove fission from an unverified inline oracle proposal", () => {
     const metadata = acceptedFissionVerifierMetadata();
     delete metadata.candidates[0].candidate.requiredOracleId;
+    delete metadata.candidates[0].candidate.outputOracleContract;
+    delete metadata.candidates[0].candidate.output_oracle_contract;
     metadata.candidates[0].candidate.outputOracleProposal = {
       kind: "dispatch_counter",
       producer: "deterministic_probe",
@@ -7032,14 +7111,37 @@ describe("GPU HMR runtime output proof classification", () => {
   it("materializes runtime proof ladder as a structured validation artifact", () => {
     const dispatchProof = safeDispatchProof();
     const sourceProof = acceptedSourceProof();
+    const visualOracleArtifacts = acceptedVisualOracleArtifacts();
+    const visualEvidenceArtifacts = acceptedVisualEvidenceArtifacts();
+    const visualEvidenceRefs = visualEvidenceArtifacts.map((artifact) => artifact.path);
+    const deterministicVisualMode = {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    };
     const outputProof = classifyGpuHmrOutputProof({
       dispatchProof,
       deterministicOutputObserved: true,
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
-      outputOracle: deterministicOutputOracle(),
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        kind: "render_target_hash",
+        outputTargetId: "framebuffer:main",
+        oracleArtifacts: {
+          visualOracleArtifacts,
+        },
+        visualEvidenceRefs,
+      },
       visualFrameObserved: true,
-      visualEvidenceRefs: ["artifacts/frame.png"],
+      visualEvidenceRefs,
+      deterministicVisualMode,
     });
     const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [sourceProof],
@@ -7117,24 +7219,9 @@ describe("GPU HMR runtime output proof classification", () => {
           finalAcceptanceTarget: "final-target",
         },
       },
-      visualEvidenceRefs: ["artifacts/frame.png"],
-      visualEvidenceArtifacts: [{
-        path: "artifacts/frame.png",
-        contentHash: `sha256:${"4".repeat(64)}`,
-        acceptedAsVisualEvidence: true,
-        visualQuality: "gpu-hmr-visual-rich",
-      }],
-      deterministicVisualMode: {
-        fixed_seed: true,
-        frozen_camera: true,
-        temporal_accumulation_disabled: true,
-        taa_disabled: true,
-        denoiser_disabled: true,
-        fixed_resolution: true,
-        fixed_swapchain_image_count: true,
-        frame_capture_after_epoch_dispatch: true,
-        presentation_fence_or_frame_boundary: true,
-      },
+      visualEvidenceRefs,
+      visualEvidenceArtifacts,
+      deterministicVisualMode,
       createdAt: "2026-05-28T00:00:00.000Z",
     });
 
@@ -7192,7 +7279,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.proofFacets.output.outputOracleProven).toBe(true);
     expect(artifact.proofFacets.hostPreservation.hostPreservationProven).toBe(true);
     expect(artifact.proofFacets.originalHostPath.originalHostPathProven).toBe(true);
-    expect(artifact.proofFacets.visual.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
+    expect(artifact.proofFacets.visual.visualEvidenceRefs).toEqual(visualEvidenceRefs);
     expect(compileStage?.evidenceRefs).toEqual(expect.arrayContaining([
       ".synthi/gpu-hmr/proofs/source-proof.json",
       "evidence:source:device-artifact",
@@ -7215,7 +7302,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain(
       "worker-log:host_identity_snapshot:test:renderer_state:2->3",
     );
-    expect(artifact.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
+    expect(artifact.visualEvidenceRefs).toEqual(visualEvidenceRefs);
     expect(artifact.runtimeEvidence.hostIdentitySnapshots.lines[0]).toContain("renderer_state");
     expect(artifact.validationContextHash).toMatch(/^sha256:/);
     expect(artifact.validationContext.docker.containers.worker.image_id).toBe("sha256:worker-image");
@@ -7235,6 +7322,93 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
     expect(artifact.proofMaterial.validationContext.timings.duration_ms).toBe(1000);
     expect(artifact.proofMaterial.targetProgression.finalAcceptanceTarget).toBe("final-target");
+  });
+
+  it("does not accept visual HMR from screenshots when the ledger proves only a compute oracle", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = acceptedSourceProof();
+    const deterministicVisualMode = {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+    };
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualFrameObserved: true,
+      visualEvidenceRefs: ["artifacts/frame.png"],
+      deterministicVisualMode,
+    });
+    const fissionProof = acceptedFissionProof();
+    const abiProof = acceptedAbiProof();
+    const artifactTransportProof = acceptedArtifactTransportProof();
+    const epochProof = retiredEpochProof();
+    const hostPreservationProof = preservedHostProof();
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      backend: "hip",
+      gpuArch: "gfx1201",
+      processId: "pid1",
+      deviceUuid: "device:test",
+      contextHandle: "hip-context:test",
+      ...acceptedGpuRouteEvidence(),
+      ...acceptedStrictLedgerEvidence(),
+      sourceProofs: [sourceProof],
+      fissionProof,
+      abiProof,
+      artifactTransportProof,
+      epochProof,
+      dispatchProof,
+      outputProof,
+      hostPreservationProof,
+      fullRuntimeProof,
+      validationContext: {
+        processId: "pid1",
+        deviceIdentity: {
+          device_uuid: "device:test",
+        },
+      },
+      visualEvidenceRefs: ["artifacts/frame.png"],
+      visualEvidenceArtifacts: [{
+        path: "artifacts/frame.png",
+        contentHash: `sha256:${"4".repeat(64)}`,
+        acceptedAsVisualEvidence: true,
+        visualQuality: "gpu-hmr-visual-varied-frame",
+      }],
+      deterministicVisualMode,
+    });
+
+    expect(artifact.proofMaterial.visualEvidenceRequired).toBe(true);
+    expect(artifact.proofLedgerQuery.gpuHmrSuccess).toBe(true);
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "proof-ledger-visual-oracle",
+          degraded_reason: "visual_oracle_ledger_record_missing",
+        }),
+      ]),
+    );
   });
 
   it("does not mark runtime artifacts successful without adversarial refusal preflight proof", () => {

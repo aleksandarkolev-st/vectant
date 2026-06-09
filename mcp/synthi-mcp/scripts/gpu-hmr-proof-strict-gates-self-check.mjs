@@ -103,6 +103,55 @@ function computeOracleArtifacts() {
   };
 }
 
+function deterministicVisualMode() {
+  return {
+    fixed_seed: true,
+    frozen_camera: true,
+    temporal_accumulation_disabled: true,
+    taa_disabled: true,
+    denoiser_disabled: true,
+    fixed_resolution: true,
+    fixed_swapchain_image_count: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+  };
+}
+
+function visualOracleArtifacts() {
+  return {
+    before_image: 'memory://visual-before.png',
+    after_image: 'memory://visual-after.png',
+    diff_image: 'memory://visual-diff.png',
+    blank_frame_rejection: true,
+    same_frame_rejection: true,
+    new_epoch_watermark_or_trace: `epoch-7 ${HASH_B} dispatch-1`,
+    camera_state_hash: HASH_C,
+    swapchain_size: [640, 480],
+    capture_backend: 'mcp_screenshot',
+    frame_number: 7,
+    timestamp_after_dispatch: 400,
+    perceptual_diff: 0.42,
+    changed_pixel_ratio: 0.25,
+    visible_pixel_count: 1024,
+    before_image_hash: HASH_A,
+    after_image_hash: HASH_B,
+    diff_image_hash: HASH_C,
+    before_image_hash_verified: true,
+    after_image_hash_verified: true,
+    diff_image_hash_verified: true,
+    pixel_metrics_verified: true,
+    visual_pixel_verification: {
+      before_image_hash: HASH_A,
+      after_image_hash: HASH_B,
+      diff_image_hash: HASH_C,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
+    },
+  };
+}
+
 function timingMetrics(overrides = {}) {
   return {
     metric_clock: 'monotonic_ns',
@@ -196,6 +245,27 @@ function ledgerRecord(overrides = {}) {
     evidence_refs: ['runtime:module-load', 'runtime:epoch-publish', 'runtime:dispatch', 'runtime:output-oracle'],
     ...overrides,
   };
+}
+
+function visualLedgerRecord(overrides = {}) {
+  return ledgerRecord({
+    backend: 'hiprt',
+    output_event: {
+      id: 'output-visual-1',
+      kind: 'render_target_hash',
+      epoch: 'epoch-7',
+      artifact_hash: HASH_B,
+      process_id: 'pid-1',
+      after_dispatch_id: 'dispatch-1',
+      passed: true,
+      timestamp_monotonic_ns: 400,
+    },
+    oracle_artifacts: {
+      visual_oracle_artifacts: visualOracleArtifacts(),
+    },
+    deterministic_visual_mode: deterministicVisualMode(),
+    ...overrides,
+  });
 }
 
 function acceptanceContract(overrides = {}) {
@@ -357,7 +427,7 @@ function runtimeArtifact(overrides = {}) {
     proofLedgerQuery: proofLedger.query,
     proofLedgerSourceConsistency: {
       accepted: true,
-      mode: 'self_check_static_fixture',
+      mode: 'derived_only',
       failures: [],
     },
     acceptanceContract: contract,
@@ -493,6 +563,25 @@ assert.match(
     },
   }).detail,
   /proof_ledger_source_consistency_rejected/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    proofLedgerSourceConsistency: {
+      accepted: true,
+      mode: 'self_check_static_fixture',
+      failures: [],
+    },
+  }).detail,
+  /proof_ledger_source_consistency_unverified_mode/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    proofLedger: buildGpuHmrProofLedger(visualLedgerRecord()),
+    proofLedgerQuery: buildGpuHmrProofLedger(visualLedgerRecord()).query,
+  }).detail,
+  /deterministic_visual_mode_missing/,
 );
 assert.match(
   runtimeProofArtifactStrictGates([], { requireAtLeastOne: true })[0].detail,

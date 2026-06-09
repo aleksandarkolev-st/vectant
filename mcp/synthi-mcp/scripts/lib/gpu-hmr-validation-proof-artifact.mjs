@@ -1372,6 +1372,62 @@ function visualProofArtifactLimitations({
   }));
 }
 
+function visualOracleArtifactsFromLedgerRecord(record) {
+  const ledgerRecord = objectOrNull(record) ?? {};
+  const recordArtifacts = objectOrNull(ledgerRecord.oracle_artifacts)
+    ?? objectOrNull(ledgerRecord.oracleArtifacts)
+    ?? {};
+  const outputEvent = objectOrNull(ledgerRecord.output_event)
+    ?? objectOrNull(ledgerRecord.outputEvent)
+    ?? {};
+  const outputArtifacts = objectOrNull(outputEvent.oracle_artifacts)
+    ?? objectOrNull(outputEvent.oracleArtifacts)
+    ?? {};
+  const outputOracle = objectOrNull(outputEvent.output_oracle)
+    ?? objectOrNull(outputEvent.outputOracle)
+    ?? {};
+  const outputOracleArtifacts = objectOrNull(outputOracle.oracle_artifacts)
+    ?? objectOrNull(outputOracle.oracleArtifacts)
+    ?? {};
+  return firstOracleArtifactObject([
+    recordArtifacts.visual_oracle_artifacts,
+    recordArtifacts.visualOracleArtifacts,
+    outputArtifacts.visual_oracle_artifacts,
+    outputArtifacts.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts.visual_oracle_artifacts,
+    outputOracleArtifacts.visualOracleArtifacts,
+  ], VISUAL_ORACLE_ARTIFACT_HINT_FIELDS);
+}
+
+function visualLedgerOracleLimitations({
+  visualEvidenceRequired,
+  derivedProofLedgerRecord,
+}) {
+  if (visualEvidenceRequired !== true) return [];
+  if (visualOracleArtifactsFromLedgerRecord(derivedProofLedgerRecord)) return [];
+  return [{
+    stageId: 'proof-ledger-visual-oracle',
+    stage_id: 'proof-ledger-visual-oracle',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-visual-oracle-backed-by-ledger-record',
+    required_state: 'gpu-hmr-visual-oracle-backed-by-ledger-record',
+    observedState: 'missing_visual_oracle_artifacts',
+    observed_state: 'missing_visual_oracle_artifacts',
+    degradedState: 'gpu-hmr-visual-oracle-ledger-missing',
+    degraded_state: 'gpu-hmr-visual-oracle-ledger-missing',
+    degradedReason: 'visual_oracle_ledger_record_missing',
+    degraded_reason: 'visual_oracle_ledger_record_missing',
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
 function proofLedgerLimitations(query) {
   if (!objectOrNull(query) || query.gpuHmrSuccess === true) return [];
   return compactObjects(query.failedInvariants).map((failure) => ({
@@ -2482,6 +2538,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
       visualEvidenceRefs,
       visualEvidenceArtifacts,
       visualEvidenceRequired,
+    }),
+    ...visualLedgerOracleLimitations({
+      visualEvidenceRequired,
+      derivedProofLedgerRecord,
     }),
     ...adversarialPreflightLimitations(adversarialPreflight),
     ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
