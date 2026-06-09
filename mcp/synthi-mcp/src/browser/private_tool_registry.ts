@@ -20,6 +20,13 @@ export interface PrivateWorkflowMcpToolDefinition {
 
 const PRIVATE_TOOL_PREFIX = "synthi_app_";
 
+export interface PrivateWorkflowToolRegistryEvent {
+  type: "list_changed";
+  registration: PrivateWorkflowToolRegistration;
+}
+
+export type PrivateWorkflowToolRegistryListener = (event: PrivateWorkflowToolRegistryEvent) => void;
+
 export interface PrivateWorkflowToolStore {
   save(registration: PrivateWorkflowToolRegistration): void;
   get(toolName: string): PrivateWorkflowToolRegistration | null;
@@ -173,6 +180,8 @@ export class EncryptedFilePrivateWorkflowToolStore implements PrivateWorkflowToo
 }
 
 export class PrivateWorkflowToolRegistry {
+  private readonly listeners = new Set<PrivateWorkflowToolRegistryListener>();
+
   constructor(private store: PrivateWorkflowToolStore = new InMemoryPrivateWorkflowToolStore()) {}
 
   publish(
@@ -201,6 +210,7 @@ export class PrivateWorkflowToolRegistry {
       registered_at: options.now ?? Date.now(),
     };
     this.store.save(registration);
+    this.emit({ type: "list_changed", registration });
     return { ok: true, registration: cloneRegistration(registration) };
   }
 
@@ -216,10 +226,29 @@ export class PrivateWorkflowToolRegistry {
 
   resetForTests(): void {
     this.store.clear();
+    this.listeners.clear();
   }
 
   useStoreForTests(store: PrivateWorkflowToolStore): void {
     this.store = store;
+  }
+
+  onListChanged(listener: PrivateWorkflowToolRegistryListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emit(event: PrivateWorkflowToolRegistryEvent): void {
+    const snapshot = { ...event, registration: cloneRegistration(event.registration) };
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(snapshot);
+      } catch {
+        // Tool publication should not fail because one observer is gone.
+      }
+    }
   }
 }
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
@@ -490,6 +491,10 @@ describe("private browser workflow MCP tool manifest", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
+      let toolListChangedNotifications = 0;
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        toolListChangedNotifications += 1;
+      });
       const beforePublish = await client.listTools();
       expect(beforePublish.tools.map((tool) => tool.name)).not.toContain("synthi_app_open_details");
 
@@ -499,6 +504,7 @@ describe("private browser workflow MCP tool manifest", () => {
         ok: true,
         tool_name: "synthi_app_open_details",
       }));
+      await waitForCondition(() => toolListChangedNotifications > 0);
 
       const afterPublish = await client.listTools();
       expect(afterPublish.tools).toEqual(expect.arrayContaining([
@@ -763,4 +769,12 @@ process.stdout.write(output);
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("condition_timeout");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }

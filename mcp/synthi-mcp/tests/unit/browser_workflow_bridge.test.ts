@@ -314,18 +314,28 @@ describe("browser workflow bridge", () => {
     seedSaveWorkflow();
     bridge = startBrowserWorkflowBridge({ port: 0 });
     await bridge.ready;
-
-    const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tool: "synthi_browser_publish_private_tool", arguments: {} }),
+    const publishedEvents: string[] = [];
+    const unsubscribe = privateWorkflowToolRegistry.onListChanged((event) => {
+      publishedEvents.push(event.registration.tool_name);
     });
-    expect(publish.status).toBe(200);
-    const publishBody = await publish.json() as {
-      result?: { tool_name?: string };
-    };
-    const toolName = publishBody.result?.tool_name;
-    expect(toolName).toMatch(/^synthi_app_/);
+
+    let toolName: string | undefined;
+    try {
+      const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "synthi_browser_publish_private_tool", arguments: {} }),
+      });
+      expect(publish.status).toBe(200);
+      const publishBody = await publish.json() as {
+        result?: { tool_name?: string };
+      };
+      toolName = publishBody.result?.tool_name;
+      expect(toolName).toMatch(/^synthi_app_/);
+      expect(publishedEvents).toContain(toolName);
+    } finally {
+      unsubscribe();
+    }
 
     const lookup = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
       method: "POST",

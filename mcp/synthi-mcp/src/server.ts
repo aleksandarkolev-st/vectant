@@ -65,6 +65,7 @@ import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
 import { BROWSER_TOOLS, browserPrivateWorkflowTools, dispatchBrowserTool } from "./tools/browser.js";
+import { privateWorkflowToolRegistry } from "./browser/private_tool_registry.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import type { ToolContext } from "./tools/shared.js";
@@ -1068,6 +1069,15 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       : {}),
   };
 
+  privateWorkflowToolRegistry.onListChanged(() => {
+    void server.notification({
+      method: "notifications/tools/list_changed",
+      params: {},
+    }).catch(() => {
+      // Disconnected clients can discover private tools on the next tools/list call.
+    });
+  });
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...TOOLS, ...browserPrivateWorkflowTools()].map((t) => ({
       name: t.name,
@@ -1270,16 +1280,6 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       };
     }
     const response = await dispatchTool(toolName, args, signal);
-    if (toolName === "synthi_browser_publish_private_tool" && response.isError !== true) {
-      try {
-        await server.notification({
-          method: "notifications/tools/list_changed",
-          params: {},
-        });
-      } catch {
-        // A disconnected client can discover the tool on its next tools/list call.
-      }
-    }
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
     recordToolCall(toolName, response.isError ? "error" : "ok");
