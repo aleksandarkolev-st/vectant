@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rankedLocatorCandidates } from "./locator.js";
 import { redactStructuredValue, redactUrl, redactValue } from "./security.js";
-import { compileWorkflowContract, normalizeReplayMode, type WorkflowContractV7, type WorkflowReplayModeV7 } from "./workflow.js";
+import { compileWorkflowContract, normalizeReplayMode, orderBrowserReplayEvents, type WorkflowContractV7, type WorkflowReplayModeV7 } from "./workflow.js";
 import type {
   BrowserActionKind,
   BrowserElementMetadata,
@@ -256,6 +256,7 @@ export interface GeneratedScript {
 }
 
 export function generatePlaywrightScript(events: BrowserTraceEvent[], options: { mode?: WorkflowReplayModeV7 } = {}): GeneratedScript {
+  const orderedEvents = orderBrowserReplayEvents(events);
   const workflow = compileWorkflowContract(events);
   const contract = workflow.contract;
   const mode = options.mode === undefined
@@ -264,8 +265,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const valueParameterByEventId = new Map(contract.steps.flatMap((step) =>
     step.action.valueRef ? [[step.stepId, step.action.valueRef] as const] : []
   ));
-  const baseOrigin = firstHttpOrigin(events);
-  const requiresRuntimeBaseUrl = events.some((event) => isPreviewProxyUrl(event.url));
+  const baseOrigin = firstHttpOrigin(orderedEvents);
+  const requiresRuntimeBaseUrl = orderedEvents.some((event) => isPreviewProxyUrl(event.url));
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const usesClipboardDrop = events.some(isClipboardDropEvent);
   const usesNetworkResponseWait = events.some(hasReplayNetworkEvent);
@@ -532,7 +533,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     warnings.push(`ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary ${firstMutationStepId}`);
   }
 
-  for (const event of coalesceReplayEvents(events)) {
+  for (const event of coalesceReplayEvents(orderedEvents)) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
     if (event.kind === "navigation" || event.action === "navigate") {
       const pageVar = popupPageByTab.get(event.tab_id) ?? "page";

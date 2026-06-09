@@ -262,6 +262,38 @@ export interface WorkflowReplayPlanV7 {
   warnings: string[];
 }
 
+export function orderBrowserReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] {
+  return [...events].sort(compareBrowserReplayEvents);
+}
+
+function compareBrowserReplayEvents(left: BrowserTraceEvent, right: BrowserTraceEvent): number {
+  const targetOrder = popupTargetDependencyOrder(left, right);
+  if (targetOrder !== 0) return targetOrder;
+  const leftSeq = typeof left.event_seq === "number" && Number.isFinite(left.event_seq) ? left.event_seq : Number.MAX_SAFE_INTEGER;
+  const rightSeq = typeof right.event_seq === "number" && Number.isFinite(right.event_seq) ? right.event_seq : Number.MAX_SAFE_INTEGER;
+  if (leftSeq !== rightSeq) return leftSeq - rightSeq;
+  const leftTs = typeof left.ts === "number" && Number.isFinite(left.ts) ? left.ts : Number.MAX_SAFE_INTEGER;
+  const rightTs = typeof right.ts === "number" && Number.isFinite(right.ts) ? right.ts : Number.MAX_SAFE_INTEGER;
+  if (leftTs !== rightTs) return leftTs - rightTs;
+  return String(left.event_id || "").localeCompare(String(right.event_id || ""));
+}
+
+function popupTargetDependencyOrder(left: BrowserTraceEvent, right: BrowserTraceEvent): number {
+  if (eventOpensTargetFor(left, right)) return -1;
+  if (eventOpensTargetFor(right, left)) return 1;
+  return 0;
+}
+
+function eventOpensTargetFor(opener: BrowserTraceEvent, target: BrowserTraceEvent): boolean {
+  if (opener.detail?.["popup_event"] !== true) return false;
+  const popupTabId = typeof opener.detail["popup_tab_id"] === "string" ? opener.detail["popup_tab_id"] : "";
+  if (!popupTabId || target.tab_id !== popupTabId) return false;
+  if (target.detail?.["popup_context"] === true) return true;
+  const openerTabId = typeof target.detail?.["opener_tab_id"] === "string" ? target.detail["opener_tab_id"] : "";
+  const rootOpenerTabId = typeof target.detail?.["root_opener_tab_id"] === "string" ? target.detail["root_opener_tab_id"] : "";
+  return openerTabId === opener.tab_id || rootOpenerTabId === opener.tab_id;
+}
+
 const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
   [/\b(create|add|new|invite)\b/i, "create", "label_implies_create"],
   [/\b(save|update|edit|submit|apply|confirm)\b/i, "update", "label_implies_update"],
@@ -274,7 +306,7 @@ const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
 
 export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWorkflowV7 {
   const lane0 = reduceLane0Windows(events);
-  const ordered = lane0.events.sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0));
+  const ordered = orderBrowserReplayEvents(lane0.events);
   const actionEvents = coalesceActionEvents(
     ordered.filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
   );
@@ -740,8 +772,7 @@ function affordanceName(value: string): string {
 
 export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowReplayModeV7 = "sameSession"): WorkflowReplayPlanV7 {
   const workflow = compileWorkflowContract(events);
-  const ordered = coalesceActionEvents([...events]
-    .sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0))
+  const ordered = coalesceActionEvents(orderBrowserReplayEvents(events)
     .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation"));
   const firstMutationStepId = workflow.contract.mutationBoundaryPlan.firstMutationStepId;
   if (ordered.length === 0) {

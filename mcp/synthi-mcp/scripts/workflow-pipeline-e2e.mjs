@@ -645,18 +645,29 @@ async function runCase({ testCase, container, context, runner }) {
           : `error=${liveReplay.replay?.error || liveReplay.error || "unknown"}`
       );
       if (liveReplay.ok === true && Array.isArray(testCase.liveReplayExpectedText) && testCase.liveReplayExpectedText.length > 0) {
-        const snapshotBody = await workflowBridgeTool("synthi_browser_snapshot", {
-          tab_id: liveReplay.replay?.tab_id,
+        const replaySnapshots = await collectReplaySnapshots(liveReplay, caseDir);
+        await writeJson(caseDir, "live-replay-snapshots.json", {
+          tab_ids: replaySnapshots.tab_ids,
+          snapshots: replaySnapshots.snapshots.map((entry) => ({
+            tab_id: entry.tab_id,
+            url: entry.snapshot?.url ?? null,
+            title: entry.snapshot?.title ?? null,
+            screenshot_path: entry.screenshot_path,
+          })),
+          errors: replaySnapshots.errors,
         });
-        const snapshotText = JSON.stringify(snapshotBody.result?.snapshot?.dom ?? {});
+        const snapshotText = replaySnapshots.snapshots
+          .map((entry) => JSON.stringify(entry.snapshot?.dom ?? {}))
+          .join("\n");
         const missingLiveText = testCase.liveReplayExpectedText.filter((text) => !snapshotText.includes(text));
         record(
           testCase.id,
           "visual MCP replay snapshot text",
-          snapshotBody.ok === true && missingLiveText.length === 0,
-          missingLiveText.length ? `missing=${missingLiveText.join(" | ")}` : `texts=${testCase.liveReplayExpectedText.length}`
+          replaySnapshots.snapshots.length > 0 && missingLiveText.length === 0,
+          missingLiveText.length
+            ? `missing=${missingLiveText.join(" | ")} tabs=${replaySnapshots.tab_ids.join(",") || "none"} errors=${replaySnapshots.errors.join(",") || "none"}`
+            : `texts=${testCase.liveReplayExpectedText.length} snapshots=${replaySnapshots.snapshots.length}`
         );
-        await writeSnapshotScreenshot(snapshotBody.result?.snapshot, path.join(caseDir, "after-live-replay.png"));
       }
     }
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
@@ -1742,6 +1753,50 @@ async function writeSnapshotScreenshot(snapshot, filePath) {
     throw new Error("snapshot_missing_screenshot_base64");
   }
   await writeFile(filePath, Buffer.from(screenshot, "base64"));
+}
+
+async function collectReplaySnapshots(liveReplay, caseDir) {
+  const tabIds = replaySnapshotTabIds(liveReplay);
+  const snapshots = [];
+  const errors = [];
+  for (const tabId of tabIds) {
+    const snapshotBody = await workflowBridgeTool("synthi_browser_snapshot", { tab_id: tabId });
+    const snapshot = snapshotBody.result?.snapshot;
+    if (snapshotBody.ok !== true || !snapshot) {
+      errors.push(`${tabId}:${snapshotBody.result?.error || snapshotBody.error || "snapshot_failed"}`);
+      continue;
+    }
+    const screenshotPath = path.join(caseDir, `after-live-replay-${artifactNamePart(tabId)}.png`);
+    await writeSnapshotScreenshot(snapshot, screenshotPath);
+    if (snapshots.length === 0) {
+      await writeSnapshotScreenshot(snapshot, path.join(caseDir, "after-live-replay.png"));
+    }
+    snapshots.push({ tab_id: tabId, snapshot, screenshot_path: screenshotPath });
+  }
+  return { tab_ids: tabIds, snapshots, errors };
+}
+
+function replaySnapshotTabIds(liveReplay) {
+  const replay = liveReplay?.replay && typeof liveReplay.replay === "object" ? liveReplay.replay : {};
+  const ids = new Set();
+  const add = (value) => {
+    if (typeof value === "string" && value.length > 0) ids.add(value);
+  };
+  if (Array.isArray(replay.replay_tab_ids)) {
+    for (const tabId of replay.replay_tab_ids) add(tabId);
+  }
+  if (replay.trace_tab_map && typeof replay.trace_tab_map === "object") {
+    for (const tabId of Object.values(replay.trace_tab_map)) add(tabId);
+  }
+  if (Array.isArray(replay.replay_targets)) {
+    for (const target of replay.replay_targets) add(target?.replay_tab_id);
+  }
+  add(replay.tab_id);
+  return [...ids];
+}
+
+function artifactNamePart(value) {
+  return String(value).replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
 }
 
 async function verifyVisualProofDir(proofDir, copyTarget) {
@@ -4730,7 +4785,7 @@ const CASES = [
       "workflowUrl(\"/external-account.html\")",
     ],
     liveReplayMode: "sameSession",
-    liveReplayExpectedText: ["Cross-Origin Popup Consented Workflow"],
+    liveReplayExpectedText: ["External account preview for Ops Ledger"],
     replayEnv: () => ({ EXTERNAL_ACCOUNT: "Ops Ledger" }),
     setup: async ({ addCleanup }) => {
       const externalPopupHtml = [

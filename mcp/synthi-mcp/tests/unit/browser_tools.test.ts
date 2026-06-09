@@ -931,6 +931,11 @@ describe("browser MCP tool surface", () => {
       url: event.url,
       detail: event.detail?.["popup_event"] === true ? { popup_tab_id: "runtime-popup" } : undefined,
     }));
+    vi.spyOn(browserPlaywrightAdapter, "isAttached").mockReturnValue(true);
+    const listTabs = vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([
+      { tab_id: "app", url, title: "Dashboard", active: false },
+      { tab_id: "runtime-popup", url: popupUrl, title: "Workflow Help", active: true },
+    ]);
     const lease = browserBroker.acquireLease("agent", 5000, "popup-continuation-replay");
 
     const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
@@ -943,7 +948,26 @@ describe("browser MCP tool surface", () => {
     expect(replay?.isError).toBeUndefined();
     expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
       ok: true,
-      replay: expect.objectContaining({ steps_run: 2 }),
+      replay: expect.objectContaining({
+        steps_run: 2,
+        replay_tab_ids: ["app", "runtime-popup"],
+        trace_tab_map: expect.objectContaining({
+          app: "app",
+          "recorded-popup": "runtime-popup",
+        }),
+        replay_targets: expect.arrayContaining([
+          expect.objectContaining({
+            trace_tab_id: "app",
+            replay_tab_id: "app",
+            popup_context: true,
+          }),
+          expect.objectContaining({
+            trace_tab_id: "recorded-popup",
+            replay_tab_id: "runtime-popup",
+            popup_context: true,
+          }),
+        ]),
+      }),
     }));
     expect(replayAction.mock.calls[0]?.[0]).toBe("app");
     expect(replayAction.mock.calls[1]?.[0]).toBe("runtime-popup");
@@ -952,6 +976,8 @@ describe("browser MCP tool surface", () => {
       tab_id: "recorded-popup",
       value: "contracts",
     }));
+    expect(listTabs).toHaveBeenCalled();
+    expect(browserBroker.listTabs().map((tab) => tab.tab_id)).toEqual(["app", "runtime-popup"]);
   });
 
   it("replays range control workflows through the event-aware adapter path", async () => {

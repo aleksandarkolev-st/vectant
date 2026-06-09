@@ -1603,6 +1603,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
   }
+  const replayTabRefreshError = await refreshReplayTabsForSnapshotAccess();
 
   return jsonResponse({
     ok: true,
@@ -1612,7 +1613,11 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       status: plan.status,
       steps_run: stepsRun,
       tab_id: replayTab.tab_id,
+      replay_tab_ids: replayTabIds(replayTabByTraceTab, replayTab.tab_id),
+      trace_tab_map: Object.fromEntries(replayTabByTraceTab),
+      replay_targets: replayTargetsForPlan(plan.events, replayTabByTraceTab, replayTab.tab_id),
       stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
+      ...(replayTabRefreshError ? { replay_tab_refresh_error: replayTabRefreshError } : {}),
     },
   });
 }
@@ -2023,6 +2028,65 @@ function rememberReplayPopupTab(
   const tracePopupTab = stringOpt(event.detail?.["popup_tab_id"]);
   const replayPopupTab = stringOpt(detail?.["popup_tab_id"]);
   if (tracePopupTab && replayPopupTab) replayTabByTraceTab.set(tracePopupTab, replayPopupTab);
+}
+
+function replayTabIds(replayTabByTraceTab: Map<string, string>, rootTabId: string): string[] {
+  return [...new Set([rootTabId, ...replayTabByTraceTab.values()].filter((value) => value.length > 0))];
+}
+
+function replayTargetsForPlan(
+  events: BrowserTraceEvent[],
+  replayTabByTraceTab: Map<string, string>,
+  rootTabId: string
+): Array<Record<string, unknown>> {
+  const byTraceTab = new Map<string, {
+    trace_tab_id: string;
+    replay_tab_id: string;
+    kind: "page" | "popup";
+    recorded_opener_tab_id?: string;
+    recorded_root_opener_tab_id?: string;
+    popup_context: boolean;
+  }>();
+
+  for (const event of events) {
+    if (!event.tab_id) continue;
+    const existing = byTraceTab.get(event.tab_id) ?? {
+      trace_tab_id: event.tab_id,
+      replay_tab_id: replayTabByTraceTab.get(event.tab_id) ?? rootTabId,
+      kind: "page",
+      popup_context: false,
+    };
+    const replayTabId = replayTabByTraceTab.get(event.tab_id);
+    if (replayTabId) existing.replay_tab_id = replayTabId;
+    if (event.detail?.["popup_context"] === true || event.detail?.["popup_event"] === true) {
+      existing.kind = "popup";
+      existing.popup_context = true;
+    }
+    const openerTabId = stringOpt(event.detail?.["opener_tab_id"]);
+    const rootOpenerTabId = stringOpt(event.detail?.["root_opener_tab_id"]);
+    if (openerTabId) existing.recorded_opener_tab_id = openerTabId;
+    if (rootOpenerTabId) existing.recorded_root_opener_tab_id = rootOpenerTabId;
+    byTraceTab.set(event.tab_id, existing);
+  }
+
+  return [...byTraceTab.values()].map((target) => ({
+    trace_tab_id: target.trace_tab_id,
+    replay_tab_id: target.replay_tab_id,
+    kind: target.kind,
+    ...(target.recorded_opener_tab_id ? { recorded_opener_tab_id: target.recorded_opener_tab_id } : {}),
+    ...(target.recorded_root_opener_tab_id ? { recorded_root_opener_tab_id: target.recorded_root_opener_tab_id } : {}),
+    popup_context: target.popup_context,
+  }));
+}
+
+async function refreshReplayTabsForSnapshotAccess(): Promise<string | null> {
+  if (!browserPlaywrightAdapter.isAttached()) return null;
+  try {
+    browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 function isFileDropEvent(event: BrowserTraceEvent): boolean {
