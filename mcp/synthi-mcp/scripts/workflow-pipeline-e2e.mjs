@@ -126,6 +126,41 @@ function countOccurrences(value, needle) {
   return count;
 }
 
+function modeReachableExpectedReplayText(expectedText, generated, contract, trace) {
+  const expected = Array.isArray(expectedText) ? expectedText.filter((text) => typeof text === "string" && text.length > 0) : [];
+  const mode = String(generated?.mode || "");
+  const boundaryStepId = typeof contract?.mutationBoundaryPlan?.firstMutationStepId === "string"
+    ? contract.mutationBoundaryPlan.firstMutationStepId
+    : "";
+  if (!expected.length || !boundaryStepId || (mode !== "prefixOnly" && mode !== "coldSession")) {
+    return { required: expected, skipped: [] };
+  }
+
+  const boundary = Array.isArray(trace) ? trace.find((event) => event?.event_id === boundaryStepId) : undefined;
+  const boundarySeq = Number(boundary?.event_seq);
+  if (!Number.isFinite(boundarySeq)) return { required: expected, skipped: [] };
+
+  const required = [];
+  const skipped = [];
+  for (const text of expected) {
+    const producers = traceEventsWithObservedEffect(trace, text);
+    if (!producers.length || producers.some((event) => Number(event?.event_seq) < boundarySeq)) {
+      required.push(text);
+      continue;
+    }
+    skipped.push(text);
+  }
+  return { required, skipped };
+}
+
+function traceEventsWithObservedEffect(trace, text) {
+  if (!Array.isArray(trace)) return [];
+  return trace.filter((event) => {
+    const effects = event?.detail?.observed_effects;
+    return Array.isArray(effects) && effects.some((effect) => effect === text);
+  });
+}
+
 function slugPart(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
@@ -442,12 +477,14 @@ async function runCase({ testCase, container, context, runner }) {
       forwardedPortLiterals.length ? `literals=${Array.from(new Set(forwardedPortLiterals)).join(",")}` : "no forwarded port literals"
     );
     if (Array.isArray(testCase.expectedReplayText) && testCase.expectedReplayText.length > 0) {
-      const missingText = testCase.expectedReplayText.filter((text) => !String(generated?.code || "").includes(text));
+      const textExpectation = modeReachableExpectedReplayText(testCase.expectedReplayText, generated, contract, trace);
+      const missingText = textExpectation.required.filter((text) => !String(generated?.code || "").includes(text));
+      const skippedDetail = textExpectation.skipped.length ? ` skipped_after_mutation_boundary=${textExpectation.skipped.length}` : "";
       record(
         testCase.id,
         "export expected assertions",
         missingText.length === 0,
-        missingText.length ? `missing=${missingText.join(" | ")}` : `assertions=${testCase.expectedReplayText.length}`
+        missingText.length ? `missing=${missingText.join(" | ")}` : `assertions=${textExpectation.required.length}${skippedDetail}`
       );
     }
     if (Array.isArray(testCase.expectedReplayCode) && testCase.expectedReplayCode.length > 0) {
