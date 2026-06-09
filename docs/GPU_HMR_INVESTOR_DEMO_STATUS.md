@@ -26,6 +26,7 @@ Every arbitrary GPU project is production accepted.
 Bevy/WebGPU has full-runtime proof-ledger acceptance.
 OIDN HIP produced or validated the accepted visual output.
 OpenCL dispatch/readback output proof was validated on this worker.
+Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-safe fission.
 Any proof succeeded because of a shim or hardcoded scenario path.
 ```
@@ -35,6 +36,7 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
@@ -59,6 +61,7 @@ The visual runner now fails immediately when no initial generated device compile
 The generated ray-light and Flow demos remain device-translation-unit HMR claims, not per-kernel fission claims.
 Generated split topology now rejects per-kernel HMR unless deterministic fission-verifier evidence proves it.
 Narrow generated fission candidates now require topology binding to a content-addressed partial artifact before the verifier can pass them.
+Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
 ```
 
 Post-hardening verification:
@@ -305,6 +308,44 @@ noSymlinkApplied: true
 
 No OpenCL proof is accepted on this worker, and no vendor ICD, symlink, or compatibility shim was synthesized.
 
+## Vulkan Result
+
+Structured Vulkan preflight proof:
+
+```text
+proof id: vulkan-preflight-proof:sha256:d904016a24c785659424bae3cc5381ae2a84b816fee87c1f13dd335709d7a528
+result state: vulkan-runtime-rejected
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-preflight/vulkan-rocm-preflight-20260609-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-preflight/vulkan-rocm-preflight-20260609-summary.txt
+```
+
+Vulkan was tested and rejected:
+
+```text
+Vulkan loader: libvulkan.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libvulkan.so.1
+ICD files: none
+ICD libraries: none
+API version: unknown
+physical device count: 0
+device names: none
+unsupported reasons: vulkan_icd_missing, vulkaninfo_missing
+```
+
+The preflight does not count as Vulkan HMR proof:
+
+```text
+acceptedForVulkanPipelineProof: false
+gpuHmrSuccess: false
+pipelineLayoutProofRequired: true
+commandBufferTraceRequired: true
+frameOutputOracleRequired: true
+noShimApplied: true
+noIcdSynthesized: true
+noSymlinkApplied: true
+```
+
+No Vulkan proof is accepted on this worker, and no ICD, symlink, or compatibility shim was synthesized.
+
 ## Strict ROCm/HIP Compute Ledger
 
 Accepted full-runtime compute/readback proof:
@@ -414,6 +455,8 @@ npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
 SYNTHI_OPENCL_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=opencl-rocm-preflight-20260609-after-output-gate npm --prefix mcp/synthi-mcp run proof:opencl:preflight
+npm --prefix mcp/synthi-mcp run proof:vulkan:preflight:self-check
+SYNTHI_VULKAN_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=vulkan-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
@@ -428,6 +471,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 Relevant current commits:
 
 ```text
+f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
@@ -454,6 +498,6 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
+- Vulkan needs a real ICD plus pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof; no synthesized ICD or shim should be used.
 - Per-kernel/smallest-safe fission needs a deterministic verifier.
 - Browser plugin visual proof was unavailable because no in-app browser backend was exposed.
-- Vulkan still needs backend-specific runtime contracts and proof ledgers.

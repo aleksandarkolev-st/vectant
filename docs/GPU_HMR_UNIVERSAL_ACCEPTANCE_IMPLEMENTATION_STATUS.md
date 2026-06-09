@@ -14,7 +14,7 @@ The accepted proof set is broader than one fixture:
 - MCP preview visual HMR for generated ray-light and Flow workloads,
 - HIPRT same-process ray-traced framebuffer HMR for CameraRays and MegaKernel direct-light profiles,
 - ThreeJS external runtime visual proof as an external screenshot profile,
-- negative/rejection evidence for Bevy, OIDN HIP, and OpenCL where proof is missing or the runtime dependency is incompatible.
+- negative/rejection evidence for Bevy, OIDN HIP, OpenCL, and Vulkan where proof is missing or the runtime dependency is incompatible.
 
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. Non-HIP backends, CUDA, Vulkan, OpenCL full-runtime acceptance, and Bevy/WebGPU full-runtime acceptance remain open.
 
@@ -34,6 +34,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
@@ -59,6 +60,7 @@ The runner fails immediately when GPU split endpoint evidence is missing after i
 Earlier hardening in the same pass:
 
 ```text
+f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
@@ -77,6 +79,7 @@ fission acceptance rejects bare placeholder oracle ids.
 runtime visual proof artifacts are blocked when the derived proof ledger record lacks visual_oracle_artifacts.
 strict runtime artifact gates reject invented source-consistency modes and require deterministic visual-mode evaluation for visual ledgers.
 OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
+Vulkan preflight now refuses missing ICD/tool evidence and cannot count as pipeline, command-buffer, or frame-output proof.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
@@ -540,6 +543,45 @@ noSymlinkApplied: true
 
 No vendor ICD was synthesized, no symlink was added, and no compatibility shim was used. Do not claim OpenCL HMR output proof on this worker.
 
+## Vulkan Status
+
+Vulkan was tested through a structured worker-container preflight artifact:
+
+```text
+latest proof id: vulkan-preflight-proof:sha256:d904016a24c785659424bae3cc5381ae2a84b816fee87c1f13dd335709d7a528
+latest result state: vulkan-runtime-rejected
+latest proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-preflight/vulkan-rocm-preflight-20260609-proof.json
+latest summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-preflight/vulkan-rocm-preflight-20260609-summary.txt
+```
+
+The live worker has a Vulkan loader but no usable ICD/tooling evidence:
+
+```text
+libraries: libvulkan.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libvulkan.so.1
+ICD files: none
+ICD libraries: none
+API version: unknown
+physical device count: 0
+device names: none
+unsupported reasons: vulkan_icd_missing, vulkaninfo_missing
+```
+
+The preflight artifact explicitly does not accept Vulkan pipeline proof or GPU HMR success. Even on a machine where Vulkan preflight accepts, pipeline-layout proof, command-buffer trace proof, and frame-output oracle proof are still required before Vulkan GPU HMR can pass.
+
+```text
+acceptedForVulkanRuntimePreflight: false
+acceptedForVulkanPipelineProof: false
+gpuHmrSuccess: false
+pipelineLayoutProofRequired: true
+commandBufferTraceRequired: true
+frameOutputOracleRequired: true
+noShimApplied: true
+noIcdSynthesized: true
+noSymlinkApplied: true
+```
+
+No ICD was synthesized, no symlink was added, and no compatibility shim was used. Do not claim Vulkan HMR output proof on this worker.
+
 ## External Project Profiles
 
 ThreeJS WebGL shader lava profile passed as an external runtime screenshot proof:
@@ -690,6 +732,8 @@ npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
 SYNTHI_OPENCL_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=opencl-rocm-preflight-20260609-after-output-gate npm --prefix mcp/synthi-mcp run proof:opencl:preflight
+npm --prefix mcp/synthi-mcp run proof:vulkan:preflight:self-check
+SYNTHI_VULKAN_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=vulkan-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
@@ -708,6 +752,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | HIPRT | Fresh same-process CameraRays and MegaKernel proofs accepted. | Integrate HIPRT into the full MCP runtime ledger path if app hooks become available. |
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
 | OpenCL | Worker has `libOpenCL.so.1`, but no vendor ICD and no `clinfo`; structured preflight rejected OpenCL runtime proof. | Install/provide a real OpenCL vendor ICD and then add dispatch/event/readback ledger proof. No synthesized ICDs or shims. |
+| Vulkan | Worker has `libvulkan.so.1`, but no ICD files and no `vulkaninfo`; structured preflight rejected Vulkan runtime proof. | Provide a real Vulkan ICD/tooling, then add pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof. No synthesized ICDs or shims. |
 | External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
 | Narrow fission | Device translation unit HMR proven. | Add deterministic smallest-safe fission verifier before claiming per-kernel/smallest island. |
@@ -727,6 +772,7 @@ Every arbitrary GPU project is production accepted.
 The generated ray-light MCP fixture is HIPRT/OIDN.
 OIDN HIP produced or validated the accepted output.
 OpenCL dispatch/readback output proof was validated on this worker.
+Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-island fission.
 Bevy/WebGPU has full-runtime proof-ledger acceptance.
 ```
