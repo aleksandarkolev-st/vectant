@@ -187,6 +187,9 @@ async function startFreshMcpVerificationBridge() {
     SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: path.join(storeDir, "private-workflows.enc.json"),
     SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: `workflow-pipeline-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: `workflow-pipeline-${process.pid}`,
+    SYNTHI_AUTH_CHECKPOINT_STORE_FILE: path.join(storeDir, "auth-checkpoints.enc.json"),
+    SYNTHI_AUTH_CHECKPOINT_STORE_KEY: `workflow-pipeline-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    SYNTHI_AUTH_CHECKPOINT_SCOPE: `workflow-pipeline-${process.pid}`,
   };
   Object.assign(process.env, storeEnv);
   CFG.privateWorkflowStoreEnv = storeEnv;
@@ -392,8 +395,8 @@ async function runCase({ testCase, container, context, runner }) {
     const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
     await writeFile(specPath, generated.code);
     await writeJson(caseDir, "export.json", generated);
-    const replayParameters = typeof testCase.replayParameters === "function" ? await testCase.replayParameters({ caseDir }) : testCase.replayParameters || {};
-    const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir }) : {};
+    const replayParameters = typeof testCase.replayParameters === "function" ? await testCase.replayParameters({ caseDir, setupContext }) : testCase.replayParameters || {};
+    const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir, setupContext }) : {};
     const forwardedPortLiterals = String(generated.code).match(/\/port\/\d+/g) ?? [];
     record(
       testCase.id,
@@ -548,6 +551,18 @@ async function runCase({ testCase, container, context, runner }) {
     }
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
+    if (typeof testCase.afterReplay === "function") {
+      await testCase.afterReplay({
+        testCase,
+        previewPage,
+        idePage,
+        previewUrl,
+        caseDir,
+        setupContext,
+        contract,
+        replayParameters,
+      });
+    }
 
     if (testCase.ciIsolatedReplay === true) {
       const ciReplay = await runCiIsolatedWorkflowReplay({
@@ -1731,6 +1746,217 @@ const CASES = [
       await page.getByText("Preview ready for taught@example.test in standard").waitFor();
       await page.getByLabel("Segment").selectOption("enterprise");
       await page.getByText("Preview ready for taught@example.test in enterprise").waitFor();
+    },
+  },
+  {
+    id: "auth-checkpoint-secure-panel",
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Secure workspace ready",
+    ],
+    expectedReplayCode: [
+      "Auth: interactiveCheckpoint",
+      "workflowStorageState",
+      "await expect(page.getByText(\"Secure workspace ready\", { exact: true })).toBeVisible();",
+    ],
+    forbiddenReplayCode: [
+      "auth-session-live-secret",
+      "auth-session-export-secret",
+    ],
+    assertTrace: ({ trace }) => [
+      {
+        name: "trace auth checkpoint approved",
+        ok: trace.some((event) => event?.security?.auth_checkpoint_approved === true),
+        detail: "auth_checkpoint_approved=true",
+      },
+    ],
+    liveReplayMode: "coldSession",
+    beforeTeach: async ({ testCase, previewPage, previewUrl, caseDir, setupContext }) => {
+      const previewOrigin = new URL(previewUrl).origin;
+      const liveAuthValue = "auth-session-live-secret";
+      const exportAuthValue = "auth-session-export-secret";
+      await previewPage.evaluate((value) => {
+        localStorage.setItem("synthi.auth.session", value);
+      }, liveAuthValue);
+      const storageStatePath = path.join(caseDir, "auth-storage-state.json");
+      await writeFile(storageStatePath, JSON.stringify({
+        cookies: [],
+        origins: [
+          {
+            origin: previewOrigin,
+            localStorage: [{ name: "synthi.auth.session", value: exportAuthValue }],
+          },
+        ],
+      }, null, 2) + "\n");
+      setupContext.authStorageStatePath = storageStatePath;
+
+      const consent = await workflowBridgeTool("synthi_browser_request_consent", {
+        url: previewUrl,
+        status: "granted",
+        screenshot: true,
+        diagnostics: false,
+        reason: "workflow-pipeline-auth-checkpoint",
+      });
+      record(
+        testCase.id,
+        "grant auth preview consent",
+        consent.ok === true && consent.result?.consent?.origin === previewOrigin,
+        consent.result?.consent?.origin || consent.result?.error || "missing"
+      );
+
+      const observed = await workflowBridgeTool("synthi_browser_observe_preview", {
+        preferred_url: previewUrl,
+        preview_url: previewUrl,
+      });
+      const tabId = observed.result?.target?.tab_id;
+      record(
+        testCase.id,
+        "select auth preview tab",
+        observed.ok === true && typeof tabId === "string",
+        tabId || observed.result?.error || "missing"
+      );
+
+      const begun = await workflowBridgeTool("synthi_auth_begin_checkpoint_enrollment", {
+        url: previewUrl,
+        reason: "workflow-pipeline-auth-checkpoint",
+      });
+      const enrollmentId = begun.result?.enrollment?.enrollment_id;
+      record(
+        testCase.id,
+        "begin auth checkpoint",
+        begun.ok === true && typeof enrollmentId === "string",
+        enrollmentId || begun.result?.error || "missing"
+      );
+
+      const finished = await workflowBridgeTool("synthi_auth_finish_checkpoint_enrollment", {
+        enrollment_id: enrollmentId,
+        app_url: previewUrl,
+        redirect_chain: [`${previewOrigin}/login`, "https://idp.workflow-pipeline.test/oauth/authorize?state=auth-checkpoint"],
+        ttl_ms: 600_000,
+      });
+      const checkpointId = finished.result?.checkpoint?.checkpoint_id;
+      record(
+        testCase.id,
+        "finish auth checkpoint",
+        finished.ok === true && typeof checkpointId === "string" && finished.result?.checkpoint?.durability === "idpCheckpoint",
+        checkpointId || finished.result?.error || "missing"
+      );
+
+      const captured = await workflowBridgeTool("synthi_browser_capture_auth_checkpoint_storage", {
+        checkpoint_id: checkpointId,
+        tab_id: tabId,
+      });
+      record(
+        testCase.id,
+        "capture auth checkpoint storage",
+        captured.ok === true &&
+          captured.result?.storage_artifact?.origin_count >= 1 &&
+          captured.result?.auth_readiness?.status === "ready",
+        captured.result?.auth_readiness?.status || captured.result?.error || "missing"
+      );
+      await writeJson(caseDir, "auth-checkpoint.json", captured.result ?? captured);
+    },
+    replayEnv: ({ setupContext }) => ({ PLAYWRIGHT_STORAGE_STATE: setupContext.authStorageStatePath }),
+    afterReplay: async ({ testCase, previewPage, previewUrl, caseDir, contract }) => {
+      const previewOrigin = new URL(previewUrl).origin;
+      await previewPage.evaluate(() => {
+        localStorage.setItem("synthi.auth.session", "auth-session-expired-secret");
+      });
+      const observed = await workflowBridgeTool("synthi_browser_observe_preview", {
+        preferred_url: previewUrl,
+        preview_url: previewUrl,
+      });
+      const tabId = observed.result?.target?.tab_id;
+      record(
+        testCase.id,
+        "select auth preview tab for expiry",
+        observed.ok === true && typeof tabId === "string",
+        tabId || observed.result?.error || "missing"
+      );
+      const begun = await workflowBridgeTool("synthi_auth_begin_checkpoint_enrollment", {
+        url: previewUrl,
+        reason: "workflow-pipeline-auth-expiry",
+      });
+      const enrollmentId = begun.result?.enrollment?.enrollment_id;
+      record(
+        testCase.id,
+        "begin expiring auth checkpoint",
+        begun.ok === true && typeof enrollmentId === "string",
+        enrollmentId || begun.result?.error || "missing"
+      );
+      const finished = await workflowBridgeTool("synthi_auth_finish_checkpoint_enrollment", {
+        enrollment_id: enrollmentId,
+        app_url: previewUrl,
+        redirect_chain: [`${previewOrigin}/login`, "https://idp.workflow-pipeline.test/oauth/authorize?state=expiring-auth-checkpoint"],
+        ttl_ms: 1_000,
+      });
+      const checkpointId = finished.result?.checkpoint?.checkpoint_id;
+      record(
+        testCase.id,
+        "finish expiring auth checkpoint",
+        finished.ok === true && typeof checkpointId === "string",
+        checkpointId || finished.result?.error || "missing"
+      );
+      const captured = await workflowBridgeTool("synthi_browser_capture_auth_checkpoint_storage", {
+        checkpoint_id: checkpointId,
+        tab_id: tabId,
+      });
+      const capturedText = JSON.stringify(captured);
+      record(
+        testCase.id,
+        "capture expiring auth checkpoint storage",
+        captured.ok === true &&
+          captured.result?.auth_readiness?.status === "ready" &&
+          !capturedText.includes("auth-session-expired-secret"),
+        captured.result?.auth_readiness?.status || captured.result?.error || "missing"
+      );
+      await writeJson(caseDir, "auth-expiring-checkpoint.json", captured.result ?? captured);
+      await sleep(1_300);
+      const expiredReplay = await runLiveWorkflowReplay({
+        caseId: testCase.id,
+        workflowId: contract?.workflowId,
+        mode: "coldSession",
+        parameters: {},
+      });
+      await writeJson(caseDir, "expired-auth-replay.json", expiredReplay);
+      record(
+        testCase.id,
+        "expired auth blocks cold replay",
+        expiredReplay.error === "workflow_auth_not_ready" &&
+          expiredReplay.auth_status === "checkpointExpired" &&
+          expiredReplay.failure_class === "authExpired",
+        expiredReplay.error ? `${expiredReplay.auth_status || "missing"} ${expiredReplay.failure_class || "missing"}` : "missing"
+      );
+    },
+    files: () => commonFiles({
+      title: "Auth Checkpoint Secure Panel Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Auth Checkpoint Secure Panel Workflow</h1>",
+        "      <section class=\"status\" aria-label=\"Auth status\" data-testid=\"auth-status\">Waiting for secure session</section>",
+        "      <button type=\"button\" data-testid=\"open-secure-panel\" data-synthi-source-id=\"auth.panel.open\">Open secure workspace</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const output = document.querySelector('#status');",
+        "const status = document.querySelector('[data-testid=\"auth-status\"]');",
+        "document.querySelector('[data-testid=\"open-secure-panel\"]').addEventListener('click', () => {",
+        "  if (!localStorage.getItem('synthi.auth.session')) {",
+        "    output.textContent = 'Login required';",
+        "    status.textContent = 'No secure session';",
+        "    return;",
+        "  }",
+        "  status.textContent = 'Secure session approved';",
+        "  output.textContent = 'Secure workspace ready';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("button", { name: "Open secure workspace" }).click();
+      await page.getByText("Secure workspace ready").waitFor();
     },
   },
   {
