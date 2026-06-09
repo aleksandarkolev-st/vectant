@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { replayIsolationProfiles } from "../../src/browser/safety.js";
 import { eventLog } from "../../src/events/index.js";
@@ -13,6 +14,7 @@ const originalExpectedCiCwd = process.env["EXPECTED_CI_CWD"];
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  authCheckpointManager.resetForTests();
   replayIsolationProfiles.resetForTests();
   eventLog._resetForTests();
 });
@@ -262,6 +264,112 @@ describe("safety MCP tool surface", () => {
         }),
       }),
     }));
+  });
+
+  it("passes validated auth provider storage state into CI isolated replay", async () => {
+    const url = "https://app.example.test/settings";
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-auth-replay-"));
+    const workingDirectory = path.join(artifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
+    const mintScript = path.join(artifactRoot, "mint-auth.mjs");
+    const resetScript = path.join(artifactRoot, "reset.mjs");
+    const ciScript = path.join(artifactRoot, "ci.mjs");
+    await writeFile(mintScript, [
+      "const appOrigin = process.env.SYNTHI_AUTH_APP_ORIGIN;",
+      "process.stdout.write(JSON.stringify({",
+      "  ok: true,",
+      "  ttl_ms: 600000,",
+      "  storage_state: {",
+      "    cookies: [{ name: 'sid', value: 'auth-cookie-secret', domain: 'app.example.test', path: '/', httpOnly: true, secure: true }],",
+      "    origins: [{ origin: appOrigin, localStorage: [{ name: 'session', value: 'auth-local-secret' }], sessionStorage: [{ name: 'tab', value: 'auth-session-secret' }] }]",
+      "  }",
+      "}));",
+      "",
+    ].join("\n"));
+    await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(ciScript, [
+      "import { appendFile, readFile } from 'node:fs/promises';",
+      "if (!process.env.SYNTHI_WORKFLOW_STORAGE_STATE) throw new Error('storage_state_path_missing');",
+      "const storage = JSON.parse(await readFile(process.env.SYNTHI_WORKFLOW_STORAGE_STATE, 'utf8'));",
+      "if (storage.cookies?.[0]?.value !== 'auth-cookie-secret') throw new Error('cookie_state_missing');",
+      "if (storage.origins?.[0]?.localStorage?.[0]?.value !== 'auth-local-secret') throw new Error('local_storage_missing');",
+      "if (storage.origins?.[0]?.sessionStorage?.[0]?.value !== 'auth-session-secret') throw new Error('session_storage_missing');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1' }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2' }) + '\\n', 'utf8');",
+      "",
+    ].join("\n"));
+
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({ enrollment_id: enrollment.enrollment_id, ttl_ms: 600_000 });
+    if (!checkpoint.ok) throw new Error(checkpoint.error);
+    const stored = authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "interactive-secret", domain: "app.example.test", path: "/" }],
+        origins: [{ origin: "https://app.example.test", localStorage: [{ name: "session", value: "interactive-secret" }] }],
+      },
+    });
+    if (!stored.ok) throw new Error(stored.error);
+    teachSaveWorkflow();
+
+    const provider = authCheckpointManager.configureRefreshProvider({
+      url,
+      provider_type: "ciTestAuth",
+      secret_ref: "synthi://secrets/workspace/ci-auth",
+      mint_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(mintScript)}`,
+      working_directory: workingDirectory,
+    });
+    if (!provider.ok) throw new Error(provider.error);
+    const tested = authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
+    expect(tested).toEqual(expect.objectContaining({ can_mint_replay_state: true }));
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-auth",
+      kind: "ciIsolated",
+      base_url: "https://app.example.test",
+      working_directory: workingDirectory,
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      auth_provider_id: provider.provider.provider_id,
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-auth",
+      parameters: { email: "ada@example.test" },
+      artifact_root: artifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    const body = replay?.structuredContent as {
+      ok: boolean;
+      replay: {
+        status: string;
+        artifacts: { auth_storage_state_path?: string };
+        report: {
+          auth_storage_state: {
+            cookie_count: number;
+            origin_count: number;
+            local_storage_entry_count: number;
+            session_storage_entry_count: number;
+          } | null;
+          attested_step_ids: string[];
+        };
+      };
+    };
+    expect(body).toEqual(expect.objectContaining({ ok: true }));
+    expect(body.replay.status).toBe("passed");
+    expect(body.replay.artifacts.auth_storage_state_path).toEqual(expect.stringContaining("auth-storage-state.json"));
+    expect(body.replay.report.auth_storage_state).toEqual({
+      cookie_count: 1,
+      origin_count: 1,
+      local_storage_entry_count: 1,
+      session_storage_entry_count: 1,
+    });
+    expect(body.replay.report.attested_step_ids).toEqual(["browser_evt_1", "browser_evt_2"]);
+    expect(JSON.stringify(body)).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
+    const storageState = await readFile(body.replay.artifacts.auth_storage_state_path!, "utf8");
+    expect(storageState).toContain("auth-cookie-secret");
   });
 
   it("blocks CI isolated replay before profile readiness instead of executing mutation steps", async () => {

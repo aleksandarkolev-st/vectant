@@ -5,6 +5,7 @@ import path from "node:path";
 import { generatePlaywrightScript, workflowParameterEnvName } from "./trace.js";
 import { classifyWorkflowReplayFailure, type FailureClassV7 } from "./workflow.js";
 import type { ReplayIsolationProfileV7 } from "./safety.js";
+import type { AuthBrowserStorageState } from "./auth.js";
 import type { BrowserTraceEvent } from "./types.js";
 import type { CompiledWorkflowV7 } from "./workflow.js";
 
@@ -15,6 +16,7 @@ export interface CiIsolatedReplayInput {
   events: BrowserTraceEvent[];
   profile: ReplayIsolationProfileV7;
   parameters?: Record<string, string>;
+  auth_storage_state?: AuthBrowserStorageState;
   blockers?: string[];
   timeout_ms?: number;
   artifact_root?: string;
@@ -41,6 +43,7 @@ export interface CiIsolatedReplayResult {
     reset_log_path: string;
     ci_log_path: string;
     attestation_path: string;
+    auth_storage_state_path?: string;
   };
   commands: {
     reset_exit_code: number | null;
@@ -51,6 +54,12 @@ export interface CiIsolatedReplayResult {
     ci_output: string;
     warnings: string[];
     parameter_env: string[];
+    auth_storage_state: {
+      cookie_count: number;
+      origin_count: number;
+      local_storage_entry_count: number;
+      session_storage_entry_count: number;
+    } | null;
     attested_step_ids: string[];
     required_mutation_step_ids: string[];
     missing_mutation_step_ids: string[];
@@ -73,11 +82,15 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const resetLogPath = path.join(directory, "reset.log");
   const ciLogPath = path.join(directory, "ci.log");
   const attestationPath = path.join(directory, "replay-attestation.jsonl");
+  const authStorageStatePath = input.auth_storage_state ? path.join(directory, "auth-storage-state.json") : undefined;
   await mkdir(directory, { recursive: true });
 
   const generated = generatePlaywrightScript(input.events, { mode: "ciIsolated" });
   await writeFile(specPath, generated.code + "\n", "utf8");
   await writeFile(attestationPath, "", "utf8");
+  if (authStorageStatePath) {
+    await writeFile(authStorageStatePath, JSON.stringify(input.auth_storage_state), "utf8");
+  }
 
   const blockers = [
     ...(input.blockers ?? []),
@@ -102,6 +115,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       resetLogPath,
       ciLogPath,
       attestationPath,
+      authStorageStatePath,
       blockers: uniqueBlockers,
       status: "blocked",
       failureClass: "mutationBlocked",
@@ -120,6 +134,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     SYNTHI_WORKFLOW_REPLAY_ATTESTATION: attestationPath,
     SYNTHI_WORKFLOW_ID: workflowId,
     SYNTHI_WORKSPACE_ID: workspaceId,
+    ...(authStorageStatePath ? { SYNTHI_WORKFLOW_STORAGE_STATE: authStorageStatePath } : {}),
     ALLOW_WORKFLOW_MUTATION: "1",
   };
   const timeoutMs = clampTimeout(input.timeout_ms);
@@ -136,6 +151,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       resetLogPath,
       ciLogPath,
       attestationPath,
+      authStorageStatePath,
       blockers: [],
       status: "failed",
       failureClass: "appValidationError",
@@ -160,6 +176,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     resetLogPath,
     ciLogPath,
     attestationPath,
+    authStorageStatePath,
     blockers: [],
     status: ci.exitCode === 0 && !missingRequiredMutationAttestation ? "passed" : "failed",
     failureClass: ci.exitCode === 0
@@ -183,6 +200,7 @@ function resultFor(
     resetLogPath: string;
     ciLogPath: string;
     attestationPath: string;
+    authStorageStatePath?: string;
     blockers: string[];
     status: CiIsolatedReplayResult["status"];
     failureClass: FailureClassV7 | null;
@@ -215,6 +233,7 @@ function resultFor(
       reset_log_path: options.resetLogPath,
       ci_log_path: options.ciLogPath,
       attestation_path: options.attestationPath,
+      ...(options.authStorageStatePath ? { auth_storage_state_path: options.authStorageStatePath } : {}),
     },
     commands: {
       reset_exit_code: options.reset?.exitCode ?? null,
@@ -225,10 +244,21 @@ function resultFor(
       ci_output: bounded(redactOutput(options.ci?.output ?? "")),
       warnings: options.generatedWarnings,
       parameter_env: options.parameterEnvNames.sort(),
+      auth_storage_state: input.auth_storage_state ? authStorageStateSummary(input.auth_storage_state) : null,
       attested_step_ids: [...options.attestedStepIds].sort(),
       required_mutation_step_ids: requiredMutationStepIds,
       missing_mutation_step_ids: missingMutationStepIds,
     },
+  };
+}
+
+function authStorageStateSummary(storageState: AuthBrowserStorageState): NonNullable<CiIsolatedReplayResult["report"]["auth_storage_state"]> {
+  const origins = storageState.origins ?? [];
+  return {
+    cookie_count: (storageState.cookies ?? []).length,
+    origin_count: origins.length,
+    local_storage_entry_count: origins.reduce((count, origin) => count + (origin.localStorage ?? []).length, 0),
+    session_storage_entry_count: origins.reduce((count, origin) => count + (origin.sessionStorage ?? []).length, 0),
   };
 }
 

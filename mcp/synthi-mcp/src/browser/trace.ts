@@ -243,6 +243,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     `// Default mutation mode: ${contract.mutationBoundaryPlan.defaultReplayMode}`,
     `// Limitations: ${contract.limitations.length ? contract.limitations.join(", ") : "none"}`,
     "",
+    "const workflowStorageState = process.env.SYNTHI_WORKFLOW_STORAGE_STATE || process.env.PLAYWRIGHT_STORAGE_STATE;",
+    "if (workflowStorageState) test.use({ storageState: workflowStorageState });",
+    "",
     "test('replayed browser workflow', async ({ page }) => {",
   ];
   const replayBlocked = contract.mutationBoundaryPlan.defaultReplayMode === "blocked";

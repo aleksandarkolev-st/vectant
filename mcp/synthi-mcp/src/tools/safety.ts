@@ -7,7 +7,8 @@ import {
 } from "../browser/safety.js";
 import { browserBroker } from "../browser/broker.js";
 import { runCiIsolatedReplay } from "../browser/ci_replay.js";
-import { classifyWorkflowReplayBlock } from "../browser/workflow.js";
+import { authCheckpointManager, type AuthBrowserStorageState } from "../browser/auth.js";
+import { classifyWorkflowReplayBlock, type WorkflowContractV7 } from "../browser/workflow.js";
 import { errorFromException, jsonResponse, type ToolResponse } from "./shared.js";
 
 export const SAFETY_TOOL_NAMES = [
@@ -171,14 +172,16 @@ async function ciIsolatedReplayTool(args: unknown): Promise<ToolResponse> {
   }
   const profile = replayIsolationProfiles.get(workspaceId);
   const plan = mutationSafetyPlanFor(artifact.artifact.workflow.contract, profile);
+  const authStorage = authStorageStateForCiReplay(artifact.artifact.workflow.contract, profile.auth_provider_id);
   const replay = await runCiIsolatedReplay({
     workspace_id: workspaceId,
     workflow_id: artifact.artifact.workflow_id,
     workflow: artifact.artifact.workflow,
     events: artifact.artifact.events,
     profile,
-    blockers: plan.ci_full_replay.blockers,
+    blockers: [...plan.ci_full_replay.blockers, ...authStorage.blockers],
     parameters: stringMap(a["parameters"]),
+    ...(authStorage.storageState ? { auth_storage_state: authStorage.storageState } : {}),
     timeout_ms: numberOpt(a["timeout_ms"]),
     artifact_root: stringOpt(a["artifact_root"]),
   });
@@ -197,6 +200,20 @@ function explainBlockedHardeningTool(args: unknown): ToolResponse {
     explanation: blockedHardeningExplanationFor(workflow.contract, profile),
     mutation_plan: mutationSafetyPlanFor(workflow.contract, profile),
   });
+}
+
+function authStorageStateForCiReplay(
+  contract: WorkflowContractV7,
+  authProviderId: string | null
+): { storageState?: AuthBrowserStorageState; blockers: string[] } {
+  if (!contract.authPlan.required) return { blockers: [] };
+  if (!authProviderId) return { blockers: ["auth_provider_id"] };
+  const artifact = authCheckpointManager.storageArtifactForRefreshProvider(authProviderId);
+  if (!artifact.ok) return { blockers: [artifact.error] };
+  if (artifact.artifact.metadata.app_origin !== contract.appOrigin) {
+    return { blockers: ["auth_provider_origin_mismatch"] };
+  }
+  return { storageState: artifact.artifact.state, blockers: [] };
 }
 
 function obj(args: unknown): Record<string, unknown> {

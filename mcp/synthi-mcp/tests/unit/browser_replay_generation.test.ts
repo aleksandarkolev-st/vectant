@@ -22,6 +22,8 @@ describe("browser replay generation scenarios", () => {
     ]);
 
     expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? \"http://localhost:5173\";");
+    expect(generated.code).toContain("const workflowStorageState = process.env.SYNTHI_WORKFLOW_STORAGE_STATE || process.env.PLAYWRIGHT_STORAGE_STATE;");
+    expect(generated.code).toContain("if (workflowStorageState) test.use({ storageState: workflowStorageState });");
     expect(generated.code).toContain("await page.goto(workflowUrl(\"/dashboard?framework=react\"));");
     expect(generated.code).toContain("await expect(target1).toBeVisible();");
   });

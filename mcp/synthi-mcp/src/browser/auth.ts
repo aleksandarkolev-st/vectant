@@ -475,6 +475,25 @@ export class AuthCheckpointManager {
     return artifact ? cloneStorageArtifact(artifact) : null;
   }
 
+  storageArtifactForRefreshProvider(provider_id: string): {
+    ok: true;
+    provider: AuthRefreshProviderMetadata;
+    artifact: AuthStorageArtifact;
+  } | { ok: false; error: string } {
+    const provider = this.store.getRefreshProvider(provider_id);
+    if (!provider || provider.status === "revoked") return { ok: false, error: "auth_refresh_provider_not_found" };
+    if (!this.refreshProviderHasUsableMint(provider)) return { ok: false, error: "auth_refresh_provider_not_ready" };
+    const artifactId = provider.last_mint_artifact?.artifact_id;
+    if (!artifactId) return { ok: false, error: "auth_refresh_provider_storage_missing" };
+    const artifact = this.store.getStorageArtifact(artifactId);
+    if (!artifact) return { ok: false, error: "auth_refresh_provider_storage_missing" };
+    return {
+      ok: true,
+      provider: this.snapshotProvider(provider),
+      artifact: cloneStorageArtifact(artifact),
+    };
+  }
+
   configureRefreshProvider(input: {
     url: string;
     secret_ref: string;
