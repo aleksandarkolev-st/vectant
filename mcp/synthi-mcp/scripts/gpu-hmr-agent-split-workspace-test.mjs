@@ -1055,6 +1055,14 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     metric_scope: options.metricScope ?? null,
     cacheState: options.cacheState ?? null,
     cache_state: options.cacheState ?? null,
+    editId: options.editId ?? null,
+    edit_id: options.editId ?? null,
+    editHash: options.editHash ?? null,
+    edit_hash: options.editHash ?? null,
+    editKind: options.editKind ?? null,
+    edit_kind: options.editKind ?? null,
+    differentEdit: options.differentEdit === true,
+    different_edit: options.differentEdit === true,
     timings: {
       device_compile_wall_time: Number(compileEndNs - compileStartNs),
       runtime_probe_time: Number(waitEndNs - waitStartNs),
@@ -1077,14 +1085,14 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
   const requireAppliedWait = options.requireAppliedWait === true || waitContract.isGpuDeviceEdit;
   record(
-    'mcp wait_hmr proof gate',
+    options.waitRecordLabel ?? 'mcp wait_hmr proof gate',
     wait?.status === 'applied' ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
     JSON.stringify(waitSummary),
   );
   if (requireAppliedWait && wait?.status !== 'applied') {
     throw new Error(`required synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`);
   }
-  return { compile, wait, waitContract };
+  return { compile, wait, waitContract, waitSummary, timingMetrics };
 }
 
 function cleanRel(value) {
@@ -1433,6 +1441,23 @@ function flipDeviceDirection(source) {
   return `${source.trimEnd()}\n${nonceDecl}`;
 }
 
+function deviceEditHash({ selectedPath, beforeSource, afterSource, editKind }) {
+  return `sha256:${sha256Hex(stableJson({
+    selectedPath: cleanRel(selectedPath),
+    beforeHash: `sha256:${sha256Hex(beforeSource ?? '')}`,
+    afterHash: `sha256:${sha256Hex(afterSource ?? '')}`,
+    editKind,
+  }))}`;
+}
+
+function runModeProofId(value) {
+  return `agent-split-run-mode-proof:sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function negativeEditProofId(value) {
+  return `agent-split-negative-edit-refusal:sha256:${sha256Hex(stableJson(value))}`;
+}
+
 function exposedSplitPath(filePath) {
   const rel = cleanRel(filePath);
   const prefix = '.synthi/generated/gpu/';
@@ -1509,10 +1534,17 @@ async function persistGeneratedSplitToWorkspace(split, granularity = null) {
     .catch((e) => record('workspace commit generated split', 'warn', e.message.slice(0, 200)));
 }
 
-async function compileGeneratedDevice(split, editedDevice) {
+async function compileGeneratedDevice(split, editedDevice, options = {}) {
   const previousDevice = split.files[split.roles.device];
   const sidecarRaw = sidecarWithSourceBaseline(split.sidecarRaw, split.roles.device, previousDevice);
   split.files[split.roles.device] = editedDevice;
+  const editKind = options.editKind ?? 'gpu_artifact_edit';
+  const editHash = options.editHash ?? deviceEditHash({
+    selectedPath: split.roles.device,
+    beforeSource: previousDevice,
+    afterSource: editedDevice,
+    editKind,
+  });
   const allFiles = [
     ...Object.entries(split.files).map(([name, content]) => ({ name, content })),
     { name: '.synthi_split_meta.json', content: sidecarRaw },
@@ -1539,14 +1571,22 @@ async function compileGeneratedDevice(split, editedDevice) {
     width: 800,
     height: 600,
   }, CFG.hotSwapTimeoutMs, {
-    metricScope: 'hot_delta_1',
-    cacheState: 'compiler_cache_warm',
+    metricScope: options.metricScope ?? 'hot_delta_1',
+    cacheState: options.cacheState ?? 'compiler_cache_warm',
+    editId: options.editId ?? `device-edit:${sha256Hex(editHash).slice(0, 16)}`,
+    editHash,
+    editKind,
+    differentEdit: options.differentEdit === true,
+    waitRecordLabel: options.waitRecordLabel,
   });
   return {
     ...result,
     previousDevice,
     editedDevice,
     selectedPath: split.roles.device,
+    editHash,
+    editId: options.editId ?? `device-edit:${sha256Hex(editHash).slice(0, 16)}`,
+    editKind,
   };
 }
 
@@ -1568,6 +1608,92 @@ function withoutImageData(shot) {
   if (!shot || typeof shot !== 'object') return shot;
   const { imageData, ...rest } = shot;
   return rest;
+}
+
+function artifactRel(name) {
+  return path.relative(process.cwd(), path.join(ARTIFACT_DIR, name));
+}
+
+function visualArtifactsForPrefixes(beforePrefix, afterPrefix, diffName = null) {
+  return {
+    beforeImage: artifactRel(`${beforePrefix}-first.png`),
+    afterImage: artifactRel(`${afterPrefix}-first.png`),
+    ...(diffName ? { diffImage: artifactRel(`${diffName}.png`) } : {}),
+  };
+}
+
+function waitProofFields(result) {
+  const wait = result?.wait ?? {};
+  return {
+    gpuProofValidation: wait.gpu_proof_validation ?? null,
+    gpu_proof_validation: wait.gpu_proof_validation ?? null,
+    gpuProofTelemetry: wait.gpu_proof_telemetry ?? null,
+    gpu_proof_telemetry: wait.gpu_proof_telemetry ?? null,
+  };
+}
+
+async function writeRunModeProofArtifact(name, proof) {
+  const seed = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+    backend: 'hip',
+    targetId: CFG.fixture,
+    profileId: CFG.fixture,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    ...proof,
+  };
+  const withProofId = {
+    ...seed,
+    proofId: runModeProofId(seed),
+  };
+  return writeJsonArtifact(name, withProofId);
+}
+
+async function writeNegativeEditRefusalArtifact(name, proof) {
+  const seed = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+    backend: 'hip',
+    targetId: CFG.fixture,
+    profileId: CFG.fixture,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    ...proof,
+  };
+  const withProofId = {
+    ...seed,
+    proofId: negativeEditProofId(seed),
+  };
+  return writeJsonArtifact(name, withProofId);
+}
+
+function negativeAbiChangingEdit(source) {
+  const kernelSignature = /((?:extern\s+"C"\s+)?__global__\s+void\s+[A-Za-z_]\w*\s*\()([^)]*)(\))/m;
+  const match = kernelSignature.exec(source);
+  if (!match) {
+    return {
+      accepted: false,
+      reasons: ['negative_edit_kernel_signature_not_found'],
+    };
+  }
+  const replacementArgs = `${match[2].trim()}${match[2].trim() ? ', ' : ''}int synthi_negative_abi_break`;
+  const edited = `${source.slice(0, match.index)}${match[1]}${replacementArgs}${match[3]}${source.slice(match.index + match[0].length)}`;
+  return {
+    accepted: true,
+    edited,
+    reasons: ['abi_compatibility_class_layout_changed', 'kernel_argument_added', 'gpu_hmr_rejected_before_load'],
+  };
 }
 
 async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
@@ -1612,7 +1738,7 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
   return { changedRatio, meanAbs };
 }
 
-async function assertVisualDelta(beforeShot, afterShot) {
+async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'before-after-diff', recordLabel = 'mcp screenshot visual delta') {
   const beforeSamples = [beforeShot?.first, beforeShot?.second, ...(beforeShot?.samples ?? [])]
     .filter((sample, index, all) => sample?.imageData && all.findIndex((candidate) => candidate?.seq === sample.seq) === index);
   const afterSamples = [afterShot?.first, afterShot?.second, ...(afterShot?.samples ?? [])]
@@ -1641,14 +1767,14 @@ async function assertVisualDelta(beforeShot, afterShot) {
   const minChangedRatio = Math.max(0.01, control.changedRatio * 3 + 0.0025);
   const minMeanAbs = Math.max(1.0, control.meanAbs * 3 + 0.25);
   const ok = best && best.changedRatio > minChangedRatio && best.meanAbs > minMeanAbs;
-  const diffPath = path.join(ARTIFACT_DIR, 'before-after-diff.png');
+  const diffPath = path.join(ARTIFACT_DIR, `${diffArtifactName}.png`);
   if (best) await screenshotDelta(baseline, best.shot, diffPath);
   const firstAfterTs = afterSamples[0]?.ts || 0;
   const selectedDeltaMs = firstAfterTs && best?.shot?.ts ? best.shot.ts - firstAfterTs : null;
   const detail = best
     ? `changed=${(best.changedRatio * 100).toFixed(2)}% mean_abs=${best.meanAbs.toFixed(2)} control_changed=${(control.changedRatio * 100).toFixed(2)}% control_mean_abs=${control.meanAbs.toFixed(2)} selected_seq=${best.shot.seq} selected_delta_ms=${selectedDeltaMs} diff=${path.relative(process.cwd(), diffPath)}`
     : `no eligible post-HMR visual samples diff=${path.relative(process.cwd(), diffPath)}`;
-  record('mcp screenshot visual delta', ok ? 'pass' : 'fail', detail);
+  record(recordLabel, ok ? 'pass' : 'fail', detail);
   if (!ok) throw new Error(`visual delta too small: ${detail}`);
   return {
     changedRatio: best.changedRatio,
@@ -1832,7 +1958,7 @@ async function run() {
   }
 
   const firstStart = await workerCheckpoint();
-  await compileViaMcp({
+  const initialCompileResult = await compileViaMcp({
     language: 'cpp',
     filename: 'main.cpp',
     source,
@@ -1846,7 +1972,13 @@ async function run() {
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hmrTimeoutMs);
+  }, CFG.hmrTimeoutMs, {
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split',
+    editHash: `sha256:${sha256Hex(source)}`,
+    editKind: 'cold_split',
+  });
   record('first compile via MCP', 'pass', 'use_ai_split=true prefer_gpu_pipeline=true');
 
   const sawGpuSplit = await awaitWorkerLogRegex(
@@ -1885,9 +2017,49 @@ async function run() {
   record('generated split granularity artifact', 'pass', granularityPath);
   await persistGeneratedSplitToWorkspace(split, granularity);
 
+  if (CFG.captureArtifacts && baselineShot) {
+    const coldPath = await writeRunModeProofArtifact('run-mode-cold-split', {
+      coldSplitProven: true,
+      cold_split_proven: true,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      runMode: initialCompileResult.timingMetrics,
+      run_mode: initialCompileResult.timingMetrics,
+      timingMetrics: initialCompileResult.timingMetrics,
+      timing_metrics: initialCompileResult.timingMetrics,
+      visualArtifacts: {
+        beforeImage: artifactRel('before-hmr-first.png'),
+        afterImage: artifactRel('before-hmr-second.png'),
+      },
+      visual_artifacts: {
+        before_image: artifactRel('before-hmr-first.png'),
+        after_image: artifactRel('before-hmr-second.png'),
+      },
+      visualMetrics: {
+        visiblePixelCount: baselineShot.second?.visiblePixels ?? baselineShot.first?.visiblePixels ?? null,
+        meanAbsDelta8bit: baselineShot.second?.meanLuma ?? baselineShot.first?.meanLuma ?? null,
+      },
+    });
+    record('run-mode cold split proof artifact', 'pass', coldPath);
+  }
+
   const editedDevice = flipDeviceDirection(split.files[split.roles.device]);
   const secondStart = await workerCheckpoint();
-  const generatedDeviceResult = await compileGeneratedDevice(split, editedDevice);
+  const hotDelta1EditHash = deviceEditHash({
+    selectedPath: split.roles.device,
+    beforeSource: split.files[split.roles.device],
+    afterSource: editedDevice,
+    editKind: 'gpu_artifact_edit',
+  });
+  const generatedDeviceResult = await compileGeneratedDevice(split, editedDevice, {
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: `hot-delta-1:${sha256Hex(hotDelta1EditHash).slice(0, 16)}`,
+    editHash: hotDelta1EditHash,
+    editKind: 'gpu_artifact_edit',
+  });
   record('device edit compile via MCP', 'pass', split.roles.device);
 
   const sawSplitEdit = await awaitWorkerLogRegex(
@@ -1919,6 +2091,29 @@ async function run() {
   let visualDelta = null;
   if (CFG.captureArtifacts && baselineShot) {
     visualDelta = await assertVisualDelta(baselineShot, afterShot);
+    const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', {
+      ...waitProofFields(generatedDeviceResult),
+      acceptedForGpuHmr: true,
+      accepted_for_gpu_hmr: true,
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      runMode: generatedDeviceResult.timingMetrics,
+      run_mode: generatedDeviceResult.timingMetrics,
+      timingMetrics: generatedDeviceResult.timingMetrics,
+      timing_metrics: generatedDeviceResult.timingMetrics,
+      visualArtifacts: visualArtifactsForPrefixes('before-hmr', 'after-hmr', 'before-after-diff'),
+      visual_artifacts: {
+        before_image: artifactRel('before-hmr-first.png'),
+        after_image: artifactRel('after-hmr-first.png'),
+        diff_image: artifactRel('before-after-diff.png'),
+      },
+      visualMetrics: {
+        changedPixelRatio: visualDelta.changedRatio,
+        meanAbsDelta8bit: visualDelta.meanAbs,
+        visiblePixelCount: afterShot.second?.visiblePixels ?? afterShot.first?.visiblePixels ?? null,
+      },
+    });
+    record('run-mode hot delta 1 proof artifact', 'pass', hotDelta1Path);
   }
   const deterministicFission = verifyGeneratedSplitFissionAfterRuntime({
     split,
@@ -1945,6 +2140,109 @@ async function run() {
       `failures=${(deterministicFission.deterministicFissionVerifier?.failures ?? []).join('|')}`,
     ].join(' '),
   );
+
+  const hotDelta2Device = generatedDeviceResult.previousDevice;
+  const hotDelta2EditHash = deviceEditHash({
+    selectedPath: split.roles.device,
+    beforeSource: split.files[split.roles.device],
+    afterSource: hotDelta2Device,
+    editKind: 'different_gpu_edit',
+  });
+  const thirdStart = await workerCheckpoint();
+  const hotDelta2Result = await compileGeneratedDevice(split, hotDelta2Device, {
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: `hot-delta-2:${sha256Hex(hotDelta2EditHash).slice(0, 16)}`,
+    editHash: hotDelta2EditHash,
+    editKind: 'different_gpu_edit',
+    differentEdit: hotDelta2EditHash !== hotDelta1EditHash,
+    waitRecordLabel: 'mcp wait_hmr proof gate hot delta 2',
+  });
+  record('device edit compile via MCP hot delta 2', 'pass', split.roles.device);
+  const hotDelta2Reload = await awaitWorkerLogRegex(
+    /\[gpu-reload\].*plan=device_only|Device sidecar reload vendor=.*result=Success/,
+    CFG.hotSwapTimeoutMs + 30000,
+    thirdStart,
+  );
+  record('device-only GPU HMR observed hot delta 2', hotDelta2Reload.matched ? 'pass' : 'fail', hotDelta2Reload.snippet || 'no device-only reload marker');
+  const afterHotDelta2Shot = await assertMcpScreenshot(
+    'mcp screenshot after hmr hot delta 2',
+    'after-hmr-2',
+    hotDelta2Result.wait,
+    CFG.captureArtifacts && afterShot
+      ? {
+          minVisibleSamples: CFG.visualDeltaMinSamples,
+          captureWindowMs: CFG.visualDeltaWindowMs,
+          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+        }
+      : {},
+  );
+  if (CFG.captureArtifacts && afterShot) {
+    const hotDelta2VisualDelta = await assertVisualDelta(
+      afterShot,
+      afterHotDelta2Shot,
+      'hot-delta-2-diff',
+      'mcp screenshot visual delta hot delta 2',
+    );
+    const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', {
+      ...waitProofFields(hotDelta2Result),
+      acceptedForGpuHmr: true,
+      accepted_for_gpu_hmr: true,
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      runMode: hotDelta2Result.timingMetrics,
+      run_mode: hotDelta2Result.timingMetrics,
+      timingMetrics: hotDelta2Result.timingMetrics,
+      timing_metrics: hotDelta2Result.timingMetrics,
+      visualArtifacts: visualArtifactsForPrefixes('after-hmr', 'after-hmr-2', 'hot-delta-2-diff'),
+      visual_artifacts: {
+        before_image: artifactRel('after-hmr-first.png'),
+        after_image: artifactRel('after-hmr-2-first.png'),
+        diff_image: artifactRel('hot-delta-2-diff.png'),
+      },
+      visualMetrics: {
+        changedPixelRatio: hotDelta2VisualDelta.changedRatio,
+        meanAbsDelta8bit: hotDelta2VisualDelta.meanAbs,
+        visiblePixelCount: afterHotDelta2Shot.second?.visiblePixels ?? afterHotDelta2Shot.first?.visiblePixels ?? null,
+      },
+    });
+    record('run-mode hot delta 2 proof artifact', 'pass', hotDelta2Path);
+  }
+
+  const negativeEdit = negativeAbiChangingEdit(split.files[split.roles.device]);
+  if (negativeEdit.accepted) {
+    const negativeEditHash = deviceEditHash({
+      selectedPath: split.roles.device,
+      beforeSource: split.files[split.roles.device],
+      afterSource: negativeEdit.edited,
+      editKind: 'negative_edit',
+    });
+    const negativePath = await writeNegativeEditRefusalArtifact('negative-edit-refusal', {
+      reasons: negativeEdit.reasons,
+      unsupportedReasons: negativeEdit.reasons,
+      unsupported_reasons: negativeEdit.reasons,
+      runMode: {
+        schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+        metricClock: 'monotonic_ns',
+        metric_clock: 'monotonic_ns',
+        metricScope: 'hot_delta_2',
+        metric_scope: 'hot_delta_2',
+        cacheState: 'compiler_cache_warm',
+        cache_state: 'compiler_cache_warm',
+        editId: `negative-edit:${sha256Hex(negativeEditHash).slice(0, 16)}`,
+        edit_id: `negative-edit:${sha256Hex(negativeEditHash).slice(0, 16)}`,
+        editHash: negativeEditHash,
+        edit_hash: negativeEditHash,
+        editKind: 'negative_edit',
+        edit_kind: 'negative_edit',
+        differentEdit: true,
+        different_edit: true,
+      },
+    });
+    record('negative ABI edit refused before GPU HMR', 'pass', negativePath);
+  } else {
+    record('negative ABI edit refused before GPU HMR', 'warn', negativeEdit.reasons.join('|'));
+  }
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});
