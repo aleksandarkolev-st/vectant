@@ -273,6 +273,7 @@ function parseArgs(argv) {
   const args = {
     profilePath: '',
     profileJson: '',
+    rejectionReportPath: '',
     selfCheck: false,
     dryRun: false,
   };
@@ -282,6 +283,7 @@ function parseArgs(argv) {
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--profile' || arg === '--profile-path') args.profilePath = argv[++index] ?? '';
     else if (arg === '--profile-json') args.profileJson = argv[++index] ?? '';
+    else if (arg === '--rejection-proof-from-report') args.rejectionReportPath = argv[++index] ?? '';
     else throw new Error(`unknown argument: ${arg}`);
   }
   return args;
@@ -1133,11 +1135,24 @@ function waitSummaryFromCompileResult(result) {
 function externalRejectionReasons(report) {
   const reasons = new Set(['external_profile_failed']);
   const message = String(report.error?.message ?? '');
+  if (/MCP request .* timed out after \d+ms/i.test(message)) reasons.add('mcp_request_timeout');
+  if (/tool synthi_wait_hmr isError/i.test(message)) reasons.add('mcp_wait_hmr_rejected');
   if (message.includes('gpu_hmr_proof_insufficient')) reasons.add('gpu_hmr_proof_insufficient');
+  if (message.includes('proof_state_missing')) reasons.add('gpu_proof_state_missing');
+  if (/frames:\s*diag:/i.test(message) && /(?:rtp=0|vp8_ok=0|frames_flushed=0|latest=none)/i.test(message)) {
+    reasons.add('mcp_no_decoded_frames');
+  }
   if (message.includes('visual diff below threshold')) reasons.add('visual_diff_below_threshold');
+  if (message.includes('gpu-hmr-visual-blank')) reasons.add('blank_frame_rejected');
+  if (/changedPixelRatio"?\s*:\s*0\b/.test(message) || /meanAbsDelta8bit"?\s*:\s*0\b/.test(message)) {
+    reasons.add('same_frame_or_zero_delta');
+  }
   if (message.includes('MCP visual proof gate is not GPU-only')) reasons.add('mcp_visual_proof_gate_unsatisfied');
   if (report.mcp?.visualProofGate && report.mcp.visualProofGate.satisfied !== true) {
     reasons.add('mcp_visual_proof_gate_unsatisfied');
+  }
+  if (report.proofMode === 'mcp_preview' && !(Array.isArray(report.screenshots) && report.screenshots.length > 0)) {
+    reasons.add('visual_frame_missing');
   }
   for (const [phase, result] of Object.entries({
     before: report.mcp?.before,
@@ -1196,6 +1211,42 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     path: outPath,
     reasons: artifact.rejection.reasons,
   };
+}
+
+function profileFromReport(report) {
+  if (report?.profile && typeof report.profile === 'object') return report.profile;
+  return {
+    id:
+      report?.profileId
+      ?? report?.profile_id
+      ?? report?.profile?.id
+      ?? 'external-project-profile',
+    mcpPreview: report?.mcp?.visualProofGate
+      ? {
+          requiredGpuProofState: report.mcp.visualProofGate.requiredGpuProofState ?? null,
+          requireGpuFullRuntimeProof: report.mcp.visualProofGate.requireGpuFullRuntimeProof ?? null,
+          hmrModule: report.mcp.visualProofGate.hmrModule ?? null,
+        }
+      : {},
+  };
+}
+
+async function writeRejectionProofFromReport(reportPath) {
+  const resolved = path.resolve(REPO_ROOT, reportPath);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`external rejection report path must stay inside repo workspace: ${resolved}`);
+  }
+  const report = JSON.parse(await fs.readFile(resolved, 'utf8'));
+  if (report.status === 'pass') {
+    throw new Error(`external rejection proof requires a non-passing report: ${resolved}`);
+  }
+  const artifact = await writeExternalRejectionProofArtifact(profileFromReport(report), report);
+  console.log(JSON.stringify({
+    schemaVersion: 'synthi.gpu.hmr.external_project_rejection_from_report.v1',
+    reportPath: resolved,
+    rejectionProofArtifact: artifact,
+  }, null, 2));
+  return artifact;
 }
 
 async function loadProfile(args) {
@@ -1492,6 +1543,26 @@ async function selfCheck() {
       && rejectionProofArtifact.reasons.includes('after_wait_fail'),
     rejectionProofArtifact,
   });
+  const timeoutRejectionReasons = externalRejectionReasons({
+    proofMode: 'mcp_preview',
+    status: 'fail',
+    screenshots: [],
+    error: {
+      message: 'MCP request tools/call timed out after 1200000ms. stderr=[mcp] frames: diag: rtp=0 vp8_ok=0 frames_flushed=0 latest=none',
+    },
+    mcp: {
+      visualProofGate: { required: true, satisfied: true },
+    },
+  });
+  checks.push({
+    name: 'external-rejection-timeout-no-frame-reasons',
+    ok:
+      timeoutRejectionReasons.includes('mcp_request_timeout')
+      && timeoutRejectionReasons.includes('mcp_no_decoded_frames')
+      && timeoutRejectionReasons.includes('visual_frame_missing')
+      && timeoutRejectionReasons.includes('visual_oracle_not_accepted'),
+    timeoutRejectionReasons,
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.self_check.v1',
@@ -1735,6 +1806,10 @@ async function runMcpPreviewProfile(profile, dir, report) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.rejectionReportPath) {
+    await writeRejectionProofFromReport(args.rejectionReportPath);
+    return;
+  }
   if (args.selfCheck) {
     await selfCheck();
     return;
