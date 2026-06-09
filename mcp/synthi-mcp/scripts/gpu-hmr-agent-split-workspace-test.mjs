@@ -1407,38 +1407,109 @@ function gpuSplitEndpointEvidenceFromSidecar(split) {
   };
 }
 
-function flipDeviceDirection(source) {
-  const marker = 'SYNTHI_HMR_DIRECTION_TOKEN';
-  const lines = source.split('\n');
-  const markerIndex = lines.findIndex((line) => line.includes(marker));
-  if (markerIndex >= 0) {
-    const old = lines[markerIndex];
-    const next = old.replace('1.0f', '-1.0f').replace('1.0', '-1.0');
-    if (next !== old) {
-      lines[markerIndex] = next;
-      return lines.join('\n');
+function findMatchingBrace(source, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
     }
   }
-  const replacements = [
-    [/FLOW_DIRECTION\s+1\.0f/g, 'FLOW_DIRECTION -1.0f'],
-    [/FLOW_DIRECTION\s+1\.0/g, 'FLOW_DIRECTION -1.0'],
-    [/const\s+float\s+direction\s*=\s*1\.0f\s*;/g, 'const float direction = -1.0f;'],
-    [/const\s+float\s+direction\s*=\s*1\.0\s*;/g, 'const float direction = -1.0f;'],
-    [/\bx\s*\[\s*i\s*\]\s*\+=\s*dx\s*\/\s*len\s*\*\s*speed\s*;/g, 'x[i] -= dx / len * speed;'],
-    [/\by\s*\[\s*i\s*\]\s*\+=\s*dy\s*\/\s*len\s*\*\s*speed\s*;/g, 'y[i] -= dy / len * speed;'],
-    [/\bx\s*\[\s*i\s*\]\s*\+=\s*direction\s*\*\s*dx\s*\/\s*len\s*\*\s*speed\s*;/g, 'x[i] -= direction * dx / len * speed;'],
-    [/\by\s*\[\s*i\s*\]\s*\+=\s*direction\s*\*\s*dy\s*\/\s*len\s*\*\s*speed\s*;/g, 'y[i] -= direction * dy / len * speed;'],
+  return -1;
+}
+
+function deviceKernelBodyRanges(source) {
+  const ranges = [];
+  const kernelRegex = /(?:extern\s+"C"\s+)?__global__\s+void\s+[A-Za-z_]\w*\s*\([^)]*\)\s*\{/g;
+  let match = null;
+  while ((match = kernelRegex.exec(source)) !== null) {
+    const openIndex = source.indexOf('{', match.index);
+    const closeIndex = openIndex >= 0 ? findMatchingBrace(source, openIndex) : -1;
+    if (openIndex >= 0 && closeIndex > openIndex) {
+      ranges.push({ start: openIndex + 1, end: closeIndex });
+      kernelRegex.lastIndex = closeIndex + 1;
+    }
+  }
+  return ranges;
+}
+
+function formatFloatLiteral(value, suffix) {
+  const normalized = Object.is(value, -0) ? 0 : value;
+  const fixed = normalized.toFixed(6).replace(/\.?0+$/, '');
+  const withDecimal = fixed.includes('.') ? fixed : `${fixed}.0`;
+  return suffix ? `${withDecimal}f` : withDecimal;
+}
+
+function mutatedFloatLiteral(raw, attempt) {
+  const suffix = /f$/i.test(raw);
+  const numeric = Number(raw.replace(/f$/i, ''));
+  if (!Number.isFinite(numeric)) return null;
+  const magnitude = Math.max(Math.abs(numeric), 0.25);
+  const candidates = [
+    numeric === 0 ? 0.25 : -numeric,
+    numeric <= 0 ? magnitude * 0.35 : -magnitude * 0.35,
+    numeric + (numeric >= 0 ? magnitude * 0.5 : -magnitude * 0.5),
+    numeric === 0 ? -0.25 : numeric * 1.5,
   ];
-  for (const [regex, replacement] of replacements) {
-    const edited = source.replace(regex, replacement);
-    if (edited !== source) return edited;
+  const next = candidates[Math.max(0, attempt) % candidates.length];
+  const rendered = formatFloatLiteral(next, suffix || raw.includes('.'));
+  return rendered === raw ? null : rendered;
+}
+
+function deviceScalarLiteralCandidates(source) {
+  const ranges = deviceKernelBodyRanges(source);
+  const candidates = [];
+  const literalRegex = /(^|[^A-Za-z0-9_])(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[fF]?)(?![A-Za-z0-9_])/g;
+  for (const range of ranges) {
+    const body = source.slice(range.start, range.end);
+    let match = null;
+    while ((match = literalRegex.exec(body)) !== null) {
+      const raw = match[2];
+      if (!(/[.]/.test(raw) || /f$/i.test(raw))) continue;
+      const start = range.start + match.index + match[1].length;
+      const end = start + raw.length;
+      const lineStart = source.lastIndexOf('\n', start) + 1;
+      const lineEndIndex = source.indexOf('\n', end);
+      const lineEnd = lineEndIndex >= 0 ? lineEndIndex : source.length;
+      const line = source.slice(lineStart, lineEnd);
+      const commentIndex = line.indexOf('//');
+      if (commentIndex >= 0 && start >= lineStart + commentIndex) continue;
+      const value = Number(raw.replace(/f$/i, ''));
+      if (!Number.isFinite(value)) continue;
+      let score = 0;
+      if (/\bconst\s+(?:float|double)\b/.test(line)) score += 100;
+      if (/\b(?:float|double)\s+[A-Za-z_]\w*\s*=/.test(line)) score += 50;
+      if (/[+\-*/]/.test(line)) score += 20;
+      if (Math.abs(value) >= 0.25) score += 10;
+      if (value === 0) score -= 40;
+      candidates.push({ start, end, raw, line: line.trim(), score });
+    }
   }
-  const nonce = BigInt(`0x${Buffer.from(`${Date.now()}:${source.length}`).toString('hex').slice(0, 16)}`);
-  const nonceDecl = `\n// Synthi GPU HMR validation edit: device-only artifact nonce.\n__device__ unsigned long long synthi_hmr_validation_nonce = ${nonce}ULL;\n`;
-  if (/synthi_hmr_validation_nonce\s*=/.test(source)) {
-    return source.replace(/synthi_hmr_validation_nonce\s*=\s*\d+ULL/g, `synthi_hmr_validation_nonce = ${nonce}ULL`);
+  return candidates.sort((a, b) => b.score - a.score || a.start - b.start);
+}
+
+function deviceScalarEdit(source, attempt = 0) {
+  const candidates = deviceScalarLiteralCandidates(source);
+  for (const candidate of candidates) {
+    const replacement = mutatedFloatLiteral(candidate.raw, attempt);
+    if (!replacement) continue;
+    const edited = `${source.slice(0, candidate.start)}${replacement}${source.slice(candidate.end)}`;
+    if (edited !== source) {
+      return {
+        edited,
+        mutation: {
+          kind: 'device_scalar_literal',
+          attempt,
+          before: candidate.raw,
+          after: replacement,
+          line: candidate.line,
+        },
+      };
+    }
   }
-  return `${source.trimEnd()}\n${nonceDecl}`;
+  return { edited: source, mutation: null };
 }
 
 function deviceEditHash({ selectedPath, beforeSource, afterSource, editKind }) {
@@ -2045,7 +2116,11 @@ async function run() {
     record('run-mode cold split proof artifact', 'pass', coldPath);
   }
 
-  const editedDevice = flipDeviceDirection(split.files[split.roles.device]);
+  const hotDelta1Edit = deviceScalarEdit(split.files[split.roles.device], 0);
+  if (hotDelta1Edit.edited === split.files[split.roles.device]) {
+    throw new Error('hot delta 1 edit generator did not produce a distinct device source');
+  }
+  const editedDevice = hotDelta1Edit.edited;
   const secondStart = await workerCheckpoint();
   const hotDelta1EditHash = deviceEditHash({
     selectedPath: split.roles.device,
@@ -2101,6 +2176,8 @@ async function run() {
       run_mode: generatedDeviceResult.timingMetrics,
       timingMetrics: generatedDeviceResult.timingMetrics,
       timing_metrics: generatedDeviceResult.timingMetrics,
+      deviceEditMutation: hotDelta1Edit.mutation,
+      device_edit_mutation: hotDelta1Edit.mutation,
       visualArtifacts: visualArtifactsForPrefixes('before-hmr', 'after-hmr', 'before-after-diff'),
       visual_artifacts: {
         before_image: artifactRel('before-hmr-first.png'),
@@ -2141,7 +2218,11 @@ async function run() {
     ].join(' '),
   );
 
-  const hotDelta2Device = generatedDeviceResult.previousDevice;
+  const hotDelta2Edit = deviceScalarEdit(generatedDeviceResult.editedDevice, 1);
+  const hotDelta2Device = hotDelta2Edit.edited;
+  if (hotDelta2Device === generatedDeviceResult.editedDevice) {
+    throw new Error('hot delta 2 edit generator did not produce a distinct device source');
+  }
   const hotDelta2EditHash = deviceEditHash({
     selectedPath: split.roles.device,
     beforeSource: split.files[split.roles.device],
@@ -2194,6 +2275,8 @@ async function run() {
       run_mode: hotDelta2Result.timingMetrics,
       timingMetrics: hotDelta2Result.timingMetrics,
       timing_metrics: hotDelta2Result.timingMetrics,
+      deviceEditMutation: hotDelta2Edit.mutation,
+      device_edit_mutation: hotDelta2Edit.mutation,
       visualArtifacts: visualArtifactsForPrefixes('after-hmr', 'after-hmr-2', 'hot-delta-2-diff'),
       visual_artifacts: {
         before_image: artifactRel('after-hmr-first.png'),
