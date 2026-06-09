@@ -361,13 +361,17 @@ describe("private browser workflow MCP tool manifest", () => {
 
     const available = await dispatchBrowserTool("synthi_browser_generate_private_tool_manifest", {});
     expect(available?.isError).toBeUndefined();
-    expect((available?.structuredContent as { manifest: { status: string; auth: { durability: string; unattended_ready: boolean } } }).manifest).toEqual(expect.objectContaining({
+    const availableManifest = (available?.structuredContent as { manifest: { status: string; auth: { durability: string; unattended_ready: boolean }; safety: { notes: string[]; failure_classes: string[] } } }).manifest;
+    expect(availableManifest).toEqual(expect.objectContaining({
       status: "available",
       auth: expect.objectContaining({
         durability: "refreshProvider",
         unattended_ready: true,
       }),
     }));
+    expect(availableManifest.safety.notes.join(" ")).toContain("Validated auth provider is ready");
+    expect(availableManifest.safety.notes.join(" ")).not.toMatch(/not configured for unattended|Do not mark this tool unattended durable/i);
+    expect(availableManifest.safety.failure_classes).toContain("authRefreshFailed");
   });
 
   it("publishes a taught workflow as a callable private MCP tool", async () => {

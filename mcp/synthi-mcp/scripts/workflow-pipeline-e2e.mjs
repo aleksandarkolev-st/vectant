@@ -136,7 +136,11 @@ function nowSlug() {
 
 async function main() {
   await mkdir(artifactRoot, { recursive: true });
-  const ownedBridge = await startFreshMcpVerificationBridge();
+  const selectedCases = CASES.filter((testCase) => CFG.cases.length === 0 || CFG.cases.includes(testCase.id));
+  if (selectedCases.length === 0) {
+    throw new Error(`no workflow pipeline cases selected: ${CFG.cases.join(",")}`);
+  }
+  const ownedBridge = await startFreshMcpVerificationBridge(selectedCases);
   let browser;
   try {
     await assertReachable(`${CFG.frontendUrl}/workspace`, "frontend");
@@ -153,11 +157,6 @@ async function main() {
     const context = browser.contexts()[0] ?? await browser.newContext();
     await configureWorkflowBridgeForContext(context);
     await closeExistingPages(context);
-
-    const selectedCases = CASES.filter((testCase) => CFG.cases.length === 0 || CFG.cases.includes(testCase.id));
-    if (selectedCases.length === 0) {
-      throw new Error(`no workflow pipeline cases selected: ${CFG.cases.join(",")}`);
-    }
 
     for (const testCase of selectedCases) {
       await runCase({ testCase, container, context, runner });
@@ -177,8 +176,13 @@ async function main() {
   }
 }
 
-async function startFreshMcpVerificationBridge() {
-  if (!CFG.verifyFreshMcp) return null;
+async function startFreshMcpVerificationBridge(selectedCases) {
+  const selectedRequiresFreshMcp = selectedCases.some((testCase) => testCase.requiresFreshMcpBridge === true);
+  if (!CFG.verifyFreshMcp && !selectedRequiresFreshMcp) return null;
+  if (selectedRequiresFreshMcp && !CFG.verifyFreshMcp) {
+    CFG.verifyFreshMcp = true;
+    log("info", "fresh MCP verification bridge enabled by selected case requirements");
+  }
   if (!existsSync(DIST_INDEX)) {
     throw new Error(`dist entrypoint missing: ${DIST_INDEX}. Run npm run build first.`);
   }
@@ -190,6 +194,7 @@ async function startFreshMcpVerificationBridge() {
     SYNTHI_AUTH_CHECKPOINT_STORE_FILE: path.join(storeDir, "auth-checkpoints.enc.json"),
     SYNTHI_AUTH_CHECKPOINT_STORE_KEY: `workflow-pipeline-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     SYNTHI_AUTH_CHECKPOINT_SCOPE: `workflow-pipeline-${process.pid}`,
+    SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG: "true",
   };
   Object.assign(process.env, storeEnv);
   CFG.privateWorkflowStoreEnv = storeEnv;
@@ -207,8 +212,18 @@ async function startFreshMcpVerificationBridge() {
   log("ok", `fresh MCP verification bridge - ${CFG.bridgeUrl}`);
   return {
     close: async () => {
-      await bridge.close();
-      await rm(storeDir, { recursive: true, force: true });
+      try {
+        await Promise.race([
+          bridge.close(),
+          sleep(2_000).then(() => {
+            throw new Error("fresh_mcp_bridge_close_timeout");
+          }),
+        ]);
+      } catch (err) {
+        log("warn", `fresh MCP verification bridge close skipped: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        await rm(storeDir, { recursive: true, force: true });
+      }
     },
   };
 }
@@ -370,6 +385,18 @@ async function runCase({ testCase, container, context, runner }) {
         );
       }
     }
+    if (typeof testCase.afterCompile === "function") {
+      await testCase.afterCompile({
+        testCase,
+        previewPage,
+        idePage,
+        previewUrl,
+        caseDir,
+        setupContext,
+        contract,
+        trace,
+      });
+    }
 
     const exportBody = await clickWorkflowButton(idePage, /^Export$/);
     let generated = exportBody.result;
@@ -454,6 +481,17 @@ async function runCase({ testCase, container, context, runner }) {
       `status=${manifest?.status || "missing"} source=${manifest?.source_identity?.status || "missing"}`
     );
     await writeJson(caseDir, "manifest.json", manifest);
+    if (typeof testCase.assertManifest === "function") {
+      const manifestAssertions = await testCase.assertManifest({ manifest, contract, setupContext, caseDir });
+      for (const assertion of Array.isArray(manifestAssertions) ? manifestAssertions : []) {
+        record(
+          testCase.id,
+          assertion.name || "manifest custom assertion",
+          assertion.ok === true,
+          assertion.detail || ""
+        );
+      }
+    }
 
     const publishBody = await clickWorkflowButton(idePage, /^Publish$/);
     const publishedToolName = publishBody.result?.tool_name;
@@ -479,7 +517,7 @@ async function runCase({ testCase, container, context, runner }) {
     );
     await writeJson(caseDir, "published-manifest-lookup.json", privateManifestLookup.result ?? privateManifestLookup);
 
-    const privateToolRunMode = privateManifest?.mutation?.requires_confirmation ? "prefixOnly" : "sameSession";
+    const privateToolRunMode = testCase.privateToolRunMode ?? (privateManifest?.mutation?.requires_confirmation ? "prefixOnly" : privateManifest?.default_run_mode ?? "sameSession");
     const privateToolArgs = privateWorkflowCallArgs(privateManifest, replayParameters, replayEnv, privateToolRunMode);
     const missingPrivateToolArgs = missingPrivateWorkflowArgs(privateManifest, privateToolArgs);
     if (missingPrivateToolArgs.length === 0) {
@@ -548,6 +586,20 @@ async function runCase({ testCase, container, context, runner }) {
           ? `steps=${liveReplay.replay?.steps_run ?? 0}`
           : `error=${liveReplay.replay?.error || liveReplay.error || "unknown"}`
       );
+      if (liveReplay.ok === true && Array.isArray(testCase.liveReplayExpectedText) && testCase.liveReplayExpectedText.length > 0) {
+        const snapshotBody = await workflowBridgeTool("synthi_browser_snapshot", {
+          tab_id: liveReplay.replay?.tab_id,
+        });
+        const snapshotText = JSON.stringify(snapshotBody.result?.snapshot?.dom ?? {});
+        const missingLiveText = testCase.liveReplayExpectedText.filter((text) => !snapshotText.includes(text));
+        record(
+          testCase.id,
+          "visual MCP replay snapshot text",
+          snapshotBody.ok === true && missingLiveText.length === 0,
+          missingLiveText.length ? `missing=${missingLiveText.join(" | ")}` : `texts=${testCase.liveReplayExpectedText.length}`
+        );
+        await writeSnapshotScreenshot(snapshotBody.result?.snapshot, path.join(caseDir, "after-live-replay.png"));
+      }
     }
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
@@ -1544,6 +1596,49 @@ async function writeJson(dir, name, value) {
   await writeFile(path.join(dir, name), JSON.stringify(value, null, 2) + "\n");
 }
 
+async function writeSnapshotScreenshot(snapshot, filePath) {
+  const screenshot = snapshot?.screenshot_base64;
+  if (typeof screenshot !== "string" || screenshot.length === 0) {
+    throw new Error("snapshot_missing_screenshot_base64");
+  }
+  await writeFile(filePath, Buffer.from(screenshot, "base64"));
+}
+
+async function writeAuthRefreshProviderMintCommand(caseDir, values) {
+  const scriptPath = path.join(caseDir, "auth-refresh-mint.mjs");
+  const countPath = path.join(caseDir, "auth-refresh-mint-count.txt");
+  await writeFile(scriptPath, [
+    "import { readFile, writeFile } from 'node:fs/promises';",
+    "const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;",
+    "if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);",
+    `const countPath = ${JSON.stringify(countPath)};`,
+    "let count = 0;",
+    "try { count = Number(await readFile(countPath, 'utf8')) || 0; } catch { count = 0; }",
+    "count += 1;",
+    "await writeFile(countPath, String(count));",
+    "const phase = count <= 1 ? 'validation' : 'replay';",
+    `const values = ${JSON.stringify(values)};`,
+    "const selected = values[phase] || values.replay;",
+    "const host = new URL(origin).hostname;",
+    "const output = JSON.stringify({",
+    "  ok: true,",
+    "  ttl_ms: 600000,",
+    "  redirect_chain: [`${origin}/login`, 'https://idp.workflow-pipeline.test/oauth/refresh?prompt=none'],",
+    "  storage_state: {",
+    "    cookies: [{ name: 'sid', value: selected.cookie, domain: host, path: '/', httpOnly: true, secure: false }],",
+    "    origins: [{ origin, localStorage: [{ name: 'synthi.auth.session', value: selected.localStorage }], sessionStorage: [{ name: 'synthi.auth.tab', value: selected.sessionStorage }] }],",
+    "  },",
+    "});",
+    "if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {",
+    "  const { writeFileSync } = await import('node:fs');",
+    "  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);",
+    "}",
+    "process.stdout.write(output);",
+    "",
+  ].join("\n"));
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
 async function collectProcess(proc, timeoutMs) {
   let stdout = "";
   let stderr = "";
@@ -1957,6 +2052,237 @@ const CASES = [
     teach: async (page) => {
       await page.getByRole("button", { name: "Open secure workspace" }).click();
       await page.getByText("Secure workspace ready").waitFor();
+    },
+  },
+  {
+    id: "auth-refresh-provider-secure-panel",
+    requiresFreshMcpBridge: true,
+    minSteps: 1,
+    expectedActions: ["click"],
+    expectedReplayText: [
+      "Refresh provider workspace ready",
+    ],
+    liveReplayExpectedText: [
+      "Refresh provider workspace ready",
+    ],
+    expectedReplayCode: [
+      "workflowStorageState",
+      "await expect(page.getByText(\"Refresh provider workspace ready\", { exact: true })).toBeVisible();",
+    ],
+    forbiddenReplayCode: [
+      "auth-refresh-live-secret",
+      "auth-refresh-export-secret",
+      "auth-refresh-validation-cookie-secret",
+      "auth-refresh-validation-local-secret",
+      "auth-refresh-validation-session-secret",
+      "auth-refresh-replay-cookie-secret",
+      "auth-refresh-replay-local-secret",
+      "auth-refresh-replay-session-secret",
+    ],
+    privateToolRunMode: "coldSession",
+    liveReplayMode: "coldSession",
+    assertTrace: ({ trace }) => [
+      {
+        name: "trace auth checkpoint approved",
+        ok: trace.some((event) => event?.security?.auth_checkpoint_approved === true),
+        detail: "auth_checkpoint_approved=true",
+      },
+    ],
+    assertManifest: ({ manifest }) => [
+      {
+        name: "manifest marks refresh provider durable",
+        ok: manifest?.status === "available" &&
+          manifest?.auth?.durability === "refreshProvider" &&
+          manifest?.auth?.unattended_ready === true,
+        detail: `status=${manifest?.status || "missing"} durability=${manifest?.auth?.durability || "missing"} unattended=${String(manifest?.auth?.unattended_ready)}`,
+      },
+      {
+        name: "manifest defaults provider workflow to cold replay",
+        ok: manifest?.default_run_mode === "coldSession" && Array.isArray(manifest?.run_modes) && manifest.run_modes.includes("coldSession"),
+        detail: `default=${manifest?.default_run_mode || "missing"} modes=${Array.isArray(manifest?.run_modes) ? manifest.run_modes.join(",") : "missing"}`,
+      },
+    ],
+    beforeTeach: async ({ testCase, previewPage, previewUrl, caseDir, setupContext }) => {
+      const previewOrigin = new URL(previewUrl).origin;
+      await previewPage.evaluate(() => {
+        localStorage.setItem("synthi.auth.session", "auth-refresh-live-secret");
+      });
+      const storageStatePath = path.join(caseDir, "auth-refresh-export-storage-state.json");
+      await writeFile(storageStatePath, JSON.stringify({
+        cookies: [],
+        origins: [
+          {
+            origin: previewOrigin,
+            localStorage: [{ name: "synthi.auth.session", value: "auth-refresh-export-secret" }],
+          },
+        ],
+      }, null, 2) + "\n");
+      setupContext.authStorageStatePath = storageStatePath;
+
+      const consent = await workflowBridgeTool("synthi_browser_request_consent", {
+        url: previewUrl,
+        status: "granted",
+        screenshot: true,
+        diagnostics: false,
+        reason: "workflow-pipeline-auth-refresh-provider",
+      });
+      record(
+        testCase.id,
+        "grant refresh preview consent",
+        consent.ok === true && consent.result?.consent?.origin === previewOrigin,
+        consent.result?.consent?.origin || consent.result?.error || "missing"
+      );
+
+      const observed = await workflowBridgeTool("synthi_browser_observe_preview", {
+        preferred_url: previewUrl,
+        preview_url: previewUrl,
+      });
+      const tabId = observed.result?.target?.tab_id;
+      record(
+        testCase.id,
+        "select refresh preview tab",
+        observed.ok === true && typeof tabId === "string",
+        tabId || observed.result?.error || "missing"
+      );
+
+      const begun = await workflowBridgeTool("synthi_auth_begin_checkpoint_enrollment", {
+        url: previewUrl,
+        reason: "workflow-pipeline-auth-refresh-provider",
+      });
+      const enrollmentId = begun.result?.enrollment?.enrollment_id;
+      record(
+        testCase.id,
+        "begin refresh auth checkpoint",
+        begun.ok === true && typeof enrollmentId === "string",
+        enrollmentId || begun.result?.error || "missing"
+      );
+
+      const finished = await workflowBridgeTool("synthi_auth_finish_checkpoint_enrollment", {
+        enrollment_id: enrollmentId,
+        app_url: previewUrl,
+        redirect_chain: [`${previewOrigin}/login`, "https://idp.workflow-pipeline.test/oauth/authorize?state=refresh-provider"],
+        ttl_ms: 600_000,
+      });
+      const checkpointId = finished.result?.checkpoint?.checkpoint_id;
+      setupContext.checkpointId = checkpointId;
+      record(
+        testCase.id,
+        "finish refresh auth checkpoint",
+        finished.ok === true && typeof checkpointId === "string",
+        checkpointId || finished.result?.error || "missing"
+      );
+
+      const captured = await workflowBridgeTool("synthi_browser_capture_auth_checkpoint_storage", {
+        checkpoint_id: checkpointId,
+        tab_id: tabId,
+      });
+      const capturedText = JSON.stringify(captured);
+      record(
+        testCase.id,
+        "capture refresh auth checkpoint storage",
+        captured.ok === true &&
+          captured.result?.auth_readiness?.status === "ready" &&
+          !capturedText.includes("auth-refresh-live-secret"),
+        captured.result?.auth_readiness?.status || captured.result?.error || "missing"
+      );
+      await writeJson(caseDir, "auth-refresh-checkpoint.json", captured.result ?? captured);
+
+      const mintCommand = await writeAuthRefreshProviderMintCommand(caseDir, {
+        validation: {
+          cookie: "auth-refresh-validation-cookie-secret",
+          localStorage: "auth-refresh-validation-local-secret",
+          sessionStorage: "auth-refresh-validation-session-secret",
+        },
+        replay: {
+          cookie: "auth-refresh-replay-cookie-secret",
+          localStorage: "auth-refresh-replay-local-secret",
+          sessionStorage: "auth-refresh-replay-session-secret",
+        },
+      });
+      const configured = await workflowBridgeTool("synthi_auth_configure_refresh_provider", {
+        url: previewUrl,
+        secret_ref: "synthi://secrets/workflow-pipeline/auth-refresh",
+        provider_type: "projectRefreshProvider",
+        mint_command: mintCommand,
+        working_directory: caseDir,
+        timeout_ms: 10_000,
+      });
+      const providerId = configured.result?.provider?.provider_id;
+      setupContext.refreshProviderId = providerId;
+      record(
+        testCase.id,
+        "configure refresh provider",
+        configured.ok === true && typeof providerId === "string",
+        providerId || configured.result?.error || "missing"
+      );
+
+      const tested = await workflowBridgeTool("synthi_auth_test_refresh_provider", {
+        provider_id: providerId,
+      });
+      const testedText = JSON.stringify(tested);
+      record(
+        testCase.id,
+        "test refresh provider",
+        tested.ok === true &&
+          tested.result?.can_mint_replay_state === true &&
+          !testedText.includes("auth-refresh-validation-cookie-secret") &&
+          !testedText.includes("auth-refresh-validation-local-secret") &&
+          !testedText.includes("auth-refresh-validation-session-secret"),
+        tested.result?.can_mint_replay_state === true ? "can_mint=true" : tested.result?.error || "missing"
+      );
+      await writeJson(caseDir, "auth-refresh-provider-tested.json", tested.result ?? tested);
+    },
+    afterCompile: async ({ testCase, setupContext, caseDir }) => {
+      const revoked = await workflowBridgeTool("synthi_auth_revoke_checkpoint", {
+        checkpoint_id: setupContext.checkpointId,
+      });
+      record(
+        testCase.id,
+        "revoke interactive checkpoint to require provider replay",
+        revoked.ok === true && revoked.result?.checkpoint?.status === "revoked",
+        revoked.result?.checkpoint?.status || revoked.result?.error || "missing"
+      );
+      await writeJson(caseDir, "auth-refresh-checkpoint-revoked.json", revoked.result ?? revoked);
+    },
+    replayEnv: ({ setupContext }) => ({ PLAYWRIGHT_STORAGE_STATE: setupContext.authStorageStatePath }),
+    afterReplay: async ({ testCase, caseDir }) => {
+      const countText = await readFile(path.join(caseDir, "auth-refresh-mint-count.txt"), "utf8").catch(() => "0");
+      const count = Number(countText) || 0;
+      record(
+        testCase.id,
+        "refresh provider minted for validation and replay",
+        count >= 4,
+        `mint_count=${count}`
+      );
+    },
+    files: () => commonFiles({
+      title: "Auth Refresh Provider Secure Panel Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Auth Refresh Provider Secure Panel Workflow</h1>",
+        "      <section class=\"status\" aria-label=\"Auth status\" data-testid=\"auth-status\">Waiting for provider-backed session</section>",
+        "      <button type=\"button\" data-testid=\"open-secure-panel\" data-synthi-source-id=\"auth.refresh.open\">Open provider workspace</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const output = document.querySelector('#status');",
+        "const status = document.querySelector('[data-testid=\"auth-status\"]');",
+        "document.querySelector('[data-testid=\"open-secure-panel\"]').addEventListener('click', () => {",
+        "  if (!localStorage.getItem('synthi.auth.session')) {",
+        "    output.textContent = 'Login required';",
+        "    status.textContent = 'No provider-backed session';",
+        "    return;",
+        "  }",
+        "  status.textContent = 'Refresh provider session approved';",
+        "  output.textContent = 'Refresh provider workspace ready';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("button", { name: "Open provider workspace" }).click();
+      await page.getByText("Refresh provider workspace ready").waitFor();
     },
   },
   {

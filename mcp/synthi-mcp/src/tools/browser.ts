@@ -1337,21 +1337,23 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
-  const authGate = replayAuthGate(replay.artifact.workflow.contract, mode);
-  if (!authGate.ok) {
-    return errorResponse("workflow_auth_not_ready", {
-      workflow_id: replay.artifact.workflow_id,
-      ...authGate.detail,
-    });
-  }
   const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
-    ? authStorageStateForColdReplay(replay.artifact.workflow.contract)
+    ? await authStorageStateForColdReplay(replay.artifact.workflow.contract)
     : { ok: true as const, storageState: undefined };
   if (!coldAuthStorage.ok) {
     return errorResponse("workflow_auth_not_ready", {
       workflow_id: replay.artifact.workflow_id,
       ...coldAuthStorage.detail,
     });
+  }
+  if (mode !== "coldSession") {
+    const authGate = replayAuthGate(replay.artifact.workflow.contract, mode);
+    if (!authGate.ok) {
+      return errorResponse("workflow_auth_not_ready", {
+        workflow_id: replay.artifact.workflow_id,
+        ...authGate.detail,
+      });
+    }
   }
   const plan = replay.plan;
   if (plan.status === "blocked") {
@@ -1760,10 +1762,11 @@ function manifestWithLiveAuthReadiness(
   if (!contract.authPlan.required) return manifest;
   const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
   const unattended = authCheckpointManager.readiness(contract.appOrigin, true);
-  const notes = [...manifest.safety.notes];
+  let notes = [...manifest.safety.notes];
   const authDurability = authDurabilityForManifest(unattended.ready ? unattended : interactive, manifest.auth.durability);
   let status = manifest.status;
   if (unattended.ready) {
+    notes = notes.filter((note) => !/not configured for unattended|Do not mark this tool unattended durable/i.test(note));
     if (
       status === "manualOnly" &&
       !manifest.mutation.requires_confirmation &&
@@ -1820,20 +1823,24 @@ function replayAuthGate(
   return { ok: false, detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended) };
 }
 
-function authStorageStateForColdReplay(
+async function authStorageStateForColdReplay(
   contract: WorkflowContractV7
-): { ok: true; storageState: AuthBrowserStorageState } | { ok: false; detail: Record<string, unknown> } {
+): Promise<{ ok: true; storageState: AuthBrowserStorageState } | { ok: false; detail: Record<string, unknown> }> {
   const authState = replayAuthReadiness(contract, "coldSession");
   if (!authState.ready) {
+    const minted = await authCheckpointManager.mintRefreshProviderStorageForOrigin(contract.appOrigin);
+    if (minted.ok) return { ok: true, storageState: minted.artifact.state };
     return {
       ok: false,
-      detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended),
+      detail: minted.error === "auth_refresh_provider_not_found"
+        ? authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended)
+        : authRefreshProviderFailureDetail(contract.appOrigin, minted.error),
     };
   }
 
   const providerId = authState.readiness.refresh_provider?.provider_id;
   if (providerId && authState.unattended) {
-    const providerArtifact = authCheckpointManager.storageArtifactForRefreshProvider(providerId);
+    const providerArtifact = await authCheckpointManager.mintRefreshProviderStorage(providerId);
     if (!providerArtifact.ok || providerArtifact.artifact.metadata.app_origin !== contract.appOrigin) {
       return {
         ok: false,
@@ -1842,6 +1849,7 @@ function authStorageStateForColdReplay(
           auth_status: providerArtifact.ok ? "checkpointStorageMissing" : providerArtifact.error,
           auth_durability: authState.readiness.durability,
           unattended: true,
+          failure_class: "authRefreshFailed",
           notes: ["Refresh provider did not produce broker-owned auth storage for this workflow origin."],
         },
       };
@@ -1880,9 +1888,12 @@ function replayAuthReadiness(
     return { ready: readiness.ready, readiness, unattended: true };
   }
   const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
-  if (interactive.ready || mode !== "coldSession") return { ready: interactive.ready, readiness: interactive, unattended: false };
-  const providerBacked = authCheckpointManager.readiness(contract.appOrigin, true);
-  if (providerBacked.ready) return { ready: true, readiness: providerBacked, unattended: true };
+  if (mode === "coldSession") {
+    const providerBacked = authCheckpointManager.readiness(contract.appOrigin, true);
+    if (providerBacked.ready) return { ready: true, readiness: providerBacked, unattended: true };
+    return { ready: interactive.ready, readiness: interactive, unattended: false };
+  }
+  if (interactive.ready) return { ready: interactive.ready, readiness: interactive, unattended: false };
   return { ready: false, readiness: interactive, unattended: false };
 }
 
@@ -1897,7 +1908,19 @@ function authReadinessDetail(appOrigin: string, readiness: AuthReadiness, unatte
   };
 }
 
-function authFailureClassForReadiness(readiness: AuthReadiness): "authExpired" | "authMissing" {
+function authRefreshProviderFailureDetail(appOrigin: string, error: string): Record<string, unknown> {
+  return {
+    app_origin: appOrigin,
+    auth_status: error,
+    auth_durability: "refreshProvider",
+    unattended: true,
+    failure_class: "authRefreshFailed",
+    notes: ["Refresh provider could not mint broker-owned replay auth state."],
+  };
+}
+
+function authFailureClassForReadiness(readiness: AuthReadiness): "authExpired" | "authMissing" | "authRefreshFailed" {
+  if (readiness.status === "unattendedBlocked" && readiness.refresh_provider?.failure_class) return "authRefreshFailed";
   return readiness.status === "checkpointExpired" ? "authExpired" : "authMissing";
 }
 
@@ -2253,6 +2276,11 @@ function failureExplanation(failureClass: string): { explanation: string; sugges
       return {
         explanation: "The workflow could not reach the application state because authentication was missing or expired.",
         suggested_next_action: "Renew or configure an auth checkpoint before replaying or publishing the workflow.",
+      };
+    case "authRefreshFailed":
+      return {
+        explanation: "The workflow has a refresh provider, but it could not mint broker-owned replay auth state.",
+        suggested_next_action: "Check the replay auth provider configuration, secret reference, and mint command before running unattended replay.",
       };
     case "mutationBlocked":
     case "unsafeEnvironment":

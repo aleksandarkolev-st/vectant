@@ -1207,7 +1207,7 @@ describe("browser workflow contract compiler", () => {
       required: true,
       durability: "interactiveCheckpoint",
     }));
-    expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["authMissing", "authExpired"]));
+    expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["authMissing", "authExpired", "authRefreshFailed"]));
     expect(workflow.card.state).toContain("Auth-ready");
     expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
       readiness: "manualOnly",

@@ -767,27 +767,42 @@ describe("safety MCP tool surface", () => {
     const url = "https://app.example.test/settings";
     const appOrigin = "https://app.example.test";
     const mintedStorageState: AuthBrowserStorageState = {
-      cookies: [{ name: "sid", value: "auth-cookie-secret", domain: "app.example.test", path: "/", httpOnly: true, secure: true }],
-      origins: [{ origin: appOrigin, localStorage: [{ name: "session", value: "auth-local-secret" }], sessionStorage: [{ name: "tab", value: "s2" }] }],
+      cookies: [{ name: "sid", value: "auth-cookie-validation-secret", domain: "app.example.test", path: "/", httpOnly: true, secure: true }],
+      origins: [{ origin: appOrigin, localStorage: [{ name: "session", value: "auth-local-validation-secret" }], sessionStorage: [{ name: "tab", value: "auth-tab-validation-secret" }] }],
+    };
+    const replayStorageState: AuthBrowserStorageState = {
+      cookies: [{ name: "sid", value: "auth-cookie-replay-secret", domain: "app.example.test", path: "/", httpOnly: true, secure: true }],
+      origins: [{ origin: appOrigin, localStorage: [{ name: "session", value: "auth-local-replay-secret" }], sessionStorage: [{ name: "tab", value: "auth-tab-replay-secret" }] }],
     };
     const interactiveStorageState: AuthBrowserStorageState = {
       cookies: [{ name: "sid", value: "interactive-secret", domain: "app.example.test", path: "/" }],
       origins: [{ origin: appOrigin, localStorage: [{ name: "session", value: "interactive-secret" }] }],
     };
-    const mintedAuthValues = authStorageValuesForTest(mintedStorageState);
-    const allSensitiveAuthValues = [...new Set([...mintedAuthValues, ...authStorageValuesForTest(interactiveStorageState)])];
+    const mintedAuthValues = authStorageValuesForTest(replayStorageState);
+    const allSensitiveAuthValues = [...new Set([
+      ...authStorageValuesForTest(mintedStorageState),
+      ...mintedAuthValues,
+      ...authStorageValuesForTest(interactiveStorageState),
+    ])];
     const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-auth-replay-"));
     const workingDirectory = path.join(artifactRoot, "workspace");
     await mkdir(workingDirectory, { recursive: true });
     const storageStateMarkerPath = path.join(artifactRoot, "storage-state-handoff.json");
+    const mintCountPath = path.join(artifactRoot, "mint-count.txt");
     const mintScript = path.join(artifactRoot, "mint-auth.mjs");
     const resetScript = path.join(artifactRoot, "reset.mjs");
     const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
     const ciScript = path.join(artifactRoot, "ci.mjs");
     const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
     await writeFile(mintScript, [
+      "import { readFile, writeFile } from 'node:fs/promises';",
       "const appOrigin = process.env.SYNTHI_AUTH_APP_ORIGIN;",
-      `const storageState = ${JSON.stringify(mintedStorageState)};`,
+      `const mintCountPath = ${JSON.stringify(mintCountPath)};`,
+      "let count = 0;",
+      "try { count = Number(await readFile(mintCountPath, 'utf8')) || 0; } catch { count = 0; }",
+      "count += 1;",
+      "await writeFile(mintCountPath, String(count));",
+      `const storageState = count <= 1 ? ${JSON.stringify(mintedStorageState)} : ${JSON.stringify(replayStorageState)};`,
       "if (storageState.origins?.[0]) storageState.origins[0].origin = appOrigin;",
       "const output = JSON.stringify({ ok: true, ttl_ms: 600000, storage_state: storageState });",
       "if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {",

@@ -590,14 +590,11 @@ describe("browser MCP tool surface", () => {
     const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
     vi.useRealTimers();
     const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-browser-tool-refresh-"));
+    const mintCountPath = path.join(directory, "mint-count.txt");
     const provider = authCheckpointManager.configureRefreshProvider({
       url,
       secret_ref: "synthi://secrets/workspace/auth-refresh",
-      mint_command: await writeRefreshMintCommand(directory, {
-        cookieValue: "provider-cookie-secret",
-        localStorageValue: "provider-local-secret",
-        sessionStorageValue: "provider-session-secret",
-      }),
+      mint_command: await writeSequencedRefreshMintCommand(directory, mintCountPath),
       mint_command_admin_approved: true,
       timeout_ms: 5_000,
     });
@@ -628,15 +625,15 @@ describe("browser MCP tool surface", () => {
 
     expect(response?.isError).toBeUndefined();
     expect(openCold).toHaveBeenCalledWith(url, expect.objectContaining({
-      cookies: [expect.objectContaining({ name: "sid", value: "provider-cookie-secret" })],
+      cookies: [expect.objectContaining({ name: "sid", value: "provider-cookie-replay-secret" })],
       origins: [expect.objectContaining({
         origin: "https://secure.example.com",
-        localStorage: [expect.objectContaining({ name: "session", value: "provider-local-secret" })],
-        sessionStorage: [expect.objectContaining({ name: "csrf", value: "provider-session-secret" })],
+        localStorage: [expect.objectContaining({ name: "session", value: "provider-local-replay-secret" })],
+        sessionStorage: [expect.objectContaining({ name: "csrf", value: "provider-session-replay-secret" })],
       })],
     }));
     expect(replay).toHaveBeenCalledWith("cold", expect.any(Object), "click", expect.stringContaining("Open secure panel"), undefined);
-    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/provider-cookie-secret|provider-local-secret|provider-session-secret|expired-cookie|expired-local/);
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/provider-cookie-(validation|replay)-secret|provider-local-(validation|replay)-secret|provider-session-(validation|replay)-secret|expired-cookie|expired-local/);
   });
 
   it("exports saved mutation workflows in prefix-only mode by default", async () => {
@@ -1625,6 +1622,40 @@ const output = JSON.stringify({
   storage_state: {
     cookies: [{ name: "sid", value: ${JSON.stringify(values.cookieValue)}, domain: host, path: "/", httpOnly: true, secure: true }],
     origins: [{ origin, localStorage: [{ name: "session", value: ${JSON.stringify(values.localStorageValue)} }], sessionStorage: [{ name: "csrf", value: ${JSON.stringify(values.sessionStorageValue)} }] }]
+  },
+  ttl_ms: 60000
+});
+if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);
+}
+process.stdout.write(output);
+`, "utf8");
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+async function writeSequencedRefreshMintCommand(directory: string, countPath: string): Promise<string> {
+  const scriptPath = path.join(directory, `mint-refresh-sequenced-${Date.now()}.mjs`);
+  await writeFile(scriptPath, `
+import { readFile, writeFile } from "node:fs/promises";
+const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
+if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
+const countPath = ${JSON.stringify(countPath)};
+let count = 0;
+try {
+  count = Number(await readFile(countPath, "utf8")) || 0;
+} catch {
+  count = 0;
+}
+count += 1;
+await writeFile(countPath, String(count));
+const phase = count <= 1 ? "validation" : "replay";
+const host = new URL(origin).hostname;
+const output = JSON.stringify({
+  ok: true,
+  storage_state: {
+    cookies: [{ name: "sid", value: \`provider-cookie-\${phase}-secret\`, domain: host, path: "/", httpOnly: true, secure: true }],
+    origins: [{ origin, localStorage: [{ name: "session", value: \`provider-local-\${phase}-secret\` }], sessionStorage: [{ name: "csrf", value: \`provider-session-\${phase}-secret\` }] }]
   },
   ttl_ms: 60000
 });

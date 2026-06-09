@@ -38,6 +38,7 @@ export type FailureClassV7 =
   | "locatorDrift"
   | "authMissing"
   | "authExpired"
+  | "authRefreshFailed"
   | "mutationBlocked"
   | "unsafeEnvironment"
   | "testDataMissing"
@@ -764,6 +765,7 @@ export function classifyWorkflowReplayBlock(plan: Pick<WorkflowReplayPlanV7, "wa
 
 export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTraceEvent): FailureClassV7 {
   const message = error instanceof Error ? error.message : String(error);
+  if (/refresh.*provider|provider.*refresh|mint.*auth|auth.*mint/i.test(message)) return "authRefreshFailed";
   if (/auth.*expired|expired.*auth|checkpoint.*expired/i.test(message)) return "authExpired";
   if (/auth|login|unauthorized|forbidden|checkpoint/i.test(message)) return "authMissing";
   if (/mutation.*blocked|mutation boundary|unsafe mutation/i.test(message)) return "mutationBlocked";
@@ -1249,6 +1251,7 @@ function failureClassesFor(
   if (authPlan.required || authPlan.durability !== "noneRequired") {
     classes.add("authMissing");
     classes.add("authExpired");
+    classes.add("authRefreshFailed");
   }
   if (limitations.includes("sourceIdentityMissing")) classes.add("sourceIdentityMissing");
   if (limitations.includes("unresolvedStep")) classes.add("testDataMissing");

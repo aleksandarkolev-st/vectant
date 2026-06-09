@@ -542,6 +542,53 @@ export class AuthCheckpointManager {
     };
   }
 
+  async mintRefreshProviderStorage(provider_id: string): Promise<{
+    ok: true;
+    provider: AuthRefreshProviderMetadata;
+    artifact: AuthStorageArtifact;
+  } | { ok: false; error: string; provider?: AuthRefreshProviderMetadata }> {
+    const tested = await this.testRefreshProvider(provider_id);
+    if (!tested.ok) return { ok: false, error: tested.error };
+    if (!tested.can_mint_replay_state) {
+      return {
+        ok: false,
+        error: refreshProviderFailureError(tested.provider),
+        provider: tested.provider,
+      };
+    }
+    const artifact = this.storageArtifactForRefreshProvider(provider_id);
+    if (!artifact.ok) {
+      return {
+        ok: false,
+        error: artifact.error,
+        provider: tested.provider,
+      };
+    }
+    return artifact;
+  }
+
+  async mintRefreshProviderStorageForOrigin(url: string): Promise<{
+    ok: true;
+    provider: AuthRefreshProviderMetadata;
+    artifact: AuthStorageArtifact;
+  } | { ok: false; error: string; provider?: AuthRefreshProviderMetadata }> {
+    const origin = normalizeOrigin(url).origin;
+    const providers = this.store.listRefreshProviders()
+      .filter((candidate) => candidate.app_origin === origin && candidate.status !== "revoked")
+      .sort((a, b) => (b.last_minted_at ?? b.last_tested_at ?? b.configured_at) - (a.last_minted_at ?? a.last_tested_at ?? a.configured_at));
+    if (providers.length === 0) return { ok: false, error: "auth_refresh_provider_not_found" };
+    let lastFailure: { ok: false; error: string; provider?: AuthRefreshProviderMetadata } = {
+      ok: false,
+      error: "auth_refresh_provider_not_ready",
+    };
+    for (const provider of providers) {
+      const minted = await this.mintRefreshProviderStorage(provider.provider_id);
+      if (minted.ok) return minted;
+      lastFailure = minted;
+    }
+    return lastFailure;
+  }
+
   configureRefreshProvider(input: {
     url: string;
     secret_ref: string;
@@ -781,6 +828,27 @@ export class AuthCheckpointManager {
 function checkpointDurabilityOpt(value: unknown): AuthCheckpointDurability | undefined {
   if (value === "interactiveCheckpoint" || value === "idpCheckpoint") return value;
   return undefined;
+}
+
+function refreshProviderFailureError(provider: AuthRefreshProviderMetadata): string {
+  switch (provider.failure_class) {
+    case "missingSecretRef":
+      return "auth_refresh_provider_secret_ref_required";
+    case "missingMintCommand":
+      return "auth_refresh_provider_mint_command_required";
+    case "invalidMintCommand":
+      return "auth_refresh_provider_invalid_mint_command";
+    case "mintCommandFailed":
+      return "auth_refresh_provider_mint_command_failed";
+    case "invalidMintResult":
+      return "auth_refresh_provider_invalid_mint_result";
+    case "providerUnavailable":
+      return "auth_refresh_provider_unavailable";
+    case "unknown":
+      return "auth_refresh_provider_failed";
+    default:
+      return "auth_refresh_provider_not_ready";
+  }
 }
 
 function clampTtl(value: number | undefined): number {
