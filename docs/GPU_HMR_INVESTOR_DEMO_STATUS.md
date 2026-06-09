@@ -35,6 +35,7 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
@@ -57,6 +58,7 @@ Generated device edits in the visual runner now require the MCP wait gate to app
 The visual runner now fails immediately when no initial generated device compile marker or GPU split endpoint evidence is observed.
 The generated ray-light and Flow demos remain device-translation-unit HMR claims, not per-kernel fission claims.
 Generated split topology now rejects per-kernel HMR unless deterministic fission-verifier evidence proves it.
+Narrow generated fission candidates now require topology binding to a content-addressed partial artifact before the verifier can pass them.
 ```
 
 Post-hardening verification:
@@ -180,6 +182,13 @@ Demo phrasing:
 
 ```text
 The current generated HIP path hot-reloads the generated device translation unit. It does not claim per-kernel fission yet.
+```
+
+Verifier guard:
+
+```text
+Narrower generated fission requires generated-topology evidence and artifact:sha256 binding.
+Missing topology evidence rejects with fission.claim_narrower_than_generated_topology.
 ```
 
 ## HIPRT Ray-Traced Proof
@@ -419,6 +428,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 Relevant current commits:
 
 ```text
+732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 f0db3c67e fix(gpu-hmr): classify external timeout rejections

@@ -34,6 +34,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
 f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
@@ -58,6 +59,9 @@ The runner fails immediately when GPU split endpoint evidence is missing after i
 Earlier hardening in the same pass:
 
 ```text
+732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
+35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
+f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
 5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
 394f6ff32 fix(gpu-hmr): bind fission contract to verifier proof
@@ -74,13 +78,14 @@ runtime visual proof artifacts are blocked when the derived proof ledger record 
 strict runtime artifact gates reject invented source-consistency modes and require deterministic visual-mode evaluation for visual ledgers.
 OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
+Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
 
 Fresh verification after these commits:
 
 ```text
 docker run ... cargo test --release --features gpu-hmr gpu_fission --lib
-  result: 64 passed
+  result: 66 passed after topology gate hardening
 
 docker run ... cargo test --release --features gpu-hmr gpu_prod_contracts --lib
   result: 36 passed
@@ -380,6 +385,14 @@ artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-
 ```
 
 This answers the one-`.hip` concern: the current generated split proves hot reload at the generated device translation unit. It does not claim smaller fission.
+
+After `732d2bcfa`, a fission candidate that is narrower than the generated device translation unit cannot pass from metadata alone. It must carry deterministic generated-topology evidence and a structured binding that ties:
+
+```text
+generated role path -> separately materialized partial artifact -> artifact:sha256 selected artifact identity
+```
+
+Missing topology evidence or a missing topology binding rejects with `fission.claim_narrower_than_generated_topology`.
 
 ## HIPRT Same-Process Visual HMR
 
