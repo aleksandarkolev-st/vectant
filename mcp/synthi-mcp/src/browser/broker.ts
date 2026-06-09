@@ -422,7 +422,10 @@ export class BrowserBroker {
     within_ms?: number;
   }): { ok: true; event: BrowserTraceEvent | null } | { ok: false; error: string } {
     const gate = this.requireTeach(input.tab_id, input.url, input.detail);
-    if (!gate.ok) return gate;
+    if (!gate.ok) {
+      this.discardDeniedTargetOriginAction(input, gate.error);
+      return gate;
+    }
     const normalized = this.normalizeSelectionOrigin({
       tab_id: input.tab_id,
       url: input.url,
@@ -437,6 +440,33 @@ export class BrowserBroker {
     });
     if (event) eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event } });
     return { ok: true, event };
+  }
+
+  private discardDeniedTargetOriginAction(
+    input: {
+      tab_id: string;
+      actions?: BrowserActionKind[];
+      within_ms?: number;
+    },
+    error: string
+  ): void {
+    if (error !== "frame_origin_consent_required" && error !== "popup_origin_consent_required") return;
+    const discarded = this.trace.discardLatestAction({
+      tab_id: input.tab_id,
+      actions: input.actions,
+      within_ms: input.within_ms,
+    });
+    if (!discarded) return;
+    eventLog.push({
+      kind: "browser",
+      action: "human_action_discarded",
+      payload: {
+        event_id: discarded.event_id,
+        tab_id: discarded.tab_id,
+        action: discarded.action,
+        reason: error,
+      },
+    });
   }
 
   snapshot(input: BrowserBrokerSnapshotInput): { ok: true; snapshot: BrowserSnapshot } | { ok: false; error: string } {

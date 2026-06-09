@@ -112,6 +112,32 @@ export class BrowserTraceRecorder {
     detail: Record<string, unknown>;
     within_ms?: number;
   }): BrowserTraceEvent | null {
+    const match = this.latestActionIndex(input);
+    if (match === null) return null;
+    const event = this.events[match];
+    if (!event) return null;
+    const detail = redactStructuredValue({ ...(event.detail ?? {}), ...input.detail });
+    event.detail = detail.value as Record<string, unknown>;
+    if (detail.redacted) event.redacted = true;
+    return this.sanitizeEvent(event);
+  }
+
+  discardLatestAction(input: {
+    tab_id: string;
+    actions?: BrowserActionKind[];
+    within_ms?: number;
+  }): BrowserTraceEvent | null {
+    const match = this.latestActionIndex(input);
+    if (match === null) return null;
+    const [event] = this.events.splice(match, 1);
+    return event ? this.sanitizeEvent(event) : null;
+  }
+
+  private latestActionIndex(input: {
+    tab_id: string;
+    actions?: BrowserActionKind[];
+    within_ms?: number;
+  }): number | null {
     const now = Date.now();
     const actions = input.actions ? new Set<BrowserActionKind>(input.actions) : null;
     for (let index = this.events.length - 1; index >= 0; index -= 1) {
@@ -120,10 +146,7 @@ export class BrowserTraceRecorder {
       if (event.tab_id !== input.tab_id) continue;
       if (actions && (!event.action || !actions.has(event.action))) continue;
       if (input.within_ms !== undefined && now - event.ts > input.within_ms) return null;
-      const detail = redactStructuredValue({ ...(event.detail ?? {}), ...input.detail });
-      event.detail = detail.value as Record<string, unknown>;
-      if (detail.redacted) event.redacted = true;
-      return this.sanitizeEvent(event);
+      return index;
     }
     return null;
   }

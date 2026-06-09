@@ -291,6 +291,39 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("discards provisional opener clicks when popup annotation reveals an unapproved origin", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const provisional = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {},
+      element: { role: "button", name: "Open billing" },
+    });
+    expect(provisional.ok).toBe(true);
+    expect(browserBroker.traceSnapshot()).toHaveLength(1);
+
+    expect(browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      detail: {
+        popup_event: true,
+        popup_url: "https://billing.example.com/popup",
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+      },
+    })).toEqual({ ok: false, error: "popup_origin_consent_required" });
+
+    expect(browserBroker.traceSnapshot()).toHaveLength(0);
+  });
+
   it("lease revocation interrupts queued actions", () => {
     browserBroker.requestConsent("https://app.example.com");
     const lease = browserBroker.acquireLease("agent", 5000, "test");
