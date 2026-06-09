@@ -311,8 +311,13 @@ Spec: `docs/superpowers/specs/2026-06-09-default-marketplace-programs-and-ui-des
 - [x] `verified:true` only on seeded `@vectant/*`; user `publishProgram` stays `verified:false`. (verified in final review)
 - [x] No manifest/secret leak — relies on the existing allow-listed `toPublicMarketplaceProgram`.
 
-## Live verification — PENDING (Docker engine down)
-Steps 5–6 of T6 (rebuild frontend → set `ENABLE_PROGRAM_SEED=1` → recreate → POST `/api/programs/seed-defaults` → confirm 7 `@vectant/*` Verified rows browse + install + installCount bump, in the logged-in browser) are BLOCKED: Docker Desktop's engine API returns 500 on every endpoint (`/version`, `/info`, `/containers`) — a daemon-level issue (needs a Docker Desktop restart). All code + tests are complete and committed; live seed/verify to run once the engine recovers. Host disk is healthy now (~11 GB free).
+## Live verification — DONE (2026-06-09, after Docker Desktop restart)
+Rebuilt the frontend image (host disk dipped to ~1.2 GB during build but completed exit 0), recreated with a TEMPORARY `ENABLE_PROGRAM_SEED=1`, and drove the flow in the logged-in browser:
+- **Seed:** `POST /api/programs/seed-defaults` → `200 { count: 7 }` (all 7 `@vectant/*` created).
+- **Browse:** workspace marketplace returns the 7 defaults, all `verified:true` with descriptions (8 rows total incl. the prior user-published `@n964u0lg/web`, which is `verified:false`).
+- **Install-from-catalog:** `@vectant/nextjs-dev` → `409 consent_required` listing its 3 scopes (`program.launch`,`network.outbound`,`ports.expose`) → `200 installed` with consent → **installCount 0→1**.
+- **UI:** Programs panel renders all 7 defaults with gradient **Verified** badges (7 badges; the user-published one has none), descriptions, and non-web cards (Background Worker, Dev Container with its honest "runs in the managed runtime today" copy). Redesigned cards/section-headers look on-brand (screenshot captured).
+- **Cleanup:** removed the temporary `ENABLE_PROGRAM_SEED` flag + recreated frontend → seed route now returns **404** (inert), the 7 seeded rows persist. `docker-compose.yml` reverted to its committed state (only the committed `COLLAB_SERVER_URL` remains).
 
 ## Deferred (not in this task)
 - Native Docker / container runtime (own slice — backlog below).
