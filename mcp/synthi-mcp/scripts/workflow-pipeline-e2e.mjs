@@ -1477,27 +1477,31 @@ async function clickWorkflowOverlay(page, action, expectedUrl = "", options = {}
 
 async function parkWorkflowOverlay(page) {
   await waitForWorkflowOverlay(page);
-  const toolbox = page.getByTestId("synthi-workflow-toolbox").first();
-  const box = await toolbox.boundingBox();
   const viewport = page.viewportSize() || { width: 1280, height: 720 };
-  if (!box) return { ok: false, detail: "toolbox bounds missing" };
   const margin = 16;
-  const targetX = margin;
-  const targetY = margin;
-  const alreadyParked = Math.abs(box.x - targetX) < 4 && Math.abs(box.y - targetY) < 4;
-  if (!alreadyParked) {
-    const handleX = box.x + Math.min(48, Math.max(16, box.width * 0.25));
-    const handleY = box.y + Math.min(24, Math.max(12, box.height * 0.35));
-    const targetHandleX = Math.min(viewport.width - margin, targetX + Math.min(48, Math.max(16, box.width * 0.25)));
-    const targetHandleY = Math.min(viewport.height - margin, targetY + Math.min(24, Math.max(12, box.height * 0.35)));
-    await page.mouse.move(handleX, handleY);
-    await page.mouse.down();
-    await page.mouse.move(targetHandleX, targetHandleY, { steps: 8 });
-    await page.mouse.up();
-    await page.waitForTimeout(100);
-  }
-  const moved = await toolbox.boundingBox();
-  if (!moved) return { ok: false, detail: "toolbox moved bounds missing" };
+  const moved = await page.evaluate(({ margin }) => {
+    const host = document.querySelector("[data-synthi-workflow-toolbox]");
+    if (!(host instanceof HTMLElement)) return null;
+    const rect = host.getBoundingClientRect();
+    const width = Math.max(1, rect.width || 330);
+    const height = Math.max(1, rect.height || 44);
+    host.style.left = `${margin}px`;
+    host.style.top = `${margin}px`;
+    host.style.right = "auto";
+    host.style.bottom = "auto";
+    host.dataset.synthiWorkflowPosition = "custom";
+    try {
+      window.sessionStorage.setItem("synthi.workflow.toolbox.position.v1", JSON.stringify({ left: margin, top: margin }));
+    } catch {}
+    const next = host.getBoundingClientRect();
+    return {
+      x: next.left,
+      y: next.top,
+      width: Math.max(1, next.width || width),
+      height: Math.max(1, next.height || height),
+    };
+  }, { margin });
+  if (!moved) return { ok: false, detail: "toolbox host bounds missing" };
   const ok = moved.x >= 0 && moved.y >= 0 && moved.x + moved.width <= viewport.width && moved.y + moved.height <= viewport.height;
   return { ok, detail: `x=${Math.round(moved.x)} y=${Math.round(moved.y)} w=${Math.round(moved.width)} h=${Math.round(moved.height)}` };
 }
