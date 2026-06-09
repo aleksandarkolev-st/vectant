@@ -3234,6 +3234,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         clearPendingEditState(el);
         return;
       }
+      flushPendingActionSends();
       if (!pendingEditBeforeEffects.has(el)) pendingEditBeforeEffects.set(el, consumeControlBeforeEffects(el));
       clearPending(el);
       pendingElements.add(el);
@@ -3279,6 +3280,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         clearPendingEditState(el);
         return;
       }
+      flushPendingActionSends();
       const beforeEffects = pendingEditBeforeEffects.has(el)
         ? pendingEditBeforeEffects.get(el)
         : consumeControlBeforeEffects(el);

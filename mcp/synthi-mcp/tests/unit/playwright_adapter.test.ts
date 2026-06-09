@@ -83,6 +83,11 @@ describe("browser Playwright teach capture", () => {
     const source = readFileSync(resolve(process.cwd(), "src/browser/playwright_adapter.ts"), "utf8");
     const beforeInput = source.indexOf("document.addEventListener('beforeinput'");
     const input = source.indexOf("document.addEventListener('input'");
+    const inputFlush = source.indexOf("flushPendingActionSends();", input);
+    const inputBeforeEffects = source.indexOf("if (!pendingEditBeforeEffects.has(el))", input);
+    const change = source.indexOf("document.addEventListener('change'");
+    const changeFlush = source.indexOf("flushPendingActionSends();", change);
+    const changeBeforeEffects = source.indexOf("const beforeEffects = pendingEditBeforeEffects.has(el)", change);
     const pointerDown = source.indexOf("document.addEventListener('pointerdown'");
     const pointerRemember = source.indexOf("rememberControlBeforeEffects(target);", pointerDown);
     const pointerDrag = source.indexOf("const el = pointerDraggableFor(target);", pointerDown);
@@ -92,6 +97,10 @@ describe("browser Playwright teach capture", () => {
     expect(source).toContain("function rememberControlBeforeEffects(target)");
     expect(beforeInput).toBeGreaterThanOrEqual(0);
     expect(input).toBeGreaterThan(beforeInput);
+    expect(inputFlush).toBeGreaterThan(input);
+    expect(inputFlush).toBeLessThan(inputBeforeEffects);
+    expect(changeFlush).toBeGreaterThan(change);
+    expect(changeFlush).toBeLessThan(changeBeforeEffects);
     expect(source).toContain("if (!pendingEditBeforeEffects.has(el)) pendingEditBeforeEffects.set(el, consumeControlBeforeEffects(el));");
     expect(source).toContain("Object.assign({ change_event: true, __before_effects: beforeEffects }");
     expect(pointerRemember).toBeGreaterThan(pointerDown);
