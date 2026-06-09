@@ -123,7 +123,8 @@ async function main() {
   log("info", `collab container=${container}`);
 
   const runner = await ensurePlaywrightTestRunner();
-  const browser = await chromium.connectOverCDP(CFG.cdpUrl);
+  await pruneExistingCdpPageTargets(CFG.cdpUrl);
+  const browser = await chromium.connectOverCDP(CFG.cdpUrl, { timeout: CFG.timeoutMs });
   try {
     const context = browser.contexts()[0] ?? await browser.newContext();
     await configureWorkflowBridgeForContext(context);
@@ -667,6 +668,57 @@ async function closeExistingPages(context) {
   await Promise.all(context.pages().map((page) => resetHostedRuntimePage(page)));
 }
 
+async function pruneExistingCdpPageTargets(cdpUrl) {
+  const baseUrl = cdpHttpBaseUrl(cdpUrl);
+  if (!baseUrl) return;
+  let targets = [];
+  try {
+    const response = await fetchWithTimeout(`${baseUrl}/json/list`, { timeoutMs: Math.min(CFG.timeoutMs, 10_000) });
+    if (!response.ok) return;
+    const body = await response.json();
+    if (Array.isArray(body)) targets = body;
+  } catch {
+    return;
+  }
+  const pageTargets = targets.filter((target) =>
+    target &&
+    typeof target.id === "string" &&
+    (target.type === "page" || target.type === "webview")
+  );
+  await Promise.all(pageTargets.map((target) =>
+    fetchWithTimeout(`${baseUrl}/json/close/${encodeURIComponent(target.id)}`, {
+      timeoutMs: Math.min(CFG.timeoutMs, 10_000),
+    }).catch(() => undefined)
+  ));
+}
+
+function cdpHttpBaseUrl(cdpUrl) {
+  try {
+    const parsed = new URL(cdpUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return trimSlash(parsed.origin);
+    if (parsed.protocol === "ws:" || parsed.protocol === "wss:") {
+      parsed.protocol = parsed.protocol === "ws:" ? "http:" : "https:";
+      parsed.pathname = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return trimSlash(parsed.origin);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchWithTimeout(url, { timeoutMs }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function openPreviewPage(context, previewUrl) {
   for (const candidate of context.pages()) {
     if (trimSlash(candidate.url()) === trimSlash(previewUrl)) {
@@ -681,7 +733,9 @@ async function openPreviewPage(context, previewUrl) {
 
 async function resetHostedRuntimePage(page) {
   if (!page || page.isClosed()) return;
-  await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }).catch(() => undefined);
+  await page.close({ runBeforeUnload: false }).catch(async () => {
+    await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }).catch(() => undefined);
+  });
 }
 
 async function waitForWorkflowOverlay(page) {
