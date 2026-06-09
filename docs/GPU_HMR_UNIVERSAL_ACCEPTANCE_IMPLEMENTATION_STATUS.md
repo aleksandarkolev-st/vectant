@@ -35,6 +35,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
 66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
@@ -63,6 +64,7 @@ The runner fails immediately when GPU split endpoint evidence is missing after i
 Earlier hardening in the same pass:
 
 ```text
+7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
 66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
@@ -87,6 +89,7 @@ OpenCL preflight now refuses missing runtime evidence and cannot count as dispat
 Vulkan preflight now refuses missing ICD/tool evidence and cannot count as pipeline, command-buffer, or frame-output proof.
 WebGPU preflight now records browser, launch flags, adapter, features, limits, and a diagnostic screenshot while still refusing shader/pipeline/frame HMR proof.
 WebGPU runtime visual proof now accepts only an executed explicit-empty-layout WGSL pipeline scope and derives success from shared ledger invariants, visual thresholds, process-continuity evidence, and native WebGPU API evidence.
+The timing metrics summary collector now normalizes WebGPU runtime visual proofs into the shared `synthi.gpu.hmr.timing_metrics.v1` schema.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
@@ -112,6 +115,8 @@ npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check
 $env:SLUG='webgpu-preflight-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:preflight
 npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check
 $env:SLUG='webgpu-runtime-visual-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual
+npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check
+node mcp/synthi-mcp/scripts/gpu-hmr-timing-metrics-summary.mjs --format json
   result: passed
 ```
 
@@ -655,6 +660,18 @@ mean abs delta 8-bit: 37.6426
 visible pixel count: 67713
 total validator wall time: 951597400ns
 trigger to visible time: 67788100ns
+```
+
+The shared timing summary includes the scoped WebGPU row:
+
+```text
+timing summary json: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260609T051533Z.json
+source: webgpu_runtime_visual
+profile: webgpu-wgsl-runtime-triangle
+status: pass
+total wall: 951.5974ms
+edit/trigger to first visual: 67.7881ms
+visual diff: 35.6061ms
 ```
 
 The accepted WebGPU proof is deliberately narrow:

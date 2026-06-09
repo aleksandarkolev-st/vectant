@@ -38,6 +38,7 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
 66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
@@ -68,6 +69,7 @@ Narrow generated fission candidates now require topology binding to a content-ad
 Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
 WebGPU preflight records Chrome launch flags, AMD RDNA4 adapter evidence, and a nonblank diagnostic screenshot, but still cannot count as shader/pipeline/frame HMR proof.
 WebGPU runtime visual proof now accepts only the executed explicit-empty-layout WGSL pipeline scope and requires shared ledger success, visual-threshold success, process-continuity evidence, and native WebGPU API evidence.
+The timing summary now includes WebGPU runtime visual proofs in the same normalized timing schema as ROCm/HIP, HIPRT, and external profiles.
 ```
 
 Post-hardening verification:
@@ -89,6 +91,7 @@ npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check -> 
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
 ```
 
 ## Live Preview Targets
@@ -432,6 +435,18 @@ process continuity accepted: true
 native WebGPU API accepted: true
 total validator wall time: 951597400ns
 trigger to visible time: 67788100ns
+```
+
+Normalized timing report:
+
+```text
+timing summary json: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260609T051533Z.json
+source: webgpu_runtime_visual
+profile: webgpu-wgsl-runtime-triangle
+status: pass
+total wall: 951.5974ms
+edit/trigger to first visual: 67.7881ms
+visual diff: 35.6061ms
 ```
 
 Do not generalize this to arbitrary WebGPU projects. The runner rejects profiles with non-empty bind-group layouts, vertex buffers, fixed color formats outside the preferred canvas format, or non-opaque alpha mode unless a future proof runner executes and traces those fields.
