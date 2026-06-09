@@ -17,6 +17,12 @@ The accepted proof set is broader than one fixture:
 - WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile,
 - negative/rejection evidence for Bevy, OIDN HIP, OpenCL, and Vulkan where proof is missing or the runtime dependency is incompatible.
 
+The latest machine-readable validation matrix ledger reports six full-runtime GPU HMR rows, one external visual-profile row, six structured refusal rows, and one preflight-only row. The matrix hash is:
+
+```text
+gpu-validation-matrix-ledger:sha256:35c01302ca867602845aa0f7fa500410c01601f822ee33ae34db79e2b4d415d4
+```
+
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. CUDA, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches remain open.
 
 ## Hard Rules Preserved
@@ -35,6 +41,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+acdb1f84c feat(gpu-hmr): add validation matrix ledger
 7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
 66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
@@ -90,6 +97,8 @@ Vulkan preflight now refuses missing ICD/tool evidence and cannot count as pipel
 WebGPU preflight now records browser, launch flags, adapter, features, limits, and a diagnostic screenshot while still refusing shader/pipeline/frame HMR proof.
 WebGPU runtime visual proof now accepts only an executed explicit-empty-layout WGSL pipeline scope and derives success from shared ledger invariants, visual thresholds, process-continuity evidence, and native WebGPU API evidence.
 The timing metrics summary collector now normalizes WebGPU runtime visual proofs into the shared `synthi.gpu.hmr.timing_metrics.v1` schema.
+The validation matrix ledger collector now scans proof artifacts and separates full-runtime GPU HMR, external visual-profile proof, preflight-only evidence, structured refusal, and unproven historical attempts.
+The matrix self-check includes a forged WebGPU success flag with no ledger/images and verifies it remains unproven.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
@@ -117,7 +126,53 @@ npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check
 $env:SLUG='webgpu-runtime-visual-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check
 node mcp/synthi-mcp/scripts/gpu-hmr-timing-metrics-summary.mjs --format json
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
+npm --prefix mcp/synthi-mcp run proof:validation-matrix
   result: passed
+```
+
+## Validation Matrix Ledger
+
+Latest generated matrix artifact:
+
+```text
+schema: synthi.gpu.hmr.validation_matrix_ledger.v1
+proof id: gpu-validation-matrix-ledger:sha256:35c01302ca867602845aa0f7fa500410c01601f822ee33ae34db79e2b4d415d4
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T053654Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T053654Z.md
+```
+
+Matrix result:
+
+```text
+row count: 14
+full-runtime GPU HMR rows: 6
+  flow
+  ray-light
+  saxpy_kernel+saxpy_init_kernel
+  hiprt-camera-rays-horizontal-mirror
+  hiprt-megakernel-direct-light-zero
+  webgpu-wgsl-runtime-triangle
+external visual-profile rows: 1
+  threejs-webgl-shader-lava
+structured refusal rows: 6
+  bevy-wgsl-shader-material
+  oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger
+  oidn-hiprt-rocm-preflight-20260609
+  opencl-rocm-preflight-20260609-after-output-gate
+  opencl-rocm-preflight-20260609
+  vulkan-rocm-preflight-20260609
+preflight-only rows: 1
+  webgpu-preflight-20260609
+omitted stale/unproven historical attempts by default: 573
+```
+
+Important interpretation:
+
+```text
+ThreeJS is accepted as an external visual-profile proof, not as a full-runtime GPU HMR proof-ledger row.
+WebGPU preflight is runtime capability evidence only; the separate webgpu-wgsl-runtime-triangle row is the scoped full-runtime WebGPU proof.
+OpenCL, Vulkan, OIDN HIP, and Bevy rows are evidence-backed refusals, not GPU HMR acceptance.
 ```
 
 Formatting note: `git diff --check` passed for the Rust fission patch. `cargo fmt --check` could not be run in the available builder-test image because rustfmt is not installed, and `cargo` is not installed on the Windows host.
@@ -826,6 +881,8 @@ npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
 npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
+npm --prefix mcp/synthi-mcp run proof:validation-matrix
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check
 npx vitest run tests/unit/gpu_hmr_runtime_proof.test.ts
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
