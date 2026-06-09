@@ -1221,6 +1221,12 @@ describe("browser MCP tool surface", () => {
     expect(unresolved?.isError).toBeUndefined();
     expect((unresolved?.structuredContent as { steps: Array<{ limitations: string[]; suggested_affordances: unknown[] }> }).steps[0]).toEqual(
       expect.objectContaining({
+        target_context: expect.objectContaining({
+          kind: "page",
+          recordedTabId: "app",
+          targetOrigin: "https://app.example.com",
+          routePattern: "/settings",
+        }),
         limitations: expect.arrayContaining(["sourceIdentityMissing", "unresolvedStep"]),
         suggested_affordances: expect.arrayContaining([
           expect.objectContaining({ suggested_attribute: "data-synthi-affordance=\"recorded.target\"" }),
@@ -1241,6 +1247,12 @@ describe("browser MCP tool surface", () => {
         step_id: "browser_evt_1",
         label: "Click recorded target",
         action: "click",
+        target_context: expect.objectContaining({
+          kind: "page",
+          recordedTabId: "app",
+          targetOrigin: "https://app.example.com",
+          routePattern: "/settings",
+        }),
         locator_confidence: "none",
         source_status: "missing",
         limitations: expect.arrayContaining(["sourceIdentityMissing", "unresolvedStep"]),

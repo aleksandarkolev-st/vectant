@@ -53,6 +53,14 @@ describe("browser workflow contract compiler", () => {
       groupLabel: "Save workspace state workflow",
       confidence: "high",
     }));
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "page",
+      traceTargetId: "tab:app",
+      recordedTabId: "app",
+      targetOrigin: "https://app.example.com",
+      origin: "https://app.example.com",
+      routePattern: "/settings",
+    }));
     expect(workflow.contract.mutationBoundaryPlan.firstMutationStepId).toBe("browser_evt_2");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("prefixOnly");
     expect(workflow.contract.counterfactualPlan).toEqual(expect.objectContaining({
@@ -501,6 +509,40 @@ describe("browser workflow contract compiler", () => {
 
     expect(workflow.contract.limitations).toContain("crossOriginTrace");
     expect(workflow.contract.limitations).not.toContain("popupOrMultiTab");
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "page",
+      traceTargetId: "tab:main",
+      recordedTabId: "main",
+      targetOrigin: "https://app.example.com",
+      origin: "https://app.example.com",
+      popup: expect.objectContaining({
+        relationship: "opens",
+        recordedPopupTabId: "popup",
+        recordedOpenerTabId: "main",
+        origin: "https://billing.example.com",
+        routePattern: "/help",
+      }),
+      consent: expect.objectContaining({
+        popupOriginApproved: true,
+      }),
+    }));
+    expect(workflow.contract.steps[1]?.targetContext).toEqual(expect.objectContaining({
+      kind: "popup",
+      traceTargetId: "tab:popup|popup:popup",
+      recordedTabId: "popup",
+      targetOrigin: "https://billing.example.com",
+      origin: "https://billing.example.com",
+      routePattern: "/help",
+      popup: expect.objectContaining({
+        relationship: "context",
+        recordedPopupTabId: "popup",
+        recordedOpenerTabId: "main",
+        openerOrigin: "https://app.example.com",
+      }),
+      consent: expect.objectContaining({
+        exactOriginApproved: true,
+      }),
+    }));
     expect(replay.status).toBe("ready");
   });
 
@@ -617,6 +659,16 @@ describe("browser workflow contract compiler", () => {
     const replay = planWorkflowReplay(events, "sameSession");
 
     expect(workflow.contract.steps[0]?.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "iframe",
+      traceTargetId: "tab:tab|frame:checkout-frame",
+      recordedTabId: "tab",
+      targetOrigin: "https://app.example.com",
+      frame: expect.objectContaining({
+        recordedFrameId: "checkout-frame",
+        locatorChain: ["iframe[data-testid=\"checkout-frame\"]"],
+      }),
+    }));
     expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).not.toBe("blocked");
     expect(replay.status).toBe("ready");
@@ -637,6 +689,15 @@ describe("browser workflow contract compiler", () => {
     ]);
 
     expect(workflow.contract.steps[0]?.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "iframe",
+      origin: "https://app.example.com",
+      targetOrigin: "https://billing.example.com",
+      frame: expect.objectContaining({
+        origin: "https://billing.example.com",
+        locatorChain: ["iframe[data-testid=\"checkout-frame\"]"],
+      }),
+    }));
     expect(workflow.contract.limitations).toContain("crossOriginTrace");
     expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
   });

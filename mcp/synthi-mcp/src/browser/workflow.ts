@@ -83,6 +83,37 @@ export interface WorkflowParameterV7 {
   redacted: boolean;
 }
 
+export interface WorkflowStepTargetContextV7 {
+  kind: "page" | "popup" | "iframe" | "popupIframe";
+  traceTargetId: string;
+  recordedTabId: string;
+  targetOrigin?: string;
+  origin?: string;
+  routePattern?: string;
+  frame?: {
+    recordedFrameId?: string;
+    origin?: string;
+    routePattern?: string;
+    locatorChain: string[];
+  };
+  popup?: {
+    relationship: "opens" | "context";
+    recordedPopupTabId: string;
+    recordedOpenerTabId?: string;
+    recordedRootOpenerTabId?: string;
+    origin?: string;
+    routePattern?: string;
+    openerOrigin?: string;
+  };
+  consent: {
+    exactOriginApproved: boolean;
+    screenshotApproved: boolean;
+    diagnosticsApproved: boolean;
+    popupOriginApproved: boolean;
+    popupScreenshotApproved: boolean;
+  };
+}
+
 export interface WorkflowStepContractV7 {
   stepId: string;
   eventSeq: number;
@@ -97,6 +128,7 @@ export interface WorkflowStepContractV7 {
     };
     valueRef?: string;
   };
+  targetContext?: WorkflowStepTargetContextV7;
   locatorPlan: {
     primary?: LocatorCandidate;
     fallbacks: LocatorCandidate[];
@@ -525,6 +557,10 @@ function stringDetail(event: BrowserTraceEvent, key: string): string | undefined
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function boolDetail(event: BrowserTraceEvent, key: string): boolean {
+  return event.detail?.[key] === true;
+}
+
 function numericDetail(event: BrowserTraceEvent, key: string): number | undefined {
   const value = event.detail?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -820,6 +856,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
       ...(targetLabel ? { target: { label: targetLabel, ...(element?.role ? { role: element.role } : {}), ...(primary?.locator ? { locator: primary.locator } : {}) } } : {}),
       ...(parameterName ? { valueRef: parameterName } : {}),
     },
+    targetContext: targetContextFor(event),
     locatorPlan: {
       ...(primary ? { primary } : {}),
       fallbacks,
@@ -840,6 +877,68 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
     expectedEffects: expectedEffectsFor(actionKind, targetLabel, mutation !== undefined),
     ...(mutation ? { mutation } : {}),
     limitations,
+  };
+}
+
+function targetContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7 {
+  const frameLocatorChain = frameLocatorChainForEvent(event);
+  const popupContext = popupContextFor(event);
+  const isPopupExecutionContext = event.detail?.["popup_context"] === true;
+  const kind = isPopupExecutionContext
+    ? frameLocatorChain.length > 0 ? "popupIframe" : "popup"
+    : frameLocatorChain.length > 0 ? "iframe" : "page";
+  const origin = event.origin || originFor(event.url) || undefined;
+  const frameOrigin = stringDetail(event, "frame_origin") ?? originFor(stringDetail(event, "frame_url") ?? "") ?? undefined;
+  const frameRoutePattern = routePatternFromUrl(stringDetail(event, "frame_url"));
+  const routePattern = routePatternFromUrl(event.url);
+  const targetOrigin = frameOrigin ?? origin;
+  const targetIdParts = [
+    `tab:${event.tab_id || "unknown"}`,
+    ...(isPopupExecutionContext ? [`popup:${event.tab_id || popupContext?.recordedPopupTabId || "unknown"}`] : []),
+    ...(event.frame_id ? [`frame:${event.frame_id}`] : frameLocatorChain.length > 0 ? [`frame:${frameLocatorChain.join(">")}`] : []),
+  ];
+  return {
+    kind,
+    traceTargetId: targetIdParts.join("|"),
+    recordedTabId: event.tab_id,
+    ...(targetOrigin ? { targetOrigin } : {}),
+    ...(origin ? { origin } : {}),
+    ...(routePattern ? { routePattern } : {}),
+    ...(frameLocatorChain.length > 0 || event.frame_id ? {
+      frame: {
+        ...(event.frame_id ? { recordedFrameId: event.frame_id } : {}),
+        ...(frameOrigin ? { origin: frameOrigin } : {}),
+        ...(frameRoutePattern ? { routePattern: frameRoutePattern } : {}),
+        locatorChain: frameLocatorChain,
+      },
+    } : {}),
+    ...(popupContext ? { popup: popupContext } : {}),
+    consent: {
+      exactOriginApproved: event.security?.exact_origin_approved === true,
+      screenshotApproved: event.security?.screenshot_approved === true,
+      diagnosticsApproved: event.security?.diagnostics_approved === true,
+      popupOriginApproved: event.security?.popup_origin_approved === true || boolDetail(event, "popup_origin_approved"),
+      popupScreenshotApproved: event.security?.popup_screenshot_approved === true || boolDetail(event, "popup_screenshot_approved"),
+    },
+  };
+}
+
+function popupContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7["popup"] | undefined {
+  const popupTabId = stringDetail(event, "popup_tab_id");
+  const isPopupContext = event.detail?.["popup_context"] === true;
+  const isPopupEvent = event.detail?.["popup_event"] === true;
+  if (!popupTabId || (!isPopupContext && !isPopupEvent)) return undefined;
+  const popupUrl = stringDetail(event, "popup_url");
+  const popupOrigin = stringDetail(event, "popup_origin") ?? originFor(popupUrl ?? "") ?? undefined;
+  const popupRoutePattern = routePatternFromUrl(popupUrl);
+  return {
+    relationship: isPopupEvent ? "opens" : "context",
+    recordedPopupTabId: popupTabId,
+    ...(stringDetail(event, "opener_tab_id") ? { recordedOpenerTabId: stringDetail(event, "opener_tab_id") } : {}),
+    ...(stringDetail(event, "root_opener_tab_id") ? { recordedRootOpenerTabId: stringDetail(event, "root_opener_tab_id") } : {}),
+    ...(popupOrigin ? { origin: popupOrigin } : {}),
+    ...(popupRoutePattern ? { routePattern: popupRoutePattern } : {}),
+    ...(stringDetail(event, "opener_origin") ? { openerOrigin: stringDetail(event, "opener_origin") } : {}),
   };
 }
 
@@ -1629,9 +1728,13 @@ function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
 
 function routePatternFor(events: BrowserTraceEvent[]): string | undefined {
   const event = events.find((candidate) => candidate.url);
-  if (!event) return undefined;
+  return routePatternFromUrl(event?.url);
+}
+
+function routePatternFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
   try {
-    const parsed = new URL(event.url);
+    const parsed = new URL(url);
     return `${parsed.pathname || "/"}${parsed.search ? "?..." : ""}`;
   } catch {
     return undefined;
