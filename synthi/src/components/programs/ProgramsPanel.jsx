@@ -196,11 +196,11 @@ function ConsentPrompt({ requested = [], busy, onApprove, onCancel }) {
   );
 }
 
-function SectionHeader({ icon: Icon, label, count }) {
+function SectionHeader({ icon: Icon, label, count, className = '' }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className={`flex items-center justify-between ${className}`}>
       <h3 className="text-xs font-semibold uppercase tracking-wider inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
-        {Icon ? <Icon className="w-3.5 h-3.5" /> : null} {label}
+        {Icon ? <Icon className="w-3.5 h-3.5" /> : null}{label}
       </h3>
       {typeof count === 'number' ? (
         <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--bg-elevated)', color: 'var(--text-dim)' }}>{count}</span>
@@ -591,7 +591,7 @@ export default function ProgramsPanel() {
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
-            <SectionHeader icon={Store} label="Marketplace" count={marketplace.length} />
+            <SectionHeader icon={Store} label="Marketplace" count={marketplace.length} className="flex-1" />
             <input
               value={marketQuery}
               onChange={(event) => setMarketQuery(event.target.value)}
