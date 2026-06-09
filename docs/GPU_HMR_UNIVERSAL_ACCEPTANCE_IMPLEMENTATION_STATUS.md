@@ -17,10 +17,10 @@ The accepted proof set is broader than one fixture:
 - WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile,
 - negative/rejection evidence for Bevy, OIDN HIP, OpenCL, and Vulkan where proof is missing or the runtime dependency is incompatible.
 
-The latest machine-readable validation matrix ledger reports six full-runtime GPU HMR rows, one external visual-profile row, six structured refusal rows, and one preflight-only row. The matrix hash is:
+The latest machine-readable validation matrix ledger reports six full-runtime GPU HMR rows, one deterministic generated-split fission verifier row, one external visual-profile row, six structured refusal rows, and one preflight-only row. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:1dd31469b5c221cb71d4b1408c410e9f62c679df769346b20c88a052e39860a3
+gpu-validation-matrix-ledger:sha256:f33be75da3ec01aba870492c3740fa20e33bdf57a1508af6d215d99ce1551c11
 ```
 
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. CUDA, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches remain open.
@@ -34,13 +34,14 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 - After `37f110451`, visual HMR success cannot be derived from screenshots or pixel diffs alone. If visual proof is required, the derived proof ledger record must contain `visual_oracle_artifacts`; screenshots remain evidence inputs.
 - Compute proof cards are supplemental unless the accepted target is compute-only and backed by deterministic output-oracle proof.
 - After `5e1ad07b6`, a placeholder `requiredOracleId` no longer satisfies fission output proof. Fission candidates require a verified inline proposal or resolved output-oracle contract.
-- One generated `.hip` file proves device-translation-unit HMR only; it does not prove per-kernel or smallest-safe fission.
+- One generated `.hip` file is not proof by itself. The ray-light generated split now proves per-kernel/smallest-safe fission only because the deterministic verifier saw one selected device role, one kernel, full runtime proof, and a frame-gated visual oracle. Flow still refuses per-kernel/smallest-safe fission because the selected device role owns two kernels.
 
 ## Latest Hardening Checkpoint
 
 Additional commits since the previous status pass:
 
 ```text
+78070f28e feat(gpu-hmr): prove generated split fission
 1a5bfbafd feat(gpu-hmr): add validation matrix plan coverage
 acdb1f84c feat(gpu-hmr): add validation matrix ledger
 7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
@@ -103,6 +104,8 @@ The matrix self-check includes a forged WebGPU success flag with no ledger/image
 The validation matrix now derives plan-coverage rows for accepted, visual-profile-only, preflight-only, refused, and missing plan requirements.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
+Generated split deterministic fission now emits all eight required fission evidence categories and is collected as a separate proof class that cannot count as GPU HMR success by itself.
+Ray-light generated split fission is accepted for `trace_light_rays`; Flow generated split fission is rejected at `symbol_ownership` because the selected device role contains `particle_init` and `particle_flow`.
 ```
 
 Fresh verification after these commits:
@@ -139,15 +142,15 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:1dd31469b5c221cb71d4b1408c410e9f62c679df769346b20c88a052e39860a3
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T054311Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T054311Z.md
+proof id: gpu-validation-matrix-ledger:sha256:f33be75da3ec01aba870492c3740fa20e33bdf57a1508af6d215d99ce1551c11
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T061913Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T061913Z.md
 ```
 
 Matrix result:
 
 ```text
-row count: 14
+row count: 15
 full-runtime GPU HMR rows: 6
   flow
   ray-light
@@ -155,6 +158,8 @@ full-runtime GPU HMR rows: 6
   hiprt-camera-rays-horizontal-mirror
   hiprt-megakernel-direct-light-zero
   webgpu-wgsl-runtime-triangle
+deterministic fission rows: 1
+  trace_light_rays
 external visual-profile rows: 1
   threejs-webgl-shader-lava
 structured refusal rows: 6
@@ -178,6 +183,7 @@ accepted:
   ray_light_visual_gpu_path
   hiprt_visual_path
   webgpu_scoped_runtime_visual
+  per_kernel_smallest_safe_fission
 preflight_only:
   webgpu_runtime_preflight
 visual_profile_only:
@@ -189,7 +195,6 @@ refused:
   vulkan_pipeline_frame
 missing:
   cuda_runtime
-  per_kernel_smallest_safe_fission
 ```
 
 Important interpretation:
@@ -198,28 +203,36 @@ Important interpretation:
 ThreeJS is accepted as an external visual-profile proof, not as a full-runtime GPU HMR proof-ledger row.
 WebGPU preflight is runtime capability evidence only; the separate webgpu-wgsl-runtime-triangle row is the scoped full-runtime WebGPU proof.
 OpenCL, Vulkan, OIDN HIP, and Bevy rows are evidence-backed refusals, not GPU HMR acceptance.
+The per-kernel/smallest-safe fission row is a deterministic fission verifier proof, not a full-runtime GPU HMR row. Runtime acceptance remains ledger-gated.
 ```
 
 Formatting note: `git diff --check` passed for the Rust fission patch. `cargo fmt --check` could not be run in the available builder-test image because rustfmt is not installed, and `cargo` is not installed on the Windows host.
 
-Fresh verification after `97ee6b7cc`:
+Fresh verification after `78070f28e`:
 
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
-node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
-node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
-npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check
 npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
+npm --prefix mcp/synthi-mcp run proof:validation-matrix
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
+npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
+npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
   result: passed
 
-ray-light live MCP visual proof rerun
-  workspace: ray-light-gpu-hmr-proof-20260609-after-wait-gate
-  result: passed
+ray-light live MCP visual proof plus fission verifier
+  workspace: ray-light-gpu-hmr-proof-20260609-fission-verifier
+  runtime proof id: gpu-runtime-proof:sha256:48b7684581b5ea856e0c3878a36e039521ecba1b5f7f3b3ab270cf197d98b22e
+  ledger id: gpu-ledger-proof:sha256:c08098e6daa1b66f9f9c32c3fa55f77136a283e94515e25da374d08d8f2f52ae
+  visual delta: changed=5.89% mean_abs=9.91 selected_delta_ms=1057
+  deterministic fission: accepted=true claim=per_kernel_hmr kernel=trace_light_rays
 
-Flow live MCP visual proof rerun
-  workspace: flow-gpu-hmr-proof-20260609-after-wait-gate
-  result: passed
+Flow live MCP visual proof plus fission verifier
+  workspace: flow-gpu-hmr-proof-20260609-fission-verifier
+  runtime proof id: gpu-runtime-proof:sha256:cdba884f9c42cb437e394af3499e9da2a8d3321a320221960f9e3f59254b56cd
+  ledger id: gpu-ledger-proof:sha256:905d12006882cda3af0e441fb0a4b7f949f4bc4897563d635493a2bd9cce4d64
+  visual delta: changed=2.59% mean_abs=3.58 selected_delta_ms=2659
+  deterministic fission: accepted=false failure=symbol_ownership reason=selected role contains two kernels
 ```
 
 ## Accepted ROCm/HIP Runtime Ledger
@@ -284,8 +297,8 @@ Those rejected attempts are not accepted proof.
 Latest accepted MCP proof after the required-wait hardening:
 
 ```text
-workspace slug: ray-light-gpu-hmr-proof-20260609-after-wait-gate
-workspace url: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-after-wait-gate
+workspace slug: ray-light-gpu-hmr-proof-20260609-fission-verifier
+workspace url: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-fission-verifier
 HTTP preview check: 200
 fixture: ray-light
 gpu vendor: rocm
@@ -293,34 +306,36 @@ gpu arch: gfx1201
 generated device compile: hipcc
 device edit: .synthi/generated/gpu/device.hip
 strict wait gate: requireGpuFullRuntimeProof=true
-ledger id: gpu-ledger-proof:sha256:c6e8aed7008136cedc8f141bba699142fd1200d72504e0ec21ef6888601c4959
-runtime proof id: gpu-runtime-proof:sha256:e7c6304f46f7f1f8e53b78e02fb0abe1a2cb2c0e4542977a857ae313ac43d045
+ledger id: gpu-ledger-proof:sha256:c08098e6daa1b66f9f9c32c3fa55f77136a283e94515e25da374d08d8f2f52ae
+runtime proof id: gpu-runtime-proof:sha256:48b7684581b5ea856e0c3878a36e039521ecba1b5f7f3b3ab270cf197d98b22e
 result state: gpu-hmr-full-runtime-proven
 hmr observed: [gpu-reload] plan=device_only
 runner stayed alive: true
+deterministic fission: accepted=true claim=per_kernel_hmr kernel=trace_light_rays
 ```
 
 Latest visual artifacts:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/before-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/after-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/before-after-diff.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/before-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/after-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/agent-split-results.txt
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/before-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/after-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/before-after-diff.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/before-hmr-metadata.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/after-hmr-metadata.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/generated-split-granularity.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/generated-split-deterministic-fission.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/agent-split-results.txt
 ```
 
 Latest visual proof:
 
 ```text
-changed=5.88%
-mean_abs=10.00
+changed=5.89%
+mean_abs=9.91
 control_changed=0.00%
-control_mean_abs=0.06
-selected_seq=1173
-selected_delta_ms=2099
+control_mean_abs=0.03
+selected_seq=8842
+selected_delta_ms=1057
 ```
 
 Local visual inspection with the image viewer confirmed a nonblank ray/light diff with the ray bundle and light path visibly changed.
@@ -371,8 +386,8 @@ Visual inspection confirmed a ray/light scene before HMR and a clearly changed l
 Latest accepted MCP proof after the required-wait hardening:
 
 ```text
-workspace slug: flow-gpu-hmr-proof-20260609-after-wait-gate
-workspace url: http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-after-wait-gate
+workspace slug: flow-gpu-hmr-proof-20260609-fission-verifier
+workspace url: http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-fission-verifier
 HTTP preview check: 200
 fixture: flow
 gpu vendor: rocm
@@ -380,23 +395,25 @@ gpu arch: gfx1201
 generated device compile: hipcc
 device edit: .synthi/generated/gpu/device.hip
 strict wait gate: requireGpuFullRuntimeProof=true
-ledger id: gpu-ledger-proof:sha256:9af232f65b3589f47f7fde378d5034d65a9d09c9529657e53efafd2aec192de7
-runtime proof id: gpu-runtime-proof:sha256:919a2b493ddee52df8647b14bd59c4d42b263ed1f1bd205b72df6f8efb456fdf
+ledger id: gpu-ledger-proof:sha256:905d12006882cda3af0e441fb0a4b7f949f4bc4897563d635493a2bd9cce4d64
+runtime proof id: gpu-runtime-proof:sha256:cdba884f9c42cb437e394af3499e9da2a8d3321a320221960f9e3f59254b56cd
 result state: gpu-hmr-full-runtime-proven
 hmr observed: [gpu-reload] plan=device_only
 runner stayed alive: true
+deterministic fission: accepted=false failure=symbol_ownership because selected device role contains particle_init and particle_flow
 ```
 
 Latest visual artifacts:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/before-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/after-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/before-after-diff.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/before-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/after-hmr-metadata.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/agent-split-results.txt
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/before-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/after-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/before-after-diff.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/before-hmr-metadata.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/after-hmr-metadata.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/generated-split-granularity.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/generated-split-deterministic-fission.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/agent-split-results.txt
 ```
 
 Latest visual proof:
@@ -405,9 +422,9 @@ Latest visual proof:
 changed=2.59%
 mean_abs=3.58
 control_changed=0.00%
-control_mean_abs=0.03
-selected_seq=3627
-selected_delta_ms=2664
+control_mean_abs=0.00
+selected_seq=8515
+selected_delta_ms=2659
 ```
 
 Local visual inspection with the image viewer confirmed a nonblank particle-field diff with the expected field displacement.
@@ -453,9 +470,9 @@ selected_delta_ms=2098
 
 Visual inspection confirmed a sparse particle ring before HMR and a gridded wave/field after HMR. The diff is nonblank and localized to the changed particle field.
 
-## Generated Split Granularity
+## Generated Split Granularity And Fission
 
-The accepted generated split claim is device translation unit HMR.
+The accepted generated split runtime claim remains device translation unit HMR unless the deterministic fission verifier proves a smaller island. The fission verifier is a separate proof class and cannot count as full-runtime GPU HMR by itself.
 
 Flow:
 
@@ -463,27 +480,35 @@ Flow:
 accepted claim: device_translation_unit_hmr
 device translation units: 1
 device roles: 1
-kernels: particle_flow, seed_kernel
+kernels: particle_init, particle_flow
 rejected claims: smallest_safe_fission_island, per_kernel_hmr
 reason: single generated translation unit contains multiple kernels
-latest artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
-artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
+runtime proof id: gpu-runtime-proof:sha256:cdba884f9c42cb437e394af3499e9da2a8d3321a320221960f9e3f59254b56cd
+ledger id: gpu-ledger-proof:sha256:905d12006882cda3af0e441fb0a4b7f949f4bc4897563d635493a2bd9cce4d64
+visual artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/before-after-diff.png
+granularity artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/generated-split-granularity.json
+deterministic fission artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-fission-verifier/generated-split-deterministic-fission.json
+deterministic fission result: accepted=false missing=symbol_ownership
 ```
 
 Ray-light:
 
 ```text
-accepted claim: device_translation_unit_hmr
+accepted runtime claim: device_translation_unit_hmr
+accepted fission claim: per_kernel_hmr
 device translation units: 1
 device roles: 1
 kernels: trace_light_rays
-rejected claims: smallest_safe_fission_island, per_kernel_hmr
-reason: deterministic smallest-safe/per-kernel fission verifier not present
-latest artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
-artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
+runtime proof id: gpu-runtime-proof:sha256:48b7684581b5ea856e0c3878a36e039521ecba1b5f7f3b3ab270cf197d98b22e
+ledger id: gpu-ledger-proof:sha256:c08098e6daa1b66f9f9c32c3fa55f77136a283e94515e25da374d08d8f2f52ae
+visual artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/before-after-diff.png
+granularity artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/generated-split-granularity.json
+deterministic fission artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-fission-verifier/generated-split-deterministic-fission.json
+deterministic fission result: accepted=true verifier=evidence:fission-verifier-report:generated-split:sha256:bf0a2fe14332dff63d1ea2c33c83079a4225f5dd24e5627a0a410b876b351ac8
+required categories: source_mapping, include_closure, symbol_ownership, dependency_closure, abi_membrane, compile_recipe, loader_capability, output_oracle
 ```
 
-This answers the one-`.hip` concern: the current generated split proves hot reload at the generated device translation unit. It does not claim smaller fission.
+This answers the one-`.hip` concern: one generated `.hip` file is insufficient by itself. Ray-light can claim per-kernel/smallest-safe fission because the selected generated device role contains exactly one kernel and the deterministic verifier is bound to full runtime proof plus frame-gated visual output. Flow cannot claim it because the selected generated device role contains two kernels.
 
 After `732d2bcfa`, a fission candidate that is narrower than the generated device translation unit cannot pass from metadata alone. It must carry deterministic generated-topology evidence and a structured binding that ties:
 
@@ -920,8 +945,8 @@ npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 SYNTHI_GPU_AGENT_MODE=seed-only SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=agent-split-archive-smoke-20260609-pass SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node scripts/gpu-hmr-agent-split-workspace-test.mjs
-MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
-MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260609-fission-verifier SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260609-fission-verifier SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
@@ -950,7 +975,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | WebGPU | Scoped Chrome/AMD RDNA4 WGSL runtime visual proof accepted for an explicit-empty-layout, no-bindings, no-vertex-buffers triangle-list pipeline. | Broaden only with executed evidence for bind groups, vertex buffers, pipeline-cache ownership, command/frame traces, and output oracles. Browser flags must remain evidence-only. |
 | External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
-| Narrow fission | Device translation unit HMR proven. | Add deterministic smallest-safe fission verifier before claiming per-kernel/smallest island. |
+| Narrow fission | Deterministic generated-split fission verifier accepted `trace_light_rays` and refused Flow's multi-kernel device role. | Broaden only with verifier evidence for additional backends/projects; do not infer per-kernel fission from one-file output. |
 | Browser proof | Preview URLs are live; MCP screenshots exist. | In-app Browser backend was unavailable in this session. |
 
 ## Accepted Statement
@@ -969,6 +994,7 @@ OIDN HIP produced or validated the accepted output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
 General WebGPU bind-group, vertex-buffer, engine-cache, or arbitrary app shader HMR was validated on this worker.
-The one-file generated .hip split proves per-kernel or smallest-island fission.
+A one-file generated .hip split proves per-kernel or smallest-island fission without deterministic verifier evidence.
+Flow's one-file generated .hip split proves per-kernel or smallest-island fission.
 Bevy has full-runtime proof-ledger acceptance.
 ```
