@@ -345,6 +345,15 @@ Rebuilt the frontend image (host disk dipped to ~1.2 GB during build but complet
 
 **Note:** keep ONE canonical schema/catalog description and render it into both surfaces (don’t fork the docs). Depends on the seeded `@vectant/*` catalog (current task) being final.
 
+## Production cost controls for the program runtime (its own track)
+**Why:** programs execute inside the per-workspace worker pod (`workspacePodSpawner.js` k8s in prod / `localWorkerSpawner.js` docker in dev). The defaults/catalog cost ~nothing; running programs cost in-pod CPU/RAM/disk. Idle-cull (`DEFAULT_IDLE_TTL_MS` 10 min) + output caps + kill-switch already bound abandoned sessions. The remaining prod levers are infra/config:
+- Per-workspace **concurrent-session cap** (limit how many heavy programs one workspace runs at once).
+- Per-workspace pod **CPU/mem limits** + **scale-to-zero / idle pod shutdown** when the workspace is inactive (the dominant cost — pods, not programs).
+- Per-workspace volume **disk quota** + node_modules cleanup (install/scaffold growth).
+- Optional **npm/pip registry cache** to cut egress.
+- Cost **visibility** (pairs with Slice-7 observability + Slice-3 `ProgramRuntimeEvent`).
+**Definition of ready:** own spec (quota/limit model + k8s resource policy). Not part of the "make default programs runnable" FE effort.
+
 ## Native Docker / container runtime (its own slice)
 **Goal:** Let programs actually run as containers (e.g. `docker compose up`, devcontainer build/run), not just as managed commands in the workspace session.
 **Why deferred:** the sandbox deliberately blocks real Docker today — devcontainer import rejects `docker.sock`/`--privileged`/host mounts/`--device`/`--cap-add` (`host_escape`), and the runtime manager scrubs `DOCKER_HOST`/`DOCKER_SOCKET` + blocks `/var/run/docker.sock`. There is no `container`/`docker` runtime type.
