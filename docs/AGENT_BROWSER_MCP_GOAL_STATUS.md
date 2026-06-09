@@ -23,17 +23,18 @@ This run did not add fixed preview ports, fixed workspace slugs, local Chrome pa
   - The workflow pipeline now prunes stale CDP page targets before attach and closes per-case pages after each case.
   - This avoids attach slowdowns from hundreds of old tabs without relying on a fixed port or slug.
 - Full workflow matrix proof:
-  - 40 seeded projects passed.
+  - 42 seeded projects passed.
   - Every case clicked the UI buttons, compiled, exported, generated manifest, published private tool, called the discovered private tool where parameters were available, validated, and ran the exported Playwright script.
-  - Covered forms, parameterized input, clipboard paste/drop/copy/cut, iframes, open Shadow DOM, ARIA widgets, range sliders, pointer drag/sort/resize, animated SaaS dashboard, file uploads, hover menus, double-click/context menu, keyboard/control keys, terminal-like text entry, scroll/wheel surfaces, downloads, network mutation classification, CI-isolated mutation replay, native confirm/prompt dialogs, popups, popup return-to-opener workflows, rich text, textarea/code editor, dashboard workflows, and navigation/review queue.
+  - Covered forms, parameterized input, clipboard paste/drop/copy/cut, same-origin iframes, nested iframes, popup iframes, open Shadow DOM, ARIA widgets, range sliders, pointer drag/sort/resize, animated SaaS dashboard, file uploads, hover menus, double-click/context menu, keyboard/control keys, terminal-like text entry, scroll/wheel surfaces, downloads, network mutation classification, CI-isolated mutation replay, native confirm/prompt dialogs, popups, popup return-to-opener workflows, rich text, textarea/code editor, dashboard workflows, and navigation/review queue.
 - Mutation safety and isolated replay:
   - Mutation-heavy private tools defaulted to prefix-only replay unless isolation/confirmation was used.
   - CI isolated replay passed with `mutation=true` for the visual mutation fixture.
-  - CI isolated replay profiles now require an explicit state seed id, reset command, reset assertion command, CI command, postcondition command, and `allow_mutation_replay`.
-  - CI replay now reports `failure_stage`, writes reset/reset-assertion/CI/postcondition logs, and ignores stale mutation attestation unless it matches the current replay run id and nonce.
+  - CI isolated replay profiles now require an explicit reset profile id, state seed id, reset command, reset assertion command, CI command, postcondition command, and `allow_mutation_replay`.
+  - CI replay now passes `SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID`, reports `failure_stage`, writes reset/reset-assertion/CI/postcondition logs, classifies reset/seed/profile mismatches as `testDataMissing`, and ignores stale mutation attestation unless it matches the current replay run id and nonce.
 - Auth durability plumbing:
   - Unit tests cover encrypted auth checkpoint metadata, approved storage state restore, refresh-provider handoff, and CI isolated replay receiving validated auth provider storage state.
   - Auth checkpoints now preserve explicit approved IdP grants with hashed cookie-name audit data instead of raw token/cookie leakage.
+  - Refresh-provider validation uses async subprocesses and supports `SYNTHI_AUTH_PROVIDER_OUTPUT_PATH` for runtimes that do not reliably capture nested stdout, while still supporting stdout JSON for normal providers.
 - Cross-origin browser target safety:
   - Denied popup/iframe target origins are blocking recording issues in the Workflows panel.
   - Delayed popup annotations no longer leave provisional opener clicks as false taught steps, including the live annotation-before-click race.
@@ -55,18 +56,22 @@ TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_CODEX_AUTH_HOME=/mnt/c/Users/dev/.codex npm run live:browser:private-tool-codex
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 npm run live:browser:workflow-pipeline
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp npx vitest run tests/unit/safety_tools.test.ts tests/unit/auth_checkpoint.test.ts tests/unit/browser_workflow_contract.test.ts tests/unit/browser_replay_generation.test.ts
+TMPDIR=/tmp TEMP=/tmp TMP=/tmp npx vitest run tests/unit/auth_checkpoint.test.ts tests/unit/safety_tools.test.ts tests/unit/private_tool_manifest.test.ts
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=cross-origin-iframe-denied,cross-origin-popup-denied npm run live:browser:workflow-pipeline
+TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=animated-saas-dashboard,ci-isolated-visual-mutation npm run live:browser:workflow-pipeline
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=ci-isolated-visual-mutation npm run live:browser:workflow-pipeline
 ```
 
 Results:
 
-- Unit suite: 70 files passed, 759 tests passed.
-- Full workflow matrix: 40 seeded projects passed.
+- Unit suite: 70 files passed, 764 tests passed.
+- Focused auth/private-tool safety suite: 36 tests passed after async refresh-provider validation.
+- Full workflow matrix: 42 seeded projects passed.
 - Stdio private-tool acceptance: passed after final build.
 - Codex private-tool acceptance: passed with a real Codex CLI prompt, temp auth home, structured MCP tool-call evidence, and browser visual proof.
 - Cross-origin denied target fixtures: passed after final build.
-- CI isolated visual mutation fixture: exported Playwright passed and CI isolated replay passed with reset assertion, postcondition, state seed id, and run-bound attestation.
+- Animated SaaS dashboard stress fixture: MCP replay and exported Playwright passed after the final bridge restart.
+- CI isolated visual mutation fixture: exported Playwright passed and CI isolated replay passed with reset assertion, reset profile id, postcondition, state seed id, and run-bound attestation.
 - Typecheck/build: passed.
 
 Visual proof artifacts:
@@ -74,6 +79,8 @@ Visual proof artifacts:
 - `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
 - `tmp/private-tool-codex-acceptance/after-codex-private-tool-call.png`
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-validate-panel.png`
+- `tmp/workflow-pipeline-e2e/nested-iframe-form/after-validate-panel.png`
+- `tmp/workflow-pipeline-e2e/popup-iframe-form/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/popup-form-window/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-teach-actions.png`
@@ -86,7 +93,7 @@ Generated-script proof:
 - The workflow matrix runs every generated Playwright script through a per-case Playwright runner.
 - The per-case runner path prevents substring/spec collisions between cases such as file upload and hidden file upload.
 - The matrix rejects forwarded `/port/<number>` literals in generated scripts.
-- CI isolated exported scripts now write run-bound mutation attestation with `SYNTHI_WORKFLOW_CI_RUN_ID` and `SYNTHI_WORKFLOW_CI_NONCE`.
+- CI isolated exported scripts now verify `SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID` and write run-bound mutation attestation with `SYNTHI_WORKFLOW_CI_RUN_ID` and `SYNTHI_WORKFLOW_CI_NONCE`.
 
 ## Commits From This Continuation
 
@@ -99,6 +106,10 @@ Generated-script proof:
 - `68534bb3` Harden CI isolated workflow replay
 - `1b8c12cb` Preserve popup action targets during teaching
 - `75e3003f` Add Codex private workflow acceptance proof
+- `42856bee` Add popup iframe workflow pipeline coverage
+- `274f3185` Replay nested iframe workflow chains
+- `07ccf6d4` Require reset profile identity for CI replay
+- `28311f44` Make auth refresh provider checks async
 
 Earlier commits in the same goal also covered parameter naming, private tool parameter proof, exported-script runner isolation, and expectation alignment for mutation-safe prefix exports.
 
