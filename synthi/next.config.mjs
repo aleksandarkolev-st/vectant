@@ -17,7 +17,10 @@ function resolveDep(rel) {
 }
 
 const contentSecurityPolicy = buildContentSecurityPolicy(
-  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234',
+  // Use the configured collab URL; only fall back to localhost in non-production
+  // so an unset env var never injects a bogus localhost origin into prod headers.
+  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
+    || (process.env.NODE_ENV !== 'production' ? 'http://localhost:1234' : ''),
 );
 
 /** @type {import('next').NextConfig} */

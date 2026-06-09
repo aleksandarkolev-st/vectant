@@ -10,7 +10,7 @@ export function buildContentSecurityPolicy(collabUrl) {
   try {
     if (collabUrl) collabOrigin = new URL(collabUrl).origin;
   } catch {
-    collabOrigin = null;
+    /* invalid url → no collab origin */
   }
   const frameSrc = ["'self'", 'blob:', collabOrigin].filter(Boolean).join(' ');
   return [
