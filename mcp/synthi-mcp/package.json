@@ -23,6 +23,7 @@
   "files": [
     "dist",
     "scripts/lib/gpu-hmr-acceptance-contract.mjs",
+    "scripts/gpu-hmr-webgpu-preflight.mjs",
     "README.md"
   ],
   "publishConfig": {
@@ -86,7 +87,9 @@
     "proof:opencl:preflight": "node scripts/gpu-hmr-opencl-preflight.mjs",
     "proof:opencl:preflight:self-check": "node scripts/gpu-hmr-opencl-preflight.mjs --self-check",
     "proof:vulkan:preflight": "node scripts/gpu-hmr-vulkan-preflight.mjs",
-    "proof:vulkan:preflight:self-check": "node scripts/gpu-hmr-vulkan-preflight.mjs --self-check"
+    "proof:vulkan:preflight:self-check": "node scripts/gpu-hmr-vulkan-preflight.mjs --self-check",
+    "proof:webgpu:preflight": "node scripts/gpu-hmr-webgpu-preflight.mjs",
+    "proof:webgpu:preflight:self-check": "node scripts/gpu-hmr-webgpu-preflight.mjs --self-check"
   },
   "engines": {
     "node": ">=18.0.0"
