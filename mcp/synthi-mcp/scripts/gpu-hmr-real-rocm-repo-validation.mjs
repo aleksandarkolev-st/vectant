@@ -1178,15 +1178,16 @@ const CFG = {
   slug: process.env.SLUG ?? `gpu-real-rocm-${configuredRepoName}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
-  signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
+  signalingUrl: process.env.SIGNALING_URL ?? process.env.SYNTHI_SIGNALING_URL ?? null,
   hostId: process.env.HOST_ID ?? 'gpu-hmr-real-rocm-validation',
   mcpClientName: process.env.SYNTHI_REAL_ROCM_MCP_CLIENT_NAME ?? 'real-rocm-validation',
-  mcpContainer: process.env.MCP_CONTAINER ?? 'vectant-ade-mcp-1',
-  workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
-  aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? 'vectant-ade-ai-engine-1',
-  mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
+  mcpContainer: process.env.MCP_CONTAINER ?? process.env.SYNTHI_MCP_CONTAINER ?? null,
+  workerContainer: process.env.WORKER_CONTAINER ?? process.env.SYNTHI_WORKER_CONTAINER ?? null,
+  aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? process.env.SYNTHI_AI_ENGINE_CONTAINER ?? null,
+  mcpTransport: (process.env.MCP_TRANSPORT ?? 'local').toLowerCase(),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
-  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
+  mcpContainerEntry: process.env.MCP_CONTAINER_ENTRY ?? process.env.SYNTHI_MCP_CONTAINER_ENTRY ?? null,
+  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? process.env.SYNTHI_MCP_SIGNALING_URL ?? null,
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 300000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
@@ -1403,6 +1404,42 @@ function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}
       resolve(err ? undefined : text);
     });
   });
+}
+
+async function resolveDockerContainer(configured, service) {
+  const composeId = await execText(
+    'docker',
+    ['compose', '--project-directory', REPO_ROOT, 'ps', '-q', service],
+    8000,
+  );
+  const id = String(composeId || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
+  if (id) return id;
+  const labelIds = await execText(
+    'docker',
+    ['ps', '-q', '--filter', `label=com.docker.compose.service=${service}`],
+    8000,
+  );
+  const labelId = String(labelIds || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
+  return labelId || configured || null;
+}
+
+async function resolveDockerContainers() {
+  if (CFG.mcpTransport !== 'docker') return;
+  CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
+  CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
+  CFG.aiEngineContainer = await resolveDockerContainer(CFG.aiEngineContainer, 'ai-engine');
+  if (!CFG.mcpContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires an MCP container from MCP_CONTAINER, SYNTHI_MCP_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.workerContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires a worker container from WORKER_CONTAINER, SYNTHI_WORKER_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.mcpSignalingUrl) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_SIGNALING_URL or SYNTHI_MCP_SIGNALING_URL');
+  }
+  if (!CFG.mcpContainerEntry) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_CONTAINER_ENTRY or SYNTHI_MCP_CONTAINER_ENTRY');
+  }
 }
 
 function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
@@ -3470,12 +3507,16 @@ async function ensureMcpAttached() {
         '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
         CFG.mcpContainer,
         'node',
-        '/app/dist/index.js',
+        CFG.mcpContainerEntry,
       ], { stdio: ['pipe', 'pipe', 'pipe'] });
     } else {
       proc = spawn('node', [CFG.mcpEntry], {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, SYNTHI_SESSION_ID: CFG.slug, SYNTHI_SIGNALING_URL: CFG.signalingUrl },
+        env: {
+          ...process.env,
+          SYNTHI_SESSION_ID: CFG.slug,
+          ...(CFG.signalingUrl ? { SYNTHI_SIGNALING_URL: CFG.signalingUrl } : {}),
+        },
       });
     }
     const client = new McpClient(proc);
@@ -3487,7 +3528,13 @@ async function ensureMcpAttached() {
     mcpState = { proc, client, attached: false };
   }
   if (!mcpState.attached) {
-    const attach = await mcpState.client.toolCall('synthi_attach', { sessionId: CFG.slug, 'i-understand-no-auth': true }, CFG.mcpAttachTimeoutMs);
+    const attachSignalingUrl = CFG.mcpTransport === 'docker' ? CFG.mcpSignalingUrl : CFG.signalingUrl;
+    const attachArgs = {
+      sessionId: CFG.slug,
+      'i-understand-no-auth': true,
+      ...(attachSignalingUrl ? { signalingUrl: attachSignalingUrl } : {}),
+    };
+    const attach = await mcpState.client.toolCall('synthi_attach', attachArgs, CFG.mcpAttachTimeoutMs);
     if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach)}`);
     mcpState.attached = true;
     record('mcp attach', 'pass', attach.resolution ? `${attach.resolution.w}x${attach.resolution.h}` : 'attached');
@@ -8363,6 +8410,7 @@ async function writeResults() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  await resolveDockerContainers();
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
   });
