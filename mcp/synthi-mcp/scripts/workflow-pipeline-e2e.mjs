@@ -18,7 +18,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright-core";
 
@@ -26,6 +26,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 const DEFAULT_USER_ID = "workflow-pipeline-e2e";
 
 const CFG = {
@@ -38,6 +39,8 @@ const CFG = {
   slugPrefix: process.env.SYNTHI_WORKFLOW_PIPELINE_SLUG_PREFIX || "workflow-pipeline",
   timeoutMs: Number(process.env.SYNTHI_WORKFLOW_PIPELINE_TIMEOUT_MS || 90_000),
   keepWorkspaces: process.env.SYNTHI_WORKFLOW_PIPELINE_KEEP_WORKSPACES === "1",
+  verifyFreshMcp: process.env.SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP === "1",
+  privateWorkflowStoreEnv: null,
   cases: (process.env.SYNTHI_WORKFLOW_PIPELINE_CASES || "")
     .split(",")
     .map((item) => item.trim())
@@ -115,18 +118,20 @@ function nowSlug() {
 
 async function main() {
   await mkdir(artifactRoot, { recursive: true });
-  await assertReachable(`${CFG.frontendUrl}/workspace`, "frontend");
-  await assertReachable(`${CFG.collabUrl}/ports`, "collab-server ports");
-  await assertReachable(`${CFG.bridgeUrl}/healthz`, "workflow bridge");
-  await assertReachable(`${CFG.cdpUrl}/json/version`, "hosted browser CDP");
-
-  const container = resolveCollabContainer();
-  log("info", `collab container=${container}`);
-
-  const runner = await ensurePlaywrightTestRunner();
-  await pruneExistingCdpPageTargets(CFG.cdpUrl);
-  const browser = await chromium.connectOverCDP(CFG.cdpUrl, { timeout: CFG.timeoutMs });
+  const ownedBridge = await startFreshMcpVerificationBridge();
+  let browser;
   try {
+    await assertReachable(`${CFG.frontendUrl}/workspace`, "frontend");
+    await assertReachable(`${CFG.collabUrl}/ports`, "collab-server ports");
+    await assertReachable(`${CFG.bridgeUrl}/healthz`, "workflow bridge");
+    await assertReachable(`${CFG.cdpUrl}/json/version`, "hosted browser CDP");
+
+    const container = resolveCollabContainer();
+    log("info", `collab container=${container}`);
+
+    const runner = await ensurePlaywrightTestRunner();
+    await pruneExistingCdpPageTargets(CFG.cdpUrl);
+    browser = await chromium.connectOverCDP(CFG.cdpUrl, { timeout: CFG.timeoutMs });
     const context = browser.contexts()[0] ?? await browser.newContext();
     await configureWorkflowBridgeForContext(context);
     await closeExistingPages(context);
@@ -150,7 +155,41 @@ async function main() {
     // This harness attaches to an already-owned hosted/runtime browser over CDP.
     // Closing the Playwright Browser can terminate that runtime; let process
     // teardown release the client connection instead.
+    if (ownedBridge) await ownedBridge.close().catch(() => undefined);
   }
+}
+
+async function startFreshMcpVerificationBridge() {
+  if (!CFG.verifyFreshMcp) return null;
+  if (!existsSync(DIST_INDEX)) {
+    throw new Error(`dist entrypoint missing: ${DIST_INDEX}. Run npm run build first.`);
+  }
+  const storeDir = await mkdtemp(path.join(os.tmpdir(), "synthi-workflow-private-tools-"));
+  const storeEnv = {
+    SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: path.join(storeDir, "private-workflows.enc.json"),
+    SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: `workflow-pipeline-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: `workflow-pipeline-${process.pid}`,
+  };
+  Object.assign(process.env, storeEnv);
+  CFG.privateWorkflowStoreEnv = storeEnv;
+
+  const { startBrowserWorkflowBridge } = await import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser_workflow_bridge", "server.js")).href);
+  const bridge = startBrowserWorkflowBridge({ port: 0, host: "127.0.0.1" });
+  await bridge.ready;
+  const address = bridge.server.address();
+  if (!address || typeof address === "string") {
+    await bridge.close().catch(() => undefined);
+    throw new Error("fresh_mcp_bridge_port_missing");
+  }
+  CFG.bridgeUrl = `http://127.0.0.1:${address.port}`;
+  process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL = CFG.bridgeUrl;
+  log("ok", `fresh MCP verification bridge - ${CFG.bridgeUrl}`);
+  return {
+    close: async () => {
+      await bridge.close();
+      await rm(storeDir, { recursive: true, force: true });
+    },
+  };
 }
 
 async function configureWorkflowBridgeForContext(context) {
@@ -384,6 +423,15 @@ async function runCase({ testCase, container, context, runner }) {
           : `error=${privateToolCall.result?.error || privateToolCall.error || "unknown"}`
       );
       await writeJson(caseDir, "private-tool-call.json", privateToolCall.result ?? privateToolCall);
+      await verifyFreshMcpPrivateTool({
+        caseDir,
+        testCase,
+        publishedToolName,
+        privateManifest,
+        privateToolArgs,
+        privateToolRunMode,
+        previewUrl,
+      });
     } else {
       const allowParameterGate = testCase.allowPrivateToolParameterGate === true;
       record(
@@ -646,6 +694,207 @@ async function workflowBridgeTool(tool, args) {
 
 async function workflowBridgeState() {
   return await httpJson("GET", `${CFG.bridgeUrl}/browser-workflows/state`);
+}
+
+async function verifyFreshMcpPrivateTool({
+  caseDir,
+  testCase,
+  publishedToolName,
+  privateManifest,
+  privateToolArgs,
+  privateToolRunMode,
+  previewUrl,
+}) {
+  if (!CFG.verifyFreshMcp) return;
+  if (!CFG.privateWorkflowStoreEnv) throw new Error("fresh_mcp_private_tool_store_env_missing");
+  const proc = spawn(process.execPath, [DIST_INDEX], {
+    cwd: MCP_ROOT,
+    env: {
+      ...process.env,
+      ...CFG.privateWorkflowStoreEnv,
+      SYNTHI_AGENT_ID: "workflow_pipeline_fresh_mcp_acceptance",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const client = new JsonRpcLineClient(proc, {
+    timeoutMs: CFG.timeoutMs,
+    label: `${testCase.id}:fresh-mcp`,
+  });
+  const transcript = {
+    generated_at: new Date().toISOString(),
+    tool_name: publishedToolName,
+    preview_url: previewUrl,
+    steps: [],
+  };
+  try {
+    const initialized = await client.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "synthi-workflow-pipeline-fresh-mcp", version: "0.0.0" },
+    });
+    client.notify("notifications/initialized", {});
+    transcript.steps.push({ name: "initialize", ok: true, serverInfo: initialized?.serverInfo ?? null });
+
+    const listed = await client.request("tools/list", {});
+    const tools = Array.isArray(listed?.tools) ? listed.tools : [];
+    const listedTool = tools.find((tool) => tool?.name === publishedToolName);
+    record(
+      testCase.id,
+      "fresh MCP tools/list private tool",
+      Boolean(listedTool),
+      `tool=${publishedToolName} tools=${tools.length}`
+    );
+    transcript.steps.push({ name: "tools/list", ok: Boolean(listedTool), tool_count: tools.length });
+
+    const manifestLookup = await client.toolCall("synthi_browser_get_private_tool_manifest", { tool_name: publishedToolName });
+    record(
+      testCase.id,
+      "fresh MCP lookup private tool manifest",
+      toolCallOk(manifestLookup) && manifestLookup.parsed?.manifest?.tool_name === publishedToolName,
+      `status=${manifestLookup.parsed?.manifest?.status || manifestLookup.parsed?.error || "missing"}`
+    );
+    transcript.steps.push({ name: "manifest", ok: true, result: manifestLookup.parsed });
+
+    const attach = await client.toolCall("synthi_browser_attach", { cdp_url: CFG.cdpUrl, bridge_port: 0 });
+    record(
+      testCase.id,
+      "fresh MCP attach hosted browser",
+      toolCallOk(attach),
+      attach.parsed?.runtime?.kind || attach.parsed?.error || "attached"
+    );
+    transcript.steps.push({ name: "attach", ok: toolCallOk(attach), result: attach.parsed });
+
+    const consent = await client.toolCall("synthi_browser_request_consent", {
+      url: previewUrl,
+      status: "granted",
+      screenshot: true,
+      diagnostics: false,
+      reason: `${testCase.id}:fresh-mcp-private-tool`,
+    });
+    record(
+      testCase.id,
+      "fresh MCP grant preview consent",
+      toolCallOk(consent),
+      consent.parsed?.consent?.origin || consent.parsed?.error || "granted"
+    );
+    transcript.steps.push({ name: "consent", ok: toolCallOk(consent), result: consent.parsed });
+
+    const opened = await client.toolCall("synthi_browser_open", { url: previewUrl });
+    const tabId = opened.parsed?.tab?.tab_id;
+    record(
+      testCase.id,
+      "fresh MCP open preview",
+      toolCallOk(opened) && typeof tabId === "string",
+      `tab=${tabId || opened.parsed?.error || "missing"}`
+    );
+    transcript.steps.push({ name: "open", ok: toolCallOk(opened), result: opened.parsed });
+
+    const args = { ...privateToolArgs, ...(typeof tabId === "string" ? { tab_id: tabId } : {}) };
+    const call = await client.toolCall(publishedToolName, args);
+    const expectedSteps = privateToolRunMode === "prefixOnly" ? 0 : Math.max(1, Math.min(testCase.minSteps ?? 1, privateManifest?.steps?.length ?? 1));
+    const stepsRun = Number(call.parsed?.replay?.steps_run ?? 0);
+    record(
+      testCase.id,
+      "fresh MCP call discovered private tool",
+      toolCallOk(call) &&
+        call.parsed?.private_tool?.tool_name === publishedToolName &&
+        call.parsed?.private_tool?.run_mode === privateToolRunMode &&
+        stepsRun >= expectedSteps,
+      toolCallOk(call)
+        ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${stepsRun}`
+        : `error=${call.parsed?.error || "unknown"}`
+    );
+    transcript.steps.push({ name: "call", ok: toolCallOk(call), result: call.parsed });
+    await writeJson(caseDir, "fresh-mcp-private-tool-call.json", transcript);
+  } finally {
+    await client.close().catch(() => undefined);
+    if (!proc.killed) proc.kill("SIGTERM");
+  }
+}
+
+function toolCallOk(call) {
+  return call?.isError !== true && call?.parsed?.ok === true;
+}
+
+class JsonRpcLineClient {
+  constructor(proc, { timeoutMs, label }) {
+    this.proc = proc;
+    this.timeoutMs = timeoutMs;
+    this.label = label;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.buffer = "";
+    proc.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
+    proc.stderr.on("data", (chunk) => {
+      const text = String(chunk);
+      process.stderr.write(`[${this.label} stderr] ${text}`);
+    });
+    proc.once("exit", (code, signal) => {
+      for (const [, pending] of this.pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(`${this.label} exited before response: code=${code} signal=${signal}`));
+      }
+      this.pending.clear();
+    });
+  }
+
+  onStdout(text) {
+    this.buffer += text;
+    let index;
+    while ((index = this.buffer.indexOf("\n")) >= 0) {
+      const line = this.buffer.slice(0, index).trim();
+      this.buffer = this.buffer.slice(index + 1);
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (message.id === undefined || !this.pending.has(message.id)) continue;
+      const pending = this.pending.get(message.id);
+      this.pending.delete(message.id);
+      clearTimeout(pending.timer);
+      if (message.error) {
+        pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
+      } else {
+        pending.resolve(message.result);
+      }
+    }
+  }
+
+  request(method, params = {}) {
+    const id = this.nextId++;
+    this.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`timeout waiting for ${method}`));
+      }, this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+    });
+  }
+
+  notify(method, params = {}) {
+    this.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
+  }
+
+  async toolCall(name, args = {}) {
+    const result = await this.request("tools/call", { name, arguments: args });
+    const text = result?.content?.find((item) => item?.type === "text")?.text;
+    let parsed = {};
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = { raw: text };
+    }
+    return { isError: result?.isError === true, parsed, result };
+  }
+
+  async close() {
+    await this.request("shutdown", {}).catch(() => undefined);
+    this.notify("exit", {});
+  }
 }
 
 async function startAuxiliaryOriginServer(routes) {
