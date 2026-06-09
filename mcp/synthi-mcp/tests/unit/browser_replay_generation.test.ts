@@ -1358,6 +1358,52 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("await expect(target1).toHaveAttribute('aria-selected', \"true\");");
     expect(generated.code).toContain("parameterizedTextRegex([\"Priority \",\"\"], optionValue1)");
   });
+
+  it("keeps repeated ARIA option parameters distinct when they target different options", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "invoice-a",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          option_select_event: true,
+          selected: true,
+          option_value: "Invoice A",
+          listbox_name: "Invoice queue",
+          observed_effects: ["Selected 1 invoices"],
+          element: { tag: "button", role: "option", name: "Invoice A", source_id: "invoice.a" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"option\", { name: \"Invoice A\" })", confidence: 0.96, reason: "accessible_role_and_name" },
+        ],
+      }),
+      event({
+        event_id: "invoice-c",
+        event_seq: 2,
+        action: "click",
+        value: "Shift",
+        detail: {
+          option_select_event: true,
+          selected: true,
+          option_value: "Invoice C",
+          listbox_name: "Invoice queue",
+          modifier_keys: { shift: true, control: false, meta: false, alt: false },
+          modifiers: ["Shift"],
+          observed_effects: ["Selected 3 invoices"],
+          element: { tag: "button", role: "option", name: "Invoice C", source_id: "invoice.c" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"option\", { name: \"Invoice C\" })", confidence: 0.96, reason: "accessible_role_and_name" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("const optionValue1 = readRequiredEnv(\"INVOICE_QUEUE\", \"invoice-a\");");
+    expect(generated.code).toContain("const optionValue2 = readRequiredEnv(\"INVOICE_QUEUE_2\", \"invoice-c\");");
+    expect(generated.code).toContain("await target2.click({ modifiers: [\"Shift\"] });");
+    expect(generated.warnings).toContain("event invoice-a ARIA option replay is parameterized by INVOICE_QUEUE");
+    expect(generated.warnings).toContain("event invoice-c ARIA option replay is parameterized by INVOICE_QUEUE_2");
+  });
 });
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

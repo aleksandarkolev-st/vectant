@@ -233,6 +233,47 @@ describe("private browser workflow MCP tool manifest", () => {
     }));
   });
 
+  it("keeps same-name parameters separate when they target different source identities", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "invoice-a",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          option_select_event: true,
+          selected: true,
+          option_value: "Invoice A",
+          listbox_name: "Invoice queue",
+          element: { role: "option", name: "Invoice A", source_id: "invoice.a" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"option\", { name: \"Invoice A\" })", confidence: 0.96, reason: "role" },
+        ],
+      }),
+      event({
+        event_id: "invoice-c",
+        event_seq: 2,
+        action: "click",
+        detail: {
+          option_select_event: true,
+          selected: true,
+          option_value: "Invoice C",
+          listbox_name: "Invoice queue",
+          element: { role: "option", name: "Invoice C", source_id: "invoice.c" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"option\", { name: \"Invoice C\" })", confidence: 0.96, reason: "role" },
+        ],
+      }),
+    ]);
+
+    const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+
+    expect(workflow.contract.parameters.map((parameter) => parameter.name)).toEqual(["invoice_queue", "invoice_queue_2"]);
+    expect(workflow.contract.steps.map((step) => step.action.valueRef)).toEqual(["invoice_queue", "invoice_queue_2"]);
+    expect(manifest.parameters.map((parameter) => parameter.name)).toEqual(["invoice_queue", "invoice_queue_2"]);
+  });
+
   it("exposes the manifest through the browser MCP tool", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url);

@@ -990,19 +990,37 @@ function mutationFor(
 
 function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTraceEvent[]): WorkflowParameterV7[] {
   const byStep = new Map(events.map((event) => [event.event_id, event]));
+  const usedNames = new Set<string>();
+  const variantsByBaseName = new Map<string, Array<{ key: string; name: string }>>();
   return steps.flatMap((step) => {
     const valueRef = step.action.valueRef;
     if (!valueRef) return [];
     const event = byStep.get(step.stepId);
+    const baseName = valueRef;
+    const variantKey = parameterVariantKey(step);
+    const variants = variantsByBaseName.get(baseName) ?? [];
+    let variant = variants.find((candidate) => candidate.key === variantKey);
+    if (!variant) {
+      variant = {
+        key: variantKey,
+        name: variants.length === 0 && !usedNames.has(baseName)
+          ? baseName
+          : uniqueWorkflowParameterName(baseName, usedNames),
+      };
+      variants.push(variant);
+      variantsByBaseName.set(baseName, variants);
+      usedNames.add(variant.name);
+    }
+    if (step.action.valueRef !== variant.name) step.action.valueRef = variant.name;
     const label = step.action.target?.label ?? valueRef;
-    const sensitive = isSensitiveParameterName(valueRef) || isSensitiveParameterName(label);
+    const sensitive = isSensitiveParameterName(baseName) || isSensitiveParameterName(variant.name) || isSensitiveParameterName(label);
     const redacted = event?.redacted === true ||
       event?.detail?.["pasted_text_redacted"] === true ||
       event?.detail?.["dropped_text_redacted"] === true ||
       event?.detail?.["dialog_prompt_value_redacted"] === true ||
       sensitive;
     return [{
-      name: valueRef,
+      name: variant.name,
       label,
       sourceStepId: step.stepId,
       valueShape: redacted ? "secret" : parameterValueShape(event),
@@ -1010,6 +1028,24 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
       redacted,
     }];
   });
+}
+
+function uniqueWorkflowParameterName(baseName: string, usedNames: Set<string>): string {
+  let ordinal = 2;
+  while (usedNames.has(`${baseName}_${ordinal}`)) ordinal += 1;
+  return `${baseName}_${ordinal}`;
+}
+
+function parameterVariantKey(step: WorkflowStepContractV7): string {
+  if (step.sourcePlan.sourceId) return `source:${step.sourcePlan.sourceId}`;
+  const target = step.action.target;
+  const targetKey = [
+    target?.role ?? "",
+    target?.label ?? "",
+    target?.locator ?? "",
+  ].map((part) => part.trim()).join("\u001f");
+  if (targetKey.trim().length > 0) return `target:${targetKey}`;
+  return `step:${step.stepId}`;
 }
 
 function isSensitiveParameterName(value: string | undefined): boolean {
