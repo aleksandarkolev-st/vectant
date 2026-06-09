@@ -2420,7 +2420,7 @@ const CASES = [
     ],
     expectedReplayCode: [
       "await target1.dblclick();",
-      "await target2.click({ button: 'right' });",
+      "await target2.click({ button: \"right\" });",
     ],
     files: () => commonFiles({
       title: "Double Click Context Menu Workflow",
