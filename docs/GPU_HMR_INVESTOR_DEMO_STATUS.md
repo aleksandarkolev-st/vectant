@@ -16,7 +16,7 @@ Best demo surfaces:
 2. ROCm/HIP MCP Flow preview: second generated visual workload, proving this is not a one-case path.
 3. HIPRT same-process CameraRays and MegaKernel: strongest ray-traced framebuffer proof.
 4. ThreeJS WebGL external profile: concrete external runtime screenshot proof, not full ledger acceptance.
-5. WebGPU Chrome/AMD runtime preflight: nonblank diagnostic visual, not HMR acceptance.
+5. WebGPU Chrome/AMD scoped WGSL runtime visual proof: shader-module/pipeline/frame proof for an explicit-empty-layout profile.
 6. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
 
 Do not claim:
@@ -24,11 +24,11 @@ Do not claim:
 ```text
 CUDA was proven on this AMD GPU.
 Every arbitrary GPU project is production accepted.
-Bevy/WebGPU has full-runtime proof-ledger acceptance.
+Bevy or broad/general WebGPU has full-runtime proof-ledger acceptance.
 OIDN HIP produced or validated the accepted visual output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
-WebGPU shader-module/pipeline/frame output proof was validated on this worker.
+General WebGPU bind-group, vertex-buffer, engine-cache, or arbitrary app shader HMR was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-safe fission.
 Any proof succeeded because of a shim or hardcoded scenario path.
 ```
@@ -38,6 +38,7 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
@@ -66,6 +67,7 @@ Generated split topology now rejects per-kernel HMR unless deterministic fission
 Narrow generated fission candidates now require topology binding to a content-addressed partial artifact before the verifier can pass them.
 Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
 WebGPU preflight records Chrome launch flags, AMD RDNA4 adapter evidence, and a nonblank diagnostic screenshot, but still cannot count as shader/pipeline/frame HMR proof.
+WebGPU runtime visual proof now accepts only the executed explicit-empty-layout WGSL pipeline scope and requires shared ledger success, visual-threshold success, process-continuity evidence, and native WebGPU API evidence.
 ```
 
 Post-hardening verification:
@@ -86,6 +88,7 @@ npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check -> passed
 ```
 
 ## Live Preview Targets
@@ -392,6 +395,47 @@ noBrowserFlagClaimedAsHmr: true
 
 No WebGPU shim was added. Browser flags are disclosed as runtime enablement evidence only, not as proof of shader-module, pipeline, epoch, or frame-output HMR.
 
+Structured WebGPU runtime visual HMR proof:
+
+```text
+proof id: webgpu-runtime-visual-proof:sha256:e45b1d839607d694a744226228c0341dd6959eb336058bf733152a77f972e81d
+result state: webgpu-hmr-full-runtime-proven
+ledger proof id: gpu-ledger-proof:sha256:56994c1b29cef52e7b86ba4d3936031a3486123bb62da99ab1e554d779011a2e
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-summary.txt
+```
+
+Visual artifacts inspected:
+
+```text
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-before.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-after.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-diff.png
+changed pixel ratio: 29.3893%
+mean abs delta 8-bit: 37.6426
+visible pixel count: 67713
+```
+
+Accepted scope:
+
+```text
+profile: webgpu-wgsl-runtime-triangle
+pipeline scope: explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list
+wgsl hash before: sha256:46927f5ed8423e965306fb45cf698deab767e2582d9b745db3c064c092285582
+wgsl hash after: sha256:63fac832718d56179ba8a043e55afe6b93f6af9608269c13aa174fb3e66a2e66
+epoch: webgpu-epoch-2
+dispatch id: webgpu-dispatch-2
+pipeline id: webgpu-pipeline-2-4fb3e66a2e66
+ledger failed invariants: none
+visual thresholds accepted: true
+process continuity accepted: true
+native WebGPU API accepted: true
+total validator wall time: 951597400ns
+trigger to visible time: 67788100ns
+```
+
+Do not generalize this to arbitrary WebGPU projects. The runner rejects profiles with non-empty bind-group layouts, vertex buffers, fixed color formats outside the preferred canvas format, or non-opaque alpha mode unless a future proof runner executes and traces those fields.
+
 ## Strict ROCm/HIP Compute Ledger
 
 Accepted full-runtime compute/readback proof:
@@ -505,6 +549,8 @@ npm --prefix mcp/synthi-mcp run proof:vulkan:preflight:self-check
 SYNTHI_VULKAN_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=vulkan-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight
 npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check
 $env:SLUG='webgpu-preflight-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:preflight
+npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check
+$env:SLUG='webgpu-runtime-visual-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
@@ -542,11 +588,11 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 
 ## Honest Remaining Work
 
-- Full-runtime Bevy/WebGPU acceptance is not implemented.
+- Full-runtime Bevy acceptance is not implemented.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
 - Vulkan needs a real ICD plus pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof; no synthesized ICD or shim should be used.
-- WebGPU needs WGSL hash, shader-module epoch, bind-group/pipeline-layout, pipeline recreate, frame trace, and output-oracle ledger proof; browser flags must remain evidence-only.
+- WebGPU beyond the accepted explicit-empty-layout WGSL profile needs executed bind-group, vertex-buffer, engine-cache, pipeline-layout, frame trace, and output-oracle ledger proof; browser flags must remain evidence-only.
 - Per-kernel/smallest-safe fission needs a deterministic verifier.
 - Browser plugin visual proof was unavailable because no in-app browser backend was exposed.

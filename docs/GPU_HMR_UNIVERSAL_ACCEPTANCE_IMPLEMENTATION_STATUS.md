@@ -14,10 +14,10 @@ The accepted proof set is broader than one fixture:
 - MCP preview visual HMR for generated ray-light and Flow workloads,
 - HIPRT same-process ray-traced framebuffer HMR for CameraRays and MegaKernel direct-light profiles,
 - ThreeJS external runtime visual proof as an external screenshot profile,
-- WebGPU runtime preflight evidence on Chrome/AMD RDNA4, explicitly not counted as WebGPU HMR,
+- WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile,
 - negative/rejection evidence for Bevy, OIDN HIP, OpenCL, and Vulkan where proof is missing or the runtime dependency is incompatible.
 
-This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. Non-HIP backends, CUDA, Vulkan, OpenCL full-runtime acceptance, and Bevy/WebGPU full-runtime acceptance remain open.
+This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. CUDA, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches remain open.
 
 ## Hard Rules Preserved
 
@@ -35,6 +35,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
@@ -62,6 +63,7 @@ The runner fails immediately when GPU split endpoint evidence is missing after i
 Earlier hardening in the same pass:
 
 ```text
+66c42458d feat(gpu-hmr): add webgpu runtime visual proof
 b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
@@ -84,6 +86,7 @@ strict runtime artifact gates reject invented source-consistency modes and requi
 OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
 Vulkan preflight now refuses missing ICD/tool evidence and cannot count as pipeline, command-buffer, or frame-output proof.
 WebGPU preflight now records browser, launch flags, adapter, features, limits, and a diagnostic screenshot while still refusing shader/pipeline/frame HMR proof.
+WebGPU runtime visual proof now accepts only an executed explicit-empty-layout WGSL pipeline scope and derives success from shared ledger invariants, visual thresholds, process-continuity evidence, and native WebGPU API evidence.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
@@ -107,6 +110,8 @@ npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check
 npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check
 $env:SLUG='webgpu-preflight-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:preflight
+npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check
+$env:SLUG='webgpu-runtime-visual-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual
   result: passed
 ```
 
@@ -629,6 +634,49 @@ noBrowserFlagClaimedAsHmr: true
 
 No WebGPU shim was added. Browser enablement flags are recorded for transparency and are not counted as HMR proof.
 
+WebGPU runtime visual HMR was then proven for a scoped WGSL shader/pipeline profile:
+
+```text
+latest runtime proof id: webgpu-runtime-visual-proof:sha256:e45b1d839607d694a744226228c0341dd6959eb336058bf733152a77f972e81d
+latest runtime result state: webgpu-hmr-full-runtime-proven
+latest runtime ledger id: gpu-ledger-proof:sha256:56994c1b29cef52e7b86ba4d3936031a3486123bb62da99ab1e554d779011a2e
+latest runtime proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-proof.json
+latest runtime summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-summary.txt
+```
+
+Runtime visual artifacts were inspected:
+
+```text
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-before.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-after.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-visual-proof/webgpu-runtime-visual-20260609-webgpu-wgsl-runtime-triangle-diff.png
+changed pixel ratio: 29.3893%
+mean abs delta 8-bit: 37.6426
+visible pixel count: 67713
+total validator wall time: 951597400ns
+trigger to visible time: 67788100ns
+```
+
+The accepted WebGPU proof is deliberately narrow:
+
+```text
+profile: webgpu-wgsl-runtime-triangle
+pipeline scope: explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list
+wgsl hash before: sha256:46927f5ed8423e965306fb45cf698deab767e2582d9b745db3c064c092285582
+wgsl hash after: sha256:63fac832718d56179ba8a043e55afe6b93f6af9608269c13aa174fb3e66a2e66
+epoch: webgpu-epoch-2
+dispatch id: webgpu-dispatch-2
+pipeline id: webgpu-pipeline-2-4fb3e66a2e66
+ledger failed invariants: none
+visual thresholds accepted: true
+process continuity accepted: true
+native WebGPU API accepted: true
+no shim applied: true
+no browser flag claimed as HMR: true
+```
+
+Unsupported WebGPU profiles with non-empty bind-group layouts, vertex buffers, fixed color target formats outside the preferred canvas format, or non-opaque alpha mode are rejected by the runner instead of being overclaimed.
+
 ## External Project Profiles
 
 ThreeJS WebGL shader lava profile passed as an external runtime screenshot proof:
@@ -800,8 +848,8 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
 | OpenCL | Worker has `libOpenCL.so.1`, but no vendor ICD and no `clinfo`; structured preflight rejected OpenCL runtime proof. | Install/provide a real OpenCL vendor ICD and then add dispatch/event/readback ledger proof. No synthesized ICDs or shims. |
 | Vulkan | Worker has `libvulkan.so.1`, but no ICD files and no `vulkaninfo`; structured preflight rejected Vulkan runtime proof. | Provide a real Vulkan ICD/tooling, then add pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof. No synthesized ICDs or shims. |
-| WebGPU | Chrome/AMD RDNA4 runtime preflight accepted with a nonblank diagnostic screenshot; the artifact still sets `gpuHmrSuccess=false`. | Add WGSL hash, shader-module epoch, bind-group/pipeline-layout, pipeline recreate, frame trace, and output-oracle ledger proof before accepting WebGPU HMR. Browser flags must remain evidence-only. |
-| External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |
+| WebGPU | Scoped Chrome/AMD RDNA4 WGSL runtime visual proof accepted for an explicit-empty-layout, no-bindings, no-vertex-buffers triangle-list pipeline. | Broaden only with executed evidence for bind groups, vertex buffers, pipeline-cache ownership, command/frame traces, and output oracles. Browser flags must remain evidence-only. |
+| External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
 | Narrow fission | Device translation unit HMR proven. | Add deterministic smallest-safe fission verifier before claiming per-kernel/smallest island. |
 | Browser proof | Preview URLs are live; MCP screenshots exist. | In-app Browser backend was unavailable in this session. |
@@ -809,7 +857,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 ## Accepted Statement
 
 ```text
-On the local AMD ROCm machine, Synthi can split generated ROCm/HIP GPU workloads, compile the device artifact with hipcc, hot-reload a device-only edit in a running preview/runtime, prove generated ROCm/HIP device artifacts with strict runtime-ledger acceptance, and provide separate pixel-backed visual evidence for Flow, ray-light, HIPRT, and external ThreeJS.
+On the local AMD ROCm machine, Synthi can split generated ROCm/HIP GPU workloads, compile the device artifact with hipcc, hot-reload a device-only edit in a running preview/runtime, prove generated ROCm/HIP device artifacts with strict runtime-ledger acceptance, and provide separate pixel-backed visual evidence for Flow, ray-light, HIPRT, scoped WebGPU WGSL, and external ThreeJS.
 ```
 
 Do not claim:
@@ -821,7 +869,7 @@ The generated ray-light MCP fixture is HIPRT/OIDN.
 OIDN HIP produced or validated the accepted output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
-WebGPU shader-module/pipeline/frame-output proof was validated on this worker.
+General WebGPU bind-group, vertex-buffer, engine-cache, or arbitrary app shader HMR was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-island fission.
-Bevy/WebGPU has full-runtime proof-ledger acceptance.
+Bevy has full-runtime proof-ledger acceptance.
 ```
