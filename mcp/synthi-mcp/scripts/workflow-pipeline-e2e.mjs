@@ -15,6 +15,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,17 +168,28 @@ async function runCase({ testCase, container, context, runner }) {
   await rm(caseDir, { recursive: true, force: true });
   await mkdir(caseDir, { recursive: true });
 
-  log("info", `${testCase.id}: seed ${slug}`);
-  const files = testCase.files();
-  await seedWorkspace(slug, files);
-  record(testCase.id, "seed workspace files", true, slug);
-  const registeredSourceTokens = await registerSeedSourceIdentity(slug, files);
-  record(testCase.id, "register source identity", true, `tokens=${registeredSourceTokens}`);
-
-  const run = await startWorkspaceDevServer(container, slug, repoPath);
+  const caseCleanups = [];
+  let run;
   let idePage;
   let previewPage;
   try {
+    const setupContext = typeof testCase.setup === "function"
+      ? await testCase.setup({
+        caseDir,
+        addCleanup: (cleanup) => {
+          if (typeof cleanup === "function") caseCleanups.push(cleanup);
+        },
+      }) ?? {}
+      : {};
+
+    log("info", `${testCase.id}: seed ${slug}`);
+    const files = testCase.files(setupContext);
+    await seedWorkspace(slug, files);
+    record(testCase.id, "seed workspace files", true, slug);
+    const registeredSourceTokens = await registerSeedSourceIdentity(slug, files);
+    record(testCase.id, "register source identity", true, `tokens=${registeredSourceTokens}`);
+
+    run = await startWorkspaceDevServer(container, slug, repoPath);
     const previewUrl = await waitForPreviewPort(run.slug, run.port);
     record(testCase.id, "detect actual running port", true, `port=${run.port} preview=${previewUrl}`);
 
@@ -208,9 +220,36 @@ async function runCase({ testCase, container, context, runner }) {
     const afterTeachScreenshotPage = isScreenshotPage(taughtVisualPage) ? taughtVisualPage : previewPage;
     await afterTeachScreenshotPage.screenshot({ path: path.join(caseDir, "after-teach-actions.png"), fullPage: true });
 
-    const endState = await clickWorkflowOverlay(previewPage, "stop");
+    const endState = await clickWorkflowOverlay(previewPage, "stop", "", {
+      allowZeroSteps: Boolean(testCase.expectedRecordingIssue),
+    });
     const taughtSteps = Number(endState.stepCount || 0);
     record(testCase.id, "click overlay stop", endState.ok === true && taughtSteps >= testCase.minSteps, `steps=${taughtSteps}`);
+
+    if (testCase.expectedRecordingIssue) {
+      const stateBody = await workflowBridgeState();
+      const state = stateBody.state ?? {};
+      const recordingIssues = Array.isArray(state?.diagnostics?.recordingIssues) ? state.diagnostics.recordingIssues : [];
+      const issueErrors = recordingIssues.map((issue) => issue?.error).filter(Boolean);
+      const panelStepCount = Number(state?.workflow?.stepCount || 0);
+      record(
+        testCase.id,
+        "record denied-origin issue",
+        issueErrors.includes(testCase.expectedRecordingIssue),
+        issueErrors.length ? `issues=${issueErrors.join(",")}` : "issues=none"
+      );
+      record(
+        testCase.id,
+        "deny keeps workflow empty",
+        taughtSteps === 0 && panelStepCount === 0,
+        `overlaySteps=${taughtSteps} panelSteps=${panelStepCount}`
+      );
+      await writeJson(caseDir, "denied-origin-state.json", state);
+      await idePage.bringToFront().catch(() => undefined);
+      await focusRecordingIssuePanel(idePage, testCase.expectedRecordingIssue);
+      await idePage.screenshot({ path: path.join(caseDir, "after-denied-origin-panel.png"), fullPage: true });
+      return;
+    }
 
     const compileBody = await clickWorkflowButton(idePage, /^Compile$/);
     const contract = compileBody.result?.workflow?.contract;
@@ -418,9 +457,16 @@ async function runCase({ testCase, container, context, runner }) {
     if (idePage && !idePage.isClosed()) {
       await resetHostedRuntimePage(idePage);
     }
-    await stopWorkspaceDevServer(container, run).catch((err) => {
-      log("warn", `${testCase.id}: failed to stop dev server: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    if (run) {
+      await stopWorkspaceDevServer(container, run).catch((err) => {
+        log("warn", `${testCase.id}: failed to stop dev server: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    for (const cleanup of [...caseCleanups].reverse()) {
+      await cleanup().catch((err) => {
+        log("warn", `${testCase.id}: cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
     if (!CFG.keepWorkspaces) {
       await dockerExec(container, ["sh", "-lc", `rm -rf ${shellQuote(`/data/repos/${slug}`)}`]).catch(() => undefined);
     }
@@ -561,6 +607,61 @@ async function workflowBridgeTool(tool, args) {
     tool,
     arguments: args,
   });
+}
+
+async function workflowBridgeState() {
+  return await httpJson("GET", `${CFG.bridgeUrl}/browser-workflows/state`);
+}
+
+async function startAuxiliaryOriginServer(routes) {
+  const routeMap = new Map(Object.entries(routes));
+  const server = http.createServer((request, response) => {
+    const pathName = new URL(request.url || "/", "http://localhost").pathname;
+    const route = routeMap.get(pathName);
+    if (!route) {
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    const body = typeof route === "function" ? route(request) : route;
+    response.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end(body);
+  });
+
+  await new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise((resolve) => server.close(resolve));
+    throw new Error("auxiliary origin did not bind to a TCP port");
+  }
+
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    },
+  };
 }
 
 function extractSourceIdentityRegistrations(files) {
@@ -742,7 +843,7 @@ async function waitForWorkflowOverlay(page) {
   await page.getByTestId("synthi-workflow-toolbox").waitFor({ state: "visible", timeout: CFG.timeoutMs });
 }
 
-async function clickWorkflowOverlay(page, action, expectedUrl = "") {
+async function clickWorkflowOverlay(page, action, expectedUrl = "", options = {}) {
   const testId = action === "observe" ? "synthi-workflow-observe" : "synthi-workflow-teach";
   await waitForWorkflowOverlay(page);
   const button = page.getByTestId(testId).first();
@@ -753,7 +854,7 @@ async function clickWorkflowOverlay(page, action, expectedUrl = "") {
     const state = await workflowOverlayState(page);
     if (action === "observe" && state.observed && (!expectedUrl || trimSlash(state.url) === trimSlash(expectedUrl))) return state;
     if (action === "teach" && state.status === "recording") return state;
-    if (action === "stop" && !state.recording && state.stepCount > 0) return state;
+    if (action === "stop" && !state.recording && (state.stepCount > 0 || options.allowZeroSteps === true)) return state;
     await sleep(250);
   }
   throw new Error(`overlay ${action} did not settle; state=${JSON.stringify(await workflowOverlayState(page))}`);
@@ -839,6 +940,20 @@ async function clickWorkflowButton(page, labelPattern) {
     page.off("response", onResponse);
     page.off("requestfailed", onRequestFailed);
   }
+}
+
+async function focusRecordingIssuePanel(page, error) {
+  const label = {
+    frame_origin_consent_required: "Frame consent required",
+    popup_origin_consent_required: "Popup consent required",
+    teach_tab_mismatch: "Different tab was used",
+    teach_origin_mismatch: "Different origin was used",
+    origin_consent_required: "Origin consent required",
+  }[error] || "Recording issue";
+  await page.getByText(label).first().scrollIntoViewIfNeeded({ timeout: 5000 }).catch(async () => {
+    await page.mouse.wheel(0, 900).catch(() => undefined);
+  });
+  await page.waitForTimeout(250);
 }
 
 async function expectButtonEnabled(page, button, labelPattern) {
@@ -1543,6 +1658,64 @@ const CASES = [
       await frame.getByLabel("Cardholder").fill("Ada Lovelace");
       await frame.getByRole("button", { name: "Save cardholder" }).click();
       await frame.getByText("Saved Ada Lovelace").waitFor();
+    },
+  },
+  {
+    id: "cross-origin-iframe-denied",
+    minSteps: 0,
+    expectedRecordingIssue: "frame_origin_consent_required",
+    setup: async ({ addCleanup }) => {
+      const auxiliary = await startAuxiliaryOriginServer({
+        "/external-frame.html": [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>External Frame</title>",
+          "    <style>",
+          "      body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 24px; color: #171717; background: #f7f7f4; }",
+          "      main { display: grid; gap: 12px; }",
+          "      input { height: 40px; border: 1px solid #9c9c92; padding: 0 12px; font: inherit; }",
+          "      output { min-height: 24px; color: #17663a; font-weight: 700; }",
+          "    </style>",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>External Checkout Frame</h1>",
+          "      <label for=\"cardholder\">Cardholder</label>",
+          "      <input id=\"cardholder\" aria-label=\"Cardholder\" placeholder=\"Name on card\">",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script>",
+          "      const input = document.querySelector('#cardholder');",
+          "      const status = document.querySelector('#status');",
+          "      input.addEventListener('input', () => { status.textContent = `Captured ${input.value}`; });",
+          "    </script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      });
+      addCleanup(auxiliary.close);
+      return { externalOrigin: auxiliary.origin };
+    },
+    files: ({ externalOrigin }) => commonFiles({
+      title: "Cross-Origin Iframe Denied Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Cross-Origin Iframe Denied Workflow</h1>",
+        `      <iframe data-testid="external-frame" title="External checkout" src="${externalOrigin}/external-frame.html"></iframe>`,
+        "    </main>",
+      ].join("\n"),
+      styles: [
+        "iframe { width: min(620px, calc(100vw - 48px)); height: 300px; border: 1px solid #b9b9b2; background: white; }",
+      ],
+      script: "",
+    }),
+    teach: async (page) => {
+      const frame = page.frameLocator('iframe[data-testid="external-frame"]');
+      await frame.getByLabel("Cardholder").fill("Ada Lovelace");
+      await frame.getByText("Captured Ada Lovelace").waitFor();
     },
   },
   {
@@ -3111,6 +3284,62 @@ const CASES = [
       await popup.waitForLoadState("domcontentloaded");
       await popup.waitForURL(/help\.html/);
       await page.getByText("Help opened").waitFor();
+    },
+  },
+  {
+    id: "cross-origin-popup-denied",
+    minSteps: 0,
+    expectedRecordingIssue: "popup_origin_consent_required",
+    setup: async ({ addCleanup }) => {
+      const auxiliary = await startAuxiliaryOriginServer({
+        "/external-billing.html": [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>External Billing</title>",
+          "    <style>",
+          "      body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 32px; color: #171717; background: #f7f7f4; }",
+          "      main { display: grid; gap: 12px; }",
+          "    </style>",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>External Billing</h1>",
+          "      <p>This popup is served from a separate origin and should require explicit workflow consent.</p>",
+          "    </main>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      });
+      addCleanup(auxiliary.close);
+      return { externalOrigin: auxiliary.origin };
+    },
+    files: ({ externalOrigin }) => commonFiles({
+      title: "Cross-Origin Popup Denied Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Cross-Origin Popup Denied Workflow</h1>",
+        `      <a href="${externalOrigin}/external-billing.html" target="_blank" rel="noreferrer" role="button" data-testid="open-external-billing">Open external billing</a>`,
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "document.querySelector('[data-testid=\"open-external-billing\"]').addEventListener('click', () => {",
+        "  document.querySelector('#status').textContent = 'External billing opened';",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      const popupPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open external billing" }).click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState("domcontentloaded");
+      await popup.getByText("External Billing").waitFor();
+      await page.getByText("External billing opened").waitFor();
+      return popup;
     },
   },
   {
