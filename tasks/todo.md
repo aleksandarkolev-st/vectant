@@ -364,6 +364,14 @@ Spec: `docs/superpowers/specs/2026-06-09-make-default-programs-runnable-design.m
 - Empty-`workspaceUserId` → shared-dir fallback is a pre-existing low-risk edge (auth guarantees email non-null); not changed.
 - `scaffoldTemplates.js` is imported client-side for `SCAFFOLDABLE_PACKAGE_IDS` (bundles ~3KB of template strings — negligible; could split later).
 
+## Follow-up: runtime toolchain for the defaults (DONE for dev) — commit `b8b2a570`
+Live testing surfaced that the program runtime (collab-server image, node:20/Debian 12) is Node-first: Node defaults run, but **Flask hit `pip: command not found`** and **lazygit had no binary**. Fixes:
+- `backend/collab-server/Dockerfile`: added `python3-venv python3-pip curl ca-certificates` + the **lazygit** binary (GitHub release v0.44.1).
+- `defaultPrograms.js`: `@vectant/flask-api` recipe → **venv-based** (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/flask run …`), because Debian 12 system Python is externally-managed (PEP 668). Re-seeded so the DB recipe updated (verified: venv install/launch stored).
+- Live-verified in the rebuilt collab-server: `pip3`/`lazygit` present, `python3 -m venv` works, and `flask` installs+runs in a venv (Flask 3.1.3).
+- Also: a Next.js launch failed with npm `ENOTEMPTY` — that was stale `node_modules` from an **interrupted install** (not a feature bug); cleaning `node_modules` → fresh `npm install` succeeds. (Robustness idea for later: self-healing install / cleanup of `.pkg-XXXX` temp dirs after an interrupted launch.)
+- **PROD TODO:** the prod program runtime is the per-workspace **worker pod** (`workspacePodSpawner.js`), NOT collab-server. The same toolchain (python3-venv/pip + lazygit) must be added to the prod worker image for Flask/lazygit to work in production. (Dev = collab-server, now done.)
+
 ---
 
 # BACKLOG — do AFTER all 6/7 slices are complete
