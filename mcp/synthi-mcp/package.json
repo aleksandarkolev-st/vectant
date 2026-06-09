@@ -24,6 +24,10 @@
     "dist",
     "scripts/lib/gpu-hmr-acceptance-contract.mjs",
     "scripts/gpu-hmr-webgpu-preflight.mjs",
+    "scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
+    "scripts/profiles/webgpu-wgsl-runtime-triangle.json",
+    "scripts/profiles/webgpu/triangle-before.wgsl",
+    "scripts/profiles/webgpu/triangle-after.wgsl",
     "README.md"
   ],
   "publishConfig": {
@@ -89,7 +93,9 @@
     "proof:vulkan:preflight": "node scripts/gpu-hmr-vulkan-preflight.mjs",
     "proof:vulkan:preflight:self-check": "node scripts/gpu-hmr-vulkan-preflight.mjs --self-check",
     "proof:webgpu:preflight": "node scripts/gpu-hmr-webgpu-preflight.mjs",
-    "proof:webgpu:preflight:self-check": "node scripts/gpu-hmr-webgpu-preflight.mjs --self-check"
+    "proof:webgpu:preflight:self-check": "node scripts/gpu-hmr-webgpu-preflight.mjs --self-check",
+    "proof:webgpu:runtime-visual": "node scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
+    "proof:webgpu:runtime-visual:self-check": "node scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs --self-check"
   },
   "engines": {
     "node": ">=18.0.0"
