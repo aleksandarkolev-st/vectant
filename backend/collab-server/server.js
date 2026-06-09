@@ -1667,6 +1667,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}] }
+  // Writes starter files into the workspace dir, ONLY when missing. Path-guarded.
+  const scaffoldMatch = /^\/program-runtime\/([^/]+)\/scaffold$/.exec(programRuntimeUrl.pathname);
+  if (scaffoldMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(scaffoldMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    try {
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const { applyScaffoldFiles } = require('./scaffold');
+      const cwd = await resolveWorkspaceCwd(slug, parsed.userId || undefined);
+      const result = applyScaffoldFiles(cwd, parsed.files || []);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      const code = err?.message === 'path_escape' ? 400 : 500;
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message || 'scaffold failed' }));
+    }
+    return;
+  }
+
   // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
   // ========================================================================
   // POST /exec-terminal/:slug  { command: string, timeout?: number }
