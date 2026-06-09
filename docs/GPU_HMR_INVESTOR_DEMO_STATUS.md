@@ -34,6 +34,8 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
+f8559c672 docs(gpu-hmr): record visual ledger hardening status
 37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
 5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
 394f6ff32 fix(gpu-hmr): bind fission contract to verifier proof
@@ -47,6 +49,8 @@ Demo-relevant rule changes:
 Screenshots and pixel diffs are visual evidence, not authority.
 Visual HMR acceptance now requires visual_oracle_artifacts in the derived proof ledger record.
 Fission acceptance requires a verified output-oracle proposal or resolved output-oracle contract.
+Generated device edits in the visual runner now require the MCP wait gate to apply with full GPU runtime proof before acceptance.
+The visual runner now fails immediately when no initial generated device compile marker or GPU split endpoint evidence is observed.
 The generated ray-light and Flow demos remain device-translation-unit HMR claims, not per-kernel fission claims.
 ```
 
@@ -61,6 +65,9 @@ npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check -> passed
 cargo gpu_fission tests in worker builder image -> 64 passed
 cargo gpu_prod_contracts tests in worker builder image -> 36 passed
+node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check -> passed
 ```
 
 ## Live Preview Targets
@@ -76,20 +83,20 @@ worker: up
 HTTP preview checks passed:
 
 ```text
-Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-rerun2 -> HTTP 200
-Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-rerun2 -> HTTP 200
+Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-after-wait-gate -> HTTP 200
+Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-after-wait-gate -> HTTP 200
 ```
 
-The Codex in-app Browser plugin had no available browser backend in this session (`agent.browsers.list()` returned `[]`). Visual proof for this checkpoint therefore comes from MCP screenshot artifacts and local image inspection of persisted PNGs.
+Headless Chrome page-level captures showed only the dark app shell and are not counted as proof. Visual proof for this checkpoint comes from MCP screenshot artifacts tied to frame gates and local image inspection of the persisted PNGs.
 
 ## Ray-Light Preview Proof
 
 Accepted current proof:
 
 ```text
-workspace slug: ray-light-gpu-hmr-proof-20260609-rerun2
-runtime proof id: gpu-runtime-proof:sha256:2f3ece89da76d997b47cebe0d65322234b59d49fbe61064fd10db9c84e17ce34
-ledger id: gpu-ledger-proof:sha256:a4730f03c1b5da395ede415501e62b3152c2ea7d85394231739e2cd75a17d3c1
+workspace slug: ray-light-gpu-hmr-proof-20260609-after-wait-gate
+runtime proof id: gpu-runtime-proof:sha256:e7c6304f46f7f1f8e53b78e02fb0abe1a2cb2c0e4542977a857ae313ac43d045
+ledger id: gpu-ledger-proof:sha256:c6e8aed7008136cedc8f141bba699142fd1200d72504e0ec21ef6888601c4959
 result state: gpu-hmr-full-runtime-proven
 HMR plan: device_only
 ```
@@ -97,21 +104,22 @@ HMR plan: device_only
 Artifacts:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/before-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/after-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/before-after-diff.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/before-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/after-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/before-after-diff.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260609-after-wait-gate/agent-split-results.txt
 ```
 
 Visual/timing numbers:
 
 ```text
-changed pixels: 5.87%
-mean abs delta: 10.01
+changed pixels: 5.88%
+mean abs delta: 10.00
 control changed: 0.00%
-control mean abs: 0.32
-selected frame seq: 993
-selected delta: 3734ms
+control mean abs: 0.06
+selected frame seq: 1173
+selected delta: 2099ms
 ```
 
 Visual inspection: before renders a ray/light scene with ground grid and ray bundle; after moves the light/ray path; the diff is nonblank and high-signal.
@@ -121,9 +129,9 @@ Visual inspection: before renders a ray/light scene with ground grid and ray bun
 Accepted current proof:
 
 ```text
-workspace slug: flow-gpu-hmr-proof-20260609-rerun2
-runtime proof id: gpu-runtime-proof:sha256:16d8756992bc28d03d8ed8dd1f5786b605b6c86cabc2ff2f6bc88681600ba6e9
-ledger id: gpu-ledger-proof:sha256:1de678f799fc420e489fbb4dcb5385d7f1621f47f2d78230cff3c60ed203800f
+workspace slug: flow-gpu-hmr-proof-20260609-after-wait-gate
+runtime proof id: gpu-runtime-proof:sha256:919a2b493ddee52df8647b14bd59c4d42b263ed1f1bd205b72df6f8efb456fdf
+ledger id: gpu-ledger-proof:sha256:9af232f65b3589f47f7fde378d5034d65a9d09c9529657e53efafd2aec192de7
 result state: gpu-hmr-full-runtime-proven
 HMR plan: device_only
 ```
@@ -131,10 +139,11 @@ HMR plan: device_only
 Artifacts:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/before-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/after-hmr-first.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/before-after-diff.png
-mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-rerun2/generated-split-granularity.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/before-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/after-hmr-first.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/before-after-diff.png
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/generated-split-granularity.json
+mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260609-after-wait-gate/agent-split-results.txt
 ```
 
 Visual/timing numbers:
@@ -143,9 +152,9 @@ Visual/timing numbers:
 changed pixels: 2.59%
 mean abs delta: 3.58
 control changed: 0.00%
-control mean abs: 0.00
-selected frame seq: 8038
-selected delta: 2098ms
+control mean abs: 0.03
+selected frame seq: 3627
+selected delta: 2664ms
 ```
 
 Visual inspection: before renders a sparse particle ring; after renders a gridded wave/field; the diff is nonblank.
@@ -180,32 +189,32 @@ CameraRays:
 
 ```text
 profile: hiprt-camera-rays-horizontal-mirror
-proof id: hiprt-warm-runtime-proof:sha256:94182ab06e86ef8da8c359f43b2ad4589d3e71d88ec367b8ada0b2f9989f96c6
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-proof.json
-before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-same-process-baseline-framebuffer.png
-after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-same-process-changed-framebuffer.png
-diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013148-diff-amplified.png
+proof id: hiprt-warm-runtime-proof:sha256:aa108131d5999bc6c473971db04f4bc0c047e0bce9570614a85f483f27c2ac40
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-diff-amplified.png
 changed pixels: 91.4019%
 mean abs delta 8-bit: 53.1273
-live recompile: 46ms
-edit to first visual: 2673ms
-total wall: 302713.591ms
+live recompile: 41ms
+edit to first visual: 1894ms
+total wall: 12843.4901ms
 ```
 
 MegaKernel direct-light:
 
 ```text
 profile: hiprt-megakernel-direct-light-zero
-proof id: hiprt-warm-runtime-proof:sha256:f881ef5c369ea0640ba0acc9ab6389ed927040e15d4a2eba6b2fff0057532984
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-proof.json
-before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-same-process-baseline-framebuffer.png
-after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-same-process-changed-framebuffer.png
-diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609013659-diff-amplified.png
+proof id: hiprt-warm-runtime-proof:sha256:bc32cdeabf7439f559b0f3b16403dcc36738612d6e691bc362a2c9ba98ea93ac
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-diff-amplified.png
 changed pixels: 41.8229%
 mean abs delta 8-bit: 32.9462
-live recompile: 82ms
-edit to first visual: 2370ms
-total wall: 13908.9233ms
+live recompile: 75ms
+edit to first visual: 2389ms
+total wall: 13764.7823ms
 ```
 
 Visual inspection: both HIPRT diffs are readable and nonblank. CameraRays shows a mirrored/recomposed Cornell-style framebuffer; MegaKernel shows a direct-light contribution change.
@@ -215,10 +224,10 @@ Visual inspection: both HIPRT diffs are readable and nonblank. CameraRays shows 
 Structured OIDN preflight proof:
 
 ```text
-proof id: oidn-preflight-proof:sha256:f5cf7bab766cfd7b13e1c0657818c20306e81cc9dda4267486771fc492e84f85
+proof id: oidn-preflight-proof:sha256:809e4e3e9613c6343fcd6fd0b3f138db66f781b74104126e65d7cc06830c60ef
 result state: oidn-hip-rejected
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-proof.json
-summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-summary.txt
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger-summary.txt
 ```
 
 OIDN HIP was tested and rejected:
@@ -342,8 +351,12 @@ npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt
+MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
-SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
+SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
