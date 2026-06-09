@@ -972,7 +972,7 @@ fn loader_capability_token_valid(value: &str) -> bool {
 }
 
 fn oracle_requirement_present(candidate: &Value) -> bool {
-    non_empty_string(candidate.get("requiredOracleId")) || output_oracle_proposal_valid(candidate)
+    output_oracle_proposal_valid(candidate) || output_oracle_resolved_contract_valid(candidate)
 }
 
 fn output_oracle_proposal_present(candidate: &Value) -> bool {
@@ -990,6 +990,57 @@ fn output_oracle_proposal_valid(candidate: &Value) -> bool {
         return false;
     };
     ACCEPTED_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())
+        && output_oracle_expected_value_present(object)
+        && output_oracle_producer_present(object)
+        && output_oracle_output_target_present(object)
+        && output_oracle_readback_contract_present(object)
+        && output_oracle_runtime_session_binding_present(object)
+        && output_oracle_artifact_binding_present(object)
+        && (!RENDER_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())
+            || output_oracle_visual_evidence_contract_present(object))
+}
+
+fn output_oracle_resolved_contract_present(candidate: &Value) -> bool {
+    output_oracle_resolved_contract_object(candidate).is_some()
+}
+
+fn output_oracle_resolved_contract_object(
+    candidate: &Value,
+) -> Option<&serde_json::Map<String, Value>> {
+    candidate
+        .get("outputOracleContract")
+        .or_else(|| candidate.get("resolvedOutputOracleContract"))
+        .or_else(|| candidate.get("output_oracle_contract"))
+        .or_else(|| candidate.get("resolved_output_oracle_contract"))
+        .and_then(Value::as_object)
+}
+
+fn output_oracle_resolved_contract_kind(
+    object: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    let kind = object.get("kind").and_then(Value::as_str)?;
+    let normalized = normalized_scope_text(kind);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn output_oracle_resolved_contract_valid(candidate: &Value) -> bool {
+    let Some(object) = output_oracle_resolved_contract_object(candidate) else {
+        return false;
+    };
+    let Some(kind) = output_oracle_resolved_contract_kind(object) else {
+        return false;
+    };
+    let oracle_id_present = non_empty_string(candidate.get("requiredOracleId"))
+        || [
+            "requiredOracleId",
+            "oracleId",
+            "oracle_id",
+            "required_oracle_id",
+        ]
+        .iter()
+        .any(|field| non_empty_string(object.get(*field)));
+    oracle_id_present
+        && ACCEPTED_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())
         && output_oracle_expected_value_present(object)
         && output_oracle_producer_present(object)
         && output_oracle_output_target_present(object)
@@ -1179,6 +1230,22 @@ fn output_oracle_contract_summary(candidate: &Value) -> Value {
             .get("outputOracleProposal")
             .and_then(Value::as_object)
             .is_some_and(output_oracle_visual_evidence_contract_present),
+        "resolvedContractPresent": output_oracle_resolved_contract_present(candidate),
+        "resolvedContractValid": output_oracle_resolved_contract_valid(candidate),
+        "resolvedContractKind": output_oracle_resolved_contract_object(candidate)
+            .and_then(output_oracle_resolved_contract_kind),
+        "resolvedContractExpectedValuePresent": output_oracle_resolved_contract_object(candidate)
+            .is_some_and(output_oracle_expected_value_present),
+        "resolvedContractProducerPresent": output_oracle_resolved_contract_object(candidate)
+            .is_some_and(output_oracle_producer_present),
+        "resolvedContractOutputTargetPresent": output_oracle_resolved_contract_object(candidate)
+            .is_some_and(output_oracle_output_target_present),
+        "resolvedContractReadbackContractPresent": output_oracle_resolved_contract_object(candidate)
+            .is_some_and(output_oracle_readback_contract_present),
+        "resolvedContractRuntimeSessionBindingPresent": output_oracle_resolved_contract_object(candidate)
+            .is_some_and(output_oracle_runtime_session_binding_present),
+        "resolvedContractArtifactBindingPresent": output_oracle_resolved_contract_object(candidate)
+            .is_some_and(output_oracle_artifact_binding_present),
         "acceptedKinds": ACCEPTED_OUTPUT_ORACLE_KINDS,
     })
 }
@@ -2305,6 +2372,15 @@ mod tests {
             "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
             "loaderCapabilityRequirement": {"transport": "content_addressed_blob"},
             "requiredOracleId": "oracle:sentinel",
+            "outputOracleProposal": {
+                "kind": "sentinel_buffer_value",
+                "producer": "deterministic_probe",
+                "expected": "sentinel-changed-after-dispatch",
+                "outputTargetId": "buffer:sentinel",
+                "readbackPlan": {"syncPoint": "after-dispatch"},
+                "sessionIdSource": "runtime-session",
+                "artifactIdSource": "selected-artifact"
+            },
             "sourceMappingEvidenceIds": ["evidence:source-map"],
             "includeClosureEvidenceIds": ["evidence:include-closure"],
             "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
@@ -2714,10 +2790,35 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("requiredOracleId");
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("outputOracleProposal");
 
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "reject");
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_missing"));
+    }
+
+    #[test]
+    fn rejects_candidate_with_placeholder_required_oracle_id_only() {
+        let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("outputOracleProposal");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["outputOracleContract"]["requiredOracleId"], "oracle:sentinel");
+        assert_eq!(report["outputOracleContract"]["proposalPresent"], false);
+        assert_eq!(report["outputOracleContract"]["resolvedContractPresent"], false);
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
@@ -3449,10 +3550,7 @@ mod tests {
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "reject");
-        assert_eq!(
-            report["outputOracleContract"]["proposalExpectedValuePresent"],
-            false
-        );
+        assert_eq!(report["outputOracleContract"]["proposalValid"], true);
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
@@ -4051,6 +4149,10 @@ mod tests {
     fn rejected_candidates_are_not_selected() {
         let mut rejected = valid_candidate();
         rejected.as_object_mut().unwrap().remove("requiredOracleId");
+        rejected
+            .as_object_mut()
+            .unwrap()
+            .remove("outputOracleProposal");
 
         let report = verify_fission_candidates(&json!([rejected]));
 
@@ -4064,6 +4166,10 @@ mod tests {
     fn rejected_candidate_report_preserves_specific_reason_codes() {
         let mut rejected = valid_candidate();
         rejected.as_object_mut().unwrap().remove("requiredOracleId");
+        rejected
+            .as_object_mut()
+            .unwrap()
+            .remove("outputOracleProposal");
 
         let report = verify_fission_candidates(&json!([rejected]));
         let reason_codes = report["reasonCodes"].as_array().unwrap();
