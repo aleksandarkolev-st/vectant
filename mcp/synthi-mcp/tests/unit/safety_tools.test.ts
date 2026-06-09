@@ -11,6 +11,7 @@ import { SAFETY_TOOL_NAMES, SAFETY_TOOLS, dispatchSafetyTool } from "../../src/t
 
 const originalCiMarkerPath = process.env["CI_MARKER_PATH"];
 const originalExpectedCiCwd = process.env["EXPECTED_CI_CWD"];
+const originalWorkflowCiArtifactDir = process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"];
 
 beforeEach(() => {
   browserBroker.resetForTests();
@@ -29,6 +30,11 @@ afterEach(() => {
     delete process.env["EXPECTED_CI_CWD"];
   } else {
     process.env["EXPECTED_CI_CWD"] = originalExpectedCiCwd;
+  }
+  if (originalWorkflowCiArtifactDir === undefined) {
+    delete process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"];
+  } else {
+    process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"] = originalWorkflowCiArtifactDir;
   }
 });
 
@@ -413,6 +419,69 @@ describe("safety MCP tool surface", () => {
       }),
     }));
     await expect(access(resetMarkerPath)).rejects.toThrow();
+  });
+
+  it("blocks CI isolated replay artifacts outside the configured managed root before reset starts", async () => {
+    teachSaveWorkflow();
+    const managedArtifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-managed-artifacts-"));
+    process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"] = managedArtifactRoot;
+    const requestedArtifactRoot = path.join(path.dirname(managedArtifactRoot), `${path.basename(managedArtifactRoot)}-outside`);
+    const workingDirectory = path.join(managedArtifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
+    const resetMarkerPath = path.join(managedArtifactRoot, "reset-ran");
+    const resetScript = path.join(managedArtifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(managedArtifactRoot, "reset-assertion.mjs");
+    const ciScript = path.join(managedArtifactRoot, "ci.mjs");
+    const postconditionScript = path.join(managedArtifactRoot, "postcondition.mjs");
+    await writeFile(resetScript, [
+      "import { writeFile } from 'node:fs/promises';",
+      `await writeFile(${JSON.stringify(resetMarkerPath)}, 'ran');`,
+      "",
+    ].join("\n"));
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
+    await writeFile(ciScript, "process.exit(0);\n");
+    await writeFile(postconditionScript, "process.exit(0);\n");
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-a",
+      kind: "ciIsolated",
+      base_url: "https://ci.example.test",
+      working_directory: workingDirectory,
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      reset_profile_id: "settings-reset-v1",
+      state_seed_id: "settings-fixture-v1",
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-a",
+      artifact_root: requestedArtifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    const body = replay?.structuredContent as {
+      ok: boolean;
+      replay: {
+        status: string;
+        failure_stage: string;
+        blockers: string[];
+        artifacts: { directory: string };
+        commands: { reset_exit_code: number | null };
+      };
+    };
+    expect(body).toEqual(expect.objectContaining({ ok: false }));
+    expect(body.replay).toEqual(expect.objectContaining({
+      status: "blocked",
+      failure_stage: "profile",
+      blockers: expect.arrayContaining(["invalid_artifact_root"]),
+      commands: expect.objectContaining({ reset_exit_code: null }),
+    }));
+    expect(body.replay.artifacts.directory.startsWith(path.join(managedArtifactRoot, "rejected-artifact-root"))).toBe(true);
+    await expect(access(resetMarkerPath)).rejects.toThrow();
+    await expect(access(requestedArtifactRoot)).rejects.toThrow();
   });
 
   it("fails CI isolated replay when a passing command omits mutation attestation", async () => {

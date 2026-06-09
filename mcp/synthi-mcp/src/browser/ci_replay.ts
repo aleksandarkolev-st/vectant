@@ -78,15 +78,16 @@ export interface CiIsolatedReplayResult {
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 const OUTPUT_LIMIT = 12_000;
+const ARTIFACT_DIRECTORY_MODE = 0o700;
+const ARTIFACT_FILE_MODE = 0o600;
 
 export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise<CiIsolatedReplayResult> {
   const workflowId = input.workflow_id || input.workflow.contract.workflowId;
   const workspaceId = input.workspace_id || input.profile.workspace_id;
   const runId = `ci_replay_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const attestationNonce = randomUUID();
-  const artifactRoot = stringOpt(input.artifact_root) ??
-    stringOpt(process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"]) ??
-    path.join(os.tmpdir(), "synthi-workflow-ci-replay");
+  const artifactRootResolution = resolveArtifactRoot(input.artifact_root);
+  const artifactRoot = artifactRootResolution.artifactRoot;
   const directory = path.join(artifactRoot, safePathSegment(workspaceId), safePathSegment(workflowId), runId);
   const specPath = path.join(directory, "workflow.spec.mjs");
   const resetLogPath = path.join(directory, "reset.log");
@@ -97,17 +98,18 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const authStorageStatePath = input.auth_storage_state
     ? path.join(artifactRoot, ".internal-auth-state", safePathSegment(workspaceId), safePathSegment(workflowId), `${runId}-${randomUUID()}.json`)
     : undefined;
-  await mkdir(directory, { recursive: true });
-  if (authStorageStatePath) await mkdir(path.dirname(authStorageStatePath), { recursive: true });
+  await mkdir(directory, { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
+  if (authStorageStatePath) await mkdir(path.dirname(authStorageStatePath), { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
 
   const generated = generatePlaywrightScript(input.events, { mode: "ciIsolated" });
-  await writeFile(specPath, generated.code + "\n", "utf8");
-  await writeFile(attestationPath, "", "utf8");
+  await writeFile(specPath, generated.code + "\n", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+  await writeFile(attestationPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
   if (authStorageStatePath) {
-    await writeFile(authStorageStatePath, JSON.stringify(input.auth_storage_state), "utf8");
+    await writeFile(authStorageStatePath, JSON.stringify(input.auth_storage_state), { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
   }
 
   const blockers = [
+    ...artifactRootResolution.blockers,
     ...(input.blockers ?? []),
     ...(input.profile.readiness !== "ciIsolatedReady" ? ["ci_isolation_profile_not_ready"] : []),
     ...input.profile.missing,
@@ -124,10 +126,10 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const commandCwd = input.profile.working_directory ?? process.cwd();
 
   if (uniqueBlockers.length > 0) {
-    await writeFile(resetLogPath, "", "utf8");
-    await writeFile(resetAssertionLogPath, "", "utf8");
-    await writeFile(ciLogPath, "", "utf8");
-    await writeFile(postconditionLogPath, "", "utf8");
+    await writeFile(resetLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+    await writeFile(resetAssertionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+    await writeFile(ciLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+    await writeFile(postconditionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     return resultFor(input, {
       workflowId,
       workspaceId,
@@ -172,9 +174,9 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const reset = await runCommand(input.profile.data_reset_command!, { cwd: commandCwd, env, timeoutMs });
   await writeRedactedCommandLog(resetLogPath, reset.output);
   if (reset.exitCode !== 0) {
-    await writeFile(resetAssertionLogPath, "", "utf8");
-    await writeFile(ciLogPath, "", "utf8");
-    await writeFile(postconditionLogPath, "", "utf8");
+    await writeFile(resetAssertionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+    await writeFile(ciLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+    await writeFile(postconditionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     return resultFor(input, {
       workflowId,
       workspaceId,
@@ -203,8 +205,8 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const resetAssertion = await runCommand(input.profile.reset_assertion_command!, { cwd: commandCwd, env, timeoutMs });
   await writeRedactedCommandLog(resetAssertionLogPath, resetAssertion.output);
   if (resetAssertion.exitCode !== 0) {
-    await writeFile(ciLogPath, "", "utf8");
-    await writeFile(postconditionLogPath, "", "utf8");
+    await writeFile(ciLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+    await writeFile(postconditionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     return resultFor(input, {
       workflowId,
       workspaceId,
@@ -236,7 +238,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const missingMutationStepIds = missingMutationSteps(input.workflow, attestedStepIds);
   const missingRequiredMutationAttestation = ci.exitCode === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 && missingMutationStepIds.length > 0;
   if (ci.exitCode !== 0 || missingRequiredMutationAttestation) {
-    await writeFile(postconditionLogPath, "", "utf8");
+    await writeFile(postconditionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     return resultFor(input, {
       workflowId,
       workspaceId,
@@ -378,7 +380,7 @@ function authStorageStateSummary(storageState: AuthBrowserStorageState): NonNull
 }
 
 async function writeRedactedCommandLog(filePath: string, output: string): Promise<void> {
-  await writeFile(filePath, bounded(redactOutput(output)), "utf8");
+  await writeFile(filePath, bounded(redactOutput(output)), { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
 }
 
 async function readAttestedStepIds(attestationPath: string, expected: { runId: string; nonce: string }): Promise<string[]> {
@@ -502,6 +504,27 @@ function clampTimeout(value: number | undefined): number {
 function safePathSegment(value: string): string {
   const normalized = value.trim().replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^_+|_+$/g, "");
   return normalized || "default";
+}
+
+function resolveArtifactRoot(requestedRoot: string | undefined): { artifactRoot: string; blockers: string[] } {
+  const configuredBase = stringOpt(process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"]);
+  const managedBase = path.resolve(configuredBase ?? path.join(os.tmpdir(), "synthi-workflow-ci-replay"));
+  if (!requestedRoot) return { artifactRoot: managedBase, blockers: [] };
+  const requested = path.isAbsolute(requestedRoot)
+    ? path.resolve(requestedRoot)
+    : path.resolve(managedBase, requestedRoot);
+  if (!configuredBase || isPathWithinOrEqual(requested, managedBase)) {
+    return { artifactRoot: requested, blockers: [] };
+  }
+  return {
+    artifactRoot: path.join(managedBase, "rejected-artifact-root"),
+    blockers: ["invalid_artifact_root"],
+  };
+}
+
+function isPathWithinOrEqual(candidate: string, base: string): boolean {
+  const relative = path.relative(path.resolve(base), path.resolve(candidate));
+  return relative === "" || (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function bounded(value: string): string {
