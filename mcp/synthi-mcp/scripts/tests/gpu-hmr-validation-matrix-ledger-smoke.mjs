@@ -30,7 +30,7 @@ await writePng(path.join(visualDir, 'before-hmr-first.png'));
 await writePng(path.join(visualDir, 'after-hmr-first.png'));
 await writePng(path.join(visualDir, 'before-after-diff.png'));
 await writeJson(path.join(visualDir, 'agent-split-results.json'), [
-  { name: 'fixture', status: 'pass', detail: 'synthetic-flow' },
+  { name: 'fixture', status: 'pass', detail: 'flow' },
   { name: 'worker used GPU split endpoint', status: 'pass', detail: 'GPU markers detected' },
   { name: 'generated split contains HMR ABI', status: 'pass', detail: 'shared.h, core.cpp, device.hip' },
   { name: 'generated split HMR granularity', status: 'pass', detail: 'claim=device_translation_unit_hmr rejected_claims=per_kernel_hmr' },
@@ -119,7 +119,7 @@ assert.equal(ledger.schemaVersion, GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSI
 assert.equal(ledger.query.accepted, true);
 assert.ok(ledger.proofId.startsWith('gpu-validation-matrix-ledger:sha256:'));
 
-const acceptedFlow = ledger.rows.find((row) => row.targetId === 'synthetic-flow');
+const acceptedFlow = ledger.rows.find((row) => row.targetId === 'flow');
 assert.equal(acceptedFlow?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(acceptedFlow.acceptedForGpuHmr, true);
 assert.equal(acceptedFlow.visual.accepted, true);
@@ -140,6 +140,12 @@ assert.ok(forgedWebGpu.reasons.includes('visual_artifacts_not_readable'));
 assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 1);
 assert.equal(ledger.summary.refusalProvenRows, 1);
 assert.ok(ledger.summary.unprovenRows >= 1);
+
+const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
+assert.equal(coverageById.get('flow_visual_gpu_path')?.status, 'accepted');
+assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
+assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
+assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'missing');
 
 console.log(JSON.stringify({
   ok: true,

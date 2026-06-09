@@ -934,7 +934,176 @@ function coverageSummary(rows) {
     preflightOnlyTargets: compactStringList(preflightRows.map((row) => row.targetId)),
     unprovenRows: unprovenRows.length,
     unprovenTargets: compactStringList(unprovenRows.map((row) => row.targetId)),
+    planCoverage: planCoverage(rows),
   };
+}
+
+function rowRefs(rows) {
+  return rows.map((row) => ({
+    rowId: row.rowId,
+    backend: row.backend,
+    targetId: row.targetId,
+    matrixOutcome: row.matrixOutcome,
+    proofChain: row.proofChain,
+    proofIds: row.proofIds,
+  }));
+}
+
+function coverageEntry({ id, requirement, status, rows = [], openGaps = [] }) {
+  return {
+    id,
+    requirement,
+    status,
+    rowCount: rows.length,
+    rows: rowRefs(rows),
+    openGaps: compactStringList(openGaps),
+  };
+}
+
+function acceptedRows(rows, predicate) {
+  return rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr' && predicate(row));
+}
+
+function refusalRows(rows, predicate) {
+  return rows.filter((row) => row.matrixOutcome === 'refusal_proven' && predicate(row));
+}
+
+function preflightOnlyRows(rows, predicate) {
+  return rows.filter((row) => row.matrixOutcome === 'preflight_only' && predicate(row));
+}
+
+function visualProfileRows(rows, predicate) {
+  return rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted' && predicate(row));
+}
+
+function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, refusalPredicate, missingGap }) {
+  const accepted = acceptedRows(rows, acceptedPredicate);
+  if (accepted.length > 0) {
+    return coverageEntry({ id, requirement, status: 'accepted', rows: accepted });
+  }
+  const refused = refusalRows(rows, refusalPredicate ?? acceptedPredicate);
+  if (refused.length > 0) {
+    return coverageEntry({
+      id,
+      requirement,
+      status: 'refused',
+      rows: refused,
+      openGaps: compactStringList(refused.flatMap((row) => row.openGaps)),
+    });
+  }
+  return coverageEntry({
+    id,
+    requirement,
+    status: 'missing',
+    openGaps: [missingGap],
+  });
+}
+
+function planCoverage(rows) {
+  const flowRows = acceptedRows(rows, (row) => row.backend === 'hip' && row.targetId === 'flow');
+  const rayRows = acceptedRows(rows, (row) => row.backend === 'hip' && row.targetId === 'ray-light');
+  const hipRuntimeRows = acceptedRows(rows, (row) => row.backend === 'hip');
+  const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
+  const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
+  const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
+  const externalVisualRows = visualProfileRows(rows, (row) => row.backend === 'webgl');
+
+  return [
+    coverageEntry({
+      id: 'rocm_hip_full_runtime',
+      requirement: 'ROCm/HIP full-runtime proof-ledger acceptance',
+      status: hipRuntimeRows.length > 0 ? 'accepted' : 'missing',
+      rows: hipRuntimeRows,
+      openGaps: hipRuntimeRows.length > 0 ? [] : ['hip_full_runtime_ledger_required'],
+    }),
+    coverageEntry({
+      id: 'flow_visual_gpu_path',
+      requirement: 'Flow visual GPU path with runtime proof and visual oracle',
+      status: flowRows.length > 0 ? 'accepted' : 'missing',
+      rows: flowRows,
+      openGaps: flowRows.length > 0 ? [] : ['flow_visual_runtime_proof_required'],
+    }),
+    coverageEntry({
+      id: 'ray_light_visual_gpu_path',
+      requirement: 'Ray-light visual GPU path with runtime proof and visual oracle',
+      status: rayRows.length > 0 ? 'accepted' : 'missing',
+      rows: rayRows,
+      openGaps: rayRows.length > 0 ? [] : ['ray_light_visual_runtime_proof_required'],
+    }),
+    coverageEntry({
+      id: 'hiprt_visual_path',
+      requirement: 'HIPRT same-process ray-traced visual path',
+      status: hiprtRows.length > 0 ? 'accepted' : 'missing',
+      rows: hiprtRows,
+      openGaps: hiprtRows.length > 0 ? [] : ['hiprt_visual_runtime_proof_required'],
+    }),
+    coverageEntry({
+      id: 'webgpu_scoped_runtime_visual',
+      requirement: 'Scoped WebGPU WGSL shader/pipeline runtime visual proof',
+      status: webgpuRuntimeRows.length > 0 ? 'accepted' : 'missing',
+      rows: webgpuRuntimeRows,
+      openGaps: webgpuRuntimeRows.length > 0 ? [] : ['webgpu_runtime_visual_proof_required'],
+    }),
+    coverageEntry({
+      id: 'webgpu_runtime_preflight',
+      requirement: 'WebGPU runtime capability preflight without shader/pipeline overclaim',
+      status: webgpuPreflightRows.length > 0 ? 'preflight_only' : 'missing',
+      rows: webgpuPreflightRows,
+      openGaps: webgpuPreflightRows.length > 0
+        ? compactStringList(webgpuPreflightRows.flatMap((row) => row.openGaps))
+        : ['webgpu_runtime_preflight_required'],
+    }),
+    coverageEntry({
+      id: 'external_engine_visual_profile',
+      requirement: 'At least one larger external engine-style visual profile',
+      status: externalVisualRows.length > 0 ? 'visual_profile_only' : 'missing',
+      rows: externalVisualRows,
+      openGaps: externalVisualRows.length > 0
+        ? compactStringList(externalVisualRows.flatMap((row) => row.openGaps))
+        : ['external_engine_visual_profile_required'],
+    }),
+    acceptedOrRefusedCoverage({
+      rows,
+      id: 'bevy_file_loaded_wgsl',
+      requirement: 'Bevy file-loaded WGSL full-runtime proof',
+      acceptedPredicate: (row) => row.backend === 'bevy_wgsl',
+      missingGap: 'bevy_full_runtime_ledger_required',
+    }),
+    acceptedOrRefusedCoverage({
+      rows,
+      id: 'oidn_hip_output',
+      requirement: 'OIDN HIP output proof on ROCm-compatible runtime',
+      acceptedPredicate: (row) => row.backend === 'oidn_hip',
+      missingGap: 'oidn_hip_runtime_proof_required',
+    }),
+    acceptedOrRefusedCoverage({
+      rows,
+      id: 'opencl_dispatch_readback',
+      requirement: 'OpenCL dispatch/event/readback output proof',
+      acceptedPredicate: (row) => row.backend === 'opencl',
+      missingGap: 'opencl_dispatch_readback_proof_required',
+    }),
+    acceptedOrRefusedCoverage({
+      rows,
+      id: 'vulkan_pipeline_frame',
+      requirement: 'Vulkan pipeline-layout, command-buffer, and frame-output proof',
+      acceptedPredicate: (row) => row.backend === 'vulkan',
+      missingGap: 'vulkan_pipeline_frame_proof_required',
+    }),
+    acceptedOrRefusedCoverage({
+      rows,
+      id: 'cuda_runtime',
+      requirement: 'CUDA runtime proof on CUDA hardware',
+      acceptedPredicate: (row) => row.backend === 'cuda',
+      missingGap: 'cuda_hardware_required',
+    }),
+    coverageEntry({
+      id: 'per_kernel_smallest_safe_fission',
+      requirement: 'Per-kernel or smallest-safe fission verifier proof',
+      status: 'missing',
+      openGaps: ['deterministic_smallest_safe_fission_verifier_required'],
+    }),
+  ];
 }
 
 export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
