@@ -4361,6 +4361,68 @@ fn upsert_compile_request_source_baselines(
     count
 }
 
+fn split_role_filename(result: &serde_json::Value, manifest: &serde_json::Value, role: &str) -> Option<String> {
+    result
+        .get(role)
+        .and_then(|v| v.get("filename"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(normalized_request_filename)
+        .or_else(|| {
+            manifest
+                .get("module_files")
+                .and_then(|v| v.get(role))
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+        })
+}
+
+fn split_role_content(result: &serde_json::Value, role: &str) -> Option<String> {
+    result
+        .get(role)
+        .and_then(|v| v.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|content| !content.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn upsert_generated_split_source_baselines(
+    meta: &mut serde_json::Value,
+    result: &serde_json::Value,
+) -> usize {
+    let Some(root) = meta.as_object_mut() else {
+        return 0;
+    };
+    let manifest = result
+        .get("_synthi_manifest")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .or_else(|| meta.get("compile_manifest").filter(|value| !value.is_null()).cloned())
+        .unwrap_or(serde_json::Value::Null);
+    let mut count = 0;
+    for role in ["shared", "core", "gui", "host_runner", "device"] {
+        let Some(filename) = split_role_filename(result, &manifest, role) else {
+            continue;
+        };
+        let Some(content) = split_role_content(result, role) else {
+            continue;
+        };
+        if upsert_source_baseline_content(root, &filename, &content).is_some() {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn upsert_compile_and_generated_source_baselines(
+    meta: &mut serde_json::Value,
+    req: &CompileRequest,
+    result: &serde_json::Value,
+) -> (usize, usize) {
+    let request_count = upsert_compile_request_source_baselines(meta, req);
+    let generated_count = upsert_generated_split_source_baselines(meta, result);
+    (request_count, generated_count)
+}
+
 async fn persist_direct_workspace_source_baseline(
     sidecar_path: &Path,
     filename: &str,
@@ -8772,10 +8834,11 @@ pub async fn handle_compile_request(
                 "launch_indirection_report": launch_report,
                 "model_provenance": model_provenance,
             });
-            let baseline_count = upsert_compile_request_source_baselines(&mut meta, &req);
+            let (baseline_count, generated_baseline_count) =
+                upsert_compile_and_generated_source_baselines(&mut meta, &req, &result);
             eprintln!(
-                "[HMR] sidecar source baselines persisted: count={}",
-                baseline_count
+                "[HMR] sidecar source baselines persisted: request_count={} generated_count={}",
+                baseline_count, generated_baseline_count
             );
             write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
 
@@ -10327,8 +10390,8 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        upsert_compile_request_source_baselines(
-                                                            &mut meta, &req,
+                                                        upsert_compile_and_generated_source_baselines(
+                                                            &mut meta, &req, &result,
                                                         );
                                                         write_sidecar_logged(
                                                             &sidecar_path,
@@ -10377,8 +10440,8 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                upsert_compile_request_source_baselines(
-                                                    &mut meta, &req,
+                                                upsert_compile_and_generated_source_baselines(
+                                                    &mut meta, &req, &result,
                                                 );
                                                 write_sidecar_logged(
                                                     &sidecar_path,
@@ -10550,8 +10613,8 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        upsert_compile_request_source_baselines(
-                                                            &mut meta, &req,
+                                                        upsert_compile_and_generated_source_baselines(
+                                                            &mut meta, &req, &result,
                                                         );
                                                         write_sidecar_logged(
                                                             &sidecar_path,
@@ -10603,8 +10666,8 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                upsert_compile_request_source_baselines(
-                                                    &mut meta, &req,
+                                                upsert_compile_and_generated_source_baselines(
+                                                    &mut meta, &req, &result,
                                                 );
                                                 write_sidecar_logged(
                                                     &sidecar_path,
