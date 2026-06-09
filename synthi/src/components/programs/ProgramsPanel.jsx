@@ -228,7 +228,7 @@ function InstallCard({ install, acting, canManage, onLaunch, scaffoldable, onSca
       </div>
       {canManage ? (
         <div className="flex items-center gap-1">
-          {canManage && scaffoldable ? (
+          {scaffoldable ? (
             <button
               type="button"
               data-testid={`scaffold-${install.id}`}
