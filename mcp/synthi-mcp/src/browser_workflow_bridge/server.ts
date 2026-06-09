@@ -156,7 +156,7 @@ function normalizeToolName(toolName: string): string {
 }
 
 async function dispatchWorkflowTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
-  if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName)) return null;
+  if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName) && !toolName.startsWith("synthi_app_")) return null;
   return (
     (await dispatchBrowserTool(toolName, args)) ??
     (await dispatchSafetyTool(toolName, args)) ??

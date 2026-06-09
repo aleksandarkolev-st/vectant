@@ -69,6 +69,33 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+function privateWorkflowCallArgs(manifest, replayParameters, replayEnv, runMode) {
+  const args = { run_mode: runMode };
+  const parameters = Array.isArray(manifest?.parameters) ? manifest.parameters : [];
+  for (const parameter of parameters) {
+    if (!parameter || typeof parameter.name !== "string") continue;
+    const fromParameter = ownString(replayParameters, parameter.name);
+    const fromEnv = ownString(replayEnv, workflowParameterEnvName(parameter.name));
+    const value = fromParameter ?? fromEnv;
+    if (value !== undefined) args[parameter.name] = value;
+  }
+  return args;
+}
+
+function workflowParameterEnvName(value) {
+  return String(value)
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
+function ownString(record, key) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return undefined;
+  return Object.prototype.hasOwnProperty.call(record, key) && typeof record[key] === "string" ? record[key] : undefined;
+}
+
 function slugPart(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
@@ -220,6 +247,8 @@ async function runCase({ testCase, container, context, runner }) {
     const specPath = path.join(caseDir, "exported-workflow.spec.mjs");
     await writeFile(specPath, generated.code);
     await writeJson(caseDir, "export.json", generated);
+    const replayParameters = typeof testCase.replayParameters === "function" ? await testCase.replayParameters({ caseDir }) : testCase.replayParameters || {};
+    const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir }) : {};
     const forwardedPortLiterals = String(generated.code).match(/\/port\/\d+/g) ?? [];
     record(
       testCase.id,
@@ -289,6 +318,25 @@ async function runCase({ testCase, container, context, runner }) {
     );
     await writeJson(caseDir, "published-manifest-lookup.json", privateManifestLookup.result ?? privateManifestLookup);
 
+    const privateToolRunMode = privateManifest?.mutation?.requires_confirmation ? "prefixOnly" : "sameSession";
+    const privateToolCall = typeof publishedToolName === "string"
+      ? await workflowBridgeTool(
+        publishedToolName,
+        privateWorkflowCallArgs(privateManifest, replayParameters, replayEnv, privateToolRunMode)
+      )
+      : { ok: false, error: "missing_published_tool_name" };
+    record(
+      testCase.id,
+      "call discovered private MCP tool",
+      privateToolCall.ok === true &&
+        privateToolCall.result?.private_tool?.tool_name === publishedToolName &&
+        privateToolCall.result?.private_tool?.run_mode === privateToolRunMode,
+      privateToolCall.ok === true
+        ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${privateToolCall.result?.replay?.steps_run ?? 0}`
+        : `error=${privateToolCall.result?.error || privateToolCall.error || "unknown"}`
+    );
+    await writeJson(caseDir, "private-tool-call.json", privateToolCall.result ?? privateToolCall);
+
     const validateBody = await clickWorkflowButton(idePage, /^Validate$/);
     const validation = validateBody.result?.validation;
     record(
@@ -300,9 +348,6 @@ async function runCase({ testCase, container, context, runner }) {
     await writeJson(caseDir, "validation.json", validation);
     await idePage.bringToFront().catch(() => undefined);
     await idePage.screenshot({ path: path.join(caseDir, "after-validate-panel.png"), fullPage: true });
-
-    const replayParameters = typeof testCase.replayParameters === "function" ? await testCase.replayParameters({ caseDir }) : testCase.replayParameters || {};
-
     if (testCase.liveReplayMode) {
       const liveReplay = await runLiveWorkflowReplay({
         caseId: testCase.id,
@@ -320,8 +365,6 @@ async function runCase({ testCase, container, context, runner }) {
           : `error=${liveReplay.replay?.error || liveReplay.error || "unknown"}`
       );
     }
-
-    const replayEnv = typeof testCase.replayEnv === "function" ? await testCase.replayEnv({ caseDir }) : {};
     const runResult = await runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId: testCase.id, env: replayEnv });
     record(testCase.id, "run exported Playwright", runResult.ok, runResult.detail);
 

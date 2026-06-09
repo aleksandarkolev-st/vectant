@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import { browserBroker } from "../../src/browser/broker.js";
+import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import {
   buildBrowserWorkflowPanelState,
@@ -352,6 +353,37 @@ describe("browser workflow bridge", () => {
       name: toolName,
       inputSchema: expect.any(Object),
     }));
+
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "tab-a",
+      url: "https://app.example.test/settings",
+    });
+    const call = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: toolName,
+        arguments: { run_mode: "prefixOnly", email: "agent@example.test" },
+      }),
+    });
+
+    expect(call.status).toBe(200);
+    const callBody = await call.json() as {
+      ok: boolean;
+      result?: { private_tool?: { tool_name?: string; run_mode?: string }; replay?: { status?: string; steps_run?: number } };
+    };
+    expect(callBody.ok).toBe(true);
+    expect(callBody.result?.private_tool).toEqual(expect.objectContaining({
+      tool_name: toolName,
+      run_mode: "prefixOnly",
+    }));
+    expect(callBody.result?.replay).toEqual(expect.objectContaining({
+      status: "stoppedAtMutationBoundary",
+      steps_run: 1,
+    }));
+    expect(replay).toHaveBeenCalledTimes(1);
   });
 
   it("returns unknown tool errors with the current state snapshot", async () => {
