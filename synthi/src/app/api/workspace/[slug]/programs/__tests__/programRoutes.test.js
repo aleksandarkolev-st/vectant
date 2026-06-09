@@ -65,7 +65,7 @@ const ctx = (params) => ({ params: Promise.resolve(params) });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.actor.mockResolvedValue({ userId: 'u1', email: 'a@b.c' });
+  h.actor.mockResolvedValue({ userId: 'u1', email: 'a@b.c', workspaceUserId: 'gh1' });
   h.canRead.mockResolvedValue(true);
   h.canWrite.mockResolvedValue(true);
   h.listPermissionGrants.mockResolvedValue([]);
@@ -162,8 +162,8 @@ describe('POST /programs/install', () => {
     expect(body.install).toMatchObject({ id: 'inst1', packageId: 'local:team:web' });
     expect(body.grant).toMatchObject({ id: 'g1' });
     expect(h.createInstall).toHaveBeenCalledWith(expect.objectContaining({ programId: 'prog1', version: '1.0.0', grantId: 'g1', status: 'installed' }));
-    // Per-user repos require the actor's userId to resolve the workspace cwd.
-    expect(h.discoverManifest).toHaveBeenCalledWith('team', 'u1');
+    // Per-user repos require the actor's workspaceUserId to resolve the workspace cwd.
+    expect(h.discoverManifest).toHaveBeenCalledWith('team', 'gh1');
   });
 
   it('reuses an existing grant that already covers the manifest scopes', async () => {
@@ -275,7 +275,7 @@ describe('POST /programs/[installId]/launch', () => {
     const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', {}, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
 
     expect(res.status).toBe(200);
-    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps1' }));
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps1', userId: 'gh1' }));
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps1', state: 'running', activePorts: [3000], webPort: 3000 });
   });

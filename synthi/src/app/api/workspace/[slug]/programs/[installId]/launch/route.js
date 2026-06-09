@@ -60,7 +60,7 @@ export async function POST(_req, { params }) {
       workspaceSlug: slug,
       sessionId: session.id,
       config,
-      userId: actor.userId,
+      userId: actor.workspaceUserId,
       title: config.displayName || null,
     });
     const nextState = snapshot?.state || 'running';

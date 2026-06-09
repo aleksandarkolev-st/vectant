@@ -19,7 +19,7 @@ export async function POST(_req, { params }) {
 
   let discovered;
   try {
-    discovered = await discoverManifest(slug, actor.userId);
+    discovered = await discoverManifest(slug, actor.workspaceUserId);
   } catch (error) {
     if (error?.name === 'ProgramManifestError') {
       return NextResponse.json({ error: 'manifest_invalid', code: error.code, field: error.field, message: error.message }, { status: 422 });

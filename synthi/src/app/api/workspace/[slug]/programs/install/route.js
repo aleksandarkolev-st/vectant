@@ -54,8 +54,8 @@ export async function POST(req, { params }) {
     // Local install: discover the workspace recipe from its working tree.
     let discovered;
     try {
-      // Pass the actor's userId so per-user workspace repos resolve correctly.
-      discovered = await discoverManifest(slug, actor.userId);
+      // Pass the actor's workspaceUserId so per-user workspace repos resolve correctly.
+      discovered = await discoverManifest(slug, actor.workspaceUserId);
     } catch (error) {
       // A manifest that fails validation is the caller's problem (422); any other
       // failure (collab unreachable, cwd/fs error) is infrastructure (502).
