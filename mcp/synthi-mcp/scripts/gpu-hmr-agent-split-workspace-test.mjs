@@ -1032,7 +1032,7 @@ function assertNoSynthiAbi(source) {
   record('monolithic source has no Synthi ABI', 'pass');
 }
 
-async function compileViaMcp(args, timeoutMs) {
+async function compileViaMcp(args, timeoutMs, options = {}) {
   const state = await ensureMcpAttached();
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
@@ -1054,7 +1054,15 @@ async function compileViaMcp(args, timeoutMs) {
   if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
   if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
   if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
-  record('mcp wait_hmr proof gate', wait?.status === 'applied' ? 'pass' : 'warn', JSON.stringify(waitSummary));
+  const requireAppliedWait = options.requireAppliedWait === true || waitContract.isGpuDeviceEdit;
+  record(
+    'mcp wait_hmr proof gate',
+    wait?.status === 'applied' ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
+    JSON.stringify(waitSummary),
+  );
+  if (requireAppliedWait && wait?.status !== 'applied') {
+    throw new Error(`required synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`);
+  }
   return { compile, wait, waitContract };
 }
 
@@ -1671,6 +1679,9 @@ async function run() {
     firstStart,
   );
   record('generated device compiled', sawDeviceCompile.matched ? 'pass' : 'fail', sawDeviceCompile.snippet || 'no device compile marker');
+  if (!sawDeviceCompile.matched) {
+    throw new Error('initial GPU compile did not produce a device compile marker');
+  }
 
   const baselineShot = CFG.captureArtifacts
     ? await assertMcpScreenshot('mcp screenshot before hmr', 'before-hmr')
@@ -1684,6 +1695,9 @@ async function run() {
     sawGpuSplit.matched || splitEndpointEvidence.observed ? 'pass' : 'fail',
     sawGpuSplit.snippet || splitEndpointEvidence.detail || 'no GPU split marker or sidecar evidence',
   );
+  if (!(sawGpuSplit.matched || splitEndpointEvidence.observed)) {
+    throw new Error('GPU split endpoint evidence missing after initial compile');
+  }
   const granularity = validateGeneratedSplit(split);
   const granularityPath = await writeJsonArtifact('generated-split-granularity', granularity);
   record('generated split granularity artifact', 'pass', granularityPath);
