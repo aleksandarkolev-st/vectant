@@ -253,7 +253,14 @@ Visual inspection confirmed nonblank before/after/diff images. CameraRays shows 
 
 ## OIDN Status
 
-OIDN was tested in the HIPRT checkout.
+OIDN was tested in the HIPRT checkout through a structured preflight artifact:
+
+```text
+proof id: oidn-preflight-proof:sha256:f5cf7bab766cfd7b13e1c0657818c20306e81cc9dda4267486771fc492e84f85
+result state: oidn-hip-rejected
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-summary.txt
+```
 
 HIP device tests rejected:
 
@@ -269,6 +276,7 @@ Dependency check:
 
 ```text
 libOpenImageDenoise_device_hip.so.2.3.0 -> libamdhip64.so.5 => not found
+unsupported reasons: missing_dependency:libamdhip64.so.5, oidn_hip_buffer_read_write_failed, oidn_hip_device_creation_failed
 ```
 
 CPU OIDN diagnostics passed:
@@ -345,6 +353,7 @@ The Codex in-app Browser connector was available as a plugin, but `agent.browser
 Proof/fix commits are separate:
 
 ```text
+fcff70032 feat(gpu-hmr): add structured OIDN HIP preflight proof
 08f16a794 fix(gpu-hmr): archive agent split results per slug
 f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
 92543192f fix(gpu-hmr): preserve derived contracts in proof summaries
@@ -379,6 +388,8 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 SYNTHI_GPU_AGENT_MODE=seed-only SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=agent-split-archive-smoke-20260609-pass SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node scripts/gpu-hmr-agent-split-workspace-test.mjs
+npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
+SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 ```
 
 ## Remaining Work

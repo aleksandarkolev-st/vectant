@@ -178,6 +178,15 @@ Visual inspection: both HIPRT diffs are readable and nonblank. CameraRays shows 
 
 ## OIDN Result
 
+Structured OIDN preflight proof:
+
+```text
+proof id: oidn-preflight-proof:sha256:f5cf7bab766cfd7b13e1c0657818c20306e81cc9dda4267486771fc492e84f85
+result state: oidn-hip-rejected
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-summary.txt
+```
+
 OIDN HIP was tested and rejected:
 
 ```text
@@ -189,6 +198,7 @@ result: FAILED, bool(device) false
 
 ldd libOpenImageDenoise_device_hip.so.2.3.0:
 libamdhip64.so.5 => not found
+unsupported reasons: missing_dependency:libamdhip64.so.5, oidn_hip_buffer_read_write_failed, oidn_hip_device_creation_failed
 ```
 
 OIDN CPU diagnostics passed:
@@ -284,6 +294,8 @@ npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
+npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
+SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 ```
 
 ## Commit Checkpoint
@@ -291,6 +303,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 Relevant current commits:
 
 ```text
+fcff70032 feat(gpu-hmr): add structured OIDN HIP preflight proof
 08f16a794 fix(gpu-hmr): archive agent split results per slug
 f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
 92543192f fix(gpu-hmr): preserve derived contracts in proof summaries
