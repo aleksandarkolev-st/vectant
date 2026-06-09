@@ -1766,7 +1766,7 @@ function routePatternFromUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   try {
     const parsed = new URL(url);
-    return `${parsed.pathname || "/"}${parsed.search ? "?..." : ""}`;
+    return `${appRoutePathname(parsed) || "/"}${parsed.search ? "?..." : ""}`;
   } catch {
     return undefined;
   }
@@ -1775,10 +1775,17 @@ function routePatternFromUrl(url: string | undefined): string | undefined {
 function routeName(url: string): string {
   try {
     const parsed = new URL(url);
-    return parsed.pathname || parsed.origin;
+    return appRoutePathname(parsed) || parsed.origin;
   } catch {
     return url;
   }
+}
+
+function appRoutePathname(parsed: URL): string {
+  const match = parsed.pathname.match(/^\/port\/\d+(?=\/|$)(.*)$/);
+  if (!match) return parsed.pathname || "/";
+  const appPath = match[1] ?? "";
+  return appPath.length > 0 ? appPath : "/";
 }
 
 function locatorConfidence(candidate?: LocatorCandidate): WorkflowStepContractV7["locatorPlan"]["confidence"] {

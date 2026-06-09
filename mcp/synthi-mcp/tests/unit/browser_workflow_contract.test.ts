@@ -99,6 +99,26 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.generatedOutputs[1]).toEqual(expect.objectContaining({ kind: "sourceAffordancePatch", status: "available" }));
   });
 
+  it("normalizes Synthi forwarded preview ports out of route patterns", () => {
+    browserBroker.requestConsent("https://preview.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://preview.example.com/port/43267/settings?tab=team", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://preview.example.com/port/43267/settings?tab=team",
+      origin: "https://preview.example.com",
+      action: "click",
+      element: { role: "button", name: "Open settings", test_id: "open-settings" },
+    });
+
+    const workflow = browserBroker.compiledWorkflow();
+
+    expect(workflow.contract.routePattern).toBe("/settings?...");
+    expect(workflow.contract.steps[0]?.targetContext.routePattern).toBe("/settings?...");
+    expect(JSON.stringify(workflow.contract)).not.toContain("/port/43267");
+  });
+
   it("coalesces repeated fills on the same target before the next action", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
