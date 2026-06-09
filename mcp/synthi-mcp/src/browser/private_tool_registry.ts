@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BrowserWorkflowArtifact } from "./broker.js";
 import type { PrivateWorkflowToolManifestV7 } from "./private_tool_manifest.js";
@@ -19,6 +19,7 @@ export interface PrivateWorkflowMcpToolDefinition {
 }
 
 const PRIVATE_TOOL_PREFIX = "synthi_app_";
+const PRIVATE_TOOL_STORE_FILE_MODE = 0o600;
 
 export interface PrivateWorkflowToolRegistryEvent {
   type: "list_changed";
@@ -161,7 +162,8 @@ export class EncryptedFilePrivateWorkflowToolStore implements PrivateWorkflowToo
   }
 
   private writeDocument(document: EncryptedPrivateWorkflowToolStoreDocument): void {
-    mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const directory = path.dirname(this.filePath);
+    mkdirSync(directory, { recursive: true });
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
     const ciphertext = Buffer.concat([
@@ -175,7 +177,15 @@ export class EncryptedFilePrivateWorkflowToolStore implements PrivateWorkflowToo
       tag: cipher.getAuthTag().toString("base64"),
       ciphertext: ciphertext.toString("base64"),
     };
-    writeFileSync(this.filePath, JSON.stringify(envelope), "utf8");
+    const tempPath = path.join(directory, `.${path.basename(this.filePath)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
+    try {
+      writeFileSync(tempPath, JSON.stringify(envelope), { encoding: "utf8", mode: PRIVATE_TOOL_STORE_FILE_MODE });
+      renameSync(tempPath, this.filePath);
+      chmodSync(this.filePath, PRIVATE_TOOL_STORE_FILE_MODE);
+    } catch (error) {
+      rmSync(tempPath, { force: true });
+      throw error;
+    }
   }
 }
 

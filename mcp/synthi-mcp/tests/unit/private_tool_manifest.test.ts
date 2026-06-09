@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -607,6 +607,8 @@ describe("private browser workflow MCP tool manifest", () => {
     const persisted = await readFile(filePath, "utf8");
     expect(persisted).toContain("synthi_private_workflow_tool_store_envelope_v1");
     expect(persisted).not.toMatch(/app\.example|Access token|secret-value-that-must-not-be-plaintext|tenant-a|workspace-a/);
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    expect((await readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
 
     browserBroker.resetForTests();
     privateWorkflowToolRegistry.useStoreForTests(new EncryptedFilePrivateWorkflowToolStore({
