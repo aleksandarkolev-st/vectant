@@ -323,10 +323,10 @@ Fresh rejection artifact:
 ```text
 profile: bevy-wgsl-shader-material
 report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
-rejection proof id: external-rejection-proof:43e4d3251e91f92d21591de7f30bee10b4a32ae31323105ace801d1beb8ace26
-rejection proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280019-rejection-proof.json
+rejection proof id: external-rejection-proof:9d3ac84744bb6ff8b8260a8df1827c8a0ffc26847d13de7fa10447015e3f215e
+rejection proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972543516-rejection-proof.json
 status: fail
-reason: MCP request timed out after 1200000ms with no decoded frames
+reasons: mcp_request_timeout, mcp_no_decoded_frames, visual_frame_missing, visual_oracle_not_accepted
 visual evidence accepted: false
 total validator wall: 1203518.9259ms
 ```
@@ -368,7 +368,10 @@ The Codex in-app Browser connector was available as a plugin, but `agent.browser
 Proof/fix commits are separate:
 
 ```text
+f0db3c67e fix(gpu-hmr): classify external timeout rejections
+b542e7390 docs(gpu-hmr): record Bevy rejection proof artifact
 706c20799 fix(gpu-hmr): ledger external profile rejections
+8b358451e docs(gpu-hmr): record structured OIDN preflight proof
 fcff70032 feat(gpu-hmr): add structured OIDN HIP preflight proof
 08f16a794 fix(gpu-hmr): archive agent split results per slug
 f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
@@ -406,6 +409,7 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 SYNTHI_GPU_AGENT_MODE=seed-only SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=agent-split-archive-smoke-20260609-pass SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
+node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
 Expected rejection command:
@@ -422,7 +426,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | Ray-light/Flow visual MCP | Accepted and visually inspected; agent-split summaries now archive under each slug artifact directory. | Keep top-level result files as latest-run convenience outputs only. |
 | HIPRT | Fresh same-process CameraRays and MegaKernel proofs accepted. | Integrate HIPRT into the full MCP runtime ledger path if app hooks become available. |
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
-| External projects | ThreeJS visual profile accepted; Bevy strict proof gate rejects missing full runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |
+| External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
 | Narrow fission | Device translation unit HMR proven. | Add deterministic smallest-safe fission verifier before claiming per-kernel/smallest island. |
 | Browser proof | Preview URLs are live; MCP screenshots exist. | In-app Browser backend was unavailable in this session. |
@@ -430,7 +434,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 ## Accepted Statement
 
 ```text
-On the local AMD ROCm machine, Synthi can split generated ROCm/HIP GPU workloads, compile the device artifact with hipcc, hot-reload a device-only edit in a running preview/runtime, and prove the result with strict runtime-ledger acceptance plus pixel-backed Flow, ray-light, HIPRT, and external ThreeJS visual evidence.
+On the local AMD ROCm machine, Synthi can split generated ROCm/HIP GPU workloads, compile the device artifact with hipcc, hot-reload a device-only edit in a running preview/runtime, prove generated ROCm/HIP device artifacts with strict runtime-ledger acceptance, and provide separate pixel-backed visual evidence for Flow, ray-light, HIPRT, and external ThreeJS.
 ```
 
 Do not claim:

@@ -272,10 +272,10 @@ Fresh rejection artifact:
 
 ```text
 report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
-rejection proof id: external-rejection-proof:43e4d3251e91f92d21591de7f30bee10b4a32ae31323105ace801d1beb8ace26
-rejection proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280019-rejection-proof.json
+rejection proof id: external-rejection-proof:9d3ac84744bb6ff8b8260a8df1827c8a0ffc26847d13de7fa10447015e3f215e
+rejection proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972543516-rejection-proof.json
 status: fail
-reason: MCP request timed out after 1200000ms with no decoded frames
+reasons: mcp_request_timeout, mcp_no_decoded_frames, visual_frame_missing, visual_oracle_not_accepted
 visual evidence accepted: false
 total validator wall: 1203518.9259ms
 ```
@@ -310,6 +310,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:oidn:preflight
+node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
 Expected rejection:
@@ -323,7 +324,10 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 Relevant current commits:
 
 ```text
+f0db3c67e fix(gpu-hmr): classify external timeout rejections
+b542e7390 docs(gpu-hmr): record Bevy rejection proof artifact
 706c20799 fix(gpu-hmr): ledger external profile rejections
+8b358451e docs(gpu-hmr): record structured OIDN preflight proof
 fcff70032 feat(gpu-hmr): add structured OIDN HIP preflight proof
 08f16a794 fix(gpu-hmr): archive agent split results per slug
 f42e4d32e docs(gpu-hmr): update ROCm proof ledger demo status
