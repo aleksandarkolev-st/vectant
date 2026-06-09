@@ -1737,9 +1737,16 @@ async function run() {
 
 async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
+  await mkdir(ARTIFACT_DIR, { recursive: true });
   await writeFile(RESULTS_JSON, JSON.stringify(results, null, 2));
-  await writeFile(RESULTS_TXT, results.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`).join('\n') + '\n');
+  const resultText = results.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`).join('\n') + '\n';
+  await writeFile(RESULTS_TXT, resultText);
+  const archivedJson = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`);
+  const archivedTxt = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`);
+  await writeFile(archivedJson, JSON.stringify(results, null, 2));
+  await writeFile(archivedTxt, resultText);
   console.log(`results: ${RESULTS_TXT}`);
+  console.log(`archived results: ${archivedTxt}`);
 }
 
 run()
