@@ -714,6 +714,8 @@ describe("browser broker privacy boundary", () => {
       active: false,
       tab_id: null,
       origin: null,
+      auth_checkpoint_active: false,
+      auth_checkpoint_id: null,
     });
     expect(JSON.stringify(trace)).not.toContain("denied.example.com");
   });
@@ -773,6 +775,7 @@ describe("browser broker privacy boundary", () => {
     expect(browserBroker.activateAuthCheckpointForTeach({
       app_origin: finished.checkpoint.app_origin,
       idp_origins: finished.checkpoint.idp_origins,
+      checkpoint_id: finished.checkpoint.checkpoint_id,
     }).ok).toBe(true);
 
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);
@@ -791,6 +794,143 @@ describe("browser broker privacy boundary", () => {
       auth_checkpoint_approved: true,
     }));
     expect(JSON.stringify(event)).not.toMatch(/cookie|localStorage|sessionStorage|secret|token/i);
+  });
+
+  it("keeps teach auth approval scoped to the selected checkpoint when same-origin checkpoints rotate", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com/form", "unit-test");
+    const selected = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/form",
+      ttl_ms: 60_000,
+    });
+    expect(selected.ok).toBe(true);
+    if (!selected.ok) throw new Error("unexpected auth checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: selected.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "secret-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: selected.checkpoint.app_origin,
+      idp_origins: selected.checkpoint.idp_origins,
+      checkpoint_id: selected.checkpoint.checkpoint_id,
+    }).ok).toBe(true);
+
+    const laterEnrollment = authCheckpointManager.beginEnrollment("https://app.example.com/other", "unit-test");
+    const later = authCheckpointManager.finishEnrollment({
+      enrollment_id: laterEnrollment.enrollment_id,
+      app_url: "https://app.example.com/other",
+      ttl_ms: 60_000,
+    });
+    expect(later.ok).toBe(true);
+
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/form",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Save" },
+    });
+
+    const [event] = browserBroker.traceSnapshot();
+    expect(event?.security).toEqual(expect.objectContaining({
+      exact_origin_approved: true,
+      auth_checkpoint_approved: true,
+    }));
+  });
+
+  it("keeps explicit auth checkpoint selection available for the next teach session", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "public", url: "https://app.example.com/public", active: true }]);
+    expect(browserBroker.startTeachMode("public").ok).toBe(true);
+
+    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com/form", "unit-test");
+    const selected = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/form",
+      ttl_ms: 60_000,
+    });
+    expect(selected.ok).toBe(true);
+    if (!selected.ok) throw new Error("unexpected auth checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: selected.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "secret-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: selected.checkpoint.app_origin,
+      idp_origins: selected.checkpoint.idp_origins,
+      checkpoint_id: selected.checkpoint.checkpoint_id,
+    }).ok).toBe(true);
+    expect(browserBroker.teachState()).toEqual(expect.objectContaining({
+      active: true,
+      auth_checkpoint_active: true,
+      auth_checkpoint_id: selected.checkpoint.checkpoint_id,
+    }));
+
+    browserBroker.stopTeachMode("next-session-proof");
+    browserBroker.registerTabs([{ tab_id: "secure", url: "https://app.example.com/form", active: true }]);
+    expect(browserBroker.startTeachMode("secure").ok).toBe(true);
+    expect(browserBroker.teachState()).toEqual(expect.objectContaining({
+      active: true,
+      auth_checkpoint_active: true,
+      auth_checkpoint_id: selected.checkpoint.checkpoint_id,
+    }));
+    browserBroker.recordHumanAction({
+      tab_id: "secure",
+      url: "https://app.example.com/form",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Open secure panel" },
+    });
+    expect(browserBroker.traceSnapshot()[0]?.security).toEqual(expect.objectContaining({
+      auth_checkpoint_approved: true,
+    }));
+  });
+
+  it("keeps the active auth checkpoint when teach starts twice on the same tab", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "secure", url: "https://app.example.com/form", active: true }]);
+    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com/form", "unit-test");
+    const selected = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/form",
+      ttl_ms: 60_000,
+    });
+    expect(selected.ok).toBe(true);
+    if (!selected.ok) throw new Error("unexpected auth checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: selected.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "secret-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: selected.checkpoint.app_origin,
+      idp_origins: selected.checkpoint.idp_origins,
+      checkpoint_id: selected.checkpoint.checkpoint_id,
+    }).ok).toBe(true);
+
+    expect(browserBroker.startTeachMode("secure").ok).toBe(true);
+    expect(browserBroker.startTeachMode("secure").ok).toBe(true);
+
+    expect(browserBroker.teachState()).toEqual(expect.objectContaining({
+      active: true,
+      auth_checkpoint_active: true,
+      auth_checkpoint_id: selected.checkpoint.checkpoint_id,
+    }));
+    expect(browserBroker.teachAuthCheckpointScopes().last_start).toEqual(expect.objectContaining({
+      origin: "https://app.example.com",
+      matched_checkpoint_id: selected.checkpoint.checkpoint_id,
+    }));
   });
 
   it("does not infer auth approval from an unselected checkpoint on the same origin", () => {

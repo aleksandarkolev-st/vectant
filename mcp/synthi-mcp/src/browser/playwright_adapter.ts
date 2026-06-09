@@ -118,7 +118,7 @@ export class BrowserPlaywrightAdapter {
   private readonly popupOpeners = new Map<string, PopupOpenerContext>();
   private readonly instrumented = new WeakSet<Page>();
   private readonly teachCaptureContexts = new WeakSet<BrowserContext>();
-  private readonly workflowOverlayInitScriptInstalled = new WeakSet<Page>();
+  private readonly workflowOverlayInitScriptKeys = new WeakMap<Page, string>();
   private readonly workflowOverlayInstalled = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
@@ -1175,10 +1175,13 @@ export class BrowserPlaywrightAdapter {
         };
       }
     }).catch(() => undefined);
-    const script = workflowOverlayInitScript(bindingName, workflowOverlayBridgeUrl(), workflowOverlayBridgeToken());
-    if (!this.workflowOverlayInitScriptInstalled.has(page)) {
+    const bridgeUrl = workflowOverlayBridgeUrl();
+    const bridgeToken = workflowOverlayBridgeToken();
+    const script = workflowOverlayInitScript(bindingName, bridgeUrl, bridgeToken);
+    const scriptKey = workflowOverlayBridgeKey(bridgeUrl, bridgeToken);
+    if (this.workflowOverlayInitScriptKeys.get(page) !== scriptKey) {
       await page.addInitScript(script).catch(() => undefined);
-      this.workflowOverlayInitScriptInstalled.add(page);
+      this.workflowOverlayInitScriptKeys.set(page, scriptKey);
     }
     await page.evaluate(script).catch(() => undefined);
     return await page.evaluate(() => Boolean(document.getElementById("synthi-workflow-toolbox-host"))).catch(() => false);
@@ -3601,16 +3604,27 @@ function workflowOverlayBridgeToken(): string {
   return token && token.trim() ? token.trim() : "";
 }
 
+function workflowOverlayBridgeKey(bridgeUrl: string, bridgeToken: string): string {
+  return `${bridgeUrl}\n${bridgeToken}`;
+}
+
 function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridgeToken: string): string {
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
     const bridgeUrl = ${JSON.stringify(bridgeUrl)};
     const bridgeToken = ${JSON.stringify(bridgeToken)};
-    if (window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ && window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName) return;
+    const installedForCurrentRuntime =
+      window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ &&
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName &&
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ === bridgeUrl &&
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken;
+    if (installedForCurrentRuntime) return;
     const existingHost = document.getElementById('synthi-workflow-toolbox-host');
     if (existingHost) existingHost.remove();
     window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
     window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     function shouldRender() {
       if (!window[bindingName] && !bridgeUrl) return false;
@@ -3624,6 +3638,7 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     const host = document.createElement('div');
     host.id = 'synthi-workflow-toolbox-host';
     host.setAttribute('data-synthi-workflow-toolbox', 'true');
+    host.setAttribute('data-synthi-workflow-bridge-url', bridgeUrl);
     host.setAttribute('data-synthi-workflow-status', 'idle');
     host.style.position = 'fixed';
     host.style.right = '16px';

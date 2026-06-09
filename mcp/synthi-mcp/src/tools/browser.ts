@@ -1183,6 +1183,7 @@ async function browserCaptureAuthCheckpointStorageTool(args: unknown): Promise<T
   const teachAuthCheckpoint = browserBroker.activateAuthCheckpointForTeach({
     app_origin: saved.checkpoint.app_origin,
     idp_origins: saved.checkpoint.idp_origins,
+    checkpoint_id: checkpointId,
   });
   return jsonResponse({
     ok: true,
@@ -1216,6 +1217,7 @@ function browserTraceStatusTool(): ToolResponse {
       origins,
       tabs,
       teach: browserBroker.teachState(),
+      teach_auth_checkpoints: browserBroker.teachAuthCheckpointScopes(),
       workflow_id: workflow.contract.workflowId,
       workflow_state: workflow.card.state,
       unresolved_count: workflow.card.unresolvedCount,

@@ -348,6 +348,15 @@ async function runCase({ testCase, container, context, runner }) {
     }
 
     await waitForWorkflowOverlay(previewPage);
+    if (CFG.verifyFreshMcp) {
+      const overlayState = await workflowOverlayState(previewPage);
+      record(
+        testCase.id,
+        "workflow overlay bridge binding",
+        trimSlash(overlayState.bridgeUrl) === trimSlash(CFG.bridgeUrl),
+        overlayState.bridgeUrl || "missing"
+      );
+    }
     const observeState = await clickWorkflowOverlay(previewPage, "observe", previewUrl);
     const observedUrl = observeState.url;
     record(
@@ -356,12 +365,36 @@ async function runCase({ testCase, container, context, runner }) {
       observeState.ok === true && observeState.observed === true && observedUrl === previewUrl,
       `observed=${observedUrl || "missing"} status=${observeState.status || "missing"}`
     );
+    if (testCase.expectTeachAuthCheckpoint === true) {
+      const traceStatus = await workflowBridgeTool("synthi_browser_get_trace_status", {});
+      const pendingCheckpoints = traceStatus.result?.trace_status?.teach_auth_checkpoints?.pending ?? [];
+      record(
+        testCase.id,
+        "auth checkpoint pending after observe",
+        traceStatus.ok === true && pendingCheckpoints.length > 0,
+        pendingCheckpoints.length ? pendingCheckpoints.map((scope) => scope?.app_origin || "unknown").join(",") : "pending=none"
+      );
+    }
 
     await previewPage.bringToFront().catch(() => undefined);
     await previewPage.screenshot({ path: path.join(caseDir, "observed-preview.png"), fullPage: true });
 
     const beginState = await clickWorkflowOverlay(previewPage, "teach");
     record(testCase.id, "click overlay teach", beginState.ok === true && beginState.recording === true, beginState.status || "");
+    if (testCase.expectTeachAuthCheckpoint === true) {
+      const traceStatus = await workflowBridgeTool("synthi_browser_get_trace_status", {});
+      const teachAuthActive = traceStatus.result?.trace_status?.teach?.auth_checkpoint_active === true;
+      const activeCheckpoint = traceStatus.result?.trace_status?.teach_auth_checkpoints?.active;
+      const pendingCheckpoints = traceStatus.result?.trace_status?.teach_auth_checkpoints?.pending ?? [];
+      const lastStart = traceStatus.result?.trace_status?.teach_auth_checkpoints?.last_start;
+      record(
+        testCase.id,
+        "teach auth checkpoint active",
+        traceStatus.ok === true && teachAuthActive,
+        traceStatus.result?.trace_status?.teach?.auth_checkpoint_id ||
+          `active=${activeCheckpoint?.checkpoint_id || "none"} pending=${pendingCheckpoints.length} startOrigin=${lastStart?.origin || "none"} matched=${lastStart?.matched_checkpoint_id || "none"} before=${(lastStart?.pending_origins_before || []).join(",") || "none"}`
+      );
+    }
     const parkedToolbox = await parkWorkflowOverlay(previewPage);
     record(testCase.id, "park workflow overlay", parkedToolbox.ok, parkedToolbox.detail);
 
@@ -1584,6 +1617,7 @@ async function workflowOverlayState(page) {
       recording: host.getAttribute("data-synthi-workflow-recording") === "true",
       stepCount: Number(host.getAttribute("data-synthi-workflow-steps") || 0),
       url: host.getAttribute("data-synthi-workflow-url") || "",
+      bridgeUrl: host.getAttribute("data-synthi-workflow-bridge-url") || "",
     };
   });
 }
@@ -2214,6 +2248,7 @@ const CASES = [
   {
     id: "auth-checkpoint-secure-panel",
     minSteps: 1,
+    expectTeachAuthCheckpoint: true,
     expectedActions: ["click"],
     expectedReplayText: [
       "Secure workspace ready",
@@ -2319,6 +2354,15 @@ const CASES = [
         captured.result?.auth_readiness?.status || captured.result?.error || "missing"
       );
       await writeJson(caseDir, "auth-checkpoint.json", captured.result ?? captured);
+      const traceStatus = await workflowBridgeTool("synthi_browser_get_trace_status", {});
+      const pendingCheckpoints = traceStatus.result?.trace_status?.teach_auth_checkpoints?.pending ?? [];
+      record(
+        testCase.id,
+        "auth checkpoint pending for teach",
+        traceStatus.ok === true &&
+          pendingCheckpoints.some((scope) => scope?.checkpoint_id === checkpointId && scope?.app_origin === previewOrigin),
+        pendingCheckpoints.length ? pendingCheckpoints.map((scope) => scope?.app_origin || "unknown").join(",") : "pending=none"
+      );
     },
     replayEnv: ({ setupContext }) => ({ PLAYWRIGHT_STORAGE_STATE: setupContext.authStorageStatePath }),
     afterReplay: async ({ testCase, previewPage, previewUrl, caseDir, contract }) => {

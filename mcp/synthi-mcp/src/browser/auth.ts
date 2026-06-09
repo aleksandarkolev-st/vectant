@@ -523,6 +523,64 @@ export class AuthCheckpointManager {
     return artifact ? cloneStorageArtifact(artifact) : null;
   }
 
+  readinessForCheckpoint(checkpoint_id: string, unattended: boolean = false): AuthReadiness {
+    const checkpoint = this.store.getCheckpoint(checkpoint_id);
+    if (!checkpoint) {
+      return {
+        ready: false,
+        durability: "missing",
+        status: "checkpointMissing",
+        notes: ["Auth checkpoint is not enrolled."],
+      };
+    }
+    const snapshot = this.snapshot(checkpoint);
+    if (snapshot.status === "revoked") {
+      return {
+        ready: false,
+        durability: snapshot.durability,
+        status: "checkpointRevoked",
+        checkpoint: snapshot,
+        notes: ["Auth checkpoint was revoked."],
+      };
+    }
+    if (snapshot.status === "expired") {
+      return {
+        ready: false,
+        durability: snapshot.durability,
+        status: "checkpointExpired",
+        checkpoint: snapshot,
+        notes: ["Auth checkpoint expired and must be renewed."],
+      };
+    }
+    if (!snapshot.storage_artifact || !this.store.getStorageArtifact(snapshot.storage_artifact.artifact_id)) {
+      return {
+        ready: false,
+        durability: snapshot.durability,
+        status: "checkpointStorageMissing",
+        checkpoint: snapshot,
+        notes: ["Auth checkpoint is missing a captured browser storage artifact."],
+      };
+    }
+    if (unattended && !snapshot.unattended_allowed) {
+      return {
+        ready: false,
+        durability: snapshot.durability,
+        status: "unattendedBlocked",
+        checkpoint: snapshot,
+        notes: ["Unattended runs require refreshProvider or ciTestAuth durability."],
+      };
+    }
+    return {
+      ready: true,
+      durability: snapshot.durability,
+      status: "ready",
+      checkpoint: snapshot,
+      notes: unattended
+        ? ["Auth checkpoint is durable for unattended replay."]
+        : ["Auth checkpoint is ready for interactive replay."],
+    };
+  }
+
   storageArtifactForRefreshProvider(provider_id: string): {
     ok: true;
     provider: AuthRefreshProviderMetadata;

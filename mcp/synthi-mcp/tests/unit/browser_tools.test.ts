@@ -450,12 +450,26 @@ describe("browser MCP tool surface", () => {
       teach_auth_checkpoint: expect.objectContaining({
         ok: true,
         app_origin: "https://secure.example.com",
+        checkpoint_id: checkpoint.checkpoint.checkpoint_id,
       }),
     }));
     expect(authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint.checkpoint_id)?.state.origins[0]?.localStorage?.[0]).toEqual({
       name: "session",
       value: "secret-local",
     });
+    const status = await dispatchBrowserTool("synthi_browser_get_trace_status", {});
+    expect((status?.structuredContent as {
+      trace_status: {
+        teach_auth_checkpoints: {
+          pending: Array<{ app_origin: string; checkpoint_id?: string }>;
+        };
+      };
+    }).trace_status.teach_auth_checkpoints.pending).toEqual([
+      expect.objectContaining({
+        app_origin: "https://secure.example.com",
+        checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      }),
+    ]);
   });
 
   it("restores captured auth storage internally for cold workflow replay", async () => {
