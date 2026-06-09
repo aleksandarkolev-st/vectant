@@ -82,7 +82,9 @@
     "proof:hiprt:same-process": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
     "proof:hiprt:same-process:camera-rays": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH='mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
     "proof:oidn:preflight": "node scripts/gpu-hmr-oidn-preflight.mjs",
-    "proof:oidn:preflight:self-check": "node scripts/gpu-hmr-oidn-preflight.mjs --self-check"
+    "proof:oidn:preflight:self-check": "node scripts/gpu-hmr-oidn-preflight.mjs --self-check",
+    "proof:opencl:preflight": "node scripts/gpu-hmr-opencl-preflight.mjs",
+    "proof:opencl:preflight:self-check": "node scripts/gpu-hmr-opencl-preflight.mjs --self-check"
   },
   "engines": {
     "node": ">=18.0.0"
