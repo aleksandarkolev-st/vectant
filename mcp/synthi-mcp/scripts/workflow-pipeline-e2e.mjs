@@ -310,6 +310,7 @@ async function runCase({ testCase, container, context, runner }) {
   let run;
   let idePage;
   let previewPage;
+  let previewUrl;
   try {
     const setupContext = typeof testCase.setup === "function"
       ? await testCase.setup({
@@ -328,7 +329,7 @@ async function runCase({ testCase, container, context, runner }) {
     record(testCase.id, "register source identity", true, `tokens=${registeredSourceTokens}`);
 
     run = await startWorkspaceDevServer(container, slug, repoPath);
-    const previewUrl = await waitForPreviewPort(run.slug, run.port);
+    previewUrl = await waitForPreviewPort(run.slug, run.port);
     record(testCase.id, "detect actual running port", true, `port=${run.port} preview=${previewUrl}`);
 
     previewPage = await openPreviewPage(context, previewUrl);
@@ -747,6 +748,9 @@ async function runCase({ testCase, container, context, runner }) {
     if (idePage && !idePage.isClosed()) {
       await resetHostedRuntimePage(idePage);
     }
+    await closeCdpTargetsForUrlScopes(CFG.cdpUrl, [workspaceUrl, previewUrl]).catch((err) => {
+      log("warn", `${testCase.id}: failed to prune hosted browser case pages: ${err instanceof Error ? err.message : String(err)}`);
+    });
     if (run) {
       await stopWorkspaceDevServer(container, run).catch((err) => {
         log("warn", `${testCase.id}: failed to stop dev server: ${err instanceof Error ? err.message : String(err)}`);
@@ -1406,6 +1410,67 @@ async function pruneExistingCdpPageTargets(cdpUrl) {
       timeoutMs: Math.min(CFG.timeoutMs, 10_000),
     }).catch(() => undefined)
   ));
+}
+
+async function closeCdpTargetsForUrlScopes(cdpUrl, scopeUrls) {
+  const scopes = scopeUrls
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .map((value) => cdpCleanupScope(value))
+    .filter(Boolean);
+  if (scopes.length === 0) return;
+  const baseUrl = cdpHttpBaseUrl(cdpUrl);
+  if (!baseUrl) return;
+  let targets = [];
+  try {
+    const response = await fetchWithTimeout(`${baseUrl}/json/list`, { timeoutMs: Math.min(CFG.timeoutMs, 10_000) });
+    if (!response.ok) return;
+    const body = await response.json();
+    if (Array.isArray(body)) targets = body;
+  } catch {
+    return;
+  }
+  const closeableTargets = targets.filter((target) =>
+    target &&
+    typeof target.id === "string" &&
+    typeof target.url === "string" &&
+    (target.type === "page" || target.type === "webview") &&
+    scopes.some((scope) => cdpTargetInCleanupScope(target.url, scope))
+  );
+  await Promise.all(closeableTargets.map((target) =>
+    fetchWithTimeout(`${baseUrl}/json/close/${encodeURIComponent(target.id)}`, {
+      timeoutMs: Math.min(CFG.timeoutMs, 10_000),
+    }).catch(() => undefined)
+  ));
+}
+
+function cdpCleanupScope(scopeUrl) {
+  try {
+    const parsed = new URL(scopeUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return {
+      href: trimSlash(parsed.href),
+      origin: parsed.origin,
+      pathPrefix: forwardedPreviewPathPrefix(parsed.pathname),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function forwardedPreviewPathPrefix(pathname) {
+  const match = String(pathname).match(/^\/port\/\d+(?:\/|$)/);
+  return match ? match[0] : null;
+}
+
+function cdpTargetInCleanupScope(targetUrl, scope) {
+  try {
+    const target = new URL(targetUrl);
+    if (trimSlash(target.href) === scope.href) return true;
+    if (scope.pathPrefix && target.origin === scope.origin && target.pathname.startsWith(scope.pathPrefix)) return true;
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function cdpHttpBaseUrl(cdpUrl) {
