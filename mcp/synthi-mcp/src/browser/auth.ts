@@ -1,11 +1,14 @@
-import { spawnSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { normalizeOrigin } from "./security.js";
 import type { AuthDurabilityV7 } from "./workflow.js";
 
 export type AuthCheckpointDurability = Extract<AuthDurabilityV7, "interactiveCheckpoint" | "idpCheckpoint">;
+
+const REFRESH_PROVIDER_OUTPUT_LIMIT = 2 * 1024 * 1024;
 
 export interface AuthIdPDomainGrant {
   checkpoint_id: string;
@@ -540,7 +543,7 @@ export class AuthCheckpointManager {
     return { ok: true, provider: this.snapshotProvider(provider) };
   }
 
-  testRefreshProvider(provider_id: string): { ok: true; provider: AuthRefreshProviderMetadata; can_mint_replay_state: boolean } | { ok: false; error: string } {
+  async testRefreshProvider(provider_id: string): Promise<{ ok: true; provider: AuthRefreshProviderMetadata; can_mint_replay_state: boolean } | { ok: false; error: string }> {
     const provider = this.store.getRefreshProvider(provider_id);
     if (!provider) return { ok: false, error: "auth_refresh_provider_not_found" };
     provider.last_tested_at = Date.now();
@@ -556,7 +559,7 @@ export class AuthCheckpointManager {
       this.store.saveRefreshProvider(provider);
       return { ok: true, provider: this.snapshotProvider(provider), can_mint_replay_state: false };
     }
-    const minted = runRefreshProviderCommand(provider);
+    const minted = await runRefreshProviderCommand(provider);
     if (!minted.ok) {
       provider.status = "failed";
       provider.failure_class = minted.failure_class;
@@ -1097,17 +1100,16 @@ interface AuthRefreshProviderMintOutput {
   captured_at?: number;
 }
 
-function runRefreshProviderCommand(
+async function runRefreshProviderCommand(
   provider: AuthRefreshProviderMetadata
-): { ok: true; output: AuthRefreshProviderMintOutput } | { ok: false; failure_class: NonNullable<AuthRefreshProviderMetadata["failure_class"]> } {
+): Promise<{ ok: true; output: AuthRefreshProviderMintOutput } | { ok: false; failure_class: NonNullable<AuthRefreshProviderMetadata["failure_class"]> }> {
   if (!provider.mint_command) return { ok: false, failure_class: "missingMintCommand" };
   const argv = parseCommandLine(provider.mint_command.command);
   if (!argv || argv.length === 0) return { ok: false, failure_class: "invalidMintCommand" };
-  const result = spawnSync(argv[0]!, argv.slice(1), {
+  const stdout = await runRefreshProviderProcess({
+    argv,
     cwd: provider.mint_command.working_directory,
-    shell: false,
-    encoding: "utf8",
-    timeout: provider.mint_command.timeout_ms,
+    timeout_ms: provider.mint_command.timeout_ms,
     env: {
       ...process.env,
       SYNTHI_AUTH_APP_ORIGIN: provider.app_origin,
@@ -1116,8 +1118,89 @@ function runRefreshProviderCommand(
       SYNTHI_AUTH_SECRET_REF: provider.secret_ref,
     },
   });
-  if (result.error || result.status !== 0) return { ok: false, failure_class: "mintCommandFailed" };
-  return parseRefreshProviderMintOutput(result.stdout);
+  if (!stdout.ok) return { ok: false, failure_class: "mintCommandFailed" };
+  return parseRefreshProviderMintOutput(stdout.output);
+}
+
+function runRefreshProviderProcess(input: {
+  argv: string[];
+  cwd?: string;
+  env: NodeJS.ProcessEnv;
+  timeout_ms: number;
+}): Promise<{ ok: true; output: string } | { ok: false }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    let child: ChildProcess;
+    const outputTarget = createRefreshProviderOutputTarget();
+    const finish = (result: { ok: true; output: string } | { ok: false }) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (outputTarget) cleanupRefreshProviderOutputTarget(outputTarget.directory);
+      resolve(result);
+    };
+    try {
+      child = spawn(input.argv[0]!, input.argv.slice(1), {
+        cwd: input.cwd,
+        shell: false,
+        env: outputTarget ? { ...input.env, SYNTHI_AUTH_PROVIDER_OUTPUT_PATH: outputTarget.file_path } : input.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      resolve({ ok: false });
+      return;
+    }
+    let output = "";
+    timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ ok: false });
+    }, input.timeout_ms);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output = boundedMintOutput(output + chunk.toString("utf8"));
+    });
+    child.stderr?.resume();
+    child.on("error", () => finish({ ok: false }));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish({ ok: false });
+        return;
+      }
+      const outputFromFile = output.trim().length === 0 && outputTarget ? readRefreshProviderOutputFile(outputTarget.file_path) : null;
+      finish({ ok: true, output: outputFromFile ?? output });
+    });
+  });
+}
+
+function boundedMintOutput(value: string): string {
+  if (value.length <= REFRESH_PROVIDER_OUTPUT_LIMIT) return value;
+  return value.slice(0, REFRESH_PROVIDER_OUTPUT_LIMIT);
+}
+
+function createRefreshProviderOutputTarget(): { directory: string; file_path: string } | null {
+  try {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "synthi-auth-provider-"));
+    return { directory, file_path: path.join(directory, "storage-state.json") };
+  } catch {
+    return null;
+  }
+}
+
+function readRefreshProviderOutputFile(filePath: string): string | null {
+  try {
+    if (!existsSync(filePath)) return null;
+    return boundedMintOutput(readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function cleanupRefreshProviderOutputTarget(directory: string): void {
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    // Best effort cleanup for short-lived provider output.
+  }
 }
 
 function parseCommandLine(command: string): string[] | null {

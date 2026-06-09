@@ -75,7 +75,7 @@ export const AUTH_TOOLS = [
         mint_command: {
           type: "string",
           description:
-            "Deployment-controlled command that prints JSON { ok: true, storage_state, redirect_chain?, ttl_ms? }. Receives only secret references in env.",
+            "Deployment-controlled command that prints JSON { ok: true, storage_state, redirect_chain?, ttl_ms? } or writes it to SYNTHI_AUTH_PROVIDER_OUTPUT_PATH. Receives only secret references in env.",
         },
         working_directory: { type: "string" },
         timeout_ms: { type: "number" },
@@ -122,7 +122,7 @@ export async function dispatchAuthTool(toolName: string, args: unknown): Promise
       case "synthi_auth_configure_refresh_provider":
         return configureRefreshProviderTool(args);
       case "synthi_auth_test_refresh_provider":
-        return testRefreshProviderTool(args);
+        return await testRefreshProviderTool(args);
       case "synthi_auth_get_tool_auth_readiness":
         return authReadinessTool(args);
       default:
@@ -174,8 +174,8 @@ function configureRefreshProviderTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, provider: result.provider });
 }
 
-function testRefreshProviderTool(args: unknown): ToolResponse {
-  const result = authCheckpointManager.testRefreshProvider(requiredString(obj(args), "provider_id"));
+async function testRefreshProviderTool(args: unknown): Promise<ToolResponse> {
+  const result = await authCheckpointManager.testRefreshProvider(requiredString(obj(args), "provider_id"));
   if (!result.ok) return errorResponse(result.error);
   return jsonResponse({ ok: true, provider: result.provider, can_mint_replay_state: result.can_mint_replay_state });
 }

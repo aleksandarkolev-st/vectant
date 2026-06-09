@@ -140,7 +140,7 @@ describe("auth checkpoint manager", () => {
     });
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected refresh provider failure");
-    managerA.testRefreshProvider(provider.provider.provider_id);
+    await managerA.testRefreshProvider(provider.provider.provider_id);
     expect(managerA.saveStorageArtifact({
       checkpoint_id: checkpoint.checkpoint.checkpoint_id,
       storage_state: {
@@ -364,14 +364,14 @@ describe("auth checkpoint manager", () => {
     }));
   });
 
-  it("requires a refresh-provider mint command before unattended readiness", () => {
+  it("requires a refresh-provider mint command before unattended readiness", async () => {
     const configured = authCheckpointManager.configureRefreshProvider({
       url: "https://app.example.com",
       secret_ref: "synthi://secrets/workspace/auth-refresh",
     });
     expect(configured.ok).toBe(true);
     if (!configured.ok) throw new Error("unexpected refresh provider config failure");
-    const tested = authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
+    const tested = await authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
     expect(tested.ok).toBe(true);
     if (!tested.ok) throw new Error("unexpected refresh provider test failure");
 
@@ -399,7 +399,7 @@ describe("auth checkpoint manager", () => {
     });
     expect(configured.ok).toBe(true);
     if (!configured.ok) throw new Error("unexpected refresh provider config failure");
-    const tested = authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
+    const tested = await authCheckpointManager.testRefreshProvider(configured.provider.provider_id);
     expect(tested.ok).toBe(true);
     if (!tested.ok) throw new Error("unexpected refresh provider test failure");
 
@@ -484,7 +484,7 @@ async function writeRefreshMintCommand(directory: string): Promise<string> {
 const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
 if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
 const host = new URL(origin).hostname;
-process.stdout.write(JSON.stringify({
+const output = JSON.stringify({
   ok: true,
   storage_state: {
     cookies: [{ name: "sid", value: "minted-cookie-secret", domain: host, path: "/", httpOnly: true, secure: true }],
@@ -493,7 +493,12 @@ process.stdout.write(JSON.stringify({
   redirect_chain: [origin + "/login"],
   ttl_ms: 60000,
   captured_at: 1234
-}));
+});
+if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);
+}
+process.stdout.write(output);
 `, "utf8");
   return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
 }

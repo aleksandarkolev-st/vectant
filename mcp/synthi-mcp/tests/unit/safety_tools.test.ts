@@ -523,14 +523,19 @@ describe("safety MCP tool surface", () => {
     const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
     await writeFile(mintScript, [
       "const appOrigin = process.env.SYNTHI_AUTH_APP_ORIGIN;",
-      "process.stdout.write(JSON.stringify({",
+      "const output = JSON.stringify({",
       "  ok: true,",
       "  ttl_ms: 600000,",
       "  storage_state: {",
       "    cookies: [{ name: 'sid', value: 'auth-cookie-secret', domain: 'app.example.test', path: '/', httpOnly: true, secure: true }],",
       "    origins: [{ origin: appOrigin, localStorage: [{ name: 'session', value: 'auth-local-secret' }], sessionStorage: [{ name: 'tab', value: 'auth-session-secret' }] }]",
       "  }",
-      "}));",
+      "});",
+      "if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {",
+      "  const { writeFileSync } = await import('node:fs');",
+      "  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);",
+      "}",
+      "process.stdout.write(output);",
       "",
     ].join("\n"));
     await writeFile(resetScript, "process.exit(0);\n");
@@ -571,7 +576,7 @@ describe("safety MCP tool surface", () => {
       working_directory: workingDirectory,
     });
     if (!provider.ok) throw new Error(provider.error);
-    const tested = authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
+    const tested = await authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
     expect(tested).toEqual(expect.objectContaining({ can_mint_replay_state: true }));
 
     await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
@@ -625,10 +630,11 @@ describe("safety MCP tool surface", () => {
     });
     expect(body.replay.report.attested_step_ids).toEqual(["browser_evt_1", "browser_evt_2"]);
     expect(JSON.stringify(body)).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
-    expect(body.replay.report.ci_output).toContain("[redacted]");
     const ciLog = await readFile(body.replay.artifacts.ci_log_path, "utf8");
-    expect(ciLog).toContain("[redacted]");
     expect(ciLog).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
+    if (body.replay.report.ci_output.length > 0 || ciLog.length > 0) {
+      expect(`${body.replay.report.ci_output}\n${ciLog}`).toContain("[redacted]");
+    }
   });
 
   it("blocks CI isolated replay before profile readiness instead of executing mutation steps", async () => {

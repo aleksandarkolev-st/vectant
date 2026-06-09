@@ -355,7 +355,7 @@ describe("private browser workflow MCP tool manifest", () => {
     });
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected provider failure");
-    authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
+    await authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
 
     const available = await dispatchBrowserTool("synthi_browser_generate_private_tool_manifest", {});
     expect(available?.isError).toBeUndefined();
@@ -744,14 +744,19 @@ async function writeRefreshMintCommand(directory: string): Promise<string> {
 const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
 if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
 const host = new URL(origin).hostname;
-process.stdout.write(JSON.stringify({
+const output = JSON.stringify({
   ok: true,
   storage_state: {
     cookies: [{ name: "sid", value: "private-tool-cookie-secret", domain: host, path: "/", httpOnly: true, secure: true }],
     origins: [{ origin, localStorage: [{ name: "session", value: "private-tool-local-secret" }], sessionStorage: [] }]
   },
   ttl_ms: 60000
-}));
+});
+if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);
+}
+process.stdout.write(output);
 `, "utf8");
   return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
 }
