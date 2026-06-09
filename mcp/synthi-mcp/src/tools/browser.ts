@@ -1702,13 +1702,21 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
     : requestedMode ??
     (manifest.mutation.requires_confirmation ? "prefixOnly" : "sameSession");
 
-  if (manifest.mutation.requires_confirmation && mode === "sameSession" && !confirmMutation) {
+  const mutationConfirmationToken = privateWorkflowMutationConfirmationToken(toolName, manifest);
+  const mutationConfirmation = stringOpt(a["mutation_confirmation"]);
+  if (
+    manifest.mutation.requires_confirmation &&
+    mode === "sameSession" &&
+    (!confirmMutation || mutationConfirmation !== mutationConfirmationToken)
+  ) {
     return errorResponse("mutation_confirmation_required", {
       tool_name: toolName,
       workflow_id: manifest.workflow_id,
       first_mutation_step_id: manifest.mutation.first_mutation_step_id,
       safe_run_modes: ["prefixOnly", "coldSession", "ciOnly"],
       confirmation_field: "confirm_mutation",
+      confirmation_token_field: "mutation_confirmation",
+      confirmation_token: mutationConfirmationToken,
     });
   }
 
@@ -1849,6 +1857,15 @@ function privateWorkflowRunMode(value: unknown): PrivateWorkflowRunMode | undefi
   if (value === undefined) return undefined;
   if (value === "confirmBeforeCommit" || value === "ciOnly") return value;
   return normalizeReplayMode(value);
+}
+
+function privateWorkflowMutationConfirmationToken(toolName: string, manifest: PrivateWorkflowToolManifestV7): string {
+  return [
+    "confirm",
+    toolName,
+    manifest.workflow_id,
+    manifest.mutation.first_mutation_step_id ?? "mutation",
+  ].join(":");
 }
 
 async function openColdReplayTab(url: string, storageState?: AuthBrowserStorageState): Promise<{ tab_id: string; url: string }> {

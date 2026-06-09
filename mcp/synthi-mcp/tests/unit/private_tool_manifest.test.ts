@@ -353,6 +353,7 @@ describe("private browser workflow MCP tool manifest", () => {
       url,
       secret_ref: "synthi://secrets/workspace/auth-refresh",
       mint_command: await writeRefreshMintCommand(await mkdtemp(path.join(os.tmpdir(), "synthi-private-tool-refresh-"))),
+      mint_command_admin_approved: true,
     });
     expect(provider.ok).toBe(true);
     if (!provider.ok) throw new Error("unexpected provider failure");
@@ -457,8 +458,45 @@ describe("private browser workflow MCP tool manifest", () => {
       error: "mutation_confirmation_required",
       tool_name: "synthi_app_save_settings",
       confirmation_field: "confirm_mutation",
+      confirmation_token_field: "mutation_confirmation",
+      confirmation_token: expect.stringMatching(/^confirm:synthi_app_save_settings:/),
       safe_run_modes: expect.arrayContaining(["prefixOnly", "coldSession", "ciOnly"]),
     }));
+    const confirmationToken = (blocked?.structuredContent as { confirmation_token: string }).confirmation_token;
+
+    const blockedBooleanOnly = await dispatchBrowserTool("synthi_app_save_settings", {
+      run_mode: "sameSession",
+      confirm_mutation: true,
+    });
+    expect(blockedBooleanOnly?.isError).toBe(true);
+    expect(blockedBooleanOnly?.structuredContent).toEqual(expect.objectContaining({
+      error: "mutation_confirmation_required",
+      confirmation_token: confirmationToken,
+    }));
+
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "tab-a",
+      url,
+    });
+    const confirmed = await dispatchBrowserTool("synthi_app_save_settings", {
+      run_mode: "sameSession",
+      confirm_mutation: true,
+      mutation_confirmation: confirmationToken,
+    });
+
+    expect(confirmed?.isError).toBeUndefined();
+    expect(confirmed?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      private_tool: expect.objectContaining({
+        tool_name: "synthi_app_save_settings",
+        run_mode: "sameSession",
+        mutation_confirmed: true,
+      }),
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replay).toHaveBeenCalled();
   });
 
   it("lets an MCP client publish, discover, and call a generated private workflow tool", async () => {
@@ -686,6 +724,9 @@ describe("private browser workflow MCP tool manifest", () => {
     const tool = browserPrivateWorkflowTools().find((candidate) => candidate.name === manifest.tool_name);
     expect(tool?.inputSchema.properties?.["run_mode"]).toEqual(expect.objectContaining({
       enum: expect.arrayContaining(["prefixOnly", "confirmBeforeCommit", "ciOnly"]),
+    }));
+    expect(tool?.inputSchema.properties?.["mutation_confirmation"]).toEqual(expect.objectContaining({
+      type: "string",
     }));
 
     const run = await dispatchBrowserTool(manifest.tool_name, {

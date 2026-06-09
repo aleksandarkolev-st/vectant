@@ -283,6 +283,11 @@ function privateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7)
       type: "boolean",
       description: "Required only when requesting sameSession replay for a workflow with mutation steps.",
     },
+    mutation_confirmation: {
+      type: "string",
+      description:
+        "Required with confirm_mutation=true for live mutation replay. Use the confirmation_token returned by mutation_confirmation_required.",
+    },
     tab_id: {
       type: "string",
       description: "Optional authorized browser tab id. Defaults to the selected Synthi browser tab.",
