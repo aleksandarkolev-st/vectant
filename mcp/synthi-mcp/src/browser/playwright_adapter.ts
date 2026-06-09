@@ -102,13 +102,20 @@ export type BrowserWorkflowOverlayActionSink = (
   request: BrowserWorkflowOverlayRequest & { tab_id: string; page_url: string }
 ) => Promise<BrowserWorkflowOverlayResponse> | BrowserWorkflowOverlayResponse;
 
+type PopupOpenerContext = {
+  opener_tab_id: string;
+  opener_origin: string;
+  root_opener_tab_id: string;
+  root_opener_origin: string;
+};
+
 export class BrowserPlaywrightAdapter {
   private browser: Browser | null = null;
   private cdpUrl: string | null = null;
   private nextTabSeq = 0;
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly pages = new Map<string, PageRecord>();
-  private readonly popupOpeners = new Map<string, { opener_tab_id: string; opener_origin: string }>();
+  private readonly popupOpeners = new Map<string, PopupOpenerContext>();
   private readonly instrumented = new WeakSet<Page>();
   private readonly workflowOverlayInitScriptInstalled = new WeakSet<Page>();
   private readonly workflowOverlayInstalled = new WeakSet<Page>();
@@ -913,19 +920,30 @@ export class BrowserPlaywrightAdapter {
     } catch {
       return;
     }
-    this.popupOpeners.set(popup_tab_id, { opener_tab_id, opener_origin: origin });
+    const parentPopup = this.popupOpeners.get(opener_tab_id);
+    const openerContext: PopupOpenerContext = {
+      opener_tab_id,
+      opener_origin: origin,
+      root_opener_tab_id: parentPopup?.root_opener_tab_id ?? opener_tab_id,
+      root_opener_origin: parentPopup?.root_opener_origin ?? origin,
+    };
+    this.popupOpeners.set(popup_tab_id, openerContext);
     await this.instrumentPage(popup, popup_tab_id).catch(() => undefined);
     await popup.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
     const popupUrl = redactUrl(popup.url());
     const popupTitle = redactText(await popup.title().catch(() => ""));
     const detail: Record<string, unknown> = {
       popup_event: true,
+      ...(parentPopup ? { popup_context: true } : {}),
       popup_url: popupUrl.url,
       popup_url_redacted: popupUrl.redacted,
       popup_title: popupTitle.text,
       popup_title_redacted: popupTitle.redacted,
       popup_tab_id,
       opener_tab_id,
+      opener_origin: origin,
+      root_opener_tab_id: openerContext.root_opener_tab_id,
+      root_opener_origin: openerContext.root_opener_origin,
     };
     setTimeout(() => {
       this.teachEventAnnotationSink?.({
@@ -1083,6 +1101,8 @@ export class BrowserPlaywrightAdapter {
         popup_tab_id: tab_id,
         opener_tab_id: popup.opener_tab_id,
         opener_origin: popup.opener_origin,
+        root_opener_tab_id: popup.root_opener_tab_id,
+        root_opener_origin: popup.root_opener_origin,
       },
     };
   }
@@ -1433,7 +1453,7 @@ function isPopupReplayEvent(event: BrowserTraceEvent): boolean {
 }
 
 function popupNavigationDetail(
-  popup: { opener_tab_id: string; opener_origin: string } | undefined,
+  popup: PopupOpenerContext | undefined,
   tab_id: string
 ): Record<string, unknown> {
   if (!popup) return {};
@@ -1442,6 +1462,8 @@ function popupNavigationDetail(
     popup_tab_id: tab_id,
     opener_tab_id: popup.opener_tab_id,
     opener_origin: popup.opener_origin,
+    root_opener_tab_id: popup.root_opener_tab_id,
+    root_opener_origin: popup.root_opener_origin,
   };
 }
 

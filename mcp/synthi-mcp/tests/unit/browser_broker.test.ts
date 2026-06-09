@@ -291,6 +291,65 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("accepts descendant popup actions when the root opener is the taught tab", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/checkout", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const nestedPopupOpen = browserBroker.recordHumanAction({
+      tab_id: "popup1",
+      url: "https://app.example.com/checkout-popup",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_context: true,
+        popup_event: true,
+        popup_url: "https://app.example.com/review",
+        popup_tab_id: "popup2",
+        opener_tab_id: "popup1",
+        opener_origin: "https://app.example.com",
+        root_opener_tab_id: "app",
+        root_opener_origin: "https://app.example.com",
+      },
+      element: { role: "button", name: "Open review popup" },
+    });
+    expect(nestedPopupOpen.ok).toBe(true);
+
+    const nestedPopupAction = browserBroker.recordHumanAction({
+      tab_id: "popup2",
+      url: "https://app.example.com/review",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "APPROVED",
+      detail: {
+        popup_context: true,
+        popup_tab_id: "popup2",
+        opener_tab_id: "popup1",
+        opener_origin: "https://app.example.com",
+        root_opener_tab_id: "app",
+        root_opener_origin: "https://app.example.com",
+      },
+      element: { role: "textbox", label: "Approval code" },
+    });
+    expect(nestedPopupAction.ok).toBe(true);
+
+    expect(browserBroker.recordHumanAction({
+      tab_id: "popup3",
+      url: "https://app.example.com/review",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_context: true,
+        popup_tab_id: "popup3",
+        opener_tab_id: "popup1",
+        opener_origin: "https://app.example.com",
+        root_opener_tab_id: "other-tab",
+        root_opener_origin: "https://app.example.com",
+      },
+      element: { role: "button", name: "Preview checkout" },
+    })).toEqual({ ok: false, error: "teach_tab_mismatch" });
+  });
+
   it("records popup screenshot consent separately from popup origin consent", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.requestConsent("https://billing.example.com", "granted", "popup-origin-only", {

@@ -819,9 +819,13 @@ export class BrowserBroker {
 
   private isTeachPopupContext(tab_id: string, detail: Record<string, unknown> | undefined): boolean {
     if (!detail || detail["popup_context"] !== true) return false;
-    if (typeof detail["popup_tab_id"] === "string" && detail["popup_tab_id"] !== tab_id) return false;
-    if (detail["opener_tab_id"] !== this.teachMode.tab_id) return false;
-    if (typeof detail["opener_origin"] === "string" && detail["opener_origin"] !== this.teachMode.origin) return false;
+    const rootOpenerTabId = typeof detail["root_opener_tab_id"] === "string" ? detail["root_opener_tab_id"] : detail["opener_tab_id"];
+    const rootOpenerOrigin = typeof detail["root_opener_origin"] === "string" ? detail["root_opener_origin"] : detail["opener_origin"];
+    if (typeof detail["root_opener_tab_id"] !== "string" && typeof detail["popup_tab_id"] === "string" && detail["popup_tab_id"] !== tab_id) {
+      return false;
+    }
+    if (rootOpenerTabId !== this.teachMode.tab_id) return false;
+    if (typeof rootOpenerOrigin === "string" && rootOpenerOrigin !== this.teachMode.origin) return false;
     return true;
   }
 

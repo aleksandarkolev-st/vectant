@@ -113,6 +113,19 @@ function detailMatches(detail, expected) {
   return Object.entries(expected).every(([key, value]) => detail[key] === value);
 }
 
+function countOccurrences(value, needle) {
+  if (!needle) return 0;
+  let count = 0;
+  let index = 0;
+  while (index <= value.length) {
+    const found = value.indexOf(needle, index);
+    if (found < 0) break;
+    count += 1;
+    index = found + needle.length;
+  }
+  return count;
+}
+
 function slugPart(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
@@ -326,13 +339,24 @@ async function runCase({ testCase, container, context, runner }) {
       );
     }
     await writeJson(caseDir, "contract.json", contract);
+    const traceBody = await workflowBridgeTool("synthi_browser_get_trace", {});
+    const trace = Array.isArray(traceBody.result?.trace) ? traceBody.result.trace : [];
+    await writeJson(caseDir, "trace.json", trace);
+    if (typeof testCase.assertTrace === "function") {
+      const traceAssertions = await testCase.assertTrace({ trace, contract, setupContext, caseDir });
+      for (const assertion of Array.isArray(traceAssertions) ? traceAssertions : []) {
+        record(
+          testCase.id,
+          assertion.name || "trace custom assertion",
+          assertion.ok === true,
+          assertion.detail || ""
+        );
+      }
+    }
     const expectedTraceDetails = typeof testCase.expectedTraceDetails === "function"
       ? testCase.expectedTraceDetails(setupContext)
       : testCase.expectedTraceDetails;
     if (Array.isArray(expectedTraceDetails) && expectedTraceDetails.length > 0) {
-      const traceBody = await workflowBridgeTool("synthi_browser_get_trace", {});
-      const trace = Array.isArray(traceBody.result?.trace) ? traceBody.result.trace : [];
-      await writeJson(caseDir, "trace.json", trace);
       for (const expectedDetail of expectedTraceDetails) {
         const matches = trace.some((event) => detailMatches(event?.detail, expectedDetail));
         record(
@@ -394,6 +418,19 @@ async function runCase({ testCase, container, context, runner }) {
         missingCode.length === 0,
         missingCode.length ? `missing=${missingCode.join(" | ")}` : `snippets=${testCase.expectedReplayCode.length}`
       );
+    }
+    if (Array.isArray(testCase.expectedReplayOccurrences) && testCase.expectedReplayOccurrences.length > 0) {
+      for (const expectation of testCase.expectedReplayOccurrences) {
+        const snippet = typeof expectation?.snippet === "string" ? expectation.snippet : "";
+        const min = Number.isFinite(Number(expectation?.min)) ? Number(expectation.min) : 1;
+        const count = snippet ? countOccurrences(String(generated?.code || ""), snippet) : 0;
+        record(
+          testCase.id,
+          "export expected replay occurrence count",
+          count >= min,
+          snippet ? `${snippet} count=${count} min=${min}` : "missing snippet"
+        );
+      }
     }
     if (Array.isArray(testCase.forbiddenReplayCode) && testCase.forbiddenReplayCode.length > 0) {
       const leakedCode = testCase.forbiddenReplayCode.filter((snippet) => String(generated?.code || "").includes(snippet));
@@ -4065,6 +4102,179 @@ const CASES = [
       await page.bringToFront();
       await page.getByRole("button", { name: "Show handoff summary" }).click();
       await page.getByText("Summary ready").waitFor();
+      return page;
+    },
+  },
+  {
+    id: "popup-chain-checkout",
+    minSteps: 6,
+    expectedActions: ["click", "fill"],
+    expectedReplayCode: [
+      "popup1.waitForEvent('popup')",
+      "popup1.getByLabel(\"Checkout email\")",
+      "getByLabel(\"Approval code\")",
+      "page.getByRole(\"button\", { name: \"Show checkout summary\" })",
+    ],
+    expectedReplayOccurrences: [
+      { snippet: "waitForEvent('popup')", min: 2 },
+    ],
+    forbiddenReplayCode: [
+      "Mutation boundary:",
+    ],
+    liveReplayMode: "sameSession",
+    assertTrace: ({ trace }) => {
+      const popupEvents = trace.filter((event) => event?.detail?.popup_event === true);
+      const rootPopup = popupEvents.find((event) => event?.detail?.root_opener_tab_id === event?.tab_id);
+      const nestedPopup = popupEvents.find((event) =>
+        typeof event?.detail?.root_opener_tab_id === "string" &&
+        event.detail.root_opener_tab_id !== event.tab_id
+      );
+      const nestedTabId = typeof nestedPopup?.detail?.popup_tab_id === "string" ? nestedPopup.detail.popup_tab_id : "";
+      const rootTabId = typeof rootPopup?.tab_id === "string" ? rootPopup.tab_id : "";
+      const nestedAction = trace.find((event) =>
+        event?.tab_id === nestedTabId &&
+        event?.detail?.popup_context === true &&
+        event?.detail?.root_opener_tab_id === rootTabId
+      );
+      const rootReturn = trace.find((event) =>
+        event?.tab_id === rootTabId &&
+        event?.action === "click" &&
+        event?.detail?.element?.source_id === "popup.chain.summary"
+      );
+      return [
+        {
+          name: "trace nested popup opener chain",
+          ok: Boolean(rootPopup && nestedPopup &&
+            nestedPopup.detail?.root_opener_tab_id === rootTabId &&
+            nestedPopup.detail?.opener_tab_id === rootPopup.detail?.popup_tab_id),
+          detail: `root=${rootTabId || "missing"} nested=${nestedTabId || "missing"}`,
+        },
+        {
+          name: "trace nested popup action root linkage",
+          ok: Boolean(nestedAction),
+          detail: `nested=${nestedTabId || "missing"} root=${rootTabId || "missing"}`,
+        },
+        {
+          name: "trace returns to root opener",
+          ok: Boolean(rootReturn),
+          detail: rootReturn ? `tab=${rootReturn.tab_id}` : "missing root return action",
+        },
+      ];
+    },
+    replayEnv: () => ({
+      CHECKOUT_EMAIL: "ops@example.test",
+      APPROVAL_CODE: "APPROVED-42",
+    }),
+    files: () => [
+      ...commonFiles({
+        title: "Popup Chain Checkout Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Popup Chain Checkout Workflow</h1>",
+          "      <a href=\"/checkout.html\" target=\"_blank\" rel=\"noreferrer\" role=\"button\" data-testid=\"open-checkout\" data-synthi-source-id=\"popup.chain.open\">Open checkout popup</a>",
+          "      <button type=\"button\" data-testid=\"show-checkout-summary\" data-synthi-source-id=\"popup.chain.summary\">Show checkout summary</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+        ].join("\n"),
+        script: [
+          "document.querySelector('[data-testid=\"open-checkout\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Checkout popup opened';",
+          "});",
+          "document.querySelector('[data-testid=\"show-checkout-summary\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Checkout summary ready';",
+          "});",
+          "",
+        ].join("\n"),
+      }),
+      {
+        path: "checkout.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Checkout Popup</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Checkout Popup</h1>",
+          "      <label for=\"checkout-email\">Checkout email</label>",
+          "      <input id=\"checkout-email\" aria-label=\"Checkout email\" data-synthi-source-id=\"popup.chain.email\" placeholder=\"ops@example.test\">",
+          "      <a href=\"/checkout-review.html\" target=\"_blank\" rel=\"noreferrer\" role=\"button\" data-testid=\"open-review\" data-synthi-source-id=\"popup.chain.review.open\">Open review popup</a>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script type=\"module\" src=\"/checkout.js\"></script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "checkout.js",
+        encoding: "utf8",
+        content: [
+          "document.querySelector('[data-testid=\"open-review\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Review popup opened';",
+          "});",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "checkout-review.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Checkout Review Popup</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Checkout Review Popup</h1>",
+          "      <label for=\"approval-code\">Approval code</label>",
+          "      <input id=\"approval-code\" aria-label=\"Approval code\" data-synthi-source-id=\"popup.chain.approval\" placeholder=\"Approval code\">",
+          "      <button type=\"button\" data-testid=\"preview-approval\" data-synthi-source-id=\"popup.chain.preview\">Preview checkout approval</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script type=\"module\" src=\"/checkout-review.js\"></script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "checkout-review.js",
+        encoding: "utf8",
+        content: [
+          "const code = document.querySelector('#approval-code');",
+          "document.querySelector('[data-testid=\"preview-approval\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = `Approval preview for ${code.value}`;",
+          "});",
+          "",
+        ].join("\n"),
+      },
+    ],
+    teach: async (page) => {
+      const checkoutPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open checkout popup" }).click();
+      const checkout = await checkoutPromise;
+      await checkout.waitForLoadState("domcontentloaded");
+      await checkout.getByLabel("Checkout email").fill("ops@example.test");
+      const reviewPromise = checkout.waitForEvent("popup");
+      await checkout.getByRole("button", { name: "Open review popup" }).click();
+      const review = await reviewPromise;
+      await review.waitForLoadState("domcontentloaded");
+      await checkout.getByText("Review popup opened").waitFor();
+      await review.getByLabel("Approval code").fill("APPROVED-42");
+      await review.getByRole("button", { name: "Preview checkout approval" }).click();
+      await review.getByText("Approval preview for APPROVED-42").waitFor();
+      await page.bringToFront();
+      await page.getByRole("button", { name: "Show checkout summary" }).click();
+      await page.getByText("Checkout summary ready").waitFor();
       return page;
     },
   },
