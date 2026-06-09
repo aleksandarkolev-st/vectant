@@ -2176,6 +2176,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const editableTags = new Set(['input', 'textarea', 'select']);
     const pendingActionSends = new Set();
     let latestDeferredActionBeforeEffects = [];
+    const actionEffectSettleMs = 250;
     let activeDrag = null;
     let activePointerDrag = null;
     let lastPointerDrag = null;
@@ -2236,7 +2237,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         entry.sent = true;
         latestDeferredActionBeforeEffects = entry.beforeEffects;
         entry.send();
-      }, 0);
+      }, actionEffectSettleMs);
       pendingActionSends.add(entry);
     }
 

@@ -72,6 +72,13 @@ describe("browser Playwright teach capture", () => {
     expect(flushActions).toBeLessThan(replayElement);
   });
 
+  it("defers discrete action sends long enough to capture async visual effects", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/browser/playwright_adapter.ts"), "utf8");
+
+    expect(source).toContain("const actionEffectSettleMs = 250;");
+    expect(source).toContain("}, actionEffectSettleMs);");
+  });
+
   it("normalizes hosted-browser DOM actions into broker teach events", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/settings",

@@ -268,6 +268,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const requiresRuntimeBaseUrl = events.some((event) => isPreviewProxyUrl(event.url));
   const usesFileDrop = events.some((event) => dragClassFor(event) === "filedrop");
   const usesClipboardDrop = events.some(isClipboardDropEvent);
+  const usesNetworkResponseWait = events.some(hasReplayNetworkEvent);
   const usesValueParameters = events.some((event) => scriptValueParameterName(event, valueParameterByEventId) !== undefined);
   const usesAriaOptionParameters = events.some((event) => scriptAriaOptionParameterName(event, valueParameterByEventId) !== undefined);
   const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
@@ -300,7 +301,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("  function workflowUrl(path = '') {");
     lines.push("    const route = String(path || '').replace(/^\\/+/, '');");
     lines.push("    const base = String(baseUrl).replace(/\\/+$/, '');");
-    lines.push("    return route ? `${base}/${route}` : String(baseUrl);");
+    lines.push("    return route ? `${base}/${route}` : `${base}/`;");
     lines.push("  }");
   }
   lines.push("  async function firstVisible(...locators) {");
@@ -378,6 +379,47 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("    await target.dispatchEvent('dragenter', { dataTransfer });");
     lines.push("    await target.dispatchEvent('dragover', { dataTransfer });");
     lines.push("    await target.dispatchEvent('drop', { dataTransfer });");
+    lines.push("  }");
+  }
+  if (usesNetworkResponseWait) {
+    lines.push("  async function installWorkflowNetworkTracker(page) {");
+    lines.push("    await page.evaluate(() => {");
+    lines.push("      const state = window;");
+    lines.push("      if (state.__synthiWorkflowNetworkTrackerInstalled) return;");
+    lines.push("      state.__synthiWorkflowNetworkTrackerInstalled = true;");
+    lines.push("      state.__synthiWorkflowPendingRequests = 0;");
+    lines.push("      const increment = () => { state.__synthiWorkflowPendingRequests = (state.__synthiWorkflowPendingRequests || 0) + 1; };");
+    lines.push("      const decrement = () => { state.__synthiWorkflowPendingRequests = Math.max(0, (state.__synthiWorkflowPendingRequests || 0) - 1); };");
+    lines.push("      const originalFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;");
+    lines.push("      if (originalFetch) {");
+    lines.push("        window.fetch = async (...args) => {");
+    lines.push("          increment();");
+    lines.push("          try { return await originalFetch(...args); }");
+    lines.push("          finally { decrement(); }");
+    lines.push("        };");
+    lines.push("      }");
+    lines.push("      const OriginalXHR = window.XMLHttpRequest;");
+    lines.push("      if (OriginalXHR) {");
+    lines.push("        window.XMLHttpRequest = function SynthiTrackedXMLHttpRequest() {");
+    lines.push("          const xhr = new OriginalXHR();");
+    lines.push("          let pending = false;");
+    lines.push("          const finish = () => { if (!pending) return; pending = false; decrement(); };");
+    lines.push("          const send = xhr.send;");
+    lines.push("          xhr.send = function (...args) {");
+    lines.push("            pending = true;");
+    lines.push("            increment();");
+    lines.push("            xhr.addEventListener('loadend', finish, { once: true });");
+    lines.push("            return send.apply(xhr, args);");
+    lines.push("          };");
+    lines.push("          return xhr;");
+    lines.push("        };");
+    lines.push("        window.XMLHttpRequest.prototype = OriginalXHR.prototype;");
+    lines.push("      }");
+    lines.push("    });");
+    lines.push("  }");
+    lines.push("  async function waitForWorkflowNetworkSettled(page) {");
+    lines.push("    const timeout = Number(process.env.SYNTHI_WORKFLOW_NETWORK_IDLE_TIMEOUT_MS || 5000);");
+    lines.push("    await page.waitForFunction(() => (window.__synthiWorkflowPendingRequests || 0) === 0, undefined, { timeout }).catch(() => undefined);");
     lines.push("  }");
   }
   if (events.some(isClipboardPasteEvent)) {
@@ -540,6 +582,10 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       continue;
     }
     let replayActionEmitted = true;
+    const waitsForNetwork = hasReplayNetworkEvent(event);
+    if (waitsForNetwork) {
+      lines.push(`  await installWorkflowNetworkTracker(${pageVar});`);
+    }
     switch (event.action) {
       case "click":
         if (isDownloadTrigger(event)) {
@@ -810,6 +856,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         warnings.push(`event ${event.event_id} has unsupported action ${event.action ?? "unknown"}`);
         replayActionEmitted = false;
         break;
+    }
+    if (waitsForNetwork && replayActionEmitted) {
+      lines.push(`  await waitForWorkflowNetworkSettled(${pageVar});`);
     }
     for (const effectText of observedEffectTexts(event)) {
       const effectLocatorSource = parameterizedEffectLocatorSource(effectText, [
@@ -1137,6 +1186,11 @@ function routePathForGeneratedUrl(parsed: URL): string {
   const proxyMatch = parsed.pathname.match(/^\/port\/\d+(\/.*)?$/);
   const path = proxyMatch ? (proxyMatch[1] || "/") : parsed.pathname;
   return `${path}${parsed.search}${parsed.hash}`;
+}
+
+function hasReplayNetworkEvent(event: BrowserTraceEvent): boolean {
+  if (event.detail?.["network_event"] !== true) return false;
+  return true;
 }
 
 function isPreviewProxyUrl(url: string): boolean {

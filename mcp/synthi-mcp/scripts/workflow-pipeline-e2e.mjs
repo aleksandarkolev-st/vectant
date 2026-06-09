@@ -130,6 +130,16 @@ function slugPart(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
 
+function workspaceStateFilePath(workspaceRepoPath, relativePath) {
+  if (typeof workspaceRepoPath !== "string" || workspaceRepoPath.trim().length === 0) return null;
+  if (typeof relativePath !== "string" || relativePath.trim().length === 0) return null;
+  const normalized = path.posix.normalize(`/${relativePath.trim()}`).replace(/^\/+/, "");
+  if (!normalized || normalized.startsWith("../") || normalized === "..") {
+    throw new Error(`invalid workspace state file path: ${relativePath}`);
+  }
+  return `${workspaceRepoPath.replace(/\/+$/, "")}/${normalized}`;
+}
+
 function nowSlug() {
   return Date.now().toString(36);
 }
@@ -629,9 +639,12 @@ async function runCase({ testCase, container, context, runner }) {
 
     if (testCase.ciIsolatedReplay === true) {
       const ciReplay = await runCiIsolatedWorkflowReplay({
+        testCase,
         caseId: testCase.id,
+        container,
         workflowId: contract?.workflowId,
         workspaceId: slug,
+        workspaceRepoPath: repoPath,
         runner,
         previewUrl,
         caseDir,
@@ -670,7 +683,7 @@ async function runCase({ testCase, container, context, runner }) {
   }
 }
 
-async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, runner, previewUrl, caseDir, parameters }) {
+async function runCiIsolatedWorkflowReplay({ testCase, caseId, container, workflowId, workspaceId, workspaceRepoPath, runner, previewUrl, caseDir, parameters }) {
   if (!workflowId) return { ok: false, error: "missing_workflow_id" };
   const resetScript = path.join(caseDir, "ci-reset.mjs");
   const resetAssertionScript = path.join(caseDir, "ci-reset-assertion.mjs");
@@ -680,20 +693,90 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
   const markerPath = path.join(caseDir, "ci-reset-marker.json");
   const stateSeedId = `${slugPart(caseId)}-${workspaceId}`;
   const resetProfileId = `${slugPart(caseId)}-reset-profile`;
+  const stateEndpoint = testCase?.ciStateEndpoint?.path;
+  const stateFilePath = workspaceStateFilePath(workspaceRepoPath, testCase?.ciStateEndpoint?.workspaceFile);
+  const resetExpectedState = testCase?.ciStateEndpoint?.resetState ?? {};
+  const postconditionExpectedState = testCase?.ciStateEndpoint?.expectedState;
+  const stateHelpers = [
+    `const workflowStateContainer = ${JSON.stringify(container || "")};`,
+    "function dockerExec(args) {",
+    "  if (!workflowStateContainer) throw new Error('workflow_state_container_missing');",
+    "  const result = spawnSync('docker', ['exec', workflowStateContainer, ...args], { encoding: 'utf8' });",
+    "  if (result.status !== 0) throw new Error(`workflow_state_docker_exec_failed:${result.stderr || result.stdout || result.status}`);",
+    "  return result.stdout || '';",
+    "}",
+    "function readWorkflowStateFile(filePath) {",
+    "  if (!filePath) return null;",
+    "  const raw = dockerExec(['node', '-e', \"const fs=require('fs');const p=process.argv[1];process.stdout.write(fs.existsSync(p)?fs.readFileSync(p,'utf8'):'{}');\", filePath]);",
+    "  return JSON.parse(raw.trim() || '{}');",
+    "}",
+    "function writeWorkflowStateFile(filePath, value) {",
+    "  if (!filePath) return false;",
+    "  dockerExec(['node', '-e', \"const fs=require('fs');fs.writeFileSync(process.argv[1], process.argv[2]);fs.chmodSync(process.argv[1],0o666);\", filePath, JSON.stringify(value || {})]);",
+    "  return true;",
+    "}",
+    "function stateUrl(pathname) {",
+    "  if (!pathname) return null;",
+    "  const base = String(process.env.PLAYWRIGHT_BASE_URL || '').replace(/\\/+$/, '');",
+    "  const route = String(pathname).replace(/^\\/+/, '');",
+    "  const url = `${base}/${route}`;",
+    "  const separator = url.includes('?') ? '&' : '?';",
+    "  return `${url}${separator}__synthi_state_nonce=${Date.now()}_${Math.random().toString(36).slice(2)}`;",
+    "}",
+    "async function readWorkflowState(pathname) {",
+    "  const url = stateUrl(pathname);",
+    "  if (!url) return {};",
+    "  const response = await fetch(url, { cache: 'no-store' });",
+    "  if (!response.ok) throw new Error(`state_read_failed_${response.status}`);",
+    "  return await response.json();",
+    "}",
+    "async function resetWorkflowState(pathname) {",
+    "  const url = stateUrl(pathname);",
+    "  if (!url) return;",
+    "  const response = await fetch(url, { method: 'DELETE' });",
+    "  if (!response.ok) throw new Error(`state_reset_failed_${response.status}`);",
+    "}",
+    "async function readExpectedWorkflowState(pathname, filePath) {",
+    "  const fileState = readWorkflowStateFile(filePath);",
+    "  if (fileState !== null) return fileState;",
+    "  return await readWorkflowState(pathname);",
+    "}",
+    "async function resetExpectedWorkflowState(pathname, filePath, value) {",
+    "  if (pathname) { await resetWorkflowState(pathname); return; }",
+    "  writeWorkflowStateFile(filePath, value);",
+    "}",
+    "function assertStateContains(actual, expected, path = '') {",
+    "  for (const [key, value] of Object.entries(expected || {})) {",
+    "    const nextPath = path ? `${path}.${key}` : key;",
+    "    if (value && typeof value === 'object' && !Array.isArray(value)) {",
+    "      assertStateContains(actual?.[key], value, nextPath);",
+    "    } else if (actual?.[key] !== value) {",
+    "      throw new Error(`state_mismatch:${nextPath}:${JSON.stringify(actual?.[key])}:${JSON.stringify(value)}`);",
+    "    }",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
   await writeFile(resetScript, [
     "import { writeFile } from 'node:fs/promises';",
+    "import { spawnSync } from 'node:child_process';",
+    stateHelpers,
     `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('reset_wrong_cwd');`,
+    `await resetExpectedWorkflowState(${JSON.stringify(stateEndpoint ?? "")}, ${JSON.stringify(stateFilePath)}, ${JSON.stringify(resetExpectedState)});`,
     `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL, resetProfileId: process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID, seedId: process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID }));`,
     "",
   ].join("\n"));
   await writeFile(resetAssertionScript, [
     "import { readFile, writeFile } from 'node:fs/promises';",
+    "import { spawnSync } from 'node:child_process';",
+    stateHelpers,
     `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('reset_assertion_wrong_cwd');`,
     `const markerPath = ${JSON.stringify(markerPath)};`,
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
     "if (!marker.reset) throw new Error('reset_not_run');",
     "if (marker.resetProfileId !== process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID) throw new Error('reset_profile_id_mismatch');",
     "if (marker.seedId !== process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID) throw new Error('state_seed_id_mismatch');",
+    `assertStateContains(await readExpectedWorkflowState(${JSON.stringify(stateEndpoint ?? "")}, ${JSON.stringify(stateFilePath)}), ${JSON.stringify(resetExpectedState)});`,
     "await writeFile(markerPath, JSON.stringify({ ...marker, resetAssertion: true }));",
     "",
   ].join("\n"));
@@ -737,6 +820,8 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
   ].join("\n"));
   await writeFile(postconditionScript, [
     "import { readFile, writeFile } from 'node:fs/promises';",
+    "import { spawnSync } from 'node:child_process';",
+    stateHelpers,
     `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('postcondition_wrong_cwd');`,
     `const markerPath = ${JSON.stringify(markerPath)};`,
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
@@ -744,6 +829,9 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     "if (process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID !== marker.resetProfileId) throw new Error('reset_profile_id_mismatch');",
     "const attestation = await readFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, 'utf8');",
     "if (!attestation.includes(process.env.SYNTHI_WORKFLOW_CI_RUN_ID)) throw new Error('attestation_run_id_missing');",
+    ...(postconditionExpectedState ? [
+      `assertStateContains(await readExpectedWorkflowState(${JSON.stringify(stateEndpoint ?? "")}, ${JSON.stringify(stateFilePath)}), ${JSON.stringify(postconditionExpectedState)});`,
+    ] : []),
     "await writeFile(markerPath, JSON.stringify({ ...marker, postcondition: true }));",
     "",
   ].join("\n"));
@@ -1744,10 +1832,45 @@ function staticServerSource() {
     "import { fileURLToPath } from 'node:url';",
     "",
     "const root = path.dirname(fileURLToPath(import.meta.url));",
+    "const workflowStatePath = path.join(root, '.synthi-workflow-state.json');",
     "const mime = new Map([['.html', 'text/html; charset=utf-8'], ['.js', 'application/javascript'], ['.css', 'text/css']]);",
+    "async function readRequestBody(req) {",
+    "  const chunks = [];",
+    "  for await (const chunk of req) chunks.push(Buffer.from(chunk));",
+    "  return Buffer.concat(chunks).toString('utf8');",
+    "}",
+    "function sendJson(res, status, value) {",
+    "  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });",
+    "  res.end(JSON.stringify(value));",
+    "}",
     "const server = http.createServer(async (req, res) => {",
     "  const url = new URL(req.url || '/', 'http://workspace.local');",
     "  let pathname = decodeURIComponent(url.pathname);",
+    "  if (pathname === '/__synthi-workflow-state') {",
+    "    try {",
+    "      if (req.method === 'GET') {",
+    "        const body = await readFile(workflowStatePath, 'utf8').catch(() => '{}');",
+    "        sendJson(res, 200, JSON.parse(body || '{}'));",
+    "        return;",
+    "      }",
+    "      if (req.method === 'DELETE') {",
+    "        await writeFile(workflowStatePath, '{}');",
+    "        sendJson(res, 200, { ok: true, state: {} });",
+    "        return;",
+    "      }",
+    "      if (req.method === 'POST' || req.method === 'PUT') {",
+    "        const raw = await readRequestBody(req);",
+    "        const state = raw.trim() ? JSON.parse(raw) : {};",
+    "        await writeFile(workflowStatePath, JSON.stringify(state, null, 2));",
+    "        sendJson(res, 200, { ok: true, state });",
+    "        return;",
+    "      }",
+    "      sendJson(res, 405, { ok: false, error: 'method_not_allowed' });",
+    "    } catch (err) {",
+    "      sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });",
+    "    }",
+    "    return;",
+    "  }",
     "  if (pathname === '/' || !path.extname(pathname)) pathname = '/index.html';",
     "  const filePath = path.resolve(root, '.' + pathname);",
     "  if (!filePath.startsWith(root)) { res.writeHead(403); res.end('Forbidden'); return; }",
@@ -2540,7 +2663,9 @@ const CASES = [
     id: "iframe-form",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: [],
+    expectedReplayText: [
+      "Saved Ada Lovelace",
+    ],
     expectedReplayCode: [
       "page.frameLocator(\"iframe[data-testid=\\\"checkout-frame\\\"]\")",
       "Mutation boundary:",
@@ -3186,7 +3311,10 @@ const CASES = [
     id: "range-slider",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: [],
+    expectedReplayText: [
+      "Budget 75",
+      "Applied budget 75",
+    ],
     expectedReplayCode: [
       "const inputValue1 = readRequiredEnv(\"BUDGET\"",
       "element.dispatchEvent(new Event('input', { bubbles: true }));",
@@ -3752,7 +3880,9 @@ const CASES = [
     id: "hover-menu",
     minSteps: 2,
     expectedActions: ["hover", "click"],
-    expectedReplayText: [],
+    expectedReplayText: [
+      "Archived report",
+    ],
     expectedReplayCode: [
       "await target1.hover();",
     ],
@@ -4260,12 +4390,22 @@ const CASES = [
     expectedActions: ["click"],
     exportMode: "ciIsolated",
     ciIsolatedReplay: true,
+    ciStateEndpoint: {
+      path: "/__synthi-workflow-state",
+      workspaceFile: ".synthi-workflow-state.json",
+      resetState: {},
+      expectedState: {
+        release_status: "published",
+        release_label: "Published release",
+      },
+    },
     expectedReplayText: [
       "Published release card",
     ],
     expectedReplayCode: [
       "ALLOW_WORKFLOW_MUTATION",
       "await target1.click();",
+      "page.getByText(\"Published release card\", { exact: true })",
     ],
     forbiddenReplayCode: [
       "Mutation boundary:",
@@ -4292,9 +4432,17 @@ const CASES = [
         "const card = document.querySelector('[data-testid=\"release-card\"]');",
         "const label = document.querySelector('[data-testid=\"release-label\"]');",
         "const status = document.querySelector('#status');",
-        "document.querySelector('[data-testid=\"publish-release\"]').addEventListener('click', () => {",
+        "document.querySelector('[data-testid=\"publish-release\"]').addEventListener('click', async () => {",
+        "  const nextLabel = 'Published release';",
+        "  const response = await fetch('./__synthi-workflow-state', {",
+        "    method: 'POST',",
+        "    headers: { 'content-type': 'application/json' },",
+        "    body: JSON.stringify({ release_status: 'published', release_label: nextLabel }),",
+        "  });",
+        "  const result = await response.json();",
+        "  if (!response.ok || result?.state?.release_status !== 'published') throw new Error('workflow_state_write_failed');",
         "  card.dataset.state = 'published';",
-        "  label.textContent = 'Published release';",
+        "  label.textContent = nextLabel;",
         "  status.textContent = 'Published release card';",
         "});",
         "",

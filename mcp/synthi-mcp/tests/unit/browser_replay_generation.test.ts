@@ -48,6 +48,7 @@ describe("browser replay generation scenarios", () => {
 
     expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL;");
     expect(generated.code).toContain("Set PLAYWRIGHT_BASE_URL to the app or forwarded preview URL for this workflow.");
+    expect(generated.code).toContain("return route ? `${base}/${route}` : `${base}/`;");
     expect(generated.code).toContain("await page.goto(workflowUrl(\"/dashboard?framework=react\"));");
     expect(generated.code).not.toContain("/port/37797");
   });
@@ -68,7 +69,13 @@ describe("browser replay generation scenarios", () => {
         event_id: "save",
         event_seq: 2,
         action: "click",
-        detail: { element: { tag: "button", role: "button", name: "Save settings", source_id: "settings.save" } },
+        url: "http://localhost:1234/port/37797/settings",
+        detail: {
+          network_event: true,
+          network_method: "POST",
+          network_url: "http://localhost:1234/port/37797/api/settings",
+          element: { tag: "button", role: "button", name: "Save settings", source_id: "settings.save" },
+        },
         locator_candidates: [
           { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save settings\" })", confidence: 0.98, reason: "accessible_role_and_name" },
         ],
@@ -79,8 +86,13 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("ALLOW_WORKFLOW_MUTATION");
     expect(generated.code).toContain("SYNTHI_WORKFLOW_REPLAY_ATTESTATION");
     expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"EMAIL\", \"email\");");
+    expect(generated.code).toContain("async function installWorkflowNetworkTracker(page)");
+    expect(generated.code).toContain("await installWorkflowNetworkTracker(page);");
     expect(generated.code).toContain("await target2.click();");
+    expect(generated.code).toContain("await waitForWorkflowNetworkSettled(page);");
     expect(generated.code).toContain("await recordWorkflowStep(\"save\");");
+    expect(generated.code).not.toContain("/port/37797");
+    expect(generated.code.indexOf("await waitForWorkflowNetworkSettled(page);")).toBeLessThan(generated.code.indexOf("await recordWorkflowStep(\"save\");"));
     expect(generated.code).not.toContain("Mutation boundary:");
     expect(generated.warnings).toContain("ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary save");
   });
