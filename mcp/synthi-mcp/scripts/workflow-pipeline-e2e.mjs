@@ -3546,6 +3546,114 @@ const CASES = [
     },
   },
   {
+    id: "popup-iframe-form",
+    minSteps: 3,
+    expectedActions: ["click", "fill"],
+    expectedReplayText: [
+      "Popup iframe preview",
+    ],
+    expectedReplayCode: [
+      "page.waitForEvent('popup')",
+      "popup1.frameLocator(\"iframe[data-testid=\\\"popup-frame\\\"]\").getByLabel(\"Popup frame note\")",
+      "popup1.frameLocator(\"iframe[data-testid=\\\"popup-frame\\\"]\").getByRole(\"button\", { name: \"Preview popup frame\" })",
+    ],
+    forbiddenReplayCode: [
+      "page.frameLocator(\"iframe[data-testid=\\\"popup-frame\\\"]\")",
+      "Mutation boundary:",
+    ],
+    liveReplayMode: "sameSession",
+    replayEnv: () => ({ POPUP_FRAME_NOTE: "contracts" }),
+    files: () => [
+      ...commonFiles({
+        title: "Popup Iframe Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Popup Iframe Workflow</h1>",
+          "      <a href=\"/popup-shell.html\" target=\"_blank\" rel=\"noreferrer\" role=\"button\" data-testid=\"open-popup-frame\" data-synthi-source-id=\"popup.iframe.open\">Open popup frame</a>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+        ].join("\n"),
+        script: [
+          "document.querySelector('[data-testid=\"open-popup-frame\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Popup frame opened';",
+          "});",
+          "",
+        ].join("\n"),
+        styles: [
+          "iframe { width: min(620px, calc(100vw - 48px)); height: 260px; border: 1px solid #b9b9b2; background: white; }",
+        ],
+      }),
+      {
+        path: "popup-shell.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Popup Frame Shell</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Popup Frame Shell</h1>",
+          "      <iframe data-testid=\"popup-frame\" title=\"Popup embedded workflow\" src=\"/popup-frame.html\"></iframe>",
+          "    </main>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "popup-frame.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Popup Frame Form</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Popup Frame Form</h1>",
+          "      <label for=\"popup-frame-note\">Popup frame note</label>",
+          "      <input id=\"popup-frame-note\" aria-label=\"Popup frame note\" data-synthi-source-id=\"popup.iframe.note\" placeholder=\"Note\">",
+          "      <button type=\"button\" data-testid=\"preview-popup-frame\" data-synthi-source-id=\"popup.iframe.preview\">Preview popup frame</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script type=\"module\" src=\"/popup-frame.js\"></script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "popup-frame.js",
+        encoding: "utf8",
+        content: [
+          "const note = document.querySelector('#popup-frame-note');",
+          "document.querySelector('[data-testid=\"preview-popup-frame\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = `Popup iframe preview for ${note.value}`;",
+          "});",
+          "",
+        ].join("\n"),
+      },
+    ],
+    teach: async (page) => {
+      const popupPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open popup frame" }).click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState("domcontentloaded");
+      const frame = popup.frameLocator('iframe[data-testid="popup-frame"]');
+      await frame.getByLabel("Popup frame note").fill("contracts");
+      await frame.getByRole("button", { name: "Preview popup frame" }).click();
+      await frame.getByText("Popup iframe preview for contracts").waitFor();
+      return popup;
+    },
+  },
+  {
     id: "rich-text-editor",
     minSteps: 2,
     expectedActions: ["fill", "click"],
