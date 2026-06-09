@@ -106,8 +106,71 @@ export async function browserWorkflowOverlayAction(input: {
   }
 
   if (input.action === "teach") {
-    const response = browserBeginTeachTool({
-      tab_id: input.tab_id,
+    const targetUrl = httpUrlOpt(input.page_url ?? input.url);
+    if (!targetUrl) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: "The current page is not an HTTP preview URL.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "invalid_preview_url",
+      };
+    }
+    if (!isBrowserPreviewUrlAllowed(targetUrl, { workspace_url: runtime.workspace_url ?? undefined })) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach blocked",
+        detail: "The current page does not match this workspace's preview policy.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "preview_target_not_allowed",
+      };
+    }
+    const targetInput = {
+      workspace_url: runtime.workspace_url ?? input.page_url,
+      preferred_url: targetUrl,
+      preview_url: targetUrl,
+    };
+    const allTabs = await browserPlaywrightAdapter.listTabs();
+    const target = resolveBrowserPreviewTarget(allTabs, targetInput, process.env);
+    if (!target.ok) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: target.reason,
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: target.error,
+      };
+    }
+    browserBroker.requestConsent(target.tab.url, "granted", "workspace_preview_teach_user_gesture", {
+      screenshot: true,
+      diagnostics: false,
+    });
+    browserBroker.registerTabs(allTabs);
+    const selected = browserBroker.selectTab(target.tab.tab_id);
+    if (!selected) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: "The current preview tab is not authorized for workflow teaching.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "tab_not_authorized",
+      };
+    }
+    await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
+    const response = await browserBeginTeachTool({
+      tab_id: selected?.tab_id ?? input.tab_id,
       goal: `Teach workflow for ${runtime.workspace_id || "current workspace"}`,
     });
     if (response.isError) return workflowOverlayError("Teach failed", response);
@@ -729,7 +792,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_observe_preview":
         return await browserObservePreviewTool(args);
       case "synthi_browser_begin_teach":
-        return browserBeginTeachTool(args);
+        return await browserBeginTeachTool(args);
       case "synthi_browser_end_teach":
         return browserEndTeachTool(args);
       case "synthi_browser_attach":
@@ -751,7 +814,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_snapshot":
         return await browserSnapshotTool(args);
       case "synthi_browser_start_teach":
-        return browserStartTeachTool(args);
+        return await browserStartTeachTool(args);
       case "synthi_browser_stop_teach":
         return browserStopTeachTool(args);
       case "synthi_browser_get_trace":
@@ -1033,16 +1096,21 @@ async function browserSnapshotTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({ ok: true, snapshot: gated.snapshot });
 }
 
-function browserStartTeachTool(args: unknown): ToolResponse {
+async function browserStartTeachTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
   const result = browserBroker.startTeachMode(tab.tab_id);
   if (!result.ok) return errorResponse(result.error);
+  const capture = await browserPlaywrightAdapter.refreshTeachCapture(result.tab.tab_id);
+  if (!capture.ok) {
+    browserBroker.stopTeachMode("teach_capture_install_failed");
+    return errorResponse(capture.error);
+  }
   return jsonResponse({ ok: true, teach: browserBroker.teachState(), tab: result.tab, origin: result.origin });
 }
 
-function browserBeginTeachTool(args: unknown): ToolResponse {
+async function browserBeginTeachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const result = browserStartTeachTool(args);
+  const result = await browserStartTeachTool(args);
   if (result.isError) return result;
   return jsonResponse({
     ...(result.structuredContent ?? {}),

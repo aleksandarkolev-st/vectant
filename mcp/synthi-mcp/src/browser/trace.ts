@@ -119,7 +119,20 @@ export class BrowserTraceRecorder {
     if (match === null) return null;
     const event = this.events[match];
     if (!event) return null;
-    const detail = redactStructuredValue({ ...(event.detail ?? {}), ...input.detail });
+    const detail = redactStructuredValue(mergeActionAnnotationDetail(event.detail, input.detail));
+    event.detail = detail.value as Record<string, unknown>;
+    if (input.security) event.security = { ...(event.security ?? {}), ...input.security };
+    if (detail.redacted) event.redacted = true;
+    return this.sanitizeEvent(event);
+  }
+
+  annotateAction(event_id: string, input: {
+    detail: Record<string, unknown>;
+    security?: BrowserTraceEvent["security"];
+  }): BrowserTraceEvent | null {
+    const event = this.events.find((candidate) => candidate.event_id === event_id);
+    if (!event || (event.kind !== "human_action" && event.kind !== "agent_action")) return null;
+    const detail = redactStructuredValue(mergeActionAnnotationDetail(event.detail, input.detail));
     event.detail = detail.value as Record<string, unknown>;
     if (input.security) event.security = { ...(event.security ?? {}), ...input.security };
     if (detail.redacted) event.redacted = true;
@@ -240,6 +253,21 @@ export class BrowserTraceRecorder {
   private newTraceId(): string {
     return `browser_trace_${randomUUID()}`;
   }
+}
+
+function mergeActionAnnotationDetail(
+  existing: Record<string, unknown> | undefined,
+  annotation: Record<string, unknown>
+): Record<string, unknown> {
+  const detail: Record<string, unknown> = { ...(existing ?? {}), ...annotation };
+  if (typeof detail["dialog_prompt_value"] === "string") {
+    detail["dialog_prompt_value"] = "[REDACTED]";
+    detail["dialog_prompt_value_redacted"] = true;
+  }
+  if (annotation["observed_effects_redacted"] === true && annotation["observed_effects"] === undefined) {
+    delete detail["observed_effects"];
+  }
+  return detail;
 }
 
 export interface GeneratedScript {

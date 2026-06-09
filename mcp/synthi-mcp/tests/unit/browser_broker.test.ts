@@ -196,6 +196,52 @@ describe("browser broker privacy boundary", () => {
     expect(JSON.stringify(event)).not.toMatch(/plain-token-value|plain-refresh-token|abcdefghijklmnop123456/);
   });
 
+  it("removes derived prompt effects when a queued dialog annotation redacts them", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const annotated = browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      detail: {
+        dialog_event: true,
+        dialog_type: "prompt",
+        dialog_message: "Enter workspace name",
+        dialog_prompt_value: "Taught Secret Workspace",
+        dialog_accepted: true,
+        observed_effects_redacted: true,
+      },
+      within_ms: 5000,
+      observed_at: 1000,
+    });
+
+    expect(annotated).toEqual({ ok: true, event: null });
+
+    const recorded = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/settings",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Rename workspace" },
+      detail: { observed_effects: ["Renamed workspace to Taught Secret Workspace"] },
+      observed_at: 1100,
+    });
+
+    expect(recorded.ok).toBe(true);
+    const event = browserBroker.traceSnapshot()[0];
+    expect(event?.detail).toEqual(expect.objectContaining({
+      dialog_event: true,
+      dialog_prompt_value: "[REDACTED]",
+      dialog_prompt_value_redacted: true,
+      observed_effects_redacted: true,
+    }));
+    expect(event?.detail).not.toHaveProperty("observed_effects");
+    expect(JSON.stringify(event)).not.toContain("Taught Secret Workspace");
+  });
+
   it("requires separate consent for iframe and popup origins", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);

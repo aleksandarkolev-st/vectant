@@ -88,6 +88,18 @@ interface BrowserTeachAuthStartDiagnostic {
   matched_checkpoint_id: string | null;
 }
 
+interface PendingHumanActionAnnotation {
+  tab_id: string;
+  url: string;
+  origin: string;
+  actions?: BrowserActionKind[];
+  detail: Record<string, unknown>;
+  security: BrowserTraceEvent["security"];
+  within_ms: number;
+  observed_at: number;
+  queued_at: number;
+}
+
 export interface BrowserRecordingIssue {
   issue_id: string;
   at: number;
@@ -135,6 +147,7 @@ export class BrowserBroker {
   private teachAnswers: BrowserTeachQuestionAnswer[] = [];
   private workflows = new Map<string, BrowserWorkflowArtifact>();
   private recordingIssues: BrowserRecordingIssue[] = [];
+  private pendingHumanActionAnnotations: PendingHumanActionAnnotation[] = [];
   private pendingDeniedTargetOriginDiscards: Array<{
     tab_id: string;
     actions: BrowserActionKind[] | null;
@@ -294,6 +307,7 @@ export class BrowserBroker {
     if (authScope) this.pendingTeachAuthScopes.delete(origin);
     this.trace.beginTrace();
     this.recordingIssues = [];
+    this.pendingHumanActionAnnotations = [];
     this.pendingDeniedTargetOriginDiscards = [];
     this.teachMode = { active: true, tab_id, origin, auth_scope: authScope };
     this.lastTeachAuthStartDiagnostic = {
@@ -556,6 +570,7 @@ export class BrowserBroker {
       security: this.securityForUrl(selection.url, detail),
       observed_at: selection.observed_at,
     });
+    this.applyPendingHumanActionAnnotations(event);
     eventLog.push({ kind: "browser", action: "human_action", payload: { event, lease_conflict } });
     if (lease_conflict) {
       eventLog.push({
@@ -597,7 +612,70 @@ export class BrowserBroker {
       observed_at: input.observed_at,
     });
     if (event) eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event } });
+    if (!event) {
+      this.queuePendingHumanActionAnnotation({
+        tab_id: input.tab_id,
+        url: input.url,
+        origin: normalized.origin,
+        actions: input.actions,
+        detail,
+        security: this.securityForUrl(input.url, detail),
+        within_ms: input.within_ms ?? 5000,
+        observed_at: typeof input.observed_at === "number" && Number.isFinite(input.observed_at) ? Math.floor(input.observed_at) : Date.now(),
+        queued_at: Date.now(),
+      });
+    }
     return { ok: true, event };
+  }
+
+  private queuePendingHumanActionAnnotation(annotation: PendingHumanActionAnnotation): void {
+    const now = Date.now();
+    this.pendingHumanActionAnnotations = this.pendingHumanActionAnnotations
+      .filter((candidate) => now - candidate.queued_at <= Math.max(candidate.within_ms, 1000));
+    this.pendingHumanActionAnnotations.push(annotation);
+    if (this.pendingHumanActionAnnotations.length > 50) {
+      this.pendingHumanActionAnnotations.splice(0, this.pendingHumanActionAnnotations.length - 50);
+    }
+    eventLog.push({
+      kind: "browser",
+      action: "human_action_annotation_queued",
+      payload: {
+        tab_id: annotation.tab_id,
+        actions: annotation.actions ?? null,
+        origin: annotation.origin,
+        within_ms: annotation.within_ms,
+      },
+    });
+  }
+
+  private applyPendingHumanActionAnnotations(event: BrowserTraceEvent): void {
+    if (this.pendingHumanActionAnnotations.length === 0) return;
+    const remaining: PendingHumanActionAnnotation[] = [];
+    const now = Date.now();
+    for (const annotation of this.pendingHumanActionAnnotations) {
+      if (now - annotation.queued_at > Math.max(annotation.within_ms, 1000)) continue;
+      if (!this.pendingHumanActionAnnotationMatches(annotation, event)) {
+        remaining.push(annotation);
+        continue;
+      }
+      const annotated = this.trace.annotateAction(event.event_id, {
+        detail: annotation.detail,
+        security: annotation.security,
+      });
+      if (annotated) {
+        eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event: annotated, pending: true } });
+      }
+    }
+    this.pendingHumanActionAnnotations = remaining;
+  }
+
+  private pendingHumanActionAnnotationMatches(annotation: PendingHumanActionAnnotation, event: BrowserTraceEvent): boolean {
+    if (event.tab_id !== annotation.tab_id) return false;
+    if (!event.action) return false;
+    if (annotation.actions && !annotation.actions.includes(event.action)) return false;
+    if (event.origin !== annotation.origin) return false;
+    const eventTs = typeof event.ts === "number" && Number.isFinite(event.ts) ? event.ts : Date.now();
+    return Math.abs(annotation.observed_at - eventTs) <= annotation.within_ms;
   }
 
   private discardDeniedTargetOriginAction(

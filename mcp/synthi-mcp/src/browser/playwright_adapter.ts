@@ -746,6 +746,13 @@ export class BrowserPlaywrightAdapter {
     return [...(this.networkEvents.get(tab_id) ?? [])];
   }
 
+  async refreshTeachCapture(tab_id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const page = this.pages.get(tab_id)?.page;
+    if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
+    await this.installTeachCapture(page, tab_id);
+    return { ok: true };
+  }
+
   resetForTests(): void {
     this.browser = null;
     this.cdpUrl = null;
@@ -815,6 +822,7 @@ export class BrowserPlaywrightAdapter {
         });
       });
       page.on("request", (request) => {
+        if (isWorkflowBridgeInternalRequest(request.url())) return;
         const redacted = redactUrl(request.url());
         const method = request.method().toUpperCase();
         this.pushEvent(this.networkEvents, tab_id, {
@@ -912,8 +920,8 @@ export class BrowserPlaywrightAdapter {
           },
         });
       });
-      await this.installTeachCapture(page, tab_id);
     }
+    await this.installTeachCapture(page, tab_id);
     if (this.workflowOverlayEnabled) {
       const visible = await this.installWorkflowOverlay(page, tab_id);
       if (visible) {
@@ -1162,7 +1170,7 @@ export class BrowserPlaywrightAdapter {
   }
 
   private async installWorkflowOverlay(page: Page, tab_id: string): Promise<boolean> {
-    const bindingName = `__synthiWorkflowOverlayAction_${tab_id.replace(/[^a-zA-Z0-9_]/g, "_")}_${Date.now().toString(36)}`;
+    const bindingName = `__synthiWorkflowOverlayAction_${tab_id.replace(/[^a-zA-Z0-9_]/g, "_")}`;
     await page.exposeBinding(bindingName, async (_source, payload: unknown) => {
       const request = workflowOverlayRequestOpt(payload);
       if (!request) return { ok: false, status: "error", error: "invalid_overlay_action" };
@@ -2131,6 +2139,7 @@ function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, 
       if (redacted) detail[`${key}_redacted`] = true;
     }
   }
+  if (promptValue) detail["observed_effects_redacted"] = true;
   return detail;
 }
 
@@ -2209,6 +2218,84 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
     const annotationBindingName = ${JSON.stringify(annotationBindingName)};
+    const queuedDialogCaptureVersion = 'dialog-response-queue-v1';
+    function dialogText(value) {
+      return typeof value === 'string' ? value.trim().replace(/\\s+/g, ' ').slice(0, 160) : '';
+    }
+    function nextQueuedDialogResponse(kind) {
+      const queue = window.__SYNTHI_TEACH_DIALOG_RESPONSES__;
+      if (!Array.isArray(queue) || queue.length === 0) return null;
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        if (!item || typeof item !== 'object') continue;
+        const itemKind = dialogText(String(item.type || item.kind || ''));
+        if (itemKind && itemKind !== kind) continue;
+        queue.splice(index, 1);
+        return item;
+      }
+      return null;
+    }
+    function annotateQueuedDialog(detail) {
+      if (!window[annotationBindingName]) return;
+      window[annotationBindingName]({
+        url: location.href,
+        origin: location.origin,
+        actions: ['click', 'dblclick', 'press'],
+        detail,
+        within_ms: 5000,
+        observed_at: Date.now(),
+      }).catch(() => {});
+    }
+    function installQueuedDialogResponseCapture() {
+      if (window.__SYNTHI_DIALOG_QUEUE_CAPTURE_VERSION__ === queuedDialogCaptureVersion) return;
+      const fallbackFns = window.__SYNTHI_DIALOG_QUEUE_CAPTURE_FALLBACKS__ || {
+        alert: window.alert.bind(window),
+        confirm: window.confirm.bind(window),
+        prompt: window.prompt.bind(window),
+      };
+      window.__SYNTHI_DIALOG_QUEUE_CAPTURE_FALLBACKS__ = fallbackFns;
+      window.__SYNTHI_DIALOG_QUEUE_CAPTURE_VERSION__ = queuedDialogCaptureVersion;
+      window.alert = (message) => {
+        const response = nextQueuedDialogResponse('alert');
+        if (!response) return fallbackFns.alert(message);
+        annotateQueuedDialog({
+          dialog_event: true,
+          dialog_type: 'alert',
+          dialog_message: dialogText(String(message || '')),
+          dialog_accepted: true,
+          dialog_runtime_response: true,
+        });
+      };
+      window.confirm = (message) => {
+        const response = nextQueuedDialogResponse('confirm');
+        if (!response) return fallbackFns.confirm(message);
+        const accepted = response.accepted !== false;
+        annotateQueuedDialog({
+          dialog_event: true,
+          dialog_type: 'confirm',
+          dialog_message: dialogText(String(message || '')),
+          dialog_accepted: accepted,
+          dialog_runtime_response: true,
+        });
+        return accepted;
+      };
+      window.prompt = (message, defaultValue) => {
+        const response = nextQueuedDialogResponse('prompt');
+        if (!response) return fallbackFns.prompt(message, defaultValue);
+        const value = response.accepted === false ? null : String(response.value ?? response.promptText ?? defaultValue ?? '');
+        annotateQueuedDialog({
+          dialog_event: true,
+          dialog_type: 'prompt',
+          dialog_message: dialogText(String(message || '')),
+          dialog_default_value: dialogText(String(defaultValue || '')),
+          dialog_accepted: value !== null,
+          dialog_prompt_value: value === null ? '' : String(value),
+          dialog_runtime_response: true,
+        });
+        return value;
+      };
+    }
+    installQueuedDialogResponseCapture();
     if (window.__SYNTHI_TEACH_CAPTURE_INSTALLED__) return;
     window.__SYNTHI_TEACH_CAPTURE_INSTALLED__ = true;
     const pending = new WeakMap();
@@ -2319,15 +2406,38 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       }, 0);
     }
 
+    function nextDialogResponse(kind) {
+      const queue = window.__SYNTHI_TEACH_DIALOG_RESPONSES__;
+      if (!Array.isArray(queue) || queue.length === 0) return null;
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        if (!item || typeof item !== 'object') continue;
+        const itemKind = text(String(item.type || item.kind || ''));
+        if (itemKind && itemKind !== kind) continue;
+        queue.splice(index, 1);
+        return item;
+      }
+      return null;
+    }
+
     function installDialogCapture() {
-      if (window.__SYNTHI_DIALOG_CAPTURE_INSTALLED__) return;
+      const dialogCaptureVersion = 'dialog-response-queue-v1';
+      if (window.__SYNTHI_DIALOG_CAPTURE_VERSION__ === dialogCaptureVersion) return;
+      const fallbackFns = window.__SYNTHI_DIALOG_CAPTURE_FALLBACKS__ || {
+        alert: window.alert.bind(window),
+        confirm: window.confirm.bind(window),
+        prompt: window.prompt.bind(window),
+      };
+      window.__SYNTHI_DIALOG_CAPTURE_FALLBACKS__ = fallbackFns;
       window.__SYNTHI_DIALOG_CAPTURE_INSTALLED__ = true;
-      const nativeAlert = window.alert.bind(window);
-      const nativeConfirm = window.confirm.bind(window);
-      const nativePrompt = window.prompt.bind(window);
+      window.__SYNTHI_DIALOG_CAPTURE_VERSION__ = dialogCaptureVersion;
+      const nativeAlert = fallbackFns.alert;
+      const nativeConfirm = fallbackFns.confirm;
+      const nativePrompt = fallbackFns.prompt;
       window.alert = (message) => {
         const beforeEffects = flushPendingActionSends();
-        nativeAlert(message);
+        const response = nextDialogResponse('alert');
+        if (!response) nativeAlert(message);
         annotateDialogTrigger({
           dialog_event: true,
           dialog_type: 'alert',
@@ -2337,7 +2447,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
       window.confirm = (message) => {
         const beforeEffects = flushPendingActionSends();
-        const accepted = nativeConfirm(message);
+        const response = nextDialogResponse('confirm');
+        const accepted = response ? response.accepted !== false : nativeConfirm(message);
         annotateDialogTrigger({
           dialog_event: true,
           dialog_type: 'confirm',
@@ -2348,7 +2459,12 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
       window.prompt = (message, defaultValue) => {
         const beforeEffects = flushPendingActionSends();
-        const value = nativePrompt(message, defaultValue);
+        const response = nextDialogResponse('prompt');
+        const value = response
+          ? response.accepted === false
+            ? null
+            : String(response.value ?? response.promptText ?? defaultValue ?? '')
+          : nativePrompt(message, defaultValue);
         annotateDialogTrigger({
           dialog_event: true,
           dialog_type: 'prompt',
@@ -3612,6 +3728,18 @@ function workflowOverlayBridgeToken(): string {
 
 function workflowOverlayBridgeKey(bridgeUrl: string, bridgeToken: string): string {
   return `${bridgeUrl}\n${bridgeToken}`;
+}
+
+function isWorkflowBridgeInternalRequest(value: string): boolean {
+  const bridgeUrl = workflowOverlayBridgeUrl();
+  if (!bridgeUrl) return false;
+  try {
+    const request = new URL(value);
+    const bridge = new URL(bridgeUrl);
+    return request.origin === bridge.origin && request.pathname.startsWith("/browser-workflows/");
+  } catch {
+    return false;
+  }
 }
 
 function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridgeToken: string): string {

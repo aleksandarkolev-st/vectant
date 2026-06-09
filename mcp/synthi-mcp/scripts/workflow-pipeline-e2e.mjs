@@ -1561,16 +1561,65 @@ async function clickWorkflowOverlay(page, action, expectedUrl = "", options = {}
   await waitForWorkflowOverlay(page);
   const button = page.getByTestId(testId).first();
   await expectButtonEnabled(page, button, `overlay:${action}`);
+  const events = [];
+  const onRequest = (request) => {
+    const url = request.url();
+    if (!url.includes("/browser-workflows")) return;
+    events.push({
+      type: "request",
+      url,
+      method: request.method(),
+      postData: request.postData()?.slice(0, 1000) || "",
+    });
+  };
+  const onResponse = (response) => {
+    const url = response.url();
+    if (!url.includes("/browser-workflows")) return;
+    events.push({ type: "response", url, status: response.status() });
+  };
+  const onRequestFailed = (request) => {
+    const url = request.url();
+    if (!url.includes("/browser-workflows")) return;
+    events.push({ type: "failed", url, error: request.failure()?.errorText || "unknown" });
+  };
+  page.on("request", onRequest);
+  page.on("response", onResponse);
+  page.on("requestfailed", onRequestFailed);
+  const actionResponsePromise = page.waitForResponse((response) => {
+    if (!response.url().includes("/browser-workflows/overlay")) return false;
+    const request = response.request();
+    if (request.method() !== "POST") return false;
+    try {
+      const postData = JSON.parse(request.postData() || "{}");
+      return postData?.action === action;
+    } catch {
+      return false;
+    }
+  }, { timeout: CFG.timeoutMs }).catch((err) => ({ __workflowHarnessError: err }));
   await button.click();
-  const deadline = Date.now() + CFG.timeoutMs;
-  while (Date.now() < deadline) {
-    const state = await workflowOverlayState(page);
-    if (action === "observe" && state.observed && (!expectedUrl || trimSlash(state.url) === trimSlash(expectedUrl))) return state;
-    if (action === "teach" && state.status === "recording") return state;
-    if (action === "stop" && !state.recording && (state.stepCount > 0 || options.allowZeroSteps === true)) return state;
-    await sleep(250);
+  try {
+    const actionResponse = await actionResponsePromise;
+    let actionBody = null;
+    if (actionResponse?.__workflowHarnessError) {
+      actionBody = { error: actionResponse.__workflowHarnessError instanceof Error ? actionResponse.__workflowHarnessError.message : String(actionResponse.__workflowHarnessError) };
+    } else if (actionResponse) {
+      actionBody = await actionResponse.json().catch((err) => ({ error: err instanceof Error ? err.message : String(err) }));
+    }
+    const deadline = Date.now() + CFG.timeoutMs;
+    while (Date.now() < deadline) {
+      const state = await workflowOverlayState(page);
+      if (action === "observe" && state.observed && (!expectedUrl || trimSlash(state.url) === trimSlash(expectedUrl))) return state;
+      if (action === "teach" && state.status === "recording") return state;
+      if (action === "stop" && !state.recording && (state.stepCount > 0 || options.allowZeroSteps === true)) return state;
+      await sleep(250);
+    }
+    const actionEvents = await page.evaluate(() => window.__synthiWorkflowActionEvents || []).catch(() => []);
+    throw new Error(`overlay ${action} did not settle; action body=${JSON.stringify(actionBody)} state=${JSON.stringify(await workflowOverlayState(page))}; workflow events=${JSON.stringify(events)} action events=${JSON.stringify(actionEvents)}`);
+  } finally {
+    page.off("request", onRequest);
+    page.off("response", onResponse);
+    page.off("requestfailed", onRequestFailed);
   }
-  throw new Error(`overlay ${action} did not settle; state=${JSON.stringify(await workflowOverlayState(page))}`);
 }
 
 async function parkWorkflowOverlay(page) {
@@ -1620,6 +1669,17 @@ async function workflowOverlayState(page) {
       bridgeUrl: host.getAttribute("data-synthi-workflow-bridge-url") || "",
     };
   });
+}
+
+async function queueTeachDialogResponse(page, response) {
+  await page.evaluate((dialogResponse) => {
+    const globalWindow = window;
+    const queue = Array.isArray(globalWindow.__SYNTHI_TEACH_DIALOG_RESPONSES__)
+      ? globalWindow.__SYNTHI_TEACH_DIALOG_RESPONSES__
+      : [];
+    queue.push(dialogResponse);
+    globalWindow.__SYNTHI_TEACH_DIALOG_RESPONSES__ = queue;
+  }, response);
 }
 
 async function clickWorkflowButton(page, labelPattern) {
@@ -4761,7 +4821,7 @@ const CASES = [
       ].join("\n"),
     }),
     teach: async (page) => {
-      page.once("dialog", (dialog) => dialog.accept());
+      await queueTeachDialogResponse(page, { type: "confirm", accepted: true });
       await page.getByRole("button", { name: "Confirm policy" }).click();
       await page.getByText("Confirmed policy").waitFor();
     },
@@ -4800,7 +4860,7 @@ const CASES = [
       ].join("\n"),
     }),
     teach: async (page) => {
-      page.once("dialog", (dialog) => dialog.accept("Taught Secret Workspace"));
+      await queueTeachDialogResponse(page, { type: "prompt", accepted: true, value: "Taught Secret Workspace" });
       await page.getByRole("button", { name: "Rename workspace" }).click();
       await page.getByText("Renamed workspace to Taught Secret Workspace").waitFor();
     },
