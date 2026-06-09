@@ -161,6 +161,24 @@ function traceEventsWithObservedEffect(trace, text) {
   });
 }
 
+function parameterizedTextAssertionSnippet(text, value) {
+  if (typeof text !== "string" || typeof value !== "string" || value.length === 0) return "";
+  if (!text.includes(value)) return "";
+  const parts = text.split(value);
+  if (parts.length < 2) return "";
+  return `parameterizedTextRegex(${JSON.stringify(parts)}`;
+}
+
+function generatedScriptIncludesExpectedText(generatedCode, trace, text) {
+  const code = String(generatedCode || "");
+  if (code.includes(text)) return true;
+  for (const event of traceEventsWithObservedEffect(trace, text)) {
+    const snippet = parameterizedTextAssertionSnippet(text, event?.value);
+    if (snippet && code.includes(snippet)) return true;
+  }
+  return false;
+}
+
 function slugPart(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
@@ -478,7 +496,7 @@ async function runCase({ testCase, container, context, runner }) {
     );
     if (Array.isArray(testCase.expectedReplayText) && testCase.expectedReplayText.length > 0) {
       const textExpectation = modeReachableExpectedReplayText(testCase.expectedReplayText, generated, contract, trace);
-      const missingText = textExpectation.required.filter((text) => !String(generated?.code || "").includes(text));
+      const missingText = textExpectation.required.filter((text) => !generatedScriptIncludesExpectedText(generated?.code, trace, text));
       const skippedDetail = textExpectation.skipped.length ? ` skipped_after_mutation_boundary=${textExpectation.skipped.length}` : "";
       record(
         testCase.id,
