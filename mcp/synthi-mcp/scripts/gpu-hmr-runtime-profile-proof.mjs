@@ -246,14 +246,14 @@ async function selfCheck() {
     runner: path.relative(REPO_ROOT, externalAdapter.runner).replace(/\\/g, '/'),
   });
   const controlled = normalizeRuntimeProofProfile({
-    ...DEFAULT_HIPRT_RUNTIME_PROFILE,
+    ...baseProfile,
     id: 'profile-controls-smoke',
     build: {
       cmakeArgs: ['-DSYNTHI_DEMO_CACHE=ON'],
       env: { SYNTHI_BUILD_CACHE_ROOT: '/tmp/synthi-cache' },
     },
     runtime: {
-      ...DEFAULT_HIPRT_RUNTIME_PROFILE.runtime,
+      ...baseProfile.runtime,
       env: { SYNTHI_RENDER_DETERMINISTIC: '1' },
     },
     deterministicVisualMode: {
