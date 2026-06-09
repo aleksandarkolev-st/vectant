@@ -1146,10 +1146,24 @@ function isPreviewProxyUrl(url: string): boolean {
 }
 
 function locatorExpressionForEvent(event: BrowserTraceEvent, locator: string, pageVar = "page"): string {
-  const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : null;
   const rooted = locator.replace(/^page\./, `${pageVar}.`);
-  if (!frameLocator) return rooted;
-  return rooted.replace(new RegExp(`^${escapeRegExp(pageVar)}\\.`), `${pageVar}.frameLocator(${JSON.stringify(frameLocator)}).`);
+  const frameLocatorChain = frameLocatorChainForEvent(event);
+  if (frameLocatorChain.length === 0) return rooted;
+  const framedRoot = frameLocatorChain.reduce(
+    (expr, frameLocator) => `${expr}.frameLocator(${JSON.stringify(frameLocator)})`,
+    pageVar
+  );
+  return rooted.replace(new RegExp(`^${escapeRegExp(pageVar)}\\.`), `${framedRoot}.`);
+}
+
+function frameLocatorChainForEvent(event: BrowserTraceEvent): string[] {
+  const rawChain = event.detail?.["frame_locator_chain"];
+  if (Array.isArray(rawChain)) {
+    const chain = rawChain.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    if (chain.length > 0) return chain;
+  }
+  const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : "";
+  return frameLocator.trim().length > 0 ? [frameLocator] : [];
 }
 
 function rememberPopupPage(popupPageByTab: Map<string, string>, event: BrowserTraceEvent, popupVar: string): void {

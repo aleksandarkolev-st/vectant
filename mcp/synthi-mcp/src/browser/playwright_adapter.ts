@@ -13,7 +13,9 @@ interface PageRecord {
 export interface FrameLocatorMetadata {
   frame_id: string;
   frame_locator: string;
+  frame_locator_chain?: string[];
   frame_locator_candidates: string[];
+  frame_locator_candidate_chain?: string[][];
   frame_url?: string;
 }
 
@@ -973,9 +975,13 @@ export class BrowserPlaywrightAdapter {
   }
 
   private resolveLocatorForEvent(page: Page, event: BrowserTraceEvent, selector: string | undefined): Locator {
-    const frameLocator = stringOpt(event.detail?.["frame_locator"]);
-    if (!frameLocator) return this.resolveLocator(page, selector);
-    return this.resolveLocatorFromRoot(page.frameLocator(frameLocator), selector);
+    const frameLocatorChain = frameLocatorChainForDetail(event.detail);
+    if (frameLocatorChain.length === 0) return this.resolveLocator(page, selector);
+    let root: Page | FrameLocator = page;
+    for (const frameLocator of frameLocatorChain) {
+      root = root.frameLocator(frameLocator);
+    }
+    return this.resolveLocatorFromRoot(root, selector);
   }
 
   private resolveLocatorFromRoot(root: Page | FrameLocator, selector: string | undefined): Locator {
@@ -1251,6 +1257,24 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
 
 async function frameLocatorMetadataForFrame(page: Page, frame: Frame): Promise<FrameLocatorMetadata | null> {
   if (frame === page.mainFrame()) return null;
+  const chain: FrameLocatorMetadata[] = [];
+  let current: Frame | null = frame;
+  while (current && current !== page.mainFrame()) {
+    const metadata = await frameLocatorMetadataForSingleFrame(current);
+    if (!metadata) return null;
+    chain.unshift(metadata);
+    current = current.parentFrame();
+  }
+  const leaf = chain.at(-1);
+  if (!leaf) return null;
+  return {
+    ...leaf,
+    frame_locator_chain: chain.map((metadata) => metadata.frame_locator),
+    frame_locator_candidate_chain: chain.map((metadata) => metadata.frame_locator_candidates),
+  };
+}
+
+async function frameLocatorMetadataForSingleFrame(frame: Frame): Promise<FrameLocatorMetadata | null> {
   const handle = await frame.frameElement().catch(() => null);
   if (!handle) return null;
   try {
@@ -1364,9 +1388,13 @@ export function enrichCapturedFramePayload(payload: unknown, metadata: FrameLoca
     detail: {
       ...detail,
       frame_locator: stringOpt(detail["frame_locator"]) ?? metadata.frame_locator,
+      frame_locator_chain: stringArrayOpt(detail["frame_locator_chain"]) ?? metadata.frame_locator_chain ?? [metadata.frame_locator],
       frame_locator_candidates: Array.isArray(detail["frame_locator_candidates"])
         ? detail["frame_locator_candidates"]
         : metadata.frame_locator_candidates,
+      frame_locator_candidate_chain: Array.isArray(detail["frame_locator_candidate_chain"])
+        ? detail["frame_locator_candidate_chain"]
+        : metadata.frame_locator_candidate_chain ?? [metadata.frame_locator_candidates],
       ...(frameUrl ? { frame_url: frameUrl } : {}),
       ...(frameOrigin ? { frame_origin: frameOrigin } : {}),
     },
@@ -1474,9 +1502,16 @@ function textSelectionRangeForEvent(event: BrowserTraceEvent | undefined): { sta
 type ClickModifier = "Alt" | "Control" | "Meta" | "Shift";
 
 function needsEventAwareReplay(event: BrowserTraceEvent, action: BrowserActionKind): boolean {
-  if (stringOpt(event.detail?.["frame_locator"])) return true;
+  if (frameLocatorChainForDetail(event.detail).length > 0) return true;
   if (action === "scroll" && isWheelScrollEvent(event)) return true;
   return (action === "click" || action === "dblclick" || action === "contextmenu") && clickModifiersForEvent(event).length > 0;
+}
+
+function frameLocatorChainForDetail(detail: Record<string, unknown> | undefined): string[] {
+  const chain = stringArrayOpt(detail?.["frame_locator_chain"]);
+  if (chain && chain.length > 0) return chain;
+  const frameLocator = stringOpt(detail?.["frame_locator"]);
+  return frameLocator ? [frameLocator] : [];
 }
 
 function isWheelScrollEvent(event: BrowserTraceEvent): boolean {

@@ -1691,6 +1691,105 @@ const CASES = [
     },
   },
   {
+    id: "nested-iframe-form",
+    minSteps: 2,
+    expectedActions: ["fill", "click"],
+    expectedReplayText: [
+      "Nested preview",
+    ],
+    expectedReplayCode: [
+      "page.frameLocator(\"iframe[data-testid=\\\"outer-frame\\\"]\").frameLocator(\"iframe[data-testid=\\\"inner-frame\\\"]\")",
+      "getByLabel(\"Cardholder\")",
+      "getByRole(\"button\", { name: \"Preview nested cardholder\" })",
+    ],
+    forbiddenReplayCode: [
+      "page.frameLocator(\"iframe[data-testid=\\\"inner-frame\\\"]\").getByLabel",
+      "Mutation boundary:",
+    ],
+    liveReplayMode: "sameSession",
+    replayEnv: () => ({ CARDHOLDER: "Ada Nested" }),
+    files: () => [
+      ...commonFiles({
+        title: "Nested Iframe Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Nested Iframe Workflow</h1>",
+          "      <iframe data-testid=\"outer-frame\" title=\"Outer workflow frame\" src=\"/outer.html\"></iframe>",
+          "    </main>",
+        ].join("\n"),
+        script: "",
+        styles: [
+          "iframe { width: min(640px, calc(100vw - 48px)); height: 320px; border: 1px solid #b9b9b2; background: white; }",
+        ],
+      }),
+      {
+        path: "outer.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Outer Workflow Frame</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Outer Workflow Frame</h1>",
+          "      <iframe data-testid=\"inner-frame\" title=\"Inner workflow frame\" src=\"/inner.html\"></iframe>",
+          "    </main>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "inner.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Inner Workflow Frame</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Inner Workflow Frame</h1>",
+          "      <label for=\"cardholder\">Cardholder</label>",
+          "      <input id=\"cardholder\" aria-label=\"Cardholder\" data-synthi-source-id=\"nested.cardholder\" placeholder=\"Name on card\">",
+          "      <button type=\"button\" data-testid=\"preview-nested-cardholder\" data-synthi-source-id=\"nested.preview\">Preview nested cardholder</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script type=\"module\" src=\"/inner.js\"></script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "inner.js",
+        encoding: "utf8",
+        content: [
+          "const cardholder = document.querySelector('#cardholder');",
+          "document.querySelector('[data-testid=\"preview-nested-cardholder\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = `Nested preview for ${cardholder.value}`;",
+          "});",
+          "",
+        ].join("\n"),
+      },
+    ],
+    teach: async (page) => {
+      const frame = page
+        .frameLocator('iframe[data-testid="outer-frame"]')
+        .frameLocator('iframe[data-testid="inner-frame"]');
+      await frame.getByLabel("Cardholder").fill("Ada Nested");
+      await frame.getByRole("button", { name: "Preview nested cardholder" }).click();
+      await frame.getByText("Nested preview for Ada Nested").waitFor();
+    },
+  },
+  {
     id: "cross-origin-iframe-denied",
     minSteps: 0,
     expectedRecordingIssue: "frame_origin_consent_required",

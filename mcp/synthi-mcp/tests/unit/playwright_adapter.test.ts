@@ -164,6 +164,43 @@ describe("browser Playwright teach capture", () => {
     }));
   });
 
+  it("preserves nested frame locator chains on taught framed actions", () => {
+    const enriched = enrichCapturedFramePayload({
+      url: "https://app.example.com/inner.html",
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada Nested",
+      element: { tag: "input", role: "textbox", label: "Cardholder" },
+      detail: { input_debounced: true },
+    }, {
+      frame_id: "inner-frame",
+      frame_locator: "iframe[data-testid=\"inner-frame\"]",
+      frame_locator_chain: [
+        "iframe[data-testid=\"outer-frame\"]",
+        "iframe[data-testid=\"inner-frame\"]",
+      ],
+      frame_locator_candidates: ["iframe[data-testid=\"inner-frame\"]"],
+      frame_locator_candidate_chain: [
+        ["iframe[data-testid=\"outer-frame\"]"],
+        ["iframe[data-testid=\"inner-frame\"]"],
+      ],
+      frame_url: "https://app.example.com/inner.html",
+    }, "https://app.example.com/checkout");
+    const event = normalizeCapturedHumanAction(enriched, "tab-a");
+
+    expect(event.detail).toEqual(expect.objectContaining({
+      frame_locator: "iframe[data-testid=\"inner-frame\"]",
+      frame_locator_chain: [
+        "iframe[data-testid=\"outer-frame\"]",
+        "iframe[data-testid=\"inner-frame\"]",
+      ],
+      frame_locator_candidate_chain: [
+        ["iframe[data-testid=\"outer-frame\"]"],
+        ["iframe[data-testid=\"inner-frame\"]"],
+      ],
+    }));
+  });
+
   it("normalizes code editor metadata on taught fill events", () => {
     const event = normalizeCapturedHumanAction({
       url: "https://app.example.com/editor",

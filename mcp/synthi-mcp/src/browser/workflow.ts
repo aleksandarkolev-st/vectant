@@ -1316,7 +1316,17 @@ function replayBlockingWarnings(limitations: WorkflowLimitationV7[]): string[] {
 }
 
 function eventNeedsFrameLocator(event: BrowserTraceEvent): boolean {
-  return Boolean(event.frame_id) && typeof event.detail?.["frame_locator"] !== "string";
+  return Boolean(event.frame_id) && frameLocatorChainForEvent(event).length === 0;
+}
+
+function frameLocatorChainForEvent(event: BrowserTraceEvent): string[] {
+  const rawChain = event.detail?.["frame_locator_chain"];
+  if (Array.isArray(rawChain)) {
+    const chain = rawChain.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    if (chain.length > 0) return chain;
+  }
+  const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : "";
+  return frameLocator.trim().length > 0 ? [frameLocator] : [];
 }
 
 function eventIsCanvasCoordinateOnly(event: BrowserTraceEvent): boolean {

@@ -147,6 +147,34 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("Saved Ada");
   });
 
+  it("rewrites locator expressions through nested frameLocator chains", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        action: "fill",
+        frame_id: "inner-frame",
+        detail: {
+          frame_locator: "iframe[data-testid=\"inner-frame\"]",
+          frame_locator_chain: [
+            "iframe[data-testid=\"outer-frame\"]",
+            "iframe[data-testid=\"inner-frame\"]",
+          ],
+          observed_effects: ["Nested preview for Ada"],
+          element: { label: "Cardholder" },
+        },
+        value: "Ada",
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Cardholder\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    const chain = "page.frameLocator(\"iframe[data-testid=\\\"outer-frame\\\"]\").frameLocator(\"iframe[data-testid=\\\"inner-frame\\\"]\")";
+    expect(generated.code).toContain(`${chain}.getByLabel(\"Cardholder\")`);
+    expect(generated.code).toContain(`${chain}.getByText(parameterizedTextRegex([\"Nested preview for \",\"\"], inputValue1))`);
+    expect(generated.code).not.toContain("page.frameLocator(\"iframe[data-testid=\\\"inner-frame\\\"]\").getByLabel");
+    expect(generated.code).not.toContain("Nested preview for Ada");
+  });
+
   it("uses assertions as delayed-hydration waits before actions", () => {
     const generated = generatePlaywrightScript([
       event({
