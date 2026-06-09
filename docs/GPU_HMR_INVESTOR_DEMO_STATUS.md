@@ -29,6 +29,40 @@ The one-file generated .hip split proves per-kernel or smallest-safe fission.
 Any proof succeeded because of a shim or hardcoded scenario path.
 ```
 
+## Current Hardening Status
+
+Latest implementation commits:
+
+```text
+37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
+5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
+394f6ff32 fix(gpu-hmr): bind fission contract to verifier proof
+e90fc49b3 fix(gpu-hmr): derive runtime profile self-check fixture
+22f003d3b fix(gpu-hmr): require complete fission contract proof
+```
+
+Demo-relevant rule changes:
+
+```text
+Screenshots and pixel diffs are visual evidence, not authority.
+Visual HMR acceptance now requires visual_oracle_artifacts in the derived proof ledger record.
+Fission acceptance requires a verified output-oracle proposal or resolved output-oracle contract.
+The generated ray-light and Flow demos remain device-translation-unit HMR claims, not per-kernel fission claims.
+```
+
+Post-hardening verification:
+
+```text
+npx vitest run tests/unit/gpu_hmr_runtime_proof.test.ts -> 279 passed
+npm --prefix mcp/synthi-mcp run build -> passed
+npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check -> passed
+cargo gpu_fission tests in worker builder image -> 64 passed
+cargo gpu_prod_contracts tests in worker builder image -> 36 passed
+```
+
 ## Live Preview Targets
 
 The local stack is running:

@@ -24,8 +24,53 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 - No shims were added.
 - Docker proof runners now require explicit runtime configuration instead of baked-in endpoint/container/entry defaults.
 - Visual evidence must be readable image artifacts; invalid image placeholders are rejected.
+- After `37f110451`, visual HMR success cannot be derived from screenshots or pixel diffs alone. If visual proof is required, the derived proof ledger record must contain `visual_oracle_artifacts`; screenshots remain evidence inputs.
 - Compute proof cards are supplemental unless the accepted target is compute-only and backed by deterministic output-oracle proof.
+- After `5e1ad07b6`, a placeholder `requiredOracleId` no longer satisfies fission output proof. Fission candidates require a verified inline proposal or resolved output-oracle contract.
 - One generated `.hip` file proves device-translation-unit HMR only; it does not prove per-kernel or smallest-safe fission.
+
+## Latest Hardening Checkpoint
+
+Additional commits since the previous status pass:
+
+```text
+37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
+5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
+394f6ff32 fix(gpu-hmr): bind fission contract to verifier proof
+e90fc49b3 fix(gpu-hmr): derive runtime profile self-check fixture
+22f003d3b fix(gpu-hmr): require complete fission contract proof
+```
+
+What changed:
+
+```text
+fission_report now carries deterministic verifier identity, selection decision hash, and output_oracle_contract.
+fission acceptance rejects bare placeholder oracle ids.
+runtime visual proof artifacts are blocked when the derived proof ledger record lacks visual_oracle_artifacts.
+strict runtime artifact gates reject invented source-consistency modes and require deterministic visual-mode evaluation for visual ledgers.
+```
+
+Fresh verification after these commits:
+
+```text
+docker run ... cargo test --release --features gpu-hmr gpu_fission --lib
+  result: 64 passed
+
+docker run ... cargo test --release --features gpu-hmr gpu_prod_contracts --lib
+  result: 36 passed
+
+npx vitest run tests/unit/gpu_hmr_runtime_proof.test.ts
+  result: 279 passed
+
+npm --prefix mcp/synthi-mcp run build
+npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
+npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
+npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check
+  result: passed
+```
+
+Formatting note: `git diff --check` passed for the Rust fission patch. `cargo fmt --check` could not be run in the available builder-test image because rustfmt is not installed, and `cargo` is not installed on the Windows host.
 
 ## Accepted ROCm/HIP Runtime Ledger
 
@@ -368,6 +413,11 @@ The Codex in-app Browser connector was available as a plugin, but `agent.browser
 Proof/fix commits are separate:
 
 ```text
+37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
+5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
+394f6ff32 fix(gpu-hmr): bind fission contract to verifier proof
+e90fc49b3 fix(gpu-hmr): derive runtime profile self-check fixture
+22f003d3b fix(gpu-hmr): require complete fission contract proof
 f0db3c67e fix(gpu-hmr): classify external timeout rejections
 b542e7390 docs(gpu-hmr): record Bevy rejection proof artifact
 706c20799 fix(gpu-hmr): ledger external profile rejections
@@ -403,6 +453,10 @@ npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
 npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check
+npx vitest run tests/unit/gpu_hmr_runtime_proof.test.ts
+docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_fission --lib
+docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_prod_contracts --lib
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
