@@ -12,7 +12,7 @@
 
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -1103,6 +1103,10 @@ function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
 
+function sha256BufferHex(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -1111,34 +1115,50 @@ function stableJson(value) {
   ).join(',')}}`;
 }
 
-function upsertObjectField(root, parentKey, filePath, value) {
+function normalizedObjectStringLookup(root, parentKey, filePath) {
   const normalized = cleanRel(filePath);
-  if (!normalized) return;
-  if (!root[parentKey] || typeof root[parentKey] !== 'object' || Array.isArray(root[parentKey])) {
-    root[parentKey] = {};
+  const table = root?.[parentKey];
+  if (!normalized || !table || typeof table !== 'object' || Array.isArray(table)) {
+    return { found: false, key: null, value: null };
   }
-  root[parentKey][normalized] = value;
+  for (const [key, value] of Object.entries(table)) {
+    if (cleanRel(key) === normalized && typeof value === 'string') {
+      return { found: true, key, value };
+    }
+  }
+  return { found: false, key: null, value: null };
 }
 
-function upsertDeviceMappingReportField(root, parentKey, filePath, value) {
-  if (!root.device_mapping_report || typeof root.device_mapping_report !== 'object' || Array.isArray(root.device_mapping_report)) {
-    root.device_mapping_report = {};
-  }
-  upsertObjectField(root.device_mapping_report, parentKey, filePath, value);
-}
-
-function sidecarWithSourceBaseline(sidecarRaw, filePath, source) {
+function sourceBaselineProofFromSidecar(sidecarRaw, filePath, source) {
   const root = JSON.parse(sidecarRaw);
-  const normalized = cleanRel(filePath);
-  if (!normalized || !String(source || '').trim()) {
-    return JSON.stringify(root, null, 2);
-  }
-  const baselineHash = sha256Hex(source);
-  upsertObjectField(root, 'sourceBaselineContents', normalized, source);
-  upsertObjectField(root, 'sourceBaselineHashes', normalized, baselineHash);
-  upsertDeviceMappingReportField(root, 'sourceBaselineContents', normalized, source);
-  upsertDeviceMappingReportField(root, 'sourceBaselineHashes', normalized, baselineHash);
-  return JSON.stringify(root, null, 2);
+  const content = normalizedObjectStringLookup(root, 'sourceBaselineContents', filePath);
+  const hash = normalizedObjectStringLookup(root, 'sourceBaselineHashes', filePath);
+  const expectedHash = sha256Hex(source);
+  const accepted =
+    content.found &&
+    hash.found &&
+    content.value === source &&
+    hash.value === expectedHash;
+  return {
+    accepted,
+    filePath: cleanRel(filePath),
+    file_path: cleanRel(filePath),
+    contentKey: content.key,
+    content_key: content.key,
+    hashKey: hash.key,
+    hash_key: hash.key,
+    expectedHash,
+    expected_hash: expectedHash,
+    observedHash: hash.value,
+    observed_hash: hash.value,
+    failures: [
+      ...(!content.found ? ['source_baseline_contents_missing'] : []),
+      ...(!hash.found ? ['source_baseline_hash_missing'] : []),
+      ...(content.found && content.value !== source ? ['source_baseline_contents_mismatch'] : []),
+      ...(hash.found && hash.value !== expectedHash ? ['source_baseline_hash_mismatch'] : []),
+    ],
+    provenance: 'compiler_emitted_sidecar',
+  };
 }
 
 function manifestRoleForPath(manifest, filePath) {
@@ -1422,13 +1442,13 @@ function findMatchingBrace(source, openIndex) {
 
 function deviceKernelBodyRanges(source) {
   const ranges = [];
-  const kernelRegex = /(?:extern\s+"C"\s+)?__global__\s+void\s+[A-Za-z_]\w*\s*\([^)]*\)\s*\{/g;
+  const kernelRegex = /(?:extern\s+"C"\s+)?__global__\s+void\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*\{/g;
   let match = null;
   while ((match = kernelRegex.exec(source)) !== null) {
     const openIndex = source.indexOf('{', match.index);
     const closeIndex = openIndex >= 0 ? findMatchingBrace(source, openIndex) : -1;
     if (openIndex >= 0 && closeIndex > openIndex) {
-      ranges.push({ start: openIndex + 1, end: closeIndex });
+      ranges.push({ kernelName: match[1], start: openIndex + 1, end: closeIndex });
       kernelRegex.lastIndex = closeIndex + 1;
     }
   }
@@ -1484,7 +1504,7 @@ function deviceScalarLiteralCandidates(source) {
       if (/[+\-*/]/.test(line)) score += 20;
       if (Math.abs(value) >= 0.25) score += 10;
       if (value === 0) score -= 40;
-      candidates.push({ start, end, raw, line: line.trim(), score });
+      candidates.push({ kernelName: range.kernelName, start, end, raw, line: line.trim(), score });
     }
   }
   return candidates.sort((a, b) => b.score - a.score || a.start - b.start);
@@ -1502,6 +1522,10 @@ function deviceScalarEdit(source, attempt = 0) {
         mutation: {
           kind: 'device_scalar_literal',
           attempt,
+          kernelName: candidate.kernelName,
+          kernel_name: candidate.kernelName,
+          sourceSpan: { start: candidate.start, end: candidate.end },
+          source_span: { start: candidate.start, end: candidate.end },
           before: candidate.raw,
           after: replacement,
           line: candidate.line,
@@ -1607,7 +1631,15 @@ async function persistGeneratedSplitToWorkspace(split, granularity = null) {
 
 async function compileGeneratedDevice(split, editedDevice, options = {}) {
   const previousDevice = split.files[split.roles.device];
-  const sidecarRaw = sidecarWithSourceBaseline(split.sidecarRaw, split.roles.device, previousDevice);
+  const sourceBaselineProof = sourceBaselineProofFromSidecar(
+    split.sidecarRaw,
+    split.roles.device,
+    previousDevice,
+  );
+  if (!sourceBaselineProof.accepted) {
+    throw new Error(`generated split sidecar lacks compiler-emitted source baseline proof for ${split.roles.device}: ${sourceBaselineProof.failures.join('|')}`);
+  }
+  const sidecarRaw = split.sidecarRaw;
   split.files[split.roles.device] = editedDevice;
   const editKind = options.editKind ?? 'gpu_artifact_edit';
   const editHash = options.editHash ?? deviceEditHash({
@@ -1658,14 +1690,19 @@ async function compileGeneratedDevice(split, editedDevice, options = {}) {
     editHash,
     editId: options.editId ?? `device-edit:${sha256Hex(editHash).slice(0, 16)}`,
     editKind,
+    sourceBaselineProof,
   };
 }
 
 async function writeImageArtifact(name, imageData) {
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const file = path.join(ARTIFACT_DIR, `${name}.png`);
-  await writeFile(file, Buffer.from(imageData, 'base64'));
-  return path.relative(process.cwd(), file);
+  const buffer = Buffer.from(imageData, 'base64');
+  await writeFile(file, buffer);
+  return {
+    path: path.relative(process.cwd(), file),
+    hash: `sha256:${sha256BufferHex(buffer)}`,
+  };
 }
 
 async function writeJsonArtifact(name, value) {
@@ -1685,14 +1722,6 @@ function artifactRel(name) {
   return path.relative(process.cwd(), path.join(ARTIFACT_DIR, name));
 }
 
-function visualArtifactsForPrefixes(beforePrefix, afterPrefix, diffName = null) {
-  return {
-    beforeImage: artifactRel(`${beforePrefix}-first.png`),
-    afterImage: artifactRel(`${afterPrefix}-first.png`),
-    ...(diffName ? { diffImage: artifactRel(`${diffName}.png`) } : {}),
-  };
-}
-
 function waitProofFields(result) {
   const wait = result?.wait ?? {};
   return {
@@ -1703,20 +1732,67 @@ function waitProofFields(result) {
   };
 }
 
-async function writeRunModeProofArtifact(name, proof) {
-  const seed = {
-    schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
-    backend: 'hip',
+function backendForSplit(split) {
+  const value = String(split?.manifest?.gpu?.vendor ?? CFG.gpuVendor ?? '').toLowerCase();
+  if (value === 'rocm' || value === 'amd' || value === 'hip') return 'hip';
+  if (value === 'cuda' || value === 'opencl' || value === 'vulkan' || value === 'webgpu') return value;
+  return 'unknown';
+}
+
+function runModeProofIdentity(split) {
+  return {
+    backend: backendForSplit(split),
     targetId: CFG.fixture,
+    target_id: CFG.fixture,
     profileId: CFG.fixture,
+    profile_id: CFG.fixture,
+  };
+}
+
+function ledgerFirewallFieldsFromProof(proof) {
+  const proofValidation = proof?.gpuProofValidation ?? proof?.gpu_proof_validation;
+  const ledgerValidation = proofValidation?.proofLedgerValidation;
+  const failedInvariants = Array.isArray(ledgerValidation?.failedInvariants)
+    ? ledgerValidation.failedInvariants
+    : null;
+  const ledgerAccepted =
+    proofValidation?.satisfied === true &&
+    ledgerValidation?.gpuHmrSuccess === true &&
+    failedInvariants !== null &&
+    failedInvariants.length === 0;
+  if (!ledgerAccepted) {
+    throw new Error('accepted run-mode proof requires full-runtime proof ledger validation with no failed invariants');
+  }
+  return {
     cpuHmrUsed: false,
     cpu_hmr_used: false,
     fullRebuildUsed: false,
     full_rebuild_used: false,
     processRestarted: false,
     process_restarted: false,
+    firewallEvidenceSource: 'proof_ledger_invariant_query',
+    firewall_evidence_source: 'proof_ledger_invariant_query',
+    firewallProofLedgerId: ledgerValidation.proofId ?? null,
+    firewall_proof_ledger_id: ledgerValidation.proofId ?? null,
+  };
+}
+
+async function writeRunModeProofArtifact(name, proof) {
+  let seed = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
     ...proof,
   };
+  const claimsRuntimeSuccess =
+    seed.acceptedForGpuHmr === true ||
+    seed.accepted_for_gpu_hmr === true ||
+    seed.gpuHmrSuccess === true ||
+    seed.gpu_hmr_success === true;
+  if (claimsRuntimeSuccess) {
+    seed = {
+      ...seed,
+      ...ledgerFirewallFieldsFromProof(seed),
+    };
+  }
   const withProofId = {
     ...seed,
     proofId: runModeProofId(seed),
@@ -1727,9 +1803,6 @@ async function writeRunModeProofArtifact(name, proof) {
 async function writeNegativeEditRefusalArtifact(name, proof) {
   const seed = {
     schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
-    backend: 'hip',
-    targetId: CFG.fixture,
-    profileId: CFG.fixture,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -1740,6 +1813,8 @@ async function writeNegativeEditRefusalArtifact(name, proof) {
     full_rebuild_used: false,
     processRestarted: false,
     process_restarted: false,
+    firewallEvidenceSource: 'static_refusal_before_gpu_load',
+    firewall_evidence_source: 'static_refusal_before_gpu_load',
     ...proof,
   };
   const withProofId = {
@@ -1847,14 +1922,43 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     : `no eligible post-HMR visual samples diff=${path.relative(process.cwd(), diffPath)}`;
   record(recordLabel, ok ? 'pass' : 'fail', detail);
   if (!ok) throw new Error(`visual delta too small: ${detail}`);
+  const baselineArtifact = await writeImageArtifact(`${diffArtifactName}-baseline`, baseline.imageData);
+  const selectedAfterArtifact = await writeImageArtifact(`${diffArtifactName}-selected-after`, best.shot.imageData);
+  const diffArtifact = {
+    path: path.relative(process.cwd(), diffPath),
+    hash: `sha256:${sha256BufferHex(await readFile(diffPath))}`,
+  };
+  const visualArtifacts = {
+    beforeImage: baselineArtifact.path,
+    beforeImageHash: baselineArtifact.hash,
+    afterImage: selectedAfterArtifact.path,
+    afterImageHash: selectedAfterArtifact.hash,
+    diffImage: diffArtifact.path,
+    diffImageHash: diffArtifact.hash,
+  };
+  const visualArtifactsSnake = {
+    before_image: baselineArtifact.path,
+    before_image_hash: baselineArtifact.hash,
+    after_image: selectedAfterArtifact.path,
+    after_image_hash: selectedAfterArtifact.hash,
+    diff_image: diffArtifact.path,
+    diff_image_hash: diffArtifact.hash,
+  };
   return {
     changedRatio: best.changedRatio,
     meanAbs: best.meanAbs,
     controlChangedRatio: control.changedRatio,
     controlMeanAbs: control.meanAbs,
+    baselineSeq: baseline.seq,
+    baselineTs: baseline.ts,
     selectedSeq: best.shot.seq,
+    selectedTs: best.shot.ts,
     selectedDeltaMs,
+    selectedFrameCaptureAfterEpochDispatch: best.shot.frameCaptureAfterEpochDispatch,
+    selected_frame_capture_after_epoch_dispatch: best.shot.frameCaptureAfterEpochDispatch,
     diffPath: path.relative(process.cwd(), diffPath),
+    visualArtifacts,
+    visual_artifacts: visualArtifactsSnake,
   };
 }
 
@@ -1975,13 +2079,17 @@ async function assertMcpScreenshot(
     ));
   let artifactDetail = '';
   if (ok && CFG.captureArtifacts) {
-    const firstPath = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);
-    const secondPath = await writeImageArtifact(`${artifactPrefix}-second`, second.imageData);
+    const firstArtifact = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);
+    const secondArtifact = await writeImageArtifact(`${artifactPrefix}-second`, second.imageData);
     const metaPath = await writeJsonArtifact(`${artifactPrefix}-metadata`, {
       first: withoutImageData(first),
       second: withoutImageData(second),
+      firstArtifact,
+      first_artifact: firstArtifact,
+      secondArtifact,
+      second_artifact: secondArtifact,
     });
-    artifactDetail = ` images=${firstPath},${secondPath} metadata=${metaPath}`;
+    artifactDetail = ` images=${firstArtifact.path},${secondArtifact.path} metadata=${metaPath}`;
   }
   record(
     label,
@@ -2090,6 +2198,7 @@ async function run() {
 
   if (CFG.captureArtifacts && baselineShot) {
     const coldPath = await writeRunModeProofArtifact('run-mode-cold-split', {
+      ...runModeProofIdentity(split),
       coldSplitProven: true,
       cold_split_proven: true,
       acceptedForGpuHmr: false,
@@ -2167,6 +2276,7 @@ async function run() {
   if (CFG.captureArtifacts && baselineShot) {
     visualDelta = await assertVisualDelta(baselineShot, afterShot);
     const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', {
+      ...runModeProofIdentity(split),
       ...waitProofFields(generatedDeviceResult),
       acceptedForGpuHmr: true,
       accepted_for_gpu_hmr: true,
@@ -2178,16 +2288,17 @@ async function run() {
       timing_metrics: generatedDeviceResult.timingMetrics,
       deviceEditMutation: hotDelta1Edit.mutation,
       device_edit_mutation: hotDelta1Edit.mutation,
-      visualArtifacts: visualArtifactsForPrefixes('before-hmr', 'after-hmr', 'before-after-diff'),
-      visual_artifacts: {
-        before_image: artifactRel('before-hmr-first.png'),
-        after_image: artifactRel('after-hmr-first.png'),
-        diff_image: artifactRel('before-after-diff.png'),
-      },
+      sourceBaselineProof: generatedDeviceResult.sourceBaselineProof,
+      source_baseline_proof: generatedDeviceResult.sourceBaselineProof,
+      visualArtifacts: visualDelta.visualArtifacts,
+      visual_artifacts: visualDelta.visual_artifacts,
       visualMetrics: {
         changedPixelRatio: visualDelta.changedRatio,
         meanAbsDelta8bit: visualDelta.meanAbs,
         visiblePixelCount: afterShot.second?.visiblePixels ?? afterShot.first?.visiblePixels ?? null,
+        baselineSeq: visualDelta.baselineSeq,
+        selectedSeq: visualDelta.selectedSeq,
+        selectedFrameCaptureAfterEpochDispatch: visualDelta.selectedFrameCaptureAfterEpochDispatch,
       },
     });
     record('run-mode hot delta 1 proof artifact', 'pass', hotDelta1Path);
@@ -2266,6 +2377,7 @@ async function run() {
       'mcp screenshot visual delta hot delta 2',
     );
     const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', {
+      ...runModeProofIdentity(split),
       ...waitProofFields(hotDelta2Result),
       acceptedForGpuHmr: true,
       accepted_for_gpu_hmr: true,
@@ -2277,16 +2389,17 @@ async function run() {
       timing_metrics: hotDelta2Result.timingMetrics,
       deviceEditMutation: hotDelta2Edit.mutation,
       device_edit_mutation: hotDelta2Edit.mutation,
-      visualArtifacts: visualArtifactsForPrefixes('after-hmr', 'after-hmr-2', 'hot-delta-2-diff'),
-      visual_artifacts: {
-        before_image: artifactRel('after-hmr-first.png'),
-        after_image: artifactRel('after-hmr-2-first.png'),
-        diff_image: artifactRel('hot-delta-2-diff.png'),
-      },
+      sourceBaselineProof: hotDelta2Result.sourceBaselineProof,
+      source_baseline_proof: hotDelta2Result.sourceBaselineProof,
+      visualArtifacts: hotDelta2VisualDelta.visualArtifacts,
+      visual_artifacts: hotDelta2VisualDelta.visual_artifacts,
       visualMetrics: {
         changedPixelRatio: hotDelta2VisualDelta.changedRatio,
         meanAbsDelta8bit: hotDelta2VisualDelta.meanAbs,
         visiblePixelCount: afterHotDelta2Shot.second?.visiblePixels ?? afterHotDelta2Shot.first?.visiblePixels ?? null,
+        baselineSeq: hotDelta2VisualDelta.baselineSeq,
+        selectedSeq: hotDelta2VisualDelta.selectedSeq,
+        selectedFrameCaptureAfterEpochDispatch: hotDelta2VisualDelta.selectedFrameCaptureAfterEpochDispatch,
       },
     });
     record('run-mode hot delta 2 proof artifact', 'pass', hotDelta2Path);
@@ -2301,6 +2414,7 @@ async function run() {
       editKind: 'negative_edit',
     });
     const negativePath = await writeNegativeEditRefusalArtifact('negative-edit-refusal', {
+      ...runModeProofIdentity(split),
       reasons: negativeEdit.reasons,
       unsupportedReasons: negativeEdit.reasons,
       unsupported_reasons: negativeEdit.reasons,
