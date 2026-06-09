@@ -49,8 +49,11 @@ export const DEFAULT_PROGRAM_RECIPES = [
       packageId: 'flask-api', version: '1.0.0',
       displayName: 'Flask API',
       description: 'Python Flask API server (port 5000).',
-      runtimeType: 'web', install: ['pip install -r requirements.txt'],
-      launch: 'flask run --host 0.0.0.0 --port 5000',
+      // Debian 12's system Python is externally-managed (PEP 668), so install
+      // into a venv. python3-venv is provided by the program-runtime image.
+      runtimeType: 'web',
+      install: ['python3 -m venv .venv', '.venv/bin/pip install -r requirements.txt'],
+      launch: '.venv/bin/flask run --host 0.0.0.0 --port 5000',
       ports: [5000], permissions: WEB_SCOPES,
     },
   },

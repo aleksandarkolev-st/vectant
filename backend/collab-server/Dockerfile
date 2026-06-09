@@ -47,11 +47,22 @@ RUN git config --system user.email "synthi@overview-synti.com" && \
 # packages ad hoc (e.g. `sudo apt-get install <pkg>`). The server itself still
 # runs unprivileged — escalation only happens when the user explicitly invokes
 # sudo inside their interactive shell.
+#  Also install the toolchain the default marketplace programs need:
+#  - python3-venv / python3-pip: Debian 12's system Python is externally-managed
+#    (PEP 668), so Python program recipes (e.g. @vectant/flask-api) use a venv.
+#  - curl / ca-certificates: for fetching the lazygit binary below.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends sudo \
+ && apt-get install -y --no-install-recommends sudo python3-venv python3-pip curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && echo 'synthi ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/synthi \
  && chmod 0440 /etc/sudoers.d/synthi
+
+# lazygit (Git TUI) — the @vectant/lazygit default program. Not in the Debian
+# repos, so install the released binary.
+RUN LAZYGIT_VERSION=0.44.1 \
+ && curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" -o /tmp/lazygit.tar.gz \
+ && tar -xzf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit \
+ && rm /tmp/lazygit.tar.gz
 
 USER synthi
 
