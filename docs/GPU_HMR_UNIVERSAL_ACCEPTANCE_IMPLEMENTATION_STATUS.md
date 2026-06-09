@@ -20,7 +20,7 @@ The accepted proof set is broader than one fixture:
 The latest machine-readable validation matrix ledger reports six full-runtime GPU HMR rows, one external visual-profile row, six structured refusal rows, and one preflight-only row. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:35c01302ca867602845aa0f7fa500410c01601f822ee33ae34db79e2b4d415d4
+gpu-validation-matrix-ledger:sha256:1dd31469b5c221cb71d4b1408c410e9f62c679df769346b20c88a052e39860a3
 ```
 
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. CUDA, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches remain open.
@@ -41,6 +41,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+1a5bfbafd feat(gpu-hmr): add validation matrix plan coverage
 acdb1f84c feat(gpu-hmr): add validation matrix ledger
 7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
 66c42458d feat(gpu-hmr): add webgpu runtime visual proof
@@ -99,6 +100,7 @@ WebGPU runtime visual proof now accepts only an executed explicit-empty-layout W
 The timing metrics summary collector now normalizes WebGPU runtime visual proofs into the shared `synthi.gpu.hmr.timing_metrics.v1` schema.
 The validation matrix ledger collector now scans proof artifacts and separates full-runtime GPU HMR, external visual-profile proof, preflight-only evidence, structured refusal, and unproven historical attempts.
 The matrix self-check includes a forged WebGPU success flag with no ledger/images and verifies it remains unproven.
+The validation matrix now derives plan-coverage rows for accepted, visual-profile-only, preflight-only, refused, and missing plan requirements.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
@@ -137,9 +139,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:35c01302ca867602845aa0f7fa500410c01601f822ee33ae34db79e2b4d415d4
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T053654Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T053654Z.md
+proof id: gpu-validation-matrix-ledger:sha256:1dd31469b5c221cb71d4b1408c410e9f62c679df769346b20c88a052e39860a3
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T054311Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260609T054311Z.md
 ```
 
 Matrix result:
@@ -165,6 +167,29 @@ structured refusal rows: 6
 preflight-only rows: 1
   webgpu-preflight-20260609
 omitted stale/unproven historical attempts by default: 573
+```
+
+Derived plan coverage:
+
+```text
+accepted:
+  rocm_hip_full_runtime
+  flow_visual_gpu_path
+  ray_light_visual_gpu_path
+  hiprt_visual_path
+  webgpu_scoped_runtime_visual
+preflight_only:
+  webgpu_runtime_preflight
+visual_profile_only:
+  external_engine_visual_profile
+refused:
+  bevy_file_loaded_wgsl
+  oidn_hip_output
+  opencl_dispatch_readback
+  vulkan_pipeline_frame
+missing:
+  cuda_runtime
+  per_kernel_smallest_safe_fission
 ```
 
 Important interpretation:
