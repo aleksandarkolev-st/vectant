@@ -85,6 +85,9 @@ describe("browser replay generation scenarios", () => {
     expect(generated.mode).toBe("ciIsolated");
     expect(generated.code).toContain("ALLOW_WORKFLOW_MUTATION");
     expect(generated.code).toContain("SYNTHI_WORKFLOW_REPLAY_ATTESTATION");
+    expect(generated.code).toContain("SYNTHI_WORKFLOW_VISUAL_PROOF_DIR");
+    expect(generated.code).toContain("page.context().pages()");
+    expect(generated.code).toContain("await captureWorkflowVisualProof(page);");
     expect(generated.code).toContain("const inputValue1 = readRequiredEnv(\"EMAIL\", \"email\");");
     expect(generated.code).toContain("async function installWorkflowNetworkTracker(page)");
     expect(generated.code).toContain("await installWorkflowNetworkTracker(page);");

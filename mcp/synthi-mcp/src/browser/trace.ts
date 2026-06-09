@@ -274,7 +274,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   const firstMutationStepId = contract.mutationBoundaryPlan.firstMutationStepId;
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
-    ...(mode === "ciIsolated" ? ["import { appendFile } from 'node:fs/promises';"] : []),
+    ...(mode === "ciIsolated" ? ["import { appendFile, mkdir } from 'node:fs/promises';", "import path from 'node:path';"] : []),
     ...(usesFileDrop ? ["import fs from 'node:fs/promises';"] : []),
     "",
     `// Workflow: ${contract.name}`,
@@ -517,6 +517,17 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("    const nonce = process.env.SYNTHI_WORKFLOW_CI_NONCE;");
     lines.push("    if (!runId || !nonce) throw new Error('missing Synthi CI replay attestation identity');");
     lines.push("    await appendFile(attestationPath, JSON.stringify({ step_id: stepId, run_id: runId, nonce, at: Date.now() }) + '\\n', 'utf8');");
+    lines.push("  }");
+    lines.push("  async function captureWorkflowVisualProof(page) {");
+    lines.push("    const proofDir = process.env.SYNTHI_WORKFLOW_VISUAL_PROOF_DIR;");
+    lines.push("    if (!proofDir) return;");
+    lines.push("    await mkdir(proofDir, { recursive: true });");
+    lines.push("    const pages = page.context().pages();");
+    lines.push("    for (let index = 0; index < pages.length; index += 1) {");
+    lines.push("      const candidate = pages[index];");
+    lines.push("      if (candidate.isClosed()) continue;");
+    lines.push("      await candidate.screenshot({ path: path.join(proofDir, `page-${index + 1}.png`), fullPage: true });");
+    lines.push("    }");
     lines.push("  }");
     warnings.push(`ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary ${firstMutationStepId}`);
   }
@@ -878,6 +889,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     }
   }
 
+  if (mode === "ciIsolated" && firstMutationStepId) {
+    lines.push("  await captureWorkflowVisualProof(page);");
+  }
   lines.push("});");
   return { code: lines.join("\n"), mode, workflow_id: contract.workflowId, used_locators, warnings };
 }

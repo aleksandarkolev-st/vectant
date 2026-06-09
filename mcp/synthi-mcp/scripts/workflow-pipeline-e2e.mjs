@@ -14,7 +14,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -659,6 +659,8 @@ async function runCase({ testCase, container, context, runner }) {
           ? `status=${ciReplay.replay?.status} mutation=${ciReplay.replay?.mutation_executed}`
           : `status=${ciReplay.replay?.status || "missing"} error=${ciReplay.replay?.failure_class || ciReplay.error || "unknown"}`
       );
+      const proof = await verifyVisualProofDir(ciReplay.replay?.artifacts?.visual_proof_dir, path.join(caseDir, "after-ci-isolated-replay.png"));
+      record(testCase.id, "CI replay visual proof", proof.ok, proof.detail);
     }
   } finally {
     if (previewPage && !previewPage.isClosed()) {
@@ -798,6 +800,8 @@ async function runCiIsolatedWorkflowReplay({ testCase, caseId, container, workfl
     "if (spec.includes('Mutation boundary:')) throw new Error('ci_script_stopped_at_mutation_boundary');",
     "if (!spec.includes('ALLOW_WORKFLOW_MUTATION')) throw new Error('ci_script_missing_mutation_guard');",
     "if (!spec.includes('SYNTHI_WORKFLOW_CI_RUN_ID')) throw new Error('ci_script_missing_run_attestation');",
+    "if (!spec.includes('SYNTHI_WORKFLOW_VISUAL_PROOF_DIR')) throw new Error('ci_script_missing_visual_proof_dir');",
+    "if (!spec.includes('captureWorkflowVisualProof')) throw new Error('ci_script_missing_visual_proof_hook');",
     "await copyFile(process.env.SYNTHI_WORKFLOW_SPEC, specTarget);",
     "const proc = spawn(playwrightBin, ['test', specTarget, '--config', runnerConfig, '--reporter=line'], {",
     "  cwd: runnerRoot,",
@@ -1701,6 +1705,33 @@ async function writeSnapshotScreenshot(snapshot, filePath) {
     throw new Error("snapshot_missing_screenshot_base64");
   }
   await writeFile(filePath, Buffer.from(screenshot, "base64"));
+}
+
+async function verifyVisualProofDir(proofDir, copyTarget) {
+  if (typeof proofDir !== "string" || proofDir.length === 0) return { ok: false, detail: "missing proof dir" };
+  let entries;
+  try {
+    entries = await readdir(proofDir, { withFileTypes: true });
+  } catch (err) {
+    return { ok: false, detail: `proof dir unreadable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".png")) continue;
+    const filePath = path.join(proofDir, entry.name);
+    try {
+      const info = await stat(filePath);
+      if (info.size <= 8) continue;
+      const header = await readFile(filePath);
+      const isPng = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47 &&
+        header[4] === 0x0d && header[5] === 0x0a && header[6] === 0x1a && header[7] === 0x0a;
+      if (!isPng) continue;
+      await copyFile(filePath, copyTarget);
+      return { ok: true, detail: `${entry.name} ${info.size} bytes` };
+    } catch {
+      continue;
+    }
+  }
+  return { ok: false, detail: `no PNG proof in ${proofDir}` };
 }
 
 async function writeAuthRefreshProviderMintCommand(caseDir, values) {

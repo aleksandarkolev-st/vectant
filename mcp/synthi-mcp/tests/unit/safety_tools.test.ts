@@ -38,6 +38,13 @@ afterEach(() => {
   }
 });
 
+function visualProofScriptLines(): string[] {
+  return [
+    "if (!process.env.SYNTHI_WORKFLOW_VISUAL_PROOF_DIR) throw new Error('visual_proof_dir_missing');",
+    "await writeFile(`${process.env.SYNTHI_WORKFLOW_VISUAL_PROOF_DIR}/page-1.png`, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]));",
+  ];
+}
+
 describe("safety MCP tool surface", () => {
   it("advertises every safety tool in the capability registry", () => {
     for (const name of SAFETY_TOOL_NAMES) {
@@ -200,6 +207,7 @@ describe("safety MCP tool surface", () => {
       "if (!spec.includes('recordWorkflowStep(\"browser_evt_2\")')) throw new Error('mutation_attestation_not_generated');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      ...visualProofScriptLines(),
       "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ ...marker, ci: true, workflowId: process.env.SYNTHI_WORKFLOW_ID }));",
       "",
     ].join("\n"));
@@ -242,7 +250,7 @@ describe("safety MCP tool surface", () => {
         mutation_executed: boolean;
         commands: { reset_exit_code: number; reset_assertion_exit_code: number; ci_exit_code: number; postcondition_exit_code: number };
         isolation_profile: { working_directory: string | null; reset_profile_id: string | null; state_seed_id: string | null };
-        artifacts: { spec_path: string; attestation_path: string };
+        artifacts: { directory: string; spec_path: string; attestation_path: string; visual_proof_dir: string };
         report: { parameter_env: string[]; attested_step_ids: string[]; missing_mutation_step_ids: string[] };
       };
     };
@@ -273,8 +281,12 @@ describe("safety MCP tool surface", () => {
     expect(generatedSpec).toContain("SYNTHI_WORKFLOW_REPLAY_ATTESTATION");
     expect(generatedSpec).toContain("SYNTHI_WORKFLOW_CI_RUN_ID");
     expect(generatedSpec).toContain("SYNTHI_WORKFLOW_CI_NONCE");
+    expect(generatedSpec).toContain("SYNTHI_WORKFLOW_VISUAL_PROOF_DIR");
+    expect(generatedSpec).toContain("captureWorkflowVisualProof");
     expect(generatedSpec).toContain("await target2.click();");
     expect(generatedSpec).not.toContain("Mutation boundary:");
+    expect(body.replay.artifacts.visual_proof_dir).toContain(body.replay.artifacts.directory);
+    await expect(access(path.join(body.replay.artifacts.visual_proof_dir, "page-1.png"))).resolves.toBeUndefined();
     const attestation = await readFile(body.replay.artifacts.attestation_path, "utf8");
     expect(attestation).toContain("browser_evt_2");
     expect(attestation).toContain("nonce");
@@ -592,6 +604,63 @@ describe("safety MCP tool surface", () => {
     }));
   });
 
+  it("fails CI isolated replay when attested mutation omits visual proof", async () => {
+    teachSaveWorkflow();
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-no-visual-proof-"));
+    const workingDirectory = path.join(artifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
+    const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
+    const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
+    await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
+    await writeFile(ciScript, [
+      "import { appendFile } from 'node:fs/promises';",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      "",
+    ].join("\n"));
+    await writeFile(postconditionScript, "process.exit(0);\n");
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-a",
+      kind: "ciIsolated",
+      base_url: "https://ci.example.test",
+      working_directory: workingDirectory,
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      reset_profile_id: "settings-reset-v1",
+      state_seed_id: "settings-fixture-v1",
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-a",
+      artifact_root: artifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        mutation_executed: true,
+        failure_class: "appValidationError",
+        failure_stage: "visual_proof",
+        commands: expect.objectContaining({
+          ci_exit_code: 0,
+          postcondition_exit_code: null,
+        }),
+        report: expect.objectContaining({
+          missing_mutation_step_ids: [],
+        }),
+      }),
+    }));
+  });
+
   it("classifies reset profile assertion mismatch as missing test data", async () => {
     teachSaveWorkflow();
     const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-profile-mismatch-"));
@@ -667,8 +736,9 @@ describe("safety MCP tool surface", () => {
     await writeFile(resetScript, "process.exit(0);\n");
     await writeFile(resetAssertionScript, "process.exit(0);\n");
     await writeFile(ciScript, [
-      "import { appendFile } from 'node:fs/promises';",
+      "import { appendFile, writeFile } from 'node:fs/promises';",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      ...visualProofScriptLines(),
       "",
     ].join("\n"));
     await writeFile(postconditionScript, "throw new Error('saved_status_missing');\n");
@@ -721,8 +791,9 @@ describe("safety MCP tool surface", () => {
     await writeFile(resetScript, "process.exit(0);\n");
     await writeFile(resetAssertionScript, "process.exit(0);\n");
     await writeFile(ciScript, [
-      "import { appendFile } from 'node:fs/promises';",
+      "import { appendFile, writeFile } from 'node:fs/promises';",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      ...visualProofScriptLines(),
       "",
     ].join("\n"));
     await writeFile(postconditionScript, "throw new Error('reset_profile_id_mismatch');\n");
@@ -829,6 +900,7 @@ describe("safety MCP tool surface", () => {
       "process.stdout.write(`bare values: ${expectedAuthValues.join(' ')}\\n`);",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      ...visualProofScriptLines(),
       "",
     ].join("\n"));
     await writeFile(postconditionScript, "process.exit(0);\n");

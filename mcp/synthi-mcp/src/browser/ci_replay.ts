@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { generatePlaywrightScript, workflowParameterEnvName } from "./trace.js";
@@ -29,7 +29,7 @@ export interface CiIsolatedReplayResult {
   replay_mode: "ciIsolated";
   status: "passed" | "failed" | "blocked";
   mutation_executed: boolean;
-  failure_stage: "profile" | "reset" | "reset_assertion" | "ci" | "attestation" | "postcondition" | null;
+  failure_stage: "profile" | "reset" | "reset_assertion" | "ci" | "attestation" | "visual_proof" | "postcondition" | null;
   isolation_profile: {
     readiness: ReplayIsolationProfileV7["readiness"];
     base_url: string | null;
@@ -49,6 +49,7 @@ export interface CiIsolatedReplayResult {
     ci_log_path: string;
     postcondition_log_path: string;
     attestation_path: string;
+    visual_proof_dir: string;
   };
   commands: {
     reset_exit_code: number | null;
@@ -95,12 +96,14 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const ciLogPath = path.join(directory, "ci.log");
   const postconditionLogPath = path.join(directory, "postcondition.log");
   const attestationPath = path.join(directory, "replay-attestation.jsonl");
+  const visualProofDir = path.join(directory, "visual-proof");
   const authStorageStatePath = input.auth_storage_state
     ? path.join(artifactRoot, ".internal-auth-state", safePathSegment(workspaceId), safePathSegment(workflowId), `${runId}-${randomUUID()}.json`)
     : undefined;
   const exactRedactions = authStorageRedactionValues(input.auth_storage_state);
   try {
   await mkdir(directory, { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
+  await mkdir(visualProofDir, { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
   if (authStorageStatePath) await mkdir(path.dirname(authStorageStatePath), { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
 
   const generated = generatePlaywrightScript(input.events, { mode: "ciIsolated" });
@@ -143,6 +146,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       ciLogPath,
       postconditionLogPath,
       attestationPath,
+      visualProofDir,
       authStorageStatePath,
       blockers: uniqueBlockers,
       status: "blocked",
@@ -163,6 +167,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     PLAYWRIGHT_BASE_URL: input.profile.base_url!,
     SYNTHI_WORKFLOW_SPEC: specPath,
     SYNTHI_WORKFLOW_REPLAY_ATTESTATION: attestationPath,
+    SYNTHI_WORKFLOW_VISUAL_PROOF_DIR: visualProofDir,
     SYNTHI_WORKFLOW_CI_RUN_ID: runId,
     SYNTHI_WORKFLOW_CI_NONCE: attestationNonce,
     SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID: input.profile.reset_profile_id!,
@@ -190,6 +195,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       ciLogPath,
       postconditionLogPath,
       attestationPath,
+      visualProofDir,
       authStorageStatePath,
       blockers: [],
       status: "failed",
@@ -220,6 +226,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       ciLogPath,
       postconditionLogPath,
       attestationPath,
+      visualProofDir,
       authStorageStatePath,
       blockers: [],
       status: "failed",
@@ -239,7 +246,11 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const attestedStepIds = await readAttestedStepIds(attestationPath, { runId, nonce: attestationNonce });
   const missingMutationStepIds = missingMutationSteps(input.workflow, attestedStepIds);
   const missingRequiredMutationAttestation = ci.exitCode === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 && missingMutationStepIds.length > 0;
-  if (ci.exitCode !== 0 || missingRequiredMutationAttestation) {
+  const missingRequiredVisualProof = ci.exitCode === 0 &&
+    input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 &&
+    !missingRequiredMutationAttestation &&
+    !(await directoryHasPngProof(visualProofDir));
+  if (ci.exitCode !== 0 || missingRequiredMutationAttestation || missingRequiredVisualProof) {
     await writeFile(postconditionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     return resultFor(input, {
       workflowId,
@@ -252,13 +263,16 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       ciLogPath,
       postconditionLogPath,
       attestationPath,
+      visualProofDir,
       authStorageStatePath,
       blockers: [],
       status: "failed",
       failureClass: ci.exitCode === 0
         ? "appValidationError"
         : classifyCiFailure(ci.output),
-      failureStage: ci.exitCode === 0 ? "attestation" : "ci",
+      failureStage: ci.exitCode === 0
+        ? missingRequiredVisualProof ? "visual_proof" : "attestation"
+        : "ci",
       reset,
       resetAssertion,
       ci,
@@ -281,6 +295,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     ciLogPath,
     postconditionLogPath,
     attestationPath,
+    visualProofDir,
     authStorageStatePath,
     blockers: [],
     status: postcondition.exitCode === 0 ? "passed" : "failed",
@@ -311,6 +326,7 @@ function resultFor(
     ciLogPath: string;
     postconditionLogPath: string;
     attestationPath: string;
+    visualProofDir: string;
     authStorageStatePath?: string;
     blockers: string[];
     status: CiIsolatedReplayResult["status"];
@@ -353,6 +369,7 @@ function resultFor(
       ci_log_path: options.ciLogPath,
       postcondition_log_path: options.postconditionLogPath,
       attestation_path: options.attestationPath,
+      visual_proof_dir: options.visualProofDir,
     },
     commands: {
       reset_exit_code: options.reset?.exitCode ?? null,
@@ -421,6 +438,37 @@ async function readAttestedStepIds(attestationPath: string, expected: { runId: s
     }
   }
   return [...stepIds];
+}
+
+async function directoryHasPngProof(directory: string): Promise<boolean> {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".png")) continue;
+    const filePath = path.join(directory, entry.name);
+    try {
+      const info = await stat(filePath);
+      if (info.size <= 8) continue;
+      const body = await readFile(filePath);
+      if (
+        body[0] === 0x89 &&
+        body[1] === 0x50 &&
+        body[2] === 0x4e &&
+        body[3] === 0x47 &&
+        body[4] === 0x0d &&
+        body[5] === 0x0a &&
+        body[6] === 0x1a &&
+        body[7] === 0x0a
+      ) return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 function missingMutationSteps(workflow: CompiledWorkflowV7, attestedStepIds: string[]): string[] {
