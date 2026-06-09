@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -177,6 +177,31 @@ describe("auth checkpoint manager", () => {
       ready: false,
       status: "checkpointMissing",
     }));
+  });
+
+  it("writes encrypted auth checkpoint files atomically with owner-only permissions", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-auth-store-mode-"));
+    const filePath = path.join(directory, "auth-checkpoints.enc.json");
+    const manager = new AuthCheckpointManager(new EncryptedFileAuthCheckpointStore({
+      file_path: filePath,
+      key: `unit-mode-key-${Date.now()}`,
+      scope_id: "tenant/workspace/mode",
+    }));
+
+    const enrollment = manager.beginEnrollment("https://app.example.com/settings");
+    const finished = manager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/settings",
+      ttl_ms: 60_000,
+    });
+
+    expect(finished.ok).toBe(true);
+    const fileMode = (await stat(filePath)).mode & 0o777;
+    expect(fileMode).toBe(0o600);
+    expect((await readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    const persisted = await readFile(filePath, "utf8");
+    expect(persisted).toContain("synthi_auth_checkpoint_store_envelope_v1");
+    expect(persisted).not.toMatch(/app\.example|tenant|workspace/);
   });
 
   it("stores approved browser auth artifacts encrypted without exposing values in checkpoint metadata", async () => {

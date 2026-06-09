@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { normalizeOrigin } from "./security.js";
@@ -9,6 +9,7 @@ import type { AuthDurabilityV7 } from "./workflow.js";
 export type AuthCheckpointDurability = Extract<AuthDurabilityV7, "interactiveCheckpoint" | "idpCheckpoint">;
 
 const REFRESH_PROVIDER_OUTPUT_LIMIT = 2 * 1024 * 1024;
+const AUTH_STORE_FILE_MODE = 0o600;
 
 export interface AuthIdPDomainGrant {
   checkpoint_id: string;
@@ -366,7 +367,8 @@ export class EncryptedFileAuthCheckpointStore implements AuthCheckpointStore {
   }
 
   private writeDocument(document: EncryptedAuthStoreDocument): void {
-    mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const directory = path.dirname(this.filePath);
+    mkdirSync(directory, { recursive: true });
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
     const ciphertext = Buffer.concat([
@@ -380,7 +382,15 @@ export class EncryptedFileAuthCheckpointStore implements AuthCheckpointStore {
       tag: cipher.getAuthTag().toString("base64"),
       ciphertext: ciphertext.toString("base64"),
     };
-    writeFileSync(this.filePath, JSON.stringify(envelope), "utf8");
+    const tempPath = path.join(directory, `.${path.basename(this.filePath)}.${process.pid}.${randomUUID()}.tmp`);
+    try {
+      writeFileSync(tempPath, JSON.stringify(envelope), { encoding: "utf8", mode: AUTH_STORE_FILE_MODE });
+      renameSync(tempPath, this.filePath);
+      chmodSync(this.filePath, AUTH_STORE_FILE_MODE);
+    } catch (error) {
+      rmSync(tempPath, { force: true });
+      throw error;
+    }
   }
 }
 
