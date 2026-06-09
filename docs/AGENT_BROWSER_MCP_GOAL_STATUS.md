@@ -53,8 +53,8 @@ TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43
 
 Results:
 
-- Unit suite: 70 files passed, 754 tests passed.
-- Full workflow matrix: 37 seeded projects passed.
+- Unit suite: 70 files passed, 759 tests passed.
+- Full workflow matrix: 39 seeded projects passed.
 - Stdio private-tool acceptance: passed after final build.
 - Cross-origin denied target fixtures: passed after final build.
 - CI isolated visual mutation fixture: exported Playwright passed and CI isolated replay passed with reset assertion, postcondition, state seed id, and run-bound attestation.
