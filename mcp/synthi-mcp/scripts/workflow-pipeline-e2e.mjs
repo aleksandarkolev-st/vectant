@@ -482,10 +482,11 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
   const ciSpecTarget = path.join(runner.root, `${slugPart(caseId)}-ci-isolated.spec.mjs`);
   const markerPath = path.join(caseDir, "ci-reset-marker.json");
   const stateSeedId = `${slugPart(caseId)}-${workspaceId}`;
+  const resetProfileId = `${slugPart(caseId)}-reset-profile`;
   await writeFile(resetScript, [
     "import { writeFile } from 'node:fs/promises';",
     `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('reset_wrong_cwd');`,
-    `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL, seedId: process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID }));`,
+    `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL, resetProfileId: process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID, seedId: process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID }));`,
     "",
   ].join("\n"));
   await writeFile(resetAssertionScript, [
@@ -494,6 +495,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     `const markerPath = ${JSON.stringify(markerPath)};`,
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
     "if (!marker.reset) throw new Error('reset_not_run');",
+    "if (marker.resetProfileId !== process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID) throw new Error('reset_profile_id_mismatch');",
     "if (marker.seedId !== process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID) throw new Error('state_seed_id_mismatch');",
     "await writeFile(markerPath, JSON.stringify({ ...marker, resetAssertion: true }));",
     "",
@@ -511,6 +513,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
     "if (!marker.reset) throw new Error('reset_not_run');",
     "if (!marker.resetAssertion) throw new Error('reset_assertion_not_run');",
+    "if (process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID !== marker.resetProfileId) throw new Error('reset_profile_id_mismatch');",
     "const spec = await readFile(process.env.SYNTHI_WORKFLOW_SPEC, 'utf8');",
     "if (spec.includes('Mutation boundary:')) throw new Error('ci_script_stopped_at_mutation_boundary');",
     "if (!spec.includes('ALLOW_WORKFLOW_MUTATION')) throw new Error('ci_script_missing_mutation_guard');",
@@ -541,6 +544,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     `const markerPath = ${JSON.stringify(markerPath)};`,
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
     "if (!marker.ci) throw new Error('ci_not_run');",
+    "if (process.env.SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID !== marker.resetProfileId) throw new Error('reset_profile_id_mismatch');",
     "const attestation = await readFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, 'utf8');",
     "if (!attestation.includes(process.env.SYNTHI_WORKFLOW_CI_RUN_ID)) throw new Error('attestation_run_id_missing');",
     "await writeFile(markerPath, JSON.stringify({ ...marker, postcondition: true }));",
@@ -556,6 +560,7 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     reset_assertion_command: `${shellQuote(process.execPath)} ${shellQuote(resetAssertionScript)}`,
     ci_command: `${shellQuote(process.execPath)} ${shellQuote(ciScript)}`,
     postcondition_command: `${shellQuote(process.execPath)} ${shellQuote(postconditionScript)}`,
+    reset_profile_id: resetProfileId,
     state_seed_id: stateSeedId,
     allow_mutation_replay: true,
   });

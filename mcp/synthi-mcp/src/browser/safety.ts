@@ -16,6 +16,7 @@ export interface ReplayIsolationProfileInput {
   postcondition_command?: string;
   working_directory?: string;
   auth_provider_id?: string;
+  reset_profile_id?: string;
   state_seed_id?: string;
   allow_mutation_replay?: boolean;
 }
@@ -32,6 +33,7 @@ export interface ReplayIsolationProfileV7 {
   postcondition_command: string | null;
   working_directory: string | null;
   auth_provider_id: string | null;
+  reset_profile_id: string | null;
   state_seed_id: string | null;
   allow_mutation_replay: boolean;
   missing: string[];
@@ -95,6 +97,7 @@ export class ReplayIsolationProfileManager {
       postcondition_command: stringOpt(input.postcondition_command) ?? null,
       working_directory: stringOpt(input.working_directory) ?? null,
       auth_provider_id: stringOpt(input.auth_provider_id) ?? null,
+      reset_profile_id: stringOpt(input.reset_profile_id) ?? null,
       state_seed_id: stringOpt(input.state_seed_id) ?? null,
       allow_mutation_replay: input.allow_mutation_replay === true,
       missing,
@@ -229,6 +232,7 @@ function missingIsolationFields(kind: ReplayIsolationKindV7, input: ReplayIsolat
   if (!stringOpt(input.data_reset_command)) missing.push("data_reset_command");
   if (!stringOpt(input.reset_assertion_command)) missing.push("reset_assertion_command");
   if (!stringOpt(input.postcondition_command)) missing.push("postcondition_command");
+  if (!stringOpt(input.reset_profile_id)) missing.push("reset_profile_id");
   if (!stringOpt(input.state_seed_id)) missing.push("state_seed_id");
   if (input.allow_mutation_replay !== true) missing.push("allow_mutation_replay");
   return missing;
@@ -253,6 +257,7 @@ function emptyProfile(workspaceId: string): ReplayIsolationProfileV7 {
     postcondition_command: null,
     working_directory: null,
     auth_provider_id: null,
+    reset_profile_id: null,
     state_seed_id: null,
     allow_mutation_replay: false,
     missing: [],

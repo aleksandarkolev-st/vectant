@@ -34,6 +34,7 @@ export interface CiIsolatedReplayResult {
     readiness: ReplayIsolationProfileV7["readiness"];
     base_url: string | null;
     working_directory: string | null;
+    reset_profile_id: string | null;
     state_seed_id: string | null;
     allow_mutation_replay: boolean;
   };
@@ -114,6 +115,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     ...(!input.profile.data_reset_command ? ["data_reset_command"] : []),
     ...(!input.profile.reset_assertion_command ? ["reset_assertion_command"] : []),
     ...(!input.profile.postcondition_command ? ["postcondition_command"] : []),
+    ...(!input.profile.reset_profile_id ? ["reset_profile_id"] : []),
     ...(!input.profile.state_seed_id ? ["state_seed_id"] : []),
   ];
   const uniqueBlockers = [...new Set(blockers)];
@@ -158,6 +160,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     SYNTHI_WORKFLOW_REPLAY_ATTESTATION: attestationPath,
     SYNTHI_WORKFLOW_CI_RUN_ID: runId,
     SYNTHI_WORKFLOW_CI_NONCE: attestationNonce,
+    SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID: input.profile.reset_profile_id!,
     SYNTHI_WORKFLOW_CI_STATE_SEED_ID: input.profile.state_seed_id!,
     SYNTHI_WORKFLOW_ID: workflowId,
     SYNTHI_WORKSPACE_ID: workspaceId,
@@ -185,7 +188,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       authStorageStatePath,
       blockers: [],
       status: "failed",
-      failureClass: "appValidationError",
+      failureClass: classifyResetProfileFailure(reset.output),
       failureStage: "reset",
       reset,
       resetAssertion: null,
@@ -215,7 +218,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       authStorageStatePath,
       blockers: [],
       status: "failed",
-      failureClass: "appValidationError",
+      failureClass: classifyResetProfileFailure(resetAssertion.output),
       failureStage: "reset_assertion",
       reset,
       resetAssertion,
@@ -326,6 +329,7 @@ function resultFor(
       readiness: input.profile.readiness,
       base_url: input.profile.base_url,
       working_directory: input.profile.working_directory,
+      reset_profile_id: input.profile.reset_profile_id,
       state_seed_id: input.profile.state_seed_id,
       allow_mutation_replay: input.profile.allow_mutation_replay,
     },
@@ -475,6 +479,13 @@ function parameterEnvForWorkflow(workflow: CompiledWorkflowV7, parameters: Recor
 
 function classifyCiFailure(output: string): FailureClassV7 {
   return classifyWorkflowReplayFailure(new Error(output));
+}
+
+function classifyResetProfileFailure(output: string): FailureClassV7 {
+  if (/(reset|profile|seed|fixture|test[-_ ]?data|baseline).*(missing|mismatch|not found|unavailable|wrong)|missing.*(reset|profile|seed|fixture|test[-_ ]?data)|mismatch.*(reset|profile|seed)/i.test(output)) {
+    return "testDataMissing";
+  }
+  return "appValidationError";
 }
 
 function clampTimeout(value: number | undefined): number {

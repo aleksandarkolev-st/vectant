@@ -48,6 +48,7 @@ export const SAFETY_TOOLS = [
         postcondition_command: { type: "string" },
         working_directory: { type: "string", description: "Optional workspace/repo directory used as cwd for reset and CI replay commands." },
         auth_provider_id: { type: "string" },
+        reset_profile_id: { type: "string", description: "Stable reset profile identity that CI reset and assertion commands must verify." },
         state_seed_id: { type: "string", description: "Workspace/app seed identifier expected after reset and before mutation replay." },
         allow_mutation_replay: { type: "boolean", default: false },
       },
@@ -145,6 +146,7 @@ function setReplayIsolationProfileTool(args: unknown): ToolResponse {
     postcondition_command: stringOpt(a["postcondition_command"]),
     working_directory: stringOpt(a["working_directory"]),
     auth_provider_id: stringOpt(a["auth_provider_id"]),
+    reset_profile_id: stringOpt(a["reset_profile_id"]),
     state_seed_id: stringOpt(a["state_seed_id"]),
     allow_mutation_replay: boolOpt(a["allow_mutation_replay"]),
   });

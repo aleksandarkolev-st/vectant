@@ -1321,6 +1321,8 @@ describe("browser workflow contract compiler", () => {
     }))).toBe("routeChanged");
     expect(classifyWorkflowReplayFailure(new Error("net::ERR_CONNECTION_REFUSED"))).toBe("networkFailure");
     expect(classifyWorkflowReplayFailure(new Error("hydration boundary not ready"))).toBe("hydrationDelay");
+    expect(classifyWorkflowReplayFailure(new Error("reset_profile_mismatch"))).toBe("testDataMissing");
+    expect(classifyWorkflowReplayFailure(new Error("state seed id mismatch"))).toBe("testDataMissing");
   });
 });
 

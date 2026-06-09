@@ -774,6 +774,7 @@ export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTra
   if (/net::|ERR_|network/i.test(message)) return "networkFailure";
   if (/navigation|url/i.test(message)) return "routeChanged";
   if (/hydration|hydrate|not ready|not mounted/i.test(message)) return "hydrationDelay";
+  if (/(reset|profile|seed|fixture|test[-_ ]?data|baseline).*(missing|mismatch|not found|unavailable|wrong)|missing.*(reset|profile|seed|fixture|test[-_ ]?data)|mismatch.*(reset|profile|seed)/i.test(message)) return "testDataMissing";
   if (/timeout|waiting|visible|locator|selector|strict mode|No locator/i.test(message)) return "locatorDrift";
   if (event?.action === "navigate") return "routeChanged";
   return "unknown";
