@@ -1198,6 +1198,18 @@ describe("browser replay generation scenarios", () => {
           { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save changes\" })", confidence: 0.98, reason: "role" },
         ],
       }),
+      event({
+        event_id: "after-save",
+        event_seq: 3,
+        action: "click",
+        detail: {
+          observed_effects: ["Audit trail saved"],
+          element: { role: "button", name: "Review audit trail" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Review audit trail\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
     ], { mode: "prefixOnly" });
 
     expect(generated.mode).toBe("prefixOnly");
@@ -1205,6 +1217,9 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("// Mutation boundary: save");
     expect(generated.code).toContain("await expect(target2).toBeEnabled();");
     expect(generated.code).not.toContain("await target2.click();");
+    expect(generated.code).not.toContain("Review audit trail");
+    expect(generated.code).not.toContain("Audit trail saved");
+    expect(generated.used_locators.map((locator) => locator.event_id)).toEqual(["fill", "save"]);
     expect(generated.warnings).toContain("prefixOnly stopped before mutation boundary save");
   });
 

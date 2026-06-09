@@ -590,7 +590,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       lines.push(`  // Mutation boundary: ${event.event_id}. Prefix-only replay verifies reachability but does not commit this action.`);
       lines.push(`  await expect(${target}).toBeEnabled();`);
       warnings.push(`${mode} stopped before mutation boundary ${event.event_id}`);
-      continue;
+      break;
     }
     let replayActionEmitted = true;
     const waitsForNetwork = hasReplayNetworkEvent(event);
