@@ -111,6 +111,13 @@ const AI_PROPOSAL_DETERMINISTIC_PROMOTION_EVIDENCE_FIELDS: &[&str] = &[
     "proposalPromotionEvidenceIds",
 ];
 
+const GENERATED_TOPOLOGY_EVIDENCE_FIELDS: &[&str] = &[
+    "generatedTopologyEvidenceIds",
+    "generatedDeviceTopologyEvidenceIds",
+    "topologyEvidenceIds",
+    "selectedArtifactTopologyEvidenceIds",
+];
+
 const FISSION_SELECTION_COMPARISON_ORDER: &[&str] = &[
     "scopeRank",
     "missingVerificationCategoryCount",
@@ -367,6 +374,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.artifact_identity_invalid".to_string());
     }
 
+    if !generated_topology_binding_valid(candidate) {
+        reason_codes.push("fission.claim_narrower_than_generated_topology".to_string());
+    }
+
     if !safe_export_superset_justified(candidate) {
         reason_codes.push("fission.safe_export_superset_unverified".to_string());
     }
@@ -437,6 +448,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
         "hashFieldCoverage": hash_field_coverage(candidate),
         "artifactIdentityContract": artifact_identity_contract_summary(candidate),
+        "generatedTopologyBinding": generated_topology_binding_summary(candidate),
         "loaderCapabilityContract": loader_capability_contract_summary(
             candidate.get("loaderCapabilityRequirement")
         ),
@@ -850,6 +862,138 @@ fn artifact_identity_contract_summary(candidate: &Value) -> Value {
             .all(|id| content_addressed_artifact_id_valid(id)),
         "hashesValid": hashes.iter().all(|hash| sha256_digest_value(hash)),
         "idsMatchHashes": artifact_identity_contract_valid(candidate),
+    })
+}
+
+fn generated_topology_binding_required(candidate: &Value) -> bool {
+    replacement_scope_rank(candidate) < 2 && generated_role_path_required(candidate)
+}
+
+fn generated_topology_binding_valid(candidate: &Value) -> bool {
+    if !generated_topology_binding_required(candidate) {
+        return true;
+    }
+    !generated_topology_evidence_ids(candidate).is_empty()
+        && selected_artifact_content_addressed_and_hashed(candidate)
+        && generated_role_path(candidate).is_some()
+        && generated_topology_binding_object_valid(candidate)
+}
+
+fn generated_topology_evidence_ids(candidate: &Value) -> Vec<String> {
+    deterministic_evidence_ids_for_category(
+        candidate,
+        GENERATED_TOPOLOGY_EVIDENCE_FIELDS,
+        &[
+            "generated_topology",
+            "device_topology",
+            "generated_manifest_device_role_topology",
+            "selected_artifact_topology",
+        ],
+    )
+}
+
+fn selected_artifact_content_addressed_and_hashed(candidate: &Value) -> bool {
+    !artifact_identity_ids(candidate).is_empty()
+        && !artifact_identity_hashes(candidate).is_empty()
+        && artifact_identity_contract_valid(candidate)
+}
+
+fn generated_topology_binding_object(candidate: &Value) -> Option<&Value> {
+    ["generatedTopologyBinding", "generatedDeviceTopologyBinding", "selectedArtifactTopology"]
+        .iter()
+        .find_map(|field| candidate.get(*field).filter(|value| value.is_object()))
+}
+
+fn generated_topology_binding_object_valid(candidate: &Value) -> bool {
+    let Some(binding) = generated_topology_binding_object(candidate) else {
+        return false;
+    };
+    let Some(binding_object) = binding.as_object() else {
+        return false;
+    };
+    if !topology_binding_source_valid(binding_object) {
+        return false;
+    }
+    if !topology_binding_materialized_partial_artifact(binding_object) {
+        return false;
+    }
+    let Some(candidate_path) = generated_role_path(candidate) else {
+        return false;
+    };
+    let Some(binding_path) = topology_binding_generated_role_path(binding_object) else {
+        return false;
+    };
+    if binding_path != candidate_path {
+        return false;
+    }
+    topology_binding_artifact_identity_matches_candidate(binding, candidate)
+}
+
+fn topology_binding_source_valid(object: &serde_json::Map<String, Value>) -> bool {
+    object
+        .get("source")
+        .and_then(Value::as_str)
+        .or_else(|| object.get("proofBoundary").and_then(Value::as_str))
+        .map(normalized_scope_text)
+        .is_some_and(|value| {
+            value.contains("generated")
+                && value.contains("topology")
+                && (value.contains("manifest") || value.contains("device_role"))
+        })
+}
+
+fn topology_binding_materialized_partial_artifact(
+    object: &serde_json::Map<String, Value>,
+) -> bool {
+    bool_true(object.get("materializedPartialArtifact"))
+        || bool_true(object.get("separatelyMaterializedPartialArtifact"))
+        || bool_true(object.get("contentAddressedPartialArtifact"))
+}
+
+fn topology_binding_generated_role_path(
+    object: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    ["generatedRolePath", "generatedPath", "deviceTranslationUnitPath", "path"]
+        .iter()
+        .find_map(|field| object.get(*field).and_then(Value::as_str))
+        .and_then(normalized_project_path)
+}
+
+fn topology_binding_artifact_identity_matches_candidate(
+    binding: &Value,
+    candidate: &Value,
+) -> bool {
+    let binding_ids = artifact_identity_ids(binding);
+    let binding_hashes = artifact_identity_hashes(binding);
+    if binding_ids.is_empty()
+        || binding_hashes.is_empty()
+        || !binding_ids
+            .iter()
+            .all(|id| content_addressed_artifact_id_valid(id))
+        || !binding_hashes.iter().all(|hash| sha256_digest_value(hash))
+    {
+        return false;
+    }
+    let candidate_ids: BTreeSet<String> = artifact_identity_ids(candidate).into_iter().collect();
+    let candidate_hashes: BTreeSet<String> = artifact_identity_hashes(candidate)
+        .into_iter()
+        .filter_map(|hash| canonical_sha256_digest(&hash))
+        .collect();
+    binding_ids.iter().any(|id| candidate_ids.contains(id))
+        && binding_hashes.iter().any(|hash| {
+            canonical_sha256_digest(hash)
+                .is_some_and(|digest| candidate_hashes.contains(&digest))
+        })
+}
+
+fn generated_topology_binding_summary(candidate: &Value) -> Value {
+    json!({
+        "required": generated_topology_binding_required(candidate),
+        "valid": generated_topology_binding_valid(candidate),
+        "evidenceIds": generated_topology_evidence_ids(candidate),
+        "generatedRolePath": generated_role_path(candidate),
+        "selectedArtifactContentAddressedAndHashed": selected_artifact_content_addressed_and_hashed(candidate),
+        "bindingPresent": generated_topology_binding_object(candidate).is_some(),
     })
 }
 
@@ -2355,12 +2499,30 @@ mod tests {
     use super::*;
 
     fn valid_candidate() -> Value {
+        let artifact_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         json!({
             "islandId": "island:sha256:1",
             "sourceEditId": "edit:1",
+            "selectedArtifactId": format!("artifact:sha256:{artifact_digest}"),
+            "artifactHash": format!("sha256:{artifact_digest}"),
             "sourcePaths": ["src/device.kernel"],
             "sourceSpans": [{"path": "src/device.kernel", "startLine": 10, "endLine": 12}],
             "generatedRolePath": ".synthi/generated/gpu/device.kernel",
+            "generatedTopologyBinding": {
+                "schemaVersion": "synthi.gpu.generated_topology_binding.v1",
+                "source": "generated_manifest_device_role_topology",
+                "generatedRolePath": ".synthi/generated/gpu/device.kernel",
+                "selectedArtifactId": format!("artifact:sha256:{artifact_digest}"),
+                "selectedArtifactHash": format!("sha256:{artifact_digest}"),
+                "artifactKind": "device_partial",
+                "replacementScope": "device_partial",
+                "materializedPartialArtifact": true,
+                "separatelyMaterializedPartialArtifact": true,
+                "contentAddressedPartialArtifact": true,
+                "sourcePaths": ["src/device.kernel"],
+                "targetSymbols": ["step"]
+            },
+            "generatedTopologyEvidenceIds": ["evidence:generated-topology"],
             "targetSymbols": ["step"],
             "exportedSymbolsExpected": ["step", "helper"],
             "artifactKind": "device_partial",
@@ -2699,6 +2861,46 @@ mod tests {
     }
 
     #[test]
+    fn rejects_narrow_candidate_without_generated_topology_evidence() {
+        let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("generatedTopologyEvidenceIds");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["generatedTopologyBinding"]["required"], true);
+        assert_eq!(report["generatedTopologyBinding"]["valid"], false);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.claim_narrower_than_generated_topology"));
+    }
+
+    #[test]
+    fn rejects_narrow_candidate_without_generated_topology_binding() {
+        let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("generatedTopologyBinding");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["generatedTopologyBinding"]["required"], true);
+        assert_eq!(report["generatedTopologyBinding"]["bindingPresent"], false);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.claim_narrower_than_generated_topology"));
+    }
+
+    #[test]
     fn rejects_non_content_addressed_selected_artifact_identity() {
         let mut candidate = valid_candidate();
         candidate["selectedArtifactId"] = json!("artifact:latest");
@@ -2749,6 +2951,10 @@ mod tests {
     fn rejects_artifact_hash_without_selected_artifact_identity() {
         let mut candidate = valid_candidate();
         let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("selectedArtifactId");
         candidate["artifactHash"] = json!(format!("sha256:{digest}"));
 
         let report = verify_fission_candidate(&candidate);
@@ -2939,7 +3145,7 @@ mod tests {
             "runtime_session_binding": {
                 "source": "runtime-session"
             },
-            "artifact_id": "artifact:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            "artifact_id": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         });
 
         let report = verify_fission_candidate(&candidate);
@@ -2976,7 +3182,7 @@ mod tests {
                 "syncPoint": "after-dispatch"
             },
             "runtimeSessionId": "runtime-session:current",
-            "artifactId": "artifact:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "artifactId": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "visual_ref": "validation-screenshot:fresh-frame"
         });
 

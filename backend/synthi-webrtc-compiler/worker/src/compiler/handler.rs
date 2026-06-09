@@ -5646,6 +5646,27 @@ fn partial_fission_candidate_and_evidence(
         partial_fission_requires_original_host_path(artifact_kind, replacement_scope, sources);
     let original_host_launch_mapping =
         partial_fission_original_host_launch_mapping(sources, &outcome.target_symbols);
+    let generated_role_path = sources
+        .and_then(|sources| sources.full_filename.as_deref())
+        .or(outcome.proof_metadata.source_filename.as_deref())
+        .map(str::to_string);
+    let generated_topology_binding = serde_json::json!({
+        "schemaVersion": "synthi.gpu.generated_topology_binding.v1",
+        "source": "generated_manifest_device_role_topology",
+        "generatedRolePath": &generated_role_path,
+        "selectedArtifactId": selected_artifact_id,
+        "selectedArtifactHash": format!("sha256:{artifact_hash}"),
+        "artifactKind": artifact_kind,
+        "replacementScope": replacement_scope,
+        "materializedPartialArtifact": true,
+        "separatelyMaterializedPartialArtifact": true,
+        "contentAddressedPartialArtifact": true,
+        "sourcePaths": &source_paths,
+        "targetSymbols": &outcome.target_symbols,
+    });
+    let generated_topology_hash = sha256_hex_str(&generated_topology_binding.to_string());
+    let generated_topology_evidence_id =
+        format!("evidence:generated-topology:{generated_topology_hash}");
     let compile_recipe_material = serde_json::json!({
         "compileProvenance": &outcome.proof_metadata,
         "artifactKind": artifact_kind,
@@ -5709,9 +5730,9 @@ fn partial_fission_candidate_and_evidence(
         "artifactHash": format!("sha256:{artifact_hash}"),
         "sourcePaths": source_paths,
         "sourceSpans": source_spans,
-        "generatedRolePath": sources
-            .and_then(|sources| sources.full_filename.as_deref())
-            .or(outcome.proof_metadata.source_filename.as_deref()),
+        "generatedRolePath": &generated_role_path,
+        "generatedTopologyBinding": generated_topology_binding,
+        "generatedTopologyEvidenceIds": [generated_topology_evidence_id.clone()],
         "targetSymbols": &outcome.target_symbols,
         "exportedSymbolsExpected": exported_symbols,
         "symbolIdentityMappings": symbol_identity_mappings,
@@ -5733,7 +5754,8 @@ fn partial_fission_candidate_and_evidence(
             compiler_evidence_id,
             symbol_evidence_id,
             abi_evidence_id,
-            transport_evidence_id
+            transport_evidence_id,
+            generated_topology_evidence_id.clone()
         ],
         "sourceMappingEvidenceIds": [candidate_evidence_id.clone()],
         "includeClosureEvidenceIds": [candidate_evidence_id.clone()],
@@ -5887,6 +5909,29 @@ fn partial_fission_candidate_and_evidence(
         metadata: Some(candidate.clone()),
     };
     let mut evidence_refs = vec![evidence];
+    evidence_refs.push(GpuHmrProofEvidenceRef {
+        evidence_id: generated_topology_evidence_id,
+        kind: "generated-device-topology".to_string(),
+        content_hash: format!("sha256:{generated_topology_hash}"),
+        producer_subsystem: "worker.compile_device".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: format!(
+            "generated topology binding artifact_kind={} source_paths={} target_symbols={}",
+            artifact_kind,
+            candidate
+                .get("sourcePaths")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+            outcome.target_symbols.len()
+        ),
+        metadata: candidate
+            .get("generatedTopologyBinding")
+            .cloned(),
+    });
     if let Some((mapping, _, evidence_id)) = original_host_launch_mapping {
         let hash = sha256_hex_str(&mapping.to_string());
         evidence_refs.push(GpuHmrProofEvidenceRef {
