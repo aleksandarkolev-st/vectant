@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   installPublishedProgram: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  scaffoldProgram: vi.fn(),
 }));
 
 vi.mock('react-redux', () => ({
@@ -39,6 +40,7 @@ vi.mock('../programsClient', () => ({
   publishWorkspaceProgram: h.publishWorkspaceProgram,
   fetchMarketplace: h.fetchMarketplace,
   installPublishedProgram: h.installPublishedProgram,
+  scaffoldProgram: h.scaffoldProgram,
 }));
 vi.mock('@/components/docking-wm/state/layout-slice', () => ({
   selectNodes: (s) => s.nodes,
@@ -202,5 +204,28 @@ describe('ProgramsPanel install / launch-from-install', () => {
     expect(byTestId(container, 'verified-badge-@vectant/nextjs-dev')).not.toBeNull();
     expect(byTestId(container, 'verified-badge-@other/web')).toBeNull();
     expect(byTestId(container, 'marketplace-item-@vectant/nextjs-dev').textContent).toContain('Next.js development server');
+  });
+
+  it('shows "Set up project" for a scaffoldable installed default and scaffolds then launches', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: '@vectant/nextjs-dev', version: '1.0.0', status: 'installed' }]);
+    h.scaffoldProgram.mockResolvedValue({ written: ['package.json', 'app/page.js'], skipped: [] });
+    h.launchInstalledProgram.mockResolvedValue({ session: { id: 'ps1', state: 'running', runtimeType: 'web' } });
+    const origConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      await render();
+      await act(async () => { byTestId(container, 'scaffold-inst1').click(); });
+      await flush();
+    } finally {
+      window.confirm = origConfirm;
+    }
+    expect(h.scaffoldProgram).toHaveBeenCalledWith('team', '@vectant/nextjs-dev');
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith('team', 'inst1');
+  });
+
+  it('hides "Set up project" for a non-scaffoldable installed program', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst2', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    await render();
+    expect(byTestId(container, 'scaffold-inst2')).toBeNull();
   });
 });

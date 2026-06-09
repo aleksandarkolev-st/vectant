@@ -109,3 +109,10 @@ export async function installPublishedProgram(workspaceSlug, packageId, version,
     body: JSON.stringify({ packageId, version, ...(grantScopes ? { grantScopes } : {}) }),
   });
 }
+
+export async function scaffoldProgram(workspaceSlug, packageId) {
+  return request(`${programsBase(workspaceSlug)}/scaffold`, {
+    method: 'POST',
+    body: JSON.stringify({ packageId }),
+  });
+}

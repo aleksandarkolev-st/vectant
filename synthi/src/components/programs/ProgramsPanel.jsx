@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe, Package, Download, ShieldCheck, X, Store, UploadCloud } from 'lucide-react';
+import { Command, Play, RefreshCw, RotateCcw, Square, Activity, Globe, Package, Download, ShieldCheck, X, Store, UploadCloud, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   fetchProgramSessions,
@@ -15,7 +15,9 @@ import {
   publishWorkspaceProgram,
   fetchMarketplace,
   installPublishedProgram,
+  scaffoldProgram,
 } from './programsClient';
+import { SCAFFOLDABLE_PACKAGE_IDS } from '@/lib/programs/scaffoldTemplates';
 import {
   buildProgramSessionSections,
   canRestartProgramSession,
@@ -209,7 +211,7 @@ function SectionHeader({ icon: Icon, label, count, className = '' }) {
   );
 }
 
-function InstallCard({ install, acting, canManage, onLaunch }) {
+function InstallCard({ install, acting, canManage, onLaunch, scaffoldable, onScaffold }) {
   return (
     <div
       className="rounded-lg border px-3 py-2 flex items-center justify-between gap-3 transition-colors hover:bg-[var(--bg-elevated)]"
@@ -225,16 +227,30 @@ function InstallCard({ install, acting, canManage, onLaunch }) {
         </div>
       </div>
       {canManage ? (
-        <button
-          type="button"
-          data-testid={`launch-install-${install.id}`}
-          onClick={() => onLaunch(install)}
-          disabled={acting}
-          className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1 disabled:opacity-50"
-          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-        >
-          <Play className="w-3 h-3" /> Launch
-        </button>
+        <div className="flex items-center gap-1">
+          {canManage && scaffoldable ? (
+            <button
+              type="button"
+              data-testid={`scaffold-${install.id}`}
+              onClick={() => onScaffold(install)}
+              disabled={acting}
+              className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1 disabled:opacity-50"
+              style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+            >
+              <Wrench className="w-3 h-3" /> Set up project
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-testid={`launch-install-${install.id}`}
+            onClick={() => onLaunch(install)}
+            disabled={acting}
+            className="text-[11px] px-2 py-1 rounded border inline-flex items-center gap-1 disabled:opacity-50"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+          >
+            <Play className="w-3 h-3" /> Launch
+          </button>
+        </div>
       ) : null}
     </div>
   );
@@ -422,6 +438,21 @@ export default function ProgramsPanel() {
     }
   }, [load, openProgramSession, workspaceSlug]);
 
+  const handleScaffold = useCallback(async (install) => {
+    if (!workspaceSlug || !install?.id) return;
+    const name = install.packageId?.split('/').pop() || 'starter';
+    if (!window.confirm(`Scaffold a "${name}" starter into this workspace? Existing files are skipped.`)) return;
+    setActingSessionId(install.id);
+    try {
+      const result = await scaffoldProgram(workspaceSlug, install.packageId);
+      toast.success(`Scaffolded ${result?.written?.length || 0} file(s)` + (result?.skipped?.length ? `, skipped ${result.skipped.length}` : ''));
+      await handleLaunchInstall(install);
+    } catch (error) {
+      toast.error(error.body?.message || error.message || 'Failed to scaffold');
+      setActingSessionId(null);
+    }
+  }, [handleLaunchInstall, workspaceSlug]);
+
   const handlePublish = useCallback(async () => {
     if (!workspaceSlug) return;
 
@@ -584,6 +615,8 @@ export default function ProgramsPanel() {
                 acting={actingSessionId === install.id}
                 canManage={canManage}
                 onLaunch={handleLaunchInstall}
+                scaffoldable={SCAFFOLDABLE_PACKAGE_IDS.includes(install.packageId)}
+                onScaffold={handleScaffold}
               />
             ))
           )}
