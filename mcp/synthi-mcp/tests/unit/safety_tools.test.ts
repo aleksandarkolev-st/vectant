@@ -709,6 +709,60 @@ describe("safety MCP tool surface", () => {
     }));
   });
 
+  it("classifies CI postcondition reset profile mismatches as missing test data", async () => {
+    teachSaveWorkflow();
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-postcondition-profile-"));
+    const workingDirectory = path.join(artifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
+    const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
+    const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
+    await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
+    await writeFile(ciScript, [
+      "import { appendFile } from 'node:fs/promises';",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      "",
+    ].join("\n"));
+    await writeFile(postconditionScript, "throw new Error('reset_profile_id_mismatch');\n");
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-a",
+      kind: "ciIsolated",
+      base_url: "https://ci.example.test",
+      working_directory: workingDirectory,
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      reset_profile_id: "settings-reset-v1",
+      state_seed_id: "settings-fixture-v1",
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-a",
+      artifact_root: artifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        mutation_executed: true,
+        failure_class: "testDataMissing",
+        failure_stage: "postcondition",
+        commands: expect.objectContaining({ postcondition_exit_code: 1 }),
+        report: expect.objectContaining({
+          postcondition_output: expect.stringContaining("reset_profile_id_mismatch"),
+          missing_mutation_step_ids: [],
+        }),
+      }),
+    }));
+  });
+
   it("passes validated auth provider storage state into CI isolated replay", async () => {
     const url = "https://app.example.test/settings";
     const appOrigin = "https://app.example.test";

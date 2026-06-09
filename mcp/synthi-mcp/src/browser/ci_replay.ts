@@ -284,7 +284,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     authStorageStatePath,
     blockers: [],
     status: postcondition.exitCode === 0 ? "passed" : "failed",
-    failureClass: postcondition.exitCode === 0 ? null : "appValidationError",
+    failureClass: postcondition.exitCode === 0 ? null : classifyPostconditionFailure(postcondition.output),
     failureStage: postcondition.exitCode === 0 ? null : "postcondition",
     reset,
     resetAssertion,
@@ -499,6 +499,12 @@ function classifyResetProfileFailure(output: string): FailureClassV7 {
   if (/(reset|profile|seed|fixture|test[-_ ]?data|baseline).*(missing|mismatch|not found|unavailable|wrong)|missing.*(reset|profile|seed|fixture|test[-_ ]?data)|mismatch.*(reset|profile|seed)/i.test(output)) {
     return "testDataMissing";
   }
+  return "appValidationError";
+}
+
+function classifyPostconditionFailure(output: string): FailureClassV7 {
+  const replayClass = classifyWorkflowReplayFailure(new Error(output));
+  if (replayClass === "testDataMissing") return replayClass;
   return "appValidationError";
 }
 
