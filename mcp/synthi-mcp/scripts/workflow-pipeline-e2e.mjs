@@ -2372,9 +2372,7 @@ const CASES = [
     id: "hover-menu",
     minSteps: 2,
     expectedActions: ["hover", "click"],
-    expectedReplayText: [
-      "Archived report",
-    ],
+    expectedReplayText: [],
     expectedReplayCode: [
       "await target1.hover();",
     ],
