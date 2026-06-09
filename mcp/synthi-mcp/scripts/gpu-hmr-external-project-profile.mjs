@@ -1113,6 +1113,91 @@ async function writeExternalVisualProofArtifact(profile, report) {
   };
 }
 
+function waitSummaryFromCompileResult(result) {
+  if (!result) return null;
+  return {
+    waitArgs: result.waitArgs ?? null,
+    waitContract: waitContractFromCompileResult(result),
+    waitStatus: result.waitStatus ?? null,
+    waitFrameGate: result.wait?.frame_gate ?? result.wait?.frameGate ?? null,
+    gpuProof: result.wait?.gpu_proof ?? null,
+    gpuProofValidation: result.wait?.gpu_proof_validation ?? null,
+    resultState: result.wait?.gpu_proof_validation?.summary?.resultState
+      ?? result.wait?.gpu_proof_validation?.resultState
+      ?? result.wait?.gpu_proof?.result_state
+      ?? result.wait?.gpu_proof?.resultState
+      ?? null,
+  };
+}
+
+function externalRejectionReasons(report) {
+  const reasons = new Set(['external_profile_failed']);
+  const message = String(report.error?.message ?? '');
+  if (message.includes('gpu_hmr_proof_insufficient')) reasons.add('gpu_hmr_proof_insufficient');
+  if (message.includes('visual diff below threshold')) reasons.add('visual_diff_below_threshold');
+  if (message.includes('MCP visual proof gate is not GPU-only')) reasons.add('mcp_visual_proof_gate_unsatisfied');
+  if (report.mcp?.visualProofGate && report.mcp.visualProofGate.satisfied !== true) {
+    reasons.add('mcp_visual_proof_gate_unsatisfied');
+  }
+  for (const [phase, result] of Object.entries({
+    before: report.mcp?.before,
+    after: report.mcp?.after,
+  })) {
+    const waitStatus = result?.waitStatus;
+    if (waitStatus && waitStatus !== 'ok' && waitStatus !== 'pass') {
+      reasons.add(`${phase}_wait_${String(waitStatus).replace(/[^a-zA-Z0-9_.-]+/g, '_')}`);
+    }
+    const resultState = waitSummaryFromCompileResult(result)?.resultState;
+    if (resultState && resultState !== 'gpu-hmr-full-runtime-proven') {
+      reasons.add(`${phase}_gpu_proof_${String(resultState).replace(/[^a-zA-Z0-9_.-]+/g, '_')}`);
+    }
+  }
+  if (!report.visualOracleArtifacts) reasons.add('visual_oracle_not_accepted');
+  return [...reasons].sort();
+}
+
+async function writeExternalRejectionProofArtifact(profile, report) {
+  await fs.mkdir(LOG_DIR, { recursive: true });
+  const material = {
+    schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+    profileId: profile.id,
+    proofMode: report.proofMode,
+    status: report.status,
+    createdAt: new Date().toISOString(),
+    rejection: {
+      accepted: false,
+      reasons: externalRejectionReasons(report),
+      requiredGpuProofState: profile.mcpPreview?.requiredGpuProofState ?? null,
+      requireGpuFullRuntimeProof: profile.mcpPreview?.requireGpuFullRuntimeProof ?? null,
+      hmrModule: profile.mcpPreview?.hmrModule ?? null,
+    },
+    error: report.error ?? null,
+    visualOracleArtifacts: report.visualOracleArtifacts ?? null,
+    visualDiff: report.visualDiff ?? null,
+    deterministicVisualMode: report.deterministicVisualMode ?? null,
+    deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    mcp: report.mcp ? {
+      visualProofGate: report.mcp.visualProofGate ?? null,
+      before: waitSummaryFromCompileResult(report.mcp.before),
+      after: waitSummaryFromCompileResult(report.mcp.after),
+      modelProvenance: report.mcp.modelProvenance ?? null,
+    } : null,
+  };
+  const proofId = `external-rejection-proof:${sha256(stableJson(material)).replace(/^sha256:/, '')}`;
+  const artifact = {
+    ...material,
+    proofId,
+  };
+  const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-rejection-proof.json`);
+  await fs.writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    schemaVersion: artifact.schemaVersion,
+    proofId,
+    path: outPath,
+    reasons: artifact.rejection.reasons,
+  };
+}
+
 async function loadProfile(args) {
   if (args.profileJson) return normalizeProfile(JSON.parse(args.profileJson));
   const envJson = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON;
@@ -1373,6 +1458,40 @@ async function selfCheck() {
     ok: visualProofArtifact.ok,
     visualProofArtifact,
   });
+  const rejectionProofArtifact = await writeExternalRejectionProofArtifact(
+    {
+      id: 'external-rejection-self-check',
+      mcpPreview: {
+        requiredGpuProofState: 'gpu-hmr-full-runtime-proven',
+        requireGpuFullRuntimeProof: true,
+        hmrModule: 'device',
+      },
+    },
+    {
+      proofMode: 'mcp_preview',
+      status: 'fail',
+      error: { message: 'gpu_hmr_proof_insufficient' },
+      mcp: {
+        visualProofGate: { required: true, satisfied: true },
+        after: {
+          waitStatus: 'fail',
+          wait: {
+            gpu_proof_validation: {
+              summary: { resultState: 'missing' },
+            },
+          },
+        },
+      },
+    },
+  );
+  checks.push({
+    name: 'external-rejection-proof-artifact',
+    ok:
+      rejectionProofArtifact.proofId.startsWith('external-rejection-proof:')
+      && rejectionProofArtifact.reasons.includes('gpu_hmr_proof_insufficient')
+      && rejectionProofArtifact.reasons.includes('after_wait_fail'),
+    rejectionProofArtifact,
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.self_check.v1',
@@ -1500,6 +1619,22 @@ async function runProfile(profile) {
     report.timings.duration_monotonic_ns = timingFields.duration_monotonic_ns;
     report.timings.totalMs = timingFields.duration_ms;
     report.timingMetrics = externalProjectTimingMetrics(report);
+    if (report.status !== 'pass') {
+      try {
+        report.rejectionProofArtifact = await writeExternalRejectionProofArtifact(profile, report);
+        report.proofArtifactPaths = [
+          ...new Set([
+            ...(Array.isArray(report.proofArtifactPaths) ? report.proofArtifactPaths : []),
+            report.rejectionProofArtifact.path,
+          ]),
+        ];
+      } catch (error) {
+        report.rejectionProofError = {
+          message: error?.message || String(error),
+          stack: error?.stack || null,
+        };
+      }
+    }
     const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-report.json`);
     await fs.writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`external_project_report=${outPath}`);
