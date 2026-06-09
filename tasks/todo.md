@@ -282,3 +282,24 @@ User lifted the disk gate to rebuild + verify. Freed ~18.5 GB of Docker build ca
 - **Install** → `409 consent_required` (`["program.launch"]`) without consent, then `200 installed` with consent (+ a new `PermissionGrant`); **installCount bumped 0→1**.
 - **Programs panel UI** renders the `Marketplace` section, owner-gated **Publish** button, and the catalog card "Demo Web Server · @n964u0lg/web · 1 installs · Install".
 - **Two pre-existing infra issues found (NOT Phase-5 bugs):** (1) frontend service was missing `COLLAB_SERVER_URL` → server-side program calls 502'd on `localhost:1234`; fixed by wiring it to the compose hostname (committed `1668e0ff`, pushed). (2) program-runtime resolves the repo dir by the DB `User.id` (cuid) while workspace files are stored under the GitHub id (`session.user.id`) → IDE-saved manifests are invisible to publish/install; worked around for the test by placing the manifest at the shared workspace root; flagged as a separate background task to fix properly.
+
+---
+
+# BACKLOG — do AFTER all 6/7 slices are complete
+
+## Recipe-authoring AI awareness (program scripts)
+**Goal:** Make Vectant's own AI — and any external AI/CLI agents linked into the app (terminal-based: Claude Code, Codex, Gemini CLI, etc.) — *aware of the program-recipe system* so they generate valid, working recipes instead of guessing/“rubbish”.
+
+**Trigger:** when a user asks the AI to create or edit a program script — i.e. a `vectant.programs.json` (preferred) or `devcontainer.json` — inject the relevant knowledge into context (system prompt / tool description / retrieved context), e.g. on detecting intent to author/modify those files or on opening them in the editor.
+
+**Knowledge the AI must have (single source of truth, reused everywhere):**
+- The `vectant.programs.json` manifest schema + fail-closed validation rules (from `src/lib/programs/manifest.js`): required `packageId`/`version`/`launch`; optional `displayName`/`description`/`runtimeType`/`workingDir`/`install`/`env`/`ports`/`surfaces`/`health`/`permissions`; supported `runtimeType` values (`web`/`background`/`gui`/`cli`); valid permission scopes; port range; path-escape / unknown-scope / unsupported-runtime rejections; **filename is `vectant.programs.json` (plural)**.
+- The documented `devcontainer.json` subset Vectant imports (`src/lib/programs/devcontainer.js`) and what is rejected (host bind mounts, `docker.sock`, privileged, etc.).
+- The **default/official `@vectant/*` starter programs** (the seeded catalog from the current task): what each is, its launch command + ports, and how to install/run it (install-from-catalog → consent → launch). So the AI can recommend an existing starter instead of authoring a worse one.
+- The install/launch/publish flow + consent model (so generated recipes declare the right `permissions`).
+
+**Surfaces to wire (design later):**
+1. Vectant AI gateway/system-prompt: a recipe-authoring context block injected on the trigger above (reuse the AI backend prompt-caching path).
+2. External CLI agents in the terminal: a discoverable, machine-readable context file in the workspace (e.g. `AGENTS.md` / a `.vectant/` doc, or an MCP resource the CLI can read) describing the same schema + default catalog, so terminal-linked agents don't need our gateway.
+
+**Note:** keep ONE canonical schema/catalog description and render it into both surfaces (don’t fork the docs). Depends on the seeded `@vectant/*` catalog (current task) being final.
