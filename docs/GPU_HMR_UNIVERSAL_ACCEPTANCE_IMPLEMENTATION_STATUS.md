@@ -14,6 +14,7 @@ The accepted proof set is broader than one fixture:
 - MCP preview visual HMR for generated ray-light and Flow workloads,
 - HIPRT same-process ray-traced framebuffer HMR for CameraRays and MegaKernel direct-light profiles,
 - ThreeJS external runtime visual proof as an external screenshot profile,
+- WebGPU runtime preflight evidence on Chrome/AMD RDNA4, explicitly not counted as WebGPU HMR,
 - negative/rejection evidence for Bevy, OIDN HIP, OpenCL, and Vulkan where proof is missing or the runtime dependency is incompatible.
 
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. Non-HIP backends, CUDA, Vulkan, OpenCL full-runtime acceptance, and Bevy/WebGPU full-runtime acceptance remain open.
@@ -34,6 +35,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
@@ -60,6 +62,7 @@ The runner fails immediately when GPU split endpoint evidence is missing after i
 Earlier hardening in the same pass:
 
 ```text
+b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
@@ -80,6 +83,7 @@ runtime visual proof artifacts are blocked when the derived proof ledger record 
 strict runtime artifact gates reject invented source-consistency modes and require deterministic visual-mode evaluation for visual ledgers.
 OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
 Vulkan preflight now refuses missing ICD/tool evidence and cannot count as pipeline, command-buffer, or frame-output proof.
+WebGPU preflight now records browser, launch flags, adapter, features, limits, and a diagnostic screenshot while still refusing shader/pipeline/frame HMR proof.
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 ```
@@ -101,6 +105,8 @@ npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check
+npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check
+$env:SLUG='webgpu-preflight-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:preflight
   result: passed
 ```
 
@@ -582,6 +588,47 @@ noSymlinkApplied: true
 
 No ICD was synthesized, no symlink was added, and no compatibility shim was used. Do not claim Vulkan HMR output proof on this worker.
 
+## WebGPU Status
+
+WebGPU was tested through a structured Chrome/Playwright runtime preflight artifact:
+
+```text
+latest proof id: webgpu-preflight-proof:sha256:c6cc4216d34477cf4968797b420d4ac4f331b84834939acc5c1a956f2c31bd2d
+latest result state: webgpu-runtime-preflight-accepted
+latest proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260609-proof.json
+latest summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260609-summary.txt
+latest diagnostic screenshot: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260609-diagnostic.png
+```
+
+The live browser accepted WebGPU runtime preflight:
+
+```text
+browser: C:\Program Files\Google\Chrome\Application\chrome.exe
+browser launch args: --enable-unsafe-webgpu --ignore-gpu-blocklist --enable-features=Vulkan,WebGPU,UseSkiaRenderer --disable-gpu-sandbox
+adapter: {"vendor":"amd","architecture":"rdna-4","device":"","description":""}
+preferred canvas format: bgra8unorm
+unsupported reasons: none
+```
+
+The diagnostic screenshot was visually inspected and is nonblank: it shows a rendered WebGPU triangle plus the runtime JSON (`navigator.gpu`, adapter, device, and render-submit true). This is runtime capability evidence only.
+
+The preflight artifact explicitly does not accept WebGPU shader/pipeline proof or GPU HMR success. Even when WebGPU runtime preflight accepts, WGSL hashes, shader-module epoch, bind-group/pipeline-layout proof, pipeline recreate proof, and frame-output oracle proof are still required before WebGPU GPU HMR can pass.
+
+```text
+acceptedForWebGpuRuntimePreflight: true
+acceptedForWebGpuPipelineProof: false
+gpuHmrSuccess: false
+shaderModuleEpochRequired: true
+bindGroupLayoutProofRequired: true
+pipelineLayoutProofRequired: true
+pipelineRecreateProofRequired: true
+frameOutputOracleRequired: true
+noShimApplied: true
+noBrowserFlagClaimedAsHmr: true
+```
+
+No WebGPU shim was added. Browser enablement flags are recorded for transparency and are not counted as HMR proof.
+
 ## External Project Profiles
 
 ThreeJS WebGL shader lava profile passed as an external runtime screenshot proof:
@@ -753,6 +800,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
 | OpenCL | Worker has `libOpenCL.so.1`, but no vendor ICD and no `clinfo`; structured preflight rejected OpenCL runtime proof. | Install/provide a real OpenCL vendor ICD and then add dispatch/event/readback ledger proof. No synthesized ICDs or shims. |
 | Vulkan | Worker has `libvulkan.so.1`, but no ICD files and no `vulkaninfo`; structured preflight rejected Vulkan runtime proof. | Provide a real Vulkan ICD/tooling, then add pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof. No synthesized ICDs or shims. |
+| WebGPU | Chrome/AMD RDNA4 runtime preflight accepted with a nonblank diagnostic screenshot; the artifact still sets `gpuHmrSuccess=false`. | Add WGSL hash, shader-module epoch, bind-group/pipeline-layout, pipeline recreate, frame trace, and output-oracle ledger proof before accepting WebGPU HMR. Browser flags must remain evidence-only. |
 | External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
 | Narrow fission | Device translation unit HMR proven. | Add deterministic smallest-safe fission verifier before claiming per-kernel/smallest island. |
@@ -773,6 +821,7 @@ The generated ray-light MCP fixture is HIPRT/OIDN.
 OIDN HIP produced or validated the accepted output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
+WebGPU shader-module/pipeline/frame-output proof was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-island fission.
 Bevy/WebGPU has full-runtime proof-ledger acceptance.
 ```

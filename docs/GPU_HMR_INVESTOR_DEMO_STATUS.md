@@ -16,7 +16,8 @@ Best demo surfaces:
 2. ROCm/HIP MCP Flow preview: second generated visual workload, proving this is not a one-case path.
 3. HIPRT same-process CameraRays and MegaKernel: strongest ray-traced framebuffer proof.
 4. ThreeJS WebGL external profile: concrete external runtime screenshot proof, not full ledger acceptance.
-5. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
+5. WebGPU Chrome/AMD runtime preflight: nonblank diagnostic visual, not HMR acceptance.
+6. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
 
 Do not claim:
 
@@ -27,6 +28,7 @@ Bevy/WebGPU has full-runtime proof-ledger acceptance.
 OIDN HIP produced or validated the accepted visual output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
+WebGPU shader-module/pipeline/frame output proof was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-safe fission.
 Any proof succeeded because of a shim or hardcoded scenario path.
 ```
@@ -36,6 +38,7 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Latest implementation commits:
 
 ```text
+b34a7e1a1 feat(gpu-hmr): add webgpu preflight proof
 f2a02a83e feat(gpu-hmr): add vulkan preflight rejection proof
 732d2bcfa fix(gpu-hmr): bind narrow fission to generated topology
 35232abcd fix(gpu-hmr): reject generated split per-kernel overclaims
@@ -62,6 +65,7 @@ The generated ray-light and Flow demos remain device-translation-unit HMR claims
 Generated split topology now rejects per-kernel HMR unless deterministic fission-verifier evidence proves it.
 Narrow generated fission candidates now require topology binding to a content-addressed partial artifact before the verifier can pass them.
 Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
+WebGPU preflight records Chrome launch flags, AMD RDNA4 adapter evidence, and a nonblank diagnostic screenshot, but still cannot count as shader/pipeline/frame HMR proof.
 ```
 
 Post-hardening verification:
@@ -81,6 +85,7 @@ node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -
 npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check -> passed
 ```
 
 ## Live Preview Targets
@@ -346,6 +351,47 @@ noSymlinkApplied: true
 
 No Vulkan proof is accepted on this worker, and no ICD, symlink, or compatibility shim was synthesized.
 
+## WebGPU Result
+
+Structured WebGPU runtime preflight proof:
+
+```text
+proof id: webgpu-preflight-proof:sha256:c6cc4216d34477cf4968797b420d4ac4f331b84834939acc5c1a956f2c31bd2d
+result state: webgpu-runtime-preflight-accepted
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260609-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260609-summary.txt
+diagnostic screenshot: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260609-diagnostic.png
+```
+
+WebGPU runtime preflight was tested and accepted:
+
+```text
+browser: C:\Program Files\Google\Chrome\Application\chrome.exe
+browser launch args: --enable-unsafe-webgpu --ignore-gpu-blocklist --enable-features=Vulkan,WebGPU,UseSkiaRenderer --disable-gpu-sandbox
+adapter: {"vendor":"amd","architecture":"rdna-4","device":"","description":""}
+preferred canvas format: bgra8unorm
+unsupported reasons: none
+```
+
+Visual inspection confirmed the diagnostic screenshot is nonblank and contains a rendered WebGPU triangle plus runtime JSON proving secure context, `navigator.gpu`, adapter, device creation, and render submit.
+
+The preflight does not count as WebGPU HMR proof:
+
+```text
+acceptedForWebGpuRuntimePreflight: true
+acceptedForWebGpuPipelineProof: false
+gpuHmrSuccess: false
+shaderModuleEpochRequired: true
+bindGroupLayoutProofRequired: true
+pipelineLayoutProofRequired: true
+pipelineRecreateProofRequired: true
+frameOutputOracleRequired: true
+noShimApplied: true
+noBrowserFlagClaimedAsHmr: true
+```
+
+No WebGPU shim was added. Browser flags are disclosed as runtime enablement evidence only, not as proof of shader-module, pipeline, epoch, or frame-output HMR.
+
 ## Strict ROCm/HIP Compute Ledger
 
 Accepted full-runtime compute/readback proof:
@@ -457,6 +503,8 @@ npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
 SYNTHI_OPENCL_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=opencl-rocm-preflight-20260609-after-output-gate npm --prefix mcp/synthi-mcp run proof:opencl:preflight
 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight:self-check
 SYNTHI_VULKAN_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=vulkan-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight
+npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check
+$env:SLUG='webgpu-preflight-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:preflight
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
@@ -499,5 +547,6 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
 - Vulkan needs a real ICD plus pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof; no synthesized ICD or shim should be used.
+- WebGPU needs WGSL hash, shader-module epoch, bind-group/pipeline-layout, pipeline recreate, frame trace, and output-oracle ledger proof; browser flags must remain evidence-only.
 - Per-kernel/smallest-safe fission needs a deterministic verifier.
 - Browser plugin visual proof was unavailable because no in-app browser backend was exposed.
