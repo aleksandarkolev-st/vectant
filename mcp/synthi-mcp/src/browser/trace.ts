@@ -23,6 +23,7 @@ export interface TraceRecorderInput {
   element?: BrowserElementMetadata;
   detail?: Record<string, unknown>;
   security?: BrowserTraceEvent["security"];
+  observed_at?: number;
 }
 
 export class BrowserTraceRecorder {
@@ -111,6 +112,7 @@ export class BrowserTraceRecorder {
     actions?: BrowserActionKind[];
     detail: Record<string, unknown>;
     within_ms?: number;
+    observed_at?: number;
   }): BrowserTraceEvent | null {
     const match = this.latestActionIndex(input);
     if (match === null) return null;
@@ -126,6 +128,7 @@ export class BrowserTraceRecorder {
     tab_id: string;
     actions?: BrowserActionKind[];
     within_ms?: number;
+    observed_at?: number;
   }): BrowserTraceEvent | null {
     const match = this.latestActionIndex(input);
     if (match === null) return null;
@@ -137,18 +140,29 @@ export class BrowserTraceRecorder {
     tab_id: string;
     actions?: BrowserActionKind[];
     within_ms?: number;
+    observed_at?: number;
   }): number | null {
-    const now = Date.now();
+    const observedAt = input.observed_at;
+    const referenceTs = typeof observedAt === "number" && Number.isFinite(observedAt)
+      ? Math.floor(observedAt)
+      : Date.now();
+    const hasObservedAt = typeof observedAt === "number" && Number.isFinite(observedAt);
     const actions = input.actions ? new Set<BrowserActionKind>(input.actions) : null;
+    let sameTimestampMatch: number | null = null;
     for (let index = this.events.length - 1; index >= 0; index -= 1) {
       const event = this.events[index];
       if (!event || (event.kind !== "human_action" && event.kind !== "agent_action")) continue;
+      if (event.ts > referenceTs) continue;
       if (event.tab_id !== input.tab_id) continue;
       if (actions && (!event.action || !actions.has(event.action))) continue;
-      if (input.within_ms !== undefined && now - event.ts > input.within_ms) return null;
+      if (input.within_ms !== undefined && referenceTs - event.ts > input.within_ms) return null;
+      if (hasObservedAt && event.ts === referenceTs) {
+        sameTimestampMatch = index;
+        continue;
+      }
       return index;
     }
-    return null;
+    return sameTimestampMatch;
   }
 
   clear(): void {
@@ -189,12 +203,13 @@ export class BrowserTraceRecorder {
   ): BrowserTraceEvent {
     this.counter += 1;
     this.eventSeq += 1;
+    const observedAt = input.observed_at;
     const event: BrowserTraceEvent = {
       event_id: `browser_evt_${this.counter}`,
       trace_id: this.traceId,
       trace_version: this.traceVersion,
       event_seq: this.eventSeq,
-      ts: Date.now(),
+      ts: typeof observedAt === "number" && Number.isFinite(observedAt) ? Math.floor(observedAt) : Date.now(),
       tab_id: input.tab_id,
       origin: input.origin,
       url: input.url,

@@ -62,6 +62,7 @@ export interface CapturedBrowserHumanAction {
     h: number;
   };
   detail?: Record<string, unknown>;
+  observed_at?: number;
 }
 
 export type BrowserTeachEventSink = (event: CapturedBrowserHumanAction) => void;
@@ -73,6 +74,7 @@ export type BrowserTeachEventAnnotationSink = (event: {
   actions?: BrowserActionKind[];
   detail: Record<string, unknown>;
   within_ms?: number;
+  observed_at?: number;
 }) => void;
 
 export interface BrowserWorkflowOverlayRequest {
@@ -794,6 +796,7 @@ export class BrowserPlaywrightAdapter {
         });
       });
       page.on("request", (request) => {
+        const observed_at = Date.now();
         const redacted = redactUrl(request.url());
         const method = request.method().toUpperCase();
         this.pushEvent(this.networkEvents, tab_id, {
@@ -824,6 +827,7 @@ export class BrowserPlaywrightAdapter {
               actions: ["click", "dblclick", "press", "select"],
               detail,
               within_ms: 5000,
+              observed_at,
             });
           }, 100);
         }
@@ -835,6 +839,7 @@ export class BrowserPlaywrightAdapter {
         void this.handlePopup(page, popup, tab_id);
       });
       page.on("download", (download) => {
+        const observed_at = Date.now();
         let origin: string;
         try {
           origin = normalizeOrigin(page.url()).origin;
@@ -858,6 +863,7 @@ export class BrowserPlaywrightAdapter {
             actions: ["click", "dblclick"],
             detail,
             within_ms: 5000,
+            observed_at,
           });
         }, 250);
       });
@@ -896,6 +902,7 @@ export class BrowserPlaywrightAdapter {
   }
 
   private async handlePopup(opener: Page, popup: Page, opener_tab_id: string): Promise<void> {
+    const observed_at = Date.now();
     const popup_tab_id = this.idForPage(popup);
     this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
     let origin: string;
@@ -926,6 +933,7 @@ export class BrowserPlaywrightAdapter {
         actions: ["click", "dblclick", "press"],
         detail,
         within_ms: 5000,
+        observed_at,
       });
     }, 250);
   }
@@ -1219,6 +1227,8 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
       ...(recordOpt(raw["detail"]) ?? {}),
     },
   };
+  const observedAt = numberOpt(raw["observed_at"]);
+  if (observedAt !== undefined) event.observed_at = observedAt;
   const value = stringOpt(raw["value"]);
   if (value !== undefined) event.value = value;
   const fieldName = stringOpt(raw["field_name"]);
@@ -1846,6 +1856,7 @@ export function normalizeCapturedHumanActionAnnotation(
     ...(actions && actions.length > 0 ? { actions } : {}),
     detail,
     within_ms: numberOpt(raw["within_ms"]),
+    observed_at: numberOpt(raw["observed_at"]),
   };
 }
 
@@ -2150,6 +2161,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         actions,
         detail,
         within_ms: withinMs || 5000,
+        observed_at: Date.now(),
       }).catch(() => {});
     }
 
@@ -2994,6 +3006,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         url: location.href,
         origin: location.origin,
         action,
+        observed_at: Date.now(),
         value: typeof value === 'string' ? value : undefined,
         field_name: fieldName(replayEl, element),
         element,

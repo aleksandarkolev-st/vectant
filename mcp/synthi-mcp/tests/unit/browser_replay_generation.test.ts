@@ -526,6 +526,72 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
   });
 
+  it("returns to the opener page after popup continuation actions", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "open-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        url: "https://app.example.com/settings",
+        origin: "https://app.example.com",
+        detail: {
+          popup_event: true,
+          popup_url: "https://app.example.com/help",
+          popup_title: "Workflow Help",
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open help", test_id: "open-help", source_id: "src_help" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"open-help\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+      event({
+        event_id: "search-help",
+        event_seq: 2,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://app.example.com/help",
+        origin: "https://app.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "show-summary",
+        event_seq: 3,
+        tab_id: "main",
+        action: "click",
+        url: "https://app.example.com/settings",
+        origin: "https://app.example.com",
+        detail: {
+          observed_effects: ["Summary ready"],
+          element: { role: "button", name: "Show handoff summary", source_id: "src_summary" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Show handoff summary\" })", confidence: 0.93, reason: "role_name" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("const [popup1] = await Promise.all([");
+    expect(generated.code).toContain("const target2 = await firstVisible(popup1.getByLabel(\"Search help\"));");
+    expect(generated.code).toContain("const target3 = await firstVisible(page.getByRole(\"button\", { name: \"Show handoff summary\" }));");
+    expect(generated.code).toContain("await target3.click();");
+    expect(generated.code).toContain("await expect(page.getByText(\"Summary ready\", { exact: true })).toBeVisible();");
+    expect(generated.code).not.toContain("popup1.getByRole(\"button\", { name: \"Show handoff summary\" })");
+    expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
+  });
+
   it("replays consented cross-origin popup continuation actions on the captured popup page", () => {
     const generated = generatePlaywrightScript([
       event({

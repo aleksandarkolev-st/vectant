@@ -3454,6 +3454,98 @@ const CASES = [
     },
   },
   {
+    id: "popup-return-to-opener",
+    minSteps: 4,
+    expectedActions: ["click", "fill"],
+    expectedReplayText: [
+      "Popup preview ready",
+      "Summary ready",
+    ],
+    expectedReplayCode: [
+      "page.waitForEvent('popup')",
+      "popup1.getByLabel(\"Search help\")",
+      "popup1.getByRole(\"button\", { name: \"Preview query\" })",
+      "page.getByRole(\"button\", { name: \"Show handoff summary\" })",
+    ],
+    forbiddenReplayCode: [
+      "popup1.getByRole(\"button\", { name: \"Show handoff summary\" })",
+      "Mutation boundary:",
+    ],
+    liveReplayMode: "sameSession",
+    replayEnv: () => ({ SEARCH_HELP: "contracts" }),
+    files: () => [
+      ...commonFiles({
+        title: "Popup Return Workflow",
+        body: [
+          "    <main>",
+          "      <h1>Popup Return Workflow</h1>",
+          "      <a href=\"/handoff.html\" target=\"_blank\" rel=\"noreferrer\" role=\"button\" data-testid=\"open-handoff\" data-synthi-source-id=\"popup.return.open\">Open handoff popup</a>",
+          "      <button type=\"button\" data-testid=\"show-summary\" data-synthi-source-id=\"popup.return.summary\">Show handoff summary</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+        ].join("\n"),
+        script: [
+          "document.querySelector('[data-testid=\"open-handoff\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Popup handoff opened';",
+          "});",
+          "document.querySelector('[data-testid=\"show-summary\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = 'Summary ready';",
+          "});",
+          "",
+        ].join("\n"),
+      }),
+      {
+        path: "handoff.html",
+        encoding: "utf8",
+        content: [
+          "<!doctype html>",
+          "<html>",
+          "  <head>",
+          "    <meta charset=\"UTF-8\">",
+          "    <title>Workflow Handoff</title>",
+          "    <link rel=\"stylesheet\" href=\"/styles.css\">",
+          "  </head>",
+          "  <body>",
+          "    <main>",
+          "      <h1>Workflow Handoff</h1>",
+          "      <label for=\"help-query\">Search help</label>",
+          "      <input id=\"help-query\" aria-label=\"Search help\" data-synthi-source-id=\"popup.return.query\" placeholder=\"Search docs\">",
+          "      <button type=\"button\" data-testid=\"preview-query\" data-synthi-source-id=\"popup.return.preview\">Preview query</button>",
+          "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+          "    </main>",
+          "    <script type=\"module\" src=\"/handoff.js\"></script>",
+          "  </body>",
+          "</html>",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "handoff.js",
+        encoding: "utf8",
+        content: [
+          "const query = document.querySelector('#help-query');",
+          "document.querySelector('[data-testid=\"preview-query\"]').addEventListener('click', () => {",
+          "  document.querySelector('#status').textContent = `Popup preview ready for ${query.value}`;",
+          "});",
+          "",
+        ].join("\n"),
+      },
+    ],
+    teach: async (page) => {
+      const popupPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open handoff popup" }).click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState("domcontentloaded");
+      await popup.getByLabel("Search help").fill("contracts");
+      await popup.getByRole("button", { name: "Preview query" }).click();
+      await popup.getByText("Popup preview ready for contracts").waitFor();
+      await page.bringToFront();
+      await page.getByRole("button", { name: "Show handoff summary" }).click();
+      await page.getByText("Summary ready").waitFor();
+      return page;
+    },
+  },
+  {
     id: "rich-text-editor",
     minSteps: 2,
     expectedActions: ["fill", "click"],

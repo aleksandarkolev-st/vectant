@@ -386,7 +386,7 @@ export class BrowserBroker {
     return { ok: true, event };
   }
 
-  recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string; detail?: Record<string, unknown> }):
+  recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string; detail?: Record<string, unknown>; observed_at?: number }):
     | { ok: true; event: BrowserTraceEvent; lease_conflict: boolean }
     | { ok: false; error: string } {
     const gate = this.requireTeach(selection.tab_id, selection.url, selection.detail);
@@ -425,6 +425,7 @@ export class BrowserBroker {
       element: selection.element,
       detail: { ...detail, lease_conflict },
       security: this.securityForUrl(selection.url, detail),
+      observed_at: selection.observed_at,
     });
     eventLog.push({ kind: "browser", action: "human_action", payload: { event, lease_conflict } });
     if (lease_conflict) {
@@ -444,6 +445,7 @@ export class BrowserBroker {
     actions?: BrowserActionKind[];
     detail: Record<string, unknown>;
     within_ms?: number;
+    observed_at?: number;
   }): { ok: true; event: BrowserTraceEvent | null } | { ok: false; error: string } {
     const gate = this.requireTeach(input.tab_id, input.url, input.detail);
     if (!gate.ok) {
@@ -461,6 +463,7 @@ export class BrowserBroker {
       actions: input.actions,
       detail: input.detail,
       within_ms: input.within_ms,
+      observed_at: input.observed_at,
     });
     if (event) eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event } });
     return { ok: true, event };
@@ -471,6 +474,7 @@ export class BrowserBroker {
       tab_id: string;
       actions?: BrowserActionKind[];
       within_ms?: number;
+      observed_at?: number;
     },
     error: string
   ): void {
@@ -479,6 +483,7 @@ export class BrowserBroker {
       tab_id: input.tab_id,
       actions: input.actions,
       within_ms: input.within_ms,
+      observed_at: input.observed_at,
     });
     if (!discarded) {
       this.queuePendingDeniedTargetOriginDiscard(input, error);
