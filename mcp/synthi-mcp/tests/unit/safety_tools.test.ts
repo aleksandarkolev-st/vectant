@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { authCheckpointManager } from "../../src/browser/auth.js";
+import { authCheckpointManager, type AuthBrowserStorageState } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { replayIsolationProfiles } from "../../src/browser/safety.js";
 import { eventLog } from "../../src/events/index.js";
@@ -711,9 +711,21 @@ describe("safety MCP tool surface", () => {
 
   it("passes validated auth provider storage state into CI isolated replay", async () => {
     const url = "https://app.example.test/settings";
+    const appOrigin = "https://app.example.test";
+    const mintedStorageState: AuthBrowserStorageState = {
+      cookies: [{ name: "sid", value: "auth-cookie-secret", domain: "app.example.test", path: "/", httpOnly: true, secure: true }],
+      origins: [{ origin: appOrigin, localStorage: [{ name: "session", value: "auth-local-secret" }], sessionStorage: [{ name: "tab", value: "s2" }] }],
+    };
+    const interactiveStorageState: AuthBrowserStorageState = {
+      cookies: [{ name: "sid", value: "interactive-secret", domain: "app.example.test", path: "/" }],
+      origins: [{ origin: appOrigin, localStorage: [{ name: "session", value: "interactive-secret" }] }],
+    };
+    const mintedAuthValues = authStorageValuesForTest(mintedStorageState);
+    const allSensitiveAuthValues = [...new Set([...mintedAuthValues, ...authStorageValuesForTest(interactiveStorageState)])];
     const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-auth-replay-"));
     const workingDirectory = path.join(artifactRoot, "workspace");
     await mkdir(workingDirectory, { recursive: true });
+    const storageStateMarkerPath = path.join(artifactRoot, "storage-state-handoff.json");
     const mintScript = path.join(artifactRoot, "mint-auth.mjs");
     const resetScript = path.join(artifactRoot, "reset.mjs");
     const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
@@ -721,14 +733,9 @@ describe("safety MCP tool surface", () => {
     const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
     await writeFile(mintScript, [
       "const appOrigin = process.env.SYNTHI_AUTH_APP_ORIGIN;",
-      "const output = JSON.stringify({",
-      "  ok: true,",
-      "  ttl_ms: 600000,",
-      "  storage_state: {",
-      "    cookies: [{ name: 'sid', value: 'auth-cookie-secret', domain: 'app.example.test', path: '/', httpOnly: true, secure: true }],",
-      "    origins: [{ origin: appOrigin, localStorage: [{ name: 'session', value: 'auth-local-secret' }], sessionStorage: [{ name: 'tab', value: 'auth-session-secret' }] }]",
-      "  }",
-      "});",
+      `const storageState = ${JSON.stringify(mintedStorageState)};`,
+      "if (storageState.origins?.[0]) storageState.origins[0].origin = appOrigin;",
+      "const output = JSON.stringify({ ok: true, ttl_ms: 600000, storage_state: storageState });",
       "if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {",
       "  const { writeFileSync } = await import('node:fs');",
       "  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);",
@@ -739,15 +746,18 @@ describe("safety MCP tool surface", () => {
     await writeFile(resetScript, "process.exit(0);\n");
     await writeFile(resetAssertionScript, "process.exit(0);\n");
     await writeFile(ciScript, [
-      "import { appendFile, readFile } from 'node:fs/promises';",
+      "import { appendFile, readFile, writeFile } from 'node:fs/promises';",
+      `const expectedAuthValues = ${JSON.stringify(mintedAuthValues)};`,
       "if (!process.env.SYNTHI_WORKFLOW_STORAGE_STATE) throw new Error('storage_state_path_missing');",
+      `await writeFile(${JSON.stringify(storageStateMarkerPath)}, JSON.stringify({ storageStatePath: process.env.SYNTHI_WORKFLOW_STORAGE_STATE }), 'utf8');`,
       "const storage = JSON.parse(await readFile(process.env.SYNTHI_WORKFLOW_STORAGE_STATE, 'utf8'));",
-      "if (storage.cookies?.[0]?.value !== 'auth-cookie-secret') throw new Error('cookie_state_missing');",
-      "if (storage.origins?.[0]?.localStorage?.[0]?.value !== 'auth-local-secret') throw new Error('local_storage_missing');",
-      "if (storage.origins?.[0]?.sessionStorage?.[0]?.value !== 'auth-session-secret') throw new Error('session_storage_missing');",
-      "process.stdout.write('Authorization: Bearer auth-cookie-secret\\n');",
-      "process.stdout.write('token=auth-local-secret session=auth-session-secret\\n');",
-      "process.stdout.write('bare values: auth-cookie-secret auth-local-secret auth-session-secret\\n');",
+      "const serializedStorage = JSON.stringify(storage);",
+      "for (const value of expectedAuthValues) {",
+      "  if (!serializedStorage.includes(value)) throw new Error('auth_storage_value_missing');",
+      "}",
+      "process.stdout.write(`Authorization: Bearer ${expectedAuthValues[0]}\\n`);",
+      "process.stdout.write(`token=${expectedAuthValues[1]} session=${expectedAuthValues[2]}\\n`);",
+      "process.stdout.write(`bare values: ${expectedAuthValues.join(' ')}\\n`);",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "",
@@ -759,10 +769,7 @@ describe("safety MCP tool surface", () => {
     if (!checkpoint.ok) throw new Error(checkpoint.error);
     const stored = authCheckpointManager.saveStorageArtifact({
       checkpoint_id: checkpoint.checkpoint.checkpoint_id,
-      storage_state: {
-        cookies: [{ name: "sid", value: "interactive-secret", domain: "app.example.test", path: "/" }],
-        origins: [{ origin: "https://app.example.test", localStorage: [{ name: "session", value: "interactive-secret" }] }],
-      },
+      storage_state: interactiveStorageState,
     });
     if (!stored.ok) throw new Error(stored.error);
     teachSaveWorkflow();
@@ -772,6 +779,7 @@ describe("safety MCP tool surface", () => {
       provider_type: "ciTestAuth",
       secret_ref: "synthi://secrets/workspace/ci-auth",
       mint_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(mintScript)}`,
+      mint_command_admin_approved: true,
       working_directory: workingDirectory,
     });
     if (!provider.ok) throw new Error(provider.error);
@@ -828,12 +836,18 @@ describe("safety MCP tool surface", () => {
       session_storage_entry_count: 1,
     });
     expect(body.replay.report.attested_step_ids).toEqual(["browser_evt_1", "browser_evt_2"]);
-    expect(JSON.stringify(body)).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
     const ciLog = await readFile(body.replay.artifacts.ci_log_path, "utf8");
-    expect(ciLog).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
+    for (const value of allSensitiveAuthValues) {
+      expect(JSON.stringify(body)).not.toContain(value);
+      expect(ciLog).not.toContain(value);
+    }
     if (body.replay.report.ci_output.length > 0 || ciLog.length > 0) {
       expect(`${body.replay.report.ci_output}\n${ciLog}`).toContain("[redacted]");
     }
+    const storageStateHandoff = JSON.parse(await readFile(storageStateMarkerPath, "utf8")) as { storageStatePath: string };
+    expect(storageStateHandoff.storageStatePath).toContain(".internal-auth-state");
+    await expect(access(storageStateHandoff.storageStatePath)).rejects.toThrow();
+    await expect(access(path.dirname(storageStateHandoff.storageStatePath))).rejects.toThrow();
     await expect(access(path.join(artifactRoot, ".internal-auth-state"))).rejects.toThrow();
   });
 
@@ -876,4 +890,20 @@ function teachSaveWorkflow(): void {
     action: "click",
     element: { tag: "button", role: "button", name: "Save settings", source_id: "s_save" },
   });
+}
+
+function authStorageValuesForTest(storageState: AuthBrowserStorageState): string[] {
+  const values = new Set<string>();
+  for (const cookie of storageState.cookies ?? []) {
+    if (cookie.value.length > 0) values.add(cookie.value);
+  }
+  for (const origin of storageState.origins ?? []) {
+    for (const entry of origin.localStorage ?? []) {
+      if (entry.value.length > 0) values.add(entry.value);
+    }
+    for (const entry of origin.sessionStorage ?? []) {
+      if (entry.value.length > 0) values.add(entry.value);
+    }
+  }
+  return [...values];
 }

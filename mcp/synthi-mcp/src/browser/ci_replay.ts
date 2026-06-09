@@ -535,9 +535,11 @@ function isPathWithinOrEqual(candidate: string, base: string): boolean {
 
 async function cleanupAuthStorageState(authStorageStatePath: string | undefined, artifactRoot: string): Promise<void> {
   if (!authStorageStatePath) return;
-  await rm(authStorageStatePath, { force: true }).catch(() => undefined);
   const internalRoot = path.resolve(artifactRoot, ".internal-auth-state");
-  let current = path.resolve(path.dirname(authStorageStatePath));
+  const resolvedAuthStorageStatePath = path.resolve(authStorageStatePath);
+  if (!isPathWithinOrEqual(resolvedAuthStorageStatePath, internalRoot)) return;
+  await rm(resolvedAuthStorageStatePath, { force: true }).catch(() => undefined);
+  let current = path.dirname(resolvedAuthStorageStatePath);
   while (isPathWithinOrEqual(current, internalRoot)) {
     await rmdir(current).catch(() => undefined);
     if (current === internalRoot) break;
@@ -551,17 +553,21 @@ function authStorageRedactionValues(storageState: AuthBrowserStorageState | unde
   if (!storageState) return [];
   const values = new Set<string>();
   for (const cookie of storageState.cookies ?? []) {
-    if (typeof cookie.value === "string" && cookie.value.length >= 3) values.add(cookie.value);
+    addAuthStorageRedactionValue(values, cookie.value);
   }
   for (const origin of storageState.origins ?? []) {
     for (const entry of origin.localStorage ?? []) {
-      if (typeof entry.value === "string" && entry.value.length >= 3) values.add(entry.value);
+      addAuthStorageRedactionValue(values, entry.value);
     }
     for (const entry of origin.sessionStorage ?? []) {
-      if (typeof entry.value === "string" && entry.value.length >= 3) values.add(entry.value);
+      addAuthStorageRedactionValue(values, entry.value);
     }
   }
   return [...values].sort((a, b) => b.length - a.length);
+}
+
+function addAuthStorageRedactionValue(values: Set<string>, value: unknown): void {
+  if (typeof value === "string" && value.length > 0) values.add(value);
 }
 
 function bounded(value: string): string {
