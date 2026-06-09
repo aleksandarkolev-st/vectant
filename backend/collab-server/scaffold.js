@@ -19,6 +19,8 @@ function applyScaffoldFiles(cwd, files) {
       throw new Error('path_escape');
     }
     const target = path.resolve(root, rel);
+    // Backstop containment check (catches OS-specific normalization). A target
+    // equal to root is harmless — it gets skipped by the existsSync check below.
     if (target !== root && !target.startsWith(root + path.sep)) {
       throw new Error('path_escape');
     }

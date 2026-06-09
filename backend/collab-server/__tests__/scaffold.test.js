@@ -32,6 +32,12 @@ test('never clobbers an existing file (skips it)', () => {
   assert.strictEqual(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'), 'ORIGINAL');
 });
 
+test('treats a non-array / missing files argument as a no-op', () => {
+  const cwd = tmpDir();
+  assert.deepStrictEqual(applyScaffoldFiles(cwd, null), { written: [], skipped: [] });
+  assert.deepStrictEqual(applyScaffoldFiles(cwd, undefined), { written: [], skipped: [] });
+});
+
 test('rejects path traversal / absolute paths', () => {
   const cwd = tmpDir();
   assert.throws(() => applyScaffoldFiles(cwd, [{ path: '../evil.js', contents: 'x' }]), /path_escape/);
