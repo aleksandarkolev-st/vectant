@@ -113,6 +113,12 @@ export class BrowserBroker {
   private teachAnswers: BrowserTeachQuestionAnswer[] = [];
   private workflows = new Map<string, BrowserWorkflowArtifact>();
   private recordingIssues: BrowserRecordingIssue[] = [];
+  private pendingDeniedTargetOriginDiscards: Array<{
+    tab_id: string;
+    actions: BrowserActionKind[] | null;
+    expires_at: number;
+    reason: string;
+  }> = [];
 
   setRuntimeAttachment(runtime: Omit<BrowserRuntimeAttachment, "attached_at">): BrowserRuntimeAttachment {
     this.runtime = { ...runtime, attached_at: Date.now() };
@@ -232,6 +238,7 @@ export class BrowserBroker {
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     this.trace.beginTrace();
     this.recordingIssues = [];
+    this.pendingDeniedTargetOriginDiscards = [];
     this.teachMode = { active: true, tab_id, origin };
     eventLog.push({
       kind: "browser",
@@ -388,6 +395,23 @@ export class BrowserBroker {
     if (!normalized.ok) return normalized;
     const intentGate = this.requireExplicitIntent(selection.action, selection.detail);
     if (!intentGate.ok) return intentGate;
+    const deniedReason = this.consumePendingDeniedTargetOriginDiscard({
+      tab_id: selection.tab_id,
+      action: selection.action,
+    });
+    if (deniedReason) {
+      eventLog.push({
+        kind: "browser",
+        action: "human_action_discarded",
+        payload: {
+          tab_id: selection.tab_id,
+          action: selection.action,
+          reason: deniedReason,
+          deferred: true,
+        },
+      });
+      return { ok: false, error: deniedReason };
+    }
     const lease_conflict = this.activeLease !== null && !this.activeLease.revoked;
     const detail = this.detailWithTargetSecurity(selection.url, selection.detail);
     const event = this.trace.recordHumanAction({
@@ -456,7 +480,10 @@ export class BrowserBroker {
       actions: input.actions,
       within_ms: input.within_ms,
     });
-    if (!discarded) return;
+    if (!discarded) {
+      this.queuePendingDeniedTargetOriginDiscard(input, error);
+      return;
+    }
     eventLog.push({
       kind: "browser",
       action: "human_action_discarded",
@@ -467,6 +494,41 @@ export class BrowserBroker {
         reason: error,
       },
     });
+  }
+
+  private queuePendingDeniedTargetOriginDiscard(
+    input: {
+      tab_id: string;
+      actions?: BrowserActionKind[];
+      within_ms?: number;
+    },
+    reason: string
+  ): void {
+    const now = Date.now();
+    this.pendingDeniedTargetOriginDiscards = this.pendingDeniedTargetOriginDiscards.filter((entry) => entry.expires_at > now);
+    const withinMs = Math.max(1, Math.min(15_000, Math.floor(input.within_ms ?? 5000)));
+    this.pendingDeniedTargetOriginDiscards.push({
+      tab_id: input.tab_id,
+      actions: input.actions ? [...input.actions] : null,
+      expires_at: now + withinMs,
+      reason,
+    });
+    if (this.pendingDeniedTargetOriginDiscards.length > 50) {
+      this.pendingDeniedTargetOriginDiscards.splice(0, this.pendingDeniedTargetOriginDiscards.length - 50);
+    }
+  }
+
+  private consumePendingDeniedTargetOriginDiscard(input: { tab_id: string; action: BrowserActionKind }): string | null {
+    const now = Date.now();
+    this.pendingDeniedTargetOriginDiscards = this.pendingDeniedTargetOriginDiscards.filter((entry) => entry.expires_at > now);
+    for (let index = this.pendingDeniedTargetOriginDiscards.length - 1; index >= 0; index -= 1) {
+      const entry = this.pendingDeniedTargetOriginDiscards[index];
+      if (!entry || entry.tab_id !== input.tab_id) continue;
+      if (entry.actions && !entry.actions.includes(input.action)) continue;
+      this.pendingDeniedTargetOriginDiscards.splice(index, 1);
+      return entry.reason;
+    }
+    return null;
   }
 
   snapshot(input: BrowserBrokerSnapshotInput): { ok: true; snapshot: BrowserSnapshot } | { ok: false; error: string } {
@@ -651,6 +713,7 @@ export class BrowserBroker {
     this.teachAnswers = [];
     this.workflows.clear();
     this.recordingIssues = [];
+    this.pendingDeniedTargetOriginDiscards = [];
   }
 
   private currentWorkflowArtifact(): BrowserWorkflowArtifact {
@@ -726,7 +789,9 @@ export class BrowserBroker {
     source: BrowserRecordingIssue["source"];
     url?: string;
   }): boolean {
-    if (input.source === "hosted-playwright-annotation") return false;
+    const deniedTargetOrigin =
+      input.error === "frame_origin_consent_required" || input.error === "popup_origin_consent_required";
+    if (input.source === "hosted-playwright-annotation" && !deniedTargetOrigin) return false;
     if (input.error === "teach_mode_required") return false;
     if (!this.teachMode.active) return false;
     if (input.url && this.isRuntimeWorkspaceShellUrl(input.url)) return false;

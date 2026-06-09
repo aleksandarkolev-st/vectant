@@ -324,6 +324,58 @@ describe("browser broker privacy boundary", () => {
     expect(browserBroker.traceSnapshot()).toHaveLength(0);
   });
 
+  it("suppresses opener clicks when popup annotation arrives before the click event", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    expect(browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      detail: {
+        popup_event: true,
+        popup_url: "https://billing.example.com/popup",
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+      },
+    })).toEqual({ ok: false, error: "popup_origin_consent_required" });
+
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {},
+      element: { role: "button", name: "Open billing" },
+    })).toEqual({ ok: false, error: "popup_origin_consent_required" });
+    expect(browserBroker.traceSnapshot()).toHaveLength(0);
+  });
+
+  it("surfaces denied popup origins as blocking recording issues", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const issue = browserBroker.recordTeachRecordingIssue(
+      "popup_origin_consent_required",
+      {
+        tab_id: "app",
+        url: "https://app.example.com/checkout",
+        origin: "https://app.example.com",
+        detail: {
+          popup_url: "https://billing.example.com/popup",
+        },
+      },
+      "hosted-playwright-annotation"
+    );
+
+    expect(issue.blocking).toBe(true);
+    expect(issue.popup_origin).toBe("https://billing.example.com");
+  });
+
   it("lease revocation interrupts queued actions", () => {
     browserBroker.requestConsent("https://app.example.com");
     const lease = browserBroker.acquireLease("agent", 5000, "test");
