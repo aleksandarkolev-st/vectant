@@ -36,6 +36,12 @@ describe('scaffoldTemplates', () => {
     expect(getScaffoldTemplate(undefined)).toBeNull();
   });
 
+  it('returns null for prototype-chain keys (no __proto__/constructor bypass)', () => {
+    expect(getScaffoldTemplate('@vectant/__proto__')).toBeNull();
+    expect(getScaffoldTemplate('@vectant/constructor')).toBeNull();
+    expect(getScaffoldTemplate('@vectant/hasOwnProperty')).toBeNull();
+  });
+
   it('SCAFFOLD_TEMPLATES is keyed by bare default name', () => {
     expect(Object.keys(SCAFFOLD_TEMPLATES)).toEqual(
       expect.arrayContaining(['nextjs-dev', 'vite-react', 'flask-api', 'static-site', 'node-worker']),

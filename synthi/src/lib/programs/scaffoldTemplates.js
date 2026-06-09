@@ -107,5 +107,10 @@ export function getScaffoldTemplate(packageId) {
   if (typeof packageId !== 'string') return null;
   const match = /^@vectant\/(.+)$/.exec(packageId);
   if (!match) return null;
-  return SCAFFOLD_TEMPLATES[match[1]] || null;
+  const key = match[1];
+  // Own-property check so prototype keys (`__proto__`, `constructor`) can't
+  // bypass the lookup and return a non-array prototype value.
+  return Object.prototype.hasOwnProperty.call(SCAFFOLD_TEMPLATES, key)
+    ? SCAFFOLD_TEMPLATES[key]
+    : null;
 }
