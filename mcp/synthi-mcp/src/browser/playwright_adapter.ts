@@ -5,6 +5,8 @@ import { normalizeOrigin, redactText, redactUrl } from "./security.js";
 import { BROWSER_ACTION_KINDS } from "./types.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
 
+const NETWORK_MUTATION_ANNOTATION_DELAY_MS = 400;
+
 interface PageRecord {
   page: Page;
   tab_id: string;
@@ -813,7 +815,6 @@ export class BrowserPlaywrightAdapter {
         });
       });
       page.on("request", (request) => {
-        const observed_at = Date.now();
         const redacted = redactUrl(request.url());
         const method = request.method().toUpperCase();
         this.pushEvent(this.networkEvents, tab_id, {
@@ -823,9 +824,8 @@ export class BrowserPlaywrightAdapter {
           detail: { method, resource_type: request.resourceType() },
         });
         if (/^(POST|PUT|PATCH|DELETE)$/i.test(method)) {
-          let origin: string;
           try {
-            origin = normalizeOrigin(page.url()).origin;
+            normalizeOrigin(page.url()).origin;
           } catch {
             return;
           }
@@ -837,6 +837,12 @@ export class BrowserPlaywrightAdapter {
             resource_type: request.resourceType(),
           };
           setTimeout(() => {
+            let origin: string;
+            try {
+              origin = normalizeOrigin(page.url()).origin;
+            } catch {
+              return;
+            }
             this.teachEventAnnotationSink?.({
               tab_id,
               url: page.url(),
@@ -844,9 +850,9 @@ export class BrowserPlaywrightAdapter {
               actions: ["click", "dblclick", "press", "select"],
               detail,
               within_ms: 5000,
-              observed_at,
+              observed_at: Date.now(),
             });
-          }, 100);
+          }, NETWORK_MUTATION_ANNOTATION_DELAY_MS);
         }
       });
       page.on("dialog", () => {
