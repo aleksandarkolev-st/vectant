@@ -35,6 +35,7 @@ Additional commits since the previous status pass:
 
 ```text
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
+e13508d27 fix(gpu-hmr): use real visual fixtures in rocm self-check
 f8559c672 docs(gpu-hmr): record visual ledger hardening status
 37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
 5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
@@ -97,6 +98,8 @@ Fresh verification after `97ee6b7cc`:
 
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check
 npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
@@ -606,6 +609,7 @@ npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check
 npx vitest run tests/unit/gpu_hmr_runtime_proof.test.ts
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_fission --lib
 docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_prod_contracts --lib
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays

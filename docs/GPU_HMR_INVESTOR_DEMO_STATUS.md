@@ -35,6 +35,7 @@ Latest implementation commits:
 
 ```text
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
+e13508d27 fix(gpu-hmr): use real visual fixtures in rocm self-check
 f8559c672 docs(gpu-hmr): record visual ledger hardening status
 37f110451 fix(gpu-hmr): bind visual proof to ledger oracle
 5e1ad07b6 fix(gpu-hmr): require resolved fission output oracle
@@ -66,6 +67,8 @@ npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check -> passed
 cargo gpu_fission tests in worker builder image -> 64 passed
 cargo gpu_prod_contracts tests in worker builder image -> 36 passed
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check -> passed
 ```
@@ -353,6 +356,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
