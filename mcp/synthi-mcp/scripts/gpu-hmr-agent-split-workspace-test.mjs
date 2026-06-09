@@ -36,21 +36,22 @@ const __dirname = path.dirname(__filename);
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
-  signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
+  signalingUrl: process.env.SIGNALING_URL ?? process.env.SYNTHI_SIGNALING_URL ?? null,
   slug: process.env.SLUG ?? `gpu-agent-split-${Date.now()}`,
   hostId: process.env.HOST_ID ?? 'gpu-hmr-agent-split-test',
   vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'auto').toLowerCase(),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 180000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 15000),
-  mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
-  mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
+  mcpTransport: (process.env.MCP_TRANSPORT ?? 'local').toLowerCase(),
+  mcpContainer: process.env.MCP_CONTAINER ?? process.env.SYNTHI_MCP_CONTAINER ?? null,
+  mcpContainerEntry: process.env.MCP_CONTAINER_ENTRY ?? process.env.SYNTHI_MCP_CONTAINER_ENTRY ?? null,
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
-  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
+  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? process.env.SYNTHI_MCP_SIGNALING_URL ?? null,
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 240000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   frameGateTimeoutMs: Number(process.env.SYNTHI_GPU_AGENT_FRAME_GATE_TIMEOUT_MS ?? 1200000),
-  workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
+  workerContainer: process.env.WORKER_CONTAINER ?? process.env.SYNTHI_WORKER_CONTAINER ?? null,
   workerLogPath: process.env.WORKER_LOG_PATH
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
@@ -169,6 +170,18 @@ async function resolveDockerContainers() {
   if (CFG.mcpTransport !== 'docker') return;
   CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
   CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
+  if (!CFG.mcpContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires an MCP container from MCP_CONTAINER, SYNTHI_MCP_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.workerContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires a worker container from WORKER_CONTAINER, SYNTHI_WORKER_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.mcpSignalingUrl) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_SIGNALING_URL or SYNTHI_MCP_SIGNALING_URL');
+  }
+  if (!CFG.mcpContainerEntry) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_CONTAINER_ENTRY or SYNTHI_MCP_CONTAINER_ENTRY');
+  }
 }
 
 async function detectVendor() {
@@ -415,7 +428,7 @@ async function startMcp() {
       '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
       CFG.mcpContainer,
       'node',
-      '/app/dist/index.js',
+      CFG.mcpContainerEntry,
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
   } else {
     if (!existsSync(CFG.mcpEntry)) throw new Error(`MCP entry not found: ${CFG.mcpEntry}`);
@@ -424,7 +437,7 @@ async function startMcp() {
       env: {
         ...process.env,
         SYNTHI_SESSION_ID: CFG.slug,
-        SYNTHI_SIGNALING_URL: CFG.signalingUrl,
+        ...(CFG.signalingUrl ? { SYNTHI_SIGNALING_URL: CFG.signalingUrl } : {}),
         SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
@@ -452,7 +465,8 @@ async function ensureMcpAttached() {
   const state = await startMcp();
   if (state.attached) return state;
   const args = { sessionId: CFG.slug, 'i-understand-no-auth': true };
-  if (CFG.mcpTransport !== 'docker') args.signalingUrl = CFG.signalingUrl;
+  const attachSignalingUrl = CFG.mcpTransport === 'docker' ? CFG.mcpSignalingUrl : CFG.signalingUrl;
+  if (attachSignalingUrl) args.signalingUrl = attachSignalingUrl;
   const attach = await state.client.toolCall('synthi_attach', args, CFG.mcpAttachTimeoutMs);
   if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach)}`);
   state.attached = true;
