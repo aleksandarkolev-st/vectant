@@ -12,8 +12,11 @@ export interface ReplayIsolationProfileInput {
   base_url?: string;
   ci_command?: string;
   data_reset_command?: string;
+  reset_assertion_command?: string;
+  postcondition_command?: string;
   working_directory?: string;
   auth_provider_id?: string;
+  state_seed_id?: string;
   allow_mutation_replay?: boolean;
 }
 
@@ -25,8 +28,11 @@ export interface ReplayIsolationProfileV7 {
   base_url: string | null;
   ci_command: string | null;
   data_reset_command: string | null;
+  reset_assertion_command: string | null;
+  postcondition_command: string | null;
   working_directory: string | null;
   auth_provider_id: string | null;
+  state_seed_id: string | null;
   allow_mutation_replay: boolean;
   missing: string[];
   updated_at: number | null;
@@ -85,8 +91,11 @@ export class ReplayIsolationProfileManager {
       base_url: stringOpt(input.base_url) ?? null,
       ci_command: stringOpt(input.ci_command) ?? null,
       data_reset_command: stringOpt(input.data_reset_command) ?? null,
+      reset_assertion_command: stringOpt(input.reset_assertion_command) ?? null,
+      postcondition_command: stringOpt(input.postcondition_command) ?? null,
       working_directory: stringOpt(input.working_directory) ?? null,
       auth_provider_id: stringOpt(input.auth_provider_id) ?? null,
+      state_seed_id: stringOpt(input.state_seed_id) ?? null,
       allow_mutation_replay: input.allow_mutation_replay === true,
       missing,
       updated_at: Date.now(),
@@ -218,6 +227,9 @@ function missingIsolationFields(kind: ReplayIsolationKindV7, input: ReplayIsolat
   if (!stringOpt(input.base_url)) missing.push("base_url");
   if (!stringOpt(input.ci_command)) missing.push("ci_command");
   if (!stringOpt(input.data_reset_command)) missing.push("data_reset_command");
+  if (!stringOpt(input.reset_assertion_command)) missing.push("reset_assertion_command");
+  if (!stringOpt(input.postcondition_command)) missing.push("postcondition_command");
+  if (!stringOpt(input.state_seed_id)) missing.push("state_seed_id");
   if (input.allow_mutation_replay !== true) missing.push("allow_mutation_replay");
   return missing;
 }
@@ -237,8 +249,11 @@ function emptyProfile(workspaceId: string): ReplayIsolationProfileV7 {
     base_url: null,
     ci_command: null,
     data_reset_command: null,
+    reset_assertion_command: null,
+    postcondition_command: null,
     working_directory: null,
     auth_provider_id: null,
+    state_seed_id: null,
     allow_mutation_replay: false,
     missing: [],
     updated_at: null,

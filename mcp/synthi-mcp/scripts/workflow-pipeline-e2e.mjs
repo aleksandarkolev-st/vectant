@@ -476,18 +476,31 @@ async function runCase({ testCase, container, context, runner }) {
 async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, runner, previewUrl, caseDir, parameters }) {
   if (!workflowId) return { ok: false, error: "missing_workflow_id" };
   const resetScript = path.join(caseDir, "ci-reset.mjs");
+  const resetAssertionScript = path.join(caseDir, "ci-reset-assertion.mjs");
   const ciScript = path.join(caseDir, "ci-run.mjs");
+  const postconditionScript = path.join(caseDir, "ci-postcondition.mjs");
   const ciSpecTarget = path.join(runner.root, `${slugPart(caseId)}-ci-isolated.spec.mjs`);
   const markerPath = path.join(caseDir, "ci-reset-marker.json");
+  const stateSeedId = `${slugPart(caseId)}-${workspaceId}`;
   await writeFile(resetScript, [
     "import { writeFile } from 'node:fs/promises';",
     `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('reset_wrong_cwd');`,
-    `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL }));`,
+    `await writeFile(${JSON.stringify(markerPath)}, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL, seedId: process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID }));`,
+    "",
+  ].join("\n"));
+  await writeFile(resetAssertionScript, [
+    "import { readFile, writeFile } from 'node:fs/promises';",
+    `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('reset_assertion_wrong_cwd');`,
+    `const markerPath = ${JSON.stringify(markerPath)};`,
+    "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
+    "if (!marker.reset) throw new Error('reset_not_run');",
+    "if (marker.seedId !== process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID) throw new Error('state_seed_id_mismatch');",
+    "await writeFile(markerPath, JSON.stringify({ ...marker, resetAssertion: true }));",
     "",
   ].join("\n"));
   await writeFile(ciScript, [
     "import { spawn } from 'node:child_process';",
-    "import { copyFile, readFile } from 'node:fs/promises';",
+    "import { copyFile, readFile, writeFile } from 'node:fs/promises';",
     `const markerPath = ${JSON.stringify(markerPath)};`,
     `const specTarget = ${JSON.stringify(ciSpecTarget)};`,
     `const runnerRoot = ${JSON.stringify(runner.root)};`,
@@ -497,9 +510,11 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     "if (process.cwd() !== runnerRoot) throw new Error('ci_wrong_cwd');",
     "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
     "if (!marker.reset) throw new Error('reset_not_run');",
+    "if (!marker.resetAssertion) throw new Error('reset_assertion_not_run');",
     "const spec = await readFile(process.env.SYNTHI_WORKFLOW_SPEC, 'utf8');",
     "if (spec.includes('Mutation boundary:')) throw new Error('ci_script_stopped_at_mutation_boundary');",
     "if (!spec.includes('ALLOW_WORKFLOW_MUTATION')) throw new Error('ci_script_missing_mutation_guard');",
+    "if (!spec.includes('SYNTHI_WORKFLOW_CI_RUN_ID')) throw new Error('ci_script_missing_run_attestation');",
     "await copyFile(process.env.SYNTHI_WORKFLOW_SPEC, specTarget);",
     "const proc = spawn(playwrightBin, ['test', specTarget, '--config', runnerConfig, '--reporter=line'], {",
     "  cwd: runnerRoot,",
@@ -516,7 +531,19 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     "  proc.on('error', reject);",
     "  proc.on('exit', (exitCode) => resolve(exitCode ?? 1));",
     "});",
+    "if (code === 0) await writeFile(markerPath, JSON.stringify({ ...marker, ci: true }));",
     "process.exit(code);",
+    "",
+  ].join("\n"));
+  await writeFile(postconditionScript, [
+    "import { readFile, writeFile } from 'node:fs/promises';",
+    `if (process.cwd() !== ${JSON.stringify(runner.root)}) throw new Error('postcondition_wrong_cwd');`,
+    `const markerPath = ${JSON.stringify(markerPath)};`,
+    "const marker = JSON.parse(await readFile(markerPath, 'utf8'));",
+    "if (!marker.ci) throw new Error('ci_not_run');",
+    "const attestation = await readFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, 'utf8');",
+    "if (!attestation.includes(process.env.SYNTHI_WORKFLOW_CI_RUN_ID)) throw new Error('attestation_run_id_missing');",
+    "await writeFile(markerPath, JSON.stringify({ ...marker, postcondition: true }));",
     "",
   ].join("\n"));
 
@@ -526,7 +553,10 @@ async function runCiIsolatedWorkflowReplay({ caseId, workflowId, workspaceId, ru
     base_url: trimSlash(previewUrl),
     working_directory: runner.root,
     data_reset_command: `${shellQuote(process.execPath)} ${shellQuote(resetScript)}`,
+    reset_assertion_command: `${shellQuote(process.execPath)} ${shellQuote(resetAssertionScript)}`,
     ci_command: `${shellQuote(process.execPath)} ${shellQuote(ciScript)}`,
+    postcondition_command: `${shellQuote(process.execPath)} ${shellQuote(postconditionScript)}`,
+    state_seed_id: stateSeedId,
     allow_mutation_replay: true,
   });
   const body = await workflowBridgeTool("synthi_safety_run_ci_isolated_replay", {

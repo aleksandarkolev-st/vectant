@@ -454,7 +454,10 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
     lines.push("  async function recordWorkflowStep(stepId) {");
     lines.push("    const attestationPath = process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION;");
     lines.push("    if (!attestationPath) return;");
-    lines.push("    await appendFile(attestationPath, JSON.stringify({ step_id: stepId, at: Date.now() }) + '\\n', 'utf8');");
+    lines.push("    const runId = process.env.SYNTHI_WORKFLOW_CI_RUN_ID;");
+    lines.push("    const nonce = process.env.SYNTHI_WORKFLOW_CI_NONCE;");
+    lines.push("    if (!runId || !nonce) throw new Error('missing Synthi CI replay attestation identity');");
+    lines.push("    await appendFile(attestationPath, JSON.stringify({ step_id: stepId, run_id: runId, nonce, at: Date.now() }) + '\\n', 'utf8');");
     lines.push("  }");
     warnings.push(`ciIsolated requires ALLOW_WORKFLOW_MUTATION=1 before mutation boundary ${firstMutationStepId}`);
   }

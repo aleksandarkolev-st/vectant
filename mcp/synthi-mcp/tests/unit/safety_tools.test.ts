@@ -100,7 +100,13 @@ describe("safety MCP tool surface", () => {
     expect((incomplete?.structuredContent as { isolation_profile: { readiness: string; missing: string[] } }).isolation_profile).toEqual(
       expect.objectContaining({
         readiness: "ciIsolatedIncomplete",
-        missing: expect.arrayContaining(["data_reset_command", "allow_mutation_replay"]),
+        missing: expect.arrayContaining([
+          "data_reset_command",
+          "reset_assertion_command",
+          "postcondition_command",
+          "state_seed_id",
+          "allow_mutation_replay",
+        ]),
       })
     );
 
@@ -115,6 +121,9 @@ describe("safety MCP tool surface", () => {
       base_url: "https://ci.example.test",
       ci_command: "npm run test:e2e",
       data_reset_command: "npm run db:reset:test",
+      reset_assertion_command: "npm run db:assert:test-seed",
+      postcondition_command: "npm run test:workflow-postcondition",
+      state_seed_id: "settings-fixture-v1",
       allow_mutation_replay: true,
     });
     expect((ready?.structuredContent as { isolation_profile: { readiness: string; can_run_full_mutation_replay: boolean } }).isolation_profile).toEqual(
@@ -141,11 +150,22 @@ describe("safety MCP tool surface", () => {
     const markerPath = path.join(artifactRoot, "marker.json");
     process.env["CI_MARKER_PATH"] = markerPath;
     const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
     const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
     await writeFile(resetScript, [
       "import { writeFile } from 'node:fs/promises';",
       "if (process.cwd() !== process.env.EXPECTED_CI_CWD) throw new Error('reset_wrong_cwd');",
-      "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL }));",
+      "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ reset: true, baseUrl: process.env.PLAYWRIGHT_BASE_URL, seedId: process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID }));",
+      "",
+    ].join("\n"));
+    await writeFile(resetAssertionScript, [
+      "import { readFile, writeFile } from 'node:fs/promises';",
+      "if (process.cwd() !== process.env.EXPECTED_CI_CWD) throw new Error('reset_assertion_wrong_cwd');",
+      "const marker = JSON.parse(await readFile(process.env.CI_MARKER_PATH, 'utf8'));",
+      "if (!marker.reset) throw new Error('reset_not_run');",
+      "if (marker.seedId !== 'settings-fixture-v1') throw new Error('seed_id_not_available_to_reset_assertion');",
+      "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ ...marker, resetAssertion: true }));",
       "",
     ].join("\n"));
     await writeFile(ciScript, [
@@ -153,8 +173,12 @@ describe("safety MCP tool surface", () => {
       "if (process.cwd() !== process.env.EXPECTED_CI_CWD) throw new Error('ci_wrong_cwd');",
       "const marker = JSON.parse(await readFile(process.env.CI_MARKER_PATH, 'utf8'));",
       "if (!marker.reset) throw new Error('reset_not_run');",
+      "if (!marker.resetAssertion) throw new Error('reset_assertion_not_run');",
       "if (marker.baseUrl !== 'https://ci.example.test') throw new Error('base_url_not_available_to_reset');",
       "if (process.env.PLAYWRIGHT_BASE_URL !== 'https://ci.example.test') throw new Error('base_url_not_available_to_ci');",
+      "if (process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID !== 'settings-fixture-v1') throw new Error('seed_id_not_available_to_ci');",
+      "if (!process.env.SYNTHI_WORKFLOW_CI_RUN_ID) throw new Error('run_id_missing');",
+      "if (!process.env.SYNTHI_WORKFLOW_CI_NONCE) throw new Error('nonce_missing');",
       "if (process.env.ALLOW_WORKFLOW_MUTATION !== '1') throw new Error('mutation_not_allowed');",
       "if (!process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION) throw new Error('attestation_path_missing');",
       "if (process.env.EMAIL !== 'ada@example.test') throw new Error('workflow_parameter_missing');",
@@ -162,9 +186,18 @@ describe("safety MCP tool surface", () => {
       "if (spec.includes('Mutation boundary:')) throw new Error('prefix_only_script_generated');",
       "if (!spec.includes('await target2.click();')) throw new Error('mutation_click_not_generated');",
       "if (!spec.includes('recordWorkflowStep(\"browser_evt_2\")')) throw new Error('mutation_attestation_not_generated');",
-      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1' }) + '\\n', 'utf8');",
-      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2' }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ ...marker, ci: true, workflowId: process.env.SYNTHI_WORKFLOW_ID }));",
+      "",
+    ].join("\n"));
+    await writeFile(postconditionScript, [
+      "import { readFile, writeFile } from 'node:fs/promises';",
+      "if (process.cwd() !== process.env.EXPECTED_CI_CWD) throw new Error('postcondition_wrong_cwd');",
+      "const marker = JSON.parse(await readFile(process.env.CI_MARKER_PATH, 'utf8'));",
+      "if (!marker.ci) throw new Error('ci_not_run');",
+      "if (process.env.SYNTHI_WORKFLOW_CI_STATE_SEED_ID !== 'settings-fixture-v1') throw new Error('seed_id_not_available_to_postcondition');",
+      "await writeFile(process.env.CI_MARKER_PATH, JSON.stringify({ ...marker, postcondition: true }));",
       "",
     ].join("\n"));
 
@@ -174,7 +207,10 @@ describe("safety MCP tool surface", () => {
       base_url: "https://ci.example.test",
       working_directory: workingDirectory,
       data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
       ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      state_seed_id: "settings-fixture-v1",
       allow_mutation_replay: true,
     });
 
@@ -191,8 +227,8 @@ describe("safety MCP tool surface", () => {
       replay: {
         status: string;
         mutation_executed: boolean;
-        commands: { reset_exit_code: number; ci_exit_code: number };
-        isolation_profile: { working_directory: string | null };
+        commands: { reset_exit_code: number; reset_assertion_exit_code: number; ci_exit_code: number; postcondition_exit_code: number };
+        isolation_profile: { working_directory: string | null; state_seed_id: string | null };
         artifacts: { spec_path: string; attestation_path: string };
         report: { parameter_env: string[]; attested_step_ids: string[]; missing_mutation_step_ids: string[] };
       };
@@ -201,8 +237,14 @@ describe("safety MCP tool surface", () => {
     expect(body.replay).toEqual(expect.objectContaining({
       status: "passed",
       mutation_executed: true,
-      isolation_profile: expect.objectContaining({ working_directory: workingDirectory }),
-      commands: expect.objectContaining({ reset_exit_code: 0, ci_exit_code: 0 }),
+      failure_stage: null,
+      isolation_profile: expect.objectContaining({ working_directory: workingDirectory, state_seed_id: "settings-fixture-v1" }),
+      commands: expect.objectContaining({
+        reset_exit_code: 0,
+        reset_assertion_exit_code: 0,
+        ci_exit_code: 0,
+        postcondition_exit_code: 0,
+      }),
       report: expect.objectContaining({
         parameter_env: ["EMAIL"],
         attested_step_ids: ["browser_evt_1", "browser_evt_2"],
@@ -212,12 +254,27 @@ describe("safety MCP tool surface", () => {
     const generatedSpec = await readFile(body.replay.artifacts.spec_path, "utf8");
     expect(generatedSpec).toContain("ALLOW_WORKFLOW_MUTATION");
     expect(generatedSpec).toContain("SYNTHI_WORKFLOW_REPLAY_ATTESTATION");
+    expect(generatedSpec).toContain("SYNTHI_WORKFLOW_CI_RUN_ID");
+    expect(generatedSpec).toContain("SYNTHI_WORKFLOW_CI_NONCE");
     expect(generatedSpec).toContain("await target2.click();");
     expect(generatedSpec).not.toContain("Mutation boundary:");
     const attestation = await readFile(body.replay.artifacts.attestation_path, "utf8");
     expect(attestation).toContain("browser_evt_2");
-    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { reset?: boolean; ci?: boolean; workflowId?: string };
-    expect(marker).toEqual(expect.objectContaining({ reset: true, ci: true, workflowId: expect.any(String) }));
+    expect(attestation).toContain("nonce");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as {
+      reset?: boolean;
+      resetAssertion?: boolean;
+      ci?: boolean;
+      postcondition?: boolean;
+      workflowId?: string;
+    };
+    expect(marker).toEqual(expect.objectContaining({
+      reset: true,
+      resetAssertion: true,
+      ci: true,
+      postcondition: true,
+      workflowId: expect.any(String),
+    }));
   });
 
   it("fails CI isolated replay when a passing command omits mutation attestation", async () => {
@@ -226,8 +283,11 @@ describe("safety MCP tool surface", () => {
     const workingDirectory = path.join(artifactRoot, "workspace");
     await mkdir(workingDirectory, { recursive: true });
     const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
     const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
     await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
     await writeFile(ciScript, [
       "import { readFile } from 'node:fs/promises';",
       "const spec = await readFile(process.env.SYNTHI_WORKFLOW_SPEC, 'utf8');",
@@ -235,6 +295,7 @@ describe("safety MCP tool surface", () => {
       "process.exit(0);",
       "",
     ].join("\n"));
+    await writeFile(postconditionScript, "process.exit(0);\n");
 
     await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
       workspace_id: "workspace-a",
@@ -242,7 +303,10 @@ describe("safety MCP tool surface", () => {
       base_url: "https://ci.example.test",
       working_directory: workingDirectory,
       data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
       ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      state_seed_id: "settings-fixture-v1",
       allow_mutation_replay: true,
     });
 
@@ -258,9 +322,115 @@ describe("safety MCP tool surface", () => {
         status: "failed",
         mutation_executed: false,
         failure_class: "appValidationError",
+        failure_stage: "attestation",
         report: expect.objectContaining({
           attested_step_ids: [],
           missing_mutation_step_ids: ["browser_evt_2"],
+        }),
+      }),
+    }));
+  });
+
+  it("rejects stale mutation attestation from a different CI replay run", async () => {
+    teachSaveWorkflow();
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-stale-attestation-"));
+    const workingDirectory = path.join(artifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
+    const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
+    const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
+    await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
+    await writeFile(ciScript, [
+      "import { appendFile } from 'node:fs/promises';",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: 'old-run', nonce: 'old-nonce' }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: 'old-run', nonce: 'old-nonce' }) + '\\n', 'utf8');",
+      "",
+    ].join("\n"));
+    await writeFile(postconditionScript, "process.exit(0);\n");
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-a",
+      kind: "ciIsolated",
+      base_url: "https://ci.example.test",
+      working_directory: workingDirectory,
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      state_seed_id: "settings-fixture-v1",
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-a",
+      artifact_root: artifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        mutation_executed: false,
+        failure_stage: "attestation",
+        report: expect.objectContaining({
+          attested_step_ids: [],
+          missing_mutation_step_ids: ["browser_evt_2"],
+        }),
+      }),
+    }));
+  });
+
+  it("fails CI isolated replay when the postcondition command fails", async () => {
+    teachSaveWorkflow();
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-postcondition-"));
+    const workingDirectory = path.join(artifactRoot, "workspace");
+    await mkdir(workingDirectory, { recursive: true });
+    const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
+    const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
+    await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
+    await writeFile(ciScript, [
+      "import { appendFile } from 'node:fs/promises';",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      "",
+    ].join("\n"));
+    await writeFile(postconditionScript, "throw new Error('saved_status_missing');\n");
+
+    await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-a",
+      kind: "ciIsolated",
+      base_url: "https://ci.example.test",
+      working_directory: workingDirectory,
+      data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
+      ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
+      state_seed_id: "settings-fixture-v1",
+      allow_mutation_replay: true,
+    });
+
+    const replay = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: "workspace-a",
+      artifact_root: artifactRoot,
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        mutation_executed: true,
+        failure_class: "appValidationError",
+        failure_stage: "postcondition",
+        commands: expect.objectContaining({ postcondition_exit_code: 1 }),
+        report: expect.objectContaining({
+          postcondition_output: expect.stringContaining("saved_status_missing"),
+          missing_mutation_step_ids: [],
         }),
       }),
     }));
@@ -273,7 +443,9 @@ describe("safety MCP tool surface", () => {
     await mkdir(workingDirectory, { recursive: true });
     const mintScript = path.join(artifactRoot, "mint-auth.mjs");
     const resetScript = path.join(artifactRoot, "reset.mjs");
+    const resetAssertionScript = path.join(artifactRoot, "reset-assertion.mjs");
     const ciScript = path.join(artifactRoot, "ci.mjs");
+    const postconditionScript = path.join(artifactRoot, "postcondition.mjs");
     await writeFile(mintScript, [
       "const appOrigin = process.env.SYNTHI_AUTH_APP_ORIGIN;",
       "process.stdout.write(JSON.stringify({",
@@ -287,6 +459,7 @@ describe("safety MCP tool surface", () => {
       "",
     ].join("\n"));
     await writeFile(resetScript, "process.exit(0);\n");
+    await writeFile(resetAssertionScript, "process.exit(0);\n");
     await writeFile(ciScript, [
       "import { appendFile, readFile } from 'node:fs/promises';",
       "if (!process.env.SYNTHI_WORKFLOW_STORAGE_STATE) throw new Error('storage_state_path_missing');",
@@ -294,10 +467,11 @@ describe("safety MCP tool surface", () => {
       "if (storage.cookies?.[0]?.value !== 'auth-cookie-secret') throw new Error('cookie_state_missing');",
       "if (storage.origins?.[0]?.localStorage?.[0]?.value !== 'auth-local-secret') throw new Error('local_storage_missing');",
       "if (storage.origins?.[0]?.sessionStorage?.[0]?.value !== 'auth-session-secret') throw new Error('session_storage_missing');",
-      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1' }) + '\\n', 'utf8');",
-      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2' }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
+      "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "",
     ].join("\n"));
+    await writeFile(postconditionScript, "process.exit(0);\n");
 
     const enrollment = authCheckpointManager.beginEnrollment(url);
     const checkpoint = authCheckpointManager.finishEnrollment({ enrollment_id: enrollment.enrollment_id, ttl_ms: 600_000 });
@@ -329,8 +503,11 @@ describe("safety MCP tool surface", () => {
       base_url: "https://app.example.test",
       working_directory: workingDirectory,
       data_reset_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetScript)}`,
+      reset_assertion_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(resetAssertionScript)}`,
       ci_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(ciScript)}`,
+      postcondition_command: `${JSON.stringify(process.execPath)} ${JSON.stringify(postconditionScript)}`,
       auth_provider_id: provider.provider.provider_id,
+      state_seed_id: "auth-fixture-v1",
       allow_mutation_replay: true,
     });
 

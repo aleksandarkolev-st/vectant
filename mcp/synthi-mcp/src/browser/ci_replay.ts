@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -28,10 +29,12 @@ export interface CiIsolatedReplayResult {
   replay_mode: "ciIsolated";
   status: "passed" | "failed" | "blocked";
   mutation_executed: boolean;
+  failure_stage: "profile" | "reset" | "reset_assertion" | "ci" | "attestation" | "postcondition" | null;
   isolation_profile: {
     readiness: ReplayIsolationProfileV7["readiness"];
     base_url: string | null;
     working_directory: string | null;
+    state_seed_id: string | null;
     allow_mutation_replay: boolean;
   };
   blockers: string[];
@@ -41,17 +44,23 @@ export interface CiIsolatedReplayResult {
     directory: string;
     spec_path: string;
     reset_log_path: string;
+    reset_assertion_log_path: string;
     ci_log_path: string;
+    postcondition_log_path: string;
     attestation_path: string;
     auth_storage_state_path?: string;
   };
   commands: {
     reset_exit_code: number | null;
+    reset_assertion_exit_code: number | null;
     ci_exit_code: number | null;
+    postcondition_exit_code: number | null;
   };
   report: {
     reset_output: string;
+    reset_assertion_output: string;
     ci_output: string;
+    postcondition_output: string;
     warnings: string[];
     parameter_env: string[];
     auth_storage_state: {
@@ -74,13 +83,16 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const workflowId = input.workflow_id || input.workflow.contract.workflowId;
   const workspaceId = input.workspace_id || input.profile.workspace_id;
   const runId = `ci_replay_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const attestationNonce = randomUUID();
   const artifactRoot = stringOpt(input.artifact_root) ??
     stringOpt(process.env["SYNTHI_WORKFLOW_CI_ARTIFACT_DIR"]) ??
     path.join(os.tmpdir(), "synthi-workflow-ci-replay");
   const directory = path.join(artifactRoot, safePathSegment(workspaceId), safePathSegment(workflowId), runId);
   const specPath = path.join(directory, "workflow.spec.mjs");
   const resetLogPath = path.join(directory, "reset.log");
+  const resetAssertionLogPath = path.join(directory, "reset-assertion.log");
   const ciLogPath = path.join(directory, "ci.log");
+  const postconditionLogPath = path.join(directory, "postcondition.log");
   const attestationPath = path.join(directory, "replay-attestation.jsonl");
   const authStorageStatePath = input.auth_storage_state ? path.join(directory, "auth-storage-state.json") : undefined;
   await mkdir(directory, { recursive: true });
@@ -98,6 +110,9 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     ...(!input.profile.base_url ? ["base_url"] : []),
     ...(!input.profile.ci_command ? ["ci_command"] : []),
     ...(!input.profile.data_reset_command ? ["data_reset_command"] : []),
+    ...(!input.profile.reset_assertion_command ? ["reset_assertion_command"] : []),
+    ...(!input.profile.postcondition_command ? ["postcondition_command"] : []),
+    ...(!input.profile.state_seed_id ? ["state_seed_id"] : []),
   ];
   const uniqueBlockers = [...new Set(blockers)];
   const parameterEnv = parameterEnvForWorkflow(input.workflow, input.parameters ?? {});
@@ -105,7 +120,9 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
 
   if (uniqueBlockers.length > 0) {
     await writeFile(resetLogPath, "", "utf8");
+    await writeFile(resetAssertionLogPath, "", "utf8");
     await writeFile(ciLogPath, "", "utf8");
+    await writeFile(postconditionLogPath, "", "utf8");
     return resultFor(input, {
       workflowId,
       workspaceId,
@@ -113,14 +130,19 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       directory,
       specPath,
       resetLogPath,
+      resetAssertionLogPath,
       ciLogPath,
+      postconditionLogPath,
       attestationPath,
       authStorageStatePath,
       blockers: uniqueBlockers,
       status: "blocked",
       failureClass: "mutationBlocked",
+      failureStage: "profile",
       reset: null,
+      resetAssertion: null,
       ci: null,
+      postcondition: null,
       attestedStepIds: [],
       parameterEnvNames: Object.keys(parameterEnv),
     });
@@ -132,6 +154,9 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     PLAYWRIGHT_BASE_URL: input.profile.base_url!,
     SYNTHI_WORKFLOW_SPEC: specPath,
     SYNTHI_WORKFLOW_REPLAY_ATTESTATION: attestationPath,
+    SYNTHI_WORKFLOW_CI_RUN_ID: runId,
+    SYNTHI_WORKFLOW_CI_NONCE: attestationNonce,
+    SYNTHI_WORKFLOW_CI_STATE_SEED_ID: input.profile.state_seed_id!,
     SYNTHI_WORKFLOW_ID: workflowId,
     SYNTHI_WORKSPACE_ID: workspaceId,
     ...(authStorageStatePath ? { SYNTHI_WORKFLOW_STORAGE_STATE: authStorageStatePath } : {}),
@@ -141,7 +166,9 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const reset = await runCommand(input.profile.data_reset_command!, { cwd: commandCwd, env, timeoutMs });
   await writeFile(resetLogPath, reset.output, "utf8");
   if (reset.exitCode !== 0) {
+    await writeFile(resetAssertionLogPath, "", "utf8");
     await writeFile(ciLogPath, "", "utf8");
+    await writeFile(postconditionLogPath, "", "utf8");
     return resultFor(input, {
       workflowId,
       workspaceId,
@@ -149,14 +176,49 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
       directory,
       specPath,
       resetLogPath,
+      resetAssertionLogPath,
       ciLogPath,
+      postconditionLogPath,
       attestationPath,
       authStorageStatePath,
       blockers: [],
       status: "failed",
       failureClass: "appValidationError",
+      failureStage: "reset",
       reset,
+      resetAssertion: null,
       ci: null,
+      postcondition: null,
+      attestedStepIds: [],
+      parameterEnvNames: Object.keys(parameterEnv),
+    });
+  }
+
+  const resetAssertion = await runCommand(input.profile.reset_assertion_command!, { cwd: commandCwd, env, timeoutMs });
+  await writeFile(resetAssertionLogPath, resetAssertion.output, "utf8");
+  if (resetAssertion.exitCode !== 0) {
+    await writeFile(ciLogPath, "", "utf8");
+    await writeFile(postconditionLogPath, "", "utf8");
+    return resultFor(input, {
+      workflowId,
+      workspaceId,
+      generatedWarnings: generated.warnings,
+      directory,
+      specPath,
+      resetLogPath,
+      resetAssertionLogPath,
+      ciLogPath,
+      postconditionLogPath,
+      attestationPath,
+      authStorageStatePath,
+      blockers: [],
+      status: "failed",
+      failureClass: "appValidationError",
+      failureStage: "reset_assertion",
+      reset,
+      resetAssertion,
+      ci: null,
+      postcondition: null,
       attestedStepIds: [],
       parameterEnvNames: Object.keys(parameterEnv),
     });
@@ -164,9 +226,40 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
 
   const ci = await runCommand(input.profile.ci_command!, { cwd: commandCwd, env, timeoutMs });
   await writeFile(ciLogPath, ci.output, "utf8");
-  const attestedStepIds = await readAttestedStepIds(attestationPath);
+  const attestedStepIds = await readAttestedStepIds(attestationPath, { runId, nonce: attestationNonce });
   const missingMutationStepIds = missingMutationSteps(input.workflow, attestedStepIds);
   const missingRequiredMutationAttestation = ci.exitCode === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 && missingMutationStepIds.length > 0;
+  if (ci.exitCode !== 0 || missingRequiredMutationAttestation) {
+    await writeFile(postconditionLogPath, "", "utf8");
+    return resultFor(input, {
+      workflowId,
+      workspaceId,
+      generatedWarnings: generated.warnings,
+      directory,
+      specPath,
+      resetLogPath,
+      resetAssertionLogPath,
+      ciLogPath,
+      postconditionLogPath,
+      attestationPath,
+      authStorageStatePath,
+      blockers: [],
+      status: "failed",
+      failureClass: ci.exitCode === 0
+        ? "appValidationError"
+        : classifyCiFailure(ci.output),
+      failureStage: ci.exitCode === 0 ? "attestation" : "ci",
+      reset,
+      resetAssertion,
+      ci,
+      postcondition: null,
+      attestedStepIds,
+      parameterEnvNames: Object.keys(parameterEnv),
+    });
+  }
+
+  const postcondition = await runCommand(input.profile.postcondition_command!, { cwd: commandCwd, env, timeoutMs });
+  await writeFile(postconditionLogPath, postcondition.output, "utf8");
   return resultFor(input, {
     workflowId,
     workspaceId,
@@ -174,16 +267,19 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     directory,
     specPath,
     resetLogPath,
+    resetAssertionLogPath,
     ciLogPath,
+    postconditionLogPath,
     attestationPath,
     authStorageStatePath,
     blockers: [],
-    status: ci.exitCode === 0 && !missingRequiredMutationAttestation ? "passed" : "failed",
-    failureClass: ci.exitCode === 0
-      ? missingRequiredMutationAttestation ? "appValidationError" : null
-      : classifyCiFailure(ci.output),
+    status: postcondition.exitCode === 0 ? "passed" : "failed",
+    failureClass: postcondition.exitCode === 0 ? null : "appValidationError",
+    failureStage: postcondition.exitCode === 0 ? null : "postcondition",
     reset,
+    resetAssertion,
     ci,
+    postcondition,
     attestedStepIds,
     parameterEnvNames: Object.keys(parameterEnv),
   });
@@ -198,14 +294,19 @@ function resultFor(
     directory: string;
     specPath: string;
     resetLogPath: string;
+    resetAssertionLogPath: string;
     ciLogPath: string;
+    postconditionLogPath: string;
     attestationPath: string;
     authStorageStatePath?: string;
     blockers: string[];
     status: CiIsolatedReplayResult["status"];
     failureClass: FailureClassV7 | null;
+    failureStage: CiIsolatedReplayResult["failure_stage"];
     reset: CommandResult | null;
+    resetAssertion: CommandResult | null;
     ci: CommandResult | null;
+    postcondition: CommandResult | null;
     attestedStepIds: string[];
     parameterEnvNames: string[];
   }
@@ -218,10 +319,12 @@ function resultFor(
     replay_mode: "ciIsolated",
     status: options.status,
     mutation_executed: requiredMutationStepIds.length > 0 && missingMutationStepIds.length === 0 && options.blockers.length === 0,
+    failure_stage: options.failureStage,
     isolation_profile: {
       readiness: input.profile.readiness,
       base_url: input.profile.base_url,
       working_directory: input.profile.working_directory,
+      state_seed_id: input.profile.state_seed_id,
       allow_mutation_replay: input.profile.allow_mutation_replay,
     },
     blockers: options.blockers,
@@ -231,17 +334,23 @@ function resultFor(
       directory: options.directory,
       spec_path: options.specPath,
       reset_log_path: options.resetLogPath,
+      reset_assertion_log_path: options.resetAssertionLogPath,
       ci_log_path: options.ciLogPath,
+      postcondition_log_path: options.postconditionLogPath,
       attestation_path: options.attestationPath,
       ...(options.authStorageStatePath ? { auth_storage_state_path: options.authStorageStatePath } : {}),
     },
     commands: {
       reset_exit_code: options.reset?.exitCode ?? null,
+      reset_assertion_exit_code: options.resetAssertion?.exitCode ?? null,
       ci_exit_code: options.ci?.exitCode ?? null,
+      postcondition_exit_code: options.postcondition?.exitCode ?? null,
     },
     report: {
       reset_output: bounded(redactOutput(options.reset?.output ?? "")),
+      reset_assertion_output: bounded(redactOutput(options.resetAssertion?.output ?? "")),
       ci_output: bounded(redactOutput(options.ci?.output ?? "")),
+      postcondition_output: bounded(redactOutput(options.postcondition?.output ?? "")),
       warnings: options.generatedWarnings,
       parameter_env: options.parameterEnvNames.sort(),
       auth_storage_state: input.auth_storage_state ? authStorageStateSummary(input.auth_storage_state) : null,
@@ -262,7 +371,7 @@ function authStorageStateSummary(storageState: AuthBrowserStorageState): NonNull
   };
 }
 
-async function readAttestedStepIds(attestationPath: string): Promise<string[]> {
+async function readAttestedStepIds(attestationPath: string, expected: { runId: string; nonce: string }): Promise<string[]> {
   let content = "";
   try {
     content = await readFile(attestationPath, "utf8");
@@ -274,7 +383,14 @@ async function readAttestedStepIds(attestationPath: string): Promise<string[]> {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const parsed = JSON.parse(trimmed) as { step_id?: unknown; event_id?: unknown; step_ids?: unknown };
+      const parsed = JSON.parse(trimmed) as {
+        step_id?: unknown;
+        event_id?: unknown;
+        step_ids?: unknown;
+        run_id?: unknown;
+        nonce?: unknown;
+      };
+      if (parsed.run_id !== expected.runId || parsed.nonce !== expected.nonce) continue;
       if (typeof parsed.step_id === "string" && parsed.step_id.length > 0) stepIds.add(parsed.step_id);
       if (typeof parsed.event_id === "string" && parsed.event_id.length > 0) stepIds.add(parsed.event_id);
       if (Array.isArray(parsed.step_ids)) {

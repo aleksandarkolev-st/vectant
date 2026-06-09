@@ -35,7 +35,7 @@ export const SAFETY_TOOLS = [
   {
     name: "synthi_safety_set_replay_isolation_profile",
     description:
-      "Set metadata for an isolated replay profile. Full mutation hardening is marked ready only with a CI base URL, command, reset command, and explicit mutation permission.",
+      "Set metadata for an isolated replay profile. Full mutation hardening is marked ready only with a CI base URL, command, reset command, reset assertion, postcondition, state seed identity, and explicit mutation permission.",
     inputSchema: {
       type: "object",
       properties: {
@@ -44,8 +44,11 @@ export const SAFETY_TOOLS = [
         base_url: { type: "string" },
         ci_command: { type: "string" },
         data_reset_command: { type: "string" },
+        reset_assertion_command: { type: "string" },
+        postcondition_command: { type: "string" },
         working_directory: { type: "string", description: "Optional workspace/repo directory used as cwd for reset and CI replay commands." },
         auth_provider_id: { type: "string" },
+        state_seed_id: { type: "string", description: "Workspace/app seed identifier expected after reset and before mutation replay." },
         allow_mutation_replay: { type: "boolean", default: false },
       },
       required: [],
@@ -138,8 +141,11 @@ function setReplayIsolationProfileTool(args: unknown): ToolResponse {
     base_url: stringOpt(a["base_url"]),
     ci_command: stringOpt(a["ci_command"]),
     data_reset_command: stringOpt(a["data_reset_command"]),
+    reset_assertion_command: stringOpt(a["reset_assertion_command"]),
+    postcondition_command: stringOpt(a["postcondition_command"]),
     working_directory: stringOpt(a["working_directory"]),
     auth_provider_id: stringOpt(a["auth_provider_id"]),
+    state_seed_id: stringOpt(a["state_seed_id"]),
     allow_mutation_replay: boolOpt(a["allow_mutation_replay"]),
   });
   return jsonResponse({
