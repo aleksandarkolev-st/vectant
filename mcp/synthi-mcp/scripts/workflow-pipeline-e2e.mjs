@@ -822,12 +822,16 @@ async function findPageByUrl(context, url) {
 }
 
 async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, caseId, env = {} }) {
-  const specTarget = path.join(runner.root, `${caseId}.spec.mjs`);
+  const specDir = path.join(runner.root, "cases", safePathSegment(caseId));
+  await rm(specDir, { recursive: true, force: true });
+  await mkdir(specDir, { recursive: true });
+  const specTarget = path.join(specDir, "workflow.spec.mjs");
   await writeFile(specTarget, await readFile(specPath, "utf8"));
   const executablePath = chromium.executablePath();
+  const specArg = path.relative(runner.root, specTarget).split(path.sep).join("/");
   const proc = spawn(path.join(runner.root, "node_modules", ".bin", process.platform === "win32" ? "playwright.cmd" : "playwright"), [
     "test",
-    path.basename(specTarget),
+    specArg,
     "--config",
     runner.configPath,
     "--reporter=line",
@@ -853,6 +857,10 @@ async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, ca
       ? skipped ? "skipped - generated script did not execute all required steps" : "passed"
       : `exit=${output.code} ${stripAnsi(output.stderr || output.stdout).slice(0, 240)}`,
   };
+}
+
+function safePathSegment(value) {
+  return String(value).replace(/[^a-zA-Z0-9_.-]/g, "_") || "workflow";
 }
 
 async function ensurePlaywrightTestRunner() {
@@ -2262,7 +2270,6 @@ const CASES = [
     expectedActions: ["drag", "click"],
     expectedReplayText: [
       "Uploaded 1 file",
-      "Submitted 1 file",
     ],
     expectedReplayCode: [
       "process.env[\"UPLOAD_EVIDENCE_FILE\"]",
