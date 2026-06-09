@@ -1159,11 +1159,16 @@ async function browserCaptureAuthCheckpointStorageTool(args: unknown): Promise<T
     storage_state: storageState,
   });
   if (!saved.ok) return errorResponse(saved.error, { checkpoint_id: checkpointId });
+  const teachAuthCheckpoint = browserBroker.activateAuthCheckpointForTeach({
+    app_origin: saved.checkpoint.app_origin,
+    idp_origins: saved.checkpoint.idp_origins,
+  });
   return jsonResponse({
     ok: true,
     checkpoint_id: checkpointId,
     storage_artifact: publicStorageArtifactMetadata(saved.storage_artifact),
     auth_readiness: authCheckpointManager.readiness(saved.checkpoint.app_origin, false),
+    teach_auth_checkpoint: teachAuthCheckpoint,
   });
 }
 

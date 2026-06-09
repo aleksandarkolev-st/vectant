@@ -331,6 +331,10 @@ describe("browser MCP tool surface", () => {
         origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "secure-local" }] }],
       },
     }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
+    }).ok).toBe(true);
     expect(browserBroker.startTeachMode("app").ok).toBe(true);
     expect(browserBroker.recordHumanAction({
       tab_id: "app",
@@ -423,6 +427,10 @@ describe("browser MCP tool surface", () => {
         ready: true,
         status: "ready",
       }),
+      teach_auth_checkpoint: expect.objectContaining({
+        ok: true,
+        app_origin: "https://secure.example.com",
+      }),
     }));
     expect(authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint.checkpoint_id)?.state.origins[0]?.localStorage?.[0]).toEqual({
       name: "session",
@@ -453,6 +461,10 @@ describe("browser MCP tool surface", () => {
           sessionStorage: [{ name: "csrf", value: "secret-session" }],
         }],
       },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
     }).ok).toBe(true);
     expect(browserBroker.startTeachMode("app").ok).toBe(true);
     expect(browserBroker.recordHumanAction({
@@ -516,6 +528,10 @@ describe("browser MCP tool surface", () => {
         origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "expired-local" }] }],
       },
     }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
+    }).ok).toBe(true);
     expect(browserBroker.startTeachMode("app").ok).toBe(true);
     expect(browserBroker.recordHumanAction({
       tab_id: "app",
@@ -578,6 +594,10 @@ describe("browser MCP tool surface", () => {
         cookies: [{ name: "sid", value: "expired-cookie", domain: "secure.example.com", path: "/" }],
         origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "expired-local" }] }],
       },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
     }).ok).toBe(true);
     expect(browserBroker.startTeachMode("app").ok).toBe(true);
     expect(browserBroker.recordHumanAction({

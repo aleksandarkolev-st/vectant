@@ -752,7 +752,7 @@ describe("browser broker privacy boundary", () => {
     });
   });
 
-  it("marks trace security when an explicit auth checkpoint is valid", () => {
+  it("marks trace security when an auth checkpoint is selected for the teach session", () => {
     browserBroker.requestConsent("https://app.example.com");
     const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com/form", "unit-test");
     const finished = authCheckpointManager.finishEnrollment({
@@ -769,6 +769,10 @@ describe("browser broker privacy boundary", () => {
         cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
         origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "secret-local" }] }],
       },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: finished.checkpoint.app_origin,
+      idp_origins: finished.checkpoint.idp_origins,
     }).ok).toBe(true);
 
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/form", active: true }]);
@@ -787,6 +791,41 @@ describe("browser broker privacy boundary", () => {
       auth_checkpoint_approved: true,
     }));
     expect(JSON.stringify(event)).not.toMatch(/cookie|localStorage|sessionStorage|secret|token/i);
+  });
+
+  it("does not infer auth approval from an unselected checkpoint on the same origin", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    const enrollment = authCheckpointManager.beginEnrollment("https://app.example.com/form", "unit-test");
+    const finished = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: "https://app.example.com/form",
+      ttl_ms: 60_000,
+    });
+    expect(finished.ok).toBe(true);
+    if (!finished.ok) throw new Error("unexpected auth checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: finished.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie", domain: "app.example.com", path: "/" }],
+        origins: [{ origin: "https://app.example.com", localStorage: [{ name: "session", value: "secret-local" }] }],
+      },
+    }).ok).toBe(true);
+
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/public", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/public",
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Open" },
+    });
+
+    const [event] = browserBroker.traceSnapshot();
+    expect(event?.security).toEqual(expect.objectContaining({
+      exact_origin_approved: true,
+      auth_checkpoint_approved: false,
+    }));
   });
 
   it("rejects bridge events that claim a different payload origin", () => {

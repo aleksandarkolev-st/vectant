@@ -74,6 +74,11 @@ export interface BrowserWorkflowArtifact {
   saved_at: number;
 }
 
+interface BrowserTeachAuthScope {
+  app_origin: string;
+  origins: string[];
+}
+
 export interface BrowserRecordingIssue {
   issue_id: string;
   at: number;
@@ -102,11 +107,18 @@ export class BrowserBroker {
   private readonly trace = new BrowserTraceRecorder();
   private bridgeToken: string | undefined;
   private selectedTabId: string | null = null;
-  private teachMode: { active: boolean; tab_id: string | null; origin: string | null } = {
+  private teachMode: {
+    active: boolean;
+    tab_id: string | null;
+    origin: string | null;
+    auth_scope: BrowserTeachAuthScope | null;
+  } = {
     active: false,
     tab_id: null,
     origin: null,
+    auth_scope: null,
   };
+  private readonly pendingTeachAuthScopes = new Map<string, BrowserTeachAuthScope>();
   private activeLease: BrowserLease | null = null;
   private queuedActions: BrowserActionInput[] = [];
   private runtime: BrowserRuntimeAttachment | null = null;
@@ -236,21 +248,23 @@ export class BrowserBroker {
     if (!tab) return { ok: false, error: "tab_not_authorized" };
     const origin = normalizeOrigin(tab.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
+    const authScope = this.pendingTeachAuthScopes.get(origin) ?? null;
+    if (authScope) this.pendingTeachAuthScopes.delete(origin);
     this.trace.beginTrace();
     this.recordingIssues = [];
     this.pendingDeniedTargetOriginDiscards = [];
-    this.teachMode = { active: true, tab_id, origin };
+    this.teachMode = { active: true, tab_id, origin, auth_scope: authScope };
     eventLog.push({
       kind: "browser",
       action: "teach_started",
-      payload: { tab_id, origin },
+      payload: { tab_id, origin, auth_checkpoint_active: authScope !== null },
     });
     return { ok: true, tab: { ...tab }, origin };
   }
 
   stopTeachMode(reason: string = "stopped"): { active: false; reason: string } {
     const previous = { ...this.teachMode };
-    this.teachMode = { active: false, tab_id: null, origin: null };
+    this.teachMode = { active: false, tab_id: null, origin: null, auth_scope: null };
     eventLog.push({
       kind: "browser",
       action: "teach_stopped",
@@ -260,7 +274,43 @@ export class BrowserBroker {
   }
 
   teachState(): { active: boolean; tab_id: string | null; origin: string | null } {
-    return { ...this.teachMode };
+    return {
+      active: this.teachMode.active,
+      tab_id: this.teachMode.tab_id,
+      origin: this.teachMode.origin,
+    };
+  }
+
+  activateAuthCheckpointForTeach(input: {
+    app_origin: string;
+    idp_origins?: string[];
+  }): { ok: true; app_origin: string; origins: string[] } | { ok: false; error: string } {
+    let appOrigin: string;
+    try {
+      appOrigin = normalizeOrigin(input.app_origin).origin;
+    } catch {
+      return { ok: false, error: "invalid_auth_checkpoint_origin" };
+    }
+    const origins = new Set<string>([appOrigin]);
+    for (const rawOrigin of input.idp_origins ?? []) {
+      try {
+        origins.add(normalizeOrigin(rawOrigin).origin);
+      } catch {
+        return { ok: false, error: "invalid_auth_checkpoint_origin" };
+      }
+    }
+    const scope: BrowserTeachAuthScope = { app_origin: appOrigin, origins: [...origins] };
+    if (this.teachMode.active && this.teachMode.origin === appOrigin) {
+      this.teachMode = { ...this.teachMode, auth_scope: scope };
+    } else {
+      this.pendingTeachAuthScopes.set(appOrigin, scope);
+    }
+    eventLog.push({
+      kind: "browser",
+      action: "teach_auth_checkpoint_selected",
+      payload: { app_origin: appOrigin, origin_count: scope.origins.length },
+    });
+    return { ok: true, ...scope };
   }
 
   recordTeachQuestionAnswer(input: {
@@ -712,7 +762,8 @@ export class BrowserBroker {
     this.tabs.clear();
     this.trace.clear();
     this.selectedTabId = null;
-    this.teachMode = { active: false, tab_id: null, origin: null };
+    this.teachMode = { active: false, tab_id: null, origin: null, auth_scope: null };
+    this.pendingTeachAuthScopes.clear();
     this.activeLease = null;
     this.queuedActions = [];
     this.bridgeToken = undefined;
@@ -851,7 +902,7 @@ export class BrowserBroker {
       exact_origin_approved: this.hasOriginConsent(url),
       screenshot_approved: this.hasScreenshotConsent(url),
       diagnostics_approved: this.hasDiagnosticsConsent(url),
-      auth_checkpoint_approved: this.hasAuthCheckpointAccess(url),
+      auth_checkpoint_approved: this.hasActiveTeachAuthCheckpointAccess(url),
     };
     const frameOrigin = this.targetOriginFromDetail(detail, "frame_origin");
     if (frameOrigin) {
@@ -948,12 +999,17 @@ export class BrowserBroker {
     }
   }
 
-  private hasAuthCheckpointAccess(url: string): boolean {
+  private hasActiveTeachAuthCheckpointAccess(url: string): boolean {
+    const scope = this.teachMode.auth_scope;
+    if (!this.teachMode.active || !scope) return false;
+    let origin: string;
     try {
-      return authCheckpointManager.readiness(url, false).ready;
+      origin = normalizeOrigin(url).origin;
     } catch {
       return false;
     }
+    if (!scope.origins.includes(origin)) return false;
+    return authCheckpointManager.readiness(scope.app_origin, false).ready;
   }
 }
 
