@@ -15,6 +15,10 @@ This run did not add fixed preview ports, fixed workspace slugs, local Chrome pa
 - Real MCP/private-tool acceptance over the spawned stdio MCP boundary:
   - Added `npm run live:browser:private-tool-stdio`.
   - Seeds an encrypted saved-workflow store, spawns `dist/index.js`, discovers `synthi_app_*` from `tools/list`, looks up the manifest over MCP, attaches to the configured hosted browser CDP, opens an OS-assigned fixture URL, calls the discovered private tool through `tools/call`, and captures a screenshot proving the action happened.
+- Real Codex-agent private-tool acceptance:
+  - Added `npm run live:browser:private-tool-codex`.
+  - Uses a temporary Codex home copied from an existing auth home, writes only temporary MCP config/private workflow store files, prompts Codex to use the saved workflow without script paths, and requires structured JSONL evidence for browser attach, consent, browser open, successful `synthi_app_*` MCP tool call, and at least one replayed workflow step.
+  - The harness captures visual proof from the hosted browser after Codex calls the discovered workflow tool.
 - Hosted browser lifecycle hardening for long live matrices:
   - The workflow pipeline now prunes stale CDP page targets before attach and closes per-case pages after each case.
   - This avoids attach slowdowns from hundreds of old tabs without relying on a fixed port or slug.
@@ -48,6 +52,7 @@ npm run typecheck
 npm run build
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp npm run test:unit
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 npm run live:browser:private-tool-stdio
+TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_CODEX_AUTH_HOME=/mnt/c/Users/dev/.codex npm run live:browser:private-tool-codex
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 npm run live:browser:workflow-pipeline
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp npx vitest run tests/unit/safety_tools.test.ts tests/unit/auth_checkpoint.test.ts tests/unit/browser_workflow_contract.test.ts tests/unit/browser_replay_generation.test.ts
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=cross-origin-iframe-denied,cross-origin-popup-denied npm run live:browser:workflow-pipeline
@@ -59,6 +64,7 @@ Results:
 - Unit suite: 70 files passed, 759 tests passed.
 - Full workflow matrix: 40 seeded projects passed.
 - Stdio private-tool acceptance: passed after final build.
+- Codex private-tool acceptance: passed with a real Codex CLI prompt, temp auth home, structured MCP tool-call evidence, and browser visual proof.
 - Cross-origin denied target fixtures: passed after final build.
 - CI isolated visual mutation fixture: exported Playwright passed and CI isolated replay passed with reset assertion, postcondition, state seed id, and run-bound attestation.
 - Typecheck/build: passed.
@@ -66,6 +72,7 @@ Results:
 Visual proof artifacts:
 
 - `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
+- `tmp/private-tool-codex-acceptance/after-codex-private-tool-call.png`
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/popup-form-window/after-validate-panel.png`
 - `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-validate-panel.png`
@@ -91,6 +98,7 @@ Generated-script proof:
 - `880fe397` Add denied-origin workflow pipeline fixtures
 - `68534bb3` Harden CI isolated workflow replay
 - `1b8c12cb` Preserve popup action targets during teaching
+- `75e3003f` Add Codex private workflow acceptance proof
 
 Earlier commits in the same goal also covered parameter naming, private tool parameter proof, exported-script runner isolation, and expectation alignment for mutation-safe prefix exports.
 
@@ -98,7 +106,7 @@ Earlier commits in the same goal also covered parameter naming, private tool par
 
 These are not blockers for the repo-local production-grade proof, but they are still the next hardening targets before broad external rollout:
 
-- Real LLM-agent prompt acceptance is not yet automated. We now prove the actual stdio MCP boundary with raw JSON-RPC, but not an external Codex/Synthi LLM prompt choosing the tool by natural language.
+- Real LLM-agent prompt acceptance is now automated locally with Codex CLI and a temporary auth home. The remaining external rollout gap is validating the same private-tool discovery/call path in third-party MCP hosts and production hosted-runtime policy without the local-dev CDP fallback or Codex's noninteractive approval-bypass mode.
 - Real third-party IdP coverage is not yet complete. Auth storage/checkpoint/redaction paths are tested with fixtures and unit coverage; OAuth/SAML/magic-link providers against real external services still need environment-specific validation.
 - Popup and iframe coverage now includes same-origin success cases, opener-return workflows, and cross-origin denial fixtures. More hostile nested iframe, multiple popup, and cross-origin return-navigation cases should still be validated under production consent policy.
 - CI isolated replay is proven for resettable fixture mutation workflows with reset assertion, postcondition, and run-bound attestation. Production teams still need per-workspace reset profiles, fixture users, and postcondition definitions configured for their apps.
