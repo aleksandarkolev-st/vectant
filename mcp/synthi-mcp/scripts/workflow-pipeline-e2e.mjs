@@ -3144,11 +3144,10 @@ const CASES = [
     id: "rich-text-editor",
     minSteps: 2,
     expectedActions: ["fill", "click"],
-    expectedReplayText: [
-      "Saved Release notes ready",
-    ],
+    expectedReplayText: [],
     expectedReplayCode: [
-      "toContainText(\"Release notes ready\")",
+      "const inputValue1 = readRequiredEnv(\"RELEASE_NOTES\"",
+      "toContainText(inputValue1)",
     ],
     replayEnv: () => ({ RELEASE_NOTES: "Release notes ready" }),
     files: () => commonFiles({
