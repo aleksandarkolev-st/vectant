@@ -14,9 +14,9 @@ The accepted proof set is broader than one fixture:
 - MCP preview visual HMR for generated ray-light and Flow workloads,
 - HIPRT same-process ray-traced framebuffer HMR for CameraRays and MegaKernel direct-light profiles,
 - ThreeJS external runtime visual proof as an external screenshot profile,
-- negative/rejection evidence for Bevy and OIDN HIP where proof is missing or the runtime dependency is incompatible.
+- negative/rejection evidence for Bevy, OIDN HIP, and OpenCL where proof is missing or the runtime dependency is incompatible.
 
-This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. Non-HIP backends, CUDA, Vulkan, OpenCL, and Bevy/WebGPU full-runtime acceptance remain open.
+This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths below. Non-HIP backends, CUDA, Vulkan, OpenCL full-runtime acceptance, and Bevy/WebGPU full-runtime acceptance remain open.
 
 ## Hard Rules Preserved
 
@@ -34,6 +34,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+f47a45c25 feat(gpu-hmr): add opencl preflight rejection proof
 97ee6b7cc fix(gpu-hmr): enforce visual runner proof waits
 e13508d27 fix(gpu-hmr): use real visual fixtures in rocm self-check
 f8559c672 docs(gpu-hmr): record visual ledger hardening status
@@ -70,6 +71,7 @@ fission_report now carries deterministic verifier identity, selection decision h
 fission acceptance rejects bare placeholder oracle ids.
 runtime visual proof artifacts are blocked when the derived proof ledger record lacks visual_oracle_artifacts.
 strict runtime artifact gates reject invented source-consistency modes and require deterministic visual-mode evaluation for visual ledgers.
+OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
 ```
 
 Fresh verification after these commits:
@@ -487,6 +489,42 @@ buffer read/write: all tests passed, 27 assertions
 
 No symlink, ABI shim, or library compatibility shortcut was added. Do not claim OIDN HIP output proof on this ROCm 7 worker.
 
+## OpenCL Status
+
+OpenCL was tested through a structured worker-container preflight artifact:
+
+```text
+latest proof id: opencl-preflight-proof:sha256:64e92684b59489f2dc88c1ac6e570fd54605bc9bb345cb6653cc15e22714c4ea
+latest result state: opencl-runtime-rejected
+latest proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/opencl-preflight/opencl-rocm-preflight-20260609-after-output-gate-proof.json
+latest summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/opencl-preflight/opencl-rocm-preflight-20260609-after-output-gate-summary.txt
+```
+
+The live worker has an OpenCL loader but no usable vendor ICD/tooling evidence:
+
+```text
+libraries: libOpenCL.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libOpenCL.so.1
+vendor ICDs: none
+platform count: unknown
+device counts: none
+unsupported reasons: opencl_vendor_icd_missing, clinfo_missing
+```
+
+The preflight artifact explicitly does not accept OpenCL output proof or GPU HMR success. Even on a machine where OpenCL preflight accepts, dispatch trace and output-oracle readback proof are still required before OpenCL GPU HMR can pass.
+
+```text
+acceptedForOpenClRuntimePreflight: false
+acceptedForOpenClOutputProof: false
+gpuHmrSuccess: false
+dispatchTraceRequired: true
+outputOracleRequired: true
+noShimApplied: true
+noVendorIcdSynthesized: true
+noSymlinkApplied: true
+```
+
+No vendor ICD was synthesized, no symlink was added, and no compatibility shim was used. Do not claim OpenCL HMR output proof on this worker.
+
 ## External Project Profiles
 
 ThreeJS WebGL shader lava profile passed as an external runtime screenshot proof:
@@ -635,6 +673,8 @@ MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/di
 MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260609-after-wait-gate SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
+npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
+SYNTHI_OPENCL_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=opencl-rocm-preflight-20260609-after-output-gate npm --prefix mcp/synthi-mcp run proof:opencl:preflight
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
 ```
 
@@ -652,6 +692,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | Ray-light/Flow visual MCP | Accepted and visually inspected; agent-split summaries now archive under each slug artifact directory. | Keep top-level result files as latest-run convenience outputs only. |
 | HIPRT | Fresh same-process CameraRays and MegaKernel proofs accepted. | Integrate HIPRT into the full MCP runtime ledger path if app hooks become available. |
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
+| OpenCL | Worker has `libOpenCL.so.1`, but no vendor ICD and no `clinfo`; structured preflight rejected OpenCL runtime proof. | Install/provide a real OpenCL vendor ICD and then add dispatch/event/readback ledger proof. No synthesized ICDs or shims. |
 | External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy/WebGPU before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
 | Narrow fission | Device translation unit HMR proven. | Add deterministic smallest-safe fission verifier before claiming per-kernel/smallest island. |
@@ -670,6 +711,7 @@ CUDA runtime proof was validated here.
 Every arbitrary GPU project is production accepted.
 The generated ray-light MCP fixture is HIPRT/OIDN.
 OIDN HIP produced or validated the accepted output.
+OpenCL dispatch/readback output proof was validated on this worker.
 The one-file generated .hip split proves per-kernel or smallest-island fission.
 Bevy/WebGPU has full-runtime proof-ledger acceptance.
 ```
