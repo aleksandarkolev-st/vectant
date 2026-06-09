@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PROGRAM_RECIPES, buildDefaultPrograms } from '../defaultPrograms';
 import { SUPPORTED_RUNTIME_TYPES, KNOWN_SCOPES } from '../manifest';
 
