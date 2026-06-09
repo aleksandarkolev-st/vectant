@@ -295,7 +295,15 @@ function acceptanceContract(overrides = {}) {
       process_restarted: false,
       full_rebuild_used: false,
       unaffected_artifacts_hash_unchanged: true,
-      evidence_refs: ['static:fission-contract', 'runtime:module-load'],
+      selected_verifier_evidence_id: 'fission-candidate:device-kernel:verified',
+      deterministic_verifier_evidence_refs: ['static:fission-source-map'],
+      selection_decision_hash: HASH_C,
+      output_oracle_contract: {
+        kind: 'buffer_checksum',
+        output_target_id: 'allocation-1',
+        readback_plan: 'after-dispatch',
+      },
+      evidence_refs: ['evidence:fission-verifier-report:strict-self-check', 'runtime:module-load'],
     },
     hip_contract: {
       kernel_name: 'generic_kernel',

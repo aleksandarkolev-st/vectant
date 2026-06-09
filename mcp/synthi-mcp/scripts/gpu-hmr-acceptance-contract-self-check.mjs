@@ -117,7 +117,15 @@ function contract(overrides = {}) {
       full_rebuild_used: false,
       unaffected_artifacts_hash_unchanged: true,
       abi_compatibility_class: 'compatible',
-      evidence_refs: ['static:hip-launch', 'runtime:module-load'],
+      selected_verifier_evidence_id: 'fission-candidate:device-kernel:verified',
+      deterministic_verifier_evidence_refs: ['static:fission-source-map'],
+      selection_decision_hash: 'sha256:9999999999999999999999999999999999999999999999999999999999999999',
+      output_oracle_contract: {
+        kind: 'buffer_checksum',
+        output_target_id: 'allocation-1',
+        readback_plan: 'after-dispatch',
+      },
+      evidence_refs: ['evidence:fission-verifier-report:self-check', 'runtime:module-load'],
     },
     hip_contract: {
       kernel_name: 'light_kernel',
@@ -339,6 +347,36 @@ expectReject('missing fission evidence refs', {
     evidence_refs: [],
   },
 }, 'fission_evidence_refs_missing');
+expectReject('arbitrary fission evidence is not verifier proof', {
+  fission_report: {
+    ...contract().fission_report,
+    evidence_refs: ['evidence:any'],
+  },
+}, 'fission_verifier_report_evidence_ref_missing');
+expectReject('missing selected fission verifier evidence id', {
+  fission_report: {
+    ...contract().fission_report,
+    selected_verifier_evidence_id: null,
+  },
+}, 'fission_selected_verifier_evidence_id_missing');
+expectReject('missing deterministic fission verifier evidence refs', {
+  fission_report: {
+    ...contract().fission_report,
+    deterministic_verifier_evidence_refs: [],
+  },
+}, 'fission_deterministic_verifier_evidence_refs_missing');
+expectReject('missing fission selection decision hash', {
+  fission_report: {
+    ...contract().fission_report,
+    selection_decision_hash: null,
+  },
+}, 'fission_selection_decision_hash_missing');
+expectReject('missing fission output oracle contract', {
+  fission_report: {
+    ...contract().fission_report,
+    output_oracle_contract: {},
+  },
+}, 'fission_output_oracle_contract_missing');
 expectReject('missing fission unaffected artifact proof', {
   fission_report: {
     ...contract().fission_report,
@@ -595,7 +633,17 @@ const derivedProofInput = {
       targetSymbols: ['light_kernel'],
       artifactKind: 'hsaco',
       compileCommandHash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      verifierEvidenceId: 'fission-candidate:device-kernel:verified',
+      deterministicVerifierEvidenceIds: ['static:fission-source-map'],
+      outputOracleContract: {
+        kind: 'buffer_checksum',
+        outputTargetId: 'allocation-1',
+        readbackPlan: 'after-dispatch',
+      },
     }],
+    verifierEvidenceRefs: ['fission-candidate:device-kernel:verified'],
+    deterministicVerifierEvidenceRefs: ['static:fission-source-map'],
+    evidenceRefs: ['evidence:fission-verifier-report:self-check'],
   },
   abiProof: {
     resultState: 'gpu-hmr-abi-proven',

@@ -499,6 +499,20 @@ function normalizeFissionReport(value = {}) {
       ? unaffectedArtifactsHashUnchanged.value
       : null,
     evidence_refs: compactStringList(report.evidence_refs ?? report.evidenceRefs),
+    selected_verifier_evidence_id: text(
+      report.selected_verifier_evidence_id
+      ?? report.selectedVerifierEvidenceId
+      ?? report.verifier_evidence_id
+      ?? report.verifierEvidenceId,
+    ),
+    deterministic_verifier_evidence_refs: compactStringList(
+      report.deterministic_verifier_evidence_refs
+      ?? report.deterministicVerifierEvidenceRefs
+      ?? report.deterministic_verifier_evidence_ids
+      ?? report.deterministicVerifierEvidenceIds,
+    ),
+    selection_decision_hash: text(report.selection_decision_hash ?? report.selectionDecisionHash),
+    output_oracle_contract: firstObject(report.output_oracle_contract, report.outputOracleContract),
     smallest_safe_island_proven: boolValue(
       report.smallest_safe_island_proven
       ?? report.smallestSafeIslandProven
@@ -518,6 +532,16 @@ function computeOnlyOutputTargetVerified(target) {
   return outputOracleTargetKind(object) === 'compute'
     && (object.compute_only_target_verified === true || object.computeOnlyTargetVerified === true)
     && compactStringList(object.evidence_refs ?? object.evidenceRefs).length > 0;
+}
+
+function fissionVerifierEvidenceRefAccepted(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized.startsWith('fission-verifier:sha256:')
+    || normalized.startsWith('evidence:fission-verifier-report:')
+    || normalized.startsWith('proof:fission-verifier-report:')
+    || normalized.startsWith('artifact:fission-verifier-report:')
+    || normalized.startsWith('runtime:fission-verifier-report:')
+    || normalized.startsWith('static:fission-verifier-report:');
 }
 
 export function normalizeGpuHmrAcceptanceContract(input = {}) {
@@ -571,11 +595,25 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     artifact_identity: normalized.artifact_identity,
     artifact_hash_before: normalized.artifact_hash_before,
     artifact_hash_after: normalized.artifact_hash_after,
+    unaffected_artifacts_hash_unchanged: normalized.unaffected_artifacts_hash_unchanged,
     abi_compatibility_class: normalized.abi_compatibility_class,
+    abi_metadata: normalized.abi_metadata,
     reload_mechanism: normalized.reload_mechanism,
     adapter_outcome: normalized.adapter_outcome,
+    reload_evidence_refs: normalized.reload_evidence_refs,
     firewall_evidence: normalized.firewall_evidence,
     output_oracle_target: normalized.output_oracle_target,
+    dispatch_trace_required: normalized.dispatch_trace_required,
+    oracle_trace_required: normalized.oracle_trace_required,
+    state_preservation_checks: normalized.state_preservation_checks,
+    epoch_policy: normalized.epoch_policy,
+    epoch_retirement_proof: normalized.epoch_retirement_proof,
+    fission_report: normalized.fission_report,
+    hip_contract: normalized.hip_contract,
+    hiprt_contract: normalized.hiprt_contract,
+    vulkan_contract: normalized.vulkan_contract,
+    webgpu_contract: normalized.webgpu_contract,
+    opencl_contract: normalized.opencl_contract,
   }))}`;
   normalized.contract_id ??= `gpu-hmr-contract:${normalized.contract_hash}`;
   return normalized;
@@ -758,6 +796,21 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   }
   if (!nonEmptyValue(fission.evidence_refs)) {
     addFailure(failures, 'fission_evidence_refs_missing');
+  }
+  if (!fission.evidence_refs.some(fissionVerifierEvidenceRefAccepted)) {
+    addFailure(failures, 'fission_verifier_report_evidence_ref_missing');
+  }
+  if (!nonEmptyValue(fission.selected_verifier_evidence_id)) {
+    addFailure(failures, 'fission_selected_verifier_evidence_id_missing');
+  }
+  if (!nonEmptyValue(fission.deterministic_verifier_evidence_refs)) {
+    addFailure(failures, 'fission_deterministic_verifier_evidence_refs_missing');
+  }
+  if (!nonEmptyValue(fission.selection_decision_hash)) {
+    addFailure(failures, 'fission_selection_decision_hash_missing');
+  }
+  if (!nonEmptyValue(fission.output_oracle_contract)) {
+    addFailure(failures, 'fission_output_oracle_contract_missing');
   }
   if (!nonEmptyValue(fission.abi_compatibility_class)) {
     addFailure(failures, 'fission_abi_compatibility_class_missing');
@@ -1140,6 +1193,62 @@ function selectedIslandContractFromProof(fissionProof) {
   const contracts = asArray(fissionProof?.selectedIslandContracts)
     .filter((contract) => contract && typeof contract === 'object' && !Array.isArray(contract));
   return contracts[0] ?? {};
+}
+
+function selectedVerifierEvidenceIdFromFissionProof(fissionProof, selectedIsland) {
+  return firstText(
+    selectedIsland.verifierEvidenceId,
+    selectedIsland.verifier_evidence_id,
+    asArray(fissionProof?.verifierEvidenceRefs)[0],
+    asArray(fissionProof?.verifier_evidence_refs)[0],
+    asArray(fissionProof?.verifierEvidenceIds)[0],
+    asArray(fissionProof?.verifier_evidence_ids)[0],
+  );
+}
+
+function deterministicVerifierEvidenceRefsFromFissionProof(fissionProof, selectedIsland) {
+  return compactStringList([
+    ...asArray(selectedIsland.deterministicVerifierEvidenceIds),
+    ...asArray(selectedIsland.deterministic_verifier_evidence_ids),
+    ...asArray(selectedIsland.deterministicVerifierEvidenceRefs),
+    ...asArray(selectedIsland.deterministic_verifier_evidence_refs),
+    ...asArray(fissionProof?.deterministicVerifierEvidenceRefs),
+    ...asArray(fissionProof?.deterministic_verifier_evidence_refs),
+    ...asArray(fissionProof?.deterministicVerifierEvidenceIds),
+    ...asArray(fissionProof?.deterministic_verifier_evidence_ids),
+  ]);
+}
+
+function outputOracleContractFromFissionProof(selectedIsland, outputProof) {
+  return firstObject(
+    selectedIsland.outputOracleContract,
+    selectedIsland.output_oracle_contract,
+    selectedIsland.oracleProposal,
+    selectedIsland.oracle_proposal,
+    outputProof.outputOracle?.outputOracleTarget,
+    outputProof.outputOracle?.output_oracle_target,
+    outputProof.output_oracle?.outputOracleTarget,
+    outputProof.output_oracle?.output_oracle_target,
+    outputProof.outputOracleTarget,
+    outputProof.output_oracle_target,
+  );
+}
+
+function fissionSelectionDecisionHashFromProof(fissionProof, selectedIsland, verifierEvidenceId, outputOracleContract) {
+  return firstText(
+    fissionProof?.selectionDecisionHash,
+    fissionProof?.selection_decision_hash,
+    selectedIsland.selectionDecisionHash,
+    selectedIsland.selection_decision_hash,
+  ) ?? `sha256:${sha256Hex(stableJson({
+    selected_island: firstText(selectedIsland.islandId, selectedIsland.island_id),
+    selected_verifier_evidence_id: verifierEvidenceId,
+    deterministic_verifier_evidence_refs: deterministicVerifierEvidenceRefsFromFissionProof(
+      fissionProof,
+      selectedIsland,
+    ),
+    output_oracle_contract: outputOracleContract,
+  }))}`;
 }
 
 function backendContractProofFromVerifiedProofs(input, validationContext, backend) {
@@ -1706,6 +1815,18 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const verifiedClassification = normalizeClassification(rawClassification);
   const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
   const selectedIsland = selectedIslandContractFromProof(fissionProof);
+  const selectedVerifierEvidenceId = selectedVerifierEvidenceIdFromFissionProof(fissionProof, selectedIsland);
+  const deterministicVerifierEvidenceRefs = deterministicVerifierEvidenceRefsFromFissionProof(
+    fissionProof,
+    selectedIsland,
+  );
+  const fissionOutputOracleContract = outputOracleContractFromFissionProof(selectedIsland, outputProof);
+  const fissionSelectionDecisionHash = fissionSelectionDecisionHashFromProof(
+    fissionProof,
+    selectedIsland,
+    selectedVerifierEvidenceId,
+    fissionOutputOracleContract,
+  );
   const backend = backendFromVerifiedContext(input, validationContext, {
     selectedIsland,
     dispatchProof,
@@ -2007,6 +2128,10 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       process_restarted: input.processRestarted === true || input.process_restarted === true,
       full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
       unaffected_artifacts_hash_unchanged: fissionProof?.fissionProven === true && !fullDeviceFallback,
+      selected_verifier_evidence_id: selectedVerifierEvidenceId,
+      deterministic_verifier_evidence_refs: deterministicVerifierEvidenceRefs,
+      selection_decision_hash: fissionSelectionDecisionHash,
+      output_oracle_contract: fissionOutputOracleContract,
       evidence_refs: evidenceRefs,
     },
     hip_contract: hipContractFromVerifiedProofs({
