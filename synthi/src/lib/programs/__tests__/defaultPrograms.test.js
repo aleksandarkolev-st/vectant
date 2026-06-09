@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PROGRAM_RECIPES, buildDefaultPrograms } from '../defaultPrograms';
 import { SUPPORTED_RUNTIME_TYPES, KNOWN_SCOPES } from '../manifest';
 
@@ -35,5 +35,41 @@ describe('buildDefaultPrograms', () => {
     expect(dc.ports).toContain(3000);
     expect(dc.launch).toBe('npm run dev');
     expect(dc.description.length).toBeGreaterThan(0);
+  });
+});
+
+import { ensureDefaultPrograms } from '../defaultPrograms';
+
+describe('ensureDefaultPrograms', () => {
+  function makePrisma() {
+    return {
+      marketplaceProgram: { upsert: vi.fn(async ({ where }) => ({ id: `prog_${where.packageId}`, packageId: where.packageId })) },
+      programVersion: { upsert: vi.fn(async () => ({ id: 'ver1' })) },
+    };
+  }
+
+  it('upserts each default as a verified vectant program + its version', async () => {
+    const prisma = makePrisma();
+    const seeded = await ensureDefaultPrograms(prisma);
+
+    expect(seeded).toContain('@vectant/nextjs-dev');
+    expect(seeded.length).toBe(7);
+    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(7);
+    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(7);
+
+    const arg = prisma.marketplaceProgram.upsert.mock.calls.find(
+      (c) => c[0].where.packageId === '@vectant/nextjs-dev',
+    )[0];
+    expect(arg.create).toMatchObject({ packageId: '@vectant/nextjs-dev', publisher: 'vectant', verified: true, latestVersion: '1.0.0' });
+    expect(arg.update).toMatchObject({ verified: true, latestVersion: '1.0.0' });
+  });
+
+  it('never writes installCount on update (preserves reputation on re-seed)', async () => {
+    const prisma = makePrisma();
+    await ensureDefaultPrograms(prisma);
+    for (const call of prisma.marketplaceProgram.upsert.mock.calls) {
+      expect(call[0].update).not.toHaveProperty('installCount');
+      expect(call[0].create).not.toHaveProperty('installCount');
+    }
   });
 });

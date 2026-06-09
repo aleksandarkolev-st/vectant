@@ -119,3 +119,52 @@ export function buildDefaultPrograms() {
     return { packageId: `@vectant/${entry.name}`, config };
   });
 }
+
+/**
+ * Idempotently upsert the default catalog. Mirrors store.publishProgram's
+ * upsert shape but with publisher 'vectant' + verified true. The `update`
+ * clause deliberately omits installCount so re-seeding preserves reputation.
+ * @param {import('@prisma/client').PrismaClient} prisma
+ * @returns {Promise<string[]>} the upserted packageIds
+ */
+export async function ensureDefaultPrograms(prisma) {
+  const built = buildDefaultPrograms();
+  const seeded = [];
+  for (const { packageId, config } of built) {
+    const program = await prisma.marketplaceProgram.upsert({
+      where: { packageId },
+      update: {
+        verified: true,
+        displayName: config.displayName,
+        description: config.description || null,
+        latestVersion: config.version,
+      },
+      create: {
+        packageId,
+        publisher: 'vectant',
+        verified: true,
+        displayName: config.displayName,
+        description: config.description || null,
+        latestVersion: config.version,
+        publishedByUserId: null,
+      },
+    });
+    await prisma.programVersion.upsert({
+      where: { programId_version: { programId: program.id, version: config.version } },
+      update: {
+        manifestJson: JSON.stringify(config),
+        requiredTools: [],
+        ports: (config.ports || []).map((p) => String(p)),
+      },
+      create: {
+        programId: program.id,
+        version: config.version,
+        manifestJson: JSON.stringify(config),
+        requiredTools: [],
+        ports: (config.ports || []).map((p) => String(p)),
+      },
+    });
+    seeded.push(packageId);
+  }
+  return seeded;
+}
