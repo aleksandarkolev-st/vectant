@@ -18,6 +18,10 @@ const MATRIX_OUTCOME_PRIORITY = new Map([
   ['unproven', 0],
 ]);
 
+const ACCEPTED_METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
+const ACCEPTED_CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
+const REQUIRED_FULL_TARGET_RUN_MODES = ['cold', 'hot_delta_1', 'hot_delta_2'];
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -68,6 +72,74 @@ function compactStringList(values) {
 
 function compactObject(value) {
   return isObject(value) ? value : {};
+}
+
+function isSelfCheckId(value) {
+  return /\bself[-_ ]?check\b/i.test(String(value ?? ''));
+}
+
+function objectCandidates(...values) {
+  const out = [];
+  const visit = (value) => {
+    if (!isObject(value)) return;
+    out.push(value);
+    for (const key of [
+      'timingMetrics',
+      'timing_metrics',
+      'timings',
+      'normalizedTimings',
+      'normalized_timings',
+      'clockEvidence',
+      'clock_evidence',
+    ]) {
+      if (isObject(value[key])) visit(value[key]);
+    }
+  };
+  values.forEach(visit);
+  return out;
+}
+
+function firstObjectField(candidates, ...keys) {
+  for (const candidate of candidates) {
+    for (const key of keys) {
+      const value = firstText(candidate[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function timingEvidence(...values) {
+  const candidates = objectCandidates(...values);
+  const metricClock = firstObjectField(candidates, 'metricClock', 'metric_clock');
+  const metricScope = firstObjectField(candidates, 'metricScope', 'metric_scope');
+  const cacheState = firstObjectField(candidates, 'cacheState', 'cache_state');
+  const editId = firstObjectField(candidates, 'editId', 'edit_id');
+  const editHash = firstObjectField(candidates, 'editHash', 'edit_hash');
+  const editKind = firstObjectField(candidates, 'editKind', 'edit_kind');
+  const differentEdit = candidates.some((candidate) =>
+    candidate.differentEdit === true || candidate.different_edit === true
+  );
+  const metricScopeAccepted = metricScope ? ACCEPTED_METRIC_SCOPES.has(metricScope) : false;
+  const cacheStateAccepted = cacheState ? ACCEPTED_CACHE_STATES.has(cacheState) : false;
+  const accepted = metricClock === 'monotonic_ns' && metricScopeAccepted && cacheStateAccepted;
+  return {
+    present: Boolean(metricClock || metricScope || cacheState),
+    accepted,
+    metricClock,
+    metricScope,
+    cacheState,
+    editId,
+    editHash,
+    editKind,
+    differentEdit,
+    different_edit: differentEdit,
+    failedGates: compactStringList([
+      metricClock === 'monotonic_ns' ? null : 'metric_clock_monotonic_ns_missing',
+      metricScopeAccepted ? null : 'metric_scope_missing_or_unsupported',
+      cacheStateAccepted ? null : 'cache_state_missing_or_unsupported',
+    ]),
+  };
 }
 
 function relPath(filePath, repoRoot) {
@@ -241,10 +313,13 @@ function ledgerFacet(json) {
   const ledger = compactObject(json.proofLedger ?? json.proof_ledger);
   const suppliedQuery = compactObject(json.proofLedgerQuery ?? json.proof_ledger_query ?? ledger.query);
   let query = null;
+  let source = 'missing';
   if (Object.keys(ledger).length > 0) {
     query = queryGpuHmrLedgerInvariants(ledger);
+    source = 'recomputed_ledger';
   } else if (suppliedQuery.schemaVersion || suppliedQuery.schema_version) {
     query = suppliedQuery;
+    source = 'supplied_query';
   }
   const failures = Array.isArray(query?.failedInvariants)
     ? query.failedInvariants
@@ -253,6 +328,7 @@ function ledgerFacet(json) {
       : [];
   return {
     present: Object.keys(ledger).length > 0,
+    source,
     proofId: firstText(ledger.proofId, ledger.proof_id, query?.proofId, query?.proof_id),
     gpuHmrSuccess: boolOrNull(query?.gpuHmrSuccess ?? query?.gpu_hmr_success),
     failedInvariants: failures.map((failure) => (
@@ -336,6 +412,12 @@ async function runtimeProofRow(json, filePath, context) {
   const hasVisualOracle = isObject(oracleArtifacts.visual_oracle_artifacts ?? oracleArtifacts.visualOracleArtifacts);
   const hasComputeOracle = isObject(oracleArtifacts.compute_oracle_artifacts ?? oracleArtifacts.computeOracleArtifacts);
   const outputKind = hasVisualOracle ? 'visual_oracle' : hasComputeOracle ? 'compute_oracle' : 'compute_oracle';
+  const runMode = timingEvidence(
+    ledgerRecord,
+    json.timingMetrics,
+    json.timing_metrics,
+    json.timings,
+  );
   const visualPaths = compactStringList([
     ...artifactPathsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
     ...artifactPathsFromValue(json.visualEvidenceRefs ?? json.visual_evidence_refs),
@@ -366,6 +448,7 @@ async function runtimeProofRow(json, filePath, context) {
     proofIds: proofIdsFrom(json, ledger),
     ledger,
     visual,
+    runMode,
     cpuHmrUsed: boolOrNull(json.derivedProofLedgerRecord?.cpuHmrUsed ?? json.derived_proof_ledger_record?.cpuHmrUsed),
     fullRebuildUsed: boolOrNull(json.derivedProofLedgerRecord?.fullRebuildUsed ?? json.derived_proof_ledger_record?.fullRebuildUsed),
     processRestarted: boolOrNull(json.derivedProofLedgerRecord?.processRestarted ?? json.derived_proof_ledger_record?.processRestarted),
@@ -462,6 +545,12 @@ async function agentSplitRow(records, filePath, context) {
       ? ledgerValidation.failedInvariants
       : [],
   };
+  const runMode = timingEvidence(
+    waitDetail?.timingMetrics,
+    waitDetail?.timing_metrics,
+    waitDetail?.gpu_proof_telemetry,
+    proofValidation,
+  );
   return finalizeRow({
     artifactSchema: 'synthi.gpu.hmr.agent_split_results.v1',
     artifactPath: relPath(filePath, context.repoRoot),
@@ -485,6 +574,7 @@ async function agentSplitRow(records, filePath, context) {
     ),
     ledger,
     visual,
+    runMode,
     cpuHmrUsed: false,
     fullRebuildUsed: false,
     processRestarted: false,
@@ -610,6 +700,7 @@ async function generatedSplitFissionRow(json, filePath, context) {
       gpuHmrSuccess: null,
       failedInvariants: [],
     },
+    runMode: timingEvidence(json),
     visual: {
       required: false,
       present: false,
@@ -662,6 +753,7 @@ async function hiprtWarmRow(json, filePath, context) {
     && changed.sameProcess === true
     && visual.accepted === true;
   const profileId = firstText(json.profile?.id, json.profileId, json.slug);
+  const runMode = timingEvidence(json.timingMetrics, json.timing_metrics, json.timings);
   return finalizeRow({
     artifactSchema: json.schemaVersion,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -686,6 +778,7 @@ async function hiprtWarmRow(json, filePath, context) {
       failedInvariants: [],
     },
     visual,
+    runMode,
     cpuHmrUsed: false,
     fullRebuildUsed: false,
     processRestarted: false,
@@ -718,10 +811,13 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     true,
   );
   const ledger = ledgerFacet(json);
+  const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
   const accepted =
     json.gpuHmrSuccess === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0
     && json.visualThresholdValidation?.accepted === true
@@ -749,6 +845,12 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     proofIds: proofIdsFrom(json, ledger),
     ledger,
     visual,
+    runMode: timingEvidence(
+      ledgerRecord,
+      json.timingMetrics,
+      json.timing_metrics,
+      json.timings,
+    ),
     cpuHmrUsed: false,
     fullRebuildUsed: false,
     processRestarted: boolOrNull(processContinuity.processRestarted),
@@ -759,6 +861,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     },
     reasons: accepted ? [] : compactStringList([
       ...ledger.failedInvariants.map((failure) => failure.code),
+      ledger.present === true ? null : 'proof_ledger_record_missing',
+      ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
       visual.accepted ? null : 'visual_artifacts_not_readable',
       json.visualThresholdValidation?.accepted === true ? null : 'visual_threshold_not_accepted',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
@@ -792,6 +896,17 @@ async function externalProjectRow(json, filePath, context) {
     && Boolean(firstText(rejection.proofId, rejection.proof_id))
     && Array.isArray(rejection.reasons)
     && rejection.reasons.length > 0;
+  const linkedRejection = await readExternalRejectionProof(
+    firstText(rejection.path, rejection.localPath, rejection.local_path),
+    context.repoRoot,
+    path.dirname(filePath),
+    profileId,
+  );
+  const rejectionReasons = compactStringList([
+    ...(Array.isArray(rejection.reasons) ? rejection.reasons : []),
+    ...linkedRejection.reasons,
+  ]);
+  const runMode = timingEvidence(json.timingMetrics, json.timing_metrics, json.timings);
   return finalizeRow({
     artifactSchema: json.schemaVersion,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -821,7 +936,7 @@ async function externalProjectRow(json, filePath, context) {
       : refusalProven
         ? 'external_rejection_artifact'
         : 'external_profile_unproven',
-    proofIds: proofIdsFrom(json, rejection),
+    proofIds: proofIdsFrom(json, rejection, linkedRejection.proof),
     ledger: {
       present: false,
       proofId: null,
@@ -829,6 +944,7 @@ async function externalProjectRow(json, filePath, context) {
       failedInvariants: [],
     },
     visual,
+    runMode,
     cpuHmrUsed: null,
     fullRebuildUsed: null,
     processRestarted: null,
@@ -838,7 +954,7 @@ async function externalProjectRow(json, filePath, context) {
       visualDiffMs: finiteNumber(json.timings?.visualDiffMs),
     },
     reasons: compactStringList([
-      ...(Array.isArray(rejection.reasons) ? rejection.reasons : []),
+      ...rejectionReasons,
       json.error?.message ? 'external_profile_failed' : null,
       visualProfileAccepted || visual.accepted ? null : 'visual_artifacts_not_readable',
     ]),
@@ -847,6 +963,85 @@ async function externalProjectRow(json, filePath, context) {
       : refusalProven
         ? ['full_runtime_gpu_hmr_not_proven']
         : ['external_profile_not_accepted'],
+  });
+}
+
+async function readExternalRejectionProof(proofPath, repoRoot, baseDir, expectedProfileId = null) {
+  const resolved = resolveEvidencePath(proofPath, repoRoot, baseDir);
+  if (!resolved) return { proof: null, reasons: [] };
+  const json = await readJson(resolved);
+  if (!isObject(json)) return { proof: null, reasons: [] };
+  const schema = firstText(json.schemaVersion, json.schema);
+  const profileId = firstText(json.profileId, json.profile_id);
+  const rejection = compactObject(json.rejection);
+  const accepted = schema === 'synthi.gpu.hmr.external_project_rejection.v1'
+    && (!expectedProfileId || profileId === expectedProfileId)
+    && json.status === 'fail'
+    && rejection.accepted === false
+    && Array.isArray(rejection.reasons)
+    && rejection.reasons.length > 0;
+  return accepted
+    ? { proof: json, reasons: compactStringList(rejection.reasons) }
+    : { proof: null, reasons: [] };
+}
+
+async function externalProjectRejectionRow(json, filePath, context) {
+  const profileId = firstText(json.profileId, json.profile_id, path.basename(filePath).replace(/-\d+-rejection-proof\.json$/, ''));
+  if (isSelfCheckId(profileId) || isSelfCheckId(filePath)) return null;
+  const backend = profileId?.includes('bevy') ? 'bevy_wgsl' : 'webgl';
+  const rejection = compactObject(json.rejection);
+  const reasons = compactStringList(rejection.reasons);
+  const refusalProven =
+    firstText(json.schemaVersion, json.schema) === 'synthi.gpu.hmr.external_project_rejection.v1'
+    && json.status === 'fail'
+    && rejection.accepted === false
+    && reasons.length > 0;
+  return finalizeRow({
+    artifactSchema: firstText(json.schemaVersion, json.schema),
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend,
+    targetId: profileId,
+    profileId,
+    proofMode: firstText(json.proofMode, json.proof_mode, 'external_rejection'),
+    evidenceKind: 'external_profile_result',
+    matrixOutcome: refusalProven ? 'refusal_proven' : 'unproven',
+    acceptanceClass: refusalProven ? 'external_profile_refusal' : 'external_profile_rejection_unproven',
+    acceptedForGpuHmr: false,
+    visualProfileAccepted: false,
+    gpuHmrSuccess: false,
+    refusalProven,
+    proofChainAccepted: refusalProven,
+    proofChain: refusalProven ? 'external_rejection_artifact' : 'external_rejection_artifact_unproven',
+    proofIds: proofIdsFrom(json),
+    ledger: {
+      present: false,
+      source: 'missing',
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: [],
+    },
+    visual: {
+      required: false,
+      present: false,
+      accepted: true,
+      imageCount: 0,
+      existingImageCount: 0,
+      pngImageCount: 0,
+      allImagesExist: true,
+      allImagesArePng: true,
+      changedPixelRatio: null,
+      meanAbsDelta8bit: null,
+      visiblePixelCount: null,
+      images: [],
+    },
+    runMode: timingEvidence(json.timingMetrics, json.timing_metrics, json.timings),
+    cpuHmrUsed: null,
+    fullRebuildUsed: null,
+    processRestarted: null,
+    timings: {},
+    reasons,
+    openGaps: refusalProven ? ['full_runtime_gpu_hmr_not_proven'] : ['external_rejection_artifact_not_accepted'],
   });
 }
 
@@ -908,6 +1103,7 @@ async function preflightRow(json, filePath, context) {
       : refusalProven
         ? 'refusal_proven'
         : 'unproven';
+  const runMode = timingEvidence(json.timingMetrics, json.timing_metrics, json.timings);
   return finalizeRow({
     artifactSchema: schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -936,6 +1132,7 @@ async function preflightRow(json, filePath, context) {
       failedInvariants: [],
     },
     visual,
+    runMode,
     cpuHmrUsed: null,
     fullRebuildUsed: null,
     processRestarted: null,
@@ -980,6 +1177,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   if (schema === 'synthi.hiprt.warm_visual_proof.v2') return hiprtWarmRow(json, filePath, context);
   if (schema === 'synthi.gpu.hmr.external_project_profile.report.v1') {
     return externalProjectRow(json, filePath, context);
+  }
+  if (schema === 'synthi.gpu.hmr.external_project_rejection.v1') {
+    return externalProjectRejectionRow(json, filePath, context);
   }
   if (schema.includes('webgpu_runtime_visual_proof') || proofId.startsWith('webgpu-runtime-visual-proof:')) {
     return webGpuRuntimeVisualRow(json, filePath, context);
@@ -1090,6 +1290,7 @@ function rowRefs(rows) {
     matrixOutcome: row.matrixOutcome,
     proofChain: row.proofChain,
     proofIds: row.proofIds,
+    runMode: row.runMode,
   }));
 }
 
@@ -1122,6 +1323,52 @@ function visualProfileRows(rows, predicate) {
 
 function deterministicFissionRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'deterministic_fission_proven' && predicate(row));
+}
+
+function validationRunModeCoverage(rows) {
+  const fullRuntimeRows = acceptedRows(rows, () => true);
+  const rowsByTarget = new Map();
+  for (const row of fullRuntimeRows) {
+    const key = `${row.backend}:${row.targetId}`;
+    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+  }
+  const openGaps = [];
+  for (const [targetKey, targetRows] of rowsByTarget) {
+    for (const requiredMode of REQUIRED_FULL_TARGET_RUN_MODES) {
+      const hasMode = targetRows.some((row) =>
+        row.runMode?.accepted === true && row.runMode.metricScope === requiredMode
+      );
+      if (!hasMode) openGaps.push(`${targetKey}:${requiredMode}_evidence_missing`);
+    }
+    const hasHotDelta2DifferentEdit = targetRows.some((row) =>
+      row.runMode?.accepted === true
+      && row.runMode.metricScope === 'hot_delta_2'
+      && (
+        row.runMode.differentEdit === true
+        || row.runMode.different_edit === true
+        || row.runMode.editKind === 'different_gpu_edit'
+        || row.runMode.edit_kind === 'different_gpu_edit'
+      )
+    );
+    if (!hasHotDelta2DifferentEdit) {
+      openGaps.push(`${targetKey}:hot_delta_2_different_edit_evidence_missing`);
+    }
+  }
+  const negativeEditRows = refusalRows(rows, (row) =>
+    row.proofMode === 'negative_edit'
+    || row.evidenceKind === 'negative_edit'
+    || row.runMode?.metricScope === 'negative_edit'
+  );
+  if (negativeEditRows.length === 0) {
+    openGaps.push('negative_edit_refusal_evidence_missing');
+  }
+  return coverageEntry({
+    id: 'per_target_run_modes',
+    requirement: 'Per-target cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit evidence',
+    status: fullRuntimeRows.length > 0 && openGaps.length === 0 ? 'accepted' : 'missing',
+    rows: [...fullRuntimeRows, ...negativeEditRows],
+    openGaps,
+  });
 }
 
 function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, refusalPredicate, missingGap }) {
@@ -1253,6 +1500,7 @@ function planCoverage(rows) {
       rows: fissionRows,
       openGaps: fissionRows.length > 0 ? [] : ['deterministic_smallest_safe_fission_verifier_required'],
     }),
+    validationRunModeCoverage(rows),
   ];
 }
 

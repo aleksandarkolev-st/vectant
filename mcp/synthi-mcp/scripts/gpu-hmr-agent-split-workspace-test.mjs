@@ -1035,14 +1035,32 @@ function assertNoSynthiAbi(source) {
 
 async function compileViaMcp(args, timeoutMs, options = {}) {
   const state = await ensureMcpAttached();
+  const compileStartNs = process.hrtime.bigint();
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+  const compileEndNs = process.hrtime.bigint();
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
   const waitContract = waitContractForCompile({ args, compile, timeoutMs });
+  const waitStartNs = process.hrtime.bigint();
   const wait = await state.client.toolCall(
     'synthi_wait_hmr',
     waitContract.waitArgs,
     timeoutMs + 5000,
   ).catch((e) => ({ status: 'timeout_or_error', error: e.message }));
+  const waitEndNs = process.hrtime.bigint();
+  const timingMetrics = {
+    schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+    metricClock: 'monotonic_ns',
+    metric_clock: 'monotonic_ns',
+    metricScope: options.metricScope ?? null,
+    metric_scope: options.metricScope ?? null,
+    cacheState: options.cacheState ?? null,
+    cache_state: options.cacheState ?? null,
+    timings: {
+      device_compile_wall_time: Number(compileEndNs - compileStartNs),
+      runtime_probe_time: Number(waitEndNs - waitStartNs),
+      total_validator_wall_time: Number(waitEndNs - compileStartNs),
+    },
+  };
   const waitSummary = {
     role: waitContract.role,
     module: waitContract.waitArgs.module ?? null,
@@ -1051,6 +1069,8 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
     status: wait?.status ?? null,
     frame_gate: wait?.frame_gate ?? null,
+    timingMetrics,
+    timing_metrics: timingMetrics,
   };
   if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
   if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
@@ -1518,7 +1538,10 @@ async function compileGeneratedDevice(split, editedDevice) {
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hotSwapTimeoutMs);
+  }, CFG.hotSwapTimeoutMs, {
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+  });
   return {
     ...result,
     previousDevice,

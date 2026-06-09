@@ -57,6 +57,11 @@ await writeJson(path.join(visualDir, 'agent-split-results.json'), [
       gpu_proof_telemetry: {
         proofId: 'gpu-runtime-proof:sha256:synthetic',
       },
+      timingMetrics: {
+        metricClock: 'monotonic_ns',
+        metricScope: 'hot_delta_1',
+        cacheState: 'compiler_cache_warm',
+      },
     }),
   },
   { name: 'device-only GPU HMR observed', status: 'pass', detail: '[gpu-reload] plan=device_only' },
@@ -141,6 +146,24 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
   proofId: 'opencl-preflight-proof:sha256:synthetic',
 });
 
+await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-shader-material-rejection-proof.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+  profileId: 'bevy-wgsl-shader-material',
+  proofMode: 'mcp_preview',
+  status: 'fail',
+  rejection: {
+    accepted: false,
+    reasons: [
+      'external_profile_failed',
+      'mcp_no_decoded_frames',
+      'mcp_request_timeout',
+      'visual_frame_missing',
+      'visual_oracle_not_accepted',
+    ],
+  },
+  proofId: 'external-rejection-proof:sha256:synthetic-bevy',
+});
+
 await writeJson(path.join(artifactsRoot, 'webgpu-runtime-visual-proof', 'forged-webgpu-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:forged',
@@ -152,6 +175,35 @@ await writeJson(path.join(artifactsRoot, 'webgpu-runtime-visual-proof', 'forged-
   metrics: {
     changedPixelRatio: 0.2,
     meanAbsDelta8bit: 12,
+  },
+});
+
+const forgedWebGpuVisualDir = path.join(artifactsRoot, 'webgpu-runtime-visual-proof');
+await writePng(path.join(forgedWebGpuVisualDir, 'forged-before.png'));
+await writePng(path.join(forgedWebGpuVisualDir, 'forged-after.png'));
+await writePng(path.join(forgedWebGpuVisualDir, 'forged-diff.png'));
+await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
+  proofId: 'webgpu-runtime-visual-proof:sha256:query-only-forged',
+  gpuHmrSuccess: true,
+  profile: { id: 'forged-webgpu-query-only' },
+  visualOracleArtifacts: {
+    beforeImage: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+    afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+    diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+  },
+  visualThresholdValidation: { accepted: true },
+  browser: { processContinuity: { accepted: true, processRestarted: false } },
+  nativeWebGpuApiEvidence: { accepted: true },
+  metrics: {
+    changedPixelRatio: 0.2,
+    meanAbsDelta8bit: 12,
+  },
+  proofLedgerQuery: {
+    schemaVersion: 'synthi.gpu.hmr.proof_ledger_query.v1',
+    proofId: 'gpu-ledger-proof:sha256:forged-query-only',
+    gpuHmrSuccess: true,
+    failedInvariants: [],
   },
 });
 
@@ -171,6 +223,8 @@ const acceptedFlow = ledger.rows.find((row) => row.targetId === 'flow');
 assert.equal(acceptedFlow?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(acceptedFlow.acceptedForGpuHmr, true);
 assert.equal(acceptedFlow.visual.accepted, true);
+assert.equal(acceptedFlow.runMode.accepted, true);
+assert.equal(acceptedFlow.runMode.metricScope, 'hot_delta_1');
 assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
 assert.equal(acceptedFlow.ledger.proofId, 'gpu-ledger-proof:sha256:synthetic');
 
@@ -180,20 +234,40 @@ assert.equal(opencl.acceptedForGpuHmr, false);
 assert.equal(opencl.gpuHmrSuccess, false);
 assert.equal(opencl.refusalProven, true);
 
+const bevy = ledger.rows.find((row) => row.backend === 'bevy_wgsl');
+assert.equal(bevy?.matrixOutcome, 'refusal_proven');
+assert.equal(bevy.acceptedForGpuHmr, false);
+assert.ok(bevy.reasons.includes('mcp_no_decoded_frames'));
+assert.ok(bevy.reasons.includes('mcp_request_timeout'));
+assert.ok(bevy.reasons.includes('visual_frame_missing'));
+
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpu.acceptedForGpuHmr, false);
 assert.ok(forgedWebGpu.reasons.includes('visual_artifacts_not_readable'));
 
+const forgedWebGpuQueryOnly = ledger.rows.find((row) => row.targetId === 'forged-webgpu-query-only');
+assert.equal(forgedWebGpuQueryOnly?.matrixOutcome, 'unproven');
+assert.equal(forgedWebGpuQueryOnly.acceptedForGpuHmr, false);
+assert.equal(forgedWebGpuQueryOnly.visual.accepted, true);
+assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
+assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query');
+assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
+
 assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 1);
-assert.equal(ledger.summary.refusalProvenRows, 1);
+assert.equal(ledger.summary.refusalProvenRows, 2);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(coverageById.get('flow_visual_gpu_path')?.status, 'accepted');
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
+assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
+assert.equal(coverageById.get('per_target_run_modes')?.status, 'missing');
+assert.ok(coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_1_evidence_missing'));
+assert.ok(coverageById.get('per_target_run_modes')?.openGaps.includes('negative_edit_refusal_evidence_missing'));
 
 const fissionRow = ledger.rows.find((row) => row.matrixOutcome === 'deterministic_fission_proven');
 assert.equal(fissionRow?.acceptedForGpuHmr, false);
