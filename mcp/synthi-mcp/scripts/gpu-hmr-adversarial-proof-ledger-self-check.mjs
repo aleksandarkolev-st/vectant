@@ -364,12 +364,18 @@ function baselineContract(overrides = {}) {
     fission_report: {
       selected_island: 'device-kernel',
       selected_reason: 'verified_fission_contract',
+      changed_sources: ['src/kernels/generic.hip'],
+      included_dependencies: [],
+      excluded_host_sources: [],
       artifact_hash_before: HASH_A,
       artifact_hash_after: HASH_B,
+      abi_compatibility_class: 'compatible',
       full_device_fallback: false,
       host_relinked: false,
       process_restarted: false,
       full_rebuild_used: false,
+      unaffected_artifacts_hash_unchanged: true,
+      evidence_refs: ['static:fission-contract', 'runtime:module-load'],
     },
     hip_contract: {
       kernel_name: 'generic_kernel',

@@ -106,12 +106,18 @@ function contract(overrides = {}) {
     fission_report: {
       selected_island: 'device-kernel',
       selected_reason: 'verified_fission_contract',
+      changed_sources: ['src/kernels.hip'],
+      included_dependencies: [],
+      excluded_host_sources: [],
       artifact_hash_before: BEFORE,
       artifact_hash_after: AFTER,
       full_device_fallback: false,
       host_relinked: false,
       process_restarted: false,
       full_rebuild_used: false,
+      unaffected_artifacts_hash_unchanged: true,
+      abi_compatibility_class: 'compatible',
+      evidence_refs: ['static:hip-launch', 'runtime:module-load'],
     },
     hip_contract: {
       kernel_name: 'light_kernel',
@@ -296,6 +302,10 @@ expectReject('unverified fission selected reason', {
   fission_report: {
     selected_island: 'device-kernel',
     selected_reason: 'device_translation_unit_hmr',
+    changed_sources: ['src/kernels.hip'],
+    unaffected_artifacts_hash_unchanged: true,
+    abi_compatibility_class: 'compatible',
+    evidence_refs: ['static:hip-launch'],
     full_device_fallback: false,
     host_relinked: false,
     process_restarted: false,
@@ -306,21 +316,68 @@ expectReject('smallest fission overclaim without verifier', {
   fission_report: {
     selected_island: 'device-kernel',
     selected_reason: 'device_translation_unit_hmr',
+    changed_sources: ['src/kernels.hip'],
     smallest_safe_island_proven: true,
+    unaffected_artifacts_hash_unchanged: true,
+    abi_compatibility_class: 'compatible',
+    evidence_refs: ['static:hip-launch'],
     full_device_fallback: false,
     host_relinked: false,
     process_restarted: false,
     full_rebuild_used: false,
   },
 }, 'fission_smallest_safe_island_without_verified_report');
+expectReject('missing fission changed sources', {
+  fission_report: {
+    ...contract().fission_report,
+    changed_sources: [],
+  },
+}, 'fission_changed_sources_missing');
+expectReject('missing fission evidence refs', {
+  fission_report: {
+    ...contract().fission_report,
+    evidence_refs: [],
+  },
+}, 'fission_evidence_refs_missing');
+expectReject('missing fission unaffected artifact proof', {
+  fission_report: {
+    ...contract().fission_report,
+    unaffected_artifacts_hash_unchanged: null,
+  },
+}, 'fission_unaffected_artifacts_hash_not_proven');
+expectReject('fission ABI class mismatch', {
+  fission_report: {
+    ...contract().fission_report,
+    abi_compatibility_class: 'additive',
+  },
+}, 'fission_abi_compatibility_class_mismatch');
 expectReject('full rebuild hidden in fission', {
   fission_report: {
     selected_island: 'device-kernel',
     selected_reason: 'verified_fission_contract',
+    changed_sources: ['src/kernels.hip'],
+    unaffected_artifacts_hash_unchanged: true,
+    abi_compatibility_class: 'compatible',
+    evidence_refs: ['static:hip-launch'],
     full_device_fallback: false,
     host_relinked: false,
     process_restarted: false,
     full_rebuild_used: true,
+  },
+}, 'fission_full_rebuild_used');
+expectReject('camelCase full rebuild hidden in fission', {
+  fission_report: undefined,
+  fissionReport: {
+    selectedIsland: 'device-kernel',
+    selectedReason: 'verified_fission_contract',
+    changedSources: ['src/kernels.hip'],
+    unaffectedArtifactsHashUnchanged: true,
+    abiCompatibilityClass: 'compatible',
+    evidenceRefs: ['static:hip-launch'],
+    fullDeviceFallback: false,
+    hostRelinked: false,
+    processRestarted: false,
+    fullRebuildUsed: true,
   },
 }, 'fission_full_rebuild_used');
 expectReject('missing HIP launch evidence', {

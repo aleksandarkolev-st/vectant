@@ -472,6 +472,42 @@ function normalizeOutputOracleTarget(value = {}) {
   };
 }
 
+function normalizeFissionReport(value = {}) {
+  const report = asObject(value);
+  const unaffectedArtifactsHashUnchanged = boolPresence(
+    report.unaffected_artifacts_hash_unchanged,
+    report.unaffectedArtifactsHashUnchanged,
+  );
+  return {
+    selected_island: text(report.selected_island ?? report.selectedIsland),
+    selected_reason: text(report.selected_reason ?? report.selectedReason),
+    changed_sources: compactStringList(report.changed_sources ?? report.changedSources),
+    included_dependencies: asArray(report.included_dependencies ?? report.includedDependencies),
+    excluded_host_sources: compactStringList(report.excluded_host_sources ?? report.excludedHostSources),
+    artifact_hash_before: text(report.artifact_hash_before ?? report.artifactHashBefore),
+    artifact_hash_after: text(report.artifact_hash_after ?? report.artifactHashAfter),
+    abi_compatibility_class: text(
+      asObject(report.abi_compatibility_class).value
+      ?? report.abi_compatibility_class
+      ?? report.abiCompatibilityClass,
+    ),
+    full_device_fallback: boolValue(report.full_device_fallback ?? report.fullDeviceFallback),
+    host_relinked: boolValue(report.host_relinked ?? report.hostRelinked),
+    process_restarted: boolValue(report.process_restarted ?? report.processRestarted),
+    full_rebuild_used: boolValue(report.full_rebuild_used ?? report.fullRebuildUsed),
+    unaffected_artifacts_hash_unchanged: unaffectedArtifactsHashUnchanged.present
+      ? unaffectedArtifactsHashUnchanged.value
+      : null,
+    evidence_refs: compactStringList(report.evidence_refs ?? report.evidenceRefs),
+    smallest_safe_island_proven: boolValue(
+      report.smallest_safe_island_proven
+      ?? report.smallestSafeIslandProven
+      ?? report.smallest_safe_fission_island_proven
+      ?? report.smallestSafeFissionIslandProven,
+    ),
+  };
+}
+
 function outputOracleTargetKind(target) {
   const object = asObject(target);
   return text(asObject(object.kind).value ?? object.kind ?? object.target_kind ?? object.targetKind);
@@ -519,7 +555,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     state_preservation_checks: asObject(c.state_preservation_checks ?? c.statePreservationChecks),
     epoch_policy: asObject(c.epoch_policy ?? c.epochPolicy),
     epoch_retirement_proof: asObject(c.epoch_retirement_proof ?? c.epochRetirementProof),
-    fission_report: asObject(c.fission_report ?? c.fissionReport),
+    fission_report: normalizeFissionReport(c.fission_report ?? c.fissionReport),
     hip_contract: asObject(c.hip_contract ?? c.hipContract),
     hiprt_contract: asObject(c.hiprt_contract ?? c.hiprtContract),
     vulkan_contract: asObject(c.vulkan_contract ?? c.vulkanContract),
@@ -717,8 +753,30 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       selected_reason: fission.selected_reason,
     });
   }
+  if (!nonEmptyValue(fission.changed_sources)) {
+    addFailure(failures, 'fission_changed_sources_missing');
+  }
+  if (!nonEmptyValue(fission.evidence_refs)) {
+    addFailure(failures, 'fission_evidence_refs_missing');
+  }
+  if (!nonEmptyValue(fission.abi_compatibility_class)) {
+    addFailure(failures, 'fission_abi_compatibility_class_missing');
+  } else if (fission.abi_compatibility_class !== contract.abi_compatibility_class.value) {
+    addFailure(failures, 'fission_abi_compatibility_class_mismatch', {
+      expected: contract.abi_compatibility_class.value,
+      actual: fission.abi_compatibility_class,
+    });
+  }
+  if (fission.unaffected_artifacts_hash_unchanged !== true) {
+    addFailure(failures, 'fission_unaffected_artifacts_hash_not_proven');
+  } else if (contract.unaffected_artifacts_hash_unchanged !== true) {
+    addFailure(failures, 'fission_unaffected_artifacts_hash_mismatch', {
+      expected: contract.unaffected_artifacts_hash_unchanged,
+      actual: fission.unaffected_artifacts_hash_unchanged,
+    });
+  }
   if (
-    (fission.smallest_safe_island_proven === true || fission.smallestSafeIslandProven === true)
+    fission.smallest_safe_island_proven === true
     && fission.selected_reason !== 'verified_fission_contract'
   ) {
     addFailure(failures, 'fission_smallest_safe_island_without_verified_report');
@@ -1948,6 +2006,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       host_relinked: input.hostRelinked === true || input.host_relinked === true,
       process_restarted: input.processRestarted === true || input.process_restarted === true,
       full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
+      unaffected_artifacts_hash_unchanged: fissionProof?.fissionProven === true && !fullDeviceFallback,
       evidence_refs: evidenceRefs,
     },
     hip_contract: hipContractFromVerifiedProofs({
