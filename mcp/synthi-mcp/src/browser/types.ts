@@ -166,6 +166,7 @@ export interface BrowserTraceEvent {
     frame_origin_approved?: boolean;
     frame_screenshot_approved?: boolean;
     popup_origin_approved?: boolean;
+    popup_screenshot_approved?: boolean;
   };
 }
 

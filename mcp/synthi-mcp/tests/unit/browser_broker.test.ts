@@ -291,6 +291,65 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("records popup screenshot consent separately from popup origin consent", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.requestConsent("https://billing.example.com", "granted", "popup-origin-only", {
+      screenshot: false,
+    });
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/checkout", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const openerAction = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_event: true,
+        popup_url: "https://billing.example.com/popup",
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+      },
+      element: { role: "button", name: "Open billing" },
+    });
+    expect(openerAction.ok).toBe(true);
+    if (!openerAction.ok) throw new Error("unexpected opener action failure");
+    expect(openerAction.event.detail).toEqual(expect.objectContaining({
+      popup_origin: "https://billing.example.com",
+      popup_origin_approved: true,
+      popup_screenshot_approved: false,
+    }));
+    expect(openerAction.event.security).toEqual(expect.objectContaining({
+      exact_origin_approved: true,
+      screenshot_approved: true,
+      popup_origin_approved: true,
+      popup_screenshot_approved: false,
+    }));
+
+    expect(browserBroker.registerTabs([
+      { tab_id: "popup", opener_tab_id: "app", url: "https://billing.example.com/popup", active: true },
+    ])).toHaveLength(1);
+    const popupAction = browserBroker.recordHumanAction({
+      tab_id: "popup",
+      url: "https://billing.example.com/popup",
+      origin: "https://billing.example.com",
+      action: "click",
+      detail: {
+        popup_context: true,
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+        opener_origin: "https://app.example.com",
+      },
+      element: { role: "button", name: "Pay now" },
+    });
+    expect(popupAction.ok).toBe(true);
+    if (!popupAction.ok) throw new Error("unexpected popup action failure");
+    expect(popupAction.event.security).toEqual(expect.objectContaining({
+      exact_origin_approved: true,
+      screenshot_approved: false,
+    }));
+  });
+
   it("discards provisional opener clicks when popup annotation reveals an unapproved origin", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);

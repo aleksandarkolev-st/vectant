@@ -855,6 +855,7 @@ export class BrowserBroker {
     const popupOrigin = this.popupOriginFromDetail(detail);
     if (popupOrigin) {
       security.popup_origin_approved = this.hasOriginConsent(popupOrigin);
+      security.popup_screenshot_approved = this.hasScreenshotConsent(popupOrigin);
     }
     return security;
   }
@@ -872,6 +873,7 @@ export class BrowserBroker {
     if (popupOrigin) {
       next["popup_origin"] = popupOrigin;
       next["popup_origin_approved"] = popupOrigin === pageOrigin || this.hasOriginConsent(popupOrigin);
+      next["popup_screenshot_approved"] = popupOrigin === pageOrigin || this.hasScreenshotConsent(popupOrigin);
     }
     return next;
   }
