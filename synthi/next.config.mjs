@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { buildContentSecurityPolicy } from './src/lib/security/csp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -15,21 +16,9 @@ function resolveDep(rel) {
   return candidates.find((p) => fs.existsSync(p)) || candidates[0];
 }
 
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "object-src 'none'",
-  "frame-ancestors 'self'",
-  "form-action 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
-  "connect-src 'self' http: https: ws: wss: blob:",
-  "worker-src 'self' blob:",
-  "frame-src 'self' blob:",
-  "media-src 'self' blob: data:",
-].join('; ');
+const contentSecurityPolicy = buildContentSecurityPolicy(
+  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234',
+);
 
 /** @type {import('next').NextConfig} */
 const nextConfig = { eslint: { ignoreDuringBuilds: true },
