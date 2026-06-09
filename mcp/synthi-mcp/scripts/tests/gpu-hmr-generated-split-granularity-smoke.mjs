@@ -57,7 +57,9 @@ assert.equal(singleRoleAssessment.acceptedClaim, 'device_translation_unit_hmr');
 assert.equal(singleRoleAssessment.deviceTranslationUnitCount, 1);
 assert.equal(singleRoleAssessment.kernelCount, 2);
 assert.equal(singleRoleAssessment.smallestSafeFissionIslandProven, false);
+assert.equal(singleRoleAssessment.perKernelHmrProven, false);
 assert.equal(singleRoleAssessment.requiresDeterministicFissionVerifierForSmallestSafeIsland, true);
+assert.equal(singleRoleAssessment.requiresDeterministicFissionVerifierForPerKernelHmr, true);
 assert.ok(singleRoleAssessment.rejectedClaims.includes('smallest_safe_fission_island'));
 assert.ok(singleRoleAssessment.rejectedClaims.includes('per_kernel_hmr'));
 assert.doesNotThrow(() => assertNoGeneratedSplitFissionOverclaim(singleRoleAssessment));
@@ -67,6 +69,21 @@ assert.throws(
     smallestSafeFissionIslandProven: true,
   }),
   /deterministic verifier proof/,
+);
+assert.throws(
+  () => assertNoGeneratedSplitFissionOverclaim({
+    ...singleRoleAssessment,
+    acceptedClaim: 'per_kernel_hmr',
+    rejectedClaims: ['smallest_safe_fission_island'],
+  }),
+  /per-kernel HMR without deterministic verifier proof/,
+);
+assert.throws(
+  () => assertNoGeneratedSplitFissionOverclaim({
+    ...singleRoleAssessment,
+    perKernelHmrProven: true,
+  }),
+  /per-kernel HMR without deterministic verifier proof/,
 );
 
 const multiRoleAssessment = assessGeneratedGpuSplitGranularity({
@@ -80,7 +97,8 @@ assert.equal(multiRoleAssessment.acceptedClaim, 'device_translation_unit_set_hmr
 assert.equal(multiRoleAssessment.deviceTranslationUnitCount, 2);
 assert.equal(multiRoleAssessment.kernelCount, 2);
 assert.equal(multiRoleAssessment.smallestSafeFissionIslandProven, false);
-assert.ok(!multiRoleAssessment.rejectedClaims.includes('per_kernel_hmr'));
+assert.equal(multiRoleAssessment.perKernelHmrProven, false);
+assert.ok(multiRoleAssessment.rejectedClaims.includes('per_kernel_hmr'));
 
 console.log(JSON.stringify({
   ok: true,

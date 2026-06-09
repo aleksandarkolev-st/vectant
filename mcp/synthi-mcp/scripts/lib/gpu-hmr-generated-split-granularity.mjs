@@ -115,10 +115,10 @@ export function assessGeneratedGpuSplitGranularity({ manifest, files, vendor } =
   const hmrReloadScope = deviceTranslationUnitCount > 1
     ? 'device_translation_unit_set'
     : 'device_translation_unit';
-  const rejectedClaims = [
+  const rejectedClaims = compactStrings([
     'smallest_safe_fission_island',
-    ...(multipleKernelsShareDeviceTranslationUnit ? ['per_kernel_hmr'] : []),
-  ];
+    'per_kernel_hmr',
+  ]);
 
   return {
     schemaVersion: GPU_HMR_GENERATED_SPLIT_GRANULARITY_SCHEMA_VERSION,
@@ -127,7 +127,9 @@ export function assessGeneratedGpuSplitGranularity({ manifest, files, vendor } =
     fissionGranularity: hmrReloadScope,
     proofBoundary: 'generated_manifest_device_role_topology',
     smallestSafeFissionIslandProven: false,
+    perKernelHmrProven: false,
     requiresDeterministicFissionVerifierForSmallestSafeIsland: true,
+    requiresDeterministicFissionVerifierForPerKernelHmr: true,
     deviceRoleCount: deviceRoles.length,
     deviceTranslationUnitCount,
     deviceRolePaths: paths,
@@ -141,6 +143,7 @@ export function assessGeneratedGpuSplitGranularity({ manifest, files, vendor } =
     reasonCodes: compactStrings([
       missingDeviceRolePaths.length ? 'generated_split.device_role_source_missing' : null,
       'generated_split.smallest_safe_fission_not_proven_without_verifier',
+      'generated_split.per_kernel_hmr_not_proven_without_verifier',
       multipleKernelsShareDeviceTranslationUnit
         ? 'generated_split.single_translation_unit_contains_multiple_kernels'
         : null,
@@ -150,19 +153,24 @@ export function assessGeneratedGpuSplitGranularity({ manifest, files, vendor } =
 
 export function assertNoGeneratedSplitFissionOverclaim(assessment) {
   const report = asObject(assessment);
+  const deterministicVerifier = report.proofBoundary === 'deterministic_fission_verifier';
   if (
     report.smallestSafeFissionIslandProven === true
-    && report.proofBoundary !== 'deterministic_fission_verifier'
+    && !deterministicVerifier
   ) {
     throw new Error(
       'generated split cannot claim smallest-safe fission without deterministic verifier proof',
     );
   }
+  if (report.perKernelHmrProven === true && !deterministicVerifier) {
+    throw new Error(
+      'generated split cannot claim per-kernel HMR without deterministic verifier proof',
+    );
+  }
   if (
-    Array.isArray(report.rejectedClaims)
-    && report.rejectedClaims.includes('per_kernel_hmr')
-    && report.acceptedClaim === 'per_kernel_hmr'
+    report.acceptedClaim === 'per_kernel_hmr'
+    && !deterministicVerifier
   ) {
-    throw new Error('generated split cannot accept per-kernel HMR when kernels share a device translation unit');
+    throw new Error('generated split cannot accept per-kernel HMR without deterministic verifier proof');
   }
 }
