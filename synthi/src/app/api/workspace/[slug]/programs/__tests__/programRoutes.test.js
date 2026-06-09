@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   appendProgramRuntimeEvent: vi.fn(),
   discoverManifest: vi.fn(),
   launchInstalledProgram: vi.fn(),
+  scaffoldProgram: vi.fn(),
 }));
 
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
@@ -52,6 +53,7 @@ vi.mock('@/lib/programs/store', () => ({
 vi.mock('@/lib/programs/runtimeClient', () => ({
   discoverManifest: h.discoverManifest,
   launchInstalledProgram: h.launchInstalledProgram,
+  scaffoldProgram: h.scaffoldProgram,
 }));
 
 import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
@@ -59,6 +61,7 @@ import { GET as GET_INSTALLED } from '../installed/route.js';
 import { POST as POST_INSTALL } from '../install/route.js';
 import { POST as POST_LAUNCH } from '../[installId]/launch/route.js';
 import { POST as POST_PUBLISH } from '../publish/route.js';
+import { POST as POST_SCAFFOLD } from '../scaffold/route.js';
 
 const req = (url, body, method = 'GET') => ({ url, method, json: async () => body });
 const ctx = (params) => ({ params: Promise.resolve(params) });
@@ -291,5 +294,34 @@ describe('POST /programs/[installId]/launch', () => {
     h.getInstall.mockResolvedValue(null);
     const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', {}, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /programs/scaffold', () => {
+  it('scaffolds a known default into the workspace for an owner/admin', async () => {
+    h.scaffoldProgram.mockResolvedValue({ written: ['package.json', 'app/page.js'], skipped: [] });
+    const res = await POST_SCAFFOLD(
+      req('http://x/api/workspace/team/programs/scaffold', { packageId: '@vectant/nextjs-dev' }, 'POST'),
+      ctx({ slug: 'team' }),
+    );
+    expect(res.status).toBe(200);
+    expect(h.scaffoldProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', userId: 'gh1' }));
+    const passed = h.scaffoldProgram.mock.calls[0][0];
+    expect(passed.files.some((f) => f.path === 'package.json')).toBe(true);
+    const body = await res.json();
+    expect(body.written).toContain('package.json');
+  });
+
+  it('rejects a plain member (403)', async () => {
+    h.canWrite.mockResolvedValue(false);
+    const res = await POST_SCAFFOLD(req('http://x/api/workspace/team/programs/scaffold', { packageId: '@vectant/nextjs-dev' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.scaffoldProgram).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a packageId with no scaffold template', async () => {
+    const res = await POST_SCAFFOLD(req('http://x/api/workspace/team/programs/scaffold', { packageId: '@vectant/lazygit' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(404);
+    expect(h.scaffoldProgram).not.toHaveBeenCalled();
   });
 });

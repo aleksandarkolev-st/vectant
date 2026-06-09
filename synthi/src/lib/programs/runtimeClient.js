@@ -110,3 +110,10 @@ export async function launchInstalledProgram({ workspaceSlug, sessionId, config,
   });
   return data.session || null;
 }
+
+export async function scaffoldProgram({ workspaceSlug, userId = '', files = [] }) {
+  return requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/scaffold`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, files }),
+  });
+}
