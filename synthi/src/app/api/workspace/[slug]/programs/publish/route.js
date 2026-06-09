@@ -19,6 +19,7 @@ export async function POST(_req, { params }) {
 
   let discovered;
   try {
+    // Pass the actor's workspaceUserId so per-user workspace repos resolve correctly.
     discovered = await discoverManifest(slug, actor.workspaceUserId);
   } catch (error) {
     if (error?.name === 'ProgramManifestError') {
