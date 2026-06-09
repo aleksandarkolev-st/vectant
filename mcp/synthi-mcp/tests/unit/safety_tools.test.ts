@@ -467,6 +467,8 @@ describe("safety MCP tool surface", () => {
       "if (storage.cookies?.[0]?.value !== 'auth-cookie-secret') throw new Error('cookie_state_missing');",
       "if (storage.origins?.[0]?.localStorage?.[0]?.value !== 'auth-local-secret') throw new Error('local_storage_missing');",
       "if (storage.origins?.[0]?.sessionStorage?.[0]?.value !== 'auth-session-secret') throw new Error('session_storage_missing');",
+      "process.stdout.write('Authorization: Bearer auth-cookie-secret\\n');",
+      "process.stdout.write('token=auth-local-secret session=auth-session-secret\\n');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "",
@@ -522,8 +524,9 @@ describe("safety MCP tool surface", () => {
       ok: boolean;
       replay: {
         status: string;
-        artifacts: { auth_storage_state_path?: string };
+        artifacts: { auth_storage_state_path?: string; ci_log_path: string };
         report: {
+          ci_output: string;
           auth_storage_state: {
             cookie_count: number;
             origin_count: number;
@@ -536,7 +539,8 @@ describe("safety MCP tool surface", () => {
     };
     expect(body).toEqual(expect.objectContaining({ ok: true }));
     expect(body.replay.status).toBe("passed");
-    expect(body.replay.artifacts.auth_storage_state_path).toEqual(expect.stringContaining("auth-storage-state.json"));
+    expect(body.replay.artifacts.auth_storage_state_path).toBeUndefined();
+    expect(JSON.stringify(body.replay.artifacts)).not.toContain("auth-storage-state");
     expect(body.replay.report.auth_storage_state).toEqual({
       cookie_count: 1,
       origin_count: 1,
@@ -545,8 +549,10 @@ describe("safety MCP tool surface", () => {
     });
     expect(body.replay.report.attested_step_ids).toEqual(["browser_evt_1", "browser_evt_2"]);
     expect(JSON.stringify(body)).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
-    const storageState = await readFile(body.replay.artifacts.auth_storage_state_path!, "utf8");
-    expect(storageState).toContain("auth-cookie-secret");
+    expect(body.replay.report.ci_output).toContain("[redacted]");
+    const ciLog = await readFile(body.replay.artifacts.ci_log_path, "utf8");
+    expect(ciLog).toContain("[redacted]");
+    expect(ciLog).not.toMatch(/auth-cookie-secret|auth-local-secret|auth-session-secret|interactive-secret/);
   });
 
   it("blocks CI isolated replay before profile readiness instead of executing mutation steps", async () => {

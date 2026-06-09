@@ -48,7 +48,6 @@ export interface CiIsolatedReplayResult {
     ci_log_path: string;
     postcondition_log_path: string;
     attestation_path: string;
-    auth_storage_state_path?: string;
   };
   commands: {
     reset_exit_code: number | null;
@@ -94,8 +93,11 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const ciLogPath = path.join(directory, "ci.log");
   const postconditionLogPath = path.join(directory, "postcondition.log");
   const attestationPath = path.join(directory, "replay-attestation.jsonl");
-  const authStorageStatePath = input.auth_storage_state ? path.join(directory, "auth-storage-state.json") : undefined;
+  const authStorageStatePath = input.auth_storage_state
+    ? path.join(artifactRoot, ".internal-auth-state", safePathSegment(workspaceId), safePathSegment(workflowId), `${runId}-${randomUUID()}.json`)
+    : undefined;
   await mkdir(directory, { recursive: true });
+  if (authStorageStatePath) await mkdir(path.dirname(authStorageStatePath), { recursive: true });
 
   const generated = generatePlaywrightScript(input.events, { mode: "ciIsolated" });
   await writeFile(specPath, generated.code + "\n", "utf8");
@@ -164,7 +166,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   };
   const timeoutMs = clampTimeout(input.timeout_ms);
   const reset = await runCommand(input.profile.data_reset_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeFile(resetLogPath, reset.output, "utf8");
+  await writeRedactedCommandLog(resetLogPath, reset.output);
   if (reset.exitCode !== 0) {
     await writeFile(resetAssertionLogPath, "", "utf8");
     await writeFile(ciLogPath, "", "utf8");
@@ -195,7 +197,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   }
 
   const resetAssertion = await runCommand(input.profile.reset_assertion_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeFile(resetAssertionLogPath, resetAssertion.output, "utf8");
+  await writeRedactedCommandLog(resetAssertionLogPath, resetAssertion.output);
   if (resetAssertion.exitCode !== 0) {
     await writeFile(ciLogPath, "", "utf8");
     await writeFile(postconditionLogPath, "", "utf8");
@@ -225,7 +227,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   }
 
   const ci = await runCommand(input.profile.ci_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeFile(ciLogPath, ci.output, "utf8");
+  await writeRedactedCommandLog(ciLogPath, ci.output);
   const attestedStepIds = await readAttestedStepIds(attestationPath, { runId, nonce: attestationNonce });
   const missingMutationStepIds = missingMutationSteps(input.workflow, attestedStepIds);
   const missingRequiredMutationAttestation = ci.exitCode === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 && missingMutationStepIds.length > 0;
@@ -259,7 +261,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   }
 
   const postcondition = await runCommand(input.profile.postcondition_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeFile(postconditionLogPath, postcondition.output, "utf8");
+  await writeRedactedCommandLog(postconditionLogPath, postcondition.output);
   return resultFor(input, {
     workflowId,
     workspaceId,
@@ -338,7 +340,6 @@ function resultFor(
       ci_log_path: options.ciLogPath,
       postcondition_log_path: options.postconditionLogPath,
       attestation_path: options.attestationPath,
-      ...(options.authStorageStatePath ? { auth_storage_state_path: options.authStorageStatePath } : {}),
     },
     commands: {
       reset_exit_code: options.reset?.exitCode ?? null,
@@ -369,6 +370,10 @@ function authStorageStateSummary(storageState: AuthBrowserStorageState): NonNull
     local_storage_entry_count: origins.reduce((count, origin) => count + (origin.localStorage ?? []).length, 0),
     session_storage_entry_count: origins.reduce((count, origin) => count + (origin.sessionStorage ?? []).length, 0),
   };
+}
+
+async function writeRedactedCommandLog(filePath: string, output: string): Promise<void> {
+  await writeFile(filePath, bounded(redactOutput(output)), "utf8");
 }
 
 async function readAttestedStepIds(attestationPath: string, expected: { runId: string; nonce: string }): Promise<string[]> {
@@ -489,8 +494,10 @@ function bounded(value: string): string {
 
 function redactOutput(value: string): string {
   return value
-    .replace(/(authorization|bearer|token|secret|password|cookie)=([^\s]+)/gi, "$1=[redacted]")
-    .replace(/(authorization|bearer|token|secret|password|cookie):\s*([^\s]+)/gi, "$1: [redacted]");
+    .replace(/\bauthorization\s*:\s*bearer\s+[^\s"'`,;]+/gi, "authorization: bearer [redacted]")
+    .replace(/\bbearer\s+[^\s"'`,;]+/gi, "bearer [redacted]")
+    .replace(/(["']?(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|cookie|session)["']?\s*[:=]\s*["']?)([^"',\s}]+)/gi, "$1[redacted]")
+    .replace(/((?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|cookie|session)\s*[:=]\s*)([^\s]+)/gi, "$1[redacted]");
 }
 
 function stringOpt(value: unknown): string | undefined {
