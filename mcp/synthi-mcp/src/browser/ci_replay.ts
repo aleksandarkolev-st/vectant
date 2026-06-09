@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { generatePlaywrightScript, workflowParameterEnvName } from "./trace.js";
@@ -98,6 +98,8 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   const authStorageStatePath = input.auth_storage_state
     ? path.join(artifactRoot, ".internal-auth-state", safePathSegment(workspaceId), safePathSegment(workflowId), `${runId}-${randomUUID()}.json`)
     : undefined;
+  const exactRedactions = authStorageRedactionValues(input.auth_storage_state);
+  try {
   await mkdir(directory, { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
   if (authStorageStatePath) await mkdir(path.dirname(authStorageStatePath), { recursive: true, mode: ARTIFACT_DIRECTORY_MODE });
 
@@ -172,7 +174,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   };
   const timeoutMs = clampTimeout(input.timeout_ms);
   const reset = await runCommand(input.profile.data_reset_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeRedactedCommandLog(resetLogPath, reset.output);
+  await writeRedactedCommandLog(resetLogPath, reset.output, exactRedactions);
   if (reset.exitCode !== 0) {
     await writeFile(resetAssertionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     await writeFile(ciLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
@@ -203,7 +205,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   }
 
   const resetAssertion = await runCommand(input.profile.reset_assertion_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeRedactedCommandLog(resetAssertionLogPath, resetAssertion.output);
+  await writeRedactedCommandLog(resetAssertionLogPath, resetAssertion.output, exactRedactions);
   if (resetAssertion.exitCode !== 0) {
     await writeFile(ciLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
     await writeFile(postconditionLogPath, "", { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
@@ -233,7 +235,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   }
 
   const ci = await runCommand(input.profile.ci_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeRedactedCommandLog(ciLogPath, ci.output);
+  await writeRedactedCommandLog(ciLogPath, ci.output, exactRedactions);
   const attestedStepIds = await readAttestedStepIds(attestationPath, { runId, nonce: attestationNonce });
   const missingMutationStepIds = missingMutationSteps(input.workflow, attestedStepIds);
   const missingRequiredMutationAttestation = ci.exitCode === 0 && input.workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0 && missingMutationStepIds.length > 0;
@@ -267,7 +269,7 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
   }
 
   const postcondition = await runCommand(input.profile.postcondition_command!, { cwd: commandCwd, env, timeoutMs });
-  await writeRedactedCommandLog(postconditionLogPath, postcondition.output);
+  await writeRedactedCommandLog(postconditionLogPath, postcondition.output, exactRedactions);
   return resultFor(input, {
     workflowId,
     workspaceId,
@@ -291,6 +293,9 @@ export async function runCiIsolatedReplay(input: CiIsolatedReplayInput): Promise
     attestedStepIds,
     parameterEnvNames: Object.keys(parameterEnv),
   });
+  } finally {
+    await cleanupAuthStorageState(authStorageStatePath, artifactRoot);
+  }
 }
 
 function resultFor(
@@ -321,6 +326,7 @@ function resultFor(
 ): CiIsolatedReplayResult {
   const requiredMutationStepIds = input.workflow.contract.mutationBoundaryPlan.mutationSteps.map((step) => step.stepId);
   const missingMutationStepIds = requiredMutationStepIds.filter((stepId) => !options.attestedStepIds.includes(stepId));
+  const exactRedactions = authStorageRedactionValues(input.auth_storage_state);
   return {
     workflow_id: options.workflowId,
     workspace_id: options.workspaceId,
@@ -355,10 +361,10 @@ function resultFor(
       postcondition_exit_code: options.postcondition?.exitCode ?? null,
     },
     report: {
-      reset_output: bounded(redactOutput(options.reset?.output ?? "")),
-      reset_assertion_output: bounded(redactOutput(options.resetAssertion?.output ?? "")),
-      ci_output: bounded(redactOutput(options.ci?.output ?? "")),
-      postcondition_output: bounded(redactOutput(options.postcondition?.output ?? "")),
+      reset_output: bounded(redactOutput(options.reset?.output ?? "", exactRedactions)),
+      reset_assertion_output: bounded(redactOutput(options.resetAssertion?.output ?? "", exactRedactions)),
+      ci_output: bounded(redactOutput(options.ci?.output ?? "", exactRedactions)),
+      postcondition_output: bounded(redactOutput(options.postcondition?.output ?? "", exactRedactions)),
       warnings: options.generatedWarnings,
       parameter_env: options.parameterEnvNames.sort(),
       auth_storage_state: input.auth_storage_state ? authStorageStateSummary(input.auth_storage_state) : null,
@@ -379,8 +385,8 @@ function authStorageStateSummary(storageState: AuthBrowserStorageState): NonNull
   };
 }
 
-async function writeRedactedCommandLog(filePath: string, output: string): Promise<void> {
-  await writeFile(filePath, bounded(redactOutput(output)), { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
+async function writeRedactedCommandLog(filePath: string, output: string, exactRedactions: string[]): Promise<void> {
+  await writeFile(filePath, bounded(redactOutput(output, exactRedactions)), { encoding: "utf8", mode: ARTIFACT_FILE_MODE });
 }
 
 async function readAttestedStepIds(attestationPath: string, expected: { runId: string; nonce: string }): Promise<string[]> {
@@ -527,13 +533,48 @@ function isPathWithinOrEqual(candidate: string, base: string): boolean {
   return relative === "" || (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+async function cleanupAuthStorageState(authStorageStatePath: string | undefined, artifactRoot: string): Promise<void> {
+  if (!authStorageStatePath) return;
+  await rm(authStorageStatePath, { force: true }).catch(() => undefined);
+  const internalRoot = path.resolve(artifactRoot, ".internal-auth-state");
+  let current = path.resolve(path.dirname(authStorageStatePath));
+  while (isPathWithinOrEqual(current, internalRoot)) {
+    await rmdir(current).catch(() => undefined);
+    if (current === internalRoot) break;
+    const next = path.dirname(current);
+    if (next === current) break;
+    current = next;
+  }
+}
+
+function authStorageRedactionValues(storageState: AuthBrowserStorageState | undefined): string[] {
+  if (!storageState) return [];
+  const values = new Set<string>();
+  for (const cookie of storageState.cookies ?? []) {
+    if (typeof cookie.value === "string" && cookie.value.length >= 3) values.add(cookie.value);
+  }
+  for (const origin of storageState.origins ?? []) {
+    for (const entry of origin.localStorage ?? []) {
+      if (typeof entry.value === "string" && entry.value.length >= 3) values.add(entry.value);
+    }
+    for (const entry of origin.sessionStorage ?? []) {
+      if (typeof entry.value === "string" && entry.value.length >= 3) values.add(entry.value);
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
 function bounded(value: string): string {
   if (value.length <= OUTPUT_LIMIT) return value;
   return `${value.slice(0, OUTPUT_LIMIT)}\n[truncated ${value.length - OUTPUT_LIMIT} bytes]`;
 }
 
-function redactOutput(value: string): string {
-  return value
+function redactOutput(value: string, exactRedactions: string[] = []): string {
+  let redacted = value;
+  for (const exact of exactRedactions) {
+    redacted = redacted.split(exact).join("[redacted]");
+  }
+  return redacted
     .replace(/\bauthorization\s*:\s*bearer\s+[^\s"'`,;]+/gi, "authorization: bearer [redacted]")
     .replace(/\bbearer\s+[^\s"'`,;]+/gi, "bearer [redacted]")
     .replace(/(["']?(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|cookie|session)["']?\s*[:=]\s*["']?)([^"',\s}]+)/gi, "$1[redacted]")

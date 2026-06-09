@@ -747,6 +747,7 @@ describe("safety MCP tool surface", () => {
       "if (storage.origins?.[0]?.sessionStorage?.[0]?.value !== 'auth-session-secret') throw new Error('session_storage_missing');",
       "process.stdout.write('Authorization: Bearer auth-cookie-secret\\n');",
       "process.stdout.write('token=auth-local-secret session=auth-session-secret\\n');",
+      "process.stdout.write('bare values: auth-cookie-secret auth-local-secret auth-session-secret\\n');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_1', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "await appendFile(process.env.SYNTHI_WORKFLOW_REPLAY_ATTESTATION, JSON.stringify({ step_id: 'browser_evt_2', run_id: process.env.SYNTHI_WORKFLOW_CI_RUN_ID, nonce: process.env.SYNTHI_WORKFLOW_CI_NONCE }) + '\\n', 'utf8');",
       "",
@@ -833,6 +834,7 @@ describe("safety MCP tool surface", () => {
     if (body.replay.report.ci_output.length > 0 || ciLog.length > 0) {
       expect(`${body.replay.report.ci_output}\n${ciLog}`).toContain("[redacted]");
     }
+    await expect(access(path.join(artifactRoot, ".internal-auth-state"))).rejects.toThrow();
   });
 
   it("blocks CI isolated replay before profile readiness instead of executing mutation steps", async () => {
