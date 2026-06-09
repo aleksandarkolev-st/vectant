@@ -13,6 +13,7 @@ const MATRIX_OUTCOME_PRIORITY = new Map([
   ['full_runtime_gpu_hmr', 100],
   ['visual_profile_accepted', 70],
   ['deterministic_fission_proven', 60],
+  ['cold_split_proven', 55],
   ['preflight_only', 50],
   ['refusal_proven', 40],
   ['unproven', 0],
@@ -252,11 +253,15 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
 }
 
 function rowKey(row) {
+  const runModeKey = row.proofMode === 'run_mode_proof'
+    ? row.runMode?.metricScope ?? 'unknown'
+    : null;
   return [
     row.backend ?? 'unknown',
     row.targetId ?? 'unknown',
     row.profileId ?? 'unknown',
     row.proofMode ?? 'unknown',
+    runModeKey,
     row.evidenceKind ?? 'unknown',
     row.matrixOutcome ?? 'unknown',
   ].join('|');
@@ -1160,6 +1165,187 @@ async function preflightRow(json, filePath, context) {
   });
 }
 
+async function agentSplitRunModeProofRow(json, filePath, context) {
+  const runMode = timingEvidence(
+    json.runMode,
+    json.run_mode,
+    json.timingMetrics,
+    json.timing_metrics,
+    json.timings,
+  );
+  const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'hip';
+  const targetId = firstText(json.targetId, json.target_id, json.profileId, json.profile_id, json.fixture)
+    ?? path.basename(path.dirname(filePath));
+  const proofValidation = compactObject(json.gpuProofValidation ?? json.gpu_proof_validation ?? json.proofValidation);
+  const ledgerValidation = compactObject(proofValidation.proofLedgerValidation);
+  const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
+  const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
+  const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
+  const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
+  const visualRequired = json.visualRequired !== false && json.visual_required !== false;
+  const visual = await visualArtifactEvidence(
+    artifactPathsFromValue(visualArtifacts),
+    context.repoRoot,
+    path.dirname(filePath),
+    visualMetrics,
+    visualRequired,
+  );
+  const metricScope = runMode.metricScope;
+  const isCold = metricScope === 'cold';
+  const noCpuFallback = json.cpuHmrUsed !== true && json.cpu_hmr_used !== true;
+  const noFullRebuild = json.fullRebuildUsed !== true && json.full_rebuild_used !== true;
+  const noRestart = json.processRestarted !== true && json.process_restarted !== true;
+  const acceptedRuntime =
+    json.acceptedForGpuHmr === true
+    && json.gpuHmrSuccess === true
+    && proofValidation.satisfied === true
+    && ledgerValidation.gpuHmrSuccess === true
+    && Array.isArray(ledgerValidation.failedInvariants)
+    && ledgerValidation.failedInvariants.length === 0
+    && runtimeValidation.accepted === true
+    && visual.accepted === true
+    && runMode.accepted === true
+    && noCpuFallback
+    && noFullRebuild
+    && noRestart;
+  const acceptedCold =
+    isCold
+    && json.coldSplitProven === true
+    && json.cold_split_proven === true
+    && visual.accepted === true
+    && runMode.accepted === true
+    && noCpuFallback
+    && noFullRebuild
+    && noRestart;
+  const matrixOutcome = acceptedRuntime
+    ? 'full_runtime_gpu_hmr'
+    : acceptedCold
+      ? 'cold_split_proven'
+      : 'unproven';
+  return finalizeRow({
+    artifactSchema: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend,
+    targetId,
+    profileId: firstText(json.profileId, json.profile_id, targetId),
+    proofMode: 'run_mode_proof',
+    evidenceKind: isCold ? 'cold_split_visual_oracle' : 'visual_oracle',
+    matrixOutcome,
+    acceptanceClass: acceptedRuntime
+      ? 'full_runtime_gpu_hmr'
+      : acceptedCold
+        ? 'cold_split_visual_proof'
+        : 'run_mode_proof_rejected',
+    acceptedForGpuHmr: acceptedRuntime,
+    gpuHmrSuccess: acceptedRuntime,
+    refusalProven: false,
+    proofChainAccepted: acceptedRuntime || acceptedCold,
+    proofChain: acceptedRuntime
+      ? 'mcp_wait_hmr_runtime_proof_gate'
+      : acceptedCold
+        ? 'mcp_initial_split_visual_gate'
+        : 'run_mode_proof_rejected',
+    proofIds: proofIdsFrom(
+      json,
+      ledgerValidation.proofId,
+      telemetry.proofId,
+      telemetry.proof_id,
+    ),
+    ledger: {
+      present: Object.keys(ledgerValidation).length > 0,
+      source: 'wait_hmr_proof_validation',
+      proofId: firstText(ledgerValidation.proofId, ledgerValidation.proof_id),
+      gpuHmrSuccess: boolOrNull(ledgerValidation.gpuHmrSuccess),
+      failedInvariants: Array.isArray(ledgerValidation.failedInvariants)
+        ? ledgerValidation.failedInvariants
+        : [],
+    },
+    visual,
+    runMode,
+    cpuHmrUsed: boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used) ?? false,
+    fullRebuildUsed: boolOrNull(json.fullRebuildUsed ?? json.full_rebuild_used) ?? false,
+    processRestarted: boolOrNull(json.processRestarted ?? json.process_restarted) ?? false,
+    timings: compactObject(json.timings),
+    reasons: matrixOutcome === 'unproven' ? compactStringList([
+      runMode.accepted ? null : 'run_mode_timing_not_accepted',
+      visual.accepted ? null : 'visual_artifacts_not_readable',
+      isCold || acceptedRuntime ? null : 'gpu_hmr_runtime_ledger_not_accepted',
+      proofValidation.satisfied === true || isCold ? null : 'wait_hmr_proof_validation_not_satisfied',
+      runtimeValidation.accepted === true || isCold ? null : 'runtime_proof_artifact_not_accepted',
+      ...(Array.isArray(ledgerValidation.failedInvariants) ? ledgerValidation.failedInvariants.map((failure) => failure.code) : []),
+    ]) : [],
+    openGaps: matrixOutcome === 'unproven' ? ['run_mode_proof_not_accepted'] : [],
+  });
+}
+
+function agentSplitNegativeEditRefusalRow(json, filePath, context) {
+  const runMode = timingEvidence(
+    json.runMode,
+    json.run_mode,
+    json.timingMetrics,
+    json.timing_metrics,
+    json.timings,
+  );
+  const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'hip';
+  const targetId = firstText(json.targetId, json.target_id, json.profileId, json.profile_id, json.fixture)
+    ?? path.basename(path.dirname(filePath));
+  const reasons = compactStringList([
+    ...(Array.isArray(json.reasons) ? json.reasons : []),
+    ...(Array.isArray(json.unsupportedReasons) ? json.unsupportedReasons : []),
+    ...(Array.isArray(json.unsupported_reasons) ? json.unsupported_reasons : []),
+    firstText(json.reason),
+  ]);
+  const refusalProven =
+    json.gpuHmrSuccess === false
+    && json.gpu_hmr_success !== true
+    && json.acceptedForGpuHmr !== true
+    && json.accepted_for_gpu_hmr !== true
+    && reasons.length > 0;
+  return finalizeRow({
+    artifactSchema: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend,
+    targetId,
+    profileId: firstText(json.profileId, json.profile_id, targetId),
+    proofMode: 'negative_edit',
+    evidenceKind: 'negative_edit',
+    matrixOutcome: refusalProven ? 'refusal_proven' : 'unproven',
+    acceptanceClass: refusalProven ? 'negative_edit_refusal' : 'negative_edit_refusal_unproven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven,
+    proofChainAccepted: refusalProven,
+    proofChain: refusalProven ? 'structured_negative_edit_refusal' : 'negative_edit_refusal_unproven',
+    proofIds: proofIdsFrom(json),
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: [],
+    },
+    visual: {
+      required: false,
+      present: false,
+      accepted: true,
+      imageCount: 0,
+      existingImageCount: 0,
+      pngImageCount: 0,
+      allImagesExist: false,
+      allImagesArePng: false,
+      images: [],
+    },
+    runMode,
+    cpuHmrUsed: boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used) ?? false,
+    fullRebuildUsed: boolOrNull(json.fullRebuildUsed ?? json.full_rebuild_used) ?? false,
+    processRestarted: boolOrNull(json.processRestarted ?? json.process_restarted) ?? false,
+    timings: compactObject(json.timings),
+    reasons,
+    openGaps: refusalProven ? [] : ['negative_edit_refusal_not_proven'],
+  });
+}
+
 async function classifyJsonArtifact(json, filePath, context) {
   if (Array.isArray(json) && json.every((record) => isObject(record) && 'name' in record && 'status' in record)) {
     return agentSplitRow(json, filePath, context);
@@ -1180,6 +1366,12 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (schema === 'synthi.gpu.hmr.external_project_rejection.v1') {
     return externalProjectRejectionRow(json, filePath, context);
+  }
+  if (schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1') {
+    return agentSplitRunModeProofRow(json, filePath, context);
+  }
+  if (schema === 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1') {
+    return agentSplitNegativeEditRefusalRow(json, filePath, context);
   }
   if (schema.includes('webgpu_runtime_visual_proof') || proofId.startsWith('webgpu-runtime-visual-proof:')) {
     return webGpuRuntimeVisualRow(json, filePath, context);
@@ -1327,8 +1519,17 @@ function deterministicFissionRows(rows, predicate) {
 
 function validationRunModeCoverage(rows) {
   const fullRuntimeRows = acceptedRows(rows, () => true);
+  const coldRows = rows.filter((row) =>
+    row.matrixOutcome === 'cold_split_proven'
+    && row.runMode?.accepted === true
+    && row.runMode.metricScope === 'cold'
+  );
   const rowsByTarget = new Map();
   for (const row of fullRuntimeRows) {
+    const key = `${row.backend}:${row.targetId}`;
+    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+  }
+  for (const row of coldRows) {
     const key = `${row.backend}:${row.targetId}`;
     rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
   }
@@ -1340,9 +1541,16 @@ function validationRunModeCoverage(rows) {
       );
       if (!hasMode) openGaps.push(`${targetKey}:${requiredMode}_evidence_missing`);
     }
+    const hotDelta1EditHashes = new Set(targetRows
+      .filter((row) => row.runMode?.accepted === true && row.runMode.metricScope === 'hot_delta_1')
+      .map((row) => text(row.runMode?.editHash ?? row.runMode?.edit_hash))
+      .filter(Boolean));
     const hasHotDelta2DifferentEdit = targetRows.some((row) =>
       row.runMode?.accepted === true
       && row.runMode.metricScope === 'hot_delta_2'
+      && hotDelta1EditHashes.size > 0
+      && text(row.runMode.editHash ?? row.runMode.edit_hash)
+      && !hotDelta1EditHashes.has(text(row.runMode.editHash ?? row.runMode.edit_hash))
       && (
         row.runMode.differentEdit === true
         || row.runMode.different_edit === true
@@ -1366,7 +1574,7 @@ function validationRunModeCoverage(rows) {
     id: 'per_target_run_modes',
     requirement: 'Per-target cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit evidence',
     status: fullRuntimeRows.length > 0 && openGaps.length === 0 ? 'accepted' : 'missing',
-    rows: [...fullRuntimeRows, ...negativeEditRows],
+    rows: [...fullRuntimeRows, ...coldRows, ...negativeEditRows],
     openGaps,
   });
 }

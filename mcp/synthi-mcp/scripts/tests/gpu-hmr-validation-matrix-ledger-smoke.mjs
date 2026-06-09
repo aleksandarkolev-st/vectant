@@ -83,6 +83,117 @@ await writeJson(path.join(visualDir, 'agent-split-results.json'), [
   { name: 'runner stayed alive after GPU HMR', status: 'pass', detail: 'no runner crash marker' },
 ]);
 
+const runModeProofBase = {
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  backend: 'hip',
+  targetId: 'flow',
+  profileId: 'flow',
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  visualArtifacts: {
+    beforeImage: path.join(visualDir, 'before-hmr-first.png'),
+    afterImage: path.join(visualDir, 'after-hmr-first.png'),
+    diffImage: path.join(visualDir, 'before-after-diff.png'),
+  },
+  visualMetrics: {
+    changedPixelRatio: 0.042,
+    meanAbsDelta8bit: 6.5,
+    visiblePixelCount: 2000,
+  },
+};
+
+function waitProofValidation(proofId, runtimeProofId) {
+  return {
+    gpuProofValidation: {
+      satisfied: true,
+      proofLedgerValidation: {
+        proofId,
+        gpuHmrSuccess: true,
+        failedInvariants: [],
+      },
+      runtimeProofArtifactValidation: {
+        accepted: true,
+        failedGates: [],
+      },
+    },
+    gpuProofTelemetry: {
+      proofId: runtimeProofId,
+    },
+  };
+}
+
+await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
+  ...runModeProofBase,
+  proofId: 'agent-split-run-mode-proof:sha256:cold',
+  coldSplitProven: true,
+  cold_split_proven: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split',
+    editHash: 'sha256:cold-split',
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot1', 'gpu-runtime-proof:sha256:synthetic-hot1'),
+  proofId: 'agent-split-run-mode-proof:sha256:hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1',
+    editHash: 'sha256:hot1',
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot2', 'gpu-runtime-proof:sha256:synthetic-hot2'),
+  proofId: 'agent-split-run-mode-proof:sha256:hot2',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot2',
+    editHash: 'sha256:hot2',
+    editKind: 'different_gpu_edit',
+    differentEdit: true,
+  },
+});
+
+await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
+  schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+  proofId: 'agent-split-negative-edit-refusal:sha256:synthetic',
+  backend: 'hip',
+  targetId: 'flow',
+  profileId: 'flow',
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: 'negative-edit:abi-layout',
+    editHash: 'sha256:negative-edit',
+    editKind: 'negative_edit',
+    differentEdit: true,
+  },
+  reasons: ['abi_compatibility_class_layout_changed', 'gpu_hmr_rejected_before_load'],
+});
+
 const fissionManifest = {
   gpu: {
     vendor: 'rocm',
@@ -254,8 +365,8 @@ assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
 
-assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 1);
-assert.equal(ledger.summary.refusalProvenRows, 2);
+assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 3);
+assert.equal(ledger.summary.refusalProvenRows, 3);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
@@ -264,10 +375,88 @@ assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
-assert.equal(coverageById.get('per_target_run_modes')?.status, 'missing');
-assert.ok(coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
+assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_1_evidence_missing'));
-assert.ok(coverageById.get('per_target_run_modes')?.openGaps.includes('negative_edit_refusal_evidence_missing'));
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_evidence_missing'));
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_different_edit_evidence_missing'));
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('negative_edit_refusal_evidence_missing'));
+
+const coldRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow' && row.proofMode === 'run_mode_proof' && row.runMode.metricScope === 'cold'
+);
+assert.equal(coldRunMode?.matrixOutcome, 'cold_split_proven');
+assert.equal(coldRunMode.acceptedForGpuHmr, false);
+
+const hot2RunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow' && row.proofMode === 'run_mode_proof' && row.runMode.metricScope === 'hot_delta_2'
+);
+assert.equal(hot2RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(hot2RunMode.runMode.differentEdit, true);
+
+const negativeEdit = ledger.rows.find((row) => row.proofMode === 'negative_edit');
+assert.equal(negativeEdit?.matrixOutcome, 'refusal_proven');
+
+const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
+await writePng(path.join(duplicateHot2Dir, 'before.png'));
+await writePng(path.join(duplicateHot2Dir, 'after.png'));
+await writePng(path.join(duplicateHot2Dir, 'diff.png'));
+await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:duplicate-hot1', 'gpu-runtime-proof:sha256:duplicate-hot1'),
+  targetId: 'duplicate-hot2',
+  profileId: 'duplicate-hot2',
+  proofId: 'agent-split-run-mode-proof:sha256:duplicate-hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(duplicateHot2Dir, 'before.png'),
+    afterImage: path.join(duplicateHot2Dir, 'after.png'),
+    diffImage: path.join(duplicateHot2Dir, 'diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:duplicate-hot1',
+    editHash: 'sha256:same-edit',
+  },
+});
+await writeJson(path.join(duplicateHot2Dir, 'hot2.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:duplicate-hot2', 'gpu-runtime-proof:sha256:duplicate-hot2'),
+  targetId: 'duplicate-hot2',
+  profileId: 'duplicate-hot2',
+  proofId: 'agent-split-run-mode-proof:sha256:duplicate-hot2',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(duplicateHot2Dir, 'before.png'),
+    afterImage: path.join(duplicateHot2Dir, 'after.png'),
+    diffImage: path.join(duplicateHot2Dir, 'diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:duplicate-hot2',
+    editHash: 'sha256:same-edit',
+    editKind: 'gpu_artifact_edit',
+    differentEdit: false,
+  },
+});
+const duplicateLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [duplicateHot2Dir],
+  generatedAt: '2026-06-09T00:00:01.000Z',
+  includeUnproven: true,
+});
+const duplicateCoverage = new Map(duplicateLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
+assert.equal(duplicateCoverage.get('per_target_run_modes')?.status, 'missing');
+assert.ok(duplicateCoverage.get('per_target_run_modes')?.openGaps.includes(
+  'hip:duplicate-hot2:hot_delta_2_different_edit_evidence_missing',
+));
 
 const fissionRow = ledger.rows.find((row) => row.matrixOutcome === 'deterministic_fission_proven');
 assert.equal(fissionRow?.acceptedForGpuHmr, false);
