@@ -447,7 +447,8 @@ export class BrowserBroker {
     within_ms?: number;
     observed_at?: number;
   }): { ok: true; event: BrowserTraceEvent | null } | { ok: false; error: string } {
-    const gate = this.requireTeach(input.tab_id, input.url, input.detail);
+    const detail = this.detailWithTargetSecurity(input.url, input.detail);
+    const gate = this.requireTeach(input.tab_id, input.url, detail);
     if (!gate.ok) {
       this.discardDeniedTargetOriginAction(input, gate.error);
       return gate;
@@ -461,7 +462,8 @@ export class BrowserBroker {
     const event = this.trace.annotateLatestAction({
       tab_id: input.tab_id,
       actions: input.actions,
-      detail: input.detail,
+      detail,
+      security: this.securityForUrl(input.url, detail),
       within_ms: input.within_ms,
       observed_at: input.observed_at,
     });

@@ -471,6 +471,17 @@ async function runCase({ testCase, container, context, runner }) {
         leakedCode.length ? `leaked=${leakedCode.join(" | ")}` : `forbidden=${testCase.forbiddenReplayCode.length}`
       );
     }
+    if (typeof testCase.assertExport === "function") {
+      const exportAssertions = await testCase.assertExport({ generated, contract, setupContext, caseDir });
+      for (const assertion of Array.isArray(exportAssertions) ? exportAssertions : []) {
+        record(
+          testCase.id,
+          assertion.name || "export custom assertion",
+          assertion.ok === true,
+          assertion.detail || ""
+        );
+      }
+    }
 
     const manifestBody = await clickWorkflowButton(idePage, /^Manifest$/);
     const manifest = manifestBody.result?.manifest;
@@ -4481,6 +4492,170 @@ const CASES = [
       await popup.waitForLoadState("domcontentloaded");
       await popup.getByText("External Billing").waitFor();
       await page.getByText("External billing opened").waitFor();
+      return popup;
+    },
+  },
+  {
+    id: "cross-origin-popup-consented",
+    minSteps: 3,
+    expectedActions: ["click", "fill"],
+    expectedReplayText: [
+      "External account opened",
+      "External account preview for ",
+    ],
+    expectedReplayCode: [
+      "page.waitForEvent('popup')",
+      "popup1.getByLabel(\"External account\")",
+      "popup1.getByRole(\"button\", { name: \"Preview external account\" })",
+      "await expect(popup1).toHaveTitle(\"External Account\");",
+    ],
+    forbiddenReplayCode: [
+      "Mutation boundary:",
+      "workflowUrl(\"/external-account.html\")",
+    ],
+    liveReplayMode: "sameSession",
+    liveReplayExpectedText: ["Cross-Origin Popup Consented Workflow"],
+    replayEnv: () => ({ EXTERNAL_ACCOUNT: "Ops Ledger" }),
+    setup: async ({ addCleanup }) => {
+      const externalPopupHtml = [
+        "<!doctype html>",
+        "<html>",
+        "  <head>",
+        "    <meta charset=\"UTF-8\">",
+        "    <title>External Account</title>",
+        "    <style>",
+        "      body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 32px; color: #171717; background: #f7f7f4; }",
+        "      main { display: grid; gap: 12px; }",
+        "      label { display: grid; gap: 8px; font-weight: 700; }",
+        "      input { height: 42px; border: 1px solid #9c9c92; padding: 0 12px; font: inherit; }",
+        "      button { width: max-content; min-height: 42px; border: 0; background: #222; color: white; padding: 10px 16px; font: inherit; cursor: pointer; }",
+        "      output { min-height: 24px; color: #17663a; font-weight: 800; }",
+        "    </style>",
+        "  </head>",
+        "  <body>",
+        "    <main>",
+        "      <h1>External Account</h1>",
+        "      <label for=\"account\">External account</label>",
+        "      <input id=\"account\" aria-label=\"External account\" data-synthi-source-id=\"external.popup.account\" placeholder=\"Workspace account\">",
+        "      <button type=\"button\" data-testid=\"preview-external-account\" data-synthi-source-id=\"external.popup.preview\">Preview external account</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+        "    <script>",
+        "      const input = document.querySelector('#account');",
+        "      document.querySelector('[data-testid=\"preview-external-account\"]').addEventListener('click', () => {",
+        "        document.querySelector('#status').textContent = `External account preview for ${input.value}`;",
+        "      });",
+        "    </script>",
+        "  </body>",
+        "</html>",
+        "",
+      ].join("\n");
+      const auxiliary = await startAuxiliaryOriginServer({
+        "/external-account.html": externalPopupHtml,
+      });
+      addCleanup(auxiliary.close);
+      return { externalOrigin: auxiliary.origin, externalPopupHtml };
+    },
+    beforeTeach: async ({ testCase, setupContext }) => {
+      const consent = await workflowBridgeTool("synthi_browser_request_consent", {
+        url: setupContext.externalOrigin,
+        status: "granted",
+        screenshot: true,
+        diagnostics: false,
+        reason: `${testCase.id}:external-popup`,
+      });
+      record(
+        testCase.id,
+        "grant external popup consent",
+        consent.ok === true && consent.result?.consent?.origin === setupContext.externalOrigin,
+        consent.result?.consent?.origin || consent.result?.error || "missing"
+      );
+    },
+    expectedTraceDetails: ({ externalOrigin }) => [
+      {
+        popup_origin: externalOrigin,
+        popup_origin_approved: true,
+        popup_screenshot_approved: true,
+      },
+    ],
+    assertTrace: ({ trace, contract, setupContext }) => {
+      const opener = trace.find((event) =>
+        event?.detail?.popup_event === true &&
+        event.detail.popup_origin === setupContext.externalOrigin
+      );
+      const popupTabId = opener?.detail?.popup_tab_id;
+      const popupActions = trace.filter((event) => event?.tab_id === popupTabId && event?.detail?.popup_context === true);
+      const openerContext = contract?.steps?.find((step) => step?.targetContext?.popup?.relationship === "opens")?.targetContext;
+      const popupContext = contract?.steps?.find((step) => step?.targetContext?.kind === "popup")?.targetContext;
+      return [
+        {
+          name: "trace consented external popup opener",
+          ok: Boolean(opener?.detail?.popup_origin_approved === true && opener?.detail?.popup_screenshot_approved === true),
+          detail: opener ? `popup=${popupTabId || "missing"}` : "missing opener",
+        },
+        {
+          name: "trace external popup continuation",
+          ok: popupActions.length >= 2,
+          detail: `actions=${popupActions.length}`,
+        },
+        {
+          name: "contract keeps cross-origin popup replay enabled",
+          ok: contract?.limitations?.includes("crossOriginTrace") === true && !contract?.limitations?.includes("popupOrMultiTab"),
+          detail: `limitations=${(contract?.limitations || []).join(",") || "none"}`,
+        },
+        {
+          name: "contract exposes opener popup target context",
+          ok: openerContext?.popup?.origin === setupContext.externalOrigin &&
+            openerContext.popup.relationship === "opens" &&
+            openerContext.consent?.popupOriginApproved === true,
+          detail: openerContext?.popup?.origin || "missing",
+        },
+        {
+          name: "contract exposes external popup continuation context",
+          ok: popupContext?.targetOrigin === setupContext.externalOrigin &&
+            popupContext.popup?.relationship === "context",
+          detail: popupContext?.targetOrigin || "missing",
+        },
+      ];
+    },
+    assertExport: ({ generated, setupContext }) => {
+      const code = String(generated?.code || "");
+      return [
+        {
+          name: "export pins consented external popup URL",
+          ok: code.includes(`${setupContext.externalOrigin}/external-account.html`),
+          detail: setupContext.externalOrigin,
+        },
+      ];
+    },
+    files: ({ externalOrigin, externalPopupHtml }) => commonFiles({
+      title: "Cross-Origin Popup Consented Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Cross-Origin Popup Consented Workflow</h1>",
+        `      <a href="${externalOrigin}/external-account.html" target="_blank" rel="noreferrer" role="button" data-testid="open-external-account" data-synthi-source-id="external.popup.open">Open external account</a>`,
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "document.querySelector('[data-testid=\"open-external-account\"]').addEventListener('click', () => {",
+        "  document.querySelector('#status').textContent = 'External account opened';",
+        "});",
+        "",
+      ].join("\n"),
+      extraFiles: [
+        { path: "external-account.html", encoding: "utf8", content: externalPopupHtml },
+      ],
+    }),
+    teach: async (page) => {
+      const popupPromise = page.waitForEvent("popup");
+      await page.getByRole("button", { name: "Open external account" }).click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState("domcontentloaded");
+      await popup.getByLabel("External account").fill("Ops Ledger");
+      await popup.getByRole("button", { name: "Preview external account" }).click();
+      await popup.getByText("External account preview for Ops Ledger").waitFor();
+      await page.getByText("External account opened").waitFor();
       return popup;
     },
   },

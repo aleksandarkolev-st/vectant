@@ -111,6 +111,7 @@ export class BrowserTraceRecorder {
     tab_id: string;
     actions?: BrowserActionKind[];
     detail: Record<string, unknown>;
+    security?: BrowserTraceEvent["security"];
     within_ms?: number;
     observed_at?: number;
   }): BrowserTraceEvent | null {
@@ -120,6 +121,7 @@ export class BrowserTraceRecorder {
     if (!event) return null;
     const detail = redactStructuredValue({ ...(event.detail ?? {}), ...input.detail });
     event.detail = detail.value as Record<string, unknown>;
+    if (input.security) event.security = { ...(event.security ?? {}), ...input.security };
     if (detail.redacted) event.redacted = true;
     return this.sanitizeEvent(event);
   }

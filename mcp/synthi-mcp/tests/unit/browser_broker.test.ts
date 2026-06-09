@@ -524,6 +524,51 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("derives popup consent metadata from delayed popup URL annotations", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.requestConsent("https://billing.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const opener = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {},
+      element: { role: "button", name: "Open billing" },
+    });
+    expect(opener.ok).toBe(true);
+    if (!opener.ok) throw new Error("unexpected opener failure");
+
+    const annotated = browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      observed_at: opener.event.ts,
+      detail: {
+        popup_event: true,
+        popup_url: "https://billing.example.com/help?token=not-secret",
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+      },
+    });
+    expect(annotated).toEqual({ ok: true, event: expect.objectContaining({ event_id: opener.event.event_id }) });
+
+    const trace = browserBroker.traceSnapshot();
+    expect(trace[0]?.detail).toEqual(expect.objectContaining({
+      popup_origin: "https://billing.example.com",
+      popup_origin_approved: true,
+      popup_screenshot_approved: true,
+    }));
+    expect(trace[0]?.security).toEqual(expect.objectContaining({
+      popup_origin_approved: true,
+      popup_screenshot_approved: true,
+    }));
+  });
+
   it("surfaces denied popup origins as blocking recording issues", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
