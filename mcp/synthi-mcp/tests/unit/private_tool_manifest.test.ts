@@ -988,6 +988,95 @@ describe("private browser workflow MCP tool manifest", () => {
     }
   });
 
+  it("works behind a strict MCP host that validates the advertised private tool schema", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    attachHostedRuntimeForTest(url);
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_token");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "fill",
+      value: "secret-value-that-must-not-be-plaintext",
+      element: { role: "textbox", label: "Access token", source_id: "s_token" },
+      locator_candidates: [
+        { kind: "label", locator: "page.getByLabel(\"Access token\")", confidence: 0.98, reason: "form_label" },
+      ],
+    });
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "tab-a",
+      url,
+    });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
+    const client = new Client({ name: "strict-host-private-tool-test", version: "0.0.0" });
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const publish = await client.callTool({ name: "synthi_browser_publish_private_tool", arguments: {} });
+      expect(publish.isError).not.toBe(true);
+      const toolName = JSON.parse(String(publish.content[0]?.text)).tool_name;
+      const listed = await client.listTools();
+      const privateTool = listed.tools.find((tool) => tool.name === toolName);
+      expect(privateTool?.inputSchema).toEqual(expect.objectContaining({
+        type: "object",
+        required: ["access_token"],
+        additionalProperties: false,
+        properties: expect.objectContaining({
+          access_token: expect.objectContaining({ type: "string", format: "password" }),
+          run_mode: expect.objectContaining({ enum: ["sameSession", "prefixOnly", "coldSession"] }),
+        }),
+      }));
+
+      expect(await strictHostCallTool(client, privateTool, {})).toEqual({
+        ok: false,
+        errors: ["missing_required:access_token"],
+      });
+      expect(await strictHostCallTool(client, privateTool, {
+        access_token: "agent-supplied-value",
+        script_path: "/tmp/brittle/generated.spec.ts",
+      })).toEqual({
+        ok: false,
+        errors: ["additional_property:script_path"],
+      });
+      expect(await strictHostCallTool(client, privateTool, {
+        access_token: "agent-supplied-value",
+        run_mode: "desktopChrome",
+      })).toEqual({
+        ok: false,
+        errors: ["enum:run_mode"],
+      });
+      expect(replay).not.toHaveBeenCalled();
+
+      const run = await strictHostCallTool(client, privateTool, {
+        access_token: "agent-supplied-value",
+        run_mode: "sameSession",
+      });
+
+      expect(run.ok).toBe(true);
+      expect(run.result?.isError).not.toBe(true);
+      expect(JSON.parse(String(run.result?.content[0]?.text))).toEqual(expect.objectContaining({
+        ok: true,
+        private_tool: expect.objectContaining({
+          tool_name: toolName,
+          run_mode: "sameSession",
+        }),
+      }));
+      expect(replay).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("advertises ciOnly for mutation tools and routes private tool execution through isolated replay", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url);
@@ -1082,6 +1171,58 @@ function attachHostedRuntimeForTest(workspaceUrl: string): void {
     workspace_url: workspaceUrl,
     adapter: "hosted-playwright-cdp",
   });
+}
+
+async function strictHostCallTool(
+  client: Client,
+  tool: { name: string; inputSchema?: unknown } | undefined,
+  args: Record<string, unknown>
+): Promise<{ ok: false; errors: string[] } | { ok: true; result: Awaited<ReturnType<Client["callTool"]>> }> {
+  if (!tool) return { ok: false, errors: ["tool_not_listed"] };
+  const errors = strictHostValidateToolArgs(tool.inputSchema, args);
+  if (errors.length > 0) return { ok: false, errors };
+  const result = await client.callTool({ name: tool.name, arguments: args });
+  return { ok: true, result };
+}
+
+function strictHostValidateToolArgs(schema: unknown, args: Record<string, unknown>): string[] {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return ["schema_not_object"];
+  const objectSchema = schema as {
+    type?: unknown;
+    properties?: unknown;
+    required?: unknown;
+    additionalProperties?: unknown;
+  };
+  const errors: string[] = [];
+  if (objectSchema.type !== "object") errors.push("schema_type_not_object");
+  const properties = objectSchema.properties && typeof objectSchema.properties === "object" && !Array.isArray(objectSchema.properties)
+    ? objectSchema.properties as Record<string, unknown>
+    : {};
+  const required = Array.isArray(objectSchema.required)
+    ? objectSchema.required.filter((item): item is string => typeof item === "string")
+    : [];
+  for (const name of required) {
+    if (!Object.prototype.hasOwnProperty.call(args, name)) errors.push(`missing_required:${name}`);
+  }
+  if (objectSchema.additionalProperties === false) {
+    for (const name of Object.keys(args)) {
+      if (!Object.prototype.hasOwnProperty.call(properties, name)) errors.push(`additional_property:${name}`);
+    }
+  }
+  for (const [name, value] of Object.entries(args)) {
+    const property = properties[name];
+    if (!property || typeof property !== "object" || Array.isArray(property)) continue;
+    const propertySchema = property as { type?: unknown; enum?: unknown; pattern?: unknown };
+    if (propertySchema.type === "string" && typeof value !== "string") errors.push(`type:${name}`);
+    if (propertySchema.type === "boolean" && typeof value !== "boolean") errors.push(`type:${name}`);
+    if (propertySchema.type === "number" && typeof value !== "number") errors.push(`type:${name}`);
+    if (Array.isArray(propertySchema.enum) && !propertySchema.enum.includes(value)) errors.push(`enum:${name}`);
+    if (typeof propertySchema.pattern === "string" && typeof value === "string") {
+      const pattern = new RegExp(propertySchema.pattern);
+      if (!pattern.test(value)) errors.push(`pattern:${name}`);
+    }
+  }
+  return errors;
 }
 
 async function writeRefreshMintCommand(directory: string): Promise<string> {
