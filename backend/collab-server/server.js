@@ -745,7 +745,12 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   // Read current CRDT content from Y-Sweet and write to the git worktree.
   // This ensures the on-disk content matches the editor state before git ops.
   const docName = buildDocName(slug, filePath, scope);
-  const content = await ySweetBridge.readDocContent(docName);
+  // Prefer the LIVE editor doc: the frontend syncs to the yjsWsServer relay, so
+  // its in-memory room holds the authoritative (incl. unsaved) content. Y-Sweet
+  // is not in the editor's sync path, so it's only a fallback for docs that
+  // aren't currently open.
+  let content = require('./yjsWsServer').getRoomText(docName);
+  if (content == null) content = await ySweetBridge.readDocContent(docName);
   if (content == null) return;
 
   const effectiveUser = scope.userId || null;
@@ -759,6 +764,35 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   await fsPromises.writeFile(fullPath, content, 'utf-8');
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
+}
+
+/**
+ * Flush a workspace's LIVE editor docs to disk before a server-side consumer
+ * reads the working tree (a `container`/`web` program's `docker build .` /
+ * `npm install`). The frontend syncs edits to the yjsWsServer relay, so the
+ * authoritative (incl. unsaved) content is its in-memory rooms — NOT Y-Sweet
+ * and NOT necessarily disk. We enumerate the open rooms for this workspace and
+ * flush each via flushYjsDocForFile (which reads the room first). Only
+ * currently-open docs need flushing; closed docs were already written on save.
+ * @returns {Promise<number>} number of docs flushed
+ */
+async function flushWorkspaceDocsToDisk(slug, userId) {
+  if (!slug || !userId) return 0;
+  const prefix = `workspace:${slug}:user:${encodeURIComponent(String(userId))}:`;
+  const docNames = require('./yjsWsServer').listRoomNames().filter((n) => n.startsWith(prefix));
+  let flushed = 0;
+  for (const docName of docNames) {
+    const filePath = docName.slice(prefix.length);
+    try { validateFilePath(filePath); } catch { continue; } // skip unsafe paths
+    try {
+      await flushYjsDocForFile(slug, filePath, { userId });
+      flushed += 1;
+    } catch (e) {
+      logger.warn('workspace_doc_flush_failed', { slug, filePath }, e);
+    }
+  }
+  if (flushed) logger.info('workspace_docs_flushed', { slug, userId, count: flushed });
+  return flushed;
 }
 
 async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
@@ -1674,6 +1708,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
+      // Reconcile the working tree from Y-Sweet first: a program's install/launch
+      // (docker build ., npm install) reads files from disk, but unsaved editor
+      // content lives only in Y-Sweet until flushed. Without this the build sees
+      // stale/empty files (e.g. an unsaved Dockerfile or package.json).
+      await flushWorkspaceDocsToDisk(slug, parsed.userId || '').catch((e) =>
+        logger.warn('workspace_flush_before_launch_failed', { slug }, e));
       const session = await managedProgramRuntime.launchManagedProgram({
         sessionId,
         workspaceSlug: slug,

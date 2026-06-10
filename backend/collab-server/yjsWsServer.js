@@ -188,4 +188,22 @@ function setupConnection(ws, docName, initialContent = null) {
   });
 }
 
-module.exports = { setupConnection, MAX_ROOMS };
+/**
+ * Return the live 'monaco' text of an open room, or null if no room exists.
+ * This is the authoritative editor content (the frontend syncs here via
+ * y-websocket), so disk-flush paths must read from here — NOT Y-Sweet, which
+ * is not in the editor's sync path.
+ */
+function getRoomText(docName) {
+  const room = rooms.get(docName);
+  if (!room) return null;
+  try { return room.doc.getText('monaco').toString(); }
+  catch (_) { return null; }
+}
+
+/** Doc names of all currently-open rooms (live/connected editor docs). */
+function listRoomNames() {
+  return [...rooms.keys()];
+}
+
+module.exports = { setupConnection, MAX_ROOMS, getRoomText, listRoomNames };
