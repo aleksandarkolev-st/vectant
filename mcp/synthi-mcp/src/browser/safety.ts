@@ -21,6 +21,35 @@ export interface ReplayIsolationProfileInput {
   allow_mutation_replay?: boolean;
 }
 
+export const REPLAY_ISOLATION_PROFILE_SCHEMA_VERSION = "synthi.replayIsolationProfile.v1" as const;
+
+export interface ReplayIsolationProfileManifestV7 {
+  schema_version: typeof REPLAY_ISOLATION_PROFILE_SCHEMA_VERSION;
+  workspace_id?: string;
+  kind?: ReplayIsolationKindV7;
+  base_url?: string;
+  commands?: {
+    ci?: string;
+    data_reset?: string;
+    reset_assertion?: string;
+    postcondition?: string;
+  };
+  working_directory?: string;
+  auth_provider_id?: string;
+  reset_profile_id?: string;
+  state_seed_id?: string;
+  allow_mutation_replay?: boolean;
+}
+
+export interface ReplayIsolationProfileDocumentV7 extends ReplayIsolationProfileManifestV7 {
+  workspace_id: string;
+  kind: ReplayIsolationKindV7;
+  readiness: ReplayIsolationProfileV7["readiness"];
+  can_run_full_mutation_replay: boolean;
+  missing: string[];
+  updated_at: number | null;
+}
+
 export interface ReplayIsolationProfileV7 {
   workspace_id: string;
   kind: ReplayIsolationKindV7;
@@ -119,6 +148,73 @@ export class ReplayIsolationProfileManager {
 }
 
 export const replayIsolationProfiles = new ReplayIsolationProfileManager();
+
+export function replayIsolationProfileInputFromManifest(manifest: unknown): ReplayIsolationProfileInput {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return {};
+  const value = manifest as Record<string, unknown>;
+  const commands = value["commands"] && typeof value["commands"] === "object" && !Array.isArray(value["commands"])
+    ? value["commands"] as Record<string, unknown>
+    : {};
+  return {
+    workspace_id: stringOpt(value["workspace_id"]),
+    kind: isolationKind(value["kind"]),
+    base_url: stringOpt(value["base_url"]),
+    ci_command: stringOpt(commands["ci"]) ?? stringOpt(value["ci_command"]),
+    data_reset_command: stringOpt(commands["data_reset"]) ?? stringOpt(value["data_reset_command"]),
+    reset_assertion_command: stringOpt(commands["reset_assertion"]) ?? stringOpt(value["reset_assertion_command"]),
+    postcondition_command: stringOpt(commands["postcondition"]) ?? stringOpt(value["postcondition_command"]),
+    working_directory: stringOpt(value["working_directory"]),
+    auth_provider_id: stringOpt(value["auth_provider_id"]),
+    reset_profile_id: stringOpt(value["reset_profile_id"]),
+    state_seed_id: stringOpt(value["state_seed_id"]),
+    allow_mutation_replay: typeof value["allow_mutation_replay"] === "boolean" ? value["allow_mutation_replay"] as boolean : undefined,
+  };
+}
+
+export function mergeReplayIsolationProfileInputs(
+  base: ReplayIsolationProfileInput,
+  override: ReplayIsolationProfileInput
+): ReplayIsolationProfileInput {
+  return {
+    workspace_id: override.workspace_id ?? base.workspace_id,
+    kind: override.kind ?? base.kind,
+    base_url: override.base_url ?? base.base_url,
+    ci_command: override.ci_command ?? base.ci_command,
+    data_reset_command: override.data_reset_command ?? base.data_reset_command,
+    reset_assertion_command: override.reset_assertion_command ?? base.reset_assertion_command,
+    postcondition_command: override.postcondition_command ?? base.postcondition_command,
+    working_directory: override.working_directory ?? base.working_directory,
+    auth_provider_id: override.auth_provider_id ?? base.auth_provider_id,
+    reset_profile_id: override.reset_profile_id ?? base.reset_profile_id,
+    state_seed_id: override.state_seed_id ?? base.state_seed_id,
+    allow_mutation_replay: override.allow_mutation_replay ?? base.allow_mutation_replay,
+  };
+}
+
+export function replayIsolationProfileManifestFor(profile: ReplayIsolationProfileV7): ReplayIsolationProfileDocumentV7 {
+  const manifest: ReplayIsolationProfileDocumentV7 = {
+    schema_version: REPLAY_ISOLATION_PROFILE_SCHEMA_VERSION,
+    workspace_id: profile.workspace_id,
+    kind: profile.kind,
+    readiness: profile.readiness,
+    can_run_full_mutation_replay: profile.can_run_full_mutation_replay,
+    missing: [...profile.missing],
+    updated_at: profile.updated_at,
+  };
+  if (profile.base_url) manifest.base_url = profile.base_url;
+  const commands: NonNullable<ReplayIsolationProfileManifestV7["commands"]> = {};
+  if (profile.ci_command) commands.ci = profile.ci_command;
+  if (profile.data_reset_command) commands.data_reset = profile.data_reset_command;
+  if (profile.reset_assertion_command) commands.reset_assertion = profile.reset_assertion_command;
+  if (profile.postcondition_command) commands.postcondition = profile.postcondition_command;
+  if (Object.keys(commands).length > 0) manifest.commands = commands;
+  if (profile.working_directory) manifest.working_directory = profile.working_directory;
+  if (profile.auth_provider_id) manifest.auth_provider_id = profile.auth_provider_id;
+  if (profile.reset_profile_id) manifest.reset_profile_id = profile.reset_profile_id;
+  if (profile.state_seed_id) manifest.state_seed_id = profile.state_seed_id;
+  manifest.allow_mutation_replay = profile.allow_mutation_replay;
+  return manifest;
+}
 
 export function mutationSafetyPlanFor(contract: WorkflowContractV7, profile: ReplayIsolationProfileV7): MutationSafetyPlanV7 {
   const hasMutation = contract.mutationBoundaryPlan.mutationSteps.length > 0;

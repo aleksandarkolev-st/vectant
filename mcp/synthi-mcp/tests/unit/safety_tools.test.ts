@@ -157,6 +157,74 @@ describe("safety MCP tool surface", () => {
     }));
   });
 
+  it("accepts a portable replay isolation profile manifest", async () => {
+    teachSaveWorkflow();
+
+    const configured = await dispatchSafetyTool("synthi_safety_set_replay_isolation_profile", {
+      workspace_id: "workspace-override",
+      profile_manifest: {
+        schema_version: "synthi.replayIsolationProfile.v1",
+        workspace_id: "workspace-from-manifest",
+        kind: "ciIsolated",
+        base_url: "https://ci.example.test",
+        commands: {
+          ci: "npm run test:e2e",
+          data_reset: "npm run db:reset:test",
+          reset_assertion: "npm run db:assert:test-seed",
+          postcondition: "npm run test:workflow-postcondition",
+        },
+        working_directory: "/workspace/app",
+        reset_profile_id: "settings-reset-v1",
+        state_seed_id: "settings-fixture-v1",
+        allow_mutation_replay: true,
+      },
+    });
+
+    expect(configured?.isError).toBeUndefined();
+    const configuredBody = configured?.structuredContent as {
+      isolation_profile: { workspace_id: string; readiness: string; can_run_full_mutation_replay: boolean };
+      profile_manifest: {
+        schema_version: string;
+        workspace_id: string;
+        kind: string;
+        commands: { ci: string; data_reset: string; reset_assertion: string; postcondition: string };
+        missing: string[];
+      };
+    };
+    expect(configuredBody.isolation_profile).toEqual(expect.objectContaining({
+      workspace_id: "workspace-override",
+      readiness: "ciIsolatedReady",
+      can_run_full_mutation_replay: true,
+    }));
+    expect(configuredBody.profile_manifest).toEqual(expect.objectContaining({
+      schema_version: "synthi.replayIsolationProfile.v1",
+      workspace_id: "workspace-override",
+      kind: "ciIsolated",
+      missing: [],
+      commands: {
+        ci: "npm run test:e2e",
+        data_reset: "npm run db:reset:test",
+        reset_assertion: "npm run db:assert:test-seed",
+        postcondition: "npm run test:workflow-postcondition",
+      },
+    }));
+    expect(JSON.stringify(configuredBody.profile_manifest)).not.toMatch(/cdp|chrome|browser-mcp-live|\/port\/\d+/i);
+
+    const mutationPlan = await dispatchSafetyTool("synthi_safety_get_mutation_plan", { workspace_id: "workspace-override" });
+    const planBody = mutationPlan?.structuredContent as {
+      profile_manifest: { workspace_id: string; commands: { postcondition: string } };
+      mutation_plan: { background_hardening: { allowed: boolean; mode: string }; ci_full_replay: { allowed: boolean; blockers: string[] } };
+    };
+    expect(planBody.profile_manifest).toEqual(expect.objectContaining({
+      workspace_id: "workspace-override",
+      commands: expect.objectContaining({ postcondition: "npm run test:workflow-postcondition" }),
+    }));
+    expect(planBody.mutation_plan).toEqual(expect.objectContaining({
+      background_hardening: expect.objectContaining({ allowed: true, mode: "ciOnly" }),
+      ci_full_replay: expect.objectContaining({ allowed: true, blockers: [] }),
+    }));
+  });
+
   it("runs reset before full mutation replay in a configured isolated profile", async () => {
     teachSaveWorkflow();
     const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "synthi-ci-replay-"));

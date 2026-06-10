@@ -1,7 +1,10 @@
 import {
   blockedHardeningExplanationFor,
+  mergeReplayIsolationProfileInputs,
   mutationSafetyPlanFor,
   prefixValidationSummaryFor,
+  replayIsolationProfileInputFromManifest,
+  replayIsolationProfileManifestFor,
   replayIsolationProfiles,
   type ReplayIsolationKindV7,
 } from "../browser/safety.js";
@@ -40,6 +43,11 @@ export const SAFETY_TOOLS = [
       type: "object",
       properties: {
         workspace_id: { type: "string" },
+        profile_manifest: {
+          type: "object",
+          description: "Portable replay isolation profile manifest. Flat fields in this call override manifest values.",
+          additionalProperties: true,
+        },
         kind: { type: "string", enum: ["none", "readOnlyPrefix", "ciIsolated"], default: "none" },
         base_url: { type: "string" },
         ci_command: { type: "string" },
@@ -130,13 +138,15 @@ function mutationPlanTool(args: unknown): ToolResponse {
     ok: true,
     workflow_id: workflow.contract.workflowId,
     isolation_profile: profile,
+    profile_manifest: replayIsolationProfileManifestFor(profile),
     mutation_plan: mutationSafetyPlanFor(workflow.contract, profile),
   });
 }
 
 function setReplayIsolationProfileTool(args: unknown): ToolResponse {
   const a = obj(args);
-  const profile = replayIsolationProfiles.set({
+  const manifestInput = replayIsolationProfileInputFromManifest(a["profile_manifest"]);
+  const argumentInput = {
     workspace_id: stringOpt(a["workspace_id"]),
     kind: isolationKind(a["kind"]),
     base_url: stringOpt(a["base_url"]),
@@ -149,10 +159,12 @@ function setReplayIsolationProfileTool(args: unknown): ToolResponse {
     reset_profile_id: stringOpt(a["reset_profile_id"]),
     state_seed_id: stringOpt(a["state_seed_id"]),
     allow_mutation_replay: boolOpt(a["allow_mutation_replay"]),
-  });
+  };
+  const profile = replayIsolationProfiles.set(mergeReplayIsolationProfileInputs(manifestInput, argumentInput));
   return jsonResponse({
     ok: true,
     isolation_profile: profile,
+    profile_manifest: replayIsolationProfileManifestFor(profile),
   });
 }
 
@@ -206,6 +218,7 @@ function explainBlockedHardeningTool(args: unknown): ToolResponse {
   return jsonResponse({
     ok: true,
     explanation: blockedHardeningExplanationFor(workflow.contract, profile),
+    profile_manifest: replayIsolationProfileManifestFor(profile),
     mutation_plan: mutationSafetyPlanFor(workflow.contract, profile),
   });
 }
