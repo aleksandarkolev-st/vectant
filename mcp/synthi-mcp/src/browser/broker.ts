@@ -10,7 +10,7 @@ import {
   type WorkflowReplayModeV7,
   type WorkflowReplayPlanV7,
 } from "./workflow.js";
-import { bridgeTokenMatches, normalizeOrigin, sameExactOrigin } from "./security.js";
+import { bridgeTokenMatches, normalizeOrigin, redactUrl, sameExactOrigin } from "./security.js";
 import type {
   BrowserActionKind,
   BrowserConsentRecord,
@@ -40,6 +40,11 @@ export interface BrowserActionInput {
   selector?: string;
   value?: string;
   field_name?: string;
+}
+
+export interface BrowserReplayTargetInput {
+  url: string;
+  detail?: Record<string, unknown>;
 }
 
 export interface BrowserBridgeMessage {
@@ -74,8 +79,49 @@ export interface BrowserWorkflowArtifact {
   saved_at: number;
 }
 
+interface BrowserTeachAuthScope {
+  app_origin: string;
+  origins: string[];
+  checkpoint_id?: string;
+}
+
+interface BrowserTeachAuthStartDiagnostic {
+  at: number;
+  tab_id: string;
+  origin: string;
+  pending_origins_before: string[];
+  matched_checkpoint_id: string | null;
+}
+
+interface PendingHumanActionAnnotation {
+  tab_id: string;
+  url: string;
+  origin: string;
+  actions?: BrowserActionKind[];
+  detail: Record<string, unknown>;
+  security: BrowserTraceEvent["security"];
+  within_ms: number;
+  observed_at: number;
+  queued_at: number;
+}
+
+export interface BrowserRecordingIssue {
+  issue_id: string;
+  at: number;
+  source: "hosted-playwright-adapter" | "hosted-playwright-annotation" | "browser-extension-bridge" | "broker";
+  error: string;
+  blocking: boolean;
+  tab_id?: string;
+  action?: BrowserActionKind;
+  url?: string;
+  origin?: string;
+  frame_origin?: string;
+  popup_origin?: string;
+}
+
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
+const PENDING_ANNOTATION_FUTURE_SKEW_MS = 75;
 
 export interface BrowserConsentGrantOptions {
   screenshot?: boolean;
@@ -88,16 +134,32 @@ export class BrowserBroker {
   private readonly trace = new BrowserTraceRecorder();
   private bridgeToken: string | undefined;
   private selectedTabId: string | null = null;
-  private teachMode: { active: boolean; tab_id: string | null; origin: string | null } = {
+  private teachMode: {
+    active: boolean;
+    tab_id: string | null;
+    origin: string | null;
+    auth_scope: BrowserTeachAuthScope | null;
+  } = {
     active: false,
     tab_id: null,
     origin: null,
+    auth_scope: null,
   };
+  private readonly pendingTeachAuthScopes = new Map<string, BrowserTeachAuthScope>();
+  private lastTeachAuthStartDiagnostic: BrowserTeachAuthStartDiagnostic | null = null;
   private activeLease: BrowserLease | null = null;
   private queuedActions: BrowserActionInput[] = [];
   private runtime: BrowserRuntimeAttachment | null = null;
   private teachAnswers: BrowserTeachQuestionAnswer[] = [];
   private workflows = new Map<string, BrowserWorkflowArtifact>();
+  private recordingIssues: BrowserRecordingIssue[] = [];
+  private pendingHumanActionAnnotations: PendingHumanActionAnnotation[] = [];
+  private pendingDeniedTargetOriginDiscards: Array<{
+    tab_id: string;
+    actions: BrowserActionKind[] | null;
+    expires_at: number;
+    reason: string;
+  }> = [];
 
   setRuntimeAttachment(runtime: Omit<BrowserRuntimeAttachment, "attached_at">): BrowserRuntimeAttachment {
     this.runtime = { ...runtime, attached_at: Date.now() };
@@ -144,6 +206,12 @@ export class BrowserBroker {
     if (!tab) return null;
     this.selectedTabId = tab_id;
     return { ...tab };
+  }
+
+  forgetTab(tab_id: string): { ok: true; forgotten: boolean } {
+    const forgotten = this.tabs.delete(tab_id);
+    if (this.selectedTabId === tab_id) this.selectedTabId = null;
+    return { ok: true, forgotten };
   }
 
   selectedTab(): BrowserTab | null {
@@ -215,19 +283,63 @@ export class BrowserBroker {
     if (!tab) return { ok: false, error: "tab_not_authorized" };
     const origin = normalizeOrigin(tab.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
+    const pendingAuthScopesBefore = [...this.pendingTeachAuthScopes.values()].map(cloneTeachAuthScope);
+    if (this.teachMode.active && this.teachMode.tab_id === tab_id && this.teachMode.origin === origin) {
+      const pendingAuthScope = this.pendingTeachAuthScopes.get(origin) ?? null;
+      if (pendingAuthScope) this.pendingTeachAuthScopes.delete(origin);
+      const authScope = pendingAuthScope ?? this.teachMode.auth_scope;
+      this.teachMode = { ...this.teachMode, auth_scope: authScope };
+      this.lastTeachAuthStartDiagnostic = {
+        at: Date.now(),
+        tab_id,
+        origin,
+        pending_origins_before: pendingAuthScopesBefore.map((scope) => scope.app_origin),
+        matched_checkpoint_id: authScope?.checkpoint_id ?? null,
+      };
+      eventLog.push({
+        kind: "browser",
+        action: "teach_start_idempotent",
+        payload: {
+          tab_id,
+          origin,
+          auth_checkpoint_active: authScope !== null,
+          pending_auth_origins_before: pendingAuthScopesBefore.map((scope) => scope.app_origin),
+          matched_auth_checkpoint_id: authScope?.checkpoint_id ?? null,
+        },
+      });
+      return { ok: true, tab: { ...tab }, origin };
+    }
+    const authScope = this.pendingTeachAuthScopes.get(origin) ?? null;
+    if (authScope) this.pendingTeachAuthScopes.delete(origin);
     this.trace.beginTrace();
-    this.teachMode = { active: true, tab_id, origin };
+    this.recordingIssues = [];
+    this.pendingHumanActionAnnotations = [];
+    this.pendingDeniedTargetOriginDiscards = [];
+    this.teachMode = { active: true, tab_id, origin, auth_scope: authScope };
+    this.lastTeachAuthStartDiagnostic = {
+      at: Date.now(),
+      tab_id,
+      origin,
+      pending_origins_before: pendingAuthScopesBefore.map((scope) => scope.app_origin),
+      matched_checkpoint_id: authScope?.checkpoint_id ?? null,
+    };
     eventLog.push({
       kind: "browser",
       action: "teach_started",
-      payload: { tab_id, origin },
+      payload: {
+        tab_id,
+        origin,
+        auth_checkpoint_active: authScope !== null,
+        pending_auth_origins_before: pendingAuthScopesBefore.map((scope) => scope.app_origin),
+        matched_auth_checkpoint_id: authScope?.checkpoint_id ?? null,
+      },
     });
     return { ok: true, tab: { ...tab }, origin };
   }
 
   stopTeachMode(reason: string = "stopped"): { active: false; reason: string } {
     const previous = { ...this.teachMode };
-    this.teachMode = { active: false, tab_id: null, origin: null };
+    this.teachMode = { active: false, tab_id: null, origin: null, auth_scope: null };
     eventLog.push({
       kind: "browser",
       action: "teach_stopped",
@@ -236,8 +348,68 @@ export class BrowserBroker {
     return { active: false, reason };
   }
 
-  teachState(): { active: boolean; tab_id: string | null; origin: string | null } {
-    return { ...this.teachMode };
+  teachState(): {
+    active: boolean;
+    tab_id: string | null;
+    origin: string | null;
+    auth_checkpoint_active: boolean;
+    auth_checkpoint_id: string | null;
+  } {
+    return {
+      active: this.teachMode.active,
+      tab_id: this.teachMode.tab_id,
+      origin: this.teachMode.origin,
+      auth_checkpoint_active: Boolean(this.teachMode.auth_scope),
+      auth_checkpoint_id: this.teachMode.auth_scope?.checkpoint_id ?? null,
+    };
+  }
+
+  teachAuthCheckpointScopes(): {
+    active: BrowserTeachAuthScope | null;
+    pending: BrowserTeachAuthScope[];
+    last_start: BrowserTeachAuthStartDiagnostic | null;
+  } {
+    return {
+      active: this.teachMode.auth_scope ? cloneTeachAuthScope(this.teachMode.auth_scope) : null,
+      pending: [...this.pendingTeachAuthScopes.values()].map(cloneTeachAuthScope),
+      last_start: this.lastTeachAuthStartDiagnostic ? { ...this.lastTeachAuthStartDiagnostic } : null,
+    };
+  }
+
+  activateAuthCheckpointForTeach(input: {
+    app_origin: string;
+    idp_origins?: string[];
+    checkpoint_id?: string;
+  }): { ok: true; app_origin: string; origins: string[]; checkpoint_id?: string } | { ok: false; error: string } {
+    let appOrigin: string;
+    try {
+      appOrigin = normalizeOrigin(input.app_origin).origin;
+    } catch {
+      return { ok: false, error: "invalid_auth_checkpoint_origin" };
+    }
+    const origins = new Set<string>([appOrigin]);
+    for (const rawOrigin of input.idp_origins ?? []) {
+      try {
+        origins.add(normalizeOrigin(rawOrigin).origin);
+      } catch {
+        return { ok: false, error: "invalid_auth_checkpoint_origin" };
+      }
+    }
+    const scope: BrowserTeachAuthScope = {
+      app_origin: appOrigin,
+      origins: [...origins],
+      ...(typeof input.checkpoint_id === "string" && input.checkpoint_id.length > 0 ? { checkpoint_id: input.checkpoint_id } : {}),
+    };
+    this.pendingTeachAuthScopes.set(appOrigin, scope);
+    if (this.teachMode.active && this.teachMode.origin === appOrigin) {
+      this.teachMode = { ...this.teachMode, auth_scope: scope };
+    }
+    eventLog.push({
+      kind: "browser",
+      action: "teach_auth_checkpoint_selected",
+      payload: { app_origin: appOrigin, checkpoint_id: scope.checkpoint_id ?? null, origin_count: scope.origins.length },
+    });
+    return { ok: true, ...scope };
   }
 
   recordTeachQuestionAnswer(input: {
@@ -270,6 +442,44 @@ export class BrowserBroker {
     return this.teachAnswers.map((answer) => ({ ...answer }));
   }
 
+  recordingIssueSnapshot(limit: number = 20): BrowserRecordingIssue[] {
+    return this.recordingIssues.slice(-Math.max(1, Math.min(100, Math.floor(limit)))).map((issue) => ({ ...issue }));
+  }
+
+  recordTeachRecordingIssue(
+    error: string,
+    input: {
+      tab_id?: string;
+      url?: string;
+      origin?: string;
+      action?: BrowserActionKind;
+      detail?: Record<string, unknown>;
+    },
+    source: BrowserRecordingIssue["source"] = "broker"
+  ): BrowserRecordingIssue {
+    const url = typeof input.url === "string" ? input.url : undefined;
+    const origin = url ? this.originOrNull(url) : typeof input.origin === "string" ? this.originOrNull(input.origin) : null;
+    const frameOrigin = this.targetOriginFromDetail(input.detail, "frame_origin");
+    const popupOrigin = this.popupOriginFromDetail(input.detail);
+    const issue: BrowserRecordingIssue = {
+      issue_id: `recording_issue_${randomUUID()}`,
+      at: Date.now(),
+      source,
+      error,
+      blocking: this.isBlockingRecordingIssue({ error, input, source, url }),
+      ...(typeof input.tab_id === "string" && input.tab_id.length > 0 ? { tab_id: input.tab_id } : {}),
+      ...(input.action ? { action: input.action } : {}),
+      ...(url ? { url: redactUrl(url).url } : {}),
+      ...(origin ? { origin } : {}),
+      ...(frameOrigin ? { frame_origin: frameOrigin } : {}),
+      ...(popupOrigin ? { popup_origin: popupOrigin } : {}),
+    };
+    this.recordingIssues.push(issue);
+    if (this.recordingIssues.length > 100) this.recordingIssues.splice(0, this.recordingIssues.length - 100);
+    eventLog.push({ kind: "browser", action: "recording_issue", payload: { issue } });
+    return { ...issue };
+  }
+
   handleOriginChange(tab_id: string, nextUrl: string, detail?: Record<string, unknown>): void {
     let origin: string;
     try {
@@ -286,7 +496,7 @@ export class BrowserBroker {
     const sameTeachTab = this.teachMode.tab_id === tab_id;
     const popupTeachTab = this.isTeachPopupContext(tab_id, detail);
     if (!sameTeachTab && !popupTeachTab) return;
-    if (this.teachMode.origin !== origin) {
+    if (!popupTeachTab && this.teachMode.origin !== origin) {
       this.stopTeachMode(this.hasOriginConsent(origin) ? "origin_changed" : "unapproved_origin_change");
       return;
     }
@@ -295,13 +505,18 @@ export class BrowserBroker {
       return;
     }
     if (previousUrl === nextUrl) return;
+    const eventDetail = this.detailWithTargetSecurity(nextUrl, {
+      event_source: "page_lifecycle",
+      navigation_event: true,
+      ...(detail ?? {}),
+    });
     const event = this.trace.recordNavigation({
       tab_id,
       url: nextUrl,
       origin,
       action: "navigate",
-      detail: { event_source: "page_lifecycle", navigation_event: true, ...(detail ?? {}) },
-      security: this.securityForUrl(nextUrl),
+      detail: eventDetail,
+      security: this.securityForUrl(nextUrl, eventDetail),
     });
     eventLog.push({ kind: "browser", action: "navigation", payload: { event } });
   }
@@ -320,7 +535,7 @@ export class BrowserBroker {
     return { ok: true, event };
   }
 
-  recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string; detail?: Record<string, unknown> }):
+  recordHumanAction(selection: BrowserSelection & { action: BrowserActionInput["action"]; value?: string; field_name?: string; detail?: Record<string, unknown>; observed_at?: number }):
     | { ok: true; event: BrowserTraceEvent; lease_conflict: boolean }
     | { ok: false; error: string } {
     const gate = this.requireTeach(selection.tab_id, selection.url, selection.detail);
@@ -329,7 +544,25 @@ export class BrowserBroker {
     if (!normalized.ok) return normalized;
     const intentGate = this.requireExplicitIntent(selection.action, selection.detail);
     if (!intentGate.ok) return intentGate;
+    const deniedReason = this.consumePendingDeniedTargetOriginDiscard({
+      tab_id: selection.tab_id,
+      action: selection.action,
+    });
+    if (deniedReason) {
+      eventLog.push({
+        kind: "browser",
+        action: "human_action_discarded",
+        payload: {
+          tab_id: selection.tab_id,
+          action: selection.action,
+          reason: deniedReason,
+          deferred: true,
+        },
+      });
+      return { ok: false, error: deniedReason };
+    }
     const lease_conflict = this.activeLease !== null && !this.activeLease.revoked;
+    const detail = this.detailWithTargetSecurity(selection.url, selection.detail);
     const event = this.trace.recordHumanAction({
       tab_id: selection.tab_id,
       frame_id: selection.frame_id,
@@ -339,9 +572,11 @@ export class BrowserBroker {
       value: selection.value,
       field_name: selection.field_name,
       element: selection.element,
-      detail: { ...(selection.detail ?? {}), lease_conflict },
-      security: this.securityForUrl(selection.url),
+      detail: { ...detail, lease_conflict },
+      security: this.securityForUrl(selection.url, detail),
+      observed_at: selection.observed_at,
     });
+    this.applyPendingHumanActionAnnotations(event);
     eventLog.push({ kind: "browser", action: "human_action", payload: { event, lease_conflict } });
     if (lease_conflict) {
       eventLog.push({
@@ -360,9 +595,14 @@ export class BrowserBroker {
     actions?: BrowserActionKind[];
     detail: Record<string, unknown>;
     within_ms?: number;
+    observed_at?: number;
   }): { ok: true; event: BrowserTraceEvent | null } | { ok: false; error: string } {
-    const gate = this.requireTeach(input.tab_id, input.url, input.detail);
-    if (!gate.ok) return gate;
+    const detail = this.detailWithTargetSecurity(input.url, input.detail);
+    const gate = this.requireTeach(input.tab_id, input.url, detail);
+    if (!gate.ok) {
+      this.discardDeniedTargetOriginAction(input, gate.error);
+      return gate;
+    }
     const normalized = this.normalizeSelectionOrigin({
       tab_id: input.tab_id,
       url: input.url,
@@ -372,11 +612,144 @@ export class BrowserBroker {
     const event = this.trace.annotateLatestAction({
       tab_id: input.tab_id,
       actions: input.actions,
-      detail: input.detail,
+      detail,
+      security: this.securityForUrl(input.url, detail),
       within_ms: input.within_ms,
+      observed_at: input.observed_at,
     });
     if (event) eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event } });
+    if (!event) {
+      this.queuePendingHumanActionAnnotation({
+        tab_id: input.tab_id,
+        url: input.url,
+        origin: normalized.origin,
+        actions: input.actions,
+        detail,
+        security: this.securityForUrl(input.url, detail),
+        within_ms: input.within_ms ?? 5000,
+        observed_at: typeof input.observed_at === "number" && Number.isFinite(input.observed_at) ? Math.floor(input.observed_at) : Date.now(),
+        queued_at: Date.now(),
+      });
+    }
     return { ok: true, event };
+  }
+
+  private queuePendingHumanActionAnnotation(annotation: PendingHumanActionAnnotation): void {
+    const now = Date.now();
+    this.pendingHumanActionAnnotations = this.pendingHumanActionAnnotations
+      .filter((candidate) => now - candidate.queued_at <= Math.max(candidate.within_ms, 1000));
+    this.pendingHumanActionAnnotations.push(annotation);
+    if (this.pendingHumanActionAnnotations.length > 50) {
+      this.pendingHumanActionAnnotations.splice(0, this.pendingHumanActionAnnotations.length - 50);
+    }
+    eventLog.push({
+      kind: "browser",
+      action: "human_action_annotation_queued",
+      payload: {
+        tab_id: annotation.tab_id,
+        actions: annotation.actions ?? null,
+        origin: annotation.origin,
+        within_ms: annotation.within_ms,
+      },
+    });
+  }
+
+  private applyPendingHumanActionAnnotations(event: BrowserTraceEvent): void {
+    if (this.pendingHumanActionAnnotations.length === 0) return;
+    const remaining: PendingHumanActionAnnotation[] = [];
+    const now = Date.now();
+    for (const annotation of this.pendingHumanActionAnnotations) {
+      if (now - annotation.queued_at > Math.max(annotation.within_ms, 1000)) continue;
+      if (!this.pendingHumanActionAnnotationMatches(annotation, event)) {
+        remaining.push(annotation);
+        continue;
+      }
+      const annotated = this.trace.annotateAction(event.event_id, {
+        detail: annotation.detail,
+        security: annotation.security,
+      });
+      if (annotated) {
+        eventLog.push({ kind: "browser", action: "human_action_annotated", payload: { event: annotated, pending: true } });
+      }
+    }
+    this.pendingHumanActionAnnotations = remaining;
+  }
+
+  private pendingHumanActionAnnotationMatches(annotation: PendingHumanActionAnnotation, event: BrowserTraceEvent): boolean {
+    if (event.tab_id !== annotation.tab_id) return false;
+    if (!event.action) return false;
+    if (annotation.actions && !annotation.actions.includes(event.action)) return false;
+    if (event.origin !== annotation.origin) return false;
+    const eventTs = typeof event.ts === "number" && Number.isFinite(event.ts) ? event.ts : Date.now();
+    const elapsedSinceAnnotation = eventTs - annotation.observed_at;
+    return elapsedSinceAnnotation >= -PENDING_ANNOTATION_FUTURE_SKEW_MS && elapsedSinceAnnotation <= annotation.within_ms;
+  }
+
+  private discardDeniedTargetOriginAction(
+    input: {
+      tab_id: string;
+      actions?: BrowserActionKind[];
+      within_ms?: number;
+      observed_at?: number;
+    },
+    error: string
+  ): void {
+    if (error !== "frame_origin_consent_required" && error !== "popup_origin_consent_required") return;
+    const discarded = this.trace.discardLatestAction({
+      tab_id: input.tab_id,
+      actions: input.actions,
+      within_ms: input.within_ms,
+      observed_at: input.observed_at,
+    });
+    if (!discarded) {
+      this.queuePendingDeniedTargetOriginDiscard(input, error);
+      return;
+    }
+    eventLog.push({
+      kind: "browser",
+      action: "human_action_discarded",
+      payload: {
+        event_id: discarded.event_id,
+        tab_id: discarded.tab_id,
+        action: discarded.action,
+        reason: error,
+      },
+    });
+  }
+
+  private queuePendingDeniedTargetOriginDiscard(
+    input: {
+      tab_id: string;
+      actions?: BrowserActionKind[];
+      within_ms?: number;
+    },
+    reason: string
+  ): void {
+    const now = Date.now();
+    this.pendingDeniedTargetOriginDiscards = this.pendingDeniedTargetOriginDiscards.filter((entry) => entry.expires_at > now);
+    const withinMs = Math.max(1, Math.min(15_000, Math.floor(input.within_ms ?? 5000)));
+    this.pendingDeniedTargetOriginDiscards.push({
+      tab_id: input.tab_id,
+      actions: input.actions ? [...input.actions] : null,
+      expires_at: now + withinMs,
+      reason,
+    });
+    if (this.pendingDeniedTargetOriginDiscards.length > 50) {
+      this.pendingDeniedTargetOriginDiscards.splice(0, this.pendingDeniedTargetOriginDiscards.length - 50);
+    }
+  }
+
+  private consumePendingDeniedTargetOriginDiscard(input: { tab_id: string; action: BrowserActionKind }): string | null {
+    const now = Date.now();
+    this.pendingDeniedTargetOriginDiscards = this.pendingDeniedTargetOriginDiscards.filter((entry) => entry.expires_at > now);
+    for (let index = this.pendingDeniedTargetOriginDiscards.length - 1; index >= 0; index -= 1) {
+      const entry = this.pendingDeniedTargetOriginDiscards[index];
+      if (!entry || entry.tab_id !== input.tab_id) continue;
+      if (entry.actions && !entry.actions.includes(input.action)) continue;
+      this.pendingDeniedTargetOriginDiscards.splice(index, 1);
+      return entry.reason;
+    }
+    return null;
   }
 
   snapshot(input: BrowserBrokerSnapshotInput): { ok: true; snapshot: BrowserSnapshot } | { ok: false; error: string } {
@@ -443,6 +816,16 @@ export class BrowserBroker {
       if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     }
     return { ok: true, action: { ...input } };
+  }
+
+  validateReplayTarget(input: BrowserReplayTargetInput): { ok: true } | { ok: false; error: string } {
+    const pageOrigin = normalizeOrigin(input.url).origin;
+    if (!this.hasOriginConsent(pageOrigin)) return { ok: false, error: "origin_consent_required" };
+    const frameGate = this.requireFrameOriginConsent(pageOrigin, input.detail);
+    if (!frameGate.ok) return frameGate;
+    const popupGate = this.requirePopupOriginConsent(pageOrigin, input.detail);
+    if (!popupGate.ok) return popupGate;
+    return { ok: true };
   }
 
   queueAction(input: BrowserActionInput): { ok: true; queued: number } | { ok: false; error: string } {
@@ -515,6 +898,17 @@ export class BrowserBroker {
     return { ok: true, artifact: this.currentWorkflowArtifact() };
   }
 
+  registerWorkflowArtifact(artifact: BrowserWorkflowArtifact): { ok: true; artifact: BrowserWorkflowArtifact } | { ok: false; error: string; workflow_id?: string } {
+    if (artifact.workflow_id !== artifact.workflow.contract.workflowId) {
+      return { ok: false, error: "workflow_artifact_id_mismatch", workflow_id: artifact.workflow_id };
+    }
+    if (artifact.workflow.card.stepCount <= 0 || artifact.events.length <= 0) {
+      return { ok: false, error: "workflow_artifact_empty", workflow_id: artifact.workflow_id };
+    }
+    this.workflows.set(artifact.workflow_id, cloneWorkflowArtifact(artifact));
+    return { ok: true, artifact: cloneWorkflowArtifact(artifact) };
+  }
+
   validateBridgeMessage(message: BrowserBridgeMessage): { ok: true } | { ok: false; error: string } {
     if (!bridgeTokenMatches(this.bridgeToken, message.bridge_token)) {
       return { ok: false, error: "bad_bridge_token" };
@@ -542,13 +936,17 @@ export class BrowserBroker {
     this.tabs.clear();
     this.trace.clear();
     this.selectedTabId = null;
-    this.teachMode = { active: false, tab_id: null, origin: null };
+    this.teachMode = { active: false, tab_id: null, origin: null, auth_scope: null };
+    this.pendingTeachAuthScopes.clear();
+    this.lastTeachAuthStartDiagnostic = null;
     this.activeLease = null;
     this.queuedActions = [];
     this.bridgeToken = undefined;
     this.runtime = null;
     this.teachAnswers = [];
     this.workflows.clear();
+    this.recordingIssues = [];
+    this.pendingDeniedTargetOriginDiscards = [];
   }
 
   private currentWorkflowArtifact(): BrowserWorkflowArtifact {
@@ -605,24 +1003,57 @@ export class BrowserBroker {
   private requireTeach(tab_id: string, url: string, detail?: Record<string, unknown>): { ok: true } | { ok: false; error: string } {
     if (!this.teachMode.active) return { ok: false, error: "teach_mode_required" };
     const origin = normalizeOrigin(url).origin;
-    if (this.teachMode.tab_id !== tab_id && !this.isSameOriginPopupTeachTab(tab_id, origin, detail)) {
+    const popupContext = this.isTeachPopupContext(tab_id, detail);
+    if (this.teachMode.tab_id !== tab_id && !popupContext) {
       return { ok: false, error: "teach_tab_mismatch" };
     }
-    if (this.teachMode.origin !== origin) return { ok: false, error: "teach_origin_mismatch" };
+    if (!popupContext && this.teachMode.origin !== origin) return { ok: false, error: "teach_origin_mismatch" };
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
+    const frameGate = this.requireFrameOriginConsent(origin, detail);
+    if (!frameGate.ok) return frameGate;
+    const popupGate = this.requirePopupOriginConsent(origin, detail);
+    if (!popupGate.ok) return popupGate;
     return { ok: true };
   }
 
-  private isSameOriginPopupTeachTab(tab_id: string, origin: string, detail: Record<string, unknown> | undefined): boolean {
-    if (!this.isTeachPopupContext(tab_id, detail)) return false;
-    return origin === this.teachMode.origin;
+  private isBlockingRecordingIssue(input: {
+    error: string;
+    input: { tab_id?: string; url?: string; origin?: string; action?: BrowserActionKind; detail?: Record<string, unknown> };
+    source: BrowserRecordingIssue["source"];
+    url?: string;
+  }): boolean {
+    const deniedTargetOrigin =
+      input.error === "frame_origin_consent_required" || input.error === "popup_origin_consent_required";
+    if (input.source === "hosted-playwright-annotation" && !deniedTargetOrigin) return false;
+    if (input.error === "teach_mode_required") return false;
+    if (!this.teachMode.active) return false;
+    if (input.url && this.isRuntimeWorkspaceShellUrl(input.url)) return false;
+    return true;
+  }
+
+  private isRuntimeWorkspaceShellUrl(url: string): boolean {
+    const workspaceUrl = this.runtime?.workspace_url;
+    if (!workspaceUrl) return false;
+    try {
+      const candidate = new URL(url);
+      const workspace = new URL(workspaceUrl);
+      const workspacePath = workspace.pathname.endsWith("/") ? workspace.pathname : `${workspace.pathname}/`;
+      return candidate.origin === workspace.origin &&
+        (candidate.pathname === workspace.pathname || candidate.pathname.startsWith(workspacePath));
+    } catch {
+      return false;
+    }
   }
 
   private isTeachPopupContext(tab_id: string, detail: Record<string, unknown> | undefined): boolean {
     if (!detail || detail["popup_context"] !== true) return false;
-    if (typeof detail["popup_tab_id"] === "string" && detail["popup_tab_id"] !== tab_id) return false;
-    if (detail["opener_tab_id"] !== this.teachMode.tab_id) return false;
-    if (typeof detail["opener_origin"] === "string" && detail["opener_origin"] !== this.teachMode.origin) return false;
+    const rootOpenerTabId = typeof detail["root_opener_tab_id"] === "string" ? detail["root_opener_tab_id"] : detail["opener_tab_id"];
+    const rootOpenerOrigin = typeof detail["root_opener_origin"] === "string" ? detail["root_opener_origin"] : detail["opener_origin"];
+    if (typeof detail["root_opener_tab_id"] !== "string" && typeof detail["popup_tab_id"] === "string" && detail["popup_tab_id"] !== tab_id) {
+      return false;
+    }
+    if (rootOpenerTabId !== this.teachMode.tab_id) return false;
+    if (typeof rootOpenerOrigin === "string" && rootOpenerOrigin !== this.teachMode.origin) return false;
     return true;
   }
 
@@ -641,13 +1072,72 @@ export class BrowserBroker {
     return { ok: true, origin };
   }
 
-  private securityForUrl(url: string): BrowserTraceEvent["security"] {
-    return {
+  private securityForUrl(url: string, detail?: Record<string, unknown>): BrowserTraceEvent["security"] {
+    const security: NonNullable<BrowserTraceEvent["security"]> = {
       exact_origin_approved: this.hasOriginConsent(url),
       screenshot_approved: this.hasScreenshotConsent(url),
       diagnostics_approved: this.hasDiagnosticsConsent(url),
-      auth_checkpoint_approved: this.hasAuthCheckpointAccess(url),
+      auth_checkpoint_approved: this.hasActiveTeachAuthCheckpointAccess(url),
     };
+    const frameOrigin = this.targetOriginFromDetail(detail, "frame_origin");
+    if (frameOrigin) {
+      security.frame_origin_approved = this.hasOriginConsent(frameOrigin);
+      security.frame_screenshot_approved = this.hasScreenshotConsent(frameOrigin);
+    }
+    const popupOrigin = this.popupOriginFromDetail(detail);
+    if (popupOrigin) {
+      security.popup_origin_approved = this.hasOriginConsent(popupOrigin);
+      security.popup_screenshot_approved = this.hasScreenshotConsent(popupOrigin);
+    }
+    return security;
+  }
+
+  private detailWithTargetSecurity(url: string, detail: Record<string, unknown> | undefined): Record<string, unknown> {
+    const next = { ...(detail ?? {}) };
+    const pageOrigin = normalizeOrigin(url).origin;
+    const frameOrigin = this.targetOriginFromDetail(next, "frame_origin");
+    if (frameOrigin) {
+      next["frame_origin"] = frameOrigin;
+      next["frame_origin_approved"] = frameOrigin === pageOrigin || this.hasOriginConsent(frameOrigin);
+      next["frame_screenshot_approved"] = frameOrigin === pageOrigin || this.hasScreenshotConsent(frameOrigin);
+    }
+    const popupOrigin = this.popupOriginFromDetail(next);
+    if (popupOrigin) {
+      next["popup_origin"] = popupOrigin;
+      next["popup_origin_approved"] = popupOrigin === pageOrigin || this.hasOriginConsent(popupOrigin);
+      next["popup_screenshot_approved"] = popupOrigin === pageOrigin || this.hasScreenshotConsent(popupOrigin);
+    }
+    return next;
+  }
+
+  private requireFrameOriginConsent(pageOrigin: string, detail: Record<string, unknown> | undefined): { ok: true } | { ok: false; error: string } {
+    const frameOrigin = this.targetOriginFromDetail(detail, "frame_origin");
+    if (!frameOrigin || frameOrigin === pageOrigin) return { ok: true };
+    if (!this.hasOriginConsent(frameOrigin)) return { ok: false, error: "frame_origin_consent_required" };
+    return { ok: true };
+  }
+
+  private requirePopupOriginConsent(pageOrigin: string, detail: Record<string, unknown> | undefined): { ok: true } | { ok: false; error: string } {
+    const popupOrigin = this.popupOriginFromDetail(detail);
+    if (!popupOrigin || popupOrigin === pageOrigin) return { ok: true };
+    if (!this.hasOriginConsent(popupOrigin)) return { ok: false, error: "popup_origin_consent_required" };
+    return { ok: true };
+  }
+
+  private popupOriginFromDetail(detail: Record<string, unknown> | undefined): string | null {
+    const popupUrlOrigin = this.targetOriginFromDetail(detail, "popup_url");
+    if (popupUrlOrigin) return popupUrlOrigin;
+    return this.targetOriginFromDetail(detail, "popup_origin");
+  }
+
+  private targetOriginFromDetail(detail: Record<string, unknown> | undefined, key: string): string | null {
+    const raw = detail?.[key];
+    if (typeof raw !== "string" || raw.trim().length === 0) return null;
+    try {
+      return normalizeOrigin(raw).origin;
+    } catch {
+      return null;
+    }
   }
 
   private requireExplicitIntent(
@@ -684,12 +1174,21 @@ export class BrowserBroker {
     }
   }
 
-  private hasAuthCheckpointAccess(url: string): boolean {
+  private hasActiveTeachAuthCheckpointAccess(url: string): boolean {
+    const scope = this.teachMode.auth_scope;
+    if (!this.teachMode.active || !scope) return false;
+    let origin: string;
     try {
-      return authCheckpointManager.readiness(url, false).ready;
+      origin = normalizeOrigin(url).origin;
     } catch {
       return false;
     }
+    if (!scope.origins.includes(origin)) return false;
+    if (scope.checkpoint_id) {
+      const readiness = authCheckpointManager.readinessForCheckpoint(scope.checkpoint_id, false);
+      return readiness.ready && readiness.checkpoint?.app_origin === scope.app_origin;
+    }
+    return authCheckpointManager.readiness(scope.app_origin, false).ready;
   }
 }
 
@@ -701,5 +1200,13 @@ function cloneWorkflowArtifact(artifact: BrowserWorkflowArtifact): BrowserWorkfl
     workflow: artifact.workflow,
     events: artifact.events.map((event) => ({ ...event })),
     saved_at: artifact.saved_at,
+  };
+}
+
+function cloneTeachAuthScope(scope: BrowserTeachAuthScope): BrowserTeachAuthScope {
+  return {
+    app_origin: scope.app_origin,
+    origins: [...scope.origins],
+    ...(scope.checkpoint_id ? { checkpoint_id: scope.checkpoint_id } : {}),
   };
 }

@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
 import { browserBridgeServer } from "../../src/browser/bridge_server.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
@@ -13,12 +17,14 @@ const originalHostedBrowserCdpUrl = process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"]
 
 beforeEach(() => {
   browserBroker.resetForTests();
+  authCheckpointManager.resetForTests();
   eventLog._resetForTests();
   delete process.env["SYNTHI_BROWSER_CDP_URL"];
   delete process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   await browserBridgeServer.stop();
   if (originalBrowserCdpUrl === undefined) {
@@ -100,6 +106,26 @@ describe("browser MCP tool surface", () => {
       reason: "complete",
     });
     expect(released?.structuredContent).toEqual({ ok: true, released: true });
+  });
+
+  it("closes authorized browser tabs through tools", async () => {
+    const url = "https://app.example.com/preview";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "preview", url, title: "Preview", active: true }]);
+    browserBroker.selectTab("preview");
+    const closeTab = vi.spyOn(browserPlaywrightAdapter, "closeTab").mockResolvedValue({ ok: true, tab_id: "preview" });
+
+    const response = await dispatchBrowserTool("synthi_browser_close_tab", { tab_id: "preview" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(closeTab).toHaveBeenCalledWith("preview");
+    expect(response?.structuredContent).toEqual({
+      ok: true,
+      closed: { ok: true, tab_id: "preview" },
+      forgotten: true,
+    });
+    expect(browserBroker.selectedTab()).toBeNull();
+    expect(browserBroker.listTabs()).toEqual([]);
   });
 
   it("dispatches durable pointer and scroll agent actions through Playwright", async () => {
@@ -306,6 +332,394 @@ describe("browser MCP tool surface", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks auth-required workflow replay when live auth readiness is revoked", async () => {
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secure-cookie", domain: "secure.example.com", path: "/" }],
+        origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "secure-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    authCheckpointManager.revoke(checkpoint.checkpoint.checkpoint_id);
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-replay");
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+    });
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "workflow_auth_not_ready",
+      workflow_id: workflowId,
+      auth_status: "checkpointRevoked",
+      unattended: false,
+    }));
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("captures hosted auth storage through a broker-owned artifact without returning values", async () => {
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "https://ide.example.com/workspace/a",
+      adapter: "unit-test",
+    });
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      redirect_chain: ["https://idp.example.com/login"],
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    const capture = vi.spyOn(browserPlaywrightAdapter, "captureAuthStorageState").mockResolvedValue({
+      cookies: [
+        { name: "sid", value: "secret-cookie-value", domain: "secure.example.com", path: "/" },
+        { name: "idp", value: "secret-idp-cookie", domain: "idp.example.com", path: "/" },
+      ],
+      origins: [
+        {
+          origin: "https://secure.example.com",
+          localStorage: [{ name: "session", value: "secret-local" }],
+          sessionStorage: [{ name: "csrf", value: "secret-session" }],
+        },
+      ],
+    });
+
+    const response = await dispatchBrowserTool("synthi_browser_capture_auth_checkpoint_storage", {
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      tab_id: "app",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(capture).toHaveBeenCalledWith("app", ["https://secure.example.com", "https://idp.example.com"]);
+    const bodyText = JSON.stringify(response?.structuredContent);
+    expect(bodyText).not.toMatch(/secret-cookie|secret-local|secret-session|secret-idp/);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_artifact: expect.objectContaining({
+        app_origin: "https://secure.example.com",
+        cookie_count: 2,
+        local_storage_entry_count: 1,
+        session_storage_entry_count: 1,
+      }),
+      auth_readiness: expect.objectContaining({
+        ready: true,
+        status: "ready",
+      }),
+      teach_auth_checkpoint: expect.objectContaining({
+        ok: true,
+        app_origin: "https://secure.example.com",
+        checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      }),
+    }));
+    expect(authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint.checkpoint_id)?.state.origins[0]?.localStorage?.[0]).toEqual({
+      name: "session",
+      value: "secret-local",
+    });
+    const status = await dispatchBrowserTool("synthi_browser_get_trace_status", {});
+    expect((status?.structuredContent as {
+      trace_status: {
+        teach_auth_checkpoints: {
+          pending: Array<{ app_origin: string; checkpoint_id?: string }>;
+        };
+      };
+    }).trace_status.teach_auth_checkpoints.pending).toEqual([
+      expect.objectContaining({
+        app_origin: "https://secure.example.com",
+        checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      }),
+    ]);
+  });
+
+  it("restores captured auth storage internally for cold workflow replay", async () => {
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      ttl_ms: 60_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "secret-cookie-value", domain: "secure.example.com", path: "/" }],
+        origins: [{
+          origin: "https://secure.example.com",
+          localStorage: [{ name: "session", value: "secret-local" }],
+          sessionStorage: [{ name: "csrf", value: "secret-session" }],
+        }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const openCold = vi.spyOn(browserPlaywrightAdapter, "openCold").mockResolvedValue({ tab_id: "cold", url });
+    vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([{ tab_id: "cold", url, active: true }]);
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "cold",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-cold-replay");
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "coldSession",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(openCold).toHaveBeenCalledWith(url, expect.objectContaining({
+      cookies: [expect.objectContaining({ name: "sid", value: "secret-cookie-value" })],
+      origins: [expect.objectContaining({
+        origin: "https://secure.example.com",
+        localStorage: [expect.objectContaining({ name: "session", value: "secret-local" })],
+        sessionStorage: [expect.objectContaining({ name: "csrf", value: "secret-session" })],
+      })],
+    }));
+    expect(replay).toHaveBeenCalledWith("cold", expect.any(Object), "click", expect.stringContaining("Open secure panel"), undefined);
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/secret-cookie|secret-local|secret-session/);
+  });
+
+  it("classifies expired auth checkpoints before workflow replay", async () => {
+    const now = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      ttl_ms: 1_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "expired-cookie", domain: "secure.example.com", path: "/" }],
+        origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "expired-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    vi.setSystemTime(now + 2_000);
+    const openCold = vi.spyOn(browserPlaywrightAdapter, "openCold").mockResolvedValue({ tab_id: "cold", url });
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "cold",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-expired-replay");
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "coldSession",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "workflow_auth_not_ready",
+      workflow_id: workflowId,
+      auth_status: "checkpointExpired",
+      auth_durability: "interactiveCheckpoint",
+      unattended: false,
+      failure_class: "authExpired",
+    }));
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/expired-cookie|expired-local/);
+    expect(openCold).not.toHaveBeenCalled();
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("uses provider-minted auth storage for cold workflow replay when the interactive checkpoint expires", async () => {
+    const now = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const url = "https://secure.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    const enrollment = authCheckpointManager.beginEnrollment(url);
+    const checkpoint = authCheckpointManager.finishEnrollment({
+      enrollment_id: enrollment.enrollment_id,
+      app_url: url,
+      ttl_ms: 1_000,
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) throw new Error("unexpected checkpoint failure");
+    expect(authCheckpointManager.saveStorageArtifact({
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+      storage_state: {
+        cookies: [{ name: "sid", value: "expired-cookie", domain: "secure.example.com", path: "/" }],
+        origins: [{ origin: "https://secure.example.com", localStorage: [{ name: "session", value: "expired-local" }] }],
+      },
+    }).ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: checkpoint.checkpoint.app_origin,
+      idp_origins: checkpoint.checkpoint.idp_origins,
+    }).ok).toBe(true);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://secure.example.com",
+      action: "click",
+      element: { tag: "button", role: "button", name: "Open secure panel" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    vi.useRealTimers();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-browser-tool-refresh-"));
+    const mintCountPath = path.join(directory, "mint-count.txt");
+    const provider = authCheckpointManager.configureRefreshProvider({
+      url,
+      secret_ref: "synthi://secrets/workspace/auth-refresh",
+      mint_command: await writeSequencedRefreshMintCommand(directory, mintCountPath),
+      mint_command_admin_approved: true,
+      timeout_ms: 5_000,
+    });
+    expect(provider.ok).toBe(true);
+    if (!provider.ok) throw new Error("unexpected provider config failure");
+    const providerTest = await authCheckpointManager.testRefreshProvider(provider.provider.provider_id);
+    expect(providerTest.ok).toBe(true);
+    if (!providerTest.ok) throw new Error("unexpected provider test failure");
+    expect(providerTest.can_mint_replay_state).toBe(true);
+    vi.useFakeTimers();
+    vi.setSystemTime(now + 2_000);
+    const openCold = vi.spyOn(browserPlaywrightAdapter, "openCold").mockResolvedValue({ tab_id: "cold", url });
+    vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([{ tab_id: "cold", url, active: true }]);
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "cold",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "auth-provider-cold-replay");
+
+    const response = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "coldSession",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(openCold).toHaveBeenCalledWith(url, expect.objectContaining({
+      cookies: [expect.objectContaining({ name: "sid", value: "provider-cookie-replay-secret" })],
+      origins: [expect.objectContaining({
+        origin: "https://secure.example.com",
+        localStorage: [expect.objectContaining({ name: "session", value: "provider-local-replay-secret" })],
+        sessionStorage: [expect.objectContaining({ name: "csrf", value: "provider-session-replay-secret" })],
+      })],
+    }));
+    expect(replay).toHaveBeenCalledWith("cold", expect.any(Object), "click", expect.stringContaining("Open secure panel"), undefined);
+    expect(JSON.stringify(response?.structuredContent)).not.toMatch(/provider-cookie-(validation|replay)-secret|provider-local-(validation|replay)-secret|provider-session-(validation|replay)-secret|expired-cookie|expired-local/);
+  });
+
+  it("exports saved mutation workflows in prefix-only mode by default", async () => {
+    const url = "https://app.example.com/query";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Query", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        network_method: "POST",
+        network_url: "https://app.example.com/api/query",
+      },
+      element: { tag: "button", role: "button", name: "Run query" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+
+    const generated = await dispatchBrowserTool("synthi_browser_generate_script", {
+      workflow_id: workflowId,
+    });
+
+    expect(generated?.isError).toBeUndefined();
+    const body = generated?.structuredContent as { mode: string; code: string };
+    expect(body.mode).toBe("prefixOnly");
+    expect(body.code).toContain("// Mutation boundary:");
+    expect(body.code).toContain("await expect(target1).toBeEnabled();");
+    expect(body.code).not.toContain("await target1.click();");
+  });
+
   it("replays native drag workflows whose drop target is stored in event detail", async () => {
     const url = "https://app.example.com/board";
     const dropLocator = "page.getByRole(\"list\", { name: \"Done\" })";
@@ -409,7 +823,76 @@ describe("browser MCP tool surface", () => {
         }),
       }),
       "drag",
-      expect.stringContaining("Revenue audit"),
+      expect.stringContaining("board.revenue"),
+      dropLocator
+    );
+  });
+
+  it("replays calibrated resize-handle drags through the event-aware adapter path", async () => {
+    const url = "https://app.example.com/workspace";
+    const dropLocator = "page.getByRole(\"group\", { name: \"Resizable workspace\" })";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Workspace", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      value: dropLocator,
+      detail: {
+        drag_mode: true,
+        drag_class: "pointerSensor",
+        pointer_drag: true,
+        pointer_replay: "calibrated",
+        pointer_start_x_ratio: 0.5,
+        pointer_start_y_ratio: 0.5,
+        pointer_end_x_ratio: 0.58,
+        pointer_end_y_ratio: 0.5,
+        pointer_steps: 10,
+        drop_locator: dropLocator,
+        resize_handle: true,
+        resize_axis: "x",
+        aria_orientation: "vertical",
+      },
+      element: { tag: "div", role: "separator", name: "Resize panels", source_id: "layout.resize.handle" },
+    }).ok).toBe(true);
+    const workflowId = browserBroker.compiledWorkflow().contract.workflowId;
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "drag",
+      tab_id: "app",
+      url,
+      detail: { pointer_replay: "calibrated", resize_handle: true },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "calibrated-resize-handle");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({
+        action: "drag",
+        value: dropLocator,
+        detail: expect.objectContaining({
+          pointer_replay: "calibrated",
+          drop_locator: dropLocator,
+          resize_handle: true,
+          resize_axis: "x",
+        }),
+      }),
+      "drag",
+      expect.stringContaining("layout.resize.handle"),
       dropLocator
     );
   });
@@ -460,6 +943,111 @@ describe("browser MCP tool surface", () => {
     }));
   });
 
+  it("blocks direct workflow replay when iframe target-origin consent is revoked", async () => {
+    const url = "https://app.example.com/settings";
+    const frameOrigin = "https://billing.example.com";
+    browserBroker.requestConsent(url);
+    browserBroker.requestConsent(frameOrigin);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      frame_id: "billing-frame",
+      url,
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada",
+      detail: {
+        frame_locator: "iframe[data-testid=\"billing-frame\"]",
+        frame_origin: `${frameOrigin}/card`,
+      },
+      element: { tag: "input", role: "textbox", label: "Cardholder", source_id: "billing.cardholder" },
+    }).ok).toBe(true);
+    const workflow = browserBroker.compiledWorkflow();
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
+    browserBroker.requestConsent(frameOrigin, "denied", "unit-revoked");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "app",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "revoked-iframe-origin-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflow.contract.workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { status: string; steps_run: number; error: string; failure_class: string } })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        steps_run: 0,
+        error: "frame_origin_consent_required",
+        failure_class: "originConsentMissing",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+  });
+
+  it("blocks direct workflow replay when popup target-origin consent is revoked", async () => {
+    const url = "https://app.example.com/dashboard";
+    const popupUrl = "https://billing.example.com/help";
+    browserBroker.requestConsent(url);
+    browserBroker.requestConsent(popupUrl);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Dashboard", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_event: true,
+        popup_url: popupUrl,
+        popup_title: "Billing Help",
+        popup_tab_id: "billing-popup",
+        opener_tab_id: "app",
+      },
+      element: { tag: "a", role: "button", name: "Open billing help", test_id: "open-billing-help", source_id: "billing.help" },
+    }).ok).toBe(true);
+    const workflow = browserBroker.compiledWorkflow();
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    browserBroker.requestConsent(popupUrl, "denied", "unit-revoked");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+      detail: { popup_tab_id: "runtime-popup" },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "revoked-popup-origin-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflow.contract.workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { status: string; steps_run: number; error: string; failure_class: string } })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        steps_run: 0,
+        error: "popup_origin_consent_required",
+        failure_class: "originConsentMissing",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+  });
+
   it("replays same-origin popup continuation steps on the runtime popup tab", async () => {
     const url = "https://app.example.com/dashboard";
     const popupUrl = "https://app.example.com/help";
@@ -502,6 +1090,11 @@ describe("browser MCP tool surface", () => {
       url: event.url,
       detail: event.detail?.["popup_event"] === true ? { popup_tab_id: "runtime-popup" } : undefined,
     }));
+    vi.spyOn(browserPlaywrightAdapter, "isAttached").mockReturnValue(true);
+    const listTabs = vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([
+      { tab_id: "app", url, title: "Dashboard", active: false },
+      { tab_id: "runtime-popup", url: popupUrl, title: "Workflow Help", active: true },
+    ]);
     const lease = browserBroker.acquireLease("agent", 5000, "popup-continuation-replay");
 
     const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
@@ -514,7 +1107,26 @@ describe("browser MCP tool surface", () => {
     expect(replay?.isError).toBeUndefined();
     expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
       ok: true,
-      replay: expect.objectContaining({ steps_run: 2 }),
+      replay: expect.objectContaining({
+        steps_run: 2,
+        replay_tab_ids: ["app", "runtime-popup"],
+        trace_tab_map: expect.objectContaining({
+          app: "app",
+          "recorded-popup": "runtime-popup",
+        }),
+        replay_targets: expect.arrayContaining([
+          expect.objectContaining({
+            trace_tab_id: "app",
+            replay_tab_id: "app",
+            popup_context: true,
+          }),
+          expect.objectContaining({
+            trace_tab_id: "recorded-popup",
+            replay_tab_id: "runtime-popup",
+            popup_context: true,
+          }),
+        ]),
+      }),
     }));
     expect(replayAction.mock.calls[0]?.[0]).toBe("app");
     expect(replayAction.mock.calls[1]?.[0]).toBe("runtime-popup");
@@ -523,6 +1135,8 @@ describe("browser MCP tool surface", () => {
       tab_id: "recorded-popup",
       value: "contracts",
     }));
+    expect(listTabs).toHaveBeenCalled();
+    expect(browserBroker.listTabs().map((tab) => tab.tab_id)).toEqual(["app", "runtime-popup"]);
   });
 
   it("replays range control workflows through the event-aware adapter path", async () => {
@@ -575,7 +1189,7 @@ describe("browser MCP tool surface", () => {
         detail: expect.objectContaining({ control_kind: "range", range_control: true }),
       }),
       "fill",
-      expect.stringContaining("Budget"),
+      expect.stringContaining("settings.budget"),
       "75"
     );
   });
@@ -630,7 +1244,7 @@ describe("browser MCP tool surface", () => {
         }),
       }),
       "select",
-      expect.stringContaining("Teams"),
+      expect.stringContaining("settings.teams"),
       "[\"qa\",\"design\"]"
     );
   });
@@ -792,6 +1406,12 @@ describe("browser MCP tool surface", () => {
     expect(unresolved?.isError).toBeUndefined();
     expect((unresolved?.structuredContent as { steps: Array<{ limitations: string[]; suggested_affordances: unknown[] }> }).steps[0]).toEqual(
       expect.objectContaining({
+        target_context: expect.objectContaining({
+          kind: "page",
+          recordedTabId: "app",
+          targetOrigin: "https://app.example.com",
+          routePattern: "/settings",
+        }),
         limitations: expect.arrayContaining(["sourceIdentityMissing", "unresolvedStep"]),
         suggested_affordances: expect.arrayContaining([
           expect.objectContaining({ suggested_attribute: "data-synthi-affordance=\"recorded.target\"" }),
@@ -812,6 +1432,12 @@ describe("browser MCP tool surface", () => {
         step_id: "browser_evt_1",
         label: "Click recorded target",
         action: "click",
+        target_context: expect.objectContaining({
+          kind: "page",
+          recordedTabId: "app",
+          targetOrigin: "https://app.example.com",
+          routePattern: "/settings",
+        }),
         locator_confidence: "none",
         source_status: "missing",
         limitations: expect.arrayContaining(["sourceIdentityMissing", "unresolvedStep"]),
@@ -829,6 +1455,7 @@ describe("browser MCP tool surface", () => {
   it("supports primary begin/end teach aliases with workflow card output", async () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
+    const refreshTeachCapture = vi.spyOn(browserPlaywrightAdapter, "refreshTeachCapture").mockResolvedValue({ ok: true });
 
     const begin = await dispatchBrowserTool("synthi_browser_begin_teach", {
       tab_id: "app",
@@ -842,6 +1469,7 @@ describe("browser MCP tool surface", () => {
         teach: expect.objectContaining({ active: true }),
       })
     );
+    expect(refreshTeachCapture).toHaveBeenCalledWith("app");
 
     browserBroker.recordHumanAction({
       tab_id: "app",
@@ -1013,6 +1641,145 @@ describe("browser MCP tool surface", () => {
       "agent-provided-token"
     );
   });
+
+  it("requires and forwards clipboard drop parameters for workflow replay", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "drag",
+      detail: {
+        drag_mode: true,
+        drag_class: "clipboardDrop",
+        clipboard_event: true,
+        clipboard_mode: "drop",
+        clipboard_drop_event: true,
+        clipboard_parameter: "RELEASE_NOTES_DROP",
+      },
+      element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "s_notes" },
+    }).ok).toBe(true);
+    const lease = browserBroker.acquireLease("agent", 5000, "test-clipboard-drop");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "drag",
+      tab_id: "app",
+      url,
+    });
+
+    const missing = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+    });
+
+    expect((missing?.structuredContent as {
+      ok: boolean;
+      replay: { status: string; failure_class: string; failed_step_id: string; error: string };
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        failure_class: "testDataMissing",
+        failed_step_id: "browser_evt_1",
+        error: "missing_clipboard_drop_parameter:release_notes_drop",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+      parameters: { release_notes_drop: "agent dropped note" },
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({ event_id: "browser_evt_1" }),
+      "drag",
+      expect.any(String),
+      "agent dropped note"
+    );
+  });
+
+  it("requires and forwards native prompt parameters for workflow replay", async () => {
+    const url = "https://app.example.com/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        dialog_event: true,
+        dialog_type: "prompt",
+        dialog_message: "Enter workspace name",
+        dialog_prompt_value: "[REDACTED]",
+        dialog_prompt_value_redacted: true,
+        dialog_accepted: true,
+      },
+      element: { role: "button", name: "Rename workspace", source_id: "s_rename_workspace" },
+    }).ok).toBe(true);
+    const lease = browserBroker.acquireLease("agent", 5000, "test-prompt-dialog");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+    });
+
+    const missing = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+    });
+
+    expect((missing?.structuredContent as {
+      ok: boolean;
+      replay: { status: string; failure_class: string; failed_step_id: string; error: string };
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        failure_class: "testDataMissing",
+        failed_step_id: "browser_evt_1",
+        error: "missing_dialog_prompt_parameter:enter_workspace_name",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      mode: "sameSession",
+      parameters: { enter_workspace_name: "Agent Workspace" },
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { steps_run: number } })).toEqual(expect.objectContaining({
+      ok: true,
+      replay: expect.objectContaining({ steps_run: 1 }),
+    }));
+    expect(replayAction).toHaveBeenCalledWith(
+      "app",
+      expect.objectContaining({ event_id: "browser_evt_1" }),
+      "click",
+      expect.any(String),
+      undefined,
+      { dialogPromptValue: "Agent Workspace" }
+    );
+  });
 });
 
 function mockPreviewAdapter(previewUrl: string): void {
@@ -1038,4 +1805,68 @@ function mockPreviewAdapter(previewUrl: string): void {
   ]);
   vi.spyOn(browserPlaywrightAdapter, "selectTab").mockResolvedValue(tab);
   vi.spyOn(browserPlaywrightAdapter, "snapshot").mockResolvedValue(snapshot);
+}
+
+async function writeRefreshMintCommand(
+  directory: string,
+  values: { cookieValue: string; localStorageValue: string; sessionStorageValue: string }
+): Promise<string> {
+  const scriptPath = path.join(directory, `mint-refresh-${Date.now()}.mjs`);
+  await writeFile(scriptPath, `
+const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
+if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
+const host = new URL(origin).hostname;
+const output = JSON.stringify({
+  ok: true,
+  storage_state: {
+    cookies: [{ name: "sid", value: ${JSON.stringify(values.cookieValue)}, domain: host, path: "/", httpOnly: true, secure: true }],
+    origins: [{ origin, localStorage: [{ name: "session", value: ${JSON.stringify(values.localStorageValue)} }], sessionStorage: [{ name: "csrf", value: ${JSON.stringify(values.sessionStorageValue)} }] }]
+  },
+  ttl_ms: 60000
+});
+if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);
+}
+process.stdout.write(output);
+`, "utf8");
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+async function writeSequencedRefreshMintCommand(directory: string, countPath: string): Promise<string> {
+  const scriptPath = path.join(directory, `mint-refresh-sequenced-${Date.now()}.mjs`);
+  await writeFile(scriptPath, `
+import { readFile, writeFile } from "node:fs/promises";
+const origin = process.env.SYNTHI_AUTH_APP_ORIGIN;
+if (!origin || !process.env.SYNTHI_AUTH_SECRET_REF) process.exit(2);
+const countPath = ${JSON.stringify(countPath)};
+let count = 0;
+try {
+  count = Number(await readFile(countPath, "utf8")) || 0;
+} catch {
+  count = 0;
+}
+count += 1;
+await writeFile(countPath, String(count));
+const phase = count <= 1 ? "validation" : "replay";
+const host = new URL(origin).hostname;
+const output = JSON.stringify({
+  ok: true,
+  storage_state: {
+    cookies: [{ name: "sid", value: \`provider-cookie-\${phase}-secret\`, domain: host, path: "/", httpOnly: true, secure: true }],
+    origins: [{ origin, localStorage: [{ name: "session", value: \`provider-local-\${phase}-secret\` }], sessionStorage: [{ name: "csrf", value: \`provider-session-\${phase}-secret\` }] }]
+  },
+  ttl_ms: 60000
+});
+if (process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(process.env.SYNTHI_AUTH_PROVIDER_OUTPUT_PATH, output);
+}
+process.stdout.write(output);
+`, "utf8");
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }

@@ -1,13 +1,23 @@
+import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
+import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
-import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
+import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
+import {
+  privateWorkflowToolParameterArgNames,
+  privateWorkflowToolDefinition,
+  privateWorkflowToolRegistry,
+} from "../browser/private_tool_registry.js";
 import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../browser/preview_target.js";
 import { browserPlaywrightAdapter, type BrowserWorkflowOverlayResponse } from "../browser/playwright_adapter.js";
 import {
   classifyWorkflowReplayBlock,
   classifyWorkflowReplayFailure,
   normalizeReplayMode,
+  type AuthDurabilityV7,
+  type FailureClassV7,
+  type WorkflowContractV7,
   type WorkflowReplayModeV7,
   type WorkflowStepContractV7,
 } from "../browser/workflow.js";
@@ -20,6 +30,8 @@ import {
 import { BROWSER_ACTION_KINDS } from "../browser/types.js";
 import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
 import { eventLog } from "../events/index.js";
+import { ADVERTISED_TOOLS } from "../tool_registry.js";
+import { dispatchSafetyTool } from "./safety.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
@@ -27,11 +39,13 @@ browserPlaywrightAdapter.setTeachEventSink((event) => {
     browserBroker.handleOriginChange(event.tab_id, event.url, event.detail);
     return;
   }
-  browserBroker.recordHumanAction(event);
+  const result = browserBroker.recordHumanAction(event);
+  if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, event, "hosted-playwright-adapter");
 });
 
 browserPlaywrightAdapter.setTeachEventAnnotationSink((event) => {
-  browserBroker.annotateLatestHumanAction(event);
+  const result = browserBroker.annotateLatestHumanAction(event);
+  if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, event, "hosted-playwright-annotation");
 });
 
 browserPlaywrightAdapter.setWorkflowOverlayActionSink(async (request) => {
@@ -95,8 +109,71 @@ export async function browserWorkflowOverlayAction(input: {
   }
 
   if (input.action === "teach") {
-    const response = browserBeginTeachTool({
-      tab_id: input.tab_id,
+    const targetUrl = httpUrlOpt(input.page_url ?? input.url);
+    if (!targetUrl) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: "The current page is not an HTTP preview URL.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "invalid_preview_url",
+      };
+    }
+    if (!isBrowserPreviewUrlAllowed(targetUrl, { workspace_url: runtime.workspace_url ?? undefined })) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach blocked",
+        detail: "The current page does not match this workspace's preview policy.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "preview_target_not_allowed",
+      };
+    }
+    const targetInput = {
+      workspace_url: runtime.workspace_url ?? input.page_url,
+      preferred_url: targetUrl,
+      preview_url: targetUrl,
+    };
+    const allTabs = await browserPlaywrightAdapter.listTabs();
+    const target = resolveBrowserPreviewTarget(allTabs, targetInput, process.env);
+    if (!target.ok) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: target.reason,
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: target.error,
+      };
+    }
+    browserBroker.requestConsent(target.tab.url, "granted", "workspace_preview_teach_user_gesture", {
+      screenshot: true,
+      diagnostics: false,
+    });
+    browserBroker.registerTabs(allTabs);
+    const selected = browserBroker.selectTab(target.tab.tab_id);
+    if (!selected) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: "The current preview tab is not authorized for workflow teaching.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "tab_not_authorized",
+      };
+    }
+    await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
+    const response = await browserBeginTeachTool({
+      tab_id: selected?.tab_id ?? input.tab_id,
       goal: `Teach workflow for ${runtime.workspace_id || "current workspace"}`,
     });
     if (response.isError) return workflowOverlayError("Teach failed", response);
@@ -170,6 +247,10 @@ function humanActionLabel(action: string): string {
       return "Dragged";
     case "scroll":
       return "Scrolled";
+    case "copy":
+      return "Copied";
+    case "cut":
+      return "Cut";
     case "hover":
       return "Hovered";
     case "navigate":
@@ -222,6 +303,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_list_tabs",
   "synthi_browser_select_tab",
   "synthi_browser_open",
+  "synthi_browser_close_tab",
   "synthi_browser_request_consent",
   "synthi_browser_get_consent",
   "synthi_browser_revoke_consent",
@@ -237,6 +319,9 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
+  "synthi_browser_publish_private_tool",
+  "synthi_browser_get_private_tool_manifest",
+  "synthi_browser_capture_auth_checkpoint_storage",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",
@@ -249,6 +334,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_run_project",
   "synthi_browser_project_status",
   "synthi_browser_stop_project",
+  "synthi_browser_get_deployment_readiness",
 ] as const;
 
 export const BROWSER_TOOLS = [
@@ -361,6 +447,15 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: { url: { type: "string" } },
       required: ["url"],
+    },
+  },
+  {
+    name: "synthi_browser_close_tab",
+    description: "Close a browser tab previously opened or authorized by Synthi. Use this to clean up agent-owned preview tabs after workflow execution.",
+    inputSchema: {
+      type: "object",
+      properties: { tab_id: { type: "string" } },
+      required: ["tab_id"],
     },
   },
   {
@@ -482,7 +577,7 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: {
         workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. When supplied, generation uses that immutable artifact." },
-        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], description: "Use prefixOnly or coldSession to stop before the first mutation boundary." },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession", "ciIsolated"], description: "Use prefixOnly/coldSession to stop before mutation boundaries, or ciIsolated to emit a full mutation script guarded by ALLOW_WORKFLOW_MUTATION=1." },
       },
       required: [],
     },
@@ -500,6 +595,49 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_publish_private_tool",
+    description:
+      "Register the generated private app-specific workflow tool with this MCP process so agents can discover and call it directly. Blocked manifests are not published; mutation workflows default to prefix-only replay until explicitly confirmed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. Defaults to the current compiled workflow." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_list_private_tools",
+    description:
+      "List published private app-specific workflow tools registered with this MCP process. Use this to discover exact synthi_app_* tool names, run modes, parameters, auth policy, and mutation policy before calling a saved workflow.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_get_private_tool_manifest",
+    description:
+      "Return the redacted registered manifest and MCP schema for a published private app-specific workflow tool by tool_name. Lets agents inspect run modes, parameters, auth durability, mutation policy, and blockers without a script path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool_name: { type: "string", description: "Published private workflow tool name from tools/list, for example synthi_app_save_runbook." },
+      },
+      required: ["tool_name"],
+    },
+  },
+  {
+    name: "synthi_browser_capture_auth_checkpoint_storage",
+    description:
+      "Capture browser cookies, localStorage, and sessionStorage for an approved auth checkpoint from the Synthi-hosted browser. Stores raw values broker-side only and returns counts, never auth values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        checkpoint_id: { type: "string", description: "Auth checkpoint id returned by synthi_auth_finish_checkpoint_enrollment." },
+        tab_id: { type: "string", description: "Optional authorized tab to capture from. Defaults to the selected tab." },
+      },
+      required: ["checkpoint_id"],
+    },
+  },
+  {
     name: "synthi_browser_run_workflow",
     description:
       "Replay the compiled workflow under a control lease. coldSession is the default and stops before the first mutation boundary in a fresh context.",
@@ -512,7 +650,7 @@ export const BROWSER_TOOLS = [
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "coldSession" },
         parameters: {
           type: "object",
-          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings here.",
+          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings; clipboard paste, clipboard drop, and native prompt steps expect caller-provided text values.",
           additionalProperties: { type: "string" },
         },
       },
@@ -646,10 +784,30 @@ export const BROWSER_TOOLS = [
       required: ["run_id"],
     },
   },
+  {
+    name: "synthi_browser_get_deployment_readiness",
+    description:
+      "Return a redacted production readiness report for browser workflow deployment wiring: hosted runtime, workflow bridge, private workflow store, auth checkpoint store, workspace scope, and local-CDP leakage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["production", "development"], default: "production" },
+        workspace_id: { type: "string", description: "Optional workspace scope for replay-isolation profile diagnostics." },
+        require_workflow_bridge: { type: "boolean", description: "Whether browser-injected Observe/Teach controls must be configured. Defaults true." },
+      },
+      required: [],
+    },
+  },
 ] as const;
+
+export function browserPrivateWorkflowTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+  return privateWorkflowToolRegistry.list().map(privateWorkflowToolDefinition);
+}
 
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
+    const privateTool = privateWorkflowToolRegistry.get(toolName);
+    if (privateTool) return await browserRunPublishedPrivateTool(toolName, args);
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
@@ -658,7 +816,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_observe_preview":
         return await browserObservePreviewTool(args);
       case "synthi_browser_begin_teach":
-        return browserBeginTeachTool(args);
+        return await browserBeginTeachTool(args);
       case "synthi_browser_end_teach":
         return browserEndTeachTool(args);
       case "synthi_browser_attach":
@@ -669,6 +827,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return await browserSelectTabTool(args);
       case "synthi_browser_open":
         return await browserOpenTool(args);
+      case "synthi_browser_close_tab":
+        return await browserCloseTabTool(args);
       case "synthi_browser_request_consent":
         return browserRequestConsentTool(args);
       case "synthi_browser_get_consent":
@@ -678,7 +838,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_snapshot":
         return await browserSnapshotTool(args);
       case "synthi_browser_start_teach":
-        return browserStartTeachTool(args);
+        return await browserStartTeachTool(args);
       case "synthi_browser_stop_teach":
         return browserStopTeachTool(args);
       case "synthi_browser_get_trace":
@@ -699,6 +859,14 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserGenerateScriptTool(args);
       case "synthi_browser_generate_private_tool_manifest":
         return browserGeneratePrivateToolManifestTool(args);
+      case "synthi_browser_publish_private_tool":
+        return browserPublishPrivateToolTool(args);
+      case "synthi_browser_list_private_tools":
+        return browserListPrivateToolsTool();
+      case "synthi_browser_get_private_tool_manifest":
+        return browserGetPrivateToolManifestTool(args);
+      case "synthi_browser_capture_auth_checkpoint_storage":
+        return await browserCaptureAuthCheckpointStorageTool(args);
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
       case "synthi_browser_explain_failure":
@@ -723,12 +891,26 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserProjectStatusTool(args);
       case "synthi_browser_stop_project":
         return await browserStopProjectTool(args);
+      case "synthi_browser_get_deployment_readiness":
+        return browserDeploymentReadinessTool(args);
       default:
         return null;
     }
   } catch (err) {
     return errorFromException("browser_tool_failed", err);
   }
+}
+
+function browserDeploymentReadinessTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  return jsonResponse({
+    ok: true,
+    readiness: browserWorkflowDeploymentReadiness({
+      mode: a["mode"] === "development" ? "development" : "production",
+      workspace_id: stringOpt(a["workspace_id"]),
+      require_workflow_bridge: boolOpt(a["require_workflow_bridge"]),
+    }),
+  });
 }
 
 async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolResponse> {
@@ -913,6 +1095,15 @@ async function browserOpenTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({ ok: true, tab, tabs });
 }
 
+async function browserCloseTabTool(args: unknown): Promise<ToolResponse> {
+  const tabId = requiredString(obj(args), "tab_id");
+  const brokerTab = browserBroker.selectTab(tabId);
+  if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: tabId });
+  const closed = await browserPlaywrightAdapter.closeTab(tabId);
+  const forgotten = browserBroker.forgetTab(tabId);
+  return jsonResponse({ ok: true, closed, forgotten: forgotten.forgotten });
+}
+
 function browserRequestConsentTool(args: unknown): ToolResponse {
   const a = obj(args);
   const url = requiredString(a, "url");
@@ -945,16 +1136,21 @@ async function browserSnapshotTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({ ok: true, snapshot: gated.snapshot });
 }
 
-function browserStartTeachTool(args: unknown): ToolResponse {
+async function browserStartTeachTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
   const result = browserBroker.startTeachMode(tab.tab_id);
   if (!result.ok) return errorResponse(result.error);
+  const capture = await browserPlaywrightAdapter.refreshTeachCapture(result.tab.tab_id);
+  if (!capture.ok) {
+    browserBroker.stopTeachMode("teach_capture_install_failed");
+    return errorResponse(capture.error);
+  }
   return jsonResponse({ ok: true, teach: browserBroker.teachState(), tab: result.tab, origin: result.origin });
 }
 
-function browserBeginTeachTool(args: unknown): ToolResponse {
+async function browserBeginTeachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const result = browserStartTeachTool(args);
+  const result = await browserStartTeachTool(args);
   if (result.isError) return result;
   return jsonResponse({
     ...(result.structuredContent ?? {}),
@@ -992,7 +1188,7 @@ function browserEndTeachTool(args: unknown): ToolResponse {
 
 function browserGenerateScriptTool(args: unknown): ToolResponse {
   const a = obj(args);
-  const mode = normalizeReplayMode(a["mode"]);
+  const mode = a["mode"] === undefined ? undefined : normalizeReplayMode(a["mode"]);
   const result = browserBroker.generatedScriptFor(stringOpt(a["workflow_id"]), mode);
   if (!result.ok) return errorResponse(result.error, result.workflow_id ? { workflow_id: result.workflow_id } : undefined);
   return jsonResponse({ ok: true, ...result.generated, workflow_id: result.artifact.workflow_id });
@@ -1002,11 +1198,163 @@ function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
   const workflowId = stringOpt(obj(args)["workflow_id"]);
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
-  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
+  const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
   return jsonResponse({
     ok: manifest.status !== "blocked",
     workflow_id: artifact.artifact.workflow_id,
     manifest,
+  });
+}
+
+function browserPublishPrivateToolTool(args: unknown): ToolResponse {
+  const workflowId = stringOpt(obj(args)["workflow_id"]);
+  const artifact = browserBroker.workflowArtifact(workflowId);
+  if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
+  const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
+  const published = privateWorkflowToolRegistry.publish(manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact: artifact.artifact,
+  });
+  if (!published.ok) {
+    return errorResponse(published.error, {
+      workflow_id: artifact.artifact.workflow_id,
+      tool_name: published.tool_name,
+      manifest,
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    workflow_id: artifact.artifact.workflow_id,
+    tool_name: published.registration.tool_name,
+    registered_at: published.registration.registered_at,
+    manifest,
+    tool: privateWorkflowToolDefinition(published.registration),
+  });
+}
+
+function browserListPrivateToolsTool(): ToolResponse {
+  const tools = privateWorkflowToolRegistry.list().map((registration) => {
+    const artifact = browserBroker.workflowArtifact(registration.workflow_id);
+    const contract = artifact.ok
+      ? artifact.artifact.workflow.contract
+      : registration.workflow_artifact?.workflow.contract;
+    const manifest = contract
+      ? manifestWithLiveAuthReadiness(registration.manifest, contract)
+      : registration.manifest;
+    const liveRegistration = { ...registration, manifest };
+    const definition = privateWorkflowToolDefinition(liveRegistration);
+    return {
+      tool_name: registration.tool_name,
+      workflow_id: registration.workflow_id,
+      title: manifest.title,
+      description: manifest.description,
+      status: manifest.status,
+      registered_at: registration.registered_at,
+      target_origins: manifest.target_origins,
+      run_modes: privateWorkflowAllowedRunModes(manifest),
+      default_run_mode: privateWorkflowDefaultReplayMode(manifest),
+      parameters: manifest.parameters.map((parameter) => ({
+        name: parameter.name,
+        required: parameter.required,
+        value_shape: parameter.value_shape,
+        redacted: parameter.redacted,
+      })),
+      auth: {
+        durability: manifest.auth.durability,
+        unattended_ready: manifest.auth.unattended_ready,
+        required: manifest.auth.required,
+      },
+      mutation: {
+        mode: manifest.mutation.mode,
+        requires_confirmation: manifest.mutation.requires_confirmation,
+        requires_ci_isolation: manifest.mutation.requires_ci_isolation,
+      },
+      safety: {
+        blockers: manifest.safety.blockers,
+        limitations: manifest.safety.limitations,
+      },
+      tool: {
+        name: definition.name,
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+      },
+    };
+  });
+  return jsonResponse({
+    ok: true,
+    count: tools.length,
+    tools,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+  });
+}
+
+function browserGetPrivateToolManifestTool(args: unknown): ToolResponse {
+  const toolName = requiredString(obj(args), "tool_name");
+  const registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
+  let manifest = registration.manifest;
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (artifact.ok) {
+    manifest = manifestWithLiveAuthReadiness(registration.manifest, artifact.artifact.workflow.contract);
+  }
+  const liveRegistration = { ...registration, manifest };
+  return jsonResponse({
+    ok: true,
+    tool_name: registration.tool_name,
+    workflow_id: registration.workflow_id,
+    registered_at: registration.registered_at,
+    manifest,
+    tool: privateWorkflowToolDefinition(liveRegistration),
+  });
+}
+
+async function browserCaptureAuthCheckpointStorageTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const checkpointId = requiredString(a, "checkpoint_id");
+  const checkpoint = authCheckpointManager.list().find((candidate) => candidate.checkpoint_id === checkpointId);
+  if (!checkpoint) return errorResponse("auth_checkpoint_not_found", { checkpoint_id: checkpointId });
+  if (checkpoint.status !== "valid") {
+    return errorResponse(`auth_checkpoint_${checkpoint.status}`, {
+      checkpoint_id: checkpointId,
+      status: checkpoint.status,
+    });
+  }
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind !== "hosted") {
+    return errorResponse("hosted_runtime_required", {
+      product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    });
+  }
+  const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
+  const allowedOrigins = [checkpoint.app_origin, ...checkpoint.idp_origins];
+  const tabOrigin = originForUrl(tab.url);
+  if (!tabOrigin || !allowedOrigins.includes(tabOrigin)) {
+    return errorResponse("auth_checkpoint_tab_origin_mismatch", {
+      checkpoint_id: checkpointId,
+      tab_origin: tabOrigin,
+      allowed_origins: allowedOrigins,
+    });
+  }
+  const storageState = await browserPlaywrightAdapter.captureAuthStorageState(tab.tab_id, allowedOrigins);
+  const saved = authCheckpointManager.saveStorageArtifact({
+    checkpoint_id: checkpointId,
+    storage_state: storageState,
+  });
+  if (!saved.ok) return errorResponse(saved.error, { checkpoint_id: checkpointId });
+  const teachAuthCheckpoint = browserBroker.activateAuthCheckpointForTeach({
+    app_origin: saved.checkpoint.app_origin,
+    idp_origins: saved.checkpoint.idp_origins,
+    checkpoint_id: checkpointId,
+  });
+  return jsonResponse({
+    ok: true,
+    checkpoint_id: checkpointId,
+    storage_artifact: publicStorageArtifactMetadata(saved.storage_artifact),
+    auth_readiness: authCheckpointManager.readiness(saved.checkpoint.app_origin, false),
+    teach_auth_checkpoint: teachAuthCheckpoint,
   });
 }
 
@@ -1033,12 +1381,14 @@ function browserTraceStatusTool(): ToolResponse {
       origins,
       tabs,
       teach: browserBroker.teachState(),
+      teach_auth_checkpoints: browserBroker.teachAuthCheckpointScopes(),
       workflow_id: workflow.contract.workflowId,
       workflow_state: workflow.card.state,
       unresolved_count: workflow.card.unresolvedCount,
       limitations: workflow.contract.limitations,
       lane0: workflow.contract.lane0,
       teach_question_answers_count: browserBroker.teachQuestionAnswers().length,
+      recording_issues: browserBroker.recordingIssueSnapshot(),
     },
   });
 }
@@ -1096,6 +1446,7 @@ function browserUnresolvedStepsTool(): ToolResponse {
       label: step.label,
       action: step.action.kind,
       target: step.action.target ?? null,
+      target_context: step.targetContext ?? null,
       locator_confidence: step.locatorPlan.confidence,
       source_status: step.sourcePlan.status,
       limitations: step.limitations,
@@ -1134,6 +1485,7 @@ function failureStepContext(step: WorkflowStepContractV7): Record<string, unknow
     step_id: step.stepId,
     label: step.label,
     action: step.action.kind,
+    target_context: step.targetContext ?? null,
     locator_confidence: step.locatorPlan.confidence,
     source_status: step.sourcePlan.status,
     limitations: step.limitations,
@@ -1148,6 +1500,35 @@ function suggestedFailureTool(step: WorkflowStepContractV7): string {
     return "synthi_browser_get_unresolved_steps";
   }
   return "synthi_browser_compile_workflow";
+}
+
+function classifyBrokerValidationFailure(error: string): FailureClassV7 {
+  if (error === "browser_lease_required") return "unsafeEnvironment";
+  return classifyWorkflowReplayFailure(new Error(error));
+}
+
+function validateWorkflowReplayAction(input: {
+  lease_id: string;
+  action: BrowserActionKind;
+  tab_id: string;
+  selector?: string;
+  value?: string;
+  url: string;
+  event: BrowserTraceEvent;
+}): { ok: true } | { ok: false; error: string } {
+  const actionValidation = browserBroker.validateAction({
+    lease_id: input.lease_id,
+    action: input.action,
+    tab_id: input.tab_id,
+    selector: input.selector,
+    value: input.value,
+    url: input.url,
+  });
+  if (!actionValidation.ok) return actionValidation;
+  return browserBroker.validateReplayTarget({
+    url: input.url,
+    detail: input.event.detail,
+  });
 }
 
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
@@ -1171,15 +1552,43 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const leaseId = requiredString(a, "lease_id");
   const mode = normalizeReplayMode(a["mode"] ?? "coldSession");
+  if (mode === "ciIsolated") {
+    return errorResponse("ci_isolated_replay_requires_safety_tool", {
+      required_tool: "synthi_safety_run_ci_isolated_replay",
+    });
+  }
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
+  const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
+    ? await authStorageStateForColdReplay(replay.artifact.workflow.contract)
+    : { ok: true as const, storageState: undefined };
+  if (!coldAuthStorage.ok) {
+    return errorResponse("workflow_auth_not_ready", {
+      workflow_id: replay.artifact.workflow_id,
+      ...coldAuthStorage.detail,
+    });
+  }
+  if (mode !== "coldSession") {
+    const authGate = replayAuthGate(replay.artifact.workflow.contract, mode);
+    if (!authGate.ok) {
+      return errorResponse("workflow_auth_not_ready", {
+        workflow_id: replay.artifact.workflow_id,
+        ...authGate.detail,
+      });
+    }
+  }
   const plan = replay.plan;
   if (plan.status === "blocked") {
     return jsonResponse({ ok: false, workflow_id: replay.artifact.workflow_id, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
   }
 
-  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;
+  const valueRefByStepId = new Map(
+    replay.artifact.workflow.contract.steps
+      .filter((step) => step.action.valueRef)
+      .map((step) => [step.stepId, step.action.valueRef as string])
+  );
+  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url, coldAuthStorage.storageState) : tab;
   const replayTabByTraceTab = new Map<string, string>();
   for (const event of plan.events) {
     if (event.tab_id) replayTabByTraceTab.set(event.tab_id, replayTab.tab_id);
@@ -1206,13 +1615,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: filePath,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1222,7 +1632,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1264,13 +1674,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: pasteText,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1280,7 +1691,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1304,14 +1715,85 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       }
       continue;
     }
-    const value = replayValueForEvent(event, action);
-    const validation = browserBroker.validateAction({
+    if (isClipboardDropEvent(event)) {
+      const dropText = clipboardDropTextFor(event, parameters);
+      if (dropText === undefined) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: "testDataMissing",
+            error: `missing_clipboard_drop_parameter:${clipboardDropParameterName(event)}`,
+          },
+        });
+      }
+      const validation = validateWorkflowReplayAction({
+        lease_id: leaseId,
+        action,
+        tab_id: targetTabId,
+        selector,
+        value: dropText,
+        url: event.url,
+        event,
+      });
+      if (!validation.ok) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyBrokerValidationFailure(validation.error),
+            error: validation.error,
+          },
+        });
+      }
+      try {
+        const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, dropText);
+        rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
+        stepsRun += 1;
+      } catch (err) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyWorkflowReplayFailure(err, event),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      continue;
+    }
+    const value = replayValueForEvent(event, action, parameters, valueRefByStepId);
+    const dialogPromptValue = dialogPromptValueFor(event, parameters);
+    if (isAcceptedPromptDialogEvent(event) && dialogPromptValue === undefined) {
+      return jsonResponse({
+        ok: false,
+        replay: {
+          ...plan,
+          status: "failed",
+          steps_run: stepsRun,
+          failed_step_id: event.event_id,
+          failure_class: "testDataMissing",
+          error: `missing_dialog_prompt_parameter:${dialogPromptParameterName(event)}`,
+        },
+      });
+    }
+    const validation = validateWorkflowReplayAction({
       lease_id: leaseId,
       action,
       tab_id: targetTabId,
       selector,
       value,
-      url: action === "navigate" ? value : event.url,
+      url: action === "navigate" && value ? value : event.url,
+      event,
     });
     if (!validation.ok) {
       return jsonResponse({
@@ -1321,13 +1803,15 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           status: "failed",
           steps_run: stepsRun,
           failed_step_id: event.event_id,
-          failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+          failure_class: classifyBrokerValidationFailure(validation.error),
           error: validation.error,
         },
       });
     }
     try {
-      const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
+      const result = dialogPromptValue !== undefined
+        ? await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value, { dialogPromptValue })
+        : await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
       rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
       stepsRun += 1;
     } catch (err) {
@@ -1344,6 +1828,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
   }
+  const replayTabRefreshError = await refreshReplayTabsForSnapshotAccess();
 
   return jsonResponse({
     ok: true,
@@ -1353,15 +1838,489 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       status: plan.status,
       steps_run: stepsRun,
       tab_id: replayTab.tab_id,
+      replay_tab_ids: replayTabIds(replayTabByTraceTab, replayTab.tab_id),
+      trace_tab_map: Object.fromEntries(replayTabByTraceTab),
+      replay_targets: replayTargetsForPlan(plan.events, replayTabByTraceTab, replayTab.tab_id),
       stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
+      ...(replayTabRefreshError ? { replay_tab_refresh_error: replayTabRefreshError } : {}),
     },
   });
 }
 
-async function openColdReplayTab(url: string): Promise<{ tab_id: string; url: string }> {
+async function browserRunPublishedPrivateTool(toolName: string, args: unknown): Promise<ToolResponse> {
+  const registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
+  const manifest = registration.manifest;
+  if (manifest.status === "blocked") {
+    return errorResponse("private_workflow_tool_blocked", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      blockers: manifest.safety.blockers,
+    });
+  }
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (!artifact.ok) {
+    return errorResponse(artifact.error, {
+      tool_name: toolName,
+      workflow_id: registration.workflow_id,
+    });
+  }
+  const liveManifest = manifestWithLiveAuthReadiness(manifest, artifact.artifact.workflow.contract);
+  if (liveManifest.status === "blocked") {
+    return errorResponse("private_workflow_tool_auth_not_ready", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      auth: liveManifest.auth,
+      notes: liveManifest.safety.notes,
+    });
+  }
+
+  const effectiveManifest = liveManifest;
+  const a = obj(args);
+  const parameters: Record<string, string> = {};
+  const missingParameters: string[] = [];
+  const parameterArgNames = privateWorkflowToolParameterArgNames(effectiveManifest);
+  for (const parameter of effectiveManifest.parameters) {
+    const argName = parameterArgNames.get(parameter.name) ?? parameter.name;
+    const value = stringOpt(a[argName]);
+    if (value === undefined) {
+      if (parameter.required) missingParameters.push(argName);
+      continue;
+    }
+    parameters[parameter.name] = value;
+  }
+  if (missingParameters.length > 0) {
+    return errorResponse("private_workflow_missing_parameters", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      missing_parameters: missingParameters,
+    });
+  }
+
+  const requestedModeResult = privateWorkflowRunMode(a["run_mode"]);
+  if (!requestedModeResult.ok) {
+    return errorResponse("private_workflow_invalid_run_mode", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      received_run_mode: typeof a["run_mode"] === "string" ? a["run_mode"] : typeof a["run_mode"],
+      allowed_run_modes: privateWorkflowAllowedRunModes(effectiveManifest),
+    });
+  }
+  const requestedMode = requestedModeResult.mode;
+  const confirmMutation = boolOpt(a["confirm_mutation"]) === true;
+  if (requestedMode === "ciOnly") {
+    const authGate = replayAuthGate(artifact.artifact.workflow.contract, "ciIsolated");
+    if (!authGate.ok) {
+      return errorResponse("private_workflow_tool_auth_not_ready", {
+        tool_name: toolName,
+        workflow_id: manifest.workflow_id,
+        ...authGate.detail,
+      });
+    }
+    const response = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: stringOpt(a["workspace_id"]),
+      workflow_id: registration.workflow_id,
+      parameters,
+      timeout_ms: numberOpt(a["timeout_ms"]),
+      artifact_root: stringOpt(a["artifact_root"]),
+    });
+    if (!response) return errorResponse("ci_isolated_replay_tool_unavailable", { tool_name: toolName });
+    const structuredContent = {
+      ...(response.structuredContent ?? {}),
+      private_tool: {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        run_mode: "ciOnly",
+        mutation_confirmed: false,
+      },
+    };
+    return {
+      ...response,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    };
+  }
+  const mode: WorkflowReplayModeV7 = requestedMode === "confirmBeforeCommit"
+    ? "sameSession"
+    : requestedMode ??
+    privateWorkflowDefaultReplayMode(effectiveManifest);
+
+  const mutationConfirmationToken = privateWorkflowMutationConfirmationToken(toolName, effectiveManifest);
+  const mutationConfirmation = stringOpt(a["mutation_confirmation"]);
+  if (
+    effectiveManifest.mutation.requires_confirmation &&
+    mode === "sameSession" &&
+    (!confirmMutation || mutationConfirmation !== mutationConfirmationToken)
+  ) {
+    return errorResponse("mutation_confirmation_required", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      first_mutation_step_id: effectiveManifest.mutation.first_mutation_step_id,
+      safe_run_modes: ["prefixOnly", "coldSession", "ciOnly"],
+      confirmation_field: "confirm_mutation",
+      confirmation_token_field: "mutation_confirmation",
+      confirmation_token: mutationConfirmationToken,
+    });
+  }
+
+  const missingConsents = missingPrivateWorkflowTargetConsents(effectiveManifest, artifact.artifact.workflow.contract);
+  if (missingConsents.length > 0) {
+    return errorResponse("workflow_origin_consent_required", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      failure_class: "originConsentMissing",
+      required_tool: "synthi_browser_request_consent",
+      missing_origins: missingConsents,
+      notes: [
+        "Grant exact-origin consent for each missing origin before replaying this private workflow tool.",
+        "Screenshot consent is required only when the taught target needed screenshot access.",
+      ],
+    });
+  }
+
+  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a);
+  if (hostedRuntimeGate) return hostedRuntimeGate;
+
+  const lease = browserBroker.acquireLease(
+    process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
+    numberOpt(a["lease_ms"]) ?? 15_000,
+    `private_tool:${toolName}`
+  );
+  try {
+    const response = await browserRunWorkflowTool({
+      lease_id: lease.lease_id,
+      workflow_id: registration.workflow_id,
+      mode,
+      parameters,
+      ...(stringOpt(a["tab_id"]) ? { tab_id: stringOpt(a["tab_id"]) } : {}),
+    });
+    const structuredContent = {
+      ...(response.structuredContent ?? {}),
+      private_tool: {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        run_mode: mode,
+        mutation_confirmed: confirmMutation,
+      },
+    };
+    return {
+      ...response,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    };
+  } finally {
+    browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
+  }
+}
+
+function privateWorkflowHostedRuntimeGate(
+  toolName: string,
+  manifest: PrivateWorkflowToolManifestV7,
+  args: Record<string, unknown>
+): ToolResponse | null {
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind === "hosted") return null;
+  const workspaceId = stringOpt(args["workspace_id"]);
+  const readiness = resolveHostedBrowserRuntime({
+    workspace_id: workspaceId,
+  });
+  return errorResponse("private_workflow_hosted_runtime_required", {
+    tool_name: toolName,
+    workflow_id: manifest.workflow_id,
+    required_tool: "synthi_browser_attach_current_workspace",
+    runtime: runtime ?? null,
+    readiness,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    next_action: {
+      tool: "synthi_browser_attach_current_workspace",
+      arguments: {
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
+        ...(readiness.workspace_url ? { workspace_url: readiness.workspace_url } : {}),
+        open_workspace: true,
+      },
+    },
+    notes: [
+      "Attach the Synthi-hosted workspace browser before running browser-backed private workflow tools.",
+      "Local Chrome, local CDP, desktop extensions, and script paths are not part of the normal user path.",
+    ],
+  });
+}
+
+function manifestWithLiveAuthReadiness(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): PrivateWorkflowToolManifestV7 {
+  if (!contract.authPlan.required) return manifest;
+  const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
+  const unattended = authCheckpointManager.readiness(contract.appOrigin, true);
+  let notes = [...manifest.safety.notes];
+  const authDurability = authDurabilityForManifest(unattended.ready ? unattended : interactive, manifest.auth.durability);
+  let status = manifest.status;
+  if (unattended.ready) {
+    notes = notes.filter((note) => !/not configured for unattended|Do not mark this tool unattended durable/i.test(note));
+    if (
+      status === "manualOnly" &&
+      !manifest.mutation.requires_confirmation &&
+      manifest.safety.blockers.length === 0 &&
+      manifest.safety.limitations.length === 0
+    ) {
+      status = "available";
+    }
+    notes.push("Validated auth provider is ready for unattended replay.");
+  } else if (!interactive.ready) {
+    status = "blocked";
+    notes.push(`Auth readiness blocked: ${interactive.status}.`);
+  } else {
+    if (status === "available") status = "manualOnly";
+    notes.push(`Auth readiness is manual-only: ${unattended.status}.`);
+  }
+  return {
+    ...manifest,
+    status,
+    run_modes: unattended.ready && !manifest.mutation.requires_confirmation
+      ? orderedRunModes(manifest.run_modes, ["coldSession"])
+      : manifest.run_modes,
+    default_run_mode: unattended.ready && !manifest.mutation.requires_confirmation
+      ? "coldSession"
+      : manifest.default_run_mode,
+    auth: {
+      ...manifest.auth,
+      durability: authDurability,
+      unattended_ready: unattended.ready,
+      required: true,
+    },
+    safety: {
+      ...manifest.safety,
+      notes,
+    },
+  };
+}
+
+function missingPrivateWorkflowTargetConsents(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): Array<Record<string, unknown>> {
+  const missing: Array<Record<string, unknown>> = [];
+  for (const target of targetOriginsForPrivateTool(manifest, contract)) {
+    const consent = browserBroker.getConsent(target.origin)[0];
+    const originMissing = consent?.status !== "granted";
+    const screenshotMissing = !originMissing && target.screenshot_consent_required && consent?.screenshot !== "granted";
+    const diagnosticsMissing = !originMissing && target.diagnostics_consent_required && consent?.diagnostics !== "granted";
+    if (!originMissing && !screenshotMissing && !diagnosticsMissing) continue;
+    missing.push({
+      origin: target.origin,
+      primary: target.primary,
+      kinds: target.kinds,
+      step_ids: target.step_ids,
+      reason: originMissing
+        ? "origin_consent_required"
+        : screenshotMissing
+        ? "screenshot_consent_required"
+        : "diagnostics_consent_required",
+      request: {
+        tool: "synthi_browser_request_consent",
+        arguments: {
+          url: target.origin,
+          status: "granted",
+          screenshot: target.screenshot_consent_required,
+          diagnostics: target.diagnostics_consent_required,
+        },
+      },
+    });
+  }
+  return missing;
+}
+
+function targetOriginsForPrivateTool(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): PrivateWorkflowToolManifestV7["target_origins"] {
+  const raw = (manifest as { target_origins?: unknown }).target_origins;
+  if (Array.isArray(raw) && raw.length > 0 && raw.every(isPrivateWorkflowTargetOrigin)) {
+    return raw;
+  }
+  return generatePrivateWorkflowToolManifest(contract).target_origins;
+}
+
+function isPrivateWorkflowTargetOrigin(value: unknown): value is PrivateWorkflowToolManifestV7["target_origins"][number] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<PrivateWorkflowToolManifestV7["target_origins"][number]>;
+  return typeof candidate.origin === "string" &&
+    typeof candidate.primary === "boolean" &&
+    Array.isArray(candidate.kinds) &&
+    Array.isArray(candidate.step_ids) &&
+    typeof candidate.screenshot_consent_required === "boolean" &&
+    typeof candidate.diagnostics_consent_required === "boolean";
+}
+
+function orderedRunModes<T extends string>(existing: T[], additions: T[]): T[] {
+  const modes = [...existing];
+  for (const mode of additions) {
+    if (!modes.includes(mode)) modes.push(mode);
+  }
+  return modes;
+}
+
+function replayAuthGate(
+  contract: WorkflowContractV7,
+  mode: WorkflowReplayModeV7
+): { ok: true } | { ok: false; detail: Record<string, unknown> } {
+  if (!contract.authPlan.required) return { ok: true };
+  const authState = replayAuthReadiness(contract, mode);
+  if (authState.ready) return { ok: true };
+  return { ok: false, detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended) };
+}
+
+async function authStorageStateForColdReplay(
+  contract: WorkflowContractV7
+): Promise<{ ok: true; storageState: AuthBrowserStorageState } | { ok: false; detail: Record<string, unknown> }> {
+  const authState = replayAuthReadiness(contract, "coldSession");
+  if (!authState.ready) {
+    const minted = await authCheckpointManager.mintRefreshProviderStorageForOrigin(contract.appOrigin);
+    if (minted.ok) return { ok: true, storageState: minted.artifact.state };
+    return {
+      ok: false,
+      detail: minted.error === "auth_refresh_provider_not_found"
+        ? authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended)
+        : authRefreshProviderFailureDetail(contract.appOrigin, minted.error),
+    };
+  }
+
+  const providerId = authState.readiness.refresh_provider?.provider_id;
+  if (providerId && authState.unattended) {
+    const providerArtifact = await authCheckpointManager.mintRefreshProviderStorage(providerId);
+    if (!providerArtifact.ok || providerArtifact.artifact.metadata.app_origin !== contract.appOrigin) {
+      return {
+        ok: false,
+        detail: {
+          app_origin: contract.appOrigin,
+          auth_status: providerArtifact.ok ? "checkpointStorageMissing" : providerArtifact.error,
+          auth_durability: authState.readiness.durability,
+          unattended: true,
+          failure_class: "authRefreshFailed",
+          notes: ["Refresh provider did not produce broker-owned auth storage for this workflow origin."],
+        },
+      };
+    }
+    return { ok: true, storageState: providerArtifact.artifact.state };
+  }
+
+  const checkpoint = authState.readiness.checkpoint;
+  if (!checkpoint) {
+    return {
+      ok: false,
+      detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended),
+    };
+  }
+  const artifact = authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint_id);
+  if (!artifact) {
+    return {
+      ok: false,
+      detail: authReadinessDetail(contract.appOrigin, {
+        ...authState.readiness,
+        status: "checkpointStorageMissing",
+        ready: false,
+        notes: ["Auth checkpoint is missing a captured browser storage artifact."],
+      }, authState.unattended),
+    };
+  }
+  return { ok: true, storageState: artifact.state };
+}
+
+function replayAuthReadiness(
+  contract: WorkflowContractV7,
+  mode: WorkflowReplayModeV7
+): { ready: true; readiness: AuthReadiness; unattended: boolean } | { ready: false; readiness: AuthReadiness; unattended: boolean } {
+  if (mode === "ciIsolated") {
+    const readiness = authCheckpointManager.readiness(contract.appOrigin, true);
+    return { ready: readiness.ready, readiness, unattended: true };
+  }
+  const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
+  if (mode === "coldSession") {
+    const providerBacked = authCheckpointManager.readiness(contract.appOrigin, true);
+    if (providerBacked.ready) return { ready: true, readiness: providerBacked, unattended: true };
+    return { ready: interactive.ready, readiness: interactive, unattended: false };
+  }
+  if (interactive.ready) return { ready: interactive.ready, readiness: interactive, unattended: false };
+  return { ready: false, readiness: interactive, unattended: false };
+}
+
+function authReadinessDetail(appOrigin: string, readiness: AuthReadiness, unattended: boolean): Record<string, unknown> {
+  return {
+    app_origin: appOrigin,
+    auth_status: readiness.status,
+    auth_durability: readiness.durability,
+    unattended,
+    failure_class: authFailureClassForReadiness(readiness),
+    notes: readiness.notes,
+  };
+}
+
+function authRefreshProviderFailureDetail(appOrigin: string, error: string): Record<string, unknown> {
+  return {
+    app_origin: appOrigin,
+    auth_status: error,
+    auth_durability: "refreshProvider",
+    unattended: true,
+    failure_class: "authRefreshFailed",
+    notes: ["Refresh provider could not mint broker-owned replay auth state."],
+  };
+}
+
+function authFailureClassForReadiness(readiness: AuthReadiness): "authExpired" | "authMissing" | "authRefreshFailed" {
+  if (readiness.status === "unattendedBlocked" && readiness.refresh_provider?.failure_class) return "authRefreshFailed";
+  return readiness.status === "checkpointExpired" ? "authExpired" : "authMissing";
+}
+
+function authDurabilityForManifest(readiness: AuthReadiness, fallback: AuthDurabilityV7): AuthDurabilityV7 {
+  return readiness.durability === "missing" ? fallback : readiness.durability;
+}
+
+type PrivateWorkflowRunMode = WorkflowReplayModeV7 | "confirmBeforeCommit" | "ciOnly";
+
+function privateWorkflowDefaultReplayMode(manifest: PrivateWorkflowToolManifestV7): WorkflowReplayModeV7 {
+  if (manifest.mutation.requires_confirmation) return "prefixOnly";
+  if (manifest.default_run_mode === "coldSession") return "coldSession";
+  if (manifest.default_run_mode === "prefixOnly") return "prefixOnly";
+  return "sameSession";
+}
+
+function privateWorkflowAllowedRunModes(manifest: PrivateWorkflowToolManifestV7): PrivateWorkflowRunMode[] {
+  return manifest.mutation.requires_confirmation
+    ? ["prefixOnly", "confirmBeforeCommit", "ciOnly", "sameSession", "coldSession"]
+    : ["sameSession", "prefixOnly", "coldSession"];
+}
+
+function privateWorkflowRunMode(value: unknown): { ok: true; mode?: PrivateWorkflowRunMode } | { ok: false } {
+  if (value === undefined) return { ok: true };
+  if (
+    value === "sameSession" ||
+    value === "prefixOnly" ||
+    value === "coldSession" ||
+    value === "confirmBeforeCommit" ||
+    value === "ciOnly"
+  ) {
+    return { ok: true, mode: value };
+  }
+  return { ok: false };
+}
+
+function privateWorkflowMutationConfirmationToken(toolName: string, manifest: PrivateWorkflowToolManifestV7): string {
+  return [
+    "confirm",
+    toolName,
+    manifest.workflow_id,
+    manifest.mutation.first_mutation_step_id ?? "mutation",
+  ].join(":");
+}
+
+async function openColdReplayTab(url: string, storageState?: AuthBrowserStorageState): Promise<{ tab_id: string; url: string }> {
   const access = browserBroker.requireSnapshotAccess(url);
   if (!access.ok) throw new Error(access.error);
-  const tab = await browserPlaywrightAdapter.openCold(url);
+  const tab = await browserPlaywrightAdapter.openCold(url, storageState);
   browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
   browserBroker.selectTab(tab.tab_id);
   return { tab_id: tab.tab_id, url: tab.url };
@@ -1394,8 +2353,17 @@ function actionForReplay(event: { kind: string; action?: BrowserActionKind }): B
   return event.action ?? null;
 }
 
-function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind): string | undefined {
+function replayValueForEvent(
+  event: BrowserTraceEvent,
+  action: BrowserActionKind,
+  parameters: Record<string, string> = {},
+  valueRefByStepId: Map<string, string> = new Map()
+): string | undefined {
   if (action === "navigate") return event.url;
+  const parameterName = valueRefByStepId.get(event.event_id);
+  if ((action === "fill" || action === "select") && parameterName && parameters[parameterName] !== undefined) {
+    return parameters[parameterName];
+  }
   if (action === "drag") return event.value ?? stringOpt(event.detail?.["drop_locator"]);
   if (action === "select") {
     const selectValues = stringArrayOpt(event.detail?.["select_values"]);
@@ -1420,6 +2388,65 @@ function rememberReplayPopupTab(
   if (tracePopupTab && replayPopupTab) replayTabByTraceTab.set(tracePopupTab, replayPopupTab);
 }
 
+function replayTabIds(replayTabByTraceTab: Map<string, string>, rootTabId: string): string[] {
+  return [...new Set([rootTabId, ...replayTabByTraceTab.values()].filter((value) => value.length > 0))];
+}
+
+function replayTargetsForPlan(
+  events: BrowserTraceEvent[],
+  replayTabByTraceTab: Map<string, string>,
+  rootTabId: string
+): Array<Record<string, unknown>> {
+  const byTraceTab = new Map<string, {
+    trace_tab_id: string;
+    replay_tab_id: string;
+    kind: "page" | "popup";
+    recorded_opener_tab_id?: string;
+    recorded_root_opener_tab_id?: string;
+    popup_context: boolean;
+  }>();
+
+  for (const event of events) {
+    if (!event.tab_id) continue;
+    const existing = byTraceTab.get(event.tab_id) ?? {
+      trace_tab_id: event.tab_id,
+      replay_tab_id: replayTabByTraceTab.get(event.tab_id) ?? rootTabId,
+      kind: "page",
+      popup_context: false,
+    };
+    const replayTabId = replayTabByTraceTab.get(event.tab_id);
+    if (replayTabId) existing.replay_tab_id = replayTabId;
+    if (event.detail?.["popup_context"] === true || event.detail?.["popup_event"] === true) {
+      existing.kind = "popup";
+      existing.popup_context = true;
+    }
+    const openerTabId = stringOpt(event.detail?.["opener_tab_id"]);
+    const rootOpenerTabId = stringOpt(event.detail?.["root_opener_tab_id"]);
+    if (openerTabId) existing.recorded_opener_tab_id = openerTabId;
+    if (rootOpenerTabId) existing.recorded_root_opener_tab_id = rootOpenerTabId;
+    byTraceTab.set(event.tab_id, existing);
+  }
+
+  return [...byTraceTab.values()].map((target) => ({
+    trace_tab_id: target.trace_tab_id,
+    replay_tab_id: target.replay_tab_id,
+    kind: target.kind,
+    ...(target.recorded_opener_tab_id ? { recorded_opener_tab_id: target.recorded_opener_tab_id } : {}),
+    ...(target.recorded_root_opener_tab_id ? { recorded_root_opener_tab_id: target.recorded_root_opener_tab_id } : {}),
+    popup_context: target.popup_context,
+  }));
+}
+
+async function refreshReplayTabsForSnapshotAccess(): Promise<string | null> {
+  if (!browserPlaywrightAdapter.isAttached()) return null;
+  try {
+    browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
 function isFileDropEvent(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && dragClassFor(event) === "filedrop";
 }
@@ -1430,6 +2457,34 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
   );
+}
+
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
+}
+
+function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true &&
+    event.detail?.["dialog_type"] === "prompt" &&
+    event.detail?.["dialog_accepted"] !== false;
+}
+
+function dialogPromptValueFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  if (!isAcceptedPromptDialogEvent(event)) return undefined;
+  const parameterName = dialogPromptParameterName(event);
+  return parameters[parameterName] ?? (typeof event.detail?.["fixture_prompt_value"] === "string" ? event.detail["fixture_prompt_value"] : undefined);
+}
+
+function dialogPromptParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["dialog_prompt_env"]) ?? stringOpt(event.detail?.["dialog_prompt_parameter"]) ?? stringOpt(event.detail?.["prompt_parameter"]);
+  const message = event.detail?.["dialog_message_redacted"] === true ? undefined : stringOpt(event.detail?.["dialog_message"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? message ?? label ?? `${event.event_id}_prompt`);
 }
 
 function clipboardPasteTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
@@ -1449,9 +2504,26 @@ function clipboardPasteParameterName(event: BrowserTraceEvent): string {
   return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
 }
 
+function clipboardDropTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  const parameterName = clipboardDropParameterName(event);
+  return parameters[parameterName] ?? stringOpt(event.detail?.["fixture_text"]);
+}
+
+function clipboardDropParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["drop_parameter"]) ?? stringOpt(event.detail?.["clipboard_parameter"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown }).placeholder) ??
+      stringOpt((element as { test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_drop`);
+}
+
 function fileDropPathFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
   const parameterName = fileDropParameterName(event);
-  return parameters[parameterName] ??
+  return stringOpt(parameters[parameterName]) ??
     stringOpt(event.detail?.["fixture_file"]) ??
     stringOpt(event.detail?.["file_path"]);
 }
@@ -1483,7 +2555,7 @@ function stringParameters(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, string> = {};
   for (const [key, parameterValue] of Object.entries(value)) {
-    if (typeof parameterValue === "string" && parameterValue.length > 0) out[slugIdentifier(key)] = parameterValue;
+    if (typeof parameterValue === "string") out[slugIdentifier(key)] = parameterValue;
   }
   return out;
 }
@@ -1583,6 +2655,16 @@ function httpUrlOpt(value: unknown): string | undefined {
   }
 }
 
+function originForUrl(value: unknown): string | null {
+  const raw = stringOpt(value);
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -1594,6 +2676,11 @@ function stringArrayOpt(value: unknown): string[] | undefined {
 
 function boolOpt(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function publicStorageArtifactMetadata(metadata: AuthStorageArtifactMetadata): Omit<AuthStorageArtifactMetadata, "artifact_id"> {
+  const { artifact_id: _artifactId, ...publicMetadata } = metadata;
+  return publicMetadata;
 }
 
 function isBrowserActionKind(value: string): value is BrowserActionKind {
@@ -1613,6 +2700,11 @@ function failureExplanation(failureClass: string): { explanation: string; sugges
       return {
         explanation: "The workflow could not reach the application state because authentication was missing or expired.",
         suggested_next_action: "Renew or configure an auth checkpoint before replaying or publishing the workflow.",
+      };
+    case "authRefreshFailed":
+      return {
+        explanation: "The workflow has a refresh provider, but it could not mint broker-owned replay auth state.",
+        suggested_next_action: "Check the replay auth provider configuration, secret reference, and mint command before running unattended replay.",
       };
     case "mutationBlocked":
     case "unsafeEnvironment":

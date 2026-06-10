@@ -3,6 +3,17 @@ import { sourceIdentityRegistry } from "./source_identity.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserTraceEvent, LocatorCandidate } from "./types.js";
 
 const RELATED_DBLCLICK_CLICK_WINDOW_MS = 1000;
+const CLIPBOARD_DERIVED_FILL_WINDOW_MS = 5000;
+const RESERVED_WORKFLOW_PARAMETER_NAMES = new Set([
+  "run_mode",
+  "confirm_mutation",
+  "mutation_confirmation",
+  "tab_id",
+  "workspace_id",
+  "lease_ms",
+  "timeout_ms",
+  "artifact_root",
+]);
 
 export type WorkflowStateV7 =
   | "Draft"
@@ -38,7 +49,9 @@ export type FailureClassV7 =
   | "locatorDrift"
   | "authMissing"
   | "authExpired"
+  | "authRefreshFailed"
   | "mutationBlocked"
+  | "originConsentMissing"
   | "unsafeEnvironment"
   | "testDataMissing"
   | "routeChanged"
@@ -59,6 +72,8 @@ export type WorkflowSurfaceKindV7 =
   | "fileDrop"
   | "clipboardPaste"
   | "clipboardDrop"
+  | "clipboardCopy"
+  | "clipboardCut"
   | "pointerDrag"
   | "canvas"
   | "openShadowDom"
@@ -80,6 +95,37 @@ export interface WorkflowParameterV7 {
   redacted: boolean;
 }
 
+export interface WorkflowStepTargetContextV7 {
+  kind: "page" | "popup" | "iframe" | "popupIframe";
+  traceTargetId: string;
+  recordedTabId: string;
+  targetOrigin?: string;
+  origin?: string;
+  routePattern?: string;
+  frame?: {
+    recordedFrameId?: string;
+    origin?: string;
+    routePattern?: string;
+    locatorChain: string[];
+  };
+  popup?: {
+    relationship: "opens" | "context";
+    recordedPopupTabId: string;
+    recordedOpenerTabId?: string;
+    recordedRootOpenerTabId?: string;
+    origin?: string;
+    routePattern?: string;
+    openerOrigin?: string;
+  };
+  consent: {
+    exactOriginApproved: boolean;
+    screenshotApproved: boolean;
+    diagnosticsApproved: boolean;
+    popupOriginApproved: boolean;
+    popupScreenshotApproved: boolean;
+  };
+}
+
 export interface WorkflowStepContractV7 {
   stepId: string;
   eventSeq: number;
@@ -94,6 +140,7 @@ export interface WorkflowStepContractV7 {
     };
     valueRef?: string;
   };
+  targetContext?: WorkflowStepTargetContextV7;
   locatorPlan: {
     primary?: LocatorCandidate;
     fallbacks: LocatorCandidate[];
@@ -165,7 +212,7 @@ export interface WorkflowContractV7 {
   }>;
   lane0: Lane0StatusV7;
   failureClasses: FailureClassV7[];
-  replayModes: Array<"sameSession" | "prefixOnly" | "ciIsolated">;
+  replayModes: Array<"sameSession" | "prefixOnly" | "coldSession" | "ciIsolated">;
   limitations: WorkflowLimitationV7[];
   counterfactualPlan: {
     mode: "readOnlyPrefix" | "sameSessionOnly" | "blocked";
@@ -190,7 +237,7 @@ export interface WorkflowContractV7 {
     unattendedReady: boolean;
     authDurability: AuthDurabilityV7;
     mutationMode: "readOnly" | "confirmBeforeCommit" | "ciOnly";
-    runModes: Array<"sameSession" | "prefixOnly" | "confirmBeforeCommit" | "ciOnly">;
+    runModes: Array<"sameSession" | "prefixOnly" | "coldSession" | "confirmBeforeCommit" | "ciOnly">;
     blockers: WorkflowLimitationV7[];
     notes: string[];
   };
@@ -216,7 +263,7 @@ export interface CompiledWorkflowV7 {
   card: WorkflowCardV7;
 }
 
-export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly" | "coldSession";
+export type WorkflowReplayModeV7 = "sameSession" | "prefixOnly" | "coldSession" | "ciIsolated";
 
 export interface WorkflowReplayPlanV7 {
   mode: WorkflowReplayModeV7;
@@ -225,6 +272,38 @@ export interface WorkflowReplayPlanV7 {
   events: BrowserTraceEvent[];
   stoppedBeforeStepId?: string;
   warnings: string[];
+}
+
+export function orderBrowserReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] {
+  return [...events].sort(compareBrowserReplayEvents);
+}
+
+function compareBrowserReplayEvents(left: BrowserTraceEvent, right: BrowserTraceEvent): number {
+  const targetOrder = popupTargetDependencyOrder(left, right);
+  if (targetOrder !== 0) return targetOrder;
+  const leftSeq = typeof left.event_seq === "number" && Number.isFinite(left.event_seq) ? left.event_seq : Number.MAX_SAFE_INTEGER;
+  const rightSeq = typeof right.event_seq === "number" && Number.isFinite(right.event_seq) ? right.event_seq : Number.MAX_SAFE_INTEGER;
+  if (leftSeq !== rightSeq) return leftSeq - rightSeq;
+  const leftTs = typeof left.ts === "number" && Number.isFinite(left.ts) ? left.ts : Number.MAX_SAFE_INTEGER;
+  const rightTs = typeof right.ts === "number" && Number.isFinite(right.ts) ? right.ts : Number.MAX_SAFE_INTEGER;
+  if (leftTs !== rightTs) return leftTs - rightTs;
+  return String(left.event_id || "").localeCompare(String(right.event_id || ""));
+}
+
+function popupTargetDependencyOrder(left: BrowserTraceEvent, right: BrowserTraceEvent): number {
+  if (eventOpensTargetFor(left, right)) return -1;
+  if (eventOpensTargetFor(right, left)) return 1;
+  return 0;
+}
+
+function eventOpensTargetFor(opener: BrowserTraceEvent, target: BrowserTraceEvent): boolean {
+  if (opener.detail?.["popup_event"] !== true) return false;
+  const popupTabId = typeof opener.detail["popup_tab_id"] === "string" ? opener.detail["popup_tab_id"] : "";
+  if (!popupTabId || target.tab_id !== popupTabId) return false;
+  if (target.detail?.["popup_context"] === true) return true;
+  const openerTabId = typeof target.detail?.["opener_tab_id"] === "string" ? target.detail["opener_tab_id"] : "";
+  const rootOpenerTabId = typeof target.detail?.["root_opener_tab_id"] === "string" ? target.detail["root_opener_tab_id"] : "";
+  return openerTabId === opener.tab_id || rootOpenerTabId === opener.tab_id;
 }
 
 const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
@@ -239,7 +318,7 @@ const MUTATION_WORDS: Array<[RegExp, MutationKindV7, string]> = [
 
 export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWorkflowV7 {
   const lane0 = reduceLane0Windows(events);
-  const ordered = lane0.events.sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0));
+  const ordered = orderBrowserReplayEvents(lane0.events);
   const actionEvents = coalesceActionEvents(
     ordered.filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
   );
@@ -258,7 +337,7 @@ export function compileWorkflowContract(events: BrowserTraceEvent[]): CompiledWo
   const authPlan = authPlanFor(actionEvents);
   const replayModes: WorkflowContractV7["replayModes"] = replayBlocked
     ? []
-    : mutationSteps.length > 0 ? ["sameSession", "prefixOnly"] : ["sameSession"];
+    : mutationSteps.length > 0 ? ["sameSession", "prefixOnly", "coldSession", "ciIsolated"] : ["sameSession", "coldSession", "prefixOnly"];
   const sourceAffordancePatches = sourceAffordancePatchesFor(steps);
   const publishPlan = publishPlanFor(name, limitations, mutationSteps.length > 0, actionEvents.length, authPlan);
   const contract: WorkflowContractV7 = {
@@ -328,8 +407,20 @@ function coalesceActionEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     if (previous && shouldDropPressBeforeClipboardPaste(previous, event)) {
       result.pop();
     }
+    if (previous && shouldDropPressBeforeClipboardTransfer(previous, event)) {
+      result.pop();
+    }
     const currentPrevious = result[result.length - 1];
     if (currentPrevious && shouldDropFillAfterClipboardPaste(currentPrevious, event)) {
+      continue;
+    }
+    if (currentPrevious && shouldDropFillAfterClipboardDrop(currentPrevious, event)) {
+      continue;
+    }
+    if (currentPrevious && shouldDropFillAfterClipboardCut(currentPrevious, event)) {
+      continue;
+    }
+    if (event.action === "fill" && shouldDropFillAfterRecentClipboardCut(result, event)) {
       continue;
     }
     if (currentPrevious && shouldReplaceWithLatestFill(currentPrevious, event)) {
@@ -353,8 +444,19 @@ function shouldDropPressBeforeClipboardPaste(previous: BrowserTraceEvent, next: 
   if (!isPasteKeyChord(previous.value)) return false;
   const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
   if (elapsedMs > 2000) return false;
+  return eventsShareDurableTarget(previous, next);
+}
+
+function shouldDropPressBeforeClipboardTransfer(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "press" || !isClipboardTransferEvent(next)) return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  if (next.action === "copy" && !isCopyKeyChord(previous.value)) return false;
+  if (next.action === "cut" && !isCutKeyChord(previous.value)) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
   const previousTarget = actionTargetKey(previous);
-  const nextTarget = fillTargetKey(next);
+  const nextTarget = actionTargetKey(next);
   return sameOrNestedTargetKey(previousTarget, nextTarget);
 }
 
@@ -370,13 +472,80 @@ function shouldDropFillAfterClipboardPaste(previous: BrowserTraceEvent, next: Br
   return sameOrNestedTargetKey(previousTarget, nextTarget);
 }
 
+function shouldDropFillAfterClipboardDrop(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (!isClipboardDropEvent(previous) || next.action !== "fill") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000) return false;
+  const previousTarget = actionTargetKey(previous);
+  const nextTarget = fillTargetKey(next);
+  return sameOrNestedTargetKey(previousTarget, nextTarget);
+}
+
+function shouldDropFillAfterClipboardCut(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.action !== "cut" || next.action !== "fill") return false;
+  if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
+  const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
+  if (elapsedMs > 2000 && !isLikelyClipboardCutDerivedFill(previous, next, elapsedMs)) return false;
+  return eventsShareDurableTarget(previous, next);
+}
+
+function shouldDropFillAfterRecentClipboardCut(events: BrowserTraceEvent[], next: BrowserTraceEvent): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    if (shouldDropFillAfterClipboardCut(event, next)) return true;
+  }
+  return false;
+}
+
+function isLikelyClipboardCutDerivedFill(cut: BrowserTraceEvent, fill: BrowserTraceEvent, elapsedMs: number): boolean {
+  if (elapsedMs > CLIPBOARD_DERIVED_FILL_WINDOW_MS) return false;
+  const selectedLength = numericDetail(cut, "selected_text_length");
+  const valueLength = numericDetail(cut, "value_length");
+  if (selectedLength === undefined || valueLength === undefined || typeof fill.value !== "string") return false;
+  return fill.value.length === Math.max(0, valueLength - selectedLength);
+}
+
 function isPasteKeyChord(value: string | undefined): boolean {
   return value === "Control+V" || value === "Meta+V";
+}
+
+function isCopyKeyChord(value: string | undefined): boolean {
+  return value === "Control+C" || value === "Meta+C";
+}
+
+function isCutKeyChord(value: string | undefined): boolean {
+  return value === "Control+X" || value === "Meta+X";
 }
 
 function sameOrNestedTargetKey(left: string, right: string): boolean {
   if (!left || !right) return false;
   return left === right || left.includes(right) || right.includes(left);
+}
+
+function eventsShareDurableTarget(left: BrowserTraceEvent, right: BrowserTraceEvent): boolean {
+  const leftTokens = durableTargetTokens(left);
+  const rightTokens = durableTargetTokens(right);
+  return leftTokens.some((token) => rightTokens.includes(token));
+}
+
+function durableTargetTokens(event: BrowserTraceEvent): string[] {
+  const element = elementForEvent(event);
+  return [
+    event.selector,
+    event.locator_candidates?.[0]?.locator,
+    element?.source_id,
+    element?.test_id,
+    element?.id,
+    element?.label,
+    element?.placeholder,
+    element?.name,
+    element?.css,
+    element?.xpath,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0);
 }
 
 function shouldReplaceWithLatestFill(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
@@ -450,6 +619,10 @@ function actionTargetKey(event: BrowserTraceEvent): string {
 function stringDetail(event: BrowserTraceEvent, key: string): string | undefined {
   const value = event.detail?.[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function boolDetail(event: BrowserTraceEvent, key: string): boolean {
+  return event.detail?.[key] === true;
 }
 
 function numericDetail(event: BrowserTraceEvent, key: string): number | undefined {
@@ -560,8 +733,8 @@ function publishPlanFor(
     : hasMutation || softBlockers.length > 0 || checkpointOnlyAuth ? "manualOnly" : "ready";
   const unattendedReady = readiness === "ready" && authDurabilityAllowsUnattended(authPlan.durability);
   const runModes: WorkflowContractV7["publishPlan"]["runModes"] = hasMutation
-    ? ["prefixOnly", "confirmBeforeCommit", "ciOnly"]
-    : ["sameSession"];
+    ? ["prefixOnly", "coldSession", "confirmBeforeCommit", "ciOnly"]
+    : ["sameSession", "coldSession", "prefixOnly"];
   return {
     privateToolName: `synthi_app_${slugIdentifier(workflowNameValue)}`,
     readiness,
@@ -607,18 +780,6 @@ function publishNotesFor(
 }
 
 function authPlanFor(events: BrowserTraceEvent[]): WorkflowContractV7["authPlan"] {
-  const explicitDurability = events
-    .map((event) => authDurabilityFromDetail(event.detail?.["auth_durability"]))
-    .find((durability): durability is AuthDurabilityV7 => durability !== null);
-  if (explicitDurability) {
-    return {
-      durability: explicitDurability,
-      required: explicitDurability !== "noneRequired",
-      notes: explicitDurability === "noneRequired"
-        ? ["Trace explicitly marked this workflow as not requiring auth."]
-        : [`Trace explicitly marked auth durability as ${explicitDurability}.`],
-    };
-  }
   if (events.some((event) => event.security?.auth_checkpoint_approved === true)) {
     return {
       durability: "interactiveCheckpoint",
@@ -633,19 +794,6 @@ function authPlanFor(events: BrowserTraceEvent[]): WorkflowContractV7["authPlan"
   };
 }
 
-function authDurabilityFromDetail(value: unknown): AuthDurabilityV7 | null {
-  if (
-    value === "noneRequired" ||
-    value === "interactiveCheckpoint" ||
-    value === "idpCheckpoint" ||
-    value === "refreshProvider" ||
-    value === "ciTestAuth"
-  ) {
-    return value;
-  }
-  return null;
-}
-
 function authDurabilityAllowsUnattended(durability: AuthDurabilityV7): boolean {
   return durability === "noneRequired" || durability === "refreshProvider" || durability === "ciTestAuth";
 }
@@ -656,8 +804,7 @@ function affordanceName(value: string): string {
 
 export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowReplayModeV7 = "sameSession"): WorkflowReplayPlanV7 {
   const workflow = compileWorkflowContract(events);
-  const ordered = coalesceActionEvents([...events]
-    .sort((a, b) => (a.event_seq || 0) - (b.event_seq || 0))
+  const ordered = coalesceActionEvents(orderBrowserReplayEvents(events)
     .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation"));
   const firstMutationStepId = workflow.contract.mutationBoundaryPlan.firstMutationStepId;
   if (ordered.length === 0) {
@@ -694,7 +841,9 @@ export function planWorkflowReplay(events: BrowserTraceEvent[], mode: WorkflowRe
     status: "ready",
     workflowId: workflow.contract.workflowId,
     events: ordered,
-    warnings: mode === "coldSession"
+    warnings: mode === "ciIsolated"
+      ? ["CI-isolated replay executes mutation steps only in a resettable environment with explicit mutation permission."]
+      : mode === "coldSession"
       ? ["Cold-session replay starts from a fresh browser context."]
       : workflow.contract.mutationBoundaryPlan.mutationSteps.length > 0
       ? ["Same-session replay includes mutation steps and must not be used for background hardening."]
@@ -715,9 +864,11 @@ export function classifyWorkflowReplayBlock(plan: Pick<WorkflowReplayPlanV7, "wa
 
 export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTraceEvent): FailureClassV7 {
   const message = error instanceof Error ? error.message : String(error);
+  if (/refresh.*provider|provider.*refresh|mint.*auth|auth.*mint/i.test(message)) return "authRefreshFailed";
   if (/auth.*expired|expired.*auth|checkpoint.*expired/i.test(message)) return "authExpired";
   if (/auth|login|unauthorized|forbidden|checkpoint/i.test(message)) return "authMissing";
   if (/mutation.*blocked|mutation boundary|unsafe mutation/i.test(message)) return "mutationBlocked";
+  if (/origin_consent_required|screenshot_consent_required|diagnostics_consent_required|consent.*required/i.test(message)) return "originConsentMissing";
   if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
   if (/canvas/i.test(message)) return "canvasUnreliable";
   if (/pointer drag|pointer-drag/i.test(message)) return "pointerDragUnreliable";
@@ -725,12 +876,14 @@ export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTra
   if (/net::|ERR_|network/i.test(message)) return "networkFailure";
   if (/navigation|url/i.test(message)) return "routeChanged";
   if (/hydration|hydrate|not ready|not mounted/i.test(message)) return "hydrationDelay";
+  if (/(reset|profile|seed|fixture|test[-_ ]?data|baseline).*(missing|mismatch|not found|unavailable|wrong)|missing.*(reset|profile|seed|fixture|test[-_ ]?data)|mismatch.*(reset|profile|seed)/i.test(message)) return "testDataMissing";
   if (/timeout|waiting|visible|locator|selector|strict mode|No locator/i.test(message)) return "locatorDrift";
   if (event?.action === "navigate") return "routeChanged";
   return "unknown";
 }
 
 export function normalizeReplayMode(value: unknown): WorkflowReplayModeV7 {
+  if (value === "ciIsolated") return "ciIsolated";
   if (value === "coldSession") return "coldSession";
   return value === "prefixOnly" ? "prefixOnly" : "sameSession";
 }
@@ -767,6 +920,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
       ...(targetLabel ? { target: { label: targetLabel, ...(element?.role ? { role: element.role } : {}), ...(primary?.locator ? { locator: primary.locator } : {}) } } : {}),
       ...(parameterName ? { valueRef: parameterName } : {}),
     },
+    targetContext: targetContextFor(event),
     locatorPlan: {
       ...(primary ? { primary } : {}),
       fallbacks,
@@ -787,6 +941,77 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
     expectedEffects: expectedEffectsFor(actionKind, targetLabel, mutation !== undefined),
     ...(mutation ? { mutation } : {}),
     limitations,
+  };
+}
+
+function targetContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7 {
+  const frameLocatorChain = frameLocatorChainForEvent(event);
+  const popupContext = popupContextFor(event);
+  const isPopupExecutionContext = event.detail?.["popup_context"] === true;
+  const kind = isPopupExecutionContext
+    ? frameLocatorChain.length > 0 ? "popupIframe" : "popup"
+    : frameLocatorChain.length > 0 ? "iframe" : "page";
+  const origin = event.origin || originFor(event.url) || undefined;
+  const frameOrigin = stringDetail(event, "frame_origin") ?? originFor(stringDetail(event, "frame_url") ?? "") ?? undefined;
+  const frameRoutePattern = routePatternFromUrl(stringDetail(event, "frame_url"));
+  const routePattern = routePatternFromUrl(event.url);
+  const targetOrigin = frameOrigin ?? origin;
+  const frameTargetIdParts = frameTargetIdPartsFor(event.frame_id, frameLocatorChain);
+  const targetIdParts = [
+    `tab:${event.tab_id || "unknown"}`,
+    ...(isPopupExecutionContext ? [`popup:${event.tab_id || popupContext?.recordedPopupTabId || "unknown"}`] : []),
+    ...frameTargetIdParts,
+  ];
+  return {
+    kind,
+    traceTargetId: targetIdParts.join("|"),
+    recordedTabId: event.tab_id,
+    ...(targetOrigin ? { targetOrigin } : {}),
+    ...(origin ? { origin } : {}),
+    ...(routePattern ? { routePattern } : {}),
+    ...(frameLocatorChain.length > 0 || event.frame_id ? {
+      frame: {
+        ...(event.frame_id ? { recordedFrameId: event.frame_id } : {}),
+        ...(frameOrigin ? { origin: frameOrigin } : {}),
+        ...(frameRoutePattern ? { routePattern: frameRoutePattern } : {}),
+        locatorChain: frameLocatorChain,
+      },
+    } : {}),
+    ...(popupContext ? { popup: popupContext } : {}),
+    consent: {
+      exactOriginApproved: event.security?.exact_origin_approved === true,
+      screenshotApproved: event.security?.screenshot_approved === true,
+      diagnosticsApproved: event.security?.diagnostics_approved === true,
+      popupOriginApproved: event.security?.popup_origin_approved === true || boolDetail(event, "popup_origin_approved"),
+      popupScreenshotApproved: event.security?.popup_screenshot_approved === true || boolDetail(event, "popup_screenshot_approved"),
+    },
+  };
+}
+
+function frameTargetIdPartsFor(frameId: string | undefined, frameLocatorChain: string[]): string[] {
+  if (frameLocatorChain.length === 0) return frameId ? [`frame:${frameId}`] : [];
+  const durableChainPart = `frameChain:${frameLocatorChain.join(">")}`;
+  if (!frameId) return [durableChainPart];
+  if (frameLocatorChain.length === 1) return [`frame:${frameId}`];
+  return [`frame:${frameId}`, durableChainPart];
+}
+
+function popupContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7["popup"] | undefined {
+  const popupTabId = stringDetail(event, "popup_tab_id");
+  const isPopupContext = event.detail?.["popup_context"] === true;
+  const isPopupEvent = event.detail?.["popup_event"] === true;
+  if (!popupTabId || (!isPopupContext && !isPopupEvent)) return undefined;
+  const popupUrl = stringDetail(event, "popup_url");
+  const popupOrigin = stringDetail(event, "popup_origin") ?? originFor(popupUrl ?? "") ?? undefined;
+  const popupRoutePattern = routePatternFromUrl(popupUrl);
+  return {
+    relationship: isPopupEvent ? "opens" : "context",
+    recordedPopupTabId: popupTabId,
+    ...(stringDetail(event, "opener_tab_id") ? { recordedOpenerTabId: stringDetail(event, "opener_tab_id") } : {}),
+    ...(stringDetail(event, "root_opener_tab_id") ? { recordedRootOpenerTabId: stringDetail(event, "root_opener_tab_id") } : {}),
+    ...(popupOrigin ? { origin: popupOrigin } : {}),
+    ...(popupRoutePattern ? { routePattern: popupRoutePattern } : {}),
+    ...(stringDetail(event, "opener_origin") ? { openerOrigin: stringDetail(event, "opener_origin") } : {}),
   };
 }
 
@@ -845,6 +1070,10 @@ function labelForAction(action: BrowserActionKind, targetLabel: string): string 
       return `Drag ${targetLabel}`;
     case "scroll":
       return `Scroll ${targetLabel}`;
+    case "copy":
+      return `Copy from ${targetLabel}`;
+    case "cut":
+      return `Cut from ${targetLabel}`;
     case "press":
       return `Press key on ${targetLabel}`;
     case "select":
@@ -877,6 +1106,10 @@ function intentForAction(action: BrowserActionKind, targetLabel: string): string
       return `Move ${targetLabel} with explicit drag mode`;
     case "scroll":
       return `Restore ${targetLabel} scroll position`;
+    case "copy":
+      return `Copy selected content from ${targetLabel}`;
+    case "cut":
+      return `Cut selected content from ${targetLabel}`;
     case "navigate":
       return `Reach ${targetLabel}`;
     case "wait":
@@ -893,6 +1126,8 @@ function expectedEffectsFor(action: BrowserActionKind, targetLabel: string, muta
   if (action === "contextmenu") return [`${targetLabel} contextual actions are visible.`];
   if (action === "drag") return [`${targetLabel} drag target remains reachable.`];
   if (action === "scroll") return [`${targetLabel} scroll position is restored.`];
+  if (action === "copy") return [`${targetLabel} selected content is available to the browser clipboard.`];
+  if (action === "cut") return [`${targetLabel} selected content is removed after clipboard transfer.`];
   if (action === "navigate") return [`The browser reaches ${targetLabel}.`];
   return [`${targetLabel} remains visible and actionable.`];
 }
@@ -930,19 +1165,72 @@ function mutationFor(
 
 function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTraceEvent[]): WorkflowParameterV7[] {
   const byStep = new Map(events.map((event) => [event.event_id, event]));
+  const usedNames = new Set<string>();
+  const variantsByBaseName = new Map<string, Array<{ key: string; name: string }>>();
   return steps.flatMap((step) => {
     const valueRef = step.action.valueRef;
     if (!valueRef) return [];
     const event = byStep.get(step.stepId);
+    const baseName = valueRef;
+    const variantKey = parameterVariantKey(step);
+    const variants = variantsByBaseName.get(baseName) ?? [];
+    let variant = variants.find((candidate) => candidate.key === variantKey);
+    if (!variant) {
+      const preferredName = workflowParameterNameCandidate(baseName);
+      variant = {
+        key: variantKey,
+        name: variants.length === 0 && !usedNames.has(preferredName)
+          ? preferredName
+          : uniqueWorkflowParameterName(preferredName, usedNames),
+      };
+      variants.push(variant);
+      variantsByBaseName.set(baseName, variants);
+      usedNames.add(variant.name);
+    }
+    if (step.action.valueRef !== variant.name) step.action.valueRef = variant.name;
+    const label = step.action.target?.label ?? valueRef;
+    const sensitive = isSensitiveParameterName(baseName) || isSensitiveParameterName(variant.name) || isSensitiveParameterName(label);
+    const redacted = event?.redacted === true ||
+      event?.detail?.["pasted_text_redacted"] === true ||
+      event?.detail?.["dropped_text_redacted"] === true ||
+      event?.detail?.["dialog_prompt_value_redacted"] === true ||
+      sensitive;
     return [{
-      name: valueRef,
-      label: step.action.target?.label ?? valueRef,
+      name: variant.name,
+      label,
       sourceStepId: step.stepId,
-      valueShape: parameterValueShape(event),
+      valueShape: redacted ? "secret" : parameterValueShape(event),
       required: true,
-      redacted: event?.redacted === true || event?.detail?.["pasted_text_redacted"] === true,
+      redacted,
     }];
   });
+}
+
+function workflowParameterNameCandidate(name: string): string {
+  return RESERVED_WORKFLOW_PARAMETER_NAMES.has(name) ? `workflow_${name}` : name;
+}
+
+function uniqueWorkflowParameterName(baseName: string, usedNames: Set<string>): string {
+  let ordinal = 2;
+  while (usedNames.has(`${baseName}_${ordinal}`)) ordinal += 1;
+  return `${baseName}_${ordinal}`;
+}
+
+function parameterVariantKey(step: WorkflowStepContractV7): string {
+  if (step.sourcePlan.sourceId) return `source:${step.sourcePlan.sourceId}`;
+  const target = step.action.target;
+  const targetKey = [
+    target?.role ?? "",
+    target?.label ?? "",
+    target?.locator ?? "",
+  ].map((part) => part.trim()).join("\u001f");
+  if (targetKey.trim().length > 0) return `target:${targetKey}`;
+  return `step:${step.stepId}`;
+}
+
+function isSensitiveParameterName(value: string | undefined): boolean {
+  if (!value) return false;
+  return /(?:^|[_\-\s])(?:api[_\-\s]?key|access[_\-\s]?token|auth|bearer|cookie|credential|key|pass(?:word)?|secret|session|token)(?:$|[_\-\s])/i.test(value);
 }
 
 function parameterNameForAction(
@@ -951,12 +1239,21 @@ function parameterNameForAction(
   ordinal: number,
   actionKind: BrowserActionKind
 ): string | undefined {
+  if (isAcceptedPromptDialogEvent(event)) {
+    const explicit = stringDetail(event, "dialog_prompt_env") ?? stringDetail(event, "dialog_prompt_parameter") ?? stringDetail(event, "prompt_parameter");
+    const message = event.detail?.["dialog_message_redacted"] === true ? undefined : stringDetail(event, "dialog_message");
+    return slugIdentifier(explicit || message || element?.label || element?.name || element?.test_id || `prompt_${ordinal}`);
+  }
   if (actionKind === "fill" || actionKind === "select") {
     if (actionKind === "fill" && isClipboardPasteEvent(event)) {
       const explicit = stringDetail(event, "paste_parameter") ?? stringDetail(event, "clipboard_parameter");
       return slugIdentifier(explicit || element?.label || element?.name || element?.placeholder || element?.test_id || `paste_${ordinal}`);
     }
     return event.semantic?.parameter_name ?? parameterNameFor(event, element, ordinal);
+  }
+  if (actionKind === "click" && isAriaOptionSelectionEvent(event)) {
+    const explicit = stringDetail(event, "option_parameter") ?? stringDetail(event, "listbox_parameter");
+    return slugIdentifier(explicit || stringDetail(event, "listbox_name") || element?.label || element?.name || element?.test_id || `option_${ordinal}`);
   }
   if (actionKind === "drag" && dragClassFor(event) === "filedrop") {
     const explicit = typeof event.detail?.["file_parameter"] === "string"
@@ -965,6 +1262,14 @@ function parameterNameForAction(
         ? event.detail["file_env"] as string
         : undefined;
     return slugIdentifier(explicit || element?.label || element?.name || element?.test_id || `file_${ordinal}`);
+  }
+  if (actionKind === "drag" && dragClassFor(event) === "clipboarddrop") {
+    const explicit = typeof event.detail?.["drop_parameter"] === "string"
+      ? event.detail["drop_parameter"] as string
+      : typeof event.detail?.["clipboard_parameter"] === "string"
+        ? event.detail["clipboard_parameter"] as string
+        : undefined;
+    return slugIdentifier(explicit || element?.label || element?.name || element?.placeholder || element?.test_id || `drop_${ordinal}`);
   }
   return undefined;
 }
@@ -977,7 +1282,10 @@ function parameterNameFor(event: BrowserTraceEvent, element: BrowserElementMetad
 
 function parameterValueShape(event: BrowserTraceEvent | undefined): WorkflowParameterV7["valueShape"] {
   if (event?.action === "drag" && dragClassFor(event) === "filedrop") return "filePath";
+  if (event?.action === "drag" && dragClassFor(event) === "clipboarddrop") return "secret";
+  if (event && isAriaOptionSelectionEvent(event)) return valueShape(stringDetail(event, "option_value") ?? event.value, false);
   if (event && isClipboardPasteEvent(event)) return "secret";
+  if (event && isAcceptedPromptDialogEvent(event)) return "secret";
   return valueShape(event?.value, event?.redacted === true);
 }
 
@@ -1006,19 +1314,19 @@ function workflowLimitations(
   if (steps.some((step) => step.limitations.includes("closedShadowDomBlocked"))) limitations.add("closedShadowDomBlocked");
   if (steps.some((step) => step.limitations.includes("pointerDragUnreliable"))) limitations.add("pointerDragUnreliable");
   if (hasMutation) limitations.add("mutationRequiresIsolation");
-  if (events.some((event) => event.origin && appOrigin !== "unknown" && event.origin !== appOrigin)) limitations.add("crossOriginTrace");
+  if (events.some((event) => eventHasCrossOriginTarget(event, appOrigin))) limitations.add("crossOriginTrace");
   const actionTabIds = new Set(events
     .filter((event) => event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation")
     .map((event) => event.tab_id)
     .filter(Boolean));
-  if ((actionTabIds.size > 1 && !isSameOriginPopupChain(events, appOrigin)) ||
+  if ((actionTabIds.size > 1 && !isLinkedPopupChain(events, appOrigin)) ||
     events.some((event) => event.detail?.["surface"] === "popup")) {
     limitations.add("popupOrMultiTab");
   }
   return [...limitations];
 }
 
-function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string): boolean {
+function isLinkedPopupChain(events: BrowserTraceEvent[], appOrigin: string): boolean {
   if (appOrigin === "unknown") return false;
   const actionEvents = events.filter((event) =>
     event.kind === "human_action" || event.kind === "agent_action" || event.kind === "navigation"
@@ -1029,12 +1337,11 @@ function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string):
   const popupTabs = new Set<string>();
   let openerEventSeen = false;
   for (const event of actionEvents) {
-    if (event.origin !== appOrigin) return false;
     const opener = stringDetail(event, "opener_tab_id");
     const popup = stringDetail(event, "popup_tab_id");
     const popupUrl = stringDetail(event, "popup_url");
     if (event.detail?.["popup_event"] === true && opener && popup && event.tab_id === opener) {
-      if (popupUrl && originFor(popupUrl) !== appOrigin) return false;
+      if (popupUrl && !eventTargetOriginApproved(event, popupUrl, appOrigin, "popup")) return false;
       allowedTabs.add(opener);
       allowedTabs.add(popup);
       popupTabs.add(popup);
@@ -1047,16 +1354,50 @@ function isSameOriginPopupChain(events: BrowserTraceEvent[], appOrigin: string):
     if (popupTabs.has(event.tab_id) && event.detail?.["popup_context"] !== true && event.detail?.["popup_event"] !== true) {
       return false;
     }
+    if (!eventTargetOriginApproved(event, event.origin, appOrigin, popupTabs.has(event.tab_id) ? "page" : "root")) {
+      return false;
+    }
   }
   return true;
 }
 
+function eventTargetOriginApproved(
+  event: BrowserTraceEvent,
+  urlOrOrigin: string,
+  appOrigin: string,
+  target: "root" | "page" | "popup"
+): boolean {
+  const origin = originFor(urlOrOrigin);
+  if (!origin) return false;
+  if (origin === appOrigin) return true;
+  if (target === "popup") {
+    return event.security?.popup_origin_approved === true || event.detail?.["popup_origin_approved"] === true;
+  }
+  return event.security?.exact_origin_approved === true;
+}
+
+function eventHasCrossOriginTarget(event: BrowserTraceEvent, appOrigin: string): boolean {
+  if (appOrigin === "unknown") return false;
+  if (event.origin && event.origin !== appOrigin) return true;
+  const frameOrigin = stringDetail(event, "frame_origin");
+  if (frameOrigin && originFor(frameOrigin) !== appOrigin) return true;
+  const popupOrigin = stringDetail(event, "popup_origin");
+  if (popupOrigin && originFor(popupOrigin) !== appOrigin) return true;
+  const popupUrl = stringDetail(event, "popup_url");
+  if (popupUrl && originFor(popupUrl) !== appOrigin) return true;
+  return false;
+}
+
 function originFor(url: string): string | null {
   try {
-    return new URL(url).origin;
+    return normalizeOriginForWorkflow(url);
   } catch {
     return null;
   }
+}
+
+function normalizeOriginForWorkflow(urlOrOrigin: string): string {
+  return new URL(urlOrOrigin).origin;
 }
 
 function successCriteriaFor(steps: WorkflowStepContractV7[]): WorkflowContractV7["successCriteria"] {
@@ -1087,6 +1428,7 @@ function failureClassesFor(
   if (authPlan.required || authPlan.durability !== "noneRequired") {
     classes.add("authMissing");
     classes.add("authExpired");
+    classes.add("authRefreshFailed");
   }
   if (limitations.includes("sourceIdentityMissing")) classes.add("sourceIdentityMissing");
   if (limitations.includes("unresolvedStep")) classes.add("testDataMissing");
@@ -1094,6 +1436,7 @@ function failureClassesFor(
   if (limitations.includes("closedShadowDomBlocked")) classes.add("closedShadowDomBlocked");
   if (limitations.includes("pointerDragUnreliable")) classes.add("pointerDragUnreliable");
   if (limitations.includes("popupOrMultiTab")) classes.add("unsafeEnvironment");
+  if (limitations.includes("crossOriginTrace")) classes.add("originConsentMissing");
   if (hasMutation) {
     classes.add("mutationBlocked");
     classes.add("unsafeEnvironment");
@@ -1155,7 +1498,17 @@ function replayBlockingWarnings(limitations: WorkflowLimitationV7[]): string[] {
 }
 
 function eventNeedsFrameLocator(event: BrowserTraceEvent): boolean {
-  return Boolean(event.frame_id) && typeof event.detail?.["frame_locator"] !== "string";
+  return Boolean(event.frame_id) && frameLocatorChainForEvent(event).length === 0;
+}
+
+function frameLocatorChainForEvent(event: BrowserTraceEvent): string[] {
+  const rawChain = event.detail?.["frame_locator_chain"];
+  if (Array.isArray(rawChain)) {
+    const chain = rawChain.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    if (chain.length > 0) return chain;
+  }
+  const frameLocator = typeof event.detail?.["frame_locator"] === "string" ? event.detail["frame_locator"] : "";
+  return frameLocator.trim().length > 0 ? [frameLocator] : [];
 }
 
 function eventIsCanvasCoordinateOnly(event: BrowserTraceEvent): boolean {
@@ -1214,6 +1567,13 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       notes: ["Open Shadow DOM can use normal Playwright locator piercing where the locator remains stable."],
     };
   }
+  if (action === "scroll" && isWheelScrollEvent(event)) {
+    return {
+      kind: "dom",
+      replay: "durable",
+      notes: ["Wheel replay preserves pointer-relative deltas and keyboard modifiers for pan/zoom surfaces."],
+    };
+  }
   if (eventIsCanvasCoordinateOnly(event)) {
     return {
       kind: "canvas",
@@ -1233,10 +1593,15 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
   }
   if (action === "drag") {
     if (eventHasCalibratedPointerReplay(event)) {
+      const isResizeHandle = event.detail?.["resize_handle"] === true || event.detail?.["resizeHandle"] === true;
       return {
         kind: "pointerDrag",
         replay: "sameSessionOnly",
-        notes: ["Pointer-sensor drag has calibrated source/drop locators and relative replay points for same-session validation."],
+        notes: [
+          isResizeHandle
+            ? "Resize handle drag has calibrated source/drop locators and relative replay points for same-session validation."
+            : "Pointer-sensor drag has calibrated source/drop locators and relative replay points for same-session validation.",
+        ],
       };
     }
     if (dragClass === "nativehtmldnd") {
@@ -1271,6 +1636,38 @@ function surfacePlanFor(event: BrowserTraceEvent, action: BrowserActionKind): Wo
       kind: "clipboardPaste",
       replay: "parameterized",
       notes: ["Clipboard paste replay requires caller-provided text; pasted content is not stored in the taught trace."],
+    };
+  }
+  if (action === "copy") {
+    return {
+      kind: "clipboardCopy",
+      replay: hasTextSelectionRange(event) ? "durable" : "sameSessionOnly",
+      notes: [hasTextSelectionRange(event)
+        ? "Clipboard copy restores the recorded text-control selection and uses the native browser shortcut; copied text is not stored."
+        : "Clipboard copy uses the current focused selection; copied text is not stored."],
+    };
+  }
+  if (action === "cut") {
+    return {
+      kind: "clipboardCut",
+      replay: hasTextSelectionRange(event) ? "durable" : "sameSessionOnly",
+      notes: [hasTextSelectionRange(event)
+        ? "Clipboard cut restores the recorded text-control selection and uses the native browser shortcut; cut text is not stored."
+        : "Clipboard cut uses the current focused selection; cut text is not stored."],
+    };
+  }
+  if (isAcceptedPromptDialogEvent(event)) {
+    return {
+      kind: "dom",
+      replay: "parameterized",
+      notes: ["Native prompt replay requires caller-provided prompt text; the taught prompt response is not stored."],
+    };
+  }
+  if (isKeyboardTextEntryEvent(event)) {
+    return {
+      kind: "dom",
+      replay: "parameterized",
+      notes: ["Non-editable keyboard surface uses focus and keyboard typing; generated replay requires caller-provided text."],
     };
   }
   const editorStrategy = editorReplayStrategyFor(event);
@@ -1316,6 +1713,47 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
     event.detail?.["clipboard_event"] === true ||
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
+  );
+}
+
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
+}
+
+function isClipboardTransferEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "copy" || event.action === "cut";
+}
+
+function isKeyboardTextEntryEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["keyboard_text_entry"] === true ||
+    event.detail?.["text_entry_mode"] === "keyboardInsert"
+  );
+}
+
+function isWheelScrollEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "scroll" && (
+    event.detail?.["wheel_event"] === true ||
+    event.detail?.["wheel_replay"] === "mouseWheel"
+  );
+}
+
+function hasTextSelectionRange(event: BrowserTraceEvent): boolean {
+  return numericDetail(event, "selection_start") !== undefined && numericDetail(event, "selection_end") !== undefined;
+}
+
+function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true &&
+    event.detail?.["dialog_type"] === "prompt" &&
+    event.detail?.["dialog_accepted"] !== false;
+}
+
+function isAriaOptionSelectionEvent(event: BrowserTraceEvent): boolean {
+  const element = elementForEvent(event);
+  return event.action === "click" && (
+    event.detail?.["option_select_event"] === true ||
+    element?.role === "option" ||
+    typeof event.detail?.["listbox_name"] === "string"
   );
 }
 
@@ -1369,10 +1807,14 @@ function firstHttpOrigin(events: BrowserTraceEvent[]): string | null {
 
 function routePatternFor(events: BrowserTraceEvent[]): string | undefined {
   const event = events.find((candidate) => candidate.url);
-  if (!event) return undefined;
+  return routePatternFromUrl(event?.url);
+}
+
+function routePatternFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
   try {
-    const parsed = new URL(event.url);
-    return `${parsed.pathname || "/"}${parsed.search ? "?..." : ""}`;
+    const parsed = new URL(url);
+    return `${appRoutePathname(parsed) || "/"}${parsed.search ? "?..." : ""}`;
   } catch {
     return undefined;
   }
@@ -1381,10 +1823,17 @@ function routePatternFor(events: BrowserTraceEvent[]): string | undefined {
 function routeName(url: string): string {
   try {
     const parsed = new URL(url);
-    return parsed.pathname || parsed.origin;
+    return appRoutePathname(parsed) || parsed.origin;
   } catch {
     return url;
   }
+}
+
+function appRoutePathname(parsed: URL): string {
+  const match = parsed.pathname.match(/^\/port\/\d+(?=\/|$)(.*)$/);
+  if (!match) return parsed.pathname || "/";
+  const appPath = match[1] ?? "";
+  return appPath.length > 0 ? appPath : "/";
 }
 
 function locatorConfidence(candidate?: LocatorCandidate): WorkflowStepContractV7["locatorPlan"]["confidence"] {

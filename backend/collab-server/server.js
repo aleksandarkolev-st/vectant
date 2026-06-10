@@ -2974,6 +2974,7 @@ const server = http.createServer(async (req, res) => {
             const effectiveUserId = sessionId && userId
               ? sessionManager.getEffectiveUserId(userId, sessionId)
               : userId;
+            const allowUnauthenticatedDevGit = config.SYNTHI_WORKSPACE_AUTH_BYPASS && !sessionId && !userId;
 
             if (effectiveUserId && effectiveUserId !== userId) {
               console.log(`[Collab] Direct-access: guest=${userId} → host=${effectiveUserId} session=${sessionId} action=${action}`);
@@ -3038,7 +3039,7 @@ const server = http.createServer(async (req, res) => {
                 }));
                 return;
               }
-            } else if (action !== 'init' && action !== 'clone') {
+            } else if (action !== 'init' && action !== 'clone' && !allowUnauthenticatedDevGit) {
               // Require userId for ALL actions (except bootstrapping).
               // Without a userId the server falls back to the slug-level
               // directory which may not be a valid git repo (migrated

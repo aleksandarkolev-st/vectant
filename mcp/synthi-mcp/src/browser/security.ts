@@ -20,7 +20,14 @@ const SECRET_FIELD_NAMES = new Set([
   "apikey",
   "secret",
   "authorization",
+  "cookie",
+  "set-cookie",
+  "localstorage",
+  "sessionstorage",
 ]);
+
+const SECRET_FIELD_PATTERN = /\b(?:password|passwd|passcode|token|secret|authorization|cookie|local\s*storage|session\s*storage|api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|id[\s_-]*token)\b/i;
+const MAX_STRUCTURED_REDACTION_DEPTH = 24;
 
 export function normalizeOrigin(rawUrl: string): BrowserOrigin {
   let parsed: URL;
@@ -68,12 +75,74 @@ export function redactText(input: string): { text: string; redacted: boolean } {
 }
 
 export function redactValue(fieldName: string | undefined, value: string): { value: string; redacted: boolean } {
-  const normalized = (fieldName ?? "").trim().toLowerCase();
-  if (SECRET_FIELD_NAMES.has(normalized)) {
+  if (isSensitiveFieldName(fieldName)) {
     return { value: "[REDACTED]", redacted: true };
   }
   const byPattern = redactText(value);
   return { value: byPattern.text, redacted: byPattern.redacted };
+}
+
+export function isSensitiveFieldName(fieldName: string | undefined): boolean {
+  const normalized = (fieldName ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  const spaced = normalized.replace(/[_-]+/g, " ");
+  const compact = spaced.replace(/\s+/g, "");
+  return SECRET_FIELD_NAMES.has(normalized)
+    || SECRET_FIELD_NAMES.has(compact)
+    || SECRET_FIELD_PATTERN.test(spaced)
+    || /(?:password|passwd|passcode|token|secret|apikey|authorization|cookie|localstorage|sessionstorage)/i.test(compact);
+}
+
+export function redactStructuredValue(value: unknown, fieldName?: string): { value: unknown; redacted: boolean } {
+  return redactStructuredValueInner(value, fieldName, new WeakSet<object>(), 0);
+}
+
+function redactStructuredValueInner(
+  value: unknown,
+  fieldName: string | undefined,
+  seen: WeakSet<object>,
+  depth: number
+): { value: unknown; redacted: boolean } {
+  if (value === null || value === undefined) return { value, redacted: false };
+  if (isSensitiveFieldName(fieldName)) {
+    return { value: "[REDACTED]", redacted: true };
+  }
+  if (depth > MAX_STRUCTURED_REDACTION_DEPTH) {
+    return { value: "[REDACTED]", redacted: true };
+  }
+  if (typeof value === "string") {
+    const redacted = redactValue(fieldName, value);
+    return { value: redacted.value, redacted: redacted.redacted };
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return { value, redacted: false };
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return { value: "[REDACTED]", redacted: true };
+    seen.add(value);
+    let redacted = false;
+    const items = value.map((item) => {
+      const next = redactStructuredValueInner(item, fieldName, seen, depth + 1);
+      redacted ||= next.redacted;
+      return next.value;
+    });
+    seen.delete(value);
+    return { value: items, redacted };
+  }
+  if (typeof value === "object") {
+    if (seen.has(value)) return { value: "[REDACTED]", redacted: true };
+    seen.add(value);
+    let redacted = false;
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const next = redactStructuredValueInner(item, key, seen, depth + 1);
+      output[key] = next.value;
+      redacted ||= next.redacted;
+    }
+    seen.delete(value);
+    return { value: output, redacted };
+  }
+  return { value, redacted: false };
 }
 
 export function redactUrl(rawUrl: string): { url: string; redacted: boolean } {

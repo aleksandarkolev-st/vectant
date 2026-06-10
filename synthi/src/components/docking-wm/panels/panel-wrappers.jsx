@@ -20,12 +20,14 @@ import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 import EditorPaneHeader from '@/components/EditorPaneHeader';
 import { WORKFLOW_ACTIONS } from '@/components/agent-workflows/AgentWorkflowPanel';
+import { buildAgentWorkflowHandoffFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
 import {
   callAgentWorkflowTool,
   getAgentWorkflowState,
   resolveAgentWorkflowBridgeToken,
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
+import { gitClient } from '@/services/gitClient';
 
 const WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
 
@@ -363,6 +365,33 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     return body;
   }, [applyBridgeState, bridgeConfig.token, bridgeConfig.url]);
 
+  const readWorkspaceFileOrEmpty = useCallback(async (path) => {
+    const workspaceId = ctx?.workspaceSlug;
+    if (!workspaceId) return '';
+    try {
+      const result = await gitClient.readFile(workspaceId, path);
+      return typeof result?.content === 'string' ? result.content : '';
+    } catch {
+      return '';
+    }
+  }, [ctx?.workspaceSlug]);
+
+  const persistWorkflowHandoff = useCallback(async ({ generated, manifest }) => {
+    const workspaceId = ctx?.workspaceSlug;
+    if (!workspaceId) throw new Error('workflow_handoff_workspace_unavailable');
+    const [existingIndexRaw, existingAgentsRaw] = await Promise.all([
+      readWorkspaceFileOrEmpty(`${SYNTHI_WORKFLOW_ROOT}/index.json`),
+      readWorkspaceFileOrEmpty('AGENTS.md'),
+    ]);
+    const { files } = buildAgentWorkflowHandoffFiles({
+      generated,
+      manifest,
+      existingIndexRaw,
+      existingAgentsRaw,
+    });
+    await gitClient.writeFilesBatch(workspaceId, files, { syncToGcs: true });
+  }, [ctx?.workspaceSlug, readWorkspaceFileOrEmpty]);
+
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
@@ -425,12 +454,37 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
           });
           break;
+        case WORKFLOW_ACTIONS.GET_MUTATION_PLAN:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_MUTATION_PLAN, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE, {
+            ...(detail?.payload && typeof detail.payload === 'object' ? detail.payload : {}),
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
         case WORKFLOW_ACTIONS.GENERATE_SCRIPT:
-          await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_SCRIPT, {});
+          {
+            const scriptBody = await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_SCRIPT, {});
+            const manifestBody = await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
+            await persistWorkflowHandoff({
+              generated: scriptBody?.result,
+              manifest: manifestBody?.result?.manifest,
+            });
+          }
           break;
         case WORKFLOW_ACTIONS.GENERATE_MANIFEST:
-        case WORKFLOW_ACTIONS.PUBLISH_TOOL:
           await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
+          break;
+        case WORKFLOW_ACTIONS.PUBLISH_TOOL:
+          await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {});
           break;
         default:
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);
