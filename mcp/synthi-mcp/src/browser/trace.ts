@@ -163,21 +163,27 @@ export class BrowserTraceRecorder {
       : Date.now();
     const hasObservedAt = typeof observedAt === "number" && Number.isFinite(observedAt);
     const actions = input.actions ? new Set<BrowserActionKind>(input.actions) : null;
+    let closestTimedMatch: { index: number; delta: number } | null = null;
     let sameTimestampMatch: number | null = null;
     for (let index = this.events.length - 1; index >= 0; index -= 1) {
       const event = this.events[index];
       if (!event || (event.kind !== "human_action" && event.kind !== "agent_action")) continue;
-      if (event.ts > referenceTs) continue;
       if (event.tab_id !== input.tab_id) continue;
       if (actions && (!event.action || !actions.has(event.action))) continue;
-      if (input.within_ms !== undefined && referenceTs - event.ts > input.within_ms) return null;
-      if (hasObservedAt && event.ts === referenceTs) {
-        sameTimestampMatch = index;
+      if (hasObservedAt) {
+        const delta = Math.abs(event.ts - referenceTs);
+        if (input.within_ms !== undefined && delta > input.within_ms) continue;
+        if (!closestTimedMatch || delta < closestTimedMatch.delta || (delta === closestTimedMatch.delta && index > closestTimedMatch.index)) {
+          closestTimedMatch = { index, delta };
+        }
+        if (event.ts === referenceTs) sameTimestampMatch = index;
         continue;
       }
+      if (event.ts > referenceTs) continue;
+      if (input.within_ms !== undefined && referenceTs - event.ts > input.within_ms) return null;
       return index;
     }
-    return sameTimestampMatch;
+    return sameTimestampMatch ?? closestTimedMatch?.index ?? null;
   }
 
   clear(): void {

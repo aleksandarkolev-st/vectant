@@ -570,6 +570,62 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("correlates popup annotations when browser popup time slightly precedes action capture time", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    const popupObservedAt = 10_000;
+    const opener = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      observed_at: popupObservedAt + 18,
+      detail: {},
+      element: { role: "button", name: "Open checkout" },
+    });
+    expect(opener.ok).toBe(true);
+    if (!opener.ok) throw new Error("unexpected opener failure");
+
+    const later = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      action: "click",
+      observed_at: popupObservedAt + 240,
+      detail: {},
+      element: { role: "button", name: "Show summary" },
+    });
+    expect(later.ok).toBe(true);
+
+    expect(browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/checkout",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      observed_at: popupObservedAt,
+      detail: {
+        popup_event: true,
+        popup_url: "https://app.example.com/checkout-popup",
+        popup_tab_id: "popup",
+        opener_tab_id: "app",
+        root_opener_tab_id: "app",
+      },
+    })).toEqual({ ok: true, event: expect.objectContaining({ event_id: opener.event.event_id }) });
+
+    const trace = browserBroker.traceSnapshot();
+    expect(trace[0]?.detail).toEqual(expect.objectContaining({
+      popup_event: true,
+      popup_tab_id: "popup",
+      root_opener_tab_id: "app",
+    }));
+    expect(trace[1]?.detail).not.toEqual(expect.objectContaining({
+      popup_event: true,
+    }));
+  });
+
   it("derives popup consent metadata from delayed popup URL annotations", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.requestConsent("https://billing.example.com");
