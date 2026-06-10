@@ -5,6 +5,7 @@ import {
   mcpCommandConformance,
   parseBooleanFlag,
   resolveMcpServerCommandSpec,
+  runtimeEndpointConformance,
   selectCdpTargetsToClose,
   strictHostValidateToolArgs,
   stdioAcceptanceAttachEvidence,
@@ -126,6 +127,63 @@ describe("private-tool stdio acceptance harness", () => {
     expect(parseBooleanFlag("1")).toBe(true);
     expect(parseBooleanFlag("true")).toBe(true);
     expect(parseBooleanFlag("yes")).toBe(true);
+  });
+
+  it("can require host conformance to use a non-loopback runtime endpoint", () => {
+    expect(runtimeEndpointConformance({
+      cdpUrl: "http://127.0.0.1:37727",
+      requireNonLoopbackRuntime: false,
+    })).toEqual({
+      ok: true,
+      require_non_loopback_runtime: false,
+      non_loopback_runtime: false,
+      runtime_host_class: "loopback",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "http://localhost:9222",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: false,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: false,
+      runtime_host_class: "loopback",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "ws://127.12.0.1/devtools/browser/session",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: false,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: false,
+      runtime_host_class: "loopback",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "http://0.0.0.0:9222/json/version",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: false,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: false,
+      runtime_host_class: "local-bind",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "wss://hosted-browser-runtime.example.test/devtools/browser/session",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: true,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "not-a-url",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: false,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: false,
+      runtime_host_class: "invalid",
+    });
   });
 
   it("rejects malformed custom MCP arg vectors", () => {

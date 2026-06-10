@@ -33,6 +33,7 @@ const CFG = {
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TIMEOUT_MS || 60_000),
   requireCustomMcpCommand: parseBooleanFlag(args["require-custom-mcp-command"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND),
+  requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
   mcpCommand: resolveMcpServerCommandSpec({
     args,
     env: process.env,
@@ -57,6 +58,10 @@ async function main() {
   const mcpCommandConformance = assertMcpCommandConformance({
     commandSpec: CFG.mcpCommand,
     requireCustomCommand: CFG.requireCustomMcpCommand,
+  });
+  const runtimeConformance = assertRuntimeEndpointConformance({
+    cdpUrl: CFG.cdpUrl,
+    requireNonLoopbackRuntime: CFG.requireNonLoopbackRuntime,
   });
 
   await mkdir(CFG.outDir, { recursive: true });
@@ -85,6 +90,9 @@ async function main() {
     conformance: {
       require_custom_mcp_command: mcpCommandConformance.require_custom_mcp_command,
       custom_mcp_command: mcpCommandConformance.custom_mcp_command,
+      require_non_loopback_runtime: runtimeConformance.require_non_loopback_runtime,
+      non_loopback_runtime: runtimeConformance.non_loopback_runtime,
+      runtime_host_class: runtimeConformance.runtime_host_class,
     },
     steps: [],
   };
@@ -649,12 +657,62 @@ function assertMcpCommandConformance({ commandSpec, requireCustomCommand }) {
   return conformance;
 }
 
+export function runtimeEndpointConformance({ cdpUrl, requireNonLoopbackRuntime = false }) {
+  const requireNonLoopback = Boolean(requireNonLoopbackRuntime);
+  const host = extractUrlHost(cdpUrl);
+  const hostClass = classifyRuntimeHost(host);
+  return {
+    ok: !requireNonLoopback || (Boolean(host) && hostClass === "remote"),
+    require_non_loopback_runtime: requireNonLoopback,
+    non_loopback_runtime: Boolean(host) && hostClass === "remote",
+    runtime_host_class: hostClass,
+  };
+}
+
+function assertRuntimeEndpointConformance({ cdpUrl, requireNonLoopbackRuntime }) {
+  const conformance = runtimeEndpointConformance({ cdpUrl, requireNonLoopbackRuntime });
+  if (!conformance.ok) {
+    throw new Error("non_loopback_runtime_required: pass a non-loopback SYNTHI_HOSTED_BROWSER_CDP_URL before using this harness as a production hosted-runtime conformance gate");
+  }
+  return conformance;
+}
+
 export function parseBooleanFlag(value) {
   if (value === undefined || value === null || value === false) return false;
   if (value === true) return true;
   const normalized = String(value).trim().toLowerCase();
   if (!normalized) return false;
   return !["0", "false", "no", "off"].includes(normalized);
+}
+
+function extractUrlHost(value) {
+  try {
+    return new URL(String(value)).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function classifyRuntimeHost(host) {
+  if (!host) return "invalid";
+  if (isLoopbackHost(host)) return "loopback";
+  if (isLocalBindHost(host)) return "local-bind";
+  return "remote";
+}
+
+function isLoopbackHost(host) {
+  const normalized = String(host).toLowerCase();
+  return normalized === "localhost"
+    || normalized.startsWith("127.")
+    || normalized === "::1"
+    || normalized === "[::1]";
+}
+
+function isLocalBindHost(host) {
+  const normalized = String(host).toLowerCase();
+  return normalized === "0.0.0.0"
+    || normalized === "::"
+    || normalized === "[::]";
 }
 
 function parseMcpCommandArgsJson(value) {
