@@ -1,6 +1,7 @@
 import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
+import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
 import {
@@ -333,6 +334,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_run_project",
   "synthi_browser_project_status",
   "synthi_browser_stop_project",
+  "synthi_browser_get_deployment_readiness",
 ] as const;
 
 export const BROWSER_TOOLS = [
@@ -776,6 +778,20 @@ export const BROWSER_TOOLS = [
       required: ["run_id"],
     },
   },
+  {
+    name: "synthi_browser_get_deployment_readiness",
+    description:
+      "Return a redacted production readiness report for browser workflow deployment wiring: hosted runtime, workflow bridge, private workflow store, auth checkpoint store, workspace scope, and local-CDP leakage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["production", "development"], default: "production" },
+        workspace_id: { type: "string", description: "Optional workspace scope for replay-isolation profile diagnostics." },
+        require_workflow_bridge: { type: "boolean", description: "Whether browser-injected Observe/Teach controls must be configured. Defaults true." },
+      },
+      required: [],
+    },
+  },
 ] as const;
 
 export function browserPrivateWorkflowTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
@@ -867,12 +883,26 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserProjectStatusTool(args);
       case "synthi_browser_stop_project":
         return await browserStopProjectTool(args);
+      case "synthi_browser_get_deployment_readiness":
+        return browserDeploymentReadinessTool(args);
       default:
         return null;
     }
   } catch (err) {
     return errorFromException("browser_tool_failed", err);
   }
+}
+
+function browserDeploymentReadinessTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  return jsonResponse({
+    ok: true,
+    readiness: browserWorkflowDeploymentReadiness({
+      mode: a["mode"] === "development" ? "development" : "production",
+      workspace_id: stringOpt(a["workspace_id"]),
+      require_workflow_bridge: boolOpt(a["require_workflow_bridge"]),
+    }),
+  });
 }
 
 async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolResponse> {

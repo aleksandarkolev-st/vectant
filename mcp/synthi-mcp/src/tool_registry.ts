@@ -51,6 +51,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_browser_run_project",
   "synthi_browser_project_status",
   "synthi_browser_stop_project",
+  "synthi_browser_get_deployment_readiness",
   // Auth checkpoint readiness
   "synthi_auth_begin_checkpoint_enrollment",
   "synthi_auth_finish_checkpoint_enrollment",
