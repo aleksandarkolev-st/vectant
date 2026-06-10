@@ -16,7 +16,10 @@ const BLOCKED_ENV_KEYS = new Set([
   'POSTGRES_PRISMA_URL',
   'POSTGRES_URL_NON_POOLING',
   'PRISMA_DATABASE_URL',
-  'DOCKER_HOST',
+  // NOTE: DOCKER_HOST is intentionally NOT key-blocked. A per-workspace runtime
+  // container sets DOCKER_HOST to its own in-container rootless socket so that
+  // `docker`/`docker compose` work inside container programs. The HOST socket is
+  // still denied by VALUE via BLOCKED_ENV_VALUE_FRAGMENTS below.
   'DOCKER_SOCKET',
   'DOCKER_CERT_PATH',
   'YSWEET_AUTH_KEY',

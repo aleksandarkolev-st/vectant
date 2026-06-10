@@ -600,3 +600,22 @@ test('runtime snapshot never leaks the health config object', async () => {
   assert.equal(snap.healthTimer, undefined);
   assert.equal(snap.healthState, 'unknown');
 });
+
+test('buildManagedRuntimeEnv keeps an in-container rootless DOCKER_HOST but still strips the host socket', () => {
+  const { buildManagedRuntimeEnv } = require('../programRuntimeManager');
+  // A per-workspace runtime container sets DOCKER_HOST to its OWN rootless socket;
+  // the scrub must let that through so `docker` works inside container programs.
+  const inContainer = buildManagedRuntimeEnv({}, {
+    DOCKER_HOST: 'unix:///run/user/1000/docker.sock',
+  });
+  assert.equal(inContainer.DOCKER_HOST, 'unix:///run/user/1000/docker.sock');
+
+  // The HOST socket must still be denied by value (defense against a recipe
+  // trying to point a program at the platform's Docker socket).
+  const hostSocket = buildManagedRuntimeEnv({}, { DOCKER_HOST: 'unix:///var/run/docker.sock' });
+  assert.equal(hostSocket.DOCKER_HOST, undefined);
+
+  // DOCKER_SOCKET stays fully blocked by key.
+  const sock = buildManagedRuntimeEnv({}, { DOCKER_SOCKET: '/run/user/1000/docker.sock' });
+  assert.equal(sock.DOCKER_SOCKET, undefined);
+});

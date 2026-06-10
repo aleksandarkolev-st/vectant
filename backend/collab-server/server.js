@@ -11,6 +11,8 @@ const gcsSync = require('./gcsSync');
 const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const proxyService = require('./proxyService');
+const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
+const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
@@ -102,11 +104,45 @@ function queueHeadlessCommandStart(ptyProcess, command) {
   return { commandStartedPromise };
 }
 
+// ── Container runtime (hybrid Phase 1) ───────────────────────────────────────
+// When ENABLE_CONTAINER_RUNTIME=1, `container`-type programs run inside a
+// per-workspace rootless-Docker runtime container (managed via dockerode) and
+// their published ports are reverse-proxied through /wsport/<slug>/<port>/.
+// When the flag is unset everything below is null and container programs fall
+// back to the existing headless PTY path — so this slice can merge dark.
+const ENABLE_CONTAINER_RUNTIME = process.env.ENABLE_CONTAINER_RUNTIME === '1';
+const workspaceRuntime = ENABLE_CONTAINER_RUNTIME
+  ? createRuntimeManager({
+      docker: new (require('dockerode'))({
+        socketPath: process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock',
+      }),
+      logger,
+    })
+  : null;
+const containerPortProxy = ENABLE_CONTAINER_RUNTIME
+  ? createContainerPortProxy({
+      // Resolve the running runtime-container host for a slug. Dev is effectively
+      // single-user per workspace, so match the first session keyed by `${slug} `.
+      resolveHost: (slug) => {
+        const match = [...workspaceRuntime._sessions.keys()].find((k) => k.startsWith(`${slug} `));
+        if (!match) return null;
+        const [s, u] = match.split(' ');
+        return runtimeContainerHost(s, u);
+      },
+    })
+  : null;
+
 const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
   getActivePorts: () => proxyService.getActivePorts(),
-  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command }) => {
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType }) => {
+    // `container` programs route into the per-workspace rootless-Docker runtime
+    // container; everything else keeps the existing shared-collab PTY path.
+    if (runtimeType === 'container' && workspaceRuntime) {
+      await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
+      return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
+    }
     const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
     const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
     return {
@@ -1299,6 +1335,22 @@ const server = http.createServer(async (req, res) => {
         _fallback: true,
         _error: e.message,
       }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // CONTAINER REVERSE PROXY — /wsport/<slug>/<N>/... → <runtime-container>:<N>
+  // Additive, workspace-scoped path for `container`-type programs whose ports
+  // bind inside a per-workspace runtime container (not collab's localhost).
+  // The global /port/<N>/ path below is left untouched.
+  // ========================================================================
+  if (req.url.startsWith('/wsport/')) {
+    if (containerPortProxy) {
+      containerPortProxy.proxyHttp(req, res);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'container_runtime_disabled' }));
     }
     return;
   }
@@ -4144,7 +4196,13 @@ server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
 
-  if (pathname === 'notifications') {
+  if (pathname.startsWith('wsport/')) {
+    // Container-program port proxy WS upgrade (HMR etc.) → runtime container.
+    // request.url is `/wsport/<slug>/<port>/...` at this point.
+    if (!containerPortProxy || !containerPortProxy.proxyWsUpgrade(request, socket, head)) {
+      socket.destroy();
+    }
+  } else if (pathname === 'notifications') {
     // Route to lightweight notification WebSocket server
     notifyWss.handleUpgrade(request, socket, head, (ws) => {
       notifyWss.emit('connection', ws, request);
