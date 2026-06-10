@@ -20,13 +20,18 @@
  */
 
 import http from "node:http";
-import { browserBroker } from "../browser/broker.js";
+import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import {
+  mutationSafetyPlanFor,
+  replayIsolationProfileManifestFor,
+  replayIsolationProfiles,
+} from "../browser/safety.js";
 import type { WorkflowStepContractV7 } from "../browser/workflow.js";
-import { dispatchAuthTool } from "../tools/auth.js";
-import { browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
-import { dispatchSafetyTool } from "../tools/safety.js";
-import { dispatchSourceTool } from "../tools/source.js";
+import { AUTH_TOOL_NAMES, dispatchAuthTool } from "../tools/auth.js";
+import { BROWSER_TOOL_NAMES, browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
+import { SAFETY_TOOL_NAMES, dispatchSafetyTool } from "../tools/safety.js";
+import { SOURCE_TOOL_NAMES, dispatchSourceTool } from "../tools/source.js";
 import type { ToolResponse } from "../tools/shared.js";
 
 export interface BrowserWorkflowBridgeOptions {
@@ -51,6 +56,7 @@ interface BrowserWorkflowBridgeState {
   compiledAt?: string;
   scriptGeneratedAt?: string;
   manifestGeneratedAt?: string;
+  publishedAt?: string;
   lastTool?: string;
   lastToolAt?: string;
   history: BridgeHistoryEntry[];
@@ -59,6 +65,13 @@ interface BrowserWorkflowBridgeState {
 interface BrowserWorkflowOverlayBody {
   action?: unknown;
   url?: unknown;
+}
+
+interface PreviewDiscoveryResult {
+  ok: boolean;
+  url?: string;
+  error?: string;
+  detail?: Record<string, unknown>;
 }
 
 const MAX_HISTORY = 8;
@@ -75,26 +88,17 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_source_identity_open: "synthi_source_get_mapping_status",
   synthi_workflow_compile_contract: "synthi_browser_compile_workflow",
   synthi_workflow_prefix_validate: "synthi_safety_run_prefix_validation",
+  synthi_workflow_ci_replay: "synthi_safety_run_ci_isolated_replay",
   synthi_workflow_generate_playwright: "synthi_browser_generate_script",
   synthi_workflow_generate_tool_manifest: "synthi_browser_generate_private_tool_manifest",
-  synthi_workflow_publish_tool: "synthi_browser_generate_private_tool_manifest",
+  synthi_workflow_publish_tool: "synthi_browser_publish_private_tool",
 };
 
-const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set([
-  "synthi_browser_attach_current_workspace",
-  "synthi_browser_observe_preview",
-  "synthi_browser_begin_teach",
-  "synthi_browser_end_teach",
-  "synthi_auth_get_tool_auth_readiness",
-  "synthi_source_register_tokens",
-  "synthi_source_get_mapping_status",
-  "synthi_browser_compile_workflow",
-  "synthi_safety_run_prefix_validation",
-  "synthi_browser_acquire_lease",
-  "synthi_browser_run_workflow",
-  "synthi_browser_release_lease",
-  "synthi_browser_generate_script",
-  "synthi_browser_generate_private_tool_manifest",
+const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set<string>([
+  ...BROWSER_TOOL_NAMES,
+  ...AUTH_TOOL_NAMES,
+  ...SOURCE_TOOL_NAMES,
+  ...SAFETY_TOOL_NAMES,
 ]);
 
 const REVIEW_LIMITATIONS = new Set([
@@ -107,6 +111,19 @@ const REVIEW_LIMITATIONS = new Set([
   "closedShadowDomBlocked",
   "pointerDragUnreliable",
 ]);
+
+class BridgeToolInputError extends Error {
+  readonly code: string;
+  readonly detail: Record<string, unknown>;
+  readonly status: number;
+
+  constructor(code: string, detail: Record<string, unknown> = {}, status = 400) {
+    super(code);
+    this.code = code;
+    this.detail = detail;
+    this.status = status;
+  }
+}
 
 async function readJsonBody<T>(req: http.IncomingMessage, maxBytes: number = 1_000_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -150,7 +167,7 @@ function normalizeToolName(toolName: string): string {
 }
 
 async function dispatchWorkflowTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
-  if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName)) return null;
+  if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName) && !toolName.startsWith("synthi_app_")) return null;
   return (
     (await dispatchBrowserTool(toolName, args)) ??
     (await dispatchSafetyTool(toolName, args)) ??
@@ -238,30 +255,66 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
     !stringOpt(base["preferred_url"]) &&
     !stringOpt(base["preview_url"])
   ) {
-    const previewUrl = await discoverWorkspacePreviewUrl(base);
-    if (previewUrl) {
-      return { ...base, preferred_url: previewUrl, preview_url: previewUrl };
+    const preview = await discoverWorkspacePreviewUrl(base);
+    if (preview.ok && preview.url) {
+      return { ...base, preferred_url: preview.url, preview_url: preview.url };
+    }
+    if (!preview.ok) {
+      throw new BridgeToolInputError(preview.error ?? "preview_discovery_failed", {
+        tool: toolName,
+        ...preview.detail,
+      });
     }
   }
   return base;
 }
 
-async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<string | undefined> {
+async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<PreviewDiscoveryResult> {
   const slug = workspaceSlugFromArgs(args);
-  if (!slug) return undefined;
-  const collabUrl = resolveCollabServerUrl();
+  if (!slug) return { ok: true };
+  const collab = resolveCollabServerUrl();
+  if (!collab) {
+    return {
+      ok: false,
+      error: "collab_server_url_required",
+      detail: {
+        workspace: slug,
+        env: ["SYNTHI_COLLAB_SERVER_URL", "COLLAB_SERVER_URL", "NEXT_PUBLIC_COLLAB_SERVER_URL", "COLLAB_URL"],
+      },
+    };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
   try {
-    const response = await fetch(`${collabUrl}/ports?workspace=${encodeURIComponent(slug)}`, {
+    const response = await fetch(`${collab.url}/ports?workspace=${encodeURIComponent(slug)}`, {
       signal: controller.signal,
     });
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: "preview_discovery_failed",
+        detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source, status: response.status },
+      };
+    }
     const payload = await response.json() as Record<string, unknown>;
-    const preview = previewUrlFromPortsPayload(payload, collabUrl);
-    return preview ?? undefined;
-  } catch {
-    return undefined;
+    const preview = previewUrlFromPortsPayload(payload, collab.url);
+    if (preview) return { ok: true, url: preview };
+    return {
+      ok: false,
+      error: "preview_not_found",
+      detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "preview_discovery_failed",
+      detail: {
+        workspace: slug,
+        collab_url: collab.url,
+        collab_url_source: collab.source,
+        message: err instanceof Error ? err.message : String(err),
+      },
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -281,12 +334,18 @@ function workspaceSlugFromArgs(args: Record<string, unknown>): string | undefine
   }
 }
 
-function resolveCollabServerUrl(): string {
+function resolveCollabServerUrl(): { url: string; source: string } | null {
   const configured =
-    stringOpt(process.env["SYNTHI_COLLAB_SERVER_URL"]) ??
-    stringOpt(process.env["COLLAB_SERVER_URL"]) ??
-    stringOpt(process.env["NEXT_PUBLIC_COLLAB_SERVER_URL"]);
-  return (configured ?? "http://localhost:1234").replace(/\/$/, "");
+    envUrl("SYNTHI_COLLAB_SERVER_URL") ??
+    envUrl("COLLAB_SERVER_URL") ??
+    envUrl("NEXT_PUBLIC_COLLAB_SERVER_URL") ??
+    envUrl("COLLAB_URL");
+  return configured;
+}
+
+function envUrl(name: string): { url: string; source: string } | null {
+  const value = stringOpt(process.env[name]);
+  return value ? { url: value.replace(/\/$/, ""), source: name } : null;
 }
 
 function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl: string): string | null {
@@ -329,12 +388,14 @@ function updateBridgeState(
     state.compiledAt = undefined;
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
+    state.publishedAt = undefined;
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_begin_teach") {
     state.compiledAt = undefined;
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
+    state.publishedAt = undefined;
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_observe") state.lastObserveAt = now;
@@ -344,12 +405,34 @@ function updateBridgeState(
   }
   if (ok && toolName === "synthi_browser_generate_script") state.scriptGeneratedAt = now;
   if (ok && toolName === "synthi_browser_generate_private_tool_manifest") state.manifestGeneratedAt = now;
-  if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow") {
+  if (ok && toolName === "synthi_browser_publish_private_tool") {
+    state.manifestGeneratedAt = state.manifestGeneratedAt ?? now;
+    state.publishedAt = now;
+    const toolNameValue = stringOpt(payload["tool_name"]) ?? "private workflow tool";
+    const entry: BridgeHistoryEntry = {
+      id: `workflow_publish_${Date.now()}`,
+      label: "Private MCP tool published",
+      detail: toolNameValue,
+      status: "passed",
+      statusLabel: "Published",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [
+      entry,
+      ...state.history,
+    ].slice(0, MAX_HISTORY);
+  }
+  if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow" || toolName === "synthi_safety_run_ci_isolated_replay") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
     const replay = payload["replay"] as Record<string, unknown> | undefined;
     const entry: BridgeHistoryEntry = {
       id: `workflow_run_${Date.now()}`,
-      label: toolName === "synthi_safety_run_prefix_validation" ? "Prefix validation" : "Workflow replay",
+      label: toolName === "synthi_safety_run_prefix_validation"
+        ? "Prefix validation"
+        : toolName === "synthi_safety_run_ci_isolated_replay"
+        ? "CI isolated replay"
+        : "Workflow replay",
       detail: stringOpt(validation?.["status"]) ?? stringOpt(replay?.["status"]) ?? (ok ? "Completed" : "Blocked"),
       status: ok ? "passed" : "blocked",
       statusLabel: ok ? "Passed" : "Blocked",
@@ -360,6 +443,15 @@ function updateBridgeState(
       entry,
       ...state.history,
     ].slice(0, MAX_HISTORY);
+  }
+}
+
+function consentForPanelState(url: string | null | undefined) {
+  if (!url) return undefined;
+  try {
+    return browserBroker.getConsent(url)[0];
+  } catch {
+    return undefined;
   }
 }
 
@@ -374,8 +466,10 @@ export function buildBrowserWorkflowPanelState(
   const lane0 = browserBroker.lane0Status();
   const workflow = browserBroker.compiledWorkflow();
   const prefixPlan = browserBroker.workflowReplayPlan("prefixOnly");
+  const workspaceId = runtime?.workspace_id ?? stringOpt(process.env["SYNTHI_WORKSPACE_ID"]);
+  const isolationProfile = replayIsolationProfiles.get(workspaceId);
   const workspaceUrl = selected?.url ?? runtime?.workspace_url ?? null;
-  const consent = workspaceUrl ? browserBroker.getConsent(workspaceUrl)[0] : undefined;
+  const consent = consentForPanelState(workspaceUrl);
   const screenshotAllowed = consent?.status === "granted" && consent.screenshot === "granted";
   const observed = Boolean(bridgeState.lastObserveAt) || Boolean(selected && screenshotAllowed);
   const traceReady = workflow.contract.steps.length > 0;
@@ -383,9 +477,10 @@ export function buildBrowserWorkflowPanelState(
   const scriptGenerated = Boolean(bridgeState.scriptGeneratedAt) && traceReady;
   const sourceCoverage = workflow.contract.sourceIdentityCoverage;
   const publish = workflow.contract.publishPlan;
+  const recordingIssues = browserBroker.recordingIssueSnapshot();
 
   return {
-    workspaceLabel: runtime?.workspace_id ?? stringOpt(process.env["SYNTHI_WORKSPACE_ID"]) ?? "Current workspace",
+    workspaceLabel: workspaceId ?? "Current workspace",
     bridge: {
       status: "ready",
       lastTool: bridgeState.lastTool ?? null,
@@ -483,24 +578,30 @@ export function buildBrowserWorkflowPanelState(
         detail: step.limitations.length
           ? `Needs publish hardening: ${step.limitations.join(", ")}.`
           : "Needs hardening before unattended replay.",
-      })),
+      }))
+      .concat(recordingIssues.filter((issue) => issue.blocking).map(panelRecordingIssue)),
     blockers: workflow.contract.limitations.map((limitation) => ({
       id: `limitation_${limitation}`,
       label: limitation,
       detail: limitationDetail(limitation),
     })),
     history: bridgeState.history ?? [],
+    isolation_profile: isolationProfile,
+    profile_manifest: replayIsolationProfileManifestFor(isolationProfile),
+    mutation_plan: mutationSafetyPlanFor(workflow.contract, isolationProfile),
     diagnostics: {
       eventCount: trace.length,
       authorizedTabCount: tabs.length,
       lane0,
       replayWarnings: prefixPlan.warnings,
+      recordingIssues,
       generatedAt: {
         compiledAt: bridgeState.compiledAt ?? null,
-        scriptGeneratedAt: bridgeState.scriptGeneratedAt ?? null,
-        manifestGeneratedAt: bridgeState.manifestGeneratedAt ?? null,
-      },
+      scriptGeneratedAt: bridgeState.scriptGeneratedAt ?? null,
+      manifestGeneratedAt: bridgeState.manifestGeneratedAt ?? null,
+      publishedAt: bridgeState.publishedAt ?? null,
     },
+  },
   };
 }
 
@@ -585,7 +686,23 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
 
       const requestedTool = body.tool;
       const tool = normalizeToolName(requestedTool);
-      const args = await enrichToolArgs(tool, body.arguments);
+      let args: Record<string, unknown>;
+      try {
+        args = await enrichToolArgs(tool, body.arguments);
+      } catch (err) {
+        if (err instanceof BridgeToolInputError) {
+          writeJson(res, err.status, {
+            ok: false,
+            error: err.code,
+            requested_tool: requestedTool,
+            tool,
+            ...err.detail,
+            state: buildBrowserWorkflowPanelState(bridgeState),
+          });
+          return;
+        }
+        throw err;
+      }
       const result = await dispatchWorkflowTool(tool, args);
       if (!result) {
         writeJson(res, 404, {
@@ -654,6 +771,40 @@ function panelStepForContract(step: WorkflowStepContractV7): Record<string, unkn
     replay: step.surfacePlan.replay,
     limitations: step.limitations,
   };
+}
+
+function panelRecordingIssue(issue: BrowserRecordingIssue): { id: string; label: string; detail: string; [key: string]: unknown } {
+  const targetOrigin = issue.frame_origin ?? issue.popup_origin ?? issue.origin;
+  return {
+    id: issue.issue_id,
+    label: recordingIssueLabel(issue.error),
+    title: recordingIssueLabel(issue.error),
+    detail: targetOrigin
+      ? `${issue.error}: grant consent or keep teaching inside ${targetOrigin}.`
+      : `${issue.error}: the runtime could not record this taught action.`,
+    source: issue.source,
+    action: issue.action,
+    origin: issue.origin,
+    frameOrigin: issue.frame_origin,
+    popupOrigin: issue.popup_origin,
+  };
+}
+
+function recordingIssueLabel(error: string): string {
+  switch (error) {
+    case "frame_origin_consent_required":
+      return "Frame consent required";
+    case "popup_origin_consent_required":
+      return "Popup consent required";
+    case "teach_tab_mismatch":
+      return "Different tab was used";
+    case "teach_origin_mismatch":
+      return "Different origin was used";
+    case "origin_consent_required":
+      return "Origin consent required";
+    default:
+      return "Recording issue";
+  }
 }
 
 function stepMeta(step: WorkflowStepContractV7): string {

@@ -1,6 +1,5 @@
-import { authCheckpointManager } from "../browser/auth.js";
+import { authCheckpointManager, type AuthCheckpointDurability } from "../browser/auth.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
-import type { AuthDurabilityV7 } from "../browser/workflow.js";
 
 export const AUTH_TOOL_NAMES = [
   "synthi_auth_begin_checkpoint_enrollment",
@@ -39,7 +38,7 @@ export const AUTH_TOOLS = [
         ttl_ms: { type: "number" },
         durability: {
           type: "string",
-          enum: ["interactiveCheckpoint", "idpCheckpoint", "refreshProvider", "ciTestAuth"],
+          enum: ["interactiveCheckpoint", "idpCheckpoint"],
         },
       },
       required: ["enrollment_id"],
@@ -66,13 +65,20 @@ export const AUTH_TOOLS = [
   {
     name: "synthi_auth_configure_refresh_provider",
     description:
-      "Configure a refresh-provider metadata record using a Synthi secret reference. Secret values are rejected and never returned.",
+      "Configure a refresh-provider metadata record using a Synthi secret reference. Mint commands require deployment approval; secret values are rejected and never returned.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string" },
         secret_ref: { type: "string", description: "Synthi secret URI, for example synthi://secrets/workspace/auth-refresh." },
         provider_type: { type: "string", enum: ["projectRefreshProvider", "ciTestAuth"] },
+        mint_command: {
+          type: "string",
+          description:
+            "Deployment-controlled command that prints JSON { ok: true, storage_state, redirect_chain?, ttl_ms? } or writes it to SYNTHI_AUTH_PROVIDER_OUTPUT_PATH. Requires SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG=true. Receives only secret references in env.",
+        },
+        working_directory: { type: "string" },
+        timeout_ms: { type: "number" },
       },
       required: ["url", "secret_ref"],
     },
@@ -116,7 +122,7 @@ export async function dispatchAuthTool(toolName: string, args: unknown): Promise
       case "synthi_auth_configure_refresh_provider":
         return configureRefreshProviderTool(args);
       case "synthi_auth_test_refresh_provider":
-        return testRefreshProviderTool(args);
+        return await testRefreshProviderTool(args);
       case "synthi_auth_get_tool_auth_readiness":
         return authReadinessTool(args);
       default:
@@ -160,13 +166,17 @@ function configureRefreshProviderTool(args: unknown): ToolResponse {
     url: requiredString(a, "url"),
     secret_ref: requiredString(a, "secret_ref"),
     provider_type: refreshProviderTypeOpt(a["provider_type"]),
+    mint_command: stringOpt(a["mint_command"]),
+    mint_command_admin_approved: authRefreshProviderCommandConfigAllowed(),
+    working_directory: stringOpt(a["working_directory"]),
+    timeout_ms: numberOpt(a["timeout_ms"]),
   });
   if (!result.ok) return errorResponse(result.error);
   return jsonResponse({ ok: true, provider: result.provider });
 }
 
-function testRefreshProviderTool(args: unknown): ToolResponse {
-  const result = authCheckpointManager.testRefreshProvider(requiredString(obj(args), "provider_id"));
+async function testRefreshProviderTool(args: unknown): Promise<ToolResponse> {
+  const result = await authCheckpointManager.testRefreshProvider(requiredString(obj(args), "provider_id"));
   if (!result.ok) return errorResponse(result.error);
   return jsonResponse({ ok: true, provider: result.provider, can_mint_replay_state: result.can_mint_replay_state });
 }
@@ -205,19 +215,17 @@ function stringArrayOpt(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
 }
 
-function authDurabilityOpt(value: unknown): AuthDurabilityV7 | undefined {
-  if (
-    value === "interactiveCheckpoint" ||
-    value === "idpCheckpoint" ||
-    value === "refreshProvider" ||
-    value === "ciTestAuth"
-  ) {
-    return value;
-  }
+function authDurabilityOpt(value: unknown): AuthCheckpointDurability | undefined {
+  if (value === "interactiveCheckpoint" || value === "idpCheckpoint") return value;
   return undefined;
 }
 
 function refreshProviderTypeOpt(value: unknown): "projectRefreshProvider" | "ciTestAuth" | undefined {
   if (value === "projectRefreshProvider" || value === "ciTestAuth") return value;
   return undefined;
+}
+
+function authRefreshProviderCommandConfigAllowed(): boolean {
+  const value = process.env["SYNTHI_AUTH_REFRESH_PROVIDER_COMMAND_CONFIG"]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }

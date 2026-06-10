@@ -35,13 +35,22 @@ function renderPanel(props = {}) {
   return container;
 }
 
+function setNativeInputValue(element, value) {
+  const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value');
+  descriptor?.set?.call(element, value);
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 describe('AgentWorkflowPanel view model', () => {
   it('starts from the hosted runtime attach path without local dev harness assumptions', () => {
     const model = createDefaultWorkflowViewModel();
     const summary = deriveWorkflowPanelSummary(model);
 
     expect(WORKFLOW_ACTIONS.COMPILE_CONTRACT).toBe('synthi_browser_compile_workflow');
+    expect(WORKFLOW_ACTIONS.GET_MUTATION_PLAN).toBe('synthi_safety_get_mutation_plan');
+    expect(WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE).toBe('synthi_safety_set_replay_isolation_profile');
     expect(WORKFLOW_ACTIONS.PREFIX_VALIDATE).toBe('synthi_safety_run_prefix_validation');
+    expect(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY).toBe('synthi_safety_run_ci_isolated_replay');
     expect(WORKFLOW_ACTIONS.GENERATE_SCRIPT).toBe('synthi_browser_generate_script');
     expect(model.workspaceLabel).toBe('Current workspace');
     expect(summary.primaryAction).toBe(WORKFLOW_ACTIONS.ATTACH_WORKSPACE);
@@ -92,6 +101,55 @@ describe('AgentWorkflowPanel view model', () => {
     expect(summary.blockerCount).toBe(1);
     expect(summary.canPublish).toBe(false);
     expect(model.unresolvedSteps).toHaveLength(1);
+  });
+
+  it('surfaces ready CI isolation profiles as workflow actions', () => {
+    const model = normalizeWorkflowPanelState(
+      {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Publish release',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        profile_manifest: {
+          schema_version: 'synthi.replayIsolationProfile.v1',
+          readiness: 'ciIsolatedReady',
+          can_run_full_mutation_replay: true,
+          reset_profile_id: 'release-reset-v1',
+          state_seed_id: 'release-fixture-v1',
+          base_url: 'https://preview.example.test',
+          commands: {
+            ci: 'npm run workflow:ci',
+            data_reset: 'npm run workflow:reset',
+            reset_assertion: 'npm run workflow:assert-reset',
+            postcondition: 'npm run assert:release',
+          },
+          missing: [],
+        },
+        mutation_plan: {
+          has_mutation: true,
+          ci_full_replay: { allowed: true, blockers: [] },
+        },
+      },
+      'developer-workspace',
+    );
+    const summary = deriveWorkflowPanelSummary(model);
+
+    expect(model.isolation).toEqual(expect.objectContaining({
+      canRunFullMutationReplay: true,
+      resetProfileId: 'release-reset-v1',
+      stateSeedId: 'release-fixture-v1',
+      baseUrl: 'https://preview.example.test',
+      ciCommand: 'npm run workflow:ci',
+      dataResetCommand: 'npm run workflow:reset',
+      resetAssertionCommand: 'npm run workflow:assert-reset',
+      postconditionCommand: 'npm run assert:release',
+      postconditionConfigured: true,
+    }));
+    expect(summary.enabledActions).toContain(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY);
   });
 });
 
@@ -161,5 +219,130 @@ describe('AgentWorkflowPanel rendering', () => {
     expect(panel.textContent).toContain('Publish Hardening');
     expect(panel.textContent).toContain('Needs publish hardening');
     expect(panel.textContent).not.toContain('Review Queue');
+  });
+
+  it('renders CI replay profile readiness and dispatches isolated replay', () => {
+    const onWorkflowAction = vi.fn();
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      onWorkflowAction,
+      workflowState: {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Publish release',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        profile_manifest: {
+          schema_version: 'synthi.replayIsolationProfile.v1',
+          readiness: 'ciIsolatedReady',
+          can_run_full_mutation_replay: true,
+          reset_profile_id: 'release-reset-v1',
+          state_seed_id: 'release-fixture-v1',
+          commands: { postcondition: 'npm run assert:release' },
+          missing: [],
+        },
+        mutation_plan: {
+          has_mutation: true,
+          ci_full_replay: { allowed: true, blockers: [] },
+        },
+      },
+    });
+
+    expect(panel.textContent).toContain('CI replay profile');
+    expect(panel.textContent).toContain('release-reset-v1');
+    expect(panel.textContent).toContain('release-fixture-v1');
+    expect(panel.textContent).toContain('Configured');
+
+    const replayButton = [...panel.querySelectorAll('button')].find((button) => button.textContent.includes('CI replay'));
+    expect(replayButton).toBeTruthy();
+
+    act(() => {
+      replayButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onWorkflowAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY,
+        workspaceSlug: 'developer-workspace',
+      }),
+    );
+  });
+
+  it('edits CI replay profiles through the portable manifest action', () => {
+    const onWorkflowAction = vi.fn();
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      onWorkflowAction,
+      workflowState: {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Publish release',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        profile_manifest: {
+          schema_version: 'synthi.replayIsolationProfile.v1',
+          readiness: 'ciIsolatedIncomplete',
+          can_run_full_mutation_replay: false,
+          base_url: 'https://preview.example.test',
+          reset_profile_id: 'release-reset-v1',
+          state_seed_id: 'release-fixture-v1',
+          commands: {
+            ci: 'npm run workflow:ci',
+            data_reset: 'npm run workflow:reset',
+            reset_assertion: 'npm run workflow:assert-reset',
+          },
+          missing: ['postcondition_command', 'allow_mutation_replay'],
+        },
+        mutation_plan: {
+          has_mutation: true,
+          ci_full_replay: { allowed: false, blockers: ['postcondition_command', 'allow_mutation_replay'] },
+        },
+      },
+    });
+
+    const postcondition = [...panel.querySelectorAll('textarea')]
+      .find((input) => input.closest('label')?.textContent.includes('Postcondition'));
+    const allowMutation = panel.querySelector('input[type="checkbox"]');
+    const saveButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Save profile'));
+
+    expect(postcondition).toBeTruthy();
+    expect(allowMutation).toBeTruthy();
+    expect(saveButton).toBeTruthy();
+
+    act(() => {
+      setNativeInputValue(postcondition, 'npm run workflow:assert-saved');
+      allowMutation.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      saveButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onWorkflowAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE,
+        workspaceSlug: 'developer-workspace',
+        payload: {
+          profile_manifest: expect.objectContaining({
+            schema_version: 'synthi.replayIsolationProfile.v1',
+            kind: 'ciIsolated',
+            base_url: 'https://preview.example.test',
+            reset_profile_id: 'release-reset-v1',
+            state_seed_id: 'release-fixture-v1',
+            allow_mutation_replay: true,
+            commands: expect.objectContaining({
+              ci: 'npm run workflow:ci',
+              data_reset: 'npm run workflow:reset',
+              reset_assertion: 'npm run workflow:assert-reset',
+              postcondition: 'npm run workflow:assert-saved',
+            }),
+          }),
+        },
+      }),
+    );
   });
 });

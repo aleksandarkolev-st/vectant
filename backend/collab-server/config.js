@@ -70,6 +70,9 @@ const GCS_SYNC_ON_FLUSH = String(process.env.GCS_SYNC_ON_FLUSH || 'true').toLowe
 /** Whether the Yjs auto-flush should trigger incremental code-intel indexing. */
 const CODE_INTEL_AUTO_INDEX = String(process.env.CODE_INTEL_AUTO_INDEX || 'true').toLowerCase() !== 'false';
 
+/** Local development only: allow workspace git actions without an authenticated user. */
+const SYNTHI_WORKSPACE_AUTH_BYPASS = String(process.env.SYNTHI_WORKSPACE_AUTH_BYPASS || '').toLowerCase() === '1';
+
 // ── Yjs auto-flush ──────────────────────────────────────────────────────────
 /** Debounce interval (ms) before Yjs changes are flushed to disk. */
 const FLUSH_DEBOUNCE_MS = Number(process.env.FLUSH_DEBOUNCE_MS) || 150;
@@ -130,6 +133,7 @@ module.exports = {
     GCS_WORKSPACE_PREFIX,
     GCS_SYNC_ON_FLUSH,
     CODE_INTEL_AUTO_INDEX,
+    SYNTHI_WORKSPACE_AUTH_BYPASS,
     FLUSH_DEBOUNCE_MS,
     CLOUDFLARE_TURN_TOKEN_ID,
     CLOUDFLARE_TURN_API_TOKEN,

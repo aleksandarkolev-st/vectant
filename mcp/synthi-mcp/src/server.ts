@@ -64,7 +64,8 @@ import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
-import { BROWSER_TOOLS, dispatchBrowserTool } from "./tools/browser.js";
+import { BROWSER_TOOLS, browserPrivateWorkflowTools, dispatchBrowserTool } from "./tools/browser.js";
+import { privateWorkflowToolRegistry } from "./browser/private_tool_registry.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import type { ToolContext } from "./tools/shared.js";
@@ -1129,7 +1130,7 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     },
     {
       capabilities: {
-        tools: {},
+        tools: { listChanged: true },
         resources: { subscribe: true, listChanged: false },
       },
     }
@@ -1142,8 +1143,17 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       : {}),
   };
 
+  privateWorkflowToolRegistry.onListChanged(() => {
+    void server.notification({
+      method: "notifications/tools/list_changed",
+      params: {},
+    }).catch(() => {
+      // Disconnected clients can discover private tools on the next tools/list call.
+    });
+  });
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map((t) => ({
+    tools: [...TOOLS, ...browserPrivateWorkflowTools()].map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,

@@ -1,8 +1,11 @@
-import { chromium, type Browser, type Frame, type FrameLocator, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Frame, type FrameLocator, type Locator, type Page } from "playwright-core";
 import { readFile } from "node:fs/promises";
+import type { AuthBrowserStorageState, AuthStorageCookie, AuthStorageEntry, AuthStorageOriginState } from "./auth.js";
 import { normalizeOrigin, redactText, redactUrl } from "./security.js";
 import { BROWSER_ACTION_KINDS } from "./types.js";
 import type { BrowserActionKind, BrowserElementMetadata, BrowserSnapshot, BrowserTab, BrowserTraceEvent } from "./types.js";
+
+const NETWORK_MUTATION_ANNOTATION_DELAY_MS = 400;
 
 interface PageRecord {
   page: Page;
@@ -12,7 +15,9 @@ interface PageRecord {
 export interface FrameLocatorMetadata {
   frame_id: string;
   frame_locator: string;
+  frame_locator_chain?: string[];
   frame_locator_candidates: string[];
+  frame_locator_candidate_chain?: string[][];
   frame_url?: string;
 }
 
@@ -61,6 +66,7 @@ export interface CapturedBrowserHumanAction {
     h: number;
   };
   detail?: Record<string, unknown>;
+  observed_at?: number;
 }
 
 export type BrowserTeachEventSink = (event: CapturedBrowserHumanAction) => void;
@@ -72,6 +78,7 @@ export type BrowserTeachEventAnnotationSink = (event: {
   actions?: BrowserActionKind[];
   detail: Record<string, unknown>;
   within_ms?: number;
+  observed_at?: number;
 }) => void;
 
 export interface BrowserWorkflowOverlayRequest {
@@ -97,14 +104,23 @@ export type BrowserWorkflowOverlayActionSink = (
   request: BrowserWorkflowOverlayRequest & { tab_id: string; page_url: string }
 ) => Promise<BrowserWorkflowOverlayResponse> | BrowserWorkflowOverlayResponse;
 
+type PopupOpenerContext = {
+  opener_tab_id: string;
+  opener_origin: string;
+  root_opener_tab_id: string;
+  root_opener_origin: string;
+};
+
 export class BrowserPlaywrightAdapter {
   private browser: Browser | null = null;
   private cdpUrl: string | null = null;
   private nextTabSeq = 0;
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly pages = new Map<string, PageRecord>();
-  private readonly popupOpeners = new Map<string, { opener_tab_id: string; opener_origin: string }>();
+  private readonly popupOpeners = new Map<string, PopupOpenerContext>();
   private readonly instrumented = new WeakSet<Page>();
+  private readonly teachCaptureContexts = new WeakSet<BrowserContext>();
+  private readonly workflowOverlayInitScriptKeys = new WeakMap<Page, string>();
   private readonly workflowOverlayInstalled = new WeakSet<Page>();
   private readonly consoleEvents = new Map<string, BrowserTraceEvent[]>();
   private readonly networkEvents = new Map<string, BrowserTraceEvent[]>();
@@ -177,18 +193,51 @@ export class BrowserPlaywrightAdapter {
     return this.describePage(page);
   }
 
-  async openCold(url: string): Promise<BrowserTab> {
+  async openCold(url: string, storageState?: AuthBrowserStorageState): Promise<BrowserTab> {
     const browser = this.requireBrowser();
-    const context = await browser.newContext();
+    const context = await this.newColdContext(browser, storageState);
     const page = await context.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded" });
     return this.describePage(page);
+  }
+
+  async captureAuthStorageState(tab_id: string, allowedOrigins: string[]): Promise<AuthBrowserStorageState> {
+    const page = this.requirePage(tab_id);
+    const context = page.context();
+    const originSet = normalizedOriginSet(allowedOrigins);
+    const storageState = await context.storageState({ indexedDB: true });
+    const origins: AuthStorageOriginState[] = storageState.origins
+      .filter((originState) => originSet.has(originState.origin))
+      .map((originState) => ({
+        origin: originState.origin,
+        localStorage: originState.localStorage.map((entry) => ({ name: entry.name, value: entry.value })),
+      }));
+    const sessionStorage = await captureSessionStorageByOrigin(context, originSet);
+    for (const [origin, entries] of sessionStorage) {
+      const existing = origins.find((candidate) => candidate.origin === origin);
+      if (existing) {
+        existing.sessionStorage = entries;
+      } else {
+        origins.push({ origin, sessionStorage: entries });
+      }
+    }
+    return {
+      cookies: storageState.cookies.map((cookie) => ({ ...cookie })),
+      origins,
+    };
   }
 
   async selectTab(tab_id: string): Promise<BrowserTab> {
     const page = this.requirePage(tab_id);
     await page.bringToFront();
     return this.describePage(page);
+  }
+
+  async closeTab(tab_id: string): Promise<{ ok: true; tab_id: string }> {
+    const page = this.requirePage(tab_id);
+    await page.close({ runBeforeUnload: false });
+    this.pages.delete(tab_id);
+    return { ok: true, tab_id };
   }
 
   async snapshot(tab_id: string): Promise<BrowserSnapshot> {
@@ -241,7 +290,8 @@ export class BrowserPlaywrightAdapter {
     action: BrowserActionKind,
     selector: string | undefined,
     value: string | undefined,
-    resolveLocator: (selector: string | undefined) => Locator
+    resolveLocator: (selector: string | undefined) => Locator,
+    event?: BrowserTraceEvent
   ): Promise<void> {
     switch (action) {
       case "navigate":
@@ -249,13 +299,13 @@ export class BrowserPlaywrightAdapter {
         await page.goto(value, { waitUntil: "domcontentloaded" });
         break;
       case "click":
-        await resolveLocator(selector).click();
+        await resolveLocator(selector).click(clickOptionsForEvent(event));
         break;
       case "dblclick":
-        await resolveLocator(selector).dblclick();
+        await resolveLocator(selector).dblclick(clickOptionsForEvent(event));
         break;
       case "contextmenu":
-        await resolveLocator(selector).click({ button: "right" });
+        await resolveLocator(selector).click(clickOptionsForEvent(event, { button: "right" }));
         break;
       case "hover":
         await resolveLocator(selector).hover();
@@ -269,6 +319,12 @@ export class BrowserPlaywrightAdapter {
         break;
       case "fill":
         await resolveLocator(selector).fill(value ?? "");
+        break;
+      case "copy":
+        await performClipboardTransferAction(page, resolveLocator(selector), "copy", event);
+        break;
+      case "cut":
+        await performClipboardTransferAction(page, resolveLocator(selector), "cut", event);
         break;
       case "press":
         await resolveLocator(selector).press(value ?? "Enter");
@@ -297,16 +353,26 @@ export class BrowserPlaywrightAdapter {
     event: BrowserTraceEvent,
     action: BrowserActionKind,
     selector?: string,
-    value?: string
+    value?: string,
+    options: { dialogPromptValue?: string } = {}
   ): Promise<BrowserActionResult> {
     if (action === "fill" && isClipboardPasteEvent(event)) {
       return await this.replayClipboardPasteAction(tab_id, event, selector, value);
     }
+    if (action === "drag" && isClipboardDropEvent(event)) {
+      return await this.replayClipboardDropAction(tab_id, event, selector, value);
+    }
     if (action === "fill" && isRangeControlEvent(event)) {
       return await this.replayRangeFillAction(tab_id, event, selector, value);
     }
+    if (action === "fill" && isKeyboardTextEntryEvent(event)) {
+      return await this.replayKeyboardTextEntryAction(tab_id, event, selector, value);
+    }
     if (action === "fill" && isKeyboardEditorFillEvent(event)) {
       return await this.replayKeyboardEditorFillAction(tab_id, event, selector, value);
+    }
+    if (action === "scroll" && isWheelScrollEvent(event)) {
+      return await this.replayWheelScrollAction(tab_id, event, selector);
     }
     if (action === "drag" && isCalibratedPointerDragEvent(event)) {
       return await this.replayCalibratedPointerDragAction(tab_id, event, selector, value);
@@ -315,16 +381,16 @@ export class BrowserPlaywrightAdapter {
       return await this.replayDownloadAction(tab_id, event, action, selector);
     }
     if (isDialogReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
-      return await this.replayDialogAction(tab_id, event, action, selector, value);
+      return await this.replayDialogAction(tab_id, event, action, selector, value, options);
     }
     if (isPopupReplayEvent(event) && (action === "click" || action === "dblclick" || action === "press")) {
       return await this.replayPopupAction(tab_id, event, action, selector, value);
     }
-    if (!stringOpt(event.detail?.["frame_locator"])) {
+    if (!needsEventAwareReplay(event, action)) {
       return await this.action(tab_id, action, selector, value);
     }
     const page = this.requirePage(tab_id);
-    await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocatorForEvent(page, event, targetSelector));
+    await this.performAction(page, action, selector, value, (targetSelector) => this.resolveLocatorForEvent(page, event, targetSelector), event);
     return { ok: true, action, tab_id, url: page.url() };
   }
 
@@ -343,6 +409,26 @@ export class BrowserPlaywrightAdapter {
       tab_id,
       url: page.url(),
       detail: { control_kind: "range", value: value ?? event.value ?? "" },
+    };
+  }
+
+  private async replayKeyboardTextEntryAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const text = value ?? event.value ?? "";
+    await target.click();
+    await page.keyboard.type(text);
+    return {
+      ok: true,
+      action: "fill",
+      tab_id,
+      url: page.url(),
+      detail: { keyboard_text_entry: true, value_length: text.length },
     };
   }
 
@@ -389,6 +475,31 @@ export class BrowserPlaywrightAdapter {
         clipboard_mode: "paste",
         paste_parameter: clipboardPasteParameterNameForEvent(event),
         pasted_text_length: text.length,
+      },
+    };
+  }
+
+  private async replayClipboardDropAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string,
+    value?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const text = value ?? event.value;
+    if (text === undefined) throw new Error(`missing_clipboard_drop_parameter:${clipboardDropParameterNameForEvent(event)}`);
+    await dropTextOnLocator(target, text);
+    return {
+      ok: true,
+      action: "drag",
+      tab_id,
+      url: page.url(),
+      detail: {
+        clipboard_event: true,
+        clipboard_mode: "drop",
+        clipboard_parameter: clipboardDropParameterNameForEvent(event),
+        dropped_text_length: text.length,
       },
     };
   }
@@ -444,7 +555,7 @@ export class BrowserPlaywrightAdapter {
     const target = this.resolveLocatorForEvent(page, event, selector);
     const [download] = await Promise.all([
       page.waitForEvent("download"),
-      action === "dblclick" ? target.dblclick() : target.click(),
+      action === "dblclick" ? target.dblclick(clickOptionsForEvent(event)) : target.click(clickOptionsForEvent(event)),
     ]);
     const expectedFilename = stringDetail(event, "suggested_filename");
     const filenameRedacted = boolDetail(event, "suggested_filename_redacted");
@@ -465,7 +576,8 @@ export class BrowserPlaywrightAdapter {
     event: BrowserTraceEvent,
     action: "click" | "dblclick" | "press",
     selector?: string,
-    value?: string
+    value?: string,
+    options: { dialogPromptValue?: string } = {}
   ): Promise<BrowserActionResult> {
     const page = this.requirePage(tab_id);
     const target = this.resolveLocatorForEvent(page, event, selector);
@@ -473,8 +585,33 @@ export class BrowserPlaywrightAdapter {
     const expectedMessage = stringDetail(event, "dialog_message");
     const messageRedacted = boolDetail(event, "dialog_message_redacted");
     const accepted = event.detail?.["dialog_accepted"] !== false;
-    const promptValue = stringDetail(event, "dialog_prompt_value");
-    const promptRedacted = boolDetail(event, "dialog_prompt_value_redacted");
+    const replayPromptValue = options.dialogPromptValue;
+    if (expectedType === "prompt" && accepted && replayPromptValue === undefined) {
+      throw new Error(`missing_dialog_prompt_parameter:${dialogPromptParameterNameForEvent(event)}`);
+    }
+    if (expectedType === "prompt") {
+      await installPromptReplayOverride(target, {
+        expectedMessage: expectedMessage && !messageRedacted ? expectedMessage : "",
+        accepted,
+        value: replayPromptValue,
+      });
+      await runTargetAction(target, action, value, event);
+      const promptResult = await readPromptReplayOverride(target);
+      if (!promptResult.consumed) throw new Error("dialog_not_triggered");
+      if (promptResult.error) throw new Error(promptResult.error);
+      return {
+        ok: true,
+        action,
+        tab_id,
+        url: page.url(),
+        detail: {
+          dialog_type: expectedType,
+          dialog_message: promptResult.actualMessage,
+          ...(accepted && replayPromptValue !== undefined ? { dialog_prompt_value_length: replayPromptValue.length } : {}),
+          dialog_prompt_replay: "frame_prompt_override",
+        },
+      };
+    }
     let dialogMessage = "";
     const dialogPromise = new Promise<void>((resolve, reject) => {
       page.once("dialog", async (dialog) => {
@@ -485,7 +622,7 @@ export class BrowserPlaywrightAdapter {
             throw new Error("dialog_message_mismatch");
           }
           if (accepted) {
-            await dialog.accept(expectedType === "prompt" && promptValue && !promptRedacted ? promptValue : undefined);
+            await dialog.accept(expectedType === "prompt" ? replayPromptValue : undefined);
           } else {
             await dialog.dismiss();
           }
@@ -495,13 +632,17 @@ export class BrowserPlaywrightAdapter {
         }
       });
     });
-    await Promise.all([dialogPromise, runTargetAction(target, action, value)]);
+    await Promise.all([dialogPromise, runTargetAction(target, action, value, event)]);
     return {
       ok: true,
       action,
       tab_id,
       url: page.url(),
-      detail: { dialog_type: expectedType, dialog_message: dialogMessage },
+      detail: {
+        dialog_type: expectedType,
+        dialog_message: dialogMessage,
+        ...(expectedType === "prompt" && replayPromptValue !== undefined ? { dialog_prompt_value_length: replayPromptValue.length } : {}),
+      },
     };
   }
 
@@ -516,7 +657,7 @@ export class BrowserPlaywrightAdapter {
     const target = this.resolveLocatorForEvent(page, event, selector);
     const [popup] = await Promise.all([
       page.waitForEvent("popup"),
-      runTargetAction(target, action, value),
+      runTargetAction(target, action, value, event),
     ]);
     const popup_tab_id = this.idForPage(popup);
     this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
@@ -605,6 +746,13 @@ export class BrowserPlaywrightAdapter {
     return [...(this.networkEvents.get(tab_id) ?? [])];
   }
 
+  async refreshTeachCapture(tab_id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const page = this.pages.get(tab_id)?.page;
+    if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
+    await this.installTeachCapture(page, tab_id);
+    return { ok: true };
+  }
+
   resetForTests(): void {
     this.browser = null;
     this.cdpUrl = null;
@@ -616,6 +764,27 @@ export class BrowserPlaywrightAdapter {
     this.teachEventSink = null;
     this.workflowOverlayActionSink = null;
     this.workflowOverlayEnabled = false;
+  }
+
+  private async newColdContext(browser: Browser, storageState?: AuthBrowserStorageState): Promise<BrowserContext> {
+    const context = storageState
+      ? await browser.newContext({ storageState: playwrightStorageStateForAuth(storageState) })
+      : await browser.newContext();
+    if (storageState) {
+      const cookies = playwrightCookiesForAuth(storageState);
+      if (cookies.length > 0) await context.addCookies(cookies);
+      const sessionStorageByOrigin = sessionStorageInitPayload(storageState);
+      if (Object.keys(sessionStorageByOrigin).length > 0) {
+        await context.addInitScript((sessionStorageByOrigin: Record<string, { name: string; value: string }[]>) => {
+          const entries = sessionStorageByOrigin[location.origin];
+          if (!entries) return;
+          for (const entry of entries) {
+            sessionStorage.setItem(entry.name, entry.value);
+          }
+        }, sessionStorageByOrigin).catch(() => undefined);
+      }
+    }
+    return context;
   }
 
   private async describePage(page: Page): Promise<BrowserTab> {
@@ -653,13 +822,46 @@ export class BrowserPlaywrightAdapter {
         });
       });
       page.on("request", (request) => {
+        if (isWorkflowBridgeInternalRequest(request.url())) return;
         const redacted = redactUrl(request.url());
+        const method = request.method().toUpperCase();
         this.pushEvent(this.networkEvents, tab_id, {
           kind: "network",
           url: redacted.url,
           redacted: redacted.redacted,
-          detail: { method: request.method(), resource_type: request.resourceType() },
+          detail: { method, resource_type: request.resourceType() },
         });
+        if (/^(POST|PUT|PATCH|DELETE)$/i.test(method)) {
+          try {
+            normalizeOrigin(page.url()).origin;
+          } catch {
+            return;
+          }
+          const detail: Record<string, unknown> = {
+            network_event: true,
+            network_method: method,
+            network_url: redacted.url,
+            network_url_redacted: redacted.redacted,
+            resource_type: request.resourceType(),
+          };
+          setTimeout(() => {
+            let origin: string;
+            try {
+              origin = normalizeOrigin(page.url()).origin;
+            } catch {
+              return;
+            }
+            this.teachEventAnnotationSink?.({
+              tab_id,
+              url: page.url(),
+              origin,
+              actions: ["click", "dblclick", "press", "select"],
+              detail,
+              within_ms: 5000,
+              observed_at: Date.now(),
+            });
+          }, NETWORK_MUTATION_ANNOTATION_DELAY_MS);
+        }
       });
       page.on("dialog", () => {
         // Keep this adapter from auto-dismissing user/runtime-owned dialogs.
@@ -668,6 +870,7 @@ export class BrowserPlaywrightAdapter {
         void this.handlePopup(page, popup, tab_id);
       });
       page.on("download", (download) => {
+        const observed_at = Date.now();
         let origin: string;
         try {
           origin = normalizeOrigin(page.url()).origin;
@@ -691,6 +894,7 @@ export class BrowserPlaywrightAdapter {
             actions: ["click", "dblclick"],
             detail,
             within_ms: 5000,
+            observed_at,
           });
         }, 250);
       });
@@ -716,15 +920,20 @@ export class BrowserPlaywrightAdapter {
           },
         });
       });
-      await this.installTeachCapture(page, tab_id);
     }
-    if (this.workflowOverlayEnabled && !this.workflowOverlayInstalled.has(page)) {
-      this.workflowOverlayInstalled.add(page);
-      await this.installWorkflowOverlay(page, tab_id);
+    await this.installTeachCapture(page, tab_id);
+    if (this.workflowOverlayEnabled) {
+      const visible = await this.installWorkflowOverlay(page, tab_id);
+      if (visible) {
+        this.workflowOverlayInstalled.add(page);
+      } else {
+        this.workflowOverlayInstalled.delete(page);
+      }
     }
   }
 
   private async handlePopup(opener: Page, popup: Page, opener_tab_id: string): Promise<void> {
+    const observed_at = Date.now();
     const popup_tab_id = this.idForPage(popup);
     this.pages.set(popup_tab_id, { page: popup, tab_id: popup_tab_id });
     let origin: string;
@@ -733,19 +942,30 @@ export class BrowserPlaywrightAdapter {
     } catch {
       return;
     }
-    this.popupOpeners.set(popup_tab_id, { opener_tab_id, opener_origin: origin });
+    const parentPopup = this.popupOpeners.get(opener_tab_id);
+    const openerContext: PopupOpenerContext = {
+      opener_tab_id,
+      opener_origin: origin,
+      root_opener_tab_id: parentPopup?.root_opener_tab_id ?? opener_tab_id,
+      root_opener_origin: parentPopup?.root_opener_origin ?? origin,
+    };
+    this.popupOpeners.set(popup_tab_id, openerContext);
     await this.instrumentPage(popup, popup_tab_id).catch(() => undefined);
     await popup.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
     const popupUrl = redactUrl(popup.url());
     const popupTitle = redactText(await popup.title().catch(() => ""));
     const detail: Record<string, unknown> = {
       popup_event: true,
+      ...(parentPopup ? { popup_context: true } : {}),
       popup_url: popupUrl.url,
       popup_url_redacted: popupUrl.redacted,
       popup_title: popupTitle.text,
       popup_title_redacted: popupTitle.redacted,
       popup_tab_id,
       opener_tab_id,
+      opener_origin: origin,
+      root_opener_tab_id: openerContext.root_opener_tab_id,
+      root_opener_origin: openerContext.root_opener_origin,
     };
     setTimeout(() => {
       this.teachEventAnnotationSink?.({
@@ -755,6 +975,7 @@ export class BrowserPlaywrightAdapter {
         actions: ["click", "dblclick", "press"],
         detail,
         within_ms: 5000,
+        observed_at,
       });
     }, 250);
   }
@@ -794,9 +1015,13 @@ export class BrowserPlaywrightAdapter {
   }
 
   private resolveLocatorForEvent(page: Page, event: BrowserTraceEvent, selector: string | undefined): Locator {
-    const frameLocator = stringOpt(event.detail?.["frame_locator"]);
-    if (!frameLocator) return this.resolveLocator(page, selector);
-    return this.resolveLocatorFromRoot(page.frameLocator(frameLocator), selector);
+    const frameLocatorChain = frameLocatorChainForDetail(event.detail);
+    if (frameLocatorChain.length === 0) return this.resolveLocator(page, selector);
+    let root: Page | FrameLocator = page;
+    for (const frameLocator of frameLocatorChain) {
+      root = root.frameLocator(frameLocator);
+    }
+    return this.resolveLocatorFromRoot(root, selector);
   }
 
   private resolveLocatorFromRoot(root: Page | FrameLocator, selector: string | undefined): Locator {
@@ -833,7 +1058,36 @@ export class BrowserPlaywrightAdapter {
     }, position);
   }
 
+  private async replayWheelScrollAction(
+    tab_id: string,
+    event: BrowserTraceEvent,
+    selector?: string
+  ): Promise<BrowserActionResult> {
+    const page = this.requirePage(tab_id);
+    const target = this.resolveLocatorForEvent(page, event, selector);
+    const box = await target.boundingBox();
+    if (!box) throw new Error(`wheel_target_not_visible:${event.event_id}`);
+    const point = wheelPointForEvent(event);
+    await page.mouse.move(box.x + box.width * point.x, box.y + box.height * point.y);
+    const modifiers = wheelModifiersForEvent(event);
+    await withKeyboardModifiers(page, modifiers, async () => {
+      await page.mouse.wheel(wheelDeltaForEvent(event, "x"), wheelDeltaForEvent(event, "y"));
+    });
+    return {
+      ok: true,
+      action: "scroll",
+      tab_id,
+      url: page.url(),
+      detail: {
+        wheel_event: true,
+        wheel_delta_x: wheelDeltaForEvent(event, "x"),
+        wheel_delta_y: wheelDeltaForEvent(event, "y"),
+      },
+    };
+  }
+
   private async installTeachCapture(page: Page, tab_id: string): Promise<void> {
+    await this.installContextTeachCapture(page.context());
     const bindingName = "__synthiRecordHumanAction";
     const annotationBindingName = "__synthiAnnotateHumanAction";
     await page.exposeBinding(bindingName, async (source, payload: unknown) => {
@@ -857,6 +1111,39 @@ export class BrowserPlaywrightAdapter {
     await Promise.all(page.frames().map((frame) => frame.evaluate(script).catch(() => undefined)));
   }
 
+  private async installContextTeachCapture(context: BrowserContext): Promise<void> {
+    if (this.teachCaptureContexts.has(context)) return;
+    this.teachCaptureContexts.add(context);
+    const bindingName = "__synthiRecordHumanAction";
+    const annotationBindingName = "__synthiAnnotateHumanAction";
+    await context.exposeBinding(bindingName, async (source, payload: unknown) => {
+      const sourcePage = source.page as Page | undefined;
+      if (!sourcePage) return;
+      const tab_id = this.idForPage(sourcePage);
+      this.pages.set(tab_id, { page: sourcePage, tab_id });
+      const event = normalizeCapturedHumanAction(
+        this.enrichCapturedPayloadWithTabContext(tab_id, await this.enrichCapturedPayloadWithFrame(sourcePage, source.frame, payload)),
+        tab_id
+      );
+      if (!event) return;
+      this.teachEventSink?.(event);
+    }).catch(() => undefined);
+    await context.exposeBinding(annotationBindingName, (source, payload: unknown) => {
+      const sourcePage = source.page as Page | undefined;
+      if (!sourcePage) return;
+      const tab_id = this.idForPage(sourcePage);
+      this.pages.set(tab_id, { page: sourcePage, tab_id });
+      const event = normalizeCapturedHumanActionAnnotation(
+        this.enrichCapturedPayloadWithTabContext(tab_id, payload),
+        tab_id
+      );
+      if (!event) return;
+      this.teachEventAnnotationSink?.(event);
+    }).catch(() => undefined);
+    const script = teachCaptureInitScript(bindingName, annotationBindingName);
+    await context.addInitScript(script).catch(() => undefined);
+  }
+
   private enrichCapturedPayloadWithTabContext(tab_id: string, payload: unknown): unknown {
     const popup = this.popupOpeners.get(tab_id);
     if (!popup || !payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
@@ -870,6 +1157,8 @@ export class BrowserPlaywrightAdapter {
         popup_tab_id: tab_id,
         opener_tab_id: popup.opener_tab_id,
         opener_origin: popup.opener_origin,
+        root_opener_tab_id: popup.root_opener_tab_id,
+        root_opener_origin: popup.root_opener_origin,
       },
     };
   }
@@ -880,8 +1169,8 @@ export class BrowserPlaywrightAdapter {
     return metadata ? enrichCapturedFramePayload(payload, metadata, page.url()) : payload;
   }
 
-  private async installWorkflowOverlay(page: Page, tab_id: string): Promise<void> {
-    const bindingName = `__synthiWorkflowOverlayAction_${tab_id.replace(/[^a-zA-Z0-9_]/g, "_")}_${Date.now().toString(36)}`;
+  private async installWorkflowOverlay(page: Page, tab_id: string): Promise<boolean> {
+    const bindingName = `__synthiWorkflowOverlayAction_${tab_id.replace(/[^a-zA-Z0-9_]/g, "_")}`;
     await page.exposeBinding(bindingName, async (_source, payload: unknown) => {
       const request = workflowOverlayRequestOpt(payload);
       if (!request) return { ok: false, status: "error", error: "invalid_overlay_action" };
@@ -900,9 +1189,16 @@ export class BrowserPlaywrightAdapter {
         };
       }
     }).catch(() => undefined);
-    const script = workflowOverlayInitScript(bindingName, workflowOverlayBridgeUrl(), workflowOverlayBridgeToken());
-    await page.addInitScript(script).catch(() => undefined);
+    const bridgeUrl = workflowOverlayBridgeUrl();
+    const bridgeToken = workflowOverlayBridgeToken();
+    const script = workflowOverlayInitScript(bindingName, bridgeUrl, bridgeToken);
+    const scriptKey = workflowOverlayBridgeKey(bridgeUrl, bridgeToken);
+    if (this.workflowOverlayInitScriptKeys.get(page) !== scriptKey) {
+      await page.addInitScript(script).catch(() => undefined);
+      this.workflowOverlayInitScriptKeys.set(page, scriptKey);
+    }
     await page.evaluate(script).catch(() => undefined);
+    return await page.evaluate(() => Boolean(document.getElementById("synthi-workflow-toolbox-host"))).catch(() => false);
   }
 
   private requireBrowser(): Browser {
@@ -915,6 +1211,88 @@ export class BrowserPlaywrightAdapter {
     if (!page || page.isClosed()) throw new Error("tab_not_found");
     return page;
   }
+}
+
+type BrowserContextCookie = Parameters<BrowserContext["addCookies"]>[0][number];
+
+async function captureSessionStorageByOrigin(
+  context: BrowserContext,
+  allowedOrigins: Set<string>
+): Promise<Map<string, AuthStorageEntry[]>> {
+  const byOrigin = new Map<string, AuthStorageEntry[]>();
+  for (const page of context.pages()) {
+    for (const frame of page.frames()) {
+      const captured = await frame.evaluate(() => ({
+        origin: location.origin,
+        entries: Array.from({ length: sessionStorage.length }, (_unused, index) => {
+          const name = sessionStorage.key(index) ?? "";
+          return { name, value: sessionStorage.getItem(name) ?? "" };
+        }).filter((entry) => entry.name.length > 0),
+      })).catch(() => null);
+      if (!captured || !allowedOrigins.has(captured.origin)) continue;
+      byOrigin.set(captured.origin, captured.entries);
+    }
+  }
+  return byOrigin;
+}
+
+export function playwrightStorageStateForAuth(storageState: AuthBrowserStorageState): {
+  cookies: [];
+  origins: Array<{ origin: string; localStorage: AuthStorageEntry[] }>;
+} {
+  return {
+    cookies: [],
+    origins: (storageState.origins ?? []).map((origin) => ({
+      origin: origin.origin,
+      localStorage: origin.localStorage ?? [],
+    })),
+  };
+}
+
+export function playwrightCookiesForAuth(storageState: AuthBrowserStorageState): BrowserContextCookie[] {
+  return (storageState.cookies ?? []).map(playwrightCookieForAuth).filter((cookie): cookie is BrowserContextCookie => cookie !== null);
+}
+
+function playwrightCookieForAuth(cookie: AuthStorageCookie): BrowserContextCookie | null {
+  if (!cookie.name || typeof cookie.value !== "string" || !cookie.domain) return null;
+  const sameSite = sameSiteOpt(cookie.sameSite) ?? "Lax";
+  return {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path ?? "/",
+    expires: typeof cookie.expires === "number" ? cookie.expires : -1,
+    httpOnly: cookie.httpOnly ?? false,
+    secure: cookie.secure ?? false,
+    sameSite,
+    ...(typeof cookie.partitionKey === "string" ? { partitionKey: cookie.partitionKey } : {}),
+  };
+}
+
+export function sessionStorageInitPayload(storageState: AuthBrowserStorageState): Record<string, AuthStorageEntry[]> {
+  const out: Record<string, AuthStorageEntry[]> = {};
+  for (const origin of storageState.origins ?? []) {
+    const entries = origin.sessionStorage ?? [];
+    if (entries.length > 0) out[origin.origin] = entries.map((entry) => ({ name: entry.name, value: entry.value }));
+  }
+  return out;
+}
+
+function normalizedOriginSet(origins: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const origin of origins) {
+    try {
+      out.add(normalizeOrigin(origin).origin);
+    } catch {
+      // Ignore invalid origin hints; the auth manager performs final filtering before storing.
+    }
+  }
+  return out;
+}
+
+function sameSiteOpt(value: unknown): "Strict" | "Lax" | "None" | undefined {
+  if (value === "Strict" || value === "Lax" || value === "None") return value;
+  return undefined;
 }
 
 export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): CapturedBrowserHumanAction | null {
@@ -934,6 +1312,8 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
       ...(recordOpt(raw["detail"]) ?? {}),
     },
   };
+  const observedAt = numberOpt(raw["observed_at"]);
+  if (observedAt !== undefined) event.observed_at = observedAt;
   const value = stringOpt(raw["value"]);
   if (value !== undefined) event.value = value;
   const fieldName = stringOpt(raw["field_name"]);
@@ -942,17 +1322,38 @@ export function normalizeCapturedHumanAction(payload: unknown, tab_id: string): 
   if (frameId !== undefined) event.frame_id = frameId;
   const element = elementOpt(raw["element"]);
   if (element !== undefined) {
-    event.element = isClipboardPasteDetail(event.detail)
-      ? redactClipboardPasteElementMetadata(element)
+    event.element = isClipboardTextTransferDetail(event.detail)
+      ? redactClipboardTextTransferElementMetadata(element)
       : element;
   }
   const bbox = bboxOpt(raw["bbox"]);
   if (bbox !== undefined) event.bbox = bbox;
+  if (event.element && (isAggregateKeyboardSurfaceElement(event.element) || isEditableTextMetadata(event.element))) {
+    event.element = stripAggregateTextMetadata(event.element);
+  }
   return event;
 }
 
 async function frameLocatorMetadataForFrame(page: Page, frame: Frame): Promise<FrameLocatorMetadata | null> {
   if (frame === page.mainFrame()) return null;
+  const chain: FrameLocatorMetadata[] = [];
+  let current: Frame | null = frame;
+  while (current && current !== page.mainFrame()) {
+    const metadata = await frameLocatorMetadataForSingleFrame(current);
+    if (!metadata) return null;
+    chain.unshift(metadata);
+    current = current.parentFrame();
+  }
+  const leaf = chain.at(-1);
+  if (!leaf) return null;
+  return {
+    ...leaf,
+    frame_locator_chain: chain.map((metadata) => metadata.frame_locator),
+    frame_locator_candidate_chain: chain.map((metadata) => metadata.frame_locator_candidates),
+  };
+}
+
+async function frameLocatorMetadataForSingleFrame(frame: Frame): Promise<FrameLocatorMetadata | null> {
   const handle = await frame.frameElement().catch(() => null);
   if (!handle) return null;
   try {
@@ -1066,9 +1467,13 @@ export function enrichCapturedFramePayload(payload: unknown, metadata: FrameLoca
     detail: {
       ...detail,
       frame_locator: stringOpt(detail["frame_locator"]) ?? metadata.frame_locator,
+      frame_locator_chain: stringArrayOpt(detail["frame_locator_chain"]) ?? metadata.frame_locator_chain ?? [metadata.frame_locator],
       frame_locator_candidates: Array.isArray(detail["frame_locator_candidates"])
         ? detail["frame_locator_candidates"]
         : metadata.frame_locator_candidates,
+      frame_locator_candidate_chain: Array.isArray(detail["frame_locator_candidate_chain"])
+        ? detail["frame_locator_candidate_chain"]
+        : metadata.frame_locator_candidate_chain ?? [metadata.frame_locator_candidates],
       ...(frameUrl ? { frame_url: frameUrl } : {}),
       ...(frameOrigin ? { frame_origin: frameOrigin } : {}),
     },
@@ -1107,7 +1512,7 @@ function isPopupReplayEvent(event: BrowserTraceEvent): boolean {
 }
 
 function popupNavigationDetail(
-  popup: { opener_tab_id: string; opener_origin: string } | undefined,
+  popup: PopupOpenerContext | undefined,
   tab_id: string
 ): Record<string, unknown> {
   if (!popup) return {};
@@ -1116,21 +1521,199 @@ function popupNavigationDetail(
     popup_tab_id: tab_id,
     opener_tab_id: popup.opener_tab_id,
     opener_origin: popup.opener_origin,
+    root_opener_tab_id: popup.root_opener_tab_id,
+    root_opener_origin: popup.root_opener_origin,
   };
 }
 
 async function runTargetAction(
   target: Locator,
   action: "click" | "dblclick" | "press",
-  value?: string
+  value?: string,
+  event?: BrowserTraceEvent
 ): Promise<void> {
   if (action === "dblclick") {
-    await target.dblclick();
+    await target.dblclick(clickOptionsForEvent(event));
   } else if (action === "press") {
     await target.press(value ?? "Enter");
   } else {
-    await target.click();
+    await target.click(clickOptionsForEvent(event));
   }
+}
+
+async function performClipboardTransferAction(
+  page: Page,
+  target: Locator,
+  action: "copy" | "cut",
+  event?: BrowserTraceEvent
+): Promise<void> {
+  await restoreTextSelection(target, event);
+  await page.keyboard.press(process.platform === "darwin" ? (action === "copy" ? "Meta+C" : "Meta+X") : (action === "copy" ? "Control+C" : "Control+X"));
+}
+
+async function restoreTextSelection(target: Locator, event: BrowserTraceEvent | undefined): Promise<void> {
+  const range = textSelectionRangeForEvent(event);
+  if (!range) {
+    await target.click();
+    return;
+  }
+  await target.evaluate((element, selection) => {
+    const targetElement = element as HTMLElement;
+    targetElement.focus();
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const direction = selection.direction === "backward" || selection.direction === "forward" ? selection.direction : "none";
+      element.setSelectionRange(selection.start, selection.end, direction);
+    }
+  }, range);
+}
+
+function textSelectionRangeForEvent(event: BrowserTraceEvent | undefined): { start: number; end: number; direction?: string } | null {
+  if (!event) return null;
+  const start = numberDetail(event, "selection_start");
+  const end = numberDetail(event, "selection_end");
+  if (start === undefined || end === undefined) return null;
+  const direction = stringDetail(event, "selection_direction");
+  return {
+    start: Math.max(0, Math.round(start)),
+    end: Math.max(0, Math.round(end)),
+    ...(direction ? { direction } : {}),
+  };
+}
+
+type ClickModifier = "Alt" | "Control" | "Meta" | "Shift";
+
+function needsEventAwareReplay(event: BrowserTraceEvent, action: BrowserActionKind): boolean {
+  if (frameLocatorChainForDetail(event.detail).length > 0) return true;
+  if (action === "scroll" && isWheelScrollEvent(event)) return true;
+  return (action === "click" || action === "dblclick" || action === "contextmenu") && clickModifiersForEvent(event).length > 0;
+}
+
+function frameLocatorChainForDetail(detail: Record<string, unknown> | undefined): string[] {
+  const chain = stringArrayOpt(detail?.["frame_locator_chain"]);
+  if (chain && chain.length > 0) return chain;
+  const frameLocator = stringOpt(detail?.["frame_locator"]);
+  return frameLocator ? [frameLocator] : [];
+}
+
+function isWheelScrollEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "scroll" && (
+    event.detail?.["wheel_event"] === true ||
+    event.detail?.["wheel_replay"] === "mouseWheel"
+  );
+}
+
+function wheelDeltaForEvent(event: BrowserTraceEvent, axis: "x" | "y"): number {
+  return Math.round(numberDetail(event, axis === "x" ? "wheel_delta_x" : "wheel_delta_y") ?? 0);
+}
+
+function wheelPointForEvent(event: BrowserTraceEvent): { x: number; y: number } {
+  return {
+    x: clampNumber(numberDetail(event, "wheel_client_x_ratio") ?? 0.5, 0, 1),
+    y: clampNumber(numberDetail(event, "wheel_client_y_ratio") ?? 0.5, 0, 1),
+  };
+}
+
+function wheelModifiersForEvent(event: BrowserTraceEvent): ClickModifier[] {
+  return clickModifiersForEvent(event);
+}
+
+async function withKeyboardModifiers(page: Page, modifiers: ClickModifier[], fn: () => Promise<void>): Promise<void> {
+  for (const modifier of modifiers) await page.keyboard.down(modifier);
+  try {
+    await fn();
+  } finally {
+    for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier).catch(() => undefined);
+  }
+}
+
+function clickOptionsForEvent(
+  event: BrowserTraceEvent | undefined,
+  base: { button?: "right" } = {}
+): { button?: "right"; modifiers?: ClickModifier[] } {
+  const modifiers = clickModifiersForEvent(event);
+  return modifiers.length > 0 ? { ...base, modifiers } : base;
+}
+
+function clickModifiersForEvent(event: BrowserTraceEvent | undefined): ClickModifier[] {
+  const allowed = new Set<ClickModifier>(["Alt", "Control", "Meta", "Shift"]);
+  const rawModifiers = event?.detail?.["modifiers"];
+  if (Array.isArray(rawModifiers)) {
+    return rawModifiers.filter((value): value is ClickModifier => typeof value === "string" && allowed.has(value as ClickModifier));
+  }
+  const raw = event?.detail?.["modifier_keys"];
+  const keys = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const modifiers: ClickModifier[] = [];
+  if (keys["control"] === true) modifiers.push("Control");
+  if (keys["meta"] === true) modifiers.push("Meta");
+  if (keys["alt"] === true) modifiers.push("Alt");
+  if (keys["shift"] === true) modifiers.push("Shift");
+  return modifiers;
+}
+
+async function installPromptReplayOverride(
+  target: Locator,
+  config: { expectedMessage: string; accepted: boolean; value?: string }
+): Promise<void> {
+  await target.evaluate((element, replayConfig) => {
+    const win = element.ownerDocument?.defaultView;
+    if (!win) throw new Error("prompt_replay_window_missing");
+    const stateKey = "__SYNTHI_PROMPT_REPLAY_STATE__";
+    const installedKey = "__SYNTHI_PROMPT_REPLAY_INSTALLED__";
+    const w = win as Window & {
+      __SYNTHI_PROMPT_REPLAY_STATE__?: {
+        expectedMessage: string;
+        accepted: boolean;
+        value?: string;
+        consumed: boolean;
+        actualMessage: string;
+        error: string;
+      };
+      __SYNTHI_PROMPT_REPLAY_INSTALLED__?: boolean;
+    };
+    w[stateKey] = {
+      expectedMessage: replayConfig.expectedMessage,
+      accepted: replayConfig.accepted,
+      value: replayConfig.value,
+      consumed: false,
+      actualMessage: "",
+      error: "",
+    };
+    if (w[installedKey]) return;
+    const nativePrompt = win.prompt.bind(win);
+    w[installedKey] = true;
+    win.prompt = (message?: string, defaultValue?: string) => {
+      const state = w[stateKey];
+      if (!state || state.consumed) return nativePrompt(message, defaultValue);
+      const actualMessage = String(message ?? "");
+      state.actualMessage = actualMessage;
+      state.consumed = true;
+      if (state.expectedMessage && !actualMessage.includes(state.expectedMessage)) {
+        state.error = "dialog_message_mismatch";
+      }
+      return state.accepted ? String(state.value ?? "") : null;
+    };
+  }, config);
+}
+
+async function readPromptReplayOverride(target: Locator): Promise<{ consumed: boolean; actualMessage: string; error: string }> {
+  return await target.evaluate((element) => {
+    const win = element.ownerDocument?.defaultView;
+    if (!win) return { consumed: false, actualMessage: "", error: "prompt_replay_window_missing" };
+    const w = win as Window & {
+      __SYNTHI_PROMPT_REPLAY_STATE__?: {
+        consumed?: boolean;
+        actualMessage?: string;
+        error?: string;
+      };
+    };
+    const state = w.__SYNTHI_PROMPT_REPLAY_STATE__;
+    delete w.__SYNTHI_PROMPT_REPLAY_STATE__;
+    return {
+      consumed: state?.consumed === true,
+      actualMessage: typeof state?.actualMessage === "string" ? state.actualMessage : "",
+      error: typeof state?.error === "string" ? state.error : "",
+    };
+  });
 }
 
 async function setRangeLocatorValue(target: Locator, value: string): Promise<void> {
@@ -1187,11 +1770,27 @@ function isKeyboardEditorFillEvent(event: BrowserTraceEvent): boolean {
   );
 }
 
+function isKeyboardTextEntryEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "fill" && (
+    event.detail?.["keyboard_text_entry"] === true ||
+    event.detail?.["text_entry_mode"] === "keyboardInsert"
+  );
+}
+
 function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
   return event.action === "fill" && (
     event.detail?.["clipboard_event"] === true ||
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
+  );
+}
+
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  const dragClass = String(event.detail?.["drag_class"] ?? event.detail?.["dragClass"] ?? "").toLowerCase();
+  return event.action === "drag" && (
+    dragClass === "clipboarddrop" ||
+    event.detail?.["clipboard_mode"] === "drop" ||
+    event.detail?.["clipboard_drop_event"] === true
   );
 }
 
@@ -1205,6 +1804,30 @@ function clipboardPasteParameterNameForEvent(event: BrowserTraceEvent): string {
       stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).test_id)
     : undefined;
   return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
+}
+
+function clipboardDropParameterNameForEvent(event: BrowserTraceEvent): string {
+  const explicit = stringDetail(event, "drop_parameter") ?? stringDetail(event, "clipboard_parameter");
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object" && !Array.isArray(element)
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).placeholder) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown; placeholder?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_drop`);
+}
+
+function dialogPromptParameterNameForEvent(event: BrowserTraceEvent): string {
+  const explicit = stringDetail(event, "dialog_prompt_env") ?? stringDetail(event, "dialog_prompt_parameter") ?? stringDetail(event, "prompt_parameter");
+  const message = boolDetail(event, "dialog_message_redacted") ? undefined : stringDetail(event, "dialog_message");
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object" && !Array.isArray(element)
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? message ?? label ?? `${event.event_id}_prompt`);
 }
 
 async function pasteTextIntoLocator(page: Page, target: Locator, text: string): Promise<void> {
@@ -1223,6 +1846,44 @@ async function pasteTextIntoLocator(page: Page, target: Locator, text: string): 
     return;
   }
   await dispatchSyntheticPaste(target, text);
+}
+
+async function dropTextOnLocator(target: Locator, text: string): Promise<void> {
+  await target.evaluate((element, nextText) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData("text/plain", nextText);
+    let dragEnterEvent: DragEvent;
+    let dragOverEvent: DragEvent;
+    let dropEvent: DragEvent;
+    try {
+      dragEnterEvent = new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer });
+      dragOverEvent = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer });
+      dropEvent = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer });
+    } catch {
+      dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true }) as DragEvent;
+      dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true }) as DragEvent;
+      dropEvent = new Event("drop", { bubbles: true, cancelable: true }) as DragEvent;
+      Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dataTransfer });
+      Object.defineProperty(dragOverEvent, "dataTransfer", { value: dataTransfer });
+      Object.defineProperty(dropEvent, "dataTransfer", { value: dataTransfer });
+    }
+    element.dispatchEvent(dragEnterEvent);
+    element.dispatchEvent(dragOverEvent);
+    const notCanceled = element.dispatchEvent(dropEvent);
+    if (!notCanceled) return;
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const start = element.selectionStart ?? element.value.length;
+      const end = element.selectionEnd ?? start;
+      element.setRangeText(nextText, start, end, "end");
+    } else if ((element as HTMLElement).isContentEditable || element.getAttribute("contenteditable")) {
+      element.textContent = `${element.textContent ?? ""}${nextText}`;
+    }
+    element.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertFromDrop",
+      data: nextText,
+    }));
+  }, text);
 }
 
 async function grantClipboardPermissions(page: Page): Promise<void> {
@@ -1311,6 +1972,7 @@ export function normalizeCapturedHumanActionAnnotation(
     ...(actions && actions.length > 0 ? { actions } : {}),
     detail,
     within_ms: numberOpt(raw["within_ms"]),
+    observed_at: numberOpt(raw["observed_at"]),
   };
 }
 
@@ -1384,7 +2046,37 @@ function isClipboardPasteDetail(detail: Record<string, unknown> | undefined): bo
     detail?.["paste_event"] === true;
 }
 
-function redactClipboardPasteElementMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
+function isClipboardTextTransferDetail(detail: Record<string, unknown> | undefined): boolean {
+  return isClipboardPasteDetail(detail) ||
+    detail?.["clipboard_mode"] === "drop" ||
+    detail?.["clipboard_drop_event"] === true;
+}
+
+function isAggregateKeyboardSurfaceElement(element: BrowserElementMetadata): boolean {
+  const role = element.role?.toLowerCase();
+  return role === "application";
+}
+
+function isEditableTextMetadata(element: BrowserElementMetadata): boolean {
+  const tag = element.tag?.toLowerCase();
+  const type = element.type?.toLowerCase() ?? "";
+  if (element.content_editable === true) return true;
+  if (tag === "textarea") return true;
+  if (tag !== "input") return element.role?.toLowerCase() === "textbox";
+  return !["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(type);
+}
+
+function stripAggregateTextMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
+  const stripped = { ...element };
+  const aggregateText = stripped.text?.trim();
+  if (aggregateText) {
+    if (stripped.name?.trim() === aggregateText) delete stripped.name;
+    delete stripped.text;
+  }
+  return stripped;
+}
+
+function redactClipboardTextTransferElementMetadata(element: BrowserElementMetadata): BrowserElementMetadata {
   const redacted = { ...element };
   if (redacted.content_editable === true || redacted.role === "textbox" || redacted.tag === "textarea" || redacted.tag === "input") {
     delete redacted.text;
@@ -1413,6 +2105,9 @@ function stringArrayOpt(value: unknown): string[] | undefined {
 
 function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, unknown> {
   const detail: Record<string, unknown> = {};
+  const promptValue = typeof raw["dialog_prompt_value"] === "string" && raw["dialog_prompt_value"].length > 0
+    ? raw["dialog_prompt_value"]
+    : undefined;
   for (const [key, value] of Object.entries(raw)) {
     if (typeof value === "string") {
       if (key === "dialog_message" || key === "dialog_default_value") {
@@ -1432,18 +2127,27 @@ function sanitizeAnnotationDetail(raw: Record<string, unknown>): Record<string, 
       let redacted = false;
       for (const item of value) {
         if (typeof item !== "string") continue;
-        const effect = redactText(item);
+        const promptRedactedText = promptValue ? redactExactText(item, promptValue) : { text: item, redacted: false };
+        const effect = redactText(promptRedactedText.text);
         const text = effect.text.trim();
         if (text.length === 0) continue;
         effects.push(text);
-        redacted = redacted || effect.redacted;
+        redacted = redacted || promptRedactedText.redacted || effect.redacted;
         if (effects.length >= 6) break;
       }
       if (effects.length > 0) detail[key] = effects;
       if (redacted) detail[`${key}_redacted`] = true;
     }
   }
+  if (promptValue) detail["observed_effects_redacted"] = true;
   return detail;
+}
+
+function redactExactText(value: string, sensitive: string): { text: string; redacted: boolean } {
+  if (!sensitive) return { text: value, redacted: false };
+  const escaped = sensitive.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const next = value.replace(new RegExp(escaped, "g"), "[REDACTED]");
+  return { text: next, redacted: next !== value };
 }
 
 function stringOpt(value: unknown): string | undefined {
@@ -1514,6 +2218,84 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
     const annotationBindingName = ${JSON.stringify(annotationBindingName)};
+    const queuedDialogCaptureVersion = 'dialog-response-queue-v1';
+    function dialogText(value) {
+      return typeof value === 'string' ? value.trim().replace(/\\s+/g, ' ').slice(0, 160) : '';
+    }
+    function nextQueuedDialogResponse(kind) {
+      const queue = window.__SYNTHI_TEACH_DIALOG_RESPONSES__;
+      if (!Array.isArray(queue) || queue.length === 0) return null;
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        if (!item || typeof item !== 'object') continue;
+        const itemKind = dialogText(String(item.type || item.kind || ''));
+        if (itemKind && itemKind !== kind) continue;
+        queue.splice(index, 1);
+        return item;
+      }
+      return null;
+    }
+    function annotateQueuedDialog(detail) {
+      if (!window[annotationBindingName]) return;
+      window[annotationBindingName]({
+        url: location.href,
+        origin: location.origin,
+        actions: ['click', 'dblclick', 'press'],
+        detail,
+        within_ms: 5000,
+        observed_at: Date.now(),
+      }).catch(() => {});
+    }
+    function installQueuedDialogResponseCapture() {
+      if (window.__SYNTHI_DIALOG_QUEUE_CAPTURE_VERSION__ === queuedDialogCaptureVersion) return;
+      const fallbackFns = window.__SYNTHI_DIALOG_QUEUE_CAPTURE_FALLBACKS__ || {
+        alert: window.alert.bind(window),
+        confirm: window.confirm.bind(window),
+        prompt: window.prompt.bind(window),
+      };
+      window.__SYNTHI_DIALOG_QUEUE_CAPTURE_FALLBACKS__ = fallbackFns;
+      window.__SYNTHI_DIALOG_QUEUE_CAPTURE_VERSION__ = queuedDialogCaptureVersion;
+      window.alert = (message) => {
+        const response = nextQueuedDialogResponse('alert');
+        if (!response) return fallbackFns.alert(message);
+        annotateQueuedDialog({
+          dialog_event: true,
+          dialog_type: 'alert',
+          dialog_message: dialogText(String(message || '')),
+          dialog_accepted: true,
+          dialog_runtime_response: true,
+        });
+      };
+      window.confirm = (message) => {
+        const response = nextQueuedDialogResponse('confirm');
+        if (!response) return fallbackFns.confirm(message);
+        const accepted = response.accepted !== false;
+        annotateQueuedDialog({
+          dialog_event: true,
+          dialog_type: 'confirm',
+          dialog_message: dialogText(String(message || '')),
+          dialog_accepted: accepted,
+          dialog_runtime_response: true,
+        });
+        return accepted;
+      };
+      window.prompt = (message, defaultValue) => {
+        const response = nextQueuedDialogResponse('prompt');
+        if (!response) return fallbackFns.prompt(message, defaultValue);
+        const value = response.accepted === false ? null : String(response.value ?? response.promptText ?? defaultValue ?? '');
+        annotateQueuedDialog({
+          dialog_event: true,
+          dialog_type: 'prompt',
+          dialog_message: dialogText(String(message || '')),
+          dialog_default_value: dialogText(String(defaultValue || '')),
+          dialog_accepted: value !== null,
+          dialog_prompt_value: value === null ? '' : String(value),
+          dialog_runtime_response: true,
+        });
+        return value;
+      };
+    }
+    installQueuedDialogResponseCapture();
     if (window.__SYNTHI_TEACH_CAPTURE_INSTALLED__) return;
     window.__SYNTHI_TEACH_CAPTURE_INSTALLED__ = true;
     const pending = new WeakMap();
@@ -1521,11 +2303,20 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     const scrollPending = new WeakMap();
     const scrollPendingElements = new Set();
     const scrollBeforeEffects = new WeakMap();
+    const wheelPending = new WeakMap();
+    const wheelPendingElements = new Set();
+    const wheelBeforeEffects = new WeakMap();
+    const wheelAccumulated = new WeakMap();
+    const keyboardTextPending = new WeakMap();
+    const keyboardTextElements = new Set();
+    const controlBeforeEffects = new WeakMap();
+    const pendingEditBeforeEffects = new WeakMap();
     const lastSent = new WeakMap();
     const pasteSuppressedUntil = new WeakMap();
     const editableTags = new Set(['input', 'textarea', 'select']);
     const pendingActionSends = new Set();
     let latestDeferredActionBeforeEffects = [];
+    const actionEffectSettleMs = 250;
     let activeDrag = null;
     let activePointerDrag = null;
     let lastPointerDrag = null;
@@ -1568,6 +2359,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         actions,
         detail,
         within_ms: withinMs || 5000,
+        observed_at: Date.now(),
       }).catch(() => {});
     }
 
@@ -1585,7 +2377,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         entry.sent = true;
         latestDeferredActionBeforeEffects = entry.beforeEffects;
         entry.send();
-      }, 0);
+      }, actionEffectSettleMs);
       pendingActionSends.add(entry);
     }
 
@@ -1614,15 +2406,38 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       }, 0);
     }
 
+    function nextDialogResponse(kind) {
+      const queue = window.__SYNTHI_TEACH_DIALOG_RESPONSES__;
+      if (!Array.isArray(queue) || queue.length === 0) return null;
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        if (!item || typeof item !== 'object') continue;
+        const itemKind = text(String(item.type || item.kind || ''));
+        if (itemKind && itemKind !== kind) continue;
+        queue.splice(index, 1);
+        return item;
+      }
+      return null;
+    }
+
     function installDialogCapture() {
-      if (window.__SYNTHI_DIALOG_CAPTURE_INSTALLED__) return;
+      const dialogCaptureVersion = 'dialog-response-queue-v1';
+      if (window.__SYNTHI_DIALOG_CAPTURE_VERSION__ === dialogCaptureVersion) return;
+      const fallbackFns = window.__SYNTHI_DIALOG_CAPTURE_FALLBACKS__ || {
+        alert: window.alert.bind(window),
+        confirm: window.confirm.bind(window),
+        prompt: window.prompt.bind(window),
+      };
+      window.__SYNTHI_DIALOG_CAPTURE_FALLBACKS__ = fallbackFns;
       window.__SYNTHI_DIALOG_CAPTURE_INSTALLED__ = true;
-      const nativeAlert = window.alert.bind(window);
-      const nativeConfirm = window.confirm.bind(window);
-      const nativePrompt = window.prompt.bind(window);
+      window.__SYNTHI_DIALOG_CAPTURE_VERSION__ = dialogCaptureVersion;
+      const nativeAlert = fallbackFns.alert;
+      const nativeConfirm = fallbackFns.confirm;
+      const nativePrompt = fallbackFns.prompt;
       window.alert = (message) => {
         const beforeEffects = flushPendingActionSends();
-        nativeAlert(message);
+        const response = nextDialogResponse('alert');
+        if (!response) nativeAlert(message);
         annotateDialogTrigger({
           dialog_event: true,
           dialog_type: 'alert',
@@ -1632,7 +2447,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
       window.confirm = (message) => {
         const beforeEffects = flushPendingActionSends();
-        const accepted = nativeConfirm(message);
+        const response = nextDialogResponse('confirm');
+        const accepted = response ? response.accepted !== false : nativeConfirm(message);
         annotateDialogTrigger({
           dialog_event: true,
           dialog_type: 'confirm',
@@ -1643,7 +2459,12 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
       window.prompt = (message, defaultValue) => {
         const beforeEffects = flushPendingActionSends();
-        const value = nativePrompt(message, defaultValue);
+        const response = nextDialogResponse('prompt');
+        const value = response
+          ? response.accepted === false
+            ? null
+            : String(response.value ?? response.promptText ?? defaultValue ?? '')
+          : nativePrompt(message, defaultValue);
         annotateDialogTrigger({
           dialog_event: true,
           dialog_type: 'prompt',
@@ -1680,6 +2501,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         if (type === 'checkbox') return 'checkbox';
         if (type === 'radio') return 'radio';
         if (type === 'range') return 'slider';
+        if (type === 'file') return '';
         if (['button', 'submit', 'reset'].includes(type)) return 'button';
         return 'textbox';
       }
@@ -1788,6 +2610,8 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const placeholder = attr(el, 'placeholder');
       const aria = attr(el, 'aria-label');
       const textContent = text(el.textContent || '');
+      const role = roleFor(el);
+      const allowAggregateTextLocator = !isEditableTextTarget(el) && !suppressAggregateTextLocator(el, role);
       const testId = attr(el, 'data-testid') || attr(el, 'data-test');
       const type = attr(el, 'type');
       const editorContainer = editorContainerFor(el);
@@ -1796,12 +2620,12 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const shadowDetail = shadowDetailFor(el);
       return {
         tag,
-        role: roleFor(el),
-        name: aria || label || placeholder || textContent,
+        role,
+        name: aria || label || placeholder || (allowAggregateTextLocator ? textContent : ''),
         label,
         placeholder,
         test_id: testId,
-        text: textContent,
+        text: allowAggregateTextLocator ? textContent : '',
         id: attr(el, 'id'),
         class_name: text(el.className || ''),
         css: cssFor(el),
@@ -1828,6 +2652,14 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         editor_container_role: editorContainer ? roleFor(editorContainer) : '',
         editor_container_css: editorContainer ? cssFor(editorContainer) : '',
       };
+    }
+
+    function suppressAggregateTextLocator(el, role) {
+      if (!isElement(el) || isEditableTextTarget(el)) return false;
+      return attr(el, 'data-synthi-keyboard-text-entry') ||
+        attr(el, 'data-terminal') ||
+        attr(el, 'data-terminal-root') ||
+        String(role || '').toLowerCase() === 'application';
     }
 
     function editorContainerFor(el) {
@@ -1940,17 +2772,63 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return null;
       if (target.closest('[data-synthi-workflow-toolbox]')) return null;
       if (isEditableTextTarget(target)) return null;
-      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="option"], [role="listitem"]');
+      const el = target.closest('[data-synthi-pointer-drag], [data-pointer-drag], [data-resize-handle], [data-synthi-resize-handle], [data-draggable]:not([draggable="true"]), [aria-grabbed], [role="separator"], [role="slider"], [role="option"], [role="listitem"]');
       if (!isElement(el)) return null;
       if (attr(el, 'role') === 'option' && el.closest('[role="listbox"]') && !attr(el, 'data-synthi-pointer-drag') && !attr(el, 'data-pointer-drag') && !attr(el, 'data-draggable') && !attr(el, 'aria-grabbed')) return null;
       if (isEditableTextTarget(el) || isRangeInput(el)) return null;
       return el;
     }
 
-    function pointerDropTargetAt(clientX, clientY) {
+    function resizeContainerFor(el) {
+      if (!isElement(el)) return null;
+      const parent = el.parentElement;
+      if (!isElement(parent)) return null;
+      return parent.closest('[data-resize-container], [data-synthi-resize-container], [data-testid], [data-test], [role="group"], [aria-label]') || parent;
+    }
+
+    function isResizeHandleElement(el) {
+      return isElement(el) && (
+        attr(el, 'role') === 'separator' ||
+        Boolean(attr(el, 'data-resize-handle')) ||
+        Boolean(attr(el, 'data-synthi-resize-handle'))
+      );
+    }
+
+    function resizeDetailFor(el) {
+      if (!isResizeHandleElement(el)) return {};
+      const orientation = attr(el, 'aria-orientation');
+      return {
+        resize_handle: true,
+        resize_axis: orientation === 'horizontal' ? 'y' : 'x',
+        aria_orientation: orientation || 'vertical',
+      };
+    }
+
+    function ariaSliderDetailFor(el) {
+      if (!isElement(el) || attr(el, 'role') !== 'slider') return {};
+      return {
+        control_kind: 'ariaSlider',
+        aria_slider: true,
+        aria_value_now: attr(el, 'aria-valuenow'),
+        aria_value_min: attr(el, 'aria-valuemin'),
+        aria_value_max: attr(el, 'aria-valuemax'),
+        aria_value_text: attr(el, 'aria-valuetext'),
+        aria_orientation: attr(el, 'aria-orientation') || 'horizontal',
+      };
+    }
+
+    function pointerDropTargetAt(clientX, clientY, sourceEl) {
       const target = document.elementFromPoint(clientX, clientY);
       if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return null;
-      const dropTarget = target.closest('[data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
+      if (isResizeHandleElement(sourceEl)) {
+        const resizeContainer = resizeContainerFor(sourceEl);
+        if (isElement(resizeContainer) && resizeContainer !== sourceEl) return resizeContainer;
+      }
+      const dropTarget = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-drop-target], [data-testid], [data-test], [role="list"], [role="group"], [aria-label]') || target;
+      if (isElement(sourceEl) && (dropTarget === sourceEl || sourceEl.contains(dropTarget))) {
+        const resizeContainer = resizeContainerFor(sourceEl);
+        if (isElement(resizeContainer) && resizeContainer !== sourceEl) return resizeContainer;
+      }
       return isElement(dropTarget) ? dropTarget : null;
     }
 
@@ -1973,6 +2851,19 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return document.scrollingElement || document.documentElement;
     }
 
+    function wheelTargetFor(event) {
+      const target = event.target;
+      if (target === document || target === window || target === document.body || target === document.documentElement) {
+        return document.scrollingElement || document.documentElement;
+      }
+      if (isElement(target)) {
+        const durable = target.closest('[data-synthi-wheel-target], [data-synthi-source-id], [data-testid], [data-test], [role="application"], [role="region"], canvas');
+        if (isElement(durable)) return durable;
+        return target;
+      }
+      return document.scrollingElement || document.documentElement;
+    }
+
     function scrollDetail(el) {
       const viewport = el === document.scrollingElement || el === document.documentElement || el === document.body;
       const top = viewport ? window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0 : el.scrollTop || 0;
@@ -1986,6 +2877,32 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         scroll_width: Math.max(0, Math.round(el.scrollWidth || 0)),
         client_height: Math.max(0, Math.round(el.clientHeight || window.innerHeight || 0)),
         client_width: Math.max(0, Math.round(el.clientWidth || window.innerWidth || 0)),
+      };
+    }
+
+    function wheelDetail(event, el) {
+      const rect = pointerReplayRect(el);
+      const point = pointRatio(rect, event.clientX, event.clientY);
+      const modifiers = [];
+      if (event.ctrlKey) modifiers.push('Control');
+      if (event.metaKey) modifiers.push('Meta');
+      if (event.altKey) modifiers.push('Alt');
+      if (event.shiftKey) modifiers.push('Shift');
+      return {
+        wheel_event: true,
+        wheel_replay: 'mouseWheel',
+        wheel_delta_x: Math.round(Number(event.deltaX || 0)),
+        wheel_delta_y: Math.round(Number(event.deltaY || 0)),
+        wheel_delta_mode: Number(event.deltaMode || 0),
+        wheel_client_x_ratio: point.x,
+        wheel_client_y_ratio: point.y,
+        modifier_keys: {
+          alt: Boolean(event.altKey),
+          control: Boolean(event.ctrlKey),
+          meta: Boolean(event.metaKey),
+          shift: Boolean(event.shiftKey),
+        },
+        modifiers,
       };
     }
 
@@ -2013,6 +2930,29 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     function changedEffectTexts(before) {
       const previous = new Set(Array.isArray(before) ? before : []);
       return visibleEffectTexts().filter((value) => !previous.has(value));
+    }
+
+    function controlEffectTarget(target) {
+      if (!isElement(target)) return null;
+      if (target.closest('[data-synthi-workflow-toolbox]')) return null;
+      const el = target.closest('input, textarea, select, [contenteditable], [role="textbox"]');
+      if (!isElement(el)) return null;
+      const tag = el.tagName.toLowerCase();
+      if (!editableTags.has(tag) && !el.isContentEditable && !attr(el, 'contenteditable')) return null;
+      return el;
+    }
+
+    function rememberControlBeforeEffects(target) {
+      const el = controlEffectTarget(target);
+      if (!el) return null;
+      controlBeforeEffects.set(el, visibleEffectTexts());
+      return el;
+    }
+
+    function consumeControlBeforeEffects(el) {
+      const beforeEffects = controlBeforeEffects.get(el);
+      controlBeforeEffects.delete(el);
+      return Array.isArray(beforeEffects) ? beforeEffects : visibleEffectTexts();
     }
 
     function playwrightLocatorFor(el) {
@@ -2051,6 +2991,33 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return String(el.value || '');
     }
 
+    function keyboardTextEntrySurface(target) {
+      if (!isElement(target) || isEditableTextTarget(target)) return null;
+      const selectors = [
+        '[data-synthi-keyboard-text-entry]',
+        '[data-terminal]',
+        '[data-terminal-root]',
+        '[role="application"]',
+        '[tabindex][aria-label]',
+        '[tabindex][data-testid]',
+        '[tabindex][data-test]',
+      ];
+      for (const selector of selectors) {
+        const candidate = target.closest(selector);
+        if (!isElement(candidate)) continue;
+        if (isEditableTextTarget(candidate)) continue;
+        if (candidate.matches('button, a, input, textarea, select, [contenteditable], [role="button"], [role="link"]')) continue;
+        return candidate;
+      }
+      return null;
+    }
+
+    function keyboardTextEntryValue(event) {
+      if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return '';
+      const key = String(event.key || '');
+      return key.length === 1 ? key : '';
+    }
+
     function shouldSkipClick(el) {
       const tag = el.tagName.toLowerCase();
       const type = attr(el, 'type').toLowerCase();
@@ -2059,7 +3026,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       return tag === 'select';
     }
 
-    function keyPressValue(event) {
+    function keyPressValue(event, target) {
       if (event.repeat) return '';
       const key = String(event.key || '');
       if (!key) return '';
@@ -2070,10 +3037,32 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (event.altKey) modifiers.push('Alt');
       if (event.shiftKey) modifiers.push('Shift');
       const normalizedKey = key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key;
-      if (modifiers.length === 0 && !['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(normalizedKey)) {
-        return '';
+      if (modifiers.length === 0) {
+        const activationKeys = ['Enter', 'Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'];
+        const appSurfaceKeys = ['Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Space'];
+        const functionKey = /^F(?:[1-9]|1[0-2])$/.test(normalizedKey);
+        const editable = isEditableTextTarget(target);
+        if (!activationKeys.includes(normalizedKey) && !functionKey && !(appSurfaceKeys.includes(normalizedKey) && !editable)) {
+          return '';
+        }
       }
       return [...modifiers, normalizedKey].join('+');
+    }
+
+    function modifierDetail(event) {
+      const modifiers = [];
+      if (event.ctrlKey) modifiers.push('Control');
+      if (event.metaKey) modifiers.push('Meta');
+      if (event.altKey) modifiers.push('Alt');
+      if (event.shiftKey) modifiers.push('Shift');
+      return Object.assign({
+        modifier_keys: {
+          alt: Boolean(event.altKey),
+          control: Boolean(event.ctrlKey),
+          meta: Boolean(event.metaKey),
+          shift: Boolean(event.shiftKey),
+        },
+      }, modifiers.length > 0 ? { modifiers, modified_click: true } : {});
     }
 
     function slug(value) {
@@ -2092,6 +3081,11 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
     function pasteParameterFor(el) {
       const element = metadata(el);
       return slug(fieldName(el, element) || 'clipboard') + '_paste';
+    }
+
+    function dropParameterFor(el) {
+      const element = metadata(el);
+      return slug(fieldName(el, element) || 'clipboard') + '_drop';
     }
 
     function isRangeInput(el) {
@@ -2143,6 +3137,20 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
     }
 
+    function ariaStateDetail(el) {
+      if (!isElement(el)) return {};
+      const detail = {};
+      const checked = attr(el, 'aria-checked');
+      const pressed = attr(el, 'aria-pressed');
+      const expanded = attr(el, 'aria-expanded');
+      const selected = attr(el, 'aria-selected');
+      if (checked) detail.aria_checked = checked;
+      if (pressed) detail.aria_pressed = pressed;
+      if (expanded) detail.aria_expanded = expanded;
+      if (selected) detail.aria_selected = selected;
+      return detail;
+    }
+
     function fileDropDetail(el, extra) {
       const inputFiles = el && el.files && typeof el.files.length === 'number' ? Array.from(el.files) : [];
       const dataTransferFiles = extra && extra.dataTransfer && extra.dataTransfer.files
@@ -2177,10 +3185,65 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       };
     }
 
+    function selectedText(el) {
+      const tag = el.tagName.toLowerCase();
+      if ((tag === 'input' || tag === 'textarea') && typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+        return String(el.value || '').slice(el.selectionStart, el.selectionEnd);
+      }
+      const selection = window.getSelection ? window.getSelection() : null;
+      return selection ? String(selection.toString() || '') : '';
+    }
+
+    function textSelectionDetail(el) {
+      const tag = el.tagName.toLowerCase();
+      if ((tag === 'input' || tag === 'textarea') && typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+        return {
+          selection_start: el.selectionStart,
+          selection_end: el.selectionEnd,
+          selection_direction: String(el.selectionDirection || 'none'),
+          value_length: String(el.value || '').length,
+          text_control_selection: true,
+        };
+      }
+      return {};
+    }
+
+    function clipboardTransferDetail(el, mode, event, beforeEffects) {
+      const selection = selectedText(el);
+      return Object.assign({
+        clipboard_event: true,
+        clipboard_mode: mode,
+        clipboard_transfer_event: true,
+        selected_text_length: selection.length,
+        selected_text_redacted: true,
+        __before_effects: beforeEffects,
+      }, mode === 'copy' ? { copy_event: true } : { cut_event: true }, textSelectionDetail(el));
+    }
+
+    function clipboardDropDetail(el, event, beforeEffects) {
+      const droppedText = event && event.dataTransfer
+        ? String(event.dataTransfer.getData('text/plain') || '')
+        : '';
+      return {
+        clipboard_event: true,
+        clipboard_mode: 'drop',
+        clipboard_drop_event: true,
+        drop_event: true,
+        explicit_intent: true,
+        drag_mode: true,
+        drag_class: 'clipboardDrop',
+        clipboard_parameter: dropParameterFor(el),
+        dropped_text_length: droppedText.length,
+        dropped_text_redacted: true,
+        __before_effects: beforeEffects,
+      };
+    }
+
     function emit(el, action, value, detail) {
       if (!window[bindingName] || !isElement(el)) return;
       if (action !== 'fill') flushPendingEdits();
       if (action !== 'scroll') flushPendingScrolls();
+      if (action !== 'scroll') flushPendingActionSends();
       const replayEl = editorReplayElementFor(el, action);
       const element = metadata(replayEl);
       const rawDetail = Object.assign({}, detail || {});
@@ -2193,6 +3256,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         url: location.href,
         origin: location.origin,
         action,
+        observed_at: Date.now(),
         value: typeof value === 'string' ? value : undefined,
         field_name: fieldName(replayEl, element),
         element,
@@ -2209,13 +3273,14 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const now = Date.now();
       if (last && last.signature === signature && now - last.ts < 300) return;
       const send = () => {
+        if (['click', 'dblclick', 'contextmenu'].includes(action)) Object.assign(payload.detail, ariaStateDetail(replayEl));
         if (action === 'click') Object.assign(payload.detail, ariaOptionDetail(replayEl));
         const effects = changedEffectTexts(beforeEffects);
         if (effects.length > 0) payload.detail.observed_effects = effects;
         lastSent.set(el, { signature, ts: Date.now() });
         window[bindingName](payload).catch(() => {});
       };
-      if (['click', 'dblclick', 'contextmenu', 'press', 'drag', 'select', 'check', 'uncheck'].includes(action)) {
+      if (['click', 'dblclick', 'contextmenu', 'press', 'drag', 'select', 'check', 'uncheck', 'copy', 'cut'].includes(action)) {
         enqueueActionSend(send, beforeEffects);
       } else {
         send();
@@ -2228,7 +3293,22 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       emit(el, 'scroll', undefined, Object.assign(scrollDetail(el), { __before_effects: beforeEffects }));
     }
 
+    function emitWheel(el) {
+      const beforeEffects = wheelBeforeEffects.get(el) || visibleEffectTexts();
+      const accumulated = wheelAccumulated.get(el) || {};
+      wheelBeforeEffects.delete(el);
+      wheelAccumulated.delete(el);
+      emit(el, 'scroll', undefined, Object.assign(scrollDetail(el), accumulated, { __before_effects: beforeEffects }));
+    }
+
     function flushPendingScrolls() {
+      for (const el of Array.from(wheelPendingElements)) {
+        const timer = wheelPending.get(el);
+        if (timer) clearTimeout(timer);
+        wheelPending.delete(el);
+        wheelPendingElements.delete(el);
+        if (isElement(el)) emitWheel(el);
+      }
       for (const el of Array.from(scrollPendingElements)) {
         const timer = scrollPending.get(el);
         if (timer) clearTimeout(timer);
@@ -2238,11 +3318,59 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       }
     }
 
+    function clearPendingKeyboardText(el) {
+      const state = keyboardTextPending.get(el);
+      if (state && state.timer) clearTimeout(state.timer);
+      keyboardTextPending.delete(el);
+      keyboardTextElements.delete(el);
+    }
+
+    function flushPendingKeyboardText(el) {
+      const state = keyboardTextPending.get(el);
+      if (!state || !state.text) {
+        clearPendingKeyboardText(el);
+        return;
+      }
+      clearPendingKeyboardText(el);
+      emit(el, 'fill', state.text, {
+        keyboard_text_entry: true,
+        text_entry_mode: 'keyboardInsert',
+        input_debounced: true,
+        typed_text_length: state.text.length,
+        __before_effects: state.beforeEffects,
+      });
+    }
+
+    function flushPendingKeyboardTextEntries() {
+      for (const el of Array.from(keyboardTextElements)) {
+        if (isElement(el)) flushPendingKeyboardText(el);
+      }
+    }
+
+    function queueKeyboardTextEntry(el, value) {
+      const existing = keyboardTextPending.get(el);
+      if (existing && existing.timer) clearTimeout(existing.timer);
+      const state = {
+        text: String(existing && existing.text ? existing.text : '') + value,
+        beforeEffects: existing && Array.isArray(existing.beforeEffects) ? existing.beforeEffects : visibleEffectTexts(),
+        timer: null,
+      };
+      keyboardTextElements.add(el);
+      state.timer = setTimeout(() => flushPendingKeyboardText(el), 300);
+      keyboardTextPending.set(el, state);
+    }
+
     function clearPending(el) {
       const timer = pending.get(el);
       if (timer) clearTimeout(timer);
       pending.delete(el);
       pendingElements.delete(el);
+    }
+
+    function clearPendingEditState(el) {
+      clearPending(el);
+      pendingEditBeforeEffects.delete(el);
+      controlBeforeEffects.delete(el);
     }
 
     function flushPendingEdits() {
@@ -2251,9 +3379,18 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         if (timer) clearTimeout(timer);
         pending.delete(el);
         pendingElements.delete(el);
-        if (isElement(el)) emit(el, 'fill', editableValue(el), { input_debounced: true });
+        if (isElement(el)) {
+          const beforeEffects = pendingEditBeforeEffects.get(el);
+          pendingEditBeforeEffects.delete(el);
+          emit(el, 'fill', editableValue(el), { input_debounced: true, __before_effects: beforeEffects });
+        }
       }
+      flushPendingKeyboardTextEntries();
     }
+
+    document.addEventListener('beforeinput', (event) => {
+      rememberControlBeforeEffects(eventElement(event));
+    }, true);
 
     document.addEventListener('input', (event) => {
       const el = eventElement(event);
@@ -2261,15 +3398,19 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isEditableTextTarget(el)) return;
       const suppressedUntil = pasteSuppressedUntil.get(el);
       if (suppressedUntil && Date.now() < suppressedUntil) {
-        clearPending(el);
+        clearPendingEditState(el);
         return;
       }
+      flushPendingActionSends();
+      if (!pendingEditBeforeEffects.has(el)) pendingEditBeforeEffects.set(el, consumeControlBeforeEffects(el));
       clearPending(el);
       pendingElements.add(el);
       pending.set(el, setTimeout(() => {
         pending.delete(el);
         pendingElements.delete(el);
-        emit(el, 'fill', editableValue(el), { input_debounced: true });
+        const beforeEffects = pendingEditBeforeEffects.get(el);
+        pendingEditBeforeEffects.delete(el);
+        emit(el, 'fill', editableValue(el), { input_debounced: true, __before_effects: beforeEffects });
       }, 300));
     }, true);
 
@@ -2279,26 +3420,42 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const el = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-testid], [data-test]');
       if (!isElement(el) || !isEditableTextTarget(el)) return;
       const beforeEffects = visibleEffectTexts();
-      clearPending(el);
+      clearPendingEditState(el);
       pasteSuppressedUntil.set(el, Date.now() + 1000);
       setTimeout(() => {
-        clearPending(el);
+        clearPendingEditState(el);
         emit(el, 'fill', undefined, pasteDetail(el, event, beforeEffects));
       }, 0);
     }, true);
+
+    for (const clipboardMode of ['copy', 'cut']) {
+      document.addEventListener(clipboardMode, (event) => {
+        const target = eventElement(event);
+        if (!isElement(target) || target.closest('[data-synthi-workflow-toolbox]')) return;
+        const el = target.closest('input, textarea, [contenteditable], [role="textbox"], [data-testid], [data-test], main, body');
+        if (!isElement(el)) return;
+        const action = clipboardMode === 'copy' ? 'copy' : 'cut';
+        emit(el, action, undefined, clipboardTransferDetail(el, clipboardMode, event, visibleEffectTexts()));
+      }, true);
+    }
 
     document.addEventListener('change', (event) => {
       const el = eventElement(event);
       if (!isElement(el) || !editableTags.has(el.tagName.toLowerCase())) return;
       const suppressedUntil = pasteSuppressedUntil.get(el);
       if (suppressedUntil && Date.now() < suppressedUntil && isEditableTextTarget(el)) {
-        clearPending(el);
+        clearPendingEditState(el);
         return;
       }
+      flushPendingActionSends();
+      const beforeEffects = pendingEditBeforeEffects.has(el)
+        ? pendingEditBeforeEffects.get(el)
+        : consumeControlBeforeEffects(el);
       clearPending(el);
+      pendingEditBeforeEffects.delete(el);
       const action = actionForChange(el);
       if (action === 'drag') {
-        emit(el, 'drag', undefined, fileDropDetail(el, { change_event: true }));
+        emit(el, 'drag', undefined, Object.assign(fileDropDetail(el, { change_event: true }), { __before_effects: beforeEffects }));
         return;
       }
       const value = action === 'check' || action === 'uncheck'
@@ -2306,13 +3463,42 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         : action === 'select' && el.multiple
           ? JSON.stringify(selectedSelectValues(el))
           : String(el.value || '');
-      emit(el, action, value, Object.assign({ change_event: true }, action === 'select' ? selectDetail(el) : {}));
+      emit(el, action, value, Object.assign({ change_event: true, __before_effects: beforeEffects }, action === 'select' ? selectDetail(el) : {}));
+    }, true);
+
+    document.addEventListener('wheel', (event) => {
+      const el = wheelTargetFor(event);
+      if (!isElement(el)) return;
+      if (el.closest('[data-synthi-workflow-toolbox]')) return;
+      const current = wheelAccumulated.get(el) || {};
+      const next = Object.assign({}, current, wheelDetail(event, el));
+      next.wheel_delta_x = Math.round(Number(current.wheel_delta_x || 0) + Number(event.deltaX || 0));
+      next.wheel_delta_y = Math.round(Number(current.wheel_delta_y || 0) + Number(event.deltaY || 0));
+      const modifiers = new Set([].concat(current.modifiers || [], next.modifiers || []));
+      next.modifiers = Array.from(modifiers);
+      next.modifier_keys = {
+        alt: Boolean(current.modifier_keys && current.modifier_keys.alt) || Boolean(event.altKey),
+        control: Boolean(current.modifier_keys && current.modifier_keys.control) || Boolean(event.ctrlKey),
+        meta: Boolean(current.modifier_keys && current.modifier_keys.meta) || Boolean(event.metaKey),
+        shift: Boolean(current.modifier_keys && current.modifier_keys.shift) || Boolean(event.shiftKey),
+      };
+      wheelAccumulated.set(el, next);
+      if (!wheelPendingElements.has(el)) wheelBeforeEffects.set(el, visibleEffectTexts());
+      wheelPendingElements.add(el);
+      const previous = wheelPending.get(el);
+      if (previous) clearTimeout(previous);
+      wheelPending.set(el, setTimeout(() => {
+        wheelPending.delete(el);
+        wheelPendingElements.delete(el);
+        emitWheel(el);
+      }, 200));
     }, true);
 
     document.addEventListener('scroll', (event) => {
       const el = scrollTargetFor(event);
       if (!isElement(el)) return;
       if (el.closest('[data-synthi-workflow-toolbox]')) return;
+      if (wheelPendingElements.has(el)) return;
       const previous = scrollPending.get(el);
       if (previous) clearTimeout(previous);
       if (!scrollPendingElements.has(el)) scrollBeforeEffects.set(el, visibleEffectTexts());
@@ -2328,8 +3514,16 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
+      rememberControlBeforeEffects(target);
       if ((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'v' && isEditableTextTarget(target)) return;
-      const key = keyPressValue(event);
+      const keyboardTextSurface = keyboardTextEntrySurface(target);
+      const typedText = keyboardTextSurface ? keyboardTextEntryValue(event) : '';
+      if (keyboardTextSurface && typedText) {
+        queueKeyboardTextEntry(keyboardTextSurface, typedText);
+        return;
+      }
+      if (keyboardTextSurface) flushPendingKeyboardText(keyboardTextSurface);
+      const key = keyPressValue(event, target);
       if (!key) return;
       const el = target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="textbox"], [role="option"], [role="listbox"], [role="application"], [data-testid], [data-test], main, body');
       if (!isElement(el)) return;
@@ -2345,32 +3539,38 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       });
     }, true);
 
+    document.addEventListener('focusout', (event) => {
+      const target = eventElement(event);
+      const keyboardTextSurface = keyboardTextEntrySurface(target);
+      if (keyboardTextSurface) flushPendingKeyboardText(keyboardTextSurface);
+    }, true);
+
     document.addEventListener('click', (event) => {
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (shouldSuppressPointerDragClick(target)) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [aria-selected], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'click', undefined, Object.assign({ click_event: true }, ariaOptionDetail(el)));
+      emit(el, 'click', undefined, Object.assign({ click_event: true }, modifierDetail(event), ariaOptionDetail(el)));
     }, true);
 
     document.addEventListener('dblclick', (event) => {
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'dblclick', undefined, { dblclick_event: true, suppresses_previous_click: true });
+      emit(el, 'dblclick', undefined, Object.assign({ dblclick_event: true, suppresses_previous_click: true }, modifierDetail(event)));
     }, true);
 
     document.addEventListener('contextmenu', (event) => {
       const target = eventElement(event);
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
-      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el) || shouldSkipClick(el)) return;
-      emit(el, 'contextmenu', undefined, { contextmenu_event: true });
+      emit(el, 'contextmenu', undefined, Object.assign({ contextmenu_event: true }, modifierDetail(event)));
     }, true);
 
     document.addEventListener('pointerover', (event) => {
@@ -2378,7 +3578,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(target)) return;
       if (target.closest('[data-synthi-workflow-toolbox]')) return;
       if (!event.altKey) return;
-      const el = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [data-testid], [data-test]');
+      const el = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="option"], [role="switch"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="tab"], [role="gridcell"], [aria-selected], [aria-checked], [aria-pressed], [aria-expanded], [data-testid], [data-test], [data-synthi-source-id]');
       if (!isElement(el)) return;
       emit(el, 'hover', undefined, {
         hover_event: true,
@@ -2390,7 +3590,9 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
 
     document.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
-      const el = pointerDraggableFor(eventElement(event));
+      const target = eventElement(event);
+      rememberControlBeforeEffects(target);
+      const el = pointerDraggableFor(target);
       if (!el) return;
       activePointerDrag = {
         el,
@@ -2419,7 +3621,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       if (!isElement(drag.el)) return;
       const distance = distanceBetween(drag.start_x, drag.start_y, event.clientX, event.clientY);
       if (distance < 8) return;
-      const dropTarget = pointerDropTargetAt(event.clientX, event.clientY);
+      const dropTarget = pointerDropTargetAt(event.clientX, event.clientY, drag.el);
       if (!dropTarget || dropTarget === drag.el || drag.el.contains(dropTarget)) return;
       const dropLocator = playwrightLocatorFor(dropTarget);
       if (!dropLocator) return;
@@ -2427,7 +3629,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
       const dropRect = pointerReplayRect(dropTarget);
       const endRatio = pointRatio(dropRect, event.clientX, event.clientY);
       lastPointerDrag = { el: drag.el, drop_target: dropTarget, ts: Date.now() };
-      emit(drag.el, 'drag', dropLocator, {
+      emit(drag.el, 'drag', dropLocator, Object.assign({
         explicit_intent: true,
         drag_mode: true,
         drag_class: 'pointerSensor',
@@ -2446,7 +3648,7 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
         drop_element: metadata(dropTarget),
         drag_duration_ms: Math.max(0, Date.now() - drag.started_at),
         __before_effects: drag.before_effects,
-      });
+      }, resizeDetailFor(drag.el), ariaSliderDetailFor(drag.el)));
     }, true);
 
     document.addEventListener('pointercancel', (event) => {
@@ -2479,6 +3681,13 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
           file_input: false,
           dataTransfer: event.dataTransfer,
         }));
+        activeDrag = null;
+        return;
+      }
+      const droppedText = event.dataTransfer ? String(event.dataTransfer.getData('text/plain') || '') : '';
+      if (droppedText && (!activeDrag || !isElement(activeDrag.el))) {
+        if (isEditableTextTarget(dropTarget)) pasteSuppressedUntil.set(dropTarget, Date.now() + 1000);
+        emit(dropTarget, 'drag', undefined, clipboardDropDetail(dropTarget, event, visibleEffectTexts()));
         activeDrag = null;
         return;
       }
@@ -2517,16 +3726,39 @@ function workflowOverlayBridgeToken(): string {
   return token && token.trim() ? token.trim() : "";
 }
 
+function workflowOverlayBridgeKey(bridgeUrl: string, bridgeToken: string): string {
+  return `${bridgeUrl}\n${bridgeToken}`;
+}
+
+function isWorkflowBridgeInternalRequest(value: string): boolean {
+  const bridgeUrl = workflowOverlayBridgeUrl();
+  if (!bridgeUrl) return false;
+  try {
+    const request = new URL(value);
+    const bridge = new URL(bridgeUrl);
+    return request.origin === bridge.origin && request.pathname.startsWith("/browser-workflows/");
+  } catch {
+    return false;
+  }
+}
+
 function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridgeToken: string): string {
   return `(() => {
     const bindingName = ${JSON.stringify(bindingName)};
     const bridgeUrl = ${JSON.stringify(bridgeUrl)};
     const bridgeToken = ${JSON.stringify(bridgeToken)};
-    if (window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ && window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName) return;
+    const installedForCurrentRuntime =
+      window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ &&
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName &&
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ === bridgeUrl &&
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken;
+    if (installedForCurrentRuntime) return;
     const existingHost = document.getElementById('synthi-workflow-toolbox-host');
     if (existingHost) existingHost.remove();
     window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
     window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     function shouldRender() {
       if (!window[bindingName] && !bridgeUrl) return false;
@@ -2540,6 +3772,7 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     const host = document.createElement('div');
     host.id = 'synthi-workflow-toolbox-host';
     host.setAttribute('data-synthi-workflow-toolbox', 'true');
+    host.setAttribute('data-synthi-workflow-bridge-url', bridgeUrl);
     host.setAttribute('data-synthi-workflow-status', 'idle');
     host.style.position = 'fixed';
     host.style.right = '16px';
@@ -2553,7 +3786,7 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       '<style>',
       ':host{all:initial}',
       '.box{box-sizing:border-box;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;min-height:44px;width:min(330px,calc(100vw - 32px));padding:8px;border:1px solid rgba(232,232,226,.16);border-radius:8px;background:rgba(22,22,24,.94);color:rgb(246,246,240);font:12px/1.25 Inter,ui-sans-serif,system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.34)}',
-      '.status{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:6px;min-width:0;padding:0 4px;color:rgba(246,246,240,.78)}',
+      '.status{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:6px;min-width:0;padding:0 4px;color:rgba(246,246,240,.78);cursor:grab;user-select:none;touch-action:none}',
       '.dot{width:7px;height:7px;border-radius:50%;background:#8a8a82}',
       '.label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgb(246,246,240);font-weight:700}',
       '.meta{grid-column:1/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(246,246,240,.62);font:11px/1.25 Inter,ui-sans-serif,system-ui,sans-serif}',
@@ -2579,8 +3812,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     const meta = root.querySelector('.meta');
     const observeButton = root.querySelector('.observe');
     const teachButton = root.querySelector('.teach');
+    const dragHandle = root.querySelector('.status');
     let recording = false;
     let busy = false;
+    let dragState = null;
+    const positionStorageKey = 'synthi.workflow.toolbox.position.v1';
 
     function setState(next) {
       const status = next && next.status ? String(next.status) : next && next.recording ? 'recording' : next && next.observed ? 'observed' : 'idle';
@@ -2610,6 +3846,57 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       } catch {
         return '';
       }
+    }
+
+    function clampNumber(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function readablePosition(raw) {
+      if (!raw || typeof raw !== 'object') return null;
+      const left = Number(raw.left);
+      const top = Number(raw.top);
+      return Number.isFinite(left) && Number.isFinite(top) ? { left, top } : null;
+    }
+
+    function toolboxBounds() {
+      const rect = host.getBoundingClientRect();
+      return {
+        width: Math.max(1, rect.width || 330),
+        height: Math.max(1, rect.height || 44),
+      };
+    }
+
+    function applyToolboxPosition(rawPosition, persist) {
+      const position = readablePosition(rawPosition);
+      if (!position) return;
+      const bounds = toolboxBounds();
+      const margin = 8;
+      const left = clampNumber(position.left, margin, Math.max(margin, window.innerWidth - bounds.width - margin));
+      const top = clampNumber(position.top, margin, Math.max(margin, window.innerHeight - bounds.height - margin));
+      host.style.left = String(Math.round(left)) + 'px';
+      host.style.top = String(Math.round(top)) + 'px';
+      host.style.right = 'auto';
+      host.style.bottom = 'auto';
+      host.dataset.synthiWorkflowPosition = 'custom';
+      if (persist) {
+        try {
+          window.sessionStorage.setItem(positionStorageKey, JSON.stringify({ left, top }));
+        } catch {}
+      }
+    }
+
+    function restoreToolboxPosition() {
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(positionStorageKey) || 'null');
+        applyToolboxPosition(saved, false);
+      } catch {}
+    }
+
+    function keepToolboxInViewport() {
+      if (host.dataset.synthiWorkflowPosition !== 'custom') return;
+      const rect = host.getBoundingClientRect();
+      applyToolboxPosition({ left: rect.left, top: rect.top }, true);
     }
 
     async function call(action) {
@@ -2649,6 +3936,40 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
 
     observeButton.addEventListener('click', () => call('observe'));
     teachButton.addEventListener('click', () => call(recording ? 'stop' : 'teach'));
+    dragHandle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      const rect = host.getBoundingClientRect();
+      dragState = {
+        pointerId: event.pointerId,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+      };
+      dragHandle.setPointerCapture(event.pointerId);
+      dragHandle.style.cursor = 'grabbing';
+      event.preventDefault();
+    });
+    dragHandle.addEventListener('pointermove', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      applyToolboxPosition({
+        left: event.clientX - dragState.offsetX,
+        top: event.clientY - dragState.offsetY,
+      }, false);
+    });
+    dragHandle.addEventListener('pointerup', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      const rect = host.getBoundingClientRect();
+      dragState = null;
+      dragHandle.releasePointerCapture(event.pointerId);
+      dragHandle.style.cursor = '';
+      applyToolboxPosition({ left: rect.left, top: rect.top }, true);
+    });
+    dragHandle.addEventListener('pointercancel', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      dragState = null;
+      dragHandle.style.cursor = '';
+    });
+    window.addEventListener('resize', keepToolboxInViewport);
+    restoreToolboxPosition();
     call('state');
   })();`;
 }
