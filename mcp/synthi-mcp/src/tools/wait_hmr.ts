@@ -14,6 +14,7 @@ import {
   GPU_HMR_PROOF_STATES,
   classifyGpuHmrProofMessage,
   gpuHmrProofMatches,
+  gpuHmrProofStateRank,
   type GpuHmrProofMatchOpts,
   isKnownGpuHmrProofState,
   validateGpuHmrProofState,
@@ -33,6 +34,7 @@ interface WaitHmrArgs {
 
 const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
+const FRAME_GATE_POLL_MS = 50;
 
 function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {
   const raw = process.env[POST_APPLY_OBSERVE_ENV];
@@ -52,6 +54,24 @@ function terminalEventFromClassification(
     source: cls.source,
     elapsedMs,
     detail: cls.detail,
+  };
+}
+
+function terminalEventFromGpuProof(
+  proof: GpuHmrProofTelemetry,
+  elapsedMs: number
+): HmrTerminalEvent {
+  return {
+    status: "applied",
+    source: "gpu_proof",
+    elapsedMs,
+    detail: {
+      terminal_equivalent: "gpu_hmr_full_runtime_proof",
+      proofId: proof.proofId,
+      resultState: proof.resultState,
+      source: proof.source,
+    },
+    observedAt: proof.observedAt,
   };
 }
 
@@ -89,6 +109,27 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
     source: proof.source,
     observedAt: proof.observedAt,
   };
+}
+
+async function waitForDecodedFrameAtOrAfter(
+  attached: ReturnType<typeof session.require>,
+  minTsMs: number,
+  timeoutMs: number
+): Promise<{ frame_seq: number; ts_ms: number } | null> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      const frame = await attached.frames.getFrame();
+      if (frame.ts >= minTsMs) {
+        return { frame_seq: frame.seq, ts_ms: frame.ts };
+      }
+    } catch {
+      // No decoded frame yet. Keep polling until the caller's wait budget expires.
+    }
+    if (Date.now() - start >= timeoutMs) return null;
+    const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(FRAME_GATE_POLL_MS, remaining)));
+  }
 }
 
 function responseWithGpuProofValidation(
@@ -155,8 +196,10 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   const previewId = typeof previewIdValue === "string" && previewIdValue.trim()
     ? previewIdValue.trim()
     : undefined;
-  const requiredProofState = requiredGpuProofState(a);
-  const waitContract: Record<string, unknown> = {
+    const requiredProofState = requiredGpuProofState(a);
+    const proofCanSatisfyTerminal = requiredProofState !== null
+      && gpuHmrProofStateRank(requiredProofState) >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+    const waitContract: Record<string, unknown> = {
     timeout_ms: timeoutMs,
     module: module ?? null,
     since_ts: sinceTs ?? null,
@@ -180,9 +223,17 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     let sawAppliedTerminal = false;
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
+    let notifyRequiredProof: (() => void) | null = null;
+    const requiredProofSatisfied = (): boolean => {
+      return requiredProofState !== null
+        && validateGpuHmrProofState(latestGpuProof, requiredProofState).satisfied;
+    };
     unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
       const proof = classifyGpuHmrProofMessage(msg);
-      if (gpuHmrProofMatches(proof, proofMatchOpts)) latestGpuProof = proof;
+      if (gpuHmrProofMatches(proof, proofMatchOpts)) {
+        latestGpuProof = proof;
+        notifyRequiredProof?.();
+      }
       const cls = classifyHmrMessage(msg);
       if (!cls) return;
       if (cls.status === "applied") {
@@ -192,6 +243,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       if (!sawAppliedTerminal || postApplyTerminal) return;
       postApplyTerminal = cls;
       notifyPostApplyTerminal?.();
+      notifyRequiredProof?.();
     });
 
     const waitForPostApplyTerminal = (
@@ -221,12 +273,66 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       return { promise, cancel };
     };
 
-    const result = await attached.channels.hmr.waitForTerminal({
+    const waitForRequiredGpuProof = (
+      timeoutMs: number
+    ): { promise: Promise<"satisfied" | "terminal" | "timeout">; cancel: () => void } => {
+      if (requiredProofState === null || requiredProofSatisfied()) {
+        return { promise: Promise.resolve("satisfied"), cancel: () => {} };
+      }
+      if (postApplyTerminal) {
+        return { promise: Promise.resolve("terminal"), cancel: () => {} };
+      }
+      if (timeoutMs <= 0) {
+        return { promise: Promise.resolve("timeout"), cancel: () => {} };
+      }
+      let cancel = (): void => {};
+      const promise = new Promise<"satisfied" | "terminal" | "timeout">((resolve) => {
+        let settled = false;
+        const settle = (value: "satisfied" | "terminal" | "timeout"): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (notifyRequiredProof === onProofOrTerminal) notifyRequiredProof = null;
+          resolve(value);
+        };
+        const onProofOrTerminal = (): void => {
+          if (requiredProofSatisfied()) {
+            settle("satisfied");
+          } else if (postApplyTerminal) {
+            settle("terminal");
+          }
+        };
+        notifyRequiredProof = onProofOrTerminal;
+        const timer = setTimeout(() => settle("timeout"), timeoutMs);
+        cancel = (): void => settle("timeout");
+      });
+      return { promise, cancel };
+    };
+
+    const terminalWait = attached.channels.hmr.waitForTerminal({
       timeoutMs,
       module,
       sinceTs,
       previewId,
     });
+    let result: HmrTerminalEvent;
+    if (proofCanSatisfyTerminal) {
+      const proofWait = waitForRequiredGpuProof(timeoutMs);
+      const outcome = await Promise.race([
+        terminalWait.then((terminal) => ({ kind: "terminal" as const, terminal })),
+        proofWait.promise.then((proofStatus) => ({ kind: "proof" as const, proofStatus })),
+      ]);
+      proofWait.cancel();
+      if (outcome.kind === "proof" && outcome.proofStatus === "satisfied" && latestGpuProof !== null) {
+        result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
+      } else {
+        result = outcome.kind === "terminal"
+          ? outcome.terminal
+          : await terminalWait;
+      }
+    } else {
+      result = await terminalWait;
+    }
     let frameGate: Record<string, unknown> | undefined;
 
     if (result.status === "applied") {
@@ -293,8 +399,34 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         }
       } else {
         const observeMs = Math.min(resolvePostApplyObserveMs(budget), remaining);
-        const lateTerminal = await waitForPostApplyTerminal(observeMs).promise;
-        if (lateTerminal) {
+        const decodedWaitMs = remaining;
+        const decodedFrameWait = waitForDecodedFrameAtOrAfter(attached, tHmr + budget, decodedWaitMs);
+        const lateTerminalWait = waitForPostApplyTerminal(observeMs);
+        type DecodedFrameOutcome = {
+          kind: "decoded_frame";
+          satisfiedBy: { frame_seq: number; ts_ms: number } | null;
+        };
+        type TerminalOutcome = {
+          kind: "terminal";
+          terminal: HmrClassification;
+        };
+        const decodedFrameOutcome: Promise<DecodedFrameOutcome> = decodedFrameWait.then((satisfiedBy) => ({
+          kind: "decoded_frame" as const,
+          satisfiedBy,
+        }));
+        const terminalOutcome: Promise<TerminalOutcome | DecodedFrameOutcome> = (async () => {
+          const terminal = await lateTerminalWait.promise;
+          return terminal
+            ? { kind: "terminal" as const, terminal }
+            : decodedFrameOutcome;
+        })();
+        const outcome = await Promise.race<DecodedFrameOutcome | TerminalOutcome>([
+          decodedFrameOutcome,
+          terminalOutcome,
+        ]);
+        lateTerminalWait.cancel();
+        if (outcome.kind === "terminal" && outcome.terminal) {
+          const lateTerminal = outcome.terminal;
           const late = terminalEventFromClassification(lateTerminal, Date.now() - start);
           return responseWithGpuProofValidation({
             status: late.status,
@@ -306,12 +438,56 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
             wait_contract: waitContract,
           }, latestGpuProof, requiredProofState);
         }
-        frameGate = {
-          status: "disabled",
-          reason: "no_frame_advance_observed",
-          pipeline_budget_ms: budget,
-          post_apply_observe_ms: observeMs,
-        };
+        const satisfiedBy = outcome.kind === "decoded_frame" ? outcome.satisfiedBy : null;
+        const gateToken = satisfiedBy
+          ? session.issueFrameGateToken({
+              session_id: attached.sessionId,
+              frame_seq: satisfiedBy.frame_seq,
+              ts_ms: satisfiedBy.ts_ms,
+            })
+          : null;
+        frameGate = satisfiedBy
+          ? {
+              status: "satisfied",
+              frame_seq: satisfiedBy.frame_seq,
+              ts_ms: satisfiedBy.ts_ms,
+              session_id: attached.sessionId,
+              gate_token: gateToken?.token,
+              gate_token_issued_at_ms: gateToken?.issued_at_ms,
+              gate_token_expires_at_ms: gateToken?.expires_at_ms,
+              capture_binding_required: true,
+              capture_binding_source: "decoded_frame",
+              pipeline_budget_ms: budget,
+              frame_advance_fallback_used: true,
+            }
+          : {
+              status: "timeout",
+              reason: "decoded_frame_gate_timeout",
+              note: "no post-budget decoded frame observed and frame_advance telemetry was unavailable",
+              pipeline_budget_ms: budget,
+              post_apply_observe_ms: observeMs,
+              frame_gate_timeout_ms: decodedWaitMs,
+            };
+      }
+    }
+
+    if (result.status === "applied" && requiredProofState !== null && !requiredProofSatisfied()) {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+      const proofWait = waitForRequiredGpuProof(remaining);
+      const proofOutcome = await proofWait.promise;
+      proofWait.cancel();
+      if (proofOutcome === "terminal" && postApplyTerminal) {
+        const late = terminalEventFromClassification(postApplyTerminal, Date.now() - start);
+        return responseWithGpuProofValidation({
+          status: late.status,
+          elapsedMs: Date.now() - start,
+          hmrElapsedMs: late.elapsedMs,
+          source: late.source,
+          detail: late.detail ?? null,
+          post_apply_terminal: true,
+          wait_contract: waitContract,
+          ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
+        }, latestGpuProof, requiredProofState);
       }
     }
 

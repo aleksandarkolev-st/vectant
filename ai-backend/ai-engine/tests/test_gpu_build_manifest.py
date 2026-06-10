@@ -657,7 +657,11 @@ def test_internalizes_generated_gpu_roles_out_of_user_tree():
             "src/flow_core_x.cpp": "core",
             "src/flow_gui_x.cpp": "gui",
             "run/flow_runner_x.cpp": "runner",
-            "gpu/flow_device_x.hip": "device",
+            "gpu/flow_device_x.hip": """
+                #include <hip/hip_runtime.h>
+                __global__ void particle_init(float* x) {}
+                __global__ void particle_flow(float* x) {}
+            """,
             "src/user_owned.hpp": "extra",
         },
         vendor_hint="rocm",
@@ -670,7 +674,11 @@ def test_internalizes_generated_gpu_roles_out_of_user_tree():
             "src/flow_core_x.cpp": "core",
             "src/flow_gui_x.cpp": "gui",
             "run/flow_runner_x.cpp": "runner",
-            "gpu/flow_device_x.hip": "device",
+            "gpu/flow_device_x.hip": """
+                #include <hip/hip_runtime.h>
+                __global__ void particle_init(float* x) {}
+                __global__ void particle_flow(float* x) {}
+            """,
             "src/user_owned.hpp": "extra",
         },
         normalized,
@@ -685,7 +693,14 @@ def test_internalizes_generated_gpu_roles_out_of_user_tree():
     assert parsed.gpu.device_roles[0]["path"] == ".synthi/generated/gpu/device.hip"
     assert parsed.gpu.device_link["affected_roles"] == [parsed.gpu.device_roles[0]["id"]]
     assert set(files) == set(parsed.files)
-    assert files[".synthi/generated/gpu/device.hip"] == "device"
+    assert "particle_flow" in files[".synthi/generated/gpu/device.hip"]
+    granularity = manifest["gpu"]["generated_split_granularity"]
+    assert granularity["acceptedClaim"] == "device_translation_unit_hmr"
+    assert granularity["deviceTranslationUnitCount"] == 1
+    assert granularity["kernelSymbols"] == ["particle_init", "particle_flow"]
+    assert granularity["smallestSafeFissionIslandProven"] is False
+    assert "per_kernel_hmr" in granularity["rejectedClaims"]
+    assert report["generatedSplitGranularity"] == granularity
     assert report["rolesAreInternal"] is True
     assert report["internalRoot"] == ".synthi/generated/gpu"
     assert "src/user_owned.hpp" in report["droppedExtraGeneratedFiles"]

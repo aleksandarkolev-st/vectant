@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifyHmrMessage,
   HmrNormalizer,
+  parseWireMessages,
   type WireMessage,
 } from "../../src/hmr.js";
 
@@ -20,6 +22,27 @@ class MockDC extends EventTarget {
 
 function dc(): MockDC {
   return new MockDC();
+}
+
+function chunkWireMessage(msg: WireMessage, chunkBytes = 128): string[] {
+  const body = Buffer.from(JSON.stringify(msg), "utf8");
+  const hash = createHash("sha256").update(body).digest("hex");
+  const total = Math.ceil(body.byteLength / chunkBytes);
+  return Array.from({ length: total }, (_, index) => {
+    const start = index * chunkBytes;
+    const end = Math.min(body.byteLength, start + chunkBytes);
+    return JSON.stringify({
+      type: "structured-json-chunk",
+      schemaVersion: "synthi.build_log.structured_json_chunk.v1",
+      chunkId: `structured-json:sha256:${hash}`,
+      encoding: "base64:utf8",
+      sha256: `sha256:${hash}`,
+      byteLength: body.byteLength,
+      index,
+      total,
+      data: body.subarray(start, end).toString("base64"),
+    });
+  });
 }
 
 describe("classifyHmrMessage (pure)", () => {
@@ -166,6 +189,26 @@ describe("classifyHmrMessage (pure)", () => {
   });
 });
 
+describe("parseWireMessages", () => {
+  it("extracts a structured JSON object from prefixed runner text", () => {
+    const parsed = parseWireMessages(
+      `[Runner Stderr] ${JSON.stringify({
+        type: "gpu_hmr_proof",
+        module: "device",
+        resultState: "gpu-hmr-symbol-bound",
+      })}`
+    );
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.type).toBe("gpu_hmr_proof");
+    expect(parsed[0]!.module).toBe("device");
+  });
+
+  it("does not treat plain text as a wire message", () => {
+    expect(parseWireMessages("ordinary compiler output")).toEqual([]);
+  });
+});
+
 describe("HmrNormalizer — data channel subscription", () => {
   it("parses incoming messages and forwards to onMessage", () => {
     const mockDC = dc();
@@ -187,6 +230,30 @@ describe("HmrNormalizer — data channel subscription", () => {
     normalizer.onMessage((msg) => seen.push(msg));
     mockDC.emit("not json at all");
     expect(seen).toHaveLength(0);
+    normalizer.dispose();
+  });
+
+  it("reassembles chunked structured JSON before classification", () => {
+    const mockDC = dc();
+    const normalizer = new HmrNormalizer(mockDC as unknown as ConstructorParameters<typeof HmrNormalizer>[0]);
+    const seen: WireMessage[] = [];
+    normalizer.onMessage((msg) => seen.push(msg));
+    const chunks = chunkWireMessage({
+      status: "gpu-proof-state",
+      module: "device",
+      resultState: "gpu-hmr-full-runtime-proven",
+      padding: "x".repeat(2048),
+    });
+
+    for (const chunk of chunks.slice().reverse()) {
+      mockDC.emit(chunk);
+    }
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.status).toBe("gpu-proof-state");
+    expect(normalizer.latestGpuProof({ module: "device" })?.resultState).toBe(
+      "gpu-hmr-full-runtime-proven"
+    );
     normalizer.dispose();
   });
 });

@@ -7,6 +7,7 @@ import {
   externalProjectTimingMetrics,
   hiprtWarmTimingMetrics,
   realRocmTimingMetrics,
+  webGpuRuntimeVisualTimingMetrics,
 } from './lib/gpu-hmr-timing-metrics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -102,6 +103,16 @@ function classifyReport(json, filePath) {
   }
 
   const schemaVersion = String(json.schemaVersion ?? '');
+  if (
+    String(json.schema ?? '').includes('webgpu_runtime_visual_proof')
+    || String(json.proofId ?? '').startsWith('webgpu-runtime-visual-proof:')
+  ) {
+    return {
+      kind: 'webgpu_runtime_visual',
+      metrics: webGpuRuntimeVisualTimingMetrics(json),
+    };
+  }
+
   if (schemaVersion.includes('external_project_profile.report')) {
     return {
       kind: 'external_project_profile',

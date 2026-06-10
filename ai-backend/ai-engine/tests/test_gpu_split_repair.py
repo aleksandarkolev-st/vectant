@@ -2185,6 +2185,80 @@ def test_repair_attaches_source_location_to_source_reachable_bare_launch():
     assert not any(v.rule == "source_launch_host_path_not_attached" for v in after.violations)
 
 
+def test_repair_attaches_source_location_when_launch_uses_scalar_aliases():
+    source_files = {
+        "src/main.hip": (
+            "#include <hip/hip_runtime.h>\n"
+            "constexpr int BALLS = 512;\n"
+            "constexpr int WIDTH = 800;\n"
+            "constexpr int HEIGHT = 600;\n"
+            "__global__ void particle_flow(float* x, float* y, int n, float cx, float cy, float speed, unsigned long long frame) {}\n"
+            "void run(float* deviceX, float* deviceY) {\n"
+            "  unsigned long long frame = 0;\n"
+            "  dim3 block(256);\n"
+            "  dim3 grid((BALLS + block.x - 1) / block.x);\n"
+            "  particle_flow<<<grid, block>>>(deviceX, deviceY, BALLS, WIDTH * 0.5f, HEIGHT * 0.5f, 2.35f, frame++);\n"
+            "}\n"
+        )
+    }
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "constexpr int BALLS = 512;\n"
+            "constexpr int WIDTH = 800;\n"
+            "constexpr int HEIGHT = 600;\n"
+            "struct AppState { float* deviceX; float* deviceY; unsigned long long frame; };"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            "dim3 block(256); dim3 grid((BALLS + block.x - 1) / block.x); "
+            "int balls_arg = BALLS; "
+            "float cx_arg = WIDTH * 0.5f; "
+            "float cy_arg = HEIGHT * 0.5f; "
+            "float speed_arg = 2.35f; "
+            "unsigned long long frame_arg = s->frame++; "
+            'synthi_gpu_launch(nullptr, "particle_flow", grid, block, 0, nullptr, '
+            "{ &s->deviceX, &s->deviceY, &balls_arg, &cx_arg, &cy_arg, &speed_arg, &frame_arg }); }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void particle_flow(float* x, float* y, int n, float cx, float cy, float speed, unsigned long long frame) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) { x[i] = cx + speed; y[i] = cy + (float)frame; } }"
+        ),
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_launch_host_path_not_attached" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.source_launch_provenance" in report["repairRules"]
+    assert "synthi_gpu_launch_source_location(" in repaired["core.cpp"]
+    assert '"source_instrumented"' in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "source_launch_host_path_not_attached" for v in after.violations)
+
+
 def test_repair_materializes_inline_launch_initializer_argument():
     files = {
         "shared.h": (

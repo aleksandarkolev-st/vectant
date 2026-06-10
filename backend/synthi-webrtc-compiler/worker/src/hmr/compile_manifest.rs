@@ -287,6 +287,8 @@ pub struct GpuBuildBlock {
     pub device_roles: Vec<GpuDeviceRole>,
     #[serde(default)]
     pub device_link: GpuDeviceLink,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_split_granularity: Option<serde_json::Value>,
 }
 
 /// Which compile stage a given module is destined for. Used by
@@ -1133,6 +1135,12 @@ mod tests {
                     "supports_incremental": false,
                     "estimated_ms": 9000,
                     "budget_ms": 5000
+                },
+                "generated_split_granularity": {
+                    "schemaVersion": "synthi.gpu_hmr.generated_split_granularity.v1",
+                    "acceptedClaim": "device_translation_unit_hmr",
+                    "hmrReloadScope": "device_translation_unit",
+                    "smallestSafeFissionIslandProven": false
                 }
             }
         }"#;
@@ -1149,5 +1157,12 @@ mod tests {
         assert!(gpu.device_link.requires_rdc);
         assert_eq!(gpu.device_link.bundle_id.as_deref(), Some("bundle.raster"));
         assert_eq!(gpu.device_link.estimated_ms, Some(9000));
+        assert_eq!(
+            gpu.generated_split_granularity
+                .as_ref()
+                .and_then(|value| value.get("acceptedClaim"))
+                .and_then(|value| value.as_str()),
+            Some("device_translation_unit_hmr")
+        );
     }
 }

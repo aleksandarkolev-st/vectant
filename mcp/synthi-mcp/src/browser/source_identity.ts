@@ -214,7 +214,7 @@ export async function transformJsxSourceIdentity(input: SourceIdentityTransformI
         }
         const existing = node.attributes.properties.find((prop) => jsxAttributeNameIs(ts, prop, SOURCE_IDENTITY_ATTR));
         const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-        const file = input.root ? relative(input.root, input.filePath) || input.filePath : input.filePath;
+        const file = workspaceFileFor(input.filePath, input.root);
         if (mode === "strip") {
           const nextAttributes = node.attributes.properties.filter((prop) => !jsxAttributeNameIs(ts, prop, SOURCE_IDENTITY_ATTR));
           if (nextAttributes.length !== node.attributes.properties.length) stats.stripped += 1;

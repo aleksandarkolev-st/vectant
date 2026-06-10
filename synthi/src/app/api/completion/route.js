@@ -488,7 +488,7 @@ export async function POST(request) {
         let geminiStream;
         try {
           geminiStream = await ai.models.generateContentStream({
-            model: 'gemini-3.1-flash-lite-preview',
+            model: 'gemini-3.1-flash-lite',
             contents: prompt,
             config: {
               maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
@@ -500,7 +500,7 @@ export async function POST(request) {
           // SDK didn't stream — fall back to a single shot and emit it as one chunk.
           if (cancelled) return;
           const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite-preview',
+            model: 'gemini-3.1-flash-lite',
             contents: prompt,
             config: {
               maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,

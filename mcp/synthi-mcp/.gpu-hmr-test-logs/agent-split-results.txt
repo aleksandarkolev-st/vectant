@@ -1,21 +1,24 @@
 PASS gpu vendor - rocm arch=gfx1201
-PASS fixture - flow
+PASS fixture - ray-light
 PASS monolithic source has no Synthi ABI
-WARN validation workspace auth fallback - frontend workspace API requires auth; using collab-backed validation workspace slug=gpu-agent-split-1779638736581
-PASS create workspace - id=gpu-agent-split-1779638736581 slug=gpu-agent-split-1779638736581
+WARN validation workspace fallback - frontend workspace API requires auth; using collab-backed validation workspace slug=ray-light-gpu-hmr-proof-20260609-run-modes-hardened
+PASS create workspace - id=ray-light-gpu-hmr-proof-20260609-run-modes-hardened slug=ray-light-gpu-hmr-proof-20260609-run-modes-hardened
 PASS seed monolithic user source - main.cpp
 PASS workspace commit seed
-PASS mcp tools/list - count=42
+PASS mcp tools/list - count=97
 PASS mcp attach - attached
+PASS mcp wait_hmr proof gate - {"role":null,"module":null,"since_ts":1780992027888,"requireGpuFullRuntimeProof":false,"requiredGpuProofState":null,"status":"applied","frame_gate":{"status":"satisfied","frame_seq":87,"ts_ms":1780992032300,"session_id":"ray-light-gpu-hmr-proof-20260609-run-modes-hardened","gate_token":"frame-gate:c008cbd2-d87e-4e8a-923d-8aea58318404","gate_token_issued_at_ms":1780992032332,"gate_token_expires_at_ms":1780993232332,"capture_binding_required":true,"capture_binding_source":"decoded_frame","pipeline_budget_ms":80,"frame_advance_fallback_used":true},"timingMetrics":{"schemaVersion":"synthi.gpu.hmr.runner_timing_metrics.v1","metricClock":"monotonic_ns","metric_clock":"monotonic_ns","metricScope":"cold","metric_scope":"cold","cacheState":"clean","cache_state":"clean","editId":"initial-ai-split","edit_id":"initial-ai-split","editHash":"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65","edit_hash":"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65","editKind":"cold_split","edit_kind":"cold_split","differentEdit":false,"different_edit":false,"timings":{"device_compile_wall_time":10019500,"runtime_probe_time":4379571200,"total_validator_wall_time":4389908400}},"timing_metrics":{"schemaVersion":"synthi.gpu.hmr.runner_timing_metrics.v1","metricClock":"monotonic_ns","metric_clock":"monotonic_ns","metricScope":"cold","metric_scope":"cold","cacheState":"clean","cache_state":"clean","editId":"initial-ai-split","edit_id":"initial-ai-split","editHash":"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65","edit_hash":"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65","editKind":"cold_split","edit_kind":"cold_split","differentEdit":false,"different_edit":false,"timings":{"device_compile_wall_time":10019500,"runtime_probe_time":4379571200,"total_validator_wall_time":4389908400}},"gpu_proof_validation":{"validated":false,"satisfied":false,"reason":"proof_state_not_requested"},"gpu_proof_telemetry":{"schemaVersion":"synthi.gpu.hmr.proof.v1","proofId":"gpu-proof:76e266faef5ebc670b49e64e30c1a531c7267ab63af18ee4f9ec088ef5baf754","proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_76e266faef5ebc670b49e64e30c1a531c7267ab63af18ee4f9ec088ef5baf754.json","resultState":"gpu-hmr-compile-proven","degradedState":"gpu-hmr-dispatch-unobserved","degradedReason":"runtime_dispatch_not_observed","label":"gpu-hmr-full-device","source":"gpu-proof-state","observedAt":1780992031024}}
 PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
-PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
-PASS generated device compiled - compile-device] hipcc
-PASS read generated split from worker - worker=/tmp/.tmpRrHjmY
+PASS generated device compiled - Device sidecar reload vendor=rocm artifact=/tmp/.tmpozv75x/build/device_1780992027.hsaco kernels=trace_light_rays result=Success
+PASS mcp screenshot before hmr - 800x600 seq=7382->7402 visible=210015/210049 luma=20.2/20.2 bytes~101412/101343 frame_gate_after=false images=mcp\synthi-mcp\.gpu-hmr-test-logs\agent-split-artifacts\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\before-hmr-first.png,mcp\synthi-mcp\.gpu-hmr-test-logs\agent-split-artifacts\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\before-hmr-second.png metadata=mcp\synthi-mcp\.gpu-hmr-test-logs\agent-split-artifacts\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\before-hmr-metadata.json
+PASS read generated split from worker - worker=/tmp/.tmpozv75x
+PASS worker used GPU split endpoint - gpu_manifest=true generated_files=5 sidecar_reports=device_mapping_report|launch_indirection_report|model_provenance
 PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
-PASS persist generated split to workspace - 7 files
+PASS generated split HMR granularity - claim=device_translation_unit_hmr device_tus=1 device_roles=1 kernels=1 smallest_safe_fission=not_proven rejected_claims=smallest_safe_fission_island|per_kernel_hmr
+PASS generated split granularity artifact - mcp\synthi-mcp\.gpu-hmr-test-logs\agent-split-artifacts\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\generated-split-granularity.json
+PASS persist generated split to workspace - 16 files
 PASS workspace commit generated split
-PASS device edit compile via MCP - .synthi/generated/gpu/device.hip
-PASS generated device file used for HMR - FallbackDeterministic → split file edit (.synthi/generated/gpu/device.hip
-PASS device-only GPU HMR observed - [gpu-reload] plan=device_only
-PASS mcp screenshot after hmr - 800x600 seq=99->114 visible=7788/7970 luma=9.6/9.6 bytes~111309/110733
-PASS runner stayed alive after GPU HMR - no runner crash marker
+PASS run-mode cold split proof artifact - mcp\synthi-mcp\.gpu-hmr-test-logs\agent-split-artifacts\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\run-mode-cold-split.json
+FAIL fatal - Error: generated split sidecar lacks compiler-emitted source baseline proof for .synthi/generated/gpu/device.hip: source_baseline_contents_missing|source_baseline_hash_missing
+    at compileGeneratedDevice (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:1640:11)
+    at run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:2240:39)

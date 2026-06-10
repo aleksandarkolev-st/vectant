@@ -3151,6 +3151,15 @@ mod tests {
                 "contentHash": format!("sha256:{digest}")
             },
             "requiredOracleId": "oracle:render-step",
+            "outputOracleProposal": {
+                "kind": "buffer_checksum",
+                "producer": "deterministic_probe",
+                "expectedHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+                "outputTargetId": "buffer:render-step",
+                "readbackPlan": {"syncPoint": "after-dispatch"},
+                "sessionIdSource": "runtime-session",
+                "artifactIdSource": "selected-artifact"
+            },
             "sourceMappingEvidenceIds": ["evidence:source-map"],
             "includeClosureEvidenceIds": ["evidence:include-closure"],
             "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
@@ -4412,6 +4421,15 @@ mod tests {
             "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
             "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
             "requiredOracleId": "oracle:render-step",
+            "outputOracleProposal": {
+                "kind": "buffer_checksum",
+                "producer": "deterministic_probe",
+                "expectedHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+                "outputTargetId": "buffer:render-step",
+                "readbackPlan": {"syncPoint": "after-dispatch"},
+                "sessionIdSource": "runtime-session",
+                "artifactIdSource": "selected-artifact"
+            },
             "sourceMappingEvidenceIds": ["evidence:source-map"],
             "includeClosureEvidenceIds": ["evidence:include-closure"],
             "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],

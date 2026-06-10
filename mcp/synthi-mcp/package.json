@@ -23,6 +23,13 @@
   "files": [
     "dist",
     "scripts/lib/gpu-hmr-acceptance-contract.mjs",
+    "scripts/lib/gpu-hmr-validation-matrix-ledger.mjs",
+    "scripts/gpu-hmr-validation-matrix-ledger.mjs",
+    "scripts/gpu-hmr-webgpu-preflight.mjs",
+    "scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
+    "scripts/profiles/webgpu-wgsl-runtime-triangle.json",
+    "scripts/profiles/webgpu/triangle-before.wgsl",
+    "scripts/profiles/webgpu/triangle-after.wgsl",
     "README.md"
   ],
   "publishConfig": {
@@ -72,10 +79,13 @@
     "proof:acceptance-contract:self-check": "node scripts/gpu-hmr-acceptance-contract-self-check.mjs",
     "proof:strict-gates:self-check": "node scripts/gpu-hmr-proof-strict-gates-self-check.mjs",
     "proof:visual-evidence:self-check": "node scripts/tests/gpu-hmr-visual-evidence-smoke.mjs",
+    "proof:generated-split-granularity:self-check": "node scripts/tests/gpu-hmr-generated-split-granularity-smoke.mjs",
     "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
     "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
     "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
     "proof:timing-metrics": "node scripts/gpu-hmr-timing-metrics-summary.mjs",
+    "proof:validation-matrix": "node scripts/gpu-hmr-validation-matrix-ledger.mjs",
+    "proof:validation-matrix:self-check": "node scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs && node scripts/gpu-hmr-validation-matrix-ledger.mjs --self-check",
     "proof:external-project:bevy": "node scripts/gpu-hmr-external-project-profile.mjs --profile mcp/synthi-mcp/scripts/profiles/bevy-wgsl-shader-material.json",
     "proof:timing-metrics:self-check": "node scripts/tests/gpu-hmr-timing-metrics-smoke.mjs && node scripts/gpu-hmr-timing-metrics-summary.mjs --self-check",
     "proof:runtime-profile:hiprt": "node scripts/gpu-hmr-runtime-profile-proof.mjs --profile mcp/synthi-mcp/scripts/profiles/hiprt-megakernel-direct-light-zero.json --mode same-process",
@@ -83,7 +93,17 @@
     "proof:hiprt:warm": "node scripts/hiprt-light-math-warm-proof.mjs",
     "proof:hiprt:warm:camera-rays": "node -e \"process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH='mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
     "proof:hiprt:same-process": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
-    "proof:hiprt:same-process:camera-rays": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH='mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json'; import('./scripts/hiprt-light-math-warm-proof.mjs')\""
+    "proof:hiprt:same-process:camera-rays": "node -e \"process.env.SYNTHI_HIPRT_WARM_MODE='same-process'; process.env.SYNTHI_HIPRT_WARM_PROFILE_PATH='mcp/synthi-mcp/scripts/profiles/hiprt-camera-rays-horizontal-mirror.json'; import('./scripts/hiprt-light-math-warm-proof.mjs')\"",
+    "proof:oidn:preflight": "node scripts/gpu-hmr-oidn-preflight.mjs",
+    "proof:oidn:preflight:self-check": "node scripts/gpu-hmr-oidn-preflight.mjs --self-check",
+    "proof:opencl:preflight": "node scripts/gpu-hmr-opencl-preflight.mjs",
+    "proof:opencl:preflight:self-check": "node scripts/gpu-hmr-opencl-preflight.mjs --self-check",
+    "proof:vulkan:preflight": "node scripts/gpu-hmr-vulkan-preflight.mjs",
+    "proof:vulkan:preflight:self-check": "node scripts/gpu-hmr-vulkan-preflight.mjs --self-check",
+    "proof:webgpu:preflight": "node scripts/gpu-hmr-webgpu-preflight.mjs",
+    "proof:webgpu:preflight:self-check": "node scripts/gpu-hmr-webgpu-preflight.mjs --self-check",
+    "proof:webgpu:runtime-visual": "node scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
+    "proof:webgpu:runtime-visual:self-check": "node scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs --self-check"
   },
   "engines": {
     "node": ">=18.0.0"

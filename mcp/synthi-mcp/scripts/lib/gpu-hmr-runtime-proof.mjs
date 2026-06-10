@@ -2311,6 +2311,22 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     observation.pid,
     Number.isFinite(observation.pid) ? String(observation.pid) : null,
   );
+  const dispatchIdentityFields = {
+    selectedArtifactIds,
+    runtimeArtifactId,
+    runtimeArtifactIds,
+    dispatcherRegistrationIds,
+    dispatchTableEntryIds,
+    dispatchTableHashes,
+    dispatchStreamIds,
+    gridDimensions,
+    blockDimensions,
+    sharedMemoryBytes,
+    dispatchTimestamps,
+    dispatchId,
+    epoch: dispatchEpoch,
+    processId,
+  };
 
   if (
     !dispatchObserved
@@ -2352,6 +2368,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceRecordComplete: false,
       argProvenanceRecords,
       unknownArgCount,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2406,6 +2423,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       argProvenanceRecordComplete: false,
       argProvenanceRecords,
       unknownArgCount: 0,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2449,6 +2467,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       gridDimensions,
       blockDimensions,
       sharedMemoryBytes,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2492,6 +2511,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       gridDimensions,
       blockDimensions,
       sharedMemoryBytes,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2539,6 +2559,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       gridDimensions,
       blockDimensions,
       sharedMemoryBytes,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2582,6 +2603,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       gridDimensions,
       blockDimensions,
       sharedMemoryBytes,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2628,6 +2650,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       blockDimensions,
       sharedMemoryBytes,
       dispatchTimestamps,
+      ...dispatchIdentityFields,
     };
   }
 
@@ -2672,6 +2695,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       blockDimensions,
       sharedMemoryBytes,
       dispatchTimestamps,
+      ...dispatchIdentityFields,
     };
   }
 

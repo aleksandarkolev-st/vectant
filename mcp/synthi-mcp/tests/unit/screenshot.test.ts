@@ -28,17 +28,21 @@ function installFakeSession(frame: {
   dpr?: number;
   ts: number;
   seq: number;
-}): void {
-  const dpr = frame.dpr ?? 1;
+}, opts: { preserveMissingDpr?: boolean } = {}): void {
+  const dpr = opts.preserveMissingDpr ? frame.dpr : frame.dpr ?? 1;
+  const frameWithDpr = dpr === undefined ? frame : { ...frame, dpr };
+  const resolution = dpr === undefined
+    ? { width: frame.width, height: frame.height }
+    : { width: frame.width, height: frame.height, dpr };
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fake-session",
     signalingUrl: "ws://localhost:9000",
-    resolution: { width: frame.width, height: frame.height, dpr },
+    resolution,
     frames: {
-      getFrame: async () => ({ ...frame, dpr }),
+      getFrame: async () => frameWithDpr,
       hasFrame: () => true,
-      dimensions: () => ({ width: frame.width, height: frame.height, dpr }),
+      dimensions: () => resolution,
     },
     // Other fields are not touched by screenshotTool.
   };
@@ -182,6 +186,57 @@ describe("synthi_screenshot", () => {
     const usage = eventLog.query({ kind: "usage" });
     expect(usage.length).toBe(1);
     expect((usage[0] as { metric: string }).metric).toBe("screenshot");
+  });
+
+  it("brokers missing producer DPR by inference for read-only screenshots", async () => {
+    const png = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
+    installFakeSession(
+      { data: png, width: 100, height: 100, ts: Date.now(), seq: 1 },
+      { preserveMissingDpr: true },
+    );
+    const res = await screenshotTool({});
+    expect(res.isError).toBeUndefined();
+    const meta = res.structuredContent as {
+      brokered?: boolean;
+      dpr?: number;
+      dpr_inferred?: boolean;
+      viewport?: unknown;
+      capture_manifest?: unknown;
+    };
+    expect(meta.brokered).toBe(true);
+    expect(meta.dpr).toBe(1);
+    expect(meta.dpr_inferred).toBe(true);
+    expect(meta.viewport).toEqual({ w: 100, h: 100, dpr: 1 });
+    expect(meta.capture_manifest).toBeTruthy();
+  });
+
+  it("returns an explicitly unbrokered image when producer DPR is missing and allowed", async () => {
+    const png = await solidPng(100, 100, { r: 40, g: 80, b: 120 });
+    installFakeSession(
+      { data: png, width: 100, height: 100, ts: Date.now(), seq: 7 },
+      { preserveMissingDpr: true },
+    );
+    const res = await screenshotTool({ allow_unbrokered_frame: true });
+    expect(res.isError).toBeUndefined();
+    expect(res.content.some((block) => block.type === "image")).toBe(true);
+    const meta = res.structuredContent as {
+      brokered?: boolean;
+      broker_frame_error?: string;
+      viewport?: unknown;
+      dpr?: unknown;
+    };
+    expect(meta.brokered).toBe(false);
+    expect(meta.broker_frame_error).toBe("producer_dpr_unavailable");
+    expect(meta.viewport).toBeUndefined();
+    expect(meta.dpr).toBeUndefined();
+  });
+
+  it("rejects non-boolean allow_unbrokered_frame", async () => {
+    const png = await solidPng(100, 100, { r: 10, g: 10, b: 10 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: Date.now(), seq: 1 });
+    const res = await screenshotTool({ allow_unbrokered_frame: "yes" });
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field).toBe("allow_unbrokered_frame");
   });
 
   it("rejects an unsatisfied HMR frame gate", async () => {

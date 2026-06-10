@@ -18,6 +18,7 @@ import type {
 
 const DEFAULT_SAMPLE_INTERVAL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 60_000;
+const FRAME_GATE_POLL_MS = 50;
 
 /**
  * Condition → resolver dispatch. Each resolver is responsible for its own
@@ -73,11 +74,36 @@ export async function runWait(args: WaitArgs, timeoutMs: number = DEFAULT_TIMEOU
                 note: "no post-budget frame_advance observed; screenshot may reflect pre-reload frame",
               };
         } else {
-          frameGate = {
-            status: "disabled",
-            reason: "no_frame_advance_observed",
-            pipeline_budget_ms: budget,
-          };
+          const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+          const satisfiedBy = await waitDecodedFrameAtOrAfter(tHmr + budget, remaining);
+          const gateToken = satisfiedBy
+            ? session.issueFrameGateToken({
+                session_id: attached.sessionId,
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+              })
+            : null;
+          frameGate = satisfiedBy
+            ? {
+                status: "satisfied",
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+                session_id: attached.sessionId,
+                gate_token: gateToken?.token,
+                gate_token_issued_at_ms: gateToken?.issued_at_ms,
+                gate_token_expires_at_ms: gateToken?.expires_at_ms,
+                capture_binding_required: true,
+                capture_binding_source: "decoded_frame",
+                pipeline_budget_ms: budget,
+                frame_advance_fallback_used: true,
+              }
+            : {
+                status: "timeout",
+                reason: "decoded_frame_gate_timeout",
+                note: "no post-budget decoded frame observed and frame_advance telemetry was unavailable",
+                pipeline_budget_ms: budget,
+                frame_gate_timeout_ms: remaining,
+              };
         }
       }
 
@@ -152,6 +178,22 @@ async function getLatestFrame(): Promise<{ data: Buffer; width: number; height: 
     return await attached.frames.getFrame();
   } catch {
     return null;
+  }
+}
+
+async function waitDecodedFrameAtOrAfter(
+  minTsMs: number,
+  timeoutMs: number
+): Promise<{ frame_seq: number; ts_ms: number } | null> {
+  const start = Date.now();
+  for (;;) {
+    const frame = await getLatestFrame();
+    if (frame && frame.ts >= minTsMs) {
+      return { frame_seq: frame.seq, ts_ms: frame.ts };
+    }
+    if (Date.now() - start >= timeoutMs) return null;
+    const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+    await sleep(Math.min(FRAME_GATE_POLL_MS, remaining));
   }
 }
 

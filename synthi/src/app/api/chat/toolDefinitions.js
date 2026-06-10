@@ -375,7 +375,7 @@ async function execWebSearch(_slug, args, _signal, options = {}) {
     if (geminiKey) {
         try {
             // Try grounding with Google Search tool
-            const model = 'gemini-3.1-flash-lite-preview';
+            const model = 'gemini-3.1-flash-lite';
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
             const res = await fetch(url, {
                 method: 'POST',
@@ -411,7 +411,7 @@ async function execWebSearch(_slug, args, _signal, options = {}) {
 
         // Strategy 3b: Fallback — ask Gemini WITHOUT grounding tool (uses model knowledge)
         try {
-            const model = 'gemini-3.1-flash-lite-preview';
+            const model = 'gemini-3.1-flash-lite';
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
             const res = await fetch(url, {
                 method: 'POST',

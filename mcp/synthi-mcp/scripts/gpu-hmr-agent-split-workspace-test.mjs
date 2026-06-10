@@ -11,7 +11,8 @@
 //   SYNTHI_GPU_HMR=1 SYNTHI_GPU_VENDOR=auto node scripts/gpu-hmr-agent-split-workspace-test.mjs
 
 import { spawn, execFile } from 'node:child_process';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -19,10 +20,16 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  assessGeneratedGpuSplitGranularity,
+  assertNoGeneratedSplitFissionOverclaim,
+  verifyGeneratedGpuSplitDeterministicFission,
+} from './lib/gpu-hmr-generated-split-granularity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,21 +37,22 @@ const __dirname = path.dirname(__filename);
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
-  signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
+  signalingUrl: process.env.SIGNALING_URL ?? process.env.SYNTHI_SIGNALING_URL ?? null,
   slug: process.env.SLUG ?? `gpu-agent-split-${Date.now()}`,
   hostId: process.env.HOST_ID ?? 'gpu-hmr-agent-split-test',
   vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'auto').toLowerCase(),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 180000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 15000),
-  mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
-  mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
+  mcpTransport: (process.env.MCP_TRANSPORT ?? 'local').toLowerCase(),
+  mcpContainer: process.env.MCP_CONTAINER ?? process.env.SYNTHI_MCP_CONTAINER ?? null,
+  mcpContainerEntry: process.env.MCP_CONTAINER_ENTRY ?? process.env.SYNTHI_MCP_CONTAINER_ENTRY ?? null,
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
-  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
+  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? process.env.SYNTHI_MCP_SIGNALING_URL ?? null,
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 240000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   frameGateTimeoutMs: Number(process.env.SYNTHI_GPU_AGENT_FRAME_GATE_TIMEOUT_MS ?? 1200000),
-  workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
+  workerContainer: process.env.WORKER_CONTAINER ?? process.env.SYNTHI_WORKER_CONTAINER ?? null,
   workerLogPath: process.env.WORKER_LOG_PATH
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
@@ -59,6 +67,10 @@ const CFG = {
     ?? 'gemini-3.1-flash-lite',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
+  captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
+  visualDeltaWindowMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_WINDOW_MS ?? 6000),
+  visualDeltaSampleIntervalMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_SAMPLE_INTERVAL_MS ?? 500),
+  visualDeltaMinSamples: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_MIN_SAMPLES ?? 8),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -66,6 +78,14 @@ const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const RESULTS_BASENAME = CFG.mode === 'seed-only' ? 'agent-split-seed-results' : 'agent-split-results';
 const RESULTS_JSON = path.join(LOG_DIR, `${RESULTS_BASENAME}.json`);
 const RESULTS_TXT = path.join(LOG_DIR, `${RESULTS_BASENAME}.txt`);
+const ARTIFACT_DIR = path.join(
+  LOG_DIR,
+  'agent-split-artifacts',
+  CFG.slug.replace(/[^a-zA-Z0-9_.-]+/g, '-'),
+);
+const EXPOSED_SPLIT_DIR = cleanVisibleWorkspaceDir(
+  process.env.SYNTHI_GPU_EXPOSED_SPLIT_DIR ?? 'gpu_hmr_demo',
+);
 
 const results = [];
 function record(name, status, detail = '') {
@@ -73,6 +93,18 @@ function record(name, status, detail = '') {
   results.push(row);
   const tag = status === 'pass' ? '[ok]' : status === 'fail' ? '[fail]' : '[warn]';
   console.log(`${tag} ${name}${detail ? ` - ${detail}` : ''}`);
+}
+
+function cleanVisibleWorkspaceDir(value) {
+  const normalized = String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+  if (!normalized || normalized.startsWith('.') || normalized.split('/').some((part) => !part || part.startsWith('.'))) {
+    return 'gpu_hmr_demo';
+  }
+  return normalized;
 }
 
 function fail(message) {
@@ -139,6 +171,18 @@ async function resolveDockerContainers() {
   if (CFG.mcpTransport !== 'docker') return;
   CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
   CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
+  if (!CFG.mcpContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires an MCP container from MCP_CONTAINER, SYNTHI_MCP_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.workerContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires a worker container from WORKER_CONTAINER, SYNTHI_WORKER_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.mcpSignalingUrl) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_SIGNALING_URL or SYNTHI_MCP_SIGNALING_URL');
+  }
+  if (!CFG.mcpContainerEntry) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_CONTAINER_ENTRY or SYNTHI_MCP_CONTAINER_ENTRY');
+  }
 }
 
 async function detectVendor() {
@@ -385,7 +429,7 @@ async function startMcp() {
       '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
       CFG.mcpContainer,
       'node',
-      '/app/dist/index.js',
+      CFG.mcpContainerEntry,
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
   } else {
     if (!existsSync(CFG.mcpEntry)) throw new Error(`MCP entry not found: ${CFG.mcpEntry}`);
@@ -394,7 +438,7 @@ async function startMcp() {
       env: {
         ...process.env,
         SYNTHI_SESSION_ID: CFG.slug,
-        SYNTHI_SIGNALING_URL: CFG.signalingUrl,
+        ...(CFG.signalingUrl ? { SYNTHI_SIGNALING_URL: CFG.signalingUrl } : {}),
         SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
@@ -422,7 +466,8 @@ async function ensureMcpAttached() {
   const state = await startMcp();
   if (state.attached) return state;
   const args = { sessionId: CFG.slug, 'i-understand-no-auth': true };
-  if (CFG.mcpTransport !== 'docker') args.signalingUrl = CFG.signalingUrl;
+  const attachSignalingUrl = CFG.mcpTransport === 'docker' ? CFG.mcpSignalingUrl : CFG.signalingUrl;
+  if (attachSignalingUrl) args.signalingUrl = attachSignalingUrl;
   const attach = await state.client.toolCall('synthi_attach', args, CFG.mcpAttachTimeoutMs);
   if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach)}`);
   state.attached = true;
@@ -469,6 +514,7 @@ function runtimeApi(vendor) {
 
 function monolithicSource(vendor) {
   if (CFG.fixture === 'complex-flow') return complexFlowSource(vendor);
+  if (CFG.fixture === 'ray-light') return rayLightSource(vendor);
 
   const api = runtimeApi(vendor);
   const target = vendor === 'rocm' ? 'rocm' : 'cuda';
@@ -495,27 +541,23 @@ __global__ void particle_flow(float* x, float* y, int n, float cx, float cy, flo
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
 
-    float dx = cx - x[i];
-    float dy = cy - y[i];
-    float len = sqrtf(dx * dx + dy * dy) + 0.0001f;
     const float direction = FLOW_DIRECTION; // SYNTHI_HMR_DIRECTION_TOKEN
-    x[i] += direction * dx / len * speed;
-    y[i] += direction * dy / len * speed;
+    float theta = 2.39996323f * (float)i;
+    float radius = 232.0f + (float)((i * 37) % 82);
 
-    float ox = x[i] - cx;
-    float oy = y[i] - cy;
-    float radius = sqrtf(ox * ox + oy * oy);
-    float theta = 2.39996323f * (float)i + 0.015f * (float)(frame % 251ULL);
-    if (direction > 0.0f && radius < 16.0f) {
-        float rr = 300.0f + (float)((i * 19) % 58);
-        x[i] = cx + cosf(theta) * rr;
-        y[i] = cy + sinf(theta) * rr;
+    if (direction > 0.0f) {
+        x[i] = cx + cosf(theta) * radius;
+        y[i] = cy + sinf(theta) * radius * 0.72f;
+        return;
     }
-    if (direction < 0.0f && radius > 384.0f) {
-        float rr = 20.0f + (float)((i * 11) % 24);
-        x[i] = cx + cosf(theta) * rr;
-        y[i] = cy + sinf(theta) * rr;
-    }
+
+    int column = i % 32;
+    int row = i / 32;
+    float u = ((float)column / 31.0f) - 0.5f;
+    float v = ((float)row / 15.0f) - 0.5f;
+    float wave = sinf(u * 6.2831853f) * 26.0f;
+    x[i] = cx + u * 560.0f;
+    y[i] = cy + v * 338.0f + wave;
 }
 
 static void seed(float* x, float* y) {
@@ -767,6 +809,223 @@ int main(int, char**) {
 `;
 }
 
+function rayLightSource(vendor) {
+  const api = runtimeApi(vendor);
+  const target = vendor === 'rocm' ? 'rocm' : 'cuda';
+  return `// User-authored single-file GPU ray-light visual app.
+// Deterministic validation fixture: fixed camera, fixed seed, no temporal
+// accumulation, and GPU-authored ray sample positions.
+// GPU_TARGET: ${target}
+// LINK: -lSDL2 ${api.link}
+// BUILD: ${api.build} main.cpp -lSDL2 ${api.link}
+#include <SDL2/SDL.h>
+${runtimeInclude(vendor)}
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+constexpr int WIDTH = 800;
+constexpr int HEIGHT = 600;
+constexpr int BEAMS = 17;
+constexpr int LEG_STEPS = 44;
+constexpr int STEPS = LEG_STEPS * 3;
+constexpr int RAY_SAMPLES = BEAMS * STEPS;
+
+extern "C" __global__ void trace_light_rays(float* sampleX, float* sampleY, float* sampleEnergy, int samples) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= samples) return;
+
+    int beam = idx % BEAMS;
+    int step = idx / BEAMS;
+    float lane = ((float)beam - (float)(BEAMS - 1) * 0.5f) / ((float)(BEAMS - 1) * 0.5f);
+
+    const float direction = 1.0f; // SYNTHI_HMR_DIRECTION_TOKEN
+    float emitterX = 400.0f + direction * 252.0f;
+    float emitterY = 74.0f;
+
+    float rayDx = -direction * (0.70f + lane * 0.10f);
+    float rayDy = 1.0f;
+    float invRayLen = rsqrtf(rayDx * rayDx + rayDy * rayDy);
+    rayDx *= invRayLen;
+    rayDy *= invRayLen;
+
+    const float mirrorAnchorX = 400.0f;
+    const float mirrorMidY = 260.0f;
+    const float mirrorSlope = 0.32f;
+    float denom = rayDx - mirrorSlope * rayDy;
+    float mirrorT = (mirrorAnchorX + (emitterY - mirrorMidY) * mirrorSlope - emitterX) / denom;
+    if (mirrorT < 40.0f) mirrorT = 40.0f;
+    float hitX = emitterX + rayDx * mirrorT;
+    float hitY = emitterY + rayDy * mirrorT;
+    hitY += lane * 10.0f;
+    hitX = mirrorAnchorX + (hitY - mirrorMidY) * mirrorSlope;
+
+    float normalX = 1.0f;
+    float normalY = -mirrorSlope;
+    float invNormalLen = rsqrtf(normalX * normalX + normalY * normalY);
+    normalX *= invNormalLen;
+    normalY *= invNormalLen;
+    float dotN = rayDx * normalX + rayDy * normalY;
+    float reflectX = rayDx - 2.0f * dotN * normalX;
+    float reflectY = rayDy - 2.0f * dotN * normalY;
+    if (reflectY < 0.25f) reflectY = 0.72f;
+    float invReflectLen = rsqrtf(reflectX * reflectX + reflectY * reflectY);
+    reflectX *= invReflectLen;
+    reflectY *= invReflectLen;
+
+    float groundY = 504.0f + lane * 7.0f;
+    float groundT = (groundY - hitY) / reflectY;
+    if (groundT < 90.0f) groundT = 90.0f;
+    float groundX = hitX + reflectX * groundT;
+
+    float diffuseX = -reflectX * 0.42f + lane * 0.10f;
+    float diffuseY = -0.82f;
+    float invDiffuseLen = rsqrtf(diffuseX * diffuseX + diffuseY * diffuseY);
+    diffuseX *= invDiffuseLen;
+    diffuseY *= invDiffuseLen;
+    float diffuseEndX = groundX + diffuseX * (88.0f + 18.0f * fabsf(lane));
+    float diffuseEndY = groundY + diffuseY * 108.0f;
+
+    int segment = step / LEG_STEPS;
+    int segmentStep = step - segment * LEG_STEPS;
+    if (segment > 2) {
+        segment = 2;
+        segmentStep = LEG_STEPS - 1;
+    }
+    float u = (float)segmentStep / (float)(LEG_STEPS - 1);
+    float x;
+    float y;
+    float energy;
+    if (segment == 0) {
+        x = emitterX + (hitX - emitterX) * u;
+        y = emitterY + (hitY - emitterY) * u;
+        energy = 1.0f - 0.25f * u;
+    } else if (segment == 1) {
+        x = hitX + (groundX - hitX) * u;
+        y = hitY + (groundY - hitY) * u;
+        float caustic = expf(-((u - 0.82f) * (u - 0.82f)) / (2.0f * 0.10f * 0.10f));
+        energy = 0.68f + caustic * 0.62f;
+    } else {
+        x = groundX + (diffuseEndX - groundX) * u;
+        y = groundY + (diffuseEndY - groundY) * u;
+        energy = 0.42f * (1.0f - u);
+    }
+    sampleX[idx] = x;
+    sampleY[idx] = y;
+    sampleEnergy[idx] = energy;
+}
+
+int main(int, char**) {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window* window = SDL_CreateWindow("Synthi GPU Ray Light HMR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+
+    float hostX[RAY_SAMPLES];
+    float hostY[RAY_SAMPLES];
+    float hostEnergy[RAY_SAMPLES];
+    float* deviceX = nullptr;
+    float* deviceY = nullptr;
+    float* deviceEnergy = nullptr;
+    ${api.malloc}(&deviceX, sizeof(float) * RAY_SAMPLES);
+    ${api.malloc}(&deviceY, sizeof(float) * RAY_SAMPLES);
+    ${api.malloc}(&deviceEnergy, sizeof(float) * RAY_SAMPLES);
+
+    bool running = true;
+    unsigned long long frame = 0;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) running = false;
+        }
+
+        dim3 block(256);
+        dim3 grid((RAY_SAMPLES + block.x - 1) / block.x);
+        trace_light_rays<<<grid, block>>>(deviceX, deviceY, deviceEnergy, RAY_SAMPLES);
+        ${api.sync}();
+        ${api.memcpy}(hostX, deviceX, sizeof(float) * RAY_SAMPLES, ${api.d2h});
+        ${api.memcpy}(hostY, deviceY, sizeof(float) * RAY_SAMPLES, ${api.d2h});
+        ${api.memcpy}(hostEnergy, deviceEnergy, sizeof(float) * RAY_SAMPLES, ${api.d2h});
+
+        SDL_SetRenderDrawColor(renderer, 5, 8, 18, 255);
+        SDL_RenderClear(renderer);
+
+        SDL_SetRenderDrawColor(renderer, 20, 30, 34, 255);
+        SDL_Rect ground{0, 340, WIDTH, HEIGHT - 340};
+        SDL_RenderFillRect(renderer, &ground);
+        SDL_SetRenderDrawColor(renderer, 38, 55, 58, 255);
+        for (int gx = 0; gx < WIDTH; gx += 40) {
+            SDL_RenderDrawLine(renderer, gx, 340, gx - 90, HEIGHT);
+        }
+        for (int gy = 360; gy < HEIGHT; gy += 42) {
+            SDL_RenderDrawLine(renderer, 0, gy, WIDTH, gy);
+        }
+
+        SDL_SetRenderDrawColor(renderer, 92, 176, 210, 255);
+        SDL_RenderDrawLine(renderer, 350, 184, 448, 491);
+        SDL_RenderDrawLine(renderer, 354, 184, 452, 491);
+        SDL_SetRenderDrawColor(renderer, 20, 48, 58, 255);
+        SDL_Rect mirrorBack{386, 252, 78, 18};
+        SDL_RenderFillRect(renderer, &mirrorBack);
+        SDL_SetRenderDrawColor(renderer, 12, 12, 16, 255);
+        SDL_Rect occluder{455, 374, 54, 86};
+        SDL_RenderFillRect(renderer, &occluder);
+        SDL_SetRenderDrawColor(renderer, 78, 86, 92, 255);
+        SDL_RenderDrawRect(renderer, &occluder);
+
+        for (int beam = 0; beam < BEAMS; ++beam) {
+            for (int step = 1; step < STEPS; ++step) {
+                int prev = (step - 1) * BEAMS + beam;
+                int cur = step * BEAMS + beam;
+                int e = (int)(hostEnergy[cur] * 255.0f);
+                if (e < 0) e = 0;
+                if (e > 255) e = 255;
+                if (step < LEG_STEPS) {
+                    SDL_SetRenderDrawColor(renderer, 255, 226, 116 + e / 4, 255);
+                } else if (step < LEG_STEPS * 2) {
+                    SDL_SetRenderDrawColor(renderer, 128 + e / 3, 218, 255, 255);
+                } else {
+                    SDL_SetRenderDrawColor(renderer, 255, 160 + e / 5, 80, 255);
+                }
+                SDL_RenderDrawLine(renderer, (int)hostX[prev], (int)hostY[prev], (int)hostX[cur], (int)hostY[cur]);
+                if ((step % 8) == 0) {
+                    int size = 1 + e / 128;
+                    SDL_Rect sample{(int)hostX[cur], (int)hostY[cur], size, size};
+                    SDL_RenderFillRect(renderer, &sample);
+                }
+            }
+            int mirrorHit = LEG_STEPS * BEAMS + beam;
+            int groundHit = (LEG_STEPS * 2) * BEAMS + beam;
+            SDL_SetRenderDrawColor(renderer, 170, 238, 255, 255);
+            SDL_Rect hit{(int)hostX[mirrorHit] - 3, (int)hostY[mirrorHit] - 3, 7, 7};
+            SDL_RenderFillRect(renderer, &hit);
+            SDL_SetRenderDrawColor(renderer, 255, 212, 104, 255);
+            SDL_Rect pool{(int)hostX[groundHit] - 7, (int)hostY[groundHit] - 2, 15, 5};
+            SDL_RenderFillRect(renderer, &pool);
+        }
+
+        SDL_SetRenderDrawColor(renderer, 255, 236, 154, 255);
+        SDL_Rect emitter{(int)hostX[0] - 8, (int)hostY[0] - 8, 16, 16};
+        SDL_RenderFillRect(renderer, &emitter);
+
+        SDL_RenderPresent(renderer);
+        SDL_Delay(16);
+
+        if ((++frame % 120ULL) == 0ULL) {
+            std::fprintf(stderr, "[user-gpu-ray-light] frame=%llu deterministic=1\\n", frame);
+        }
+    }
+
+    ${api.free}(deviceX);
+    ${api.free}(deviceY);
+    ${api.free}(deviceEnergy);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}
+`;
+}
+
 function assertNoSynthiAbi(source) {
   const forbidden = ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'];
   const found = forbidden.filter((needle) => source.includes(needle));
@@ -774,17 +1033,43 @@ function assertNoSynthiAbi(source) {
   record('monolithic source has no Synthi ABI', 'pass');
 }
 
-async function compileViaMcp(args, timeoutMs) {
+async function compileViaMcp(args, timeoutMs, options = {}) {
   const state = await ensureMcpAttached();
+  const compileStartNs = process.hrtime.bigint();
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+  const compileEndNs = process.hrtime.bigint();
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
   const waitContract = waitContractForCompile({ args, compile, timeoutMs });
+  const waitStartNs = process.hrtime.bigint();
   const wait = await state.client.toolCall(
     'synthi_wait_hmr',
     waitContract.waitArgs,
     timeoutMs + 5000,
   ).catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  record('mcp wait_hmr proof gate', wait?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+  const waitEndNs = process.hrtime.bigint();
+  const timingMetrics = {
+    schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+    metricClock: 'monotonic_ns',
+    metric_clock: 'monotonic_ns',
+    metricScope: options.metricScope ?? null,
+    metric_scope: options.metricScope ?? null,
+    cacheState: options.cacheState ?? null,
+    cache_state: options.cacheState ?? null,
+    editId: options.editId ?? null,
+    edit_id: options.editId ?? null,
+    editHash: options.editHash ?? null,
+    edit_hash: options.editHash ?? null,
+    editKind: options.editKind ?? null,
+    edit_kind: options.editKind ?? null,
+    differentEdit: options.differentEdit === true,
+    different_edit: options.differentEdit === true,
+    timings: {
+      device_compile_wall_time: Number(compileEndNs - compileStartNs),
+      runtime_probe_time: Number(waitEndNs - waitStartNs),
+      total_validator_wall_time: Number(waitEndNs - compileStartNs),
+    },
+  };
+  const waitSummary = {
     role: waitContract.role,
     module: waitContract.waitArgs.module ?? null,
     since_ts: waitContract.waitArgs.since_ts ?? null,
@@ -792,12 +1077,88 @@ async function compileViaMcp(args, timeoutMs) {
     requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
     status: wait?.status ?? null,
     frame_gate: wait?.frame_gate ?? null,
-  }));
-  return { compile, wait, waitContract };
+    timingMetrics,
+    timing_metrics: timingMetrics,
+  };
+  if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
+  if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
+  if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
+  const requireAppliedWait = options.requireAppliedWait === true || waitContract.isGpuDeviceEdit;
+  record(
+    options.waitRecordLabel ?? 'mcp wait_hmr proof gate',
+    wait?.status === 'applied' ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
+    JSON.stringify(waitSummary),
+  );
+  if (requireAppliedWait && wait?.status !== 'applied') {
+    throw new Error(`required synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`);
+  }
+  return { compile, wait, waitContract, waitSummary, timingMetrics };
 }
 
 function cleanRel(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+}
+
+function sha256Hex(value) {
+  return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+function sha256BufferHex(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function normalizedObjectStringLookup(root, parentKey, filePath) {
+  const normalized = cleanRel(filePath);
+  const table = root?.[parentKey];
+  if (!normalized || !table || typeof table !== 'object' || Array.isArray(table)) {
+    return { found: false, key: null, value: null };
+  }
+  for (const [key, value] of Object.entries(table)) {
+    if (cleanRel(key) === normalized && typeof value === 'string') {
+      return { found: true, key, value };
+    }
+  }
+  return { found: false, key: null, value: null };
+}
+
+function sourceBaselineProofFromSidecar(sidecarRaw, filePath, source) {
+  const root = JSON.parse(sidecarRaw);
+  const content = normalizedObjectStringLookup(root, 'sourceBaselineContents', filePath);
+  const hash = normalizedObjectStringLookup(root, 'sourceBaselineHashes', filePath);
+  const expectedHash = sha256Hex(source);
+  const accepted =
+    content.found &&
+    hash.found &&
+    content.value === source &&
+    hash.value === expectedHash;
+  return {
+    accepted,
+    filePath: cleanRel(filePath),
+    file_path: cleanRel(filePath),
+    contentKey: content.key,
+    content_key: content.key,
+    hashKey: hash.key,
+    hash_key: hash.key,
+    expectedHash,
+    expected_hash: expectedHash,
+    observedHash: hash.value,
+    observed_hash: hash.value,
+    failures: [
+      ...(!content.found ? ['source_baseline_contents_missing'] : []),
+      ...(!hash.found ? ['source_baseline_hash_missing'] : []),
+      ...(content.found && content.value !== source ? ['source_baseline_contents_mismatch'] : []),
+      ...(hash.found && hash.value !== expectedHash ? ['source_baseline_hash_mismatch'] : []),
+    ],
+    provenance: 'compiler_emitted_sidecar',
+  };
 }
 
 function manifestRoleForPath(manifest, filePath) {
@@ -875,46 +1236,392 @@ function validateGeneratedSplit(split) {
   if (!device.includes('__global__')) missing.push('__global__ device kernel');
   if (missing.length) throw new Error(`generated split missing expected generated pieces: ${missing.join(', ')}`);
   record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
+  const granularity = assessGeneratedGpuSplitGranularity({
+    manifest: split.manifest,
+    files: split.files,
+    vendor: split.manifest?.gpu?.vendor,
+  });
+  assertNoGeneratedSplitFissionOverclaim(granularity);
+  record(
+    'generated split HMR granularity',
+    'pass',
+    [
+      `claim=${granularity.acceptedClaim}`,
+      `device_tus=${granularity.deviceTranslationUnitCount}`,
+      `device_roles=${granularity.deviceRoleCount}`,
+      `kernels=${granularity.kernelCount}`,
+      `smallest_safe_fission=${granularity.smallestSafeFissionIslandProven ? 'proven' : 'not_proven'}`,
+      `rejected_claims=${granularity.rejectedClaims.join('|')}`,
+    ].join(' '),
+  );
+  return granularity;
 }
 
-function flipDeviceDirection(source) {
-  const marker = 'SYNTHI_HMR_DIRECTION_TOKEN';
-  const lines = source.split('\n');
-  const markerIndex = lines.findIndex((line) => line.includes(marker));
-  if (markerIndex >= 0) {
-    const old = lines[markerIndex];
-    const next = old.replace('1.0f', '-1.0f').replace('1.0', '-1.0');
-    if (next !== old) {
-      lines[markerIndex] = next;
-      return lines.join('\n');
+function proofIdsFromRuntimeWait(wait) {
+  const proofValidation = wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+  const ledgerValidation = proofValidation.proofLedgerValidation
+    && typeof proofValidation.proofLedgerValidation === 'object'
+    ? proofValidation.proofLedgerValidation
+    : {};
+  const telemetry = wait?.gpu_proof_telemetry && typeof wait.gpu_proof_telemetry === 'object'
+    ? wait.gpu_proof_telemetry
+    : {};
+  return [...new Set([
+    ledgerValidation.proofId,
+    ledgerValidation.proof_id,
+    telemetry.proofId,
+    telemetry.proof_id,
+  ].filter((value) => typeof value === 'string' && value.trim()))];
+}
+
+function deterministicVisualOracleContract({ visualDelta, wait, selectedPath }) {
+  if (!visualDelta) return {};
+  const proofValidation = wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+  const ledgerValidation = proofValidation.proofLedgerValidation
+    && typeof proofValidation.proofLedgerValidation === 'object'
+    ? proofValidation.proofLedgerValidation
+    : {};
+  const telemetry = wait?.gpu_proof_telemetry && typeof wait.gpu_proof_telemetry === 'object'
+    ? wait.gpu_proof_telemetry
+    : {};
+  const frameGate = wait?.frame_gate && typeof wait.frame_gate === 'object' ? wait.frame_gate : {};
+  const oracleSeed = {
+    selectedPath,
+    proofIds: proofIdsFromRuntimeWait(wait),
+    frameGateToken: frameGate.gate_token ?? null,
+    changedRatio: visualDelta.changedRatio ?? null,
+    meanAbs: visualDelta.meanAbs ?? null,
+    diffPath: visualDelta.diffPath ?? null,
+    selectedSeq: visualDelta.selectedSeq ?? null,
+  };
+  return {
+    oracleId: `oracle:generated-split-visual:sha256:${sha256Hex(stableJson(oracleSeed))}`,
+    kind: 'visual',
+    target: 'framebuffer',
+    visualRegion: 'full_frame',
+    selectedPath,
+    diffPath: visualDelta.diffPath ?? null,
+    changedPixelRatio: visualDelta.changedRatio ?? null,
+    meanAbsDelta8bit: visualDelta.meanAbs ?? null,
+    controlChangedPixelRatio: visualDelta.controlChangedRatio ?? null,
+    controlMeanAbsDelta8bit: visualDelta.controlMeanAbs ?? null,
+    selectedFrameSeq: visualDelta.selectedSeq ?? null,
+    selectedDeltaMs: visualDelta.selectedDeltaMs ?? null,
+    frameGateToken: frameGate.gate_token ?? null,
+    frameGateSeq: frameGate.frame_seq ?? null,
+    frameGateTimestampMs: frameGate.ts_ms ?? null,
+    frameCaptureAfterEpochDispatch: true,
+    runtimeProofId: telemetry.proofId ?? telemetry.proof_id ?? null,
+    ledgerProofId: ledgerValidation.proofId ?? ledgerValidation.proof_id ?? null,
+  };
+}
+
+function roleHashMap(files, rolePaths, selectedPath = null) {
+  const out = {};
+  for (const rolePath of rolePaths ?? []) {
+    const normalized = cleanRel(rolePath);
+    if (!normalized || normalized === cleanRel(selectedPath)) continue;
+    out[normalized] = `sha256:${sha256Hex(files?.[normalized] ?? '')}`;
+  }
+  return out;
+}
+
+function verifyGeneratedSplitFissionAfterRuntime({
+  split,
+  granularity,
+  generatedDeviceResult,
+  visualDelta,
+  selectedPath,
+  previousDevice,
+  editedDevice,
+}) {
+  const wait = generatedDeviceResult?.wait ?? {};
+  const proofValidation = wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+  const ledgerValidation = proofValidation.proofLedgerValidation
+    && typeof proofValidation.proofLedgerValidation === 'object'
+    ? proofValidation.proofLedgerValidation
+    : {};
+  const runtimeArtifactValidation = proofValidation.runtimeProofArtifactValidation
+    && typeof proofValidation.runtimeProofArtifactValidation === 'object'
+    ? proofValidation.runtimeProofArtifactValidation
+    : {};
+  const proofIds = proofIdsFromRuntimeWait(wait);
+  const sourceHashBefore = `sha256:${sha256Hex(previousDevice ?? '')}`;
+  const sourceHashAfter = `sha256:${sha256Hex(editedDevice ?? '')}`;
+  const runtimeProofAccepted =
+    wait?.status === 'applied'
+    && proofValidation.satisfied === true
+    && ledgerValidation.gpuHmrSuccess === true
+    && Array.isArray(ledgerValidation.failedInvariants)
+    && ledgerValidation.failedInvariants.length === 0
+    && runtimeArtifactValidation.accepted === true;
+  const selectedArtifact = {
+    sourcePath: selectedPath,
+    sourceHashBefore,
+    sourceHashAfter,
+    proofIds,
+    runtimeProofAccepted,
+    runtimeProofArtifactValidation: runtimeArtifactValidation,
+    proofLedgerValidation: ledgerValidation,
+  };
+  const rolePaths = granularity.deviceRolePaths ?? [];
+  const outputOracleContract = deterministicVisualOracleContract({
+    visualDelta,
+    wait,
+    selectedPath,
+  });
+  const report = verifyGeneratedGpuSplitDeterministicFission({
+    assessment: granularity,
+    selectedPath,
+    changedPaths: [selectedPath],
+    selectedArtifact,
+    outputOracleContract,
+    abiCompatibilityClass: 'compatible',
+    unaffectedArtifactHashesBefore: roleHashMap(split.files, rolePaths, selectedPath),
+    unaffectedArtifactHashesAfter: roleHashMap(split.files, rolePaths, selectedPath),
+    excludedHostSources: [split.roles.core, split.roles.gui, split.roles.host_runner].map(cleanRel),
+    compilerArgsHash: `sha256:${sha256Hex(stableJson({
+      compileManifest: split.manifest,
+      gpuArch: CFG.gpuArch ?? null,
+      selectedPath,
+    }))}`,
+    compileTarget: CFG.gpuArch ?? split.manifest?.gpu?.arch?.[0] ?? null,
+    fullDeviceFallback: false,
+    hostRelinked: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  });
+  assertNoGeneratedSplitFissionOverclaim(report);
+  return report;
+}
+
+function gpuSplitEndpointEvidenceFromSidecar(split) {
+  const sidecar = split?.sidecar && typeof split.sidecar === 'object' ? split.sidecar : {};
+  const manifest = split?.manifest && typeof split.manifest === 'object' ? split.manifest : {};
+  const rolePaths = Object.values(split?.roles || {}).map(cleanRel).filter(Boolean);
+  const gpuManifestObserved = Boolean(manifest.gpu)
+    && rolePaths.some((filePath) => /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(filePath));
+  const sidecarReports = [
+    'agentic_split_report',
+    'generated_artifact_purity_report',
+    'device_mapping_report',
+    'deterministic_source_context_report',
+    'launch_indirection_report',
+    'model_provenance',
+  ].filter((key) => sidecar[key] && typeof sidecar[key] === 'object');
+  const generatedFilesObserved = rolePaths.length >= 5
+    && rolePaths.every((filePath) => split.files && Object.prototype.hasOwnProperty.call(split.files, filePath));
+  return {
+    observed: gpuManifestObserved && generatedFilesObserved,
+    detail: [
+      `gpu_manifest=${gpuManifestObserved}`,
+      `generated_files=${rolePaths.length}`,
+      `sidecar_reports=${sidecarReports.join('|') || 'none'}`,
+    ].join(' '),
+  };
+}
+
+function findMatchingBrace(source, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
     }
   }
-  const replacements = [
-    [/FLOW_DIRECTION\s+1\.0f/g, 'FLOW_DIRECTION -1.0f'],
-    [/FLOW_DIRECTION\s+1\.0/g, 'FLOW_DIRECTION -1.0'],
-    [/const\s+float\s+direction\s*=\s*1\.0f\s*;/g, 'const float direction = -1.0f;'],
-    [/const\s+float\s+direction\s*=\s*1\.0\s*;/g, 'const float direction = -1.0f;'],
-    [/\bx\s*\[\s*i\s*\]\s*\+=\s*dx\s*\/\s*len\s*\*\s*speed\s*;/g, 'x[i] -= dx / len * speed;'],
-    [/\by\s*\[\s*i\s*\]\s*\+=\s*dy\s*\/\s*len\s*\*\s*speed\s*;/g, 'y[i] -= dy / len * speed;'],
-    [/\bx\s*\[\s*i\s*\]\s*\+=\s*direction\s*\*\s*dx\s*\/\s*len\s*\*\s*speed\s*;/g, 'x[i] -= direction * dx / len * speed;'],
-    [/\by\s*\[\s*i\s*\]\s*\+=\s*direction\s*\*\s*dy\s*\/\s*len\s*\*\s*speed\s*;/g, 'y[i] -= direction * dy / len * speed;'],
-  ];
-  for (const [regex, replacement] of replacements) {
-    const edited = source.replace(regex, replacement);
-    if (edited !== source) return edited;
-  }
-  const nonce = BigInt(`0x${Buffer.from(`${Date.now()}:${source.length}`).toString('hex').slice(0, 16)}`);
-  const nonceDecl = `\n// Synthi GPU HMR validation edit: device-only artifact nonce.\n__device__ unsigned long long synthi_hmr_validation_nonce = ${nonce}ULL;\n`;
-  if (/synthi_hmr_validation_nonce\s*=/.test(source)) {
-    return source.replace(/synthi_hmr_validation_nonce\s*=\s*\d+ULL/g, `synthi_hmr_validation_nonce = ${nonce}ULL`);
-  }
-  return `${source.trimEnd()}\n${nonceDecl}`;
+  return -1;
 }
 
-async function persistGeneratedSplitToWorkspace(split) {
+function deviceKernelBodyRanges(source) {
+  const ranges = [];
+  const kernelRegex = /(?:extern\s+"C"\s+)?__global__\s+void\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*\{/g;
+  let match = null;
+  while ((match = kernelRegex.exec(source)) !== null) {
+    const openIndex = source.indexOf('{', match.index);
+    const closeIndex = openIndex >= 0 ? findMatchingBrace(source, openIndex) : -1;
+    if (openIndex >= 0 && closeIndex > openIndex) {
+      ranges.push({ kernelName: match[1], start: openIndex + 1, end: closeIndex });
+      kernelRegex.lastIndex = closeIndex + 1;
+    }
+  }
+  return ranges;
+}
+
+function formatFloatLiteral(value, suffix) {
+  const normalized = Object.is(value, -0) ? 0 : value;
+  const fixed = normalized.toFixed(6).replace(/\.?0+$/, '');
+  const withDecimal = fixed.includes('.') ? fixed : `${fixed}.0`;
+  return suffix ? `${withDecimal}f` : withDecimal;
+}
+
+function mutatedFloatLiteral(raw, attempt) {
+  const suffix = /f$/i.test(raw);
+  const numeric = Number(raw.replace(/f$/i, ''));
+  if (!Number.isFinite(numeric)) return null;
+  const magnitude = Math.max(Math.abs(numeric), 0.25);
+  const candidates = [
+    numeric === 0 ? 0.25 : -numeric,
+    numeric <= 0 ? magnitude * 0.35 : -magnitude * 0.35,
+    numeric + (numeric >= 0 ? magnitude * 0.5 : -magnitude * 0.5),
+    numeric === 0 ? -0.25 : numeric * 1.5,
+  ];
+  const next = candidates[Math.max(0, attempt) % candidates.length];
+  const rendered = formatFloatLiteral(next, suffix || raw.includes('.'));
+  return rendered === raw ? null : rendered;
+}
+
+function deviceScalarLiteralCandidates(source) {
+  const ranges = deviceKernelBodyRanges(source);
+  const candidates = [];
+  const literalRegex = /(^|[^A-Za-z0-9_])(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[fF]?)(?![A-Za-z0-9_])/g;
+  for (const range of ranges) {
+    const body = source.slice(range.start, range.end);
+    let match = null;
+    while ((match = literalRegex.exec(body)) !== null) {
+      const raw = match[2];
+      if (!(/[.]/.test(raw) || /f$/i.test(raw))) continue;
+      const start = range.start + match.index + match[1].length;
+      const end = start + raw.length;
+      const lineStart = source.lastIndexOf('\n', start) + 1;
+      const lineEndIndex = source.indexOf('\n', end);
+      const lineEnd = lineEndIndex >= 0 ? lineEndIndex : source.length;
+      const line = source.slice(lineStart, lineEnd);
+      const commentIndex = line.indexOf('//');
+      if (commentIndex >= 0 && start >= lineStart + commentIndex) continue;
+      const value = Number(raw.replace(/f$/i, ''));
+      if (!Number.isFinite(value)) continue;
+      let score = 0;
+      if (/\bconst\s+(?:float|double)\b/.test(line)) score += 100;
+      if (/\b(?:float|double)\s+[A-Za-z_]\w*\s*=/.test(line)) score += 50;
+      if (/[+\-*/]/.test(line)) score += 20;
+      if (Math.abs(value) >= 0.25) score += 10;
+      if (value === 0) score -= 40;
+      candidates.push({ kernelName: range.kernelName, start, end, raw, line: line.trim(), score });
+    }
+  }
+  return candidates.sort((a, b) => b.score - a.score || a.start - b.start);
+}
+
+function deviceScalarEdit(source, attempt = 0) {
+  const candidates = deviceScalarLiteralCandidates(source);
+  for (const candidate of candidates) {
+    const replacement = mutatedFloatLiteral(candidate.raw, attempt);
+    if (!replacement) continue;
+    const edited = `${source.slice(0, candidate.start)}${replacement}${source.slice(candidate.end)}`;
+    if (edited !== source) {
+      return {
+        edited,
+        mutation: {
+          kind: 'device_scalar_literal',
+          attempt,
+          kernelName: candidate.kernelName,
+          kernel_name: candidate.kernelName,
+          sourceSpan: { start: candidate.start, end: candidate.end },
+          source_span: { start: candidate.start, end: candidate.end },
+          before: candidate.raw,
+          after: replacement,
+          line: candidate.line,
+        },
+      };
+    }
+  }
+  return { edited: source, mutation: null };
+}
+
+function deviceEditHash({ selectedPath, beforeSource, afterSource, editKind }) {
+  return `sha256:${sha256Hex(stableJson({
+    selectedPath: cleanRel(selectedPath),
+    beforeHash: `sha256:${sha256Hex(beforeSource ?? '')}`,
+    afterHash: `sha256:${sha256Hex(afterSource ?? '')}`,
+    editKind,
+  }))}`;
+}
+
+function runModeProofId(value) {
+  return `agent-split-run-mode-proof:sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function negativeEditProofId(value) {
+  return `agent-split-negative-edit-refusal:sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function exposedSplitPath(filePath) {
+  const rel = cleanRel(filePath);
+  const prefix = '.synthi/generated/gpu/';
+  if (!rel.startsWith(prefix)) return null;
+  const suffix = rel.slice(prefix.length).split('/').filter(Boolean).join('/');
+  return suffix ? `${EXPOSED_SPLIT_DIR}/${suffix}` : null;
+}
+
+function exposedCompileManifest(manifest) {
+  const copy = JSON.parse(JSON.stringify(manifest || {}));
+  if (copy.module_files && typeof copy.module_files === 'object') {
+    for (const [role, filePath] of Object.entries(copy.module_files)) {
+      const exposed = exposedSplitPath(filePath);
+      if (exposed) copy.module_files[role] = exposed;
+    }
+  }
+  if (copy.gpu?.device_roles && Array.isArray(copy.gpu.device_roles)) {
+    copy.gpu.device_roles = copy.gpu.device_roles.map((role) => {
+      if (!role || typeof role !== 'object') return role;
+      const exposed = exposedSplitPath(role.path);
+      return exposed ? { ...role, path: exposed } : role;
+    });
+  }
+  return copy;
+}
+
+function visibleGpuSplitFiles(split, granularity = null) {
+  const files = [];
+  for (const [filePath, content] of Object.entries(split.files || {})) {
+    const exposed = exposedSplitPath(filePath);
+    if (exposed) files.push({ path: exposed, content });
+  }
+  if (!files.length) return files;
+  const manifest = exposedCompileManifest(split.manifest);
+  files.push({ path: 'synthi/build_manifest.json', content: JSON.stringify(manifest, null, 2) + '\n' });
+  if (granularity) {
+    files.push({
+      path: 'synthi/gpu_hmr_granularity.json',
+      content: JSON.stringify(granularity, null, 2) + '\n',
+    });
+  }
+  files.push({
+    path: `${EXPOSED_SPLIT_DIR}/README.md`,
+    content: [
+      '# GPU HMR Split Files',
+      '',
+      'These files are the visible editor surface for the generated GPU split.',
+      'Edit the device file here for the fast GPU HMR delta path.',
+      '',
+      'Granularity is manifest-derived. A single device file proves device-translation-unit HMR, not per-kernel or smallest-safe fission.',
+      'Smallest-safe fission requires a deterministic fission verifier report.',
+      'The internal `.synthi/` files remain implementation metadata.',
+      '',
+    ].join('\n'),
+  });
+  return files;
+}
+
+async function persistGeneratedSplitToWorkspace(split, granularity = null) {
   const files = Object.entries(split.files).map(([filePath, content]) => ({ path: filePath, content }));
   files.push({ path: '.synthi_split_meta.json', content: split.sidecarRaw });
   files.push({ path: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' });
+  if (granularity) {
+    files.push({
+      path: '.synthi/gpu_hmr_granularity.json',
+      content: JSON.stringify(granularity, null, 2) + '\n',
+    });
+  }
+  files.push(...visibleGpuSplitFiles(split, granularity));
   await writeFilesBatch({ slug: CFG.slug, files });
   record('persist generated split to workspace', 'pass', `${files.length} files`);
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: persist generated split' })
@@ -922,11 +1629,28 @@ async function persistGeneratedSplitToWorkspace(split) {
     .catch((e) => record('workspace commit generated split', 'warn', e.message.slice(0, 200)));
 }
 
-async function compileGeneratedDevice(split, editedDevice) {
+async function compileGeneratedDevice(split, editedDevice, options = {}) {
+  const previousDevice = split.files[split.roles.device];
+  const sourceBaselineProof = sourceBaselineProofFromSidecar(
+    split.sidecarRaw,
+    split.roles.device,
+    previousDevice,
+  );
+  if (!sourceBaselineProof.accepted) {
+    throw new Error(`generated split sidecar lacks compiler-emitted source baseline proof for ${split.roles.device}: ${sourceBaselineProof.failures.join('|')}`);
+  }
+  const sidecarRaw = split.sidecarRaw;
   split.files[split.roles.device] = editedDevice;
+  const editKind = options.editKind ?? 'gpu_artifact_edit';
+  const editHash = options.editHash ?? deviceEditHash({
+    selectedPath: split.roles.device,
+    beforeSource: previousDevice,
+    afterSource: editedDevice,
+    editKind,
+  });
   const allFiles = [
     ...Object.entries(split.files).map(([name, content]) => ({ name, content })),
-    { name: '.synthi_split_meta.json', content: split.sidecarRaw },
+    { name: '.synthi_split_meta.json', content: sidecarRaw },
     { name: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' },
   ];
   const additionalFiles = allFiles.filter((f) => cleanRel(f.name) !== cleanRel(split.roles.device));
@@ -934,7 +1658,7 @@ async function compileGeneratedDevice(split, editedDevice) {
     slug: CFG.slug,
     files: [{ path: split.roles.device, content: editedDevice }],
   });
-  return compileViaMcp({
+  const result = await compileViaMcp({
     language: 'cpp',
     filename: split.roles.device,
     source: editedDevice,
@@ -949,11 +1673,304 @@ async function compileGeneratedDevice(split, editedDevice) {
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hotSwapTimeoutMs);
+  }, CFG.hotSwapTimeoutMs, {
+    metricScope: options.metricScope ?? 'hot_delta_1',
+    cacheState: options.cacheState ?? 'compiler_cache_warm',
+    editId: options.editId ?? `device-edit:${sha256Hex(editHash).slice(0, 16)}`,
+    editHash,
+    editKind,
+    differentEdit: options.differentEdit === true,
+    waitRecordLabel: options.waitRecordLabel,
+  });
+  return {
+    ...result,
+    previousDevice,
+    editedDevice,
+    selectedPath: split.roles.device,
+    editHash,
+    editId: options.editId ?? `device-edit:${sha256Hex(editHash).slice(0, 16)}`,
+    editKind,
+    sourceBaselineProof,
+  };
 }
 
-async function assertMcpScreenshot(waitEvidence = null) {
+async function writeImageArtifact(name, imageData) {
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const file = path.join(ARTIFACT_DIR, `${name}.png`);
+  const buffer = Buffer.from(imageData, 'base64');
+  await writeFile(file, buffer);
+  return {
+    path: path.relative(process.cwd(), file),
+    hash: `sha256:${sha256BufferHex(buffer)}`,
+  };
+}
+
+async function writeJsonArtifact(name, value) {
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const file = path.join(ARTIFACT_DIR, `${name}.json`);
+  await writeFile(file, JSON.stringify(value, null, 2));
+  return path.relative(process.cwd(), file);
+}
+
+function withoutImageData(shot) {
+  if (!shot || typeof shot !== 'object') return shot;
+  const { imageData, ...rest } = shot;
+  return rest;
+}
+
+function artifactRel(name) {
+  return path.relative(process.cwd(), path.join(ARTIFACT_DIR, name));
+}
+
+function waitProofFields(result) {
+  const wait = result?.wait ?? {};
+  return {
+    gpuProofValidation: wait.gpu_proof_validation ?? null,
+    gpu_proof_validation: wait.gpu_proof_validation ?? null,
+    gpuProofTelemetry: wait.gpu_proof_telemetry ?? null,
+    gpu_proof_telemetry: wait.gpu_proof_telemetry ?? null,
+  };
+}
+
+function backendForSplit(split) {
+  const value = String(split?.manifest?.gpu?.vendor ?? CFG.gpuVendor ?? '').toLowerCase();
+  if (value === 'rocm' || value === 'amd' || value === 'hip') return 'hip';
+  if (value === 'cuda' || value === 'opencl' || value === 'vulkan' || value === 'webgpu') return value;
+  return 'unknown';
+}
+
+function runModeProofIdentity(split) {
+  return {
+    backend: backendForSplit(split),
+    targetId: CFG.fixture,
+    target_id: CFG.fixture,
+    profileId: CFG.fixture,
+    profile_id: CFG.fixture,
+  };
+}
+
+function ledgerFirewallFieldsFromProof(proof) {
+  const proofValidation = proof?.gpuProofValidation ?? proof?.gpu_proof_validation;
+  const ledgerValidation = proofValidation?.proofLedgerValidation;
+  const failedInvariants = Array.isArray(ledgerValidation?.failedInvariants)
+    ? ledgerValidation.failedInvariants
+    : null;
+  const ledgerAccepted =
+    proofValidation?.satisfied === true &&
+    ledgerValidation?.gpuHmrSuccess === true &&
+    failedInvariants !== null &&
+    failedInvariants.length === 0;
+  if (!ledgerAccepted) {
+    throw new Error('accepted run-mode proof requires full-runtime proof ledger validation with no failed invariants');
+  }
+  return {
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    firewallEvidenceSource: 'proof_ledger_invariant_query',
+    firewall_evidence_source: 'proof_ledger_invariant_query',
+    firewallProofLedgerId: ledgerValidation.proofId ?? null,
+    firewall_proof_ledger_id: ledgerValidation.proofId ?? null,
+  };
+}
+
+async function writeRunModeProofArtifact(name, proof) {
+  let seed = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+    ...proof,
+  };
+  const claimsRuntimeSuccess =
+    seed.acceptedForGpuHmr === true ||
+    seed.accepted_for_gpu_hmr === true ||
+    seed.gpuHmrSuccess === true ||
+    seed.gpu_hmr_success === true;
+  if (claimsRuntimeSuccess) {
+    seed = {
+      ...seed,
+      ...ledgerFirewallFieldsFromProof(seed),
+    };
+  }
+  const withProofId = {
+    ...seed,
+    proofId: runModeProofId(seed),
+  };
+  return writeJsonArtifact(name, withProofId);
+}
+
+async function writeNegativeEditRefusalArtifact(name, proof) {
+  const seed = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    firewallEvidenceSource: 'static_refusal_before_gpu_load',
+    firewall_evidence_source: 'static_refusal_before_gpu_load',
+    ...proof,
+  };
+  const withProofId = {
+    ...seed,
+    proofId: negativeEditProofId(seed),
+  };
+  return writeJsonArtifact(name, withProofId);
+}
+
+function negativeAbiChangingEdit(source) {
+  const kernelSignature = /((?:extern\s+"C"\s+)?__global__\s+void\s+[A-Za-z_]\w*\s*\()([^)]*)(\))/m;
+  const match = kernelSignature.exec(source);
+  if (!match) {
+    return {
+      accepted: false,
+      reasons: ['negative_edit_kernel_signature_not_found'],
+    };
+  }
+  const replacementArgs = `${match[2].trim()}${match[2].trim() ? ', ' : ''}int synthi_negative_abi_break`;
+  const edited = `${source.slice(0, match.index)}${match[1]}${replacementArgs}${match[3]}${source.slice(match.index + match[0].length)}`;
+  return {
+    accepted: true,
+    edited,
+    reasons: ['abi_compatibility_class_layout_changed', 'kernel_argument_added', 'gpu_hmr_rejected_before_load'],
+  };
+}
+
+async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
+  if (!beforeShot?.imageData || !afterShot?.imageData) {
+    throw new Error('visual delta requires saved before/after screenshot data');
+  }
+  const beforeInput = Buffer.from(beforeShot.imageData, 'base64');
+  const afterInput = Buffer.from(afterShot.imageData, 'base64');
+  const before = await sharp(beforeInput).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const after = await sharp(afterInput)
+    .resize(before.info.width, before.info.height, { fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const pixelCount = Math.max(1, before.info.width * before.info.height);
+  const diff = Buffer.alloc(pixelCount * 4);
+  let changed = 0;
+  let totalAbs = 0;
+  for (let i = 0, p = 0; i < before.data.length && i < after.data.length; i += before.info.channels, p += 4) {
+    const dr = Math.abs((before.data[i] ?? 0) - (after.data[i] ?? 0));
+    const dg = Math.abs((before.data[i + 1] ?? 0) - (after.data[i + 1] ?? 0));
+    const db = Math.abs((before.data[i + 2] ?? 0) - (after.data[i + 2] ?? 0));
+    const delta = dr + dg + db;
+    totalAbs += delta / 3;
+    if (delta > 42) changed += 1;
+    diff[p] = Math.min(255, dr * 4);
+    diff[p + 1] = Math.min(255, dg * 4);
+    diff[p + 2] = Math.min(255, db * 4);
+    diff[p + 3] = 255;
+  }
+  const changedRatio = changed / pixelCount;
+  const meanAbs = totalAbs / pixelCount;
+  if (diffPath) {
+    await sharp(diff, {
+      raw: {
+        width: before.info.width,
+        height: before.info.height,
+        channels: 4,
+      },
+    }).png().toFile(diffPath);
+  }
+  return { changedRatio, meanAbs };
+}
+
+async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'before-after-diff', recordLabel = 'mcp screenshot visual delta') {
+  const beforeSamples = [beforeShot?.first, beforeShot?.second, ...(beforeShot?.samples ?? [])]
+    .filter((sample, index, all) => sample?.imageData && all.findIndex((candidate) => candidate?.seq === sample.seq) === index);
+  const afterSamples = [afterShot?.first, afterShot?.second, ...(afterShot?.samples ?? [])]
+    .filter((sample, index, all) => sample?.imageData && all.findIndex((candidate) => candidate?.seq === sample.seq) === index)
+    .filter((sample) => sample.frameCaptureAfterEpochDispatch !== false);
+  if (!beforeSamples.length || !afterSamples.length) {
+    throw new Error('visual delta requires saved before/after screenshot data');
+  }
+
+  const baseline = beforeShot?.second?.imageData ? beforeShot.second : beforeSamples[beforeSamples.length - 1];
+  const control = beforeSamples.length >= 2
+    ? await screenshotDelta(beforeSamples[0], beforeSamples[beforeSamples.length - 1])
+    : { changedRatio: 0, meanAbs: 0 };
+  let best = null;
+  for (const candidate of afterSamples) {
+    const stats = await screenshotDelta(baseline, candidate);
+    if (!best || stats.changedRatio > best.changedRatio || (
+      stats.changedRatio === best.changedRatio && stats.meanAbs > best.meanAbs
+    )) {
+      best = {
+        ...stats,
+        shot: candidate,
+      };
+    }
+  }
+  const minChangedRatio = Math.max(0.01, control.changedRatio * 3 + 0.0025);
+  const minMeanAbs = Math.max(1.0, control.meanAbs * 3 + 0.25);
+  const ok = best && best.changedRatio > minChangedRatio && best.meanAbs > minMeanAbs;
+  const diffPath = path.join(ARTIFACT_DIR, `${diffArtifactName}.png`);
+  if (best) await screenshotDelta(baseline, best.shot, diffPath);
+  const firstAfterTs = afterSamples[0]?.ts || 0;
+  const selectedDeltaMs = firstAfterTs && best?.shot?.ts ? best.shot.ts - firstAfterTs : null;
+  const detail = best
+    ? `changed=${(best.changedRatio * 100).toFixed(2)}% mean_abs=${best.meanAbs.toFixed(2)} control_changed=${(control.changedRatio * 100).toFixed(2)}% control_mean_abs=${control.meanAbs.toFixed(2)} selected_seq=${best.shot.seq} selected_delta_ms=${selectedDeltaMs} diff=${path.relative(process.cwd(), diffPath)}`
+    : `no eligible post-HMR visual samples diff=${path.relative(process.cwd(), diffPath)}`;
+  record(recordLabel, ok ? 'pass' : 'fail', detail);
+  if (!ok) throw new Error(`visual delta too small: ${detail}`);
+  const baselineArtifact = await writeImageArtifact(`${diffArtifactName}-baseline`, baseline.imageData);
+  const selectedAfterArtifact = await writeImageArtifact(`${diffArtifactName}-selected-after`, best.shot.imageData);
+  const diffArtifact = {
+    path: path.relative(process.cwd(), diffPath),
+    hash: `sha256:${sha256BufferHex(await readFile(diffPath))}`,
+  };
+  const visualArtifacts = {
+    beforeImage: baselineArtifact.path,
+    beforeImageHash: baselineArtifact.hash,
+    afterImage: selectedAfterArtifact.path,
+    afterImageHash: selectedAfterArtifact.hash,
+    diffImage: diffArtifact.path,
+    diffImageHash: diffArtifact.hash,
+  };
+  const visualArtifactsSnake = {
+    before_image: baselineArtifact.path,
+    before_image_hash: baselineArtifact.hash,
+    after_image: selectedAfterArtifact.path,
+    after_image_hash: selectedAfterArtifact.hash,
+    diff_image: diffArtifact.path,
+    diff_image_hash: diffArtifact.hash,
+  };
+  return {
+    changedRatio: best.changedRatio,
+    meanAbs: best.meanAbs,
+    controlChangedRatio: control.changedRatio,
+    controlMeanAbs: control.meanAbs,
+    baselineSeq: baseline.seq,
+    baselineTs: baseline.ts,
+    selectedSeq: best.shot.seq,
+    selectedTs: best.shot.ts,
+    selectedDeltaMs,
+    selectedFrameCaptureAfterEpochDispatch: best.shot.frameCaptureAfterEpochDispatch,
+    selected_frame_capture_after_epoch_dispatch: best.shot.frameCaptureAfterEpochDispatch,
+    diffPath: path.relative(process.cwd(), diffPath),
+    visualArtifacts,
+    visual_artifacts: visualArtifactsSnake,
+  };
+}
+
+async function assertMcpScreenshot(
+  label = 'mcp screenshot after hmr',
+  artifactPrefix = 'after-hmr',
+  waitEvidence = null,
+  options = {},
+) {
   const state = await ensureMcpAttached();
+  let gateTokenConsumed = false;
+  let verifiedGateCapture = null;
   const analyzeImage = async (data) => {
     if (!data) return { bytes: 0, visiblePixels: 0, meanLuma: 0 };
     const bytes = Math.floor(data.length * 3 / 4);
@@ -978,7 +1995,8 @@ async function assertMcpScreenshot(waitEvidence = null) {
     return { bytes, visiblePixels, meanLuma: lumaTotal / pixels };
   };
   const capture = async () => {
-    const screenshotArgs = mcpScreenshotArgsForFrameGate(waitEvidence, {
+    const useFrameGate = waitEvidence && !gateTokenConsumed;
+    const screenshotArgs = mcpScreenshotArgsForFrameGate(useFrameGate ? waitEvidence : null, {
       freshnessMaxMs: 15000,
       frameGateTimeoutMs: CFG.frameGateTimeoutMs,
     });
@@ -987,20 +2005,38 @@ async function assertMcpScreenshot(waitEvidence = null) {
       screenshotArgs,
       Math.max(30000, CFG.frameGateTimeoutMs + 5000),
     );
+    if (screenshotArgs.after_frame_gate) gateTokenConsumed = true;
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
     const meta = mcpScreenshotMetadataFromToolResult(shot) || {};
+    const frameMeta = {
+      ...meta,
+      seq: Number(meta.seq || 0),
+      ts: Number(meta.ts || 0),
+    };
+    const gateTokenVerified = mcpFrameGateSatisfiedByScreenshot(waitEvidence, frameMeta);
+    if (gateTokenVerified) {
+      verifiedGateCapture = {
+        seq: frameMeta.seq,
+        ts: frameMeta.ts,
+      };
+    }
+    const frameAfterGate = !waitEvidence
+      ? false
+      : gateTokenVerified
+        || (verifiedGateCapture !== null
+          && mcpFrameAtOrAfterFrameGate(waitEvidence, frameMeta)
+          && frameMeta.seq >= verifiedGateCapture.seq
+          && frameMeta.ts >= verifiedGateCapture.ts);
     const analysis = await analyzeImage(image?.data);
     return {
       meta,
+      imageData: image?.data || '',
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
-      seq: Number(meta.seq || 0),
-      ts: Number(meta.ts || 0),
-      frameCaptureAfterEpochDispatch: mcpFrameGateSatisfiedByScreenshot(waitEvidence, {
-        ...meta,
-        seq: Number(meta.seq || 0),
-        ts: Number(meta.ts || 0),
-      }),
+      seq: frameMeta.seq,
+      ts: frameMeta.ts,
+      frameGateTokenVerified: gateTokenVerified,
+      frameCaptureAfterEpochDispatch: frameAfterGate,
       ...analysis,
     };
   };
@@ -1009,17 +2045,26 @@ async function assertMcpScreenshot(waitEvidence = null) {
     shot.height >= 240 &&
     shot.bytes > 512 &&
     shot.visiblePixels > 500;
-  const deadline = Date.now() + 15000;
+  const minVisibleSamples = Math.max(2, Number(options.minVisibleSamples ?? 2));
+  const captureWindowMs = Math.max(1000, Number(options.captureWindowMs ?? 15000));
+  const sampleIntervalMs = Math.max(50, Number(options.sampleIntervalMs ?? 500));
+  const deadline = Date.now() + captureWindowMs;
   const samples = [];
   while (Date.now() < deadline) {
     const shot = await capture();
     samples.push(shot);
-    if (samples.filter(isVisibleFrame).length >= 2) break;
-    await sleep(500);
+    const eligibleVisible = samples
+      .filter(isVisibleFrame)
+      .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
+    if (eligibleVisible.length >= minVisibleSamples) break;
+    await sleep(sampleIntervalMs);
   }
-  const visible = samples.filter(isVisibleFrame);
+  const visible = samples
+    .filter(isVisibleFrame)
+    .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
   const first = visible[0] ?? samples[0] ?? { meta: {}, width: 0, height: 0, seq: 0, bytes: 0, visiblePixels: 0, meanLuma: 0 };
-  const second = visible.find((shot) => shot.seq > first.seq) ?? visible[1] ?? samples[samples.length - 1] ?? first;
+  const second = [...visible].reverse().find((shot) => shot.seq > first.seq) ?? visible[1] ?? samples[samples.length - 1] ?? first;
+  const frameGateVerified = !waitEvidence || samples.some((sample) => sample.frameGateTokenVerified === true);
   const ok =
     isVisibleFrame(first) &&
     second.width === first.width &&
@@ -1027,15 +2072,34 @@ async function assertMcpScreenshot(waitEvidence = null) {
     second.bytes > 512 &&
     second.visiblePixels > 500 &&
     second.seq > first.seq &&
-    (!waitEvidence || second.frameCaptureAfterEpochDispatch === true);
+    frameGateVerified &&
+    (!waitEvidence || (
+      first.frameCaptureAfterEpochDispatch === true &&
+      second.frameCaptureAfterEpochDispatch === true
+    ));
+  let artifactDetail = '';
+  if (ok && CFG.captureArtifacts) {
+    const firstArtifact = await writeImageArtifact(`${artifactPrefix}-first`, first.imageData);
+    const secondArtifact = await writeImageArtifact(`${artifactPrefix}-second`, second.imageData);
+    const metaPath = await writeJsonArtifact(`${artifactPrefix}-metadata`, {
+      first: withoutImageData(first),
+      second: withoutImageData(second),
+      firstArtifact,
+      first_artifact: firstArtifact,
+      secondArtifact,
+      second_artifact: secondArtifact,
+    });
+    artifactDetail = ` images=${firstArtifact.path},${secondArtifact.path} metadata=${metaPath}`;
+  }
   record(
-    'mcp screenshot after hmr',
+    label,
     ok ? 'pass' : 'fail',
     ok
-      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`
+      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}${artifactDetail}`
       : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes} frame_gate_after=${second.frameCaptureAfterEpochDispatch}`,
   );
-  if (!ok) throw new Error('MCP screenshot after HMR did not return a valid frame');
+  if (!ok) throw new Error(`${label} did not return a valid frame`);
+  return { first, second, samples: visible };
 }
 
 async function run() {
@@ -1073,7 +2137,7 @@ async function run() {
   }
 
   const firstStart = await workerCheckpoint();
-  await compileViaMcp({
+  const initialCompileResult = await compileViaMcp({
     language: 'cpp',
     filename: 'main.cpp',
     source,
@@ -1087,7 +2151,13 @@ async function run() {
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hmrTimeoutMs);
+  }, CFG.hmrTimeoutMs, {
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split',
+    editHash: `sha256:${sha256Hex(source)}`,
+    editKind: 'cold_split',
+  });
   record('first compile via MCP', 'pass', 'use_ai_split=true prefer_gpu_pipeline=true');
 
   const sawGpuSplit = await awaitWorkerLogRegex(
@@ -1095,7 +2165,6 @@ async function run() {
     CFG.hmrTimeoutMs,
     firstStart,
   );
-  record('worker used GPU split endpoint', sawGpuSplit.matched ? 'pass' : 'fail', sawGpuSplit.snippet || 'no GPU split marker');
 
   const sawDeviceCompile = await awaitWorkerLogRegex(
     /compile-device.*(hipcc|nvcc)|Device sidecar reload vendor=.*result=Success/,
@@ -1103,15 +2172,78 @@ async function run() {
     firstStart,
   );
   record('generated device compiled', sawDeviceCompile.matched ? 'pass' : 'fail', sawDeviceCompile.snippet || 'no device compile marker');
+  if (!sawDeviceCompile.matched) {
+    throw new Error('initial GPU compile did not produce a device compile marker');
+  }
+
+  const baselineShot = CFG.captureArtifacts
+    ? await assertMcpScreenshot('mcp screenshot before hmr', 'before-hmr')
+    : null;
 
   const split = await readGeneratedSplit(vendor);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
-  validateGeneratedSplit(split);
-  await persistGeneratedSplitToWorkspace(split);
+  const splitEndpointEvidence = gpuSplitEndpointEvidenceFromSidecar(split);
+  record(
+    'worker used GPU split endpoint',
+    sawGpuSplit.matched || splitEndpointEvidence.observed ? 'pass' : 'fail',
+    sawGpuSplit.snippet || splitEndpointEvidence.detail || 'no GPU split marker or sidecar evidence',
+  );
+  if (!(sawGpuSplit.matched || splitEndpointEvidence.observed)) {
+    throw new Error('GPU split endpoint evidence missing after initial compile');
+  }
+  const granularity = validateGeneratedSplit(split);
+  const granularityPath = await writeJsonArtifact('generated-split-granularity', granularity);
+  record('generated split granularity artifact', 'pass', granularityPath);
+  await persistGeneratedSplitToWorkspace(split, granularity);
 
-  const editedDevice = flipDeviceDirection(split.files[split.roles.device]);
+  if (CFG.captureArtifacts && baselineShot) {
+    const coldPath = await writeRunModeProofArtifact('run-mode-cold-split', {
+      ...runModeProofIdentity(split),
+      coldSplitProven: true,
+      cold_split_proven: true,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      runMode: initialCompileResult.timingMetrics,
+      run_mode: initialCompileResult.timingMetrics,
+      timingMetrics: initialCompileResult.timingMetrics,
+      timing_metrics: initialCompileResult.timingMetrics,
+      visualArtifacts: {
+        beforeImage: artifactRel('before-hmr-first.png'),
+        afterImage: artifactRel('before-hmr-second.png'),
+      },
+      visual_artifacts: {
+        before_image: artifactRel('before-hmr-first.png'),
+        after_image: artifactRel('before-hmr-second.png'),
+      },
+      visualMetrics: {
+        visiblePixelCount: baselineShot.second?.visiblePixels ?? baselineShot.first?.visiblePixels ?? null,
+        meanAbsDelta8bit: baselineShot.second?.meanLuma ?? baselineShot.first?.meanLuma ?? null,
+      },
+    });
+    record('run-mode cold split proof artifact', 'pass', coldPath);
+  }
+
+  const hotDelta1Edit = deviceScalarEdit(split.files[split.roles.device], 0);
+  if (hotDelta1Edit.edited === split.files[split.roles.device]) {
+    throw new Error('hot delta 1 edit generator did not produce a distinct device source');
+  }
+  const editedDevice = hotDelta1Edit.edited;
   const secondStart = await workerCheckpoint();
-  const generatedDeviceResult = await compileGeneratedDevice(split, editedDevice);
+  const hotDelta1EditHash = deviceEditHash({
+    selectedPath: split.roles.device,
+    beforeSource: split.files[split.roles.device],
+    afterSource: editedDevice,
+    editKind: 'gpu_artifact_edit',
+  });
+  const generatedDeviceResult = await compileGeneratedDevice(split, editedDevice, {
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: `hot-delta-1:${sha256Hex(hotDelta1EditHash).slice(0, 16)}`,
+    editHash: hotDelta1EditHash,
+    editKind: 'gpu_artifact_edit',
+  });
   record('device edit compile via MCP', 'pass', split.roles.device);
 
   const sawSplitEdit = await awaitWorkerLogRegex(
@@ -1128,7 +2260,186 @@ async function run() {
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
-  await assertMcpScreenshot(generatedDeviceResult.wait);
+  const afterShot = await assertMcpScreenshot(
+    'mcp screenshot after hmr',
+    'after-hmr',
+    generatedDeviceResult.wait,
+    CFG.captureArtifacts && baselineShot
+      ? {
+          minVisibleSamples: CFG.visualDeltaMinSamples,
+          captureWindowMs: CFG.visualDeltaWindowMs,
+          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+        }
+      : {},
+  );
+  let visualDelta = null;
+  if (CFG.captureArtifacts && baselineShot) {
+    visualDelta = await assertVisualDelta(baselineShot, afterShot);
+    const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', {
+      ...runModeProofIdentity(split),
+      ...waitProofFields(generatedDeviceResult),
+      acceptedForGpuHmr: true,
+      accepted_for_gpu_hmr: true,
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      runMode: generatedDeviceResult.timingMetrics,
+      run_mode: generatedDeviceResult.timingMetrics,
+      timingMetrics: generatedDeviceResult.timingMetrics,
+      timing_metrics: generatedDeviceResult.timingMetrics,
+      deviceEditMutation: hotDelta1Edit.mutation,
+      device_edit_mutation: hotDelta1Edit.mutation,
+      sourceBaselineProof: generatedDeviceResult.sourceBaselineProof,
+      source_baseline_proof: generatedDeviceResult.sourceBaselineProof,
+      visualArtifacts: visualDelta.visualArtifacts,
+      visual_artifacts: visualDelta.visual_artifacts,
+      visualMetrics: {
+        changedPixelRatio: visualDelta.changedRatio,
+        meanAbsDelta8bit: visualDelta.meanAbs,
+        visiblePixelCount: afterShot.second?.visiblePixels ?? afterShot.first?.visiblePixels ?? null,
+        baselineSeq: visualDelta.baselineSeq,
+        selectedSeq: visualDelta.selectedSeq,
+        selectedFrameCaptureAfterEpochDispatch: visualDelta.selectedFrameCaptureAfterEpochDispatch,
+      },
+    });
+    record('run-mode hot delta 1 proof artifact', 'pass', hotDelta1Path);
+  }
+  const deterministicFission = verifyGeneratedSplitFissionAfterRuntime({
+    split,
+    granularity,
+    generatedDeviceResult,
+    visualDelta,
+    selectedPath: generatedDeviceResult.selectedPath,
+    previousDevice: generatedDeviceResult.previousDevice,
+    editedDevice: generatedDeviceResult.editedDevice,
+  });
+  const deterministicFissionPath = await writeJsonArtifact(
+    'generated-split-deterministic-fission',
+    deterministicFission,
+  );
+  record(
+    'generated split deterministic fission verifier',
+    'pass',
+    [
+      `accepted=${deterministicFission.deterministicFissionVerifier?.accepted === true}`,
+      `claim=${deterministicFission.acceptedClaim}`,
+      `selected=${deterministicFission.deterministicFissionVerifier?.selectedPath ?? 'none'}`,
+      `kernel=${deterministicFission.deterministicFissionVerifier?.selectedKernel ?? 'none'}`,
+      `artifact=${deterministicFissionPath}`,
+      `failures=${(deterministicFission.deterministicFissionVerifier?.failures ?? []).join('|')}`,
+    ].join(' '),
+  );
+
+  const hotDelta2Edit = deviceScalarEdit(generatedDeviceResult.editedDevice, 1);
+  const hotDelta2Device = hotDelta2Edit.edited;
+  if (hotDelta2Device === generatedDeviceResult.editedDevice) {
+    throw new Error('hot delta 2 edit generator did not produce a distinct device source');
+  }
+  const hotDelta2EditHash = deviceEditHash({
+    selectedPath: split.roles.device,
+    beforeSource: split.files[split.roles.device],
+    afterSource: hotDelta2Device,
+    editKind: 'different_gpu_edit',
+  });
+  const thirdStart = await workerCheckpoint();
+  const hotDelta2Result = await compileGeneratedDevice(split, hotDelta2Device, {
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: `hot-delta-2:${sha256Hex(hotDelta2EditHash).slice(0, 16)}`,
+    editHash: hotDelta2EditHash,
+    editKind: 'different_gpu_edit',
+    differentEdit: hotDelta2EditHash !== hotDelta1EditHash,
+    waitRecordLabel: 'mcp wait_hmr proof gate hot delta 2',
+  });
+  record('device edit compile via MCP hot delta 2', 'pass', split.roles.device);
+  const hotDelta2Reload = await awaitWorkerLogRegex(
+    /\[gpu-reload\].*plan=device_only|Device sidecar reload vendor=.*result=Success/,
+    CFG.hotSwapTimeoutMs + 30000,
+    thirdStart,
+  );
+  record('device-only GPU HMR observed hot delta 2', hotDelta2Reload.matched ? 'pass' : 'fail', hotDelta2Reload.snippet || 'no device-only reload marker');
+  const afterHotDelta2Shot = await assertMcpScreenshot(
+    'mcp screenshot after hmr hot delta 2',
+    'after-hmr-2',
+    hotDelta2Result.wait,
+    CFG.captureArtifacts && afterShot
+      ? {
+          minVisibleSamples: CFG.visualDeltaMinSamples,
+          captureWindowMs: CFG.visualDeltaWindowMs,
+          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+        }
+      : {},
+  );
+  if (CFG.captureArtifacts && afterShot) {
+    const hotDelta2VisualDelta = await assertVisualDelta(
+      afterShot,
+      afterHotDelta2Shot,
+      'hot-delta-2-diff',
+      'mcp screenshot visual delta hot delta 2',
+    );
+    const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', {
+      ...runModeProofIdentity(split),
+      ...waitProofFields(hotDelta2Result),
+      acceptedForGpuHmr: true,
+      accepted_for_gpu_hmr: true,
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      runMode: hotDelta2Result.timingMetrics,
+      run_mode: hotDelta2Result.timingMetrics,
+      timingMetrics: hotDelta2Result.timingMetrics,
+      timing_metrics: hotDelta2Result.timingMetrics,
+      deviceEditMutation: hotDelta2Edit.mutation,
+      device_edit_mutation: hotDelta2Edit.mutation,
+      sourceBaselineProof: hotDelta2Result.sourceBaselineProof,
+      source_baseline_proof: hotDelta2Result.sourceBaselineProof,
+      visualArtifacts: hotDelta2VisualDelta.visualArtifacts,
+      visual_artifacts: hotDelta2VisualDelta.visual_artifacts,
+      visualMetrics: {
+        changedPixelRatio: hotDelta2VisualDelta.changedRatio,
+        meanAbsDelta8bit: hotDelta2VisualDelta.meanAbs,
+        visiblePixelCount: afterHotDelta2Shot.second?.visiblePixels ?? afterHotDelta2Shot.first?.visiblePixels ?? null,
+        baselineSeq: hotDelta2VisualDelta.baselineSeq,
+        selectedSeq: hotDelta2VisualDelta.selectedSeq,
+        selectedFrameCaptureAfterEpochDispatch: hotDelta2VisualDelta.selectedFrameCaptureAfterEpochDispatch,
+      },
+    });
+    record('run-mode hot delta 2 proof artifact', 'pass', hotDelta2Path);
+  }
+
+  const negativeEdit = negativeAbiChangingEdit(split.files[split.roles.device]);
+  if (negativeEdit.accepted) {
+    const negativeEditHash = deviceEditHash({
+      selectedPath: split.roles.device,
+      beforeSource: split.files[split.roles.device],
+      afterSource: negativeEdit.edited,
+      editKind: 'negative_edit',
+    });
+    const negativePath = await writeNegativeEditRefusalArtifact('negative-edit-refusal', {
+      ...runModeProofIdentity(split),
+      reasons: negativeEdit.reasons,
+      unsupportedReasons: negativeEdit.reasons,
+      unsupported_reasons: negativeEdit.reasons,
+      runMode: {
+        schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+        metricClock: 'monotonic_ns',
+        metric_clock: 'monotonic_ns',
+        metricScope: 'hot_delta_2',
+        metric_scope: 'hot_delta_2',
+        cacheState: 'compiler_cache_warm',
+        cache_state: 'compiler_cache_warm',
+        editId: `negative-edit:${sha256Hex(negativeEditHash).slice(0, 16)}`,
+        edit_id: `negative-edit:${sha256Hex(negativeEditHash).slice(0, 16)}`,
+        editHash: negativeEditHash,
+        edit_hash: negativeEditHash,
+        editKind: 'negative_edit',
+        edit_kind: 'negative_edit',
+        differentEdit: true,
+        different_edit: true,
+      },
+    });
+    record('negative ABI edit refused before GPU HMR', 'pass', negativePath);
+  } else {
+    record('negative ABI edit refused before GPU HMR', 'warn', negativeEdit.reasons.join('|'));
+  }
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});
@@ -1143,9 +2454,16 @@ async function run() {
 
 async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
+  await mkdir(ARTIFACT_DIR, { recursive: true });
   await writeFile(RESULTS_JSON, JSON.stringify(results, null, 2));
-  await writeFile(RESULTS_TXT, results.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`).join('\n') + '\n');
+  const resultText = results.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`).join('\n') + '\n';
+  await writeFile(RESULTS_TXT, resultText);
+  const archivedJson = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`);
+  const archivedTxt = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`);
+  await writeFile(archivedJson, JSON.stringify(results, null, 2));
+  await writeFile(archivedTxt, resultText);
   console.log(`results: ${RESULTS_TXT}`);
+  console.log(`archived results: ${archivedTxt}`);
 }
 
 run()

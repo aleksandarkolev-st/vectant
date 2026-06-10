@@ -350,7 +350,8 @@ _GPU_HOST_TO_DEVICE_COPY_RE = re.compile(
     re.DOTALL,
 )
 _GPU_DEVICE_TO_HOST_COPY_RE = re.compile(
-    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyDeviceToHost|hipMemcpyDeviceToHost)\b",
+    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyDeviceToHost|hipMemcpyDeviceToHost)\b"
+    r"|\b(?:cuMemcpyDtoH|cudaMemcpyDtoH|hipMemcpyDtoH|oroMemcpyDtoH|oroMemcpyDtoHAsync|oroMemcpy_dtoh)\s*\(",
     re.DOTALL,
 )
 _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
@@ -2528,7 +2529,14 @@ def verify_split_output(
                         for entry in entries
                         if entry.strip()
                     ]
-                    if generated_arg_identities not in source_launch_args:
+                    if not any(
+                        _launch_args_match_source_option(
+                            generated_arg_identities,
+                            option,
+                            core_source,
+                        )
+                        for option in source_launch_args
+                    ):
                         expected = " or ".join(
                             "{" + ", ".join(args) + "}" for args in source_launch_args[:3]
                         )
@@ -3002,6 +3010,7 @@ def verify_split_output(
         )
 
     synthi_launch_count = 0
+    generated_launch_kernels: Set[str] = set()
     for host_path in (core_path, gui_path, host_runner_path):
         src = files.get(host_path)
         if not src:
@@ -3044,6 +3053,7 @@ def verify_split_output(
             kernel = _launch_kernel_name(launch.kernel_arg)
             if not kernel:
                 continue
+            generated_launch_kernels.add(kernel)
             if kernel not in declared_kernels:
                 violations.append(
                     Violation(
@@ -3079,6 +3089,54 @@ def verify_split_output(
                         offending_symbol=kernel,
                     )
                 )
+
+    source_declared_launch_kernels = {
+        kernel
+        for kernel in source_launch_kernels
+        if kernel in declared_kernels
+    }
+    missing_source_launch_kernels = sorted(
+        source_declared_launch_kernels - generated_launch_kernels
+    )
+    for kernel in missing_source_launch_kernels:
+        violations.append(
+            Violation(
+                rule="source_launch_kernel_not_preserved",
+                message=(
+                    f"The source launch graph contains kernel {kernel!r}, "
+                    "but the generated host roles never launch it through "
+                    "synthi_gpu_launch(...). Preserve every source-reachable "
+                    "launch path through Synthi's launch indirection boundary, "
+                    "or reject the split as unsupported instead of returning "
+                    "an inert generated runtime."
+                ),
+                offending_module=core_path,
+                offending_symbol=kernel,
+            )
+        )
+
+    source_requires_host_readback = bool(
+        _GPU_DEVICE_TO_HOST_COPY_RE.search(mask_comments_for_parsing(source_blob))
+    )
+    generated_preserves_host_readback = any(
+        _GPU_DEVICE_TO_HOST_COPY_RE.search(mask_comments_for_parsing(files.get(path) or ""))
+        for path in (core_path, gui_path, host_runner_path)
+    )
+    if source_requires_host_readback and not generated_preserves_host_readback:
+        violations.append(
+            Violation(
+                rule="source_device_to_host_readback_not_preserved",
+                message=(
+                    "The source uses a host-visible DeviceToHost readback path, "
+                    "but generated host roles do not preserve any equivalent "
+                    "cudaMemcpy/hipMemcpy DeviceToHost copy. Preserve the real "
+                    "readback on the generated update/render path so visual "
+                    "output is produced from GPU state, not from stale or "
+                    "host-fabricated mirrors."
+                ),
+                offending_module=core_path,
+            )
+        )
 
     source_preserved_mapping_only = _device_role_is_source_preserved_mapping_only(
         declared_kernels=declared_kernels,
@@ -3251,6 +3309,89 @@ def _normalize_launch_arg_identity(expr: str) -> str:
             break
         text = inner
     return re.sub(r"\s+", "", text)
+
+
+def _strip_generated_state_qualifiers(expr: str) -> str:
+    return re.sub(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*(?:->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)",
+        r"\1",
+        expr,
+    )
+
+
+def _local_expression_bindings(source: str) -> dict[str, str]:
+    masked = mask_comments_for_parsing(source)
+    bindings: dict[str, str] = {}
+    declaration_types = (
+        r"auto|bool|char|short|int|long|float|double|size_t|uint(?:8|16|32|64)_t|"
+        r"int(?:8|16|32|64)_t|unsigned(?:\s+long\s+long|\s+long|\s+int)?|"
+        r"unsigned\s+long\s+long|long\s+long"
+    )
+    for match in re.finditer(
+        rf"\b(?:const\s+|constexpr\s+|static\s+)*"
+        rf"(?:{declaration_types})"
+        rf"(?:\s+const)?(?:\s*[*&])?\s+"
+        rf"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>[^;{{}}]+)\s*;",
+        masked,
+    ):
+        bindings[match.group("name")] = match.group("expr").strip()
+    for match in re.finditer(
+        r"(?<![=!<>])\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>[^;{}]+)\s*;",
+        masked,
+    ):
+        bindings.setdefault(match.group("name"), match.group("expr").strip())
+    return bindings
+
+
+def _launch_arg_expression_matches(
+    generated_arg: str,
+    source_arg: str,
+    core_source: str,
+    bindings: Optional[Mapping[str, str]] = None,
+    depth: int = 0,
+) -> bool:
+    if depth > 4:
+        return False
+    generated = _normalize_launch_arg_identity(generated_arg)
+    source = _normalize_launch_arg_identity(source_arg)
+    if generated == source:
+        return True
+    if _strip_generated_state_qualifiers(generated) == source:
+        return True
+
+    bindings = bindings or _local_expression_bindings(core_source)
+    bound_expr = bindings.get(generated)
+    if not bound_expr:
+        return False
+    bound = _normalize_launch_arg_identity(bound_expr)
+    if bound == source or _strip_generated_state_qualifiers(bound) == source:
+        return True
+    return _launch_arg_expression_matches(
+        bound,
+        source,
+        core_source,
+        bindings,
+        depth + 1,
+    )
+
+
+def _launch_args_match_source_option(
+    generated_args: List[str],
+    source_args: List[str],
+    core_source: str,
+) -> bool:
+    if len(generated_args) != len(source_args):
+        return False
+    bindings = _local_expression_bindings(core_source)
+    return all(
+        _launch_arg_expression_matches(
+            generated,
+            source,
+            core_source,
+            bindings,
+        )
+        for generated, source in zip(generated_args, source_args)
+    )
 
 
 def _collect_new_kernels(
