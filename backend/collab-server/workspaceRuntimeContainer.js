@@ -135,7 +135,45 @@ function createRuntimeManager({
     }
   }
 
-  return { ensureRuntimeContainer, touch, teardown, cullIdle, _sessions: sessions };
+  async function execInRuntime(slug, userId, { command, env = {}, tty = true } = {}) {
+    const s = sessions.get(keyOf(slug, userId));
+    if (!s) throw new Error('runtime container not started');
+    s.lastActive = Date.now();
+
+    const Env = Object.entries(env)
+      .filter(([k, v]) => typeof k === 'string' && v != null)
+      .map(([k, v]) => `${k}=${v}`);
+
+    const exec = await docker.getContainer(s.containerId).exec({
+      Cmd: ['/bin/sh', '-lc', String(command)],
+      Env,
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: tty,
+      WorkingDir: '/workspace',
+    });
+    const stream = await exec.start({ hijack: true, stdin: true, Tty: tty });
+
+    const dataCbs = new Set();
+    const exitCbs = new Set();
+    stream.on('data', (chunk) => { for (const cb of dataCbs) cb(chunk.toString('utf8')); });
+    stream.on('end', async () => {
+      let exitCode = null;
+      try { exitCode = (await exec.inspect()).ExitCode; } catch (_) {}
+      for (const cb of exitCbs) cb({ exitCode });
+    });
+
+    const ptyProcess = {
+      onData: (cb) => { dataCbs.add(cb); return { dispose: () => dataCbs.delete(cb) }; },
+      onExit: (cb) => { exitCbs.add(cb); return { dispose: () => exitCbs.delete(cb) }; },
+      write: (data) => { try { stream.write(data); } catch (_) {} },
+      kill: () => { try { stream.end(); } catch (_) {} },
+    };
+    return { ptyProcess, stop: () => ptyProcess.kill() };
+  }
+
+  return { ensureRuntimeContainer, touch, teardown, cullIdle, execInRuntime, _sessions: sessions };
 }
 
 module.exports = {

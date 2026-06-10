@@ -96,3 +96,15 @@ test('ensureRuntimeContainer enforces the max-container cap', async () => {
   await mgr.ensureRuntimeContainer('a', 'u1');
   await assert.rejects(() => mgr.ensureRuntimeContainer('b', 'u2'), /cap reached/i);
 });
+
+test('execInRuntime returns a ptyProcess-shaped handle (onData/onExit/kill)', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+  const handle = await mgr.execInRuntime('repo', 'u1', { command: 'echo hi', env: { FOO: 'bar' } });
+  assert.equal(typeof handle.ptyProcess.onData, 'function');
+  assert.equal(typeof handle.ptyProcess.onExit, 'function');
+  assert.equal(typeof handle.ptyProcess.kill, 'function');
+  const d = handle.ptyProcess.onData(() => {});
+  assert.equal(typeof d.dispose, 'function');
+});
