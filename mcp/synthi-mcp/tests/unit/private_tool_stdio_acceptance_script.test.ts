@@ -4,8 +4,11 @@ import {
   buildStdioMcpEnv,
   mcpCommandConformance,
   parseBooleanFlag,
+  parseJsonObjectArgument,
   resolveMcpServerCommandSpec,
+  resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
+  selectPrivateToolForAcceptance,
   selectCdpTargetsToClose,
   strictHostValidateToolArgs,
   stdioAcceptanceAttachEvidence,
@@ -118,6 +121,74 @@ describe("private-tool stdio acceptance harness", () => {
     });
   });
 
+  it("resolves external private workflow stores only when the scoped encrypted store is complete", () => {
+    expect(resolvePrivateToolStoreSpec({
+      args: {},
+      env: {},
+      defaultFile: "/tmp/default-private-tools.enc.json",
+      defaultKey: "default-key",
+      defaultScope: "default-scope",
+    })).toEqual({
+      file: "/tmp/default-private-tools.enc.json",
+      key: "default-key",
+      scope: "default-scope",
+      external: false,
+    });
+
+    expect(resolvePrivateToolStoreSpec({
+      args: {
+        "private-tool-store-file": "/srv/synthi/private-tools.enc.json",
+        "private-tool-store-key": "external-key",
+        "private-tool-store-scope": "workspace-scope",
+      },
+      env: {},
+      defaultFile: "/tmp/default-private-tools.enc.json",
+      defaultKey: "default-key",
+      defaultScope: "default-scope",
+    })).toEqual({
+      file: "/srv/synthi/private-tools.enc.json",
+      key: "external-key",
+      scope: "workspace-scope",
+      external: true,
+    });
+
+    expect(() => resolvePrivateToolStoreSpec({
+      args: { "private-tool-store-file": "/srv/synthi/private-tools.enc.json" },
+      env: {},
+      defaultFile: "/tmp/default-private-tools.enc.json",
+      defaultKey: "default-key",
+      defaultScope: "default-scope",
+    })).toThrow("private_tool_store_config_incomplete");
+  });
+
+  it("selects private workflow tools deterministically", () => {
+    const tools = [
+      { name: "synthi_browser_open" },
+      { name: "synthi_app_create_invoice" },
+      { name: "synthi_app_export_csv" },
+    ];
+
+    expect(selectPrivateToolForAcceptance({
+      tools,
+      requestedToolName: "synthi_app_export_csv",
+    }).name).toBe("synthi_app_export_csv");
+    expect(selectPrivateToolForAcceptance({
+      tools,
+      seededToolName: "synthi_app_create_invoice",
+    }).name).toBe("synthi_app_create_invoice");
+    expect(selectPrivateToolForAcceptance({
+      tools: [{ name: "synthi_app_single" }],
+    }).name).toBe("synthi_app_single");
+    expect(() => selectPrivateToolForAcceptance({ tools })).toThrow("private_workflow_tool_ambiguous");
+    expect(() => selectPrivateToolForAcceptance({
+      tools,
+      requestedToolName: "synthi_app_missing",
+    })).toThrow("private_workflow_tool_not_found");
+    expect(() => selectPrivateToolForAcceptance({
+      tools: [{ name: "synthi_browser_open" }],
+    })).toThrow("private_workflow_tool_missing");
+  });
+
   it("parses explicit boolean flags for conformance gates", () => {
     expect(parseBooleanFlag(undefined)).toBe(false);
     expect(parseBooleanFlag("")).toBe(false);
@@ -127,6 +198,15 @@ describe("private-tool stdio acceptance harness", () => {
     expect(parseBooleanFlag("1")).toBe(true);
     expect(parseBooleanFlag("true")).toBe(true);
     expect(parseBooleanFlag("yes")).toBe(true);
+  });
+
+  it("parses structured JSON object arguments without accepting arrays or strings", () => {
+    expect(parseJsonObjectArgument("{\"run_mode\":\"prefixOnly\",\"confirm_mutation\":false}", "tool_args")).toEqual({
+      run_mode: "prefixOnly",
+      confirm_mutation: false,
+    });
+    expect(() => parseJsonObjectArgument("[\"run_mode\"]", "tool_args")).toThrow("tool_args_must_be_object");
+    expect(() => parseJsonObjectArgument("not-json", "tool_args")).toThrow("tool_args_invalid_json");
   });
 
   it("can require host conformance to use a non-loopback runtime endpoint", () => {

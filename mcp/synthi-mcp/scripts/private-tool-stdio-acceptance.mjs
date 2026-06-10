@@ -34,6 +34,10 @@ const CFG = {
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TIMEOUT_MS || 60_000),
   requireCustomMcpCommand: parseBooleanFlag(args["require-custom-mcp-command"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND),
   requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
+  toolName: args["tool-name"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME || "",
+  toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}"),
+  expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
+  expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
   mcpCommand: resolveMcpServerCommandSpec({
     args,
     env: process.env,
@@ -65,16 +69,24 @@ async function main() {
   });
 
   await mkdir(CFG.outDir, { recursive: true });
-  const fixture = CFG.targetUrl ? null : await startFixtureServer();
-  const targetUrl = CFG.targetUrl || fixture.url;
   const workspaceId = CFG.workspaceId || `stdio-private-tool-acceptance-${process.pid}`;
   const artifactDir = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tool-stdio-"));
-  const storeFile = path.join(artifactDir, "private-tools.enc.json");
-  const storeKey = `stdio-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const storeScope = `stdio-acceptance-${process.pid}`;
+  const privateToolStore = resolvePrivateToolStoreSpec({
+    args,
+    env: process.env,
+    defaultFile: path.join(artifactDir, "private-tools.enc.json"),
+    defaultKey: `stdio-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    defaultScope: `stdio-acceptance-${process.pid}`,
+  });
+  if (privateToolStore.external && !CFG.targetUrl.trim()) {
+    throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
+  }
+  const fixture = privateToolStore.external || CFG.targetUrl ? null : await startFixtureServer();
+  const targetUrl = CFG.targetUrl || fixture.url;
+  const expectedText = CFG.expectedText ?? (privateToolStore.external ? "" : "Details opened");
   const authStoreFile = path.join(artifactDir, "auth-checkpoints.enc.json");
   const authStoreKey = `stdio-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const secretValues = [storeKey, authStoreKey, CFG.cdpUrl];
+  const secretValues = [privateToolStore.key, authStoreKey, CFG.cdpUrl];
   const transcript = {
     generated_at: new Date().toISOString(),
     cdp_url: redactCdpUrl(CFG.cdpUrl),
@@ -94,27 +106,49 @@ async function main() {
       non_loopback_runtime: runtimeConformance.non_loopback_runtime,
       runtime_host_class: runtimeConformance.runtime_host_class,
     },
+    private_tool_store: {
+      external: privateToolStore.external,
+      file: privateToolStore.file,
+      scope: privateToolStore.scope,
+    },
+    acceptance: {
+      requested_tool_name: CFG.toolName || null,
+      tool_args_keys: Object.keys(CFG.toolArgs).sort(),
+      expected_steps_min: CFG.expectedStepsMin,
+      expected_text_required: Boolean(expectedText),
+    },
     steps: [],
   };
 
   let client;
   let proc;
   try {
-    const seeded = await seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl });
-    transcript.seeded = seeded;
-    log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
+    const seeded = privateToolStore.external
+      ? null
+      : await seedPrivateWorkflowStore({
+        storeFile: privateToolStore.file,
+        storeKey: privateToolStore.key,
+        storeScope: privateToolStore.scope,
+        targetUrl,
+      });
+    if (seeded) {
+      transcript.seeded = seeded;
+      log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
+    } else {
+      log("ok", `use existing private workflow store - scope=${privateToolStore.scope}`);
+    }
 
     await pruneExistingCdpPageTargets(CFG.cdpUrl);
     proc = spawn(CFG.mcpCommand.command, CFG.mcpCommand.args, {
       cwd: CFG.mcpCommand.cwd,
       env: buildStdioMcpEnv({
         baseEnv: process.env,
-        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: storeFile,
-        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: storeKey,
-        SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: storeScope,
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: privateToolStore.file,
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: privateToolStore.key,
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: privateToolStore.scope,
         SYNTHI_AUTH_CHECKPOINT_STORE_FILE: authStoreFile,
         SYNTHI_AUTH_CHECKPOINT_STORE_KEY: authStoreKey,
-        SYNTHI_AUTH_CHECKPOINT_SCOPE: storeScope,
+        SYNTHI_AUTH_CHECKPOINT_SCOPE: privateToolStore.scope,
         SYNTHI_HOSTED_BROWSER_CDP_URL: CFG.cdpUrl,
         SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: targetUrl,
         SYNTHI_WORKSPACE_ID: workspaceId,
@@ -156,8 +190,11 @@ async function main() {
 
     const listed = await client.request("tools/list", {});
     const tools = Array.isArray(listed?.tools) ? listed.tools : [];
-    const privateTool = tools.find((tool) => typeof tool?.name === "string" && tool.name.startsWith("synthi_app_"));
-    assert(privateTool, `private workflow tool missing from tools/list (${tools.length} tools)`);
+    const privateTool = selectPrivateToolForAcceptance({
+      tools,
+      requestedToolName: CFG.toolName,
+      seededToolName: seeded?.tool_name || "",
+    });
     transcript.steps.push({
       name: "discover private MCP tool",
       ok: true,
@@ -170,13 +207,13 @@ async function main() {
     const strictRejectedScriptPath = strictHostValidateToolArgs(privateTool.inputSchema, {
       script_path: "generated-workflow-script-is-not-a-tool-argument",
     });
-    assert.deepEqual(strictRejectedScriptPath, ["additional_property:script_path"]);
+    assert(strictRejectedScriptPath.includes("additional_property:script_path"), `script_path should be rejected by private tool schema: ${JSON.stringify(strictRejectedScriptPath)}`);
     const strictRejectedRunMode = strictHostValidateToolArgs(privateTool.inputSchema, {
       run_mode: "desktopChrome",
     });
-    assert.deepEqual(strictRejectedRunMode, ["enum:run_mode"]);
-    const strictAcceptedCall = strictHostValidateToolArgs(privateTool.inputSchema, {});
-    assert.deepEqual(strictAcceptedCall, []);
+    assert(strictRejectedRunMode.includes("enum:run_mode"), `invalid run_mode should be rejected by private tool schema: ${JSON.stringify(strictRejectedRunMode)}`);
+    const strictAcceptedCall = strictHostValidateToolArgs(privateTool.inputSchema, CFG.toolArgs);
+    assert.deepEqual(strictAcceptedCall, [], `configured tool args rejected by private tool schema: ${JSON.stringify(strictAcceptedCall)}`);
     transcript.steps.push({
       name: "strict host schema validation before execution",
       ok: true,
@@ -184,7 +221,7 @@ async function main() {
         { arguments: ["script_path"], errors: strictRejectedScriptPath },
         { arguments: ["run_mode"], errors: strictRejectedRunMode },
       ],
-      accepted_empty_call: true,
+      accepted_configured_call: true,
     });
     log("ok", "strict host schema validation before execution");
 
@@ -248,24 +285,28 @@ async function main() {
     transcript.steps.push({ name: "open target page", ok: true, tab: opened.parsed?.tab ?? null });
     log("ok", `open target page - tab=${tabId}`);
 
-    const run = await client.toolCall(privateTool.name, {});
+    const run = await client.toolCall(privateTool.name, CFG.toolArgs);
     assertToolOk(run, "call discovered private workflow tool");
     assert.equal(run.parsed?.private_tool?.tool_name, privateTool.name);
-    assert.equal(run.parsed?.private_tool?.run_mode, "sameSession");
-    assert.equal(run.parsed?.replay?.steps_run, 1);
+    const expectedRunMode = typeof CFG.toolArgs.run_mode === "string" ? CFG.toolArgs.run_mode : "sameSession";
+    assert.equal(run.parsed?.private_tool?.run_mode, expectedRunMode);
+    assert(Number(run.parsed?.replay?.steps_run) >= CFG.expectedStepsMin, `private workflow ran too few steps: expected at least ${CFG.expectedStepsMin}, got ${run.parsed?.replay?.steps_run}`);
     transcript.steps.push({ name: "call discovered private MCP tool", ok: true, result: run.parsed });
     log("ok", `call discovered private MCP tool - steps=${run.parsed?.replay?.steps_run}`);
 
     const snapshot = await client.toolCall("synthi_browser_snapshot", { tab_id: tabId });
     assertToolOk(snapshot, "snapshot after private tool run");
     const dom = JSON.stringify(snapshot.parsed?.snapshot?.dom ?? {});
-    assert(dom.includes("Details opened"), "snapshot DOM did not show workflow effect");
+    if (expectedText) {
+      assert(dom.includes(expectedText), `snapshot DOM did not include expected postcondition text: ${expectedText}`);
+    }
     const screenshotPath = await writeSnapshotScreenshot(snapshot.parsed?.snapshot, CFG.outDir);
     transcript.steps.push({
       name: "visual proof snapshot",
       ok: true,
       screenshot_path: screenshotPath,
       url: snapshot.parsed?.snapshot?.url ?? null,
+      expected_text: expectedText || null,
     });
     log("ok", `visual proof snapshot - ${screenshotPath}`);
 
@@ -610,6 +651,56 @@ function parseArgs(argv) {
   return parsed;
 }
 
+export function selectPrivateToolForAcceptance({ tools, requestedToolName = "", seededToolName = "" }) {
+  const privateTools = Array.isArray(tools)
+    ? tools.filter((tool) => typeof tool?.name === "string" && tool.name.startsWith("synthi_app_"))
+    : [];
+  const preferredName = String(requestedToolName || seededToolName || "").trim();
+  if (preferredName) {
+    const tool = privateTools.find((candidate) => candidate.name === preferredName);
+    if (!tool) {
+      throw new Error(`private_workflow_tool_not_found: ${preferredName}`);
+    }
+    return tool;
+  }
+  if (privateTools.length === 1) return privateTools[0];
+  if (privateTools.length === 0) {
+    throw new Error(`private_workflow_tool_missing: no synthi_app_* tools were advertised in tools/list (${Array.isArray(tools) ? tools.length : 0} total tools)`);
+  }
+  throw new Error(`private_workflow_tool_ambiguous: pass --tool-name or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME (${privateTools.map((tool) => tool.name).join(", ")})`);
+}
+
+export function resolvePrivateToolStoreSpec({
+  args = {},
+  env = process.env,
+  defaultFile,
+  defaultKey,
+  defaultScope,
+} = {}) {
+  const file = args["private-tool-store-file"]
+    || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_PRIVATE_TOOL_STORE_FILE
+    || env.SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE
+    || "";
+  const key = args["private-tool-store-key"]
+    || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_PRIVATE_TOOL_STORE_KEY
+    || env.SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY
+    || "";
+  const scope = args["private-tool-store-scope"]
+    || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_PRIVATE_TOOL_STORE_SCOPE
+    || env.SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE
+    || "";
+  const external = Boolean(file || key || scope);
+  if (external && (!file || !key || !scope)) {
+    throw new Error("private_tool_store_config_incomplete: provide file, key, and scope for an external private workflow store");
+  }
+  return {
+    file: path.resolve(String(file || defaultFile)),
+    key: String(key || defaultKey),
+    scope: String(scope || defaultScope),
+    external,
+  };
+}
+
 export function resolveMcpServerCommandSpec({
   args = {},
   env = process.env,
@@ -724,6 +815,32 @@ function parseMcpCommandArgsJson(value) {
   }
   if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
     throw new Error("mcp_args_json_must_be_string_array");
+  }
+  return parsed;
+}
+
+export function parseJsonObjectArgument(value, label = "json_object_argument") {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(value));
+  } catch {
+    throw new Error(`${label}_invalid_json`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label}_must_be_object`);
+  }
+  return parsed;
+}
+
+function normalizeOptionalText(value) {
+  if (value === undefined || value === null) return null;
+  return String(value);
+}
+
+function parseNonNegativeInteger(value, label) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${label}_must_be_non_negative_integer`);
   }
   return parsed;
 }
