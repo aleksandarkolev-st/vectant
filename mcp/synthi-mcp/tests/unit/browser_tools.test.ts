@@ -1455,6 +1455,7 @@ describe("browser MCP tool surface", () => {
   it("supports primary begin/end teach aliases with workflow card output", async () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/settings", active: true }]);
+    const refreshTeachCapture = vi.spyOn(browserPlaywrightAdapter, "refreshTeachCapture").mockResolvedValue({ ok: true });
 
     const begin = await dispatchBrowserTool("synthi_browser_begin_teach", {
       tab_id: "app",
@@ -1468,6 +1469,7 @@ describe("browser MCP tool surface", () => {
         teach: expect.objectContaining({ active: true }),
       })
     );
+    expect(refreshTeachCapture).toHaveBeenCalledWith("app");
 
     browserBroker.recordHumanAction({
       tab_id: "app",
