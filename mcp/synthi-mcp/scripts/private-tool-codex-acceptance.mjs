@@ -27,7 +27,7 @@ const CFG = {
   targetUrl: args["target-url"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL || "",
   codexBin: args["codex-bin"] || process.env.CODEX_BIN || "codex",
   codexAuthHome: args["codex-auth-home"] || process.env.SYNTHI_CODEX_AUTH_HOME || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
-  codexModel: args["codex-model"] || process.env.SYNTHI_CODEX_ACCEPTANCE_MODEL || process.env.CODEX_MODEL || "gpt-5.5",
+  codexModel: args["codex-model"] || process.env.SYNTHI_CODEX_ACCEPTANCE_MODEL || process.env.CODEX_MODEL || "",
   codexReasoning: args["codex-reasoning"] || process.env.SYNTHI_CODEX_ACCEPTANCE_REASONING || "low",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_TIMEOUT_MS || 120_000),
@@ -63,7 +63,7 @@ async function main() {
     generated_at: new Date().toISOString(),
     cdp_url: redactCdpUrl(CFG.cdpUrl),
     target_url: targetUrl,
-    codex_model: CFG.codexModel,
+    codex_model: CFG.codexModel || "codex-default",
     steps: [],
   };
 
@@ -110,7 +110,6 @@ async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, stor
   await mkdir(codexHome, { recursive: true });
   await copyFile(authPath, path.join(codexHome, "auth.json"));
   const config = [
-    `model = ${JSON.stringify(CFG.codexModel)}`,
     `model_reasoning_effort = ${JSON.stringify(CFG.codexReasoning)}`,
     "",
     "[mcp_servers.synthi]",
@@ -124,8 +123,11 @@ async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, stor
     `SYNTHI_BROWSER_CDP_URL = ${JSON.stringify(CFG.cdpUrl)}`,
     'SYNTHI_AGENT_ID = "codex_private_tool_acceptance"',
     "",
-  ].join("\n");
-  await writeFile(path.join(codexHome, "config.toml"), config);
+  ];
+  if (CFG.codexModel) {
+    config.unshift(`model = ${JSON.stringify(CFG.codexModel)}`);
+  }
+  await writeFile(path.join(codexHome, "config.toml"), config.join("\n"));
 }
 
 async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {

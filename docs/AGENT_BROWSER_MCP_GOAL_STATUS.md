@@ -38,6 +38,8 @@ Result:
 - Dynamic app ports were detected per case through the workspace/collab port service.
 - Generated scripts rejected forwarded `/port/<number>` literals and used runtime base URLs.
 
+Codex CLI private-tool acceptance was also attempted with `SYNTHI_CODEX_ACCEPTANCE_MODEL=gpt-5.3-spark`. The local ChatGPT-auth Codex CLI rejected that model for this account before calling tools, so the harness is now override-driven and does not hardcode a 5.5 fallback. The repo-local fresh MCP/private-tool path still passes; the 5.3-spark Codex-agent pass remains an environment-availability gap.
+
 Visual artifacts inspected in this update:
 
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-live-replay.png`
@@ -72,4 +74,4 @@ These sit on top of the earlier goal commits for private-tool registration, host
 - Expand adversarial target coverage for multiple simultaneous popups, hostile nested frame timing, and cross-origin return navigation under production consent rules.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
 - Add product UI for authoring mutation postconditions and reset profiles instead of configuring those only through workspace metadata.
-- Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when the CLI/auth environment is available there; the repo-local MCP/private-tool and generated-script paths already pass.
+- Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
