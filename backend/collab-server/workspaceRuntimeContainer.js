@@ -12,11 +12,15 @@ const path = require('path');
  * socket and cannot see another workspace's containers.
  */
 
-const RUNTIME_IMAGE = process.env.RUNTIME_IMAGE || 'synthi-runtime:local';
+const RUNTIME_IMAGE = process.env.RUNTIME_IMAGE || 'vectant-runtime:local';
 const RUNTIME_NETWORK = process.env.WORKER_NETWORK || 'synthi-ide_default';
 const RUNTIME_IDLE_TTL_MS = Number(process.env.RUNTIME_IDLE_TTL_MS) || 10 * 60 * 1000;
 const MAX_RUNTIME_CONTAINERS = Number(process.env.MAX_RUNTIME_CONTAINERS) || 25;
 const REPOS_DIR = process.env.REPOS_DIR || '/data/repos';
+// Outer-container privilege. Dev (Docker Desktop/WSL2) needs it so rootless
+// dockerd can set up user namespaces; prod (k8s + Sysbox) sets RUNTIME_PRIVILEGED=0
+// and supplies a runtimeClass instead. Defaults ON; any value other than '0'/'false' is on.
+const RUNTIME_PRIVILEGED = !['0', 'false', 'no'].includes(String(process.env.RUNTIME_PRIVILEGED ?? '').toLowerCase());
 
 function safeName(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 40);
@@ -49,6 +53,7 @@ function createRuntimeManager({
   reposDir = REPOS_DIR,
   image = RUNTIME_IMAGE,
   network = RUNTIME_NETWORK,
+  privileged = RUNTIME_PRIVILEGED,
   logger = console,
 } = {}) {
   if (!docker) throw new TypeError('docker client is required');
@@ -84,16 +89,16 @@ function createRuntimeManager({
       name,
       Image: image,
       Labels: {
-        'synthi/runtime': 'workspace-runtime-local',
-        'synthi/slug': String(slug),
-        'synthi/userId': String(userId),
-        'synthi/lastActive': String(now),
+        'vectant/runtime': 'workspace-runtime-local',
+        'vectant/slug': String(slug),
+        'vectant/userId': String(userId),
+        'vectant/lastActive': String(now),
       },
       HostConfig: {
-        // Privileged on the OUTER container is required for rootless dockerd to
-        // set up its user namespaces in the Docker Desktop/WSL2 dev stack.
-        // Prod (Phase 2) replaces this with Sysbox.
-        Privileged: true,
+        // Privileged on the OUTER container lets rootless dockerd set up its user
+        // namespaces in the Docker Desktop/WSL2 dev stack. Prod (k8s + Sysbox)
+        // sets RUNTIME_PRIVILEGED=0 and supplies a runtimeClass instead.
+        Privileged: privileged,
         NetworkMode: network,
         Binds: [`${hostRepoDir}:/workspace`],
         RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 3 },
@@ -182,6 +187,7 @@ module.exports = {
   RUNTIME_IDLE_TTL_MS,
   MAX_RUNTIME_CONTAINERS,
   REPOS_DIR,
+  RUNTIME_PRIVILEGED,
   safeName,
   runtimeContainerName,
   runtimeContainerHost,

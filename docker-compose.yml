@@ -140,7 +140,7 @@ services:
       # per-workspace rootless-Docker runtime container. Requires the host
       # docker socket mount below so collab-server can manage those containers.
       ENABLE_CONTAINER_RUNTIME: "1"
-      RUNTIME_IMAGE: "synthi-runtime:local"
+      RUNTIME_IMAGE: "vectant-runtime:local"
     volumes:
       - collab-data:/data
       # Used ONLY by collab-server to manage per-workspace runtime containers.

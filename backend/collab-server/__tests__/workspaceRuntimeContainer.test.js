@@ -25,8 +25,8 @@ test('shouldCull is true only past the idle TTL', () => {
   assert.equal(shouldCull({ lastActive: 0 }, 1001, ttl), true);
 });
 
-test('RUNTIME_IMAGE defaults to synthi-runtime:local', () => {
-  assert.equal(RUNTIME_IMAGE, 'synthi-runtime:local');
+test('RUNTIME_IMAGE defaults to vectant-runtime:local', () => {
+  assert.equal(RUNTIME_IMAGE, 'vectant-runtime:local');
 });
 
 const { createRuntimeManager } = require('../workspaceRuntimeContainer');
@@ -68,10 +68,20 @@ test('ensureRuntimeContainer creates + starts a privileged container on the shar
   assert.equal(res.name, 'workspace-runtime-repo-u1');
   assert.equal(docker.created.length, 1);
   const opts = docker.created[0];
-  assert.equal(opts.Image, 'synthi-runtime:local');
+  assert.equal(opts.Image, 'vectant-runtime:local');
   assert.equal(opts.HostConfig.Privileged, true);
   assert.equal(opts.HostConfig.NetworkMode, 'synthi-ide_default');
   assert.ok(opts.HostConfig.Binds.some((b) => b.endsWith(':/workspace')));
+  // labels use the vectant namespace
+  assert.equal(opts.Labels['vectant/runtime'], 'workspace-runtime-local');
+  assert.equal(opts.Labels['vectant/slug'], 'repo');
+});
+
+test('createRuntimeManager honours privileged=false (prod Sysbox path)', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker, privileged: false });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+  assert.equal(docker.created[0].HostConfig.Privileged, false);
 });
 
 test('ensureRuntimeContainer reuses a running container (no second create)', async () => {
