@@ -156,6 +156,61 @@ describe("browser workflow contract compiler", () => {
     ]);
   });
 
+  it("renames parameters that would collide with private tool control arguments", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "run-mode",
+        event_seq: 1,
+        action: "fill",
+        value: "safe",
+        detail: {
+          field_name: "Run mode",
+          element: { role: "textbox", label: "Run mode", source_id: "settings.run_mode" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Run mode\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      baseEvent({
+        event_id: "tab-id",
+        event_seq: 2,
+        action: "fill",
+        value: "main",
+        detail: {
+          field_name: "Tab id",
+          element: { role: "textbox", label: "Tab id", source_id: "settings.tab_id" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Tab id\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      baseEvent({
+        event_id: "workflow-run-mode",
+        event_seq: 3,
+        action: "fill",
+        value: "manual",
+        detail: {
+          field_name: "Workflow run mode",
+          element: { role: "textbox", label: "Workflow run mode", source_id: "settings.workflow_run_mode" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Workflow run mode\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    expect(workflow.contract.parameters.map((parameter) => parameter.name)).toEqual([
+      "workflow_run_mode",
+      "workflow_tab_id",
+      "workflow_run_mode_2",
+    ]);
+    expect(workflow.contract.steps.map((step) => step.action.valueRef)).toEqual([
+      "workflow_run_mode",
+      "workflow_tab_id",
+      "workflow_run_mode_2",
+    ]);
+  });
+
   it("coalesces browser double-click noise and keeps context-menu actions durable", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com/records", active: true }]);

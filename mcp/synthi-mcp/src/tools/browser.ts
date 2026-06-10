@@ -4,6 +4,7 @@ import { browserBridgeServer } from "../browser/bridge_server.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
 import {
+  privateWorkflowToolParameterArgNames,
   privateWorkflowToolDefinition,
   privateWorkflowToolRegistry,
 } from "../browser/private_tool_registry.js";
@@ -1759,10 +1760,12 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   const a = obj(args);
   const parameters: Record<string, string> = {};
   const missingParameters: string[] = [];
+  const parameterArgNames = privateWorkflowToolParameterArgNames(effectiveManifest);
   for (const parameter of effectiveManifest.parameters) {
-    const value = stringOpt(a[parameter.name]);
+    const argName = parameterArgNames.get(parameter.name) ?? parameter.name;
+    const value = stringOpt(a[argName]);
     if (value === undefined) {
-      if (parameter.required) missingParameters.push(parameter.name);
+      if (parameter.required) missingParameters.push(argName);
       continue;
     }
     parameters[parameter.name] = value;

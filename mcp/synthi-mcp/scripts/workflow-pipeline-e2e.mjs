@@ -2354,6 +2354,70 @@ const CASES = [
     },
   },
   {
+    id: "reserved-private-tool-parameters",
+    minSteps: 4,
+    expectedActions: ["fill", "click"],
+    expectedReplayCode: [
+      "readRequiredEnv(\"WORKFLOW_RUN_MODE\"",
+      "readRequiredEnv(\"WORKFLOW_TAB_ID\"",
+      "readRequiredEnv(\"WORKFLOW_RUN_MODE_2\"",
+      "parameterizedTextRegex([\"Reserved args ready \",\" \",\" \",\"\"], inputValue1, inputValue2, inputValue3)",
+    ],
+    forbiddenReplayCode: [
+      "readRequiredEnv(\"RUN_MODE\"",
+      "readRequiredEnv(\"TAB_ID\"",
+      "taught-safe",
+      "taught-main",
+      "taught-manual",
+    ],
+    liveReplayMode: "sameSession",
+    replayParameters: {
+      workflow_run_mode: "safe",
+      workflow_tab_id: "main",
+      workflow_run_mode_2: "manual",
+    },
+    replayEnv: () => ({
+      WORKFLOW_RUN_MODE: "safe",
+      WORKFLOW_TAB_ID: "main",
+      WORKFLOW_RUN_MODE_2: "manual",
+    }),
+    liveReplayExpectedText: [
+      "Reserved args ready safe main manual",
+    ],
+    files: () => commonFiles({
+      title: "Reserved Private Tool Parameters Workflow",
+      body: [
+        "    <main>",
+        "      <h1>Reserved Private Tool Parameters Workflow</h1>",
+        "      <label for=\"run-mode\">Run mode</label>",
+        "      <input id=\"run-mode\" aria-label=\"Run mode\" data-synthi-source-id=\"reserved.run_mode\" placeholder=\"safe\">",
+        "      <label for=\"tab-id\">Tab id</label>",
+        "      <input id=\"tab-id\" aria-label=\"Tab id\" data-synthi-source-id=\"reserved.tab_id\" placeholder=\"main\">",
+        "      <label for=\"workflow-run-mode\">Workflow run mode</label>",
+        "      <input id=\"workflow-run-mode\" aria-label=\"Workflow run mode\" data-synthi-source-id=\"reserved.workflow_run_mode\" placeholder=\"manual\">",
+        "      <button type=\"button\" data-testid=\"preview-reserved\" data-synthi-source-id=\"reserved.preview\">Preview reserved args</button>",
+        "      <output id=\"status\" aria-live=\"polite\">Waiting</output>",
+        "    </main>",
+      ].join("\n"),
+      script: [
+        "const runMode = document.querySelector('#run-mode');",
+        "const tabId = document.querySelector('#tab-id');",
+        "const workflowRunMode = document.querySelector('#workflow-run-mode');",
+        "document.querySelector('[data-testid=\"preview-reserved\"]').addEventListener('click', () => {",
+        "  document.querySelector('#status').textContent = `Reserved args ready ${runMode.value} ${tabId.value} ${workflowRunMode.value}`;",
+        "});",
+        "",
+      ].join("\n"),
+    }),
+    teach: async (page) => {
+      await page.getByRole("textbox", { name: "Run mode", exact: true }).fill("taught-safe");
+      await page.getByRole("textbox", { name: "Tab id", exact: true }).fill("taught-main");
+      await page.getByRole("textbox", { name: "Workflow run mode", exact: true }).fill("taught-manual");
+      await page.getByRole("button", { name: "Preview reserved args" }).click();
+      await page.getByText("Reserved args ready taught-safe taught-main taught-manual").waitFor();
+    },
+  },
+  {
     id: "auth-checkpoint-secure-panel",
     minSteps: 1,
     expectTeachAuthCheckpoint: true,

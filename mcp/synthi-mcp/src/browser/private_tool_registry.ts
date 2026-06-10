@@ -20,6 +20,16 @@ export interface PrivateWorkflowMcpToolDefinition {
 
 const PRIVATE_TOOL_PREFIX = "synthi_app_";
 const PRIVATE_TOOL_STORE_FILE_MODE = 0o600;
+const PRIVATE_WORKFLOW_TOOL_CONTROL_ARG_NAMES = new Set([
+  "run_mode",
+  "confirm_mutation",
+  "mutation_confirmation",
+  "tab_id",
+  "workspace_id",
+  "lease_ms",
+  "timeout_ms",
+  "artifact_root",
+]);
 
 export interface PrivateWorkflowToolRegistryEvent {
   type: "list_changed";
@@ -316,10 +326,12 @@ function privateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7)
     },
   };
   const required = new Set<string>();
+  const parameterArgNames = privateWorkflowToolParameterArgNames(manifest);
 
   for (const parameter of manifest.parameters) {
-    properties[parameter.name] = parameterSchema(parameter);
-    if (parameter.required) required.add(parameter.name);
+    const argName = parameterArgNames.get(parameter.name) ?? parameter.name;
+    properties[argName] = parameterSchema(parameter, argName === parameter.name ? undefined : parameter.name);
+    if (parameter.required) required.add(argName);
   }
 
   return {
@@ -330,10 +342,31 @@ function privateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7)
   };
 }
 
-function parameterSchema(parameter: PrivateWorkflowToolManifestV7["parameters"][number]): Record<string, unknown> {
+export function privateWorkflowToolParameterArgNames(manifest: PrivateWorkflowToolManifestV7): Map<string, string> {
+  const usedNames = new Set(PRIVATE_WORKFLOW_TOOL_CONTROL_ARG_NAMES);
+  const argNames = new Map<string, string>();
+  for (const parameter of manifest.parameters) {
+    const preferred = PRIVATE_WORKFLOW_TOOL_CONTROL_ARG_NAMES.has(parameter.name)
+      ? `workflow_${parameter.name}`
+      : parameter.name;
+    let candidate = preferred;
+    let ordinal = 2;
+    while (usedNames.has(candidate)) {
+      candidate = `${preferred}_${ordinal}`;
+      ordinal += 1;
+    }
+    usedNames.add(candidate);
+    argNames.set(parameter.name, candidate);
+  }
+  return argNames;
+}
+
+function parameterSchema(parameter: PrivateWorkflowToolManifestV7["parameters"][number], originalName?: string): Record<string, unknown> {
   const base: Record<string, unknown> = {
     type: "string",
-    description: parameter.label,
+    description: originalName
+      ? `${parameter.label} (workflow parameter: ${originalName})`
+      : parameter.label,
   };
   if (parameter.redacted) base["format"] = "password";
   if (parameter.value_shape === "number") {

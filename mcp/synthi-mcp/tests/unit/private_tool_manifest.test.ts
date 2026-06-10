@@ -11,6 +11,8 @@ import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_t
 import {
   EncryptedFilePrivateWorkflowToolStore,
   InMemoryPrivateWorkflowToolStore,
+  privateWorkflowToolDefinition,
+  privateWorkflowToolParameterArgNames,
   privateWorkflowToolRegistry,
 } from "../../src/browser/private_tool_registry.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
@@ -305,6 +307,51 @@ describe("private browser workflow MCP tool manifest", () => {
       value_shape: "email",
       required: true,
     }));
+  });
+
+  it("keeps private tool control arguments separate from legacy colliding parameters", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "run-mode",
+        event_seq: 1,
+        action: "fill",
+        value: "agent-value",
+        detail: { element: { role: "textbox", label: "Run mode", source_id: "s_run_mode" } },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Run mode\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+    ]);
+    const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+    const legacyManifest = {
+      ...manifest,
+      parameters: [
+        { ...manifest.parameters[0]!, name: "run_mode", label: "Run mode" },
+        { ...manifest.parameters[0]!, name: "workflow_run_mode", label: "Workflow run mode" },
+      ],
+    };
+    const argNames = privateWorkflowToolParameterArgNames(legacyManifest);
+    const tool = privateWorkflowToolDefinition({
+      workflow_id: legacyManifest.workflow_id,
+      tool_name: "synthi_app_legacy_control_collision",
+      manifest: legacyManifest,
+      registered_at: Date.now(),
+    });
+
+    expect(argNames.get("run_mode")).toBe("workflow_run_mode");
+    expect(argNames.get("workflow_run_mode")).toBe("workflow_run_mode_2");
+    expect(tool.inputSchema.properties?.["run_mode"]).toEqual(expect.objectContaining({
+      enum: ["sameSession", "prefixOnly", "coldSession"],
+    }));
+    expect(tool.inputSchema.properties?.["workflow_run_mode"]).toEqual(expect.objectContaining({
+      type: "string",
+      description: expect.stringContaining("workflow parameter: run_mode"),
+    }));
+    expect(tool.inputSchema.properties?.["workflow_run_mode_2"]).toEqual(expect.objectContaining({
+      type: "string",
+      description: expect.stringContaining("workflow parameter: workflow_run_mode"),
+    }));
+    expect(tool.inputSchema.required).toEqual(["workflow_run_mode", "workflow_run_mode_2"]);
   });
 
   it("keeps same-name parameters separate when they target different source identities", () => {

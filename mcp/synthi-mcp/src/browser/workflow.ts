@@ -4,6 +4,16 @@ import type { BrowserActionKind, BrowserElementMetadata, BrowserTraceEvent, Loca
 
 const RELATED_DBLCLICK_CLICK_WINDOW_MS = 1000;
 const CLIPBOARD_DERIVED_FILL_WINDOW_MS = 5000;
+const RESERVED_WORKFLOW_PARAMETER_NAMES = new Set([
+  "run_mode",
+  "confirm_mutation",
+  "mutation_confirmation",
+  "tab_id",
+  "workspace_id",
+  "lease_ms",
+  "timeout_ms",
+  "artifact_root",
+]);
 
 export type WorkflowStateV7 =
   | "Draft"
@@ -1157,11 +1167,12 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
     const variants = variantsByBaseName.get(baseName) ?? [];
     let variant = variants.find((candidate) => candidate.key === variantKey);
     if (!variant) {
+      const preferredName = workflowParameterNameCandidate(baseName);
       variant = {
         key: variantKey,
-        name: variants.length === 0 && !usedNames.has(baseName)
-          ? baseName
-          : uniqueWorkflowParameterName(baseName, usedNames),
+        name: variants.length === 0 && !usedNames.has(preferredName)
+          ? preferredName
+          : uniqueWorkflowParameterName(preferredName, usedNames),
       };
       variants.push(variant);
       variantsByBaseName.set(baseName, variants);
@@ -1184,6 +1195,10 @@ function parametersFromSteps(steps: WorkflowStepContractV7[], events: BrowserTra
       redacted,
     }];
   });
+}
+
+function workflowParameterNameCandidate(name: string): string {
+  return RESERVED_WORKFLOW_PARAMETER_NAMES.has(name) ? `workflow_${name}` : name;
 }
 
 function uniqueWorkflowParameterName(baseName: string, usedNames: Set<string>): string {
