@@ -1530,6 +1530,28 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: pointerDragUnreliable");
   });
 
+  it("blocks drag script generation when the drop target locator is missing", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "drag-without-drop",
+        event_seq: 1,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "nativeHtmlDnd",
+          element: { role: "listitem", name: "Task", source_id: "src_task" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"listitem\", { name: \"Task\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("test.skip(true, \"event drag-without-drop is a drag step without a durable drop target locator\")");
+    expect(generated.code).not.toContain(".dragTo(");
+    expect(generated.warnings).toContain("event drag-without-drop is a drag step without a durable drop target locator");
+  });
+
   it("emits multi-value select replay for native multiple selects", () => {
     const generated = generatePlaywrightScript([
       event({

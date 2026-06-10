@@ -624,6 +624,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       break;
     }
     let replayActionEmitted = true;
+    let stopReplayGeneration = false;
     const waitsForNetwork = hasReplayNetworkEvent(event);
     if (waitsForNetwork) {
       lines.push(`  await installWorkflowNetworkTracker(${pageVar});`);
@@ -709,20 +710,31 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
             ? event.detail["drop_locator"]
             : event.value;
           if (!dropLocator) {
-            warnings.push(`event ${event.event_id} is a calibrated pointer drag without a durable drop target locator`);
+            pushBlockedReplayStep(lines, warnings, `event ${event.event_id} is a calibrated pointer drag without a durable drop target locator`);
             replayActionEmitted = false;
+            stopReplayGeneration = true;
+            break;
+          }
+          const startX = numericDetail(event, "pointer_start_x_ratio");
+          const startY = numericDetail(event, "pointer_start_y_ratio");
+          const endX = numericDetail(event, "pointer_end_x_ratio");
+          const endY = numericDetail(event, "pointer_end_y_ratio");
+          if (startX === undefined || startY === undefined || endX === undefined || endY === undefined) {
+            pushBlockedReplayStep(lines, warnings, `event ${event.event_id} is a calibrated pointer drag without complete coordinate ratios`);
+            replayActionEmitted = false;
+            stopReplayGeneration = true;
             break;
           }
           const dropTarget = `dropTarget${targetSeq}`;
           const sourceBox = `sourceBox${targetSeq}`;
           const dropBox = `dropBox${targetSeq}`;
           const start = {
-            x: numericDetail(event, "pointer_start_x_ratio") ?? 0.5,
-            y: numericDetail(event, "pointer_start_y_ratio") ?? 0.5,
+            x: startX,
+            y: startY,
           };
           const end = {
-            x: numericDetail(event, "pointer_end_x_ratio") ?? 0.5,
-            y: numericDetail(event, "pointer_end_y_ratio") ?? 0.5,
+            x: endX,
+            y: endY,
           };
           const steps = Math.max(1, Math.min(60, Math.round(numericDetail(event, "pointer_steps") ?? 12)));
           lines.push(`  const ${dropTarget} = await firstVisible(${locatorExpressionForEvent(event, dropLocator, pageVar)});`);
@@ -752,8 +764,9 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
             lines.push(`  await expect(${dropTarget}).toContainText(${JSON.stringify(draggedText)});`);
           }
         } else {
-          warnings.push(`event ${event.event_id} is a drag step without a durable drop target locator`);
+          pushBlockedReplayStep(lines, warnings, `event ${event.event_id} is a drag step without a durable drop target locator`);
           replayActionEmitted = false;
+          stopReplayGeneration = true;
         }
         break;
       }
@@ -902,6 +915,7 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
         replayActionEmitted = false;
         break;
     }
+    if (stopReplayGeneration) break;
     if (waitsForNetwork && replayActionEmitted) {
       lines.push(`  await waitForWorkflowNetworkSettled(${pageVar});`);
     }
@@ -1090,6 +1104,11 @@ function replayPageVariableForEvent(
     return null;
   }
   return "page";
+}
+
+function pushBlockedReplayStep(lines: string[], warnings: string[], reason: string): void {
+  warnings.push(reason);
+  lines.push(`  test.skip(true, ${JSON.stringify(reason)});`);
 }
 
 function mergeObservedEffectsFromSuppressedEvent(target: BrowserTraceEvent, suppressed: BrowserTraceEvent): BrowserTraceEvent {
