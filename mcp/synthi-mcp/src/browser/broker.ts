@@ -42,6 +42,11 @@ export interface BrowserActionInput {
   field_name?: string;
 }
 
+export interface BrowserReplayTargetInput {
+  url: string;
+  detail?: Record<string, unknown>;
+}
+
 export interface BrowserBridgeMessage {
   bridge_token?: unknown;
   page_origin?: unknown;
@@ -811,6 +816,16 @@ export class BrowserBroker {
       if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     }
     return { ok: true, action: { ...input } };
+  }
+
+  validateReplayTarget(input: BrowserReplayTargetInput): { ok: true } | { ok: false; error: string } {
+    const pageOrigin = normalizeOrigin(input.url).origin;
+    if (!this.hasOriginConsent(pageOrigin)) return { ok: false, error: "origin_consent_required" };
+    const frameGate = this.requireFrameOriginConsent(pageOrigin, input.detail);
+    if (!frameGate.ok) return frameGate;
+    const popupGate = this.requirePopupOriginConsent(pageOrigin, input.detail);
+    if (!popupGate.ok) return popupGate;
+    return { ok: true };
   }
 
   queueAction(input: BrowserActionInput): { ok: true; queued: number } | { ok: false; error: string } {

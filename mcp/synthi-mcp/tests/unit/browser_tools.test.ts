@@ -943,6 +943,111 @@ describe("browser MCP tool surface", () => {
     }));
   });
 
+  it("blocks direct workflow replay when iframe target-origin consent is revoked", async () => {
+    const url = "https://app.example.com/settings";
+    const frameOrigin = "https://billing.example.com";
+    browserBroker.requestConsent(url);
+    browserBroker.requestConsent(frameOrigin);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Settings", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      frame_id: "billing-frame",
+      url,
+      origin: "https://app.example.com",
+      action: "fill",
+      value: "Ada",
+      detail: {
+        frame_locator: "iframe[data-testid=\"billing-frame\"]",
+        frame_origin: `${frameOrigin}/card`,
+      },
+      element: { tag: "input", role: "textbox", label: "Cardholder", source_id: "billing.cardholder" },
+    }).ok).toBe(true);
+    const workflow = browserBroker.compiledWorkflow();
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
+    browserBroker.requestConsent(frameOrigin, "denied", "unit-revoked");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "app",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "revoked-iframe-origin-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflow.contract.workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { status: string; steps_run: number; error: string; failure_class: string } })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        steps_run: 0,
+        error: "frame_origin_consent_required",
+        failure_class: "originConsentMissing",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+  });
+
+  it("blocks direct workflow replay when popup target-origin consent is revoked", async () => {
+    const url = "https://app.example.com/dashboard";
+    const popupUrl = "https://billing.example.com/help";
+    browserBroker.requestConsent(url);
+    browserBroker.requestConsent(popupUrl);
+    browserBroker.registerTabs([{ tab_id: "app", url, title: "Dashboard", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      detail: {
+        popup_event: true,
+        popup_url: popupUrl,
+        popup_title: "Billing Help",
+        popup_tab_id: "billing-popup",
+        opener_tab_id: "app",
+      },
+      element: { tag: "a", role: "button", name: "Open billing help", test_id: "open-billing-help", source_id: "billing.help" },
+    }).ok).toBe(true);
+    const workflow = browserBroker.compiledWorkflow();
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    browserBroker.requestConsent(popupUrl, "denied", "unit-revoked");
+    const replayAction = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+      detail: { popup_tab_id: "runtime-popup" },
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "revoked-popup-origin-replay");
+
+    const replay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflow.contract.workflowId,
+      mode: "sameSession",
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect((replay?.structuredContent as { ok: boolean; replay: { status: string; steps_run: number; error: string; failure_class: string } })).toEqual(expect.objectContaining({
+      ok: false,
+      replay: expect.objectContaining({
+        status: "failed",
+        steps_run: 0,
+        error: "popup_origin_consent_required",
+        failure_class: "originConsentMissing",
+      }),
+    }));
+    expect(replayAction).not.toHaveBeenCalled();
+  });
+
   it("replays same-origin popup continuation steps on the runtime popup tab", async () => {
     const url = "https://app.example.com/dashboard";
     const popupUrl = "https://app.example.com/help";

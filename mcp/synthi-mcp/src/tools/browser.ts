@@ -1443,6 +1443,30 @@ function classifyBrokerValidationFailure(error: string): FailureClassV7 {
   return classifyWorkflowReplayFailure(new Error(error));
 }
 
+function validateWorkflowReplayAction(input: {
+  lease_id: string;
+  action: BrowserActionKind;
+  tab_id: string;
+  selector?: string;
+  value?: string;
+  url: string;
+  event: BrowserTraceEvent;
+}): { ok: true } | { ok: false; error: string } {
+  const actionValidation = browserBroker.validateAction({
+    lease_id: input.lease_id,
+    action: input.action,
+    tab_id: input.tab_id,
+    selector: input.selector,
+    value: input.value,
+    url: input.url,
+  });
+  if (!actionValidation.ok) return actionValidation;
+  return browserBroker.validateReplayTarget({
+    url: input.url,
+    detail: input.event.detail,
+  });
+}
+
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
   const a = obj(args);
   const lease = browserBroker.acquireLease(
@@ -1527,13 +1551,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: filePath,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1585,13 +1610,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: pasteText,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1640,13 +1666,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: dropText,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1695,13 +1722,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
         },
       });
     }
-    const validation = browserBroker.validateAction({
+    const validation = validateWorkflowReplayAction({
       lease_id: leaseId,
       action,
       tab_id: targetTabId,
       selector,
       value,
-      url: action === "navigate" ? value : event.url,
+      url: action === "navigate" && value ? value : event.url,
+      event,
     });
     if (!validation.ok) {
       return jsonResponse({
