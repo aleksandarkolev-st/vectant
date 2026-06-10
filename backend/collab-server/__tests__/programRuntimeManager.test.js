@@ -601,21 +601,24 @@ test('runtime snapshot never leaks the health config object', async () => {
   assert.equal(snap.healthState, 'unknown');
 });
 
-test('buildManagedRuntimeEnv keeps an in-container rootless DOCKER_HOST but still strips the host socket', () => {
+test('buildManagedRuntimeEnv strips any recipe-supplied DOCKER_HOST (container provides it by inheritance)', () => {
   const { buildManagedRuntimeEnv } = require('../programRuntimeManager');
-  // A per-workspace runtime container sets DOCKER_HOST to its OWN rootless socket;
-  // the scrub must let that through so `docker` works inside container programs.
-  const inContainer = buildManagedRuntimeEnv({}, {
-    DOCKER_HOST: 'unix:///run/user/1000/docker.sock',
-  });
-  assert.equal(inContainer.DOCKER_HOST, 'unix:///run/user/1000/docker.sock');
+  // A program must never be able to choose the Docker endpoint via env. Container
+  // programs inherit the runtime-container image's own rootless DOCKER_HOST, so a
+  // recipe-supplied DOCKER_HOST is always scrubbed — including TCP daemon APIs and
+  // the host socket, which a value-only denylist would miss.
+  for (const dh of [
+    'unix:///run/user/1000/docker.sock', // even the "good" value is dropped — comes from the image instead
+    'unix:///var/run/docker.sock',       // host socket
+    'tcp://host.docker.internal:2375',   // host Docker REST API
+    'tcp://172.17.0.1:2375',             // docker bridge gateway
+  ]) {
+    const out = buildManagedRuntimeEnv({}, { DOCKER_HOST: dh });
+    assert.equal(out.DOCKER_HOST, undefined, `DOCKER_HOST=${dh} must be stripped`);
+  }
 
-  // The HOST socket must still be denied by value (defense against a recipe
-  // trying to point a program at the platform's Docker socket).
-  const hostSocket = buildManagedRuntimeEnv({}, { DOCKER_HOST: 'unix:///var/run/docker.sock' });
-  assert.equal(hostSocket.DOCKER_HOST, undefined);
-
-  // DOCKER_SOCKET stays fully blocked by key.
-  const sock = buildManagedRuntimeEnv({}, { DOCKER_SOCKET: '/run/user/1000/docker.sock' });
+  // DOCKER_SOCKET / DOCKER_CERT_PATH stay fully blocked by key too.
+  const sock = buildManagedRuntimeEnv({}, { DOCKER_SOCKET: '/run/user/1000/docker.sock', DOCKER_CERT_PATH: '/x' });
   assert.equal(sock.DOCKER_SOCKET, undefined);
+  assert.equal(sock.DOCKER_CERT_PATH, undefined);
 });

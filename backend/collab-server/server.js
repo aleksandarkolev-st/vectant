@@ -126,8 +126,10 @@ const containerPortProxy = ENABLE_CONTAINER_RUNTIME
       resolveHost: (slug) => {
         const match = [...workspaceRuntime._sessions.keys()].find((k) => k.startsWith(`${slug} `));
         if (!match) return null;
-        const [s, u] = match.split(' ');
-        return runtimeContainerHost(s, u);
+        // Keys are `${slug} ${userId}`; split on the FIRST space only so a userId
+        // that itself contains a space is reconstructed intact.
+        const spaceIdx = match.indexOf(' ');
+        return runtimeContainerHost(match.slice(0, spaceIdx), match.slice(spaceIdx + 1));
       },
     })
   : null;
