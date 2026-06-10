@@ -1,124 +1,75 @@
 # Agent Browser Workflow Production-Grade Status
 
-Updated: 2026-06-09
+Updated: 2026-06-10
 
 ## Current State
 
-The browser workflow teaching path is implemented and verified through the cloud-IDE product route:
+The browser workflow teaching path is implemented and verified through the intended cloud-IDE route:
 
-agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screenshots/events/actions -> workflow contract -> private MCP tool -> Playwright replay.
+```text
+agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screenshots/events/actions -> workflow contract -> private MCP tool -> Playwright replay
+```
 
-This run did not add fixed preview ports, fixed workspace slugs, local Chrome paths, or case-specific generated-script shortcuts.
+Local CDP remains only the development harness. The verification run did not rely on fixed preview ports, fixed workspace slugs, local Chrome paths, fixed element positions, or generated-script shortcuts for a specific fixture.
 
-## Implemented In This Run
+Excluding real deployed IdP testing, the remaining work is about 5-8 percent. The main unfinished items are production rollout validation in third-party MCP hosts, hosted-runtime deployment wiring, and more adversarial target/auth fixtures under production policy.
 
-- Real MCP/private-tool acceptance over the spawned stdio MCP boundary:
-  - Added `npm run live:browser:private-tool-stdio`.
-  - Seeds an encrypted saved-workflow store, spawns `dist/index.js`, discovers `synthi_app_*` from `tools/list`, looks up the manifest over MCP, attaches to the configured hosted browser CDP, opens an OS-assigned fixture URL, calls the discovered private tool through `tools/call`, and captures a screenshot proving the action happened.
-- Real Codex-agent private-tool acceptance:
-  - Added `npm run live:browser:private-tool-codex`.
-  - Uses a temporary Codex home copied from an existing auth home, writes only temporary MCP config/private workflow store files, prompts Codex to use the saved workflow without script paths, and requires structured JSONL evidence for browser attach, consent, browser open, successful `synthi_app_*` MCP tool call, and at least one replayed workflow step.
-  - The harness captures visual proof from the hosted browser after Codex calls the discovered workflow tool.
-- Hosted browser lifecycle hardening for long live matrices:
-  - The workflow pipeline now prunes stale CDP page targets before attach and closes per-case pages after each case.
-  - This avoids attach slowdowns from hundreds of old tabs without relying on a fixed port or slug.
-- Full workflow matrix proof:
-  - 42 seeded projects passed.
-  - Every case clicked the UI buttons, compiled, exported, generated manifest, published private tool, called the discovered private tool where parameters were available, validated, and ran the exported Playwright script.
-  - Covered forms, parameterized input, clipboard paste/drop/copy/cut, same-origin iframes, nested iframes, popup iframes, open Shadow DOM, ARIA widgets, range sliders, pointer drag/sort/resize, animated SaaS dashboard, file uploads, hover menus, double-click/context menu, keyboard/control keys, terminal-like text entry, scroll/wheel surfaces, downloads, network mutation classification, CI-isolated mutation replay, native confirm/prompt dialogs, popups, popup return-to-opener workflows, rich text, textarea/code editor, dashboard workflows, and navigation/review queue.
-- Mutation safety and isolated replay:
-  - Mutation-heavy private tools defaulted to prefix-only replay unless isolation/confirmation was used.
-  - CI isolated replay passed with `mutation=true` for the visual mutation fixture.
-  - CI isolated replay profiles now require an explicit reset profile id, state seed id, reset command, reset assertion command, CI command, postcondition command, and `allow_mutation_replay`.
-  - CI replay now passes `SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID`, reports `failure_stage`, writes reset/reset-assertion/CI/postcondition logs, classifies reset/seed/profile mismatches as `testDataMissing`, and ignores stale mutation attestation unless it matches the current replay run id and nonce.
-- Auth durability plumbing:
-  - Unit tests cover encrypted auth checkpoint metadata, approved storage state restore, refresh-provider handoff, and CI isolated replay receiving validated auth provider storage state.
-  - Auth checkpoints now preserve explicit approved IdP grants with hashed cookie-name audit data instead of raw token/cookie leakage.
-  - Refresh-provider validation uses async subprocesses and supports `SYNTHI_AUTH_PROVIDER_OUTPUT_PATH` for runtimes that do not reliably capture nested stdout, while still supporting stdout JSON for normal providers.
-- Cross-origin browser target safety:
-  - Denied popup/iframe target origins are blocking recording issues in the Workflows panel.
-  - Delayed popup annotations no longer leave provisional opener clicks as false taught steps, including the live annotation-before-click race.
-  - Live fixtures cover cross-origin iframe denial and cross-origin popup denial using dynamically allocated auxiliary origins.
-- Popup/new-tab target attribution:
-  - Taught popup workflows now preserve browser-observed action timestamps so delayed popup/download/network annotations attach to the action that caused them instead of a later same-tab action.
-  - The live matrix includes a popup workflow that opens a new tab, fills/clicks inside the popup, returns to the opener page, and verifies the generated script uses `popup1` for popup actions and `page` for opener actions.
+## Latest Verification
 
-## Verification
-
-Commands run successfully:
+Full workflow pipeline:
 
 ```bash
 cd mcp/synthi-mcp
-npm run typecheck
-npm run build
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp npm run test:unit
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 npm run live:browser:private-tool-stdio
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_CODEX_AUTH_HOME=/mnt/c/Users/dev/.codex npm run live:browser:private-tool-codex
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 npm run live:browser:workflow-pipeline
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp npx vitest run tests/unit/safety_tools.test.ts tests/unit/auth_checkpoint.test.ts tests/unit/browser_workflow_contract.test.ts tests/unit/browser_replay_generation.test.ts
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp npx vitest run tests/unit/auth_checkpoint.test.ts tests/unit/safety_tools.test.ts tests/unit/private_tool_manifest.test.ts
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=cross-origin-iframe-denied,cross-origin-popup-denied npm run live:browser:workflow-pipeline
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=animated-saas-dashboard,ci-isolated-visual-mutation npm run live:browser:workflow-pipeline
-TMPDIR=/tmp TEMP=/tmp TMP=/tmp SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL=http://127.0.0.1:9466 FRONTEND_URL=http://localhost:3000 COLLAB_URL=http://localhost:1234 SYNTHI_WORKFLOW_PIPELINE_CASES=ci-isolated-visual-mutation npm run live:browser:workflow-pipeline
+TMPDIR=/tmp TEMP=/tmp TMP=/tmp \
+  SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 \
+  FRONTEND_URL=http://localhost:3000 \
+  COLLAB_URL=http://localhost:1234 \
+  SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1 \
+  npm run live:browser:workflow-pipeline
 ```
 
-Results:
+Result:
 
-- Unit suite: 70 files passed, 764 tests passed.
-- Focused auth/private-tool safety suite: 36 tests passed after async refresh-provider validation.
-- Full workflow matrix: 42 seeded projects passed.
-- Stdio private-tool acceptance: passed after final build.
-- Codex private-tool acceptance: passed with a real Codex CLI prompt, temp auth home, structured MCP tool-call evidence, and browser visual proof.
-- Cross-origin denied target fixtures: passed after final build.
-- Animated SaaS dashboard stress fixture: MCP replay and exported Playwright passed after the final bridge restart.
-- CI isolated visual mutation fixture: exported Playwright passed and CI isolated replay passed with reset assertion, reset profile id, postcondition, state seed id, and run-bound attestation.
-- Typecheck/build: passed.
+- 48 seeded projects passed.
+- 0 failed checks in `tmp/workflow-pipeline-e2e/summary.json`.
+- 46 generated Playwright exports were run and passed.
+- 46 published private MCP workflows were called through a fresh MCP process.
+- 27 cases captured visual live-replay or isolated-replay screenshots.
+- Dynamic app ports were detected per case through the workspace/collab port service.
+- Generated scripts rejected forwarded `/port/<number>` literals and used runtime base URLs.
 
-Visual proof artifacts:
+Visual artifacts inspected in this update:
 
-- `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
-- `tmp/private-tool-codex-acceptance/after-codex-private-tool-call.png`
-- `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-validate-panel.png`
-- `tmp/workflow-pipeline-e2e/nested-iframe-form/after-validate-panel.png`
-- `tmp/workflow-pipeline-e2e/popup-iframe-form/after-validate-panel.png`
-- `tmp/workflow-pipeline-e2e/popup-form-window/after-validate-panel.png`
-- `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-validate-panel.png`
-- `tmp/workflow-pipeline-e2e/popup-return-to-opener/after-teach-actions.png`
-- `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-validate-panel.png`
-- `tmp/workflow-pipeline-e2e/cross-origin-iframe-denied/after-denied-origin-panel.png`
-- `tmp/workflow-pipeline-e2e/cross-origin-popup-denied/after-denied-origin-panel.png`
+- `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-live-replay.png`
+- `tmp/workflow-pipeline-e2e/popup-chain-checkout/after-live-replay.png`
+- `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-ci-isolated-replay.png`
 
-Generated-script proof:
+## Implemented
 
-- The workflow matrix runs every generated Playwright script through a per-case Playwright runner.
-- The per-case runner path prevents substring/spec collisions between cases such as file upload and hidden file upload.
-- The matrix rejects forwarded `/port/<number>` literals in generated scripts.
-- CI isolated exported scripts now verify `SYNTHI_WORKFLOW_CI_RESET_PROFILE_ID` and write run-bound mutation attestation with `SYNTHI_WORKFLOW_CI_RUN_ID` and `SYNTHI_WORKFLOW_CI_NONCE`.
+- Private MCP workflow tools are registered from taught workflow manifests and can be discovered through `tools/list`.
+- Agents can call published `synthi_app_*` workflow tools without being handed script paths.
+- Managed-browser Observe/Teach/Stop controls are injected by the hosted runtime path; the IDE Workflows panel remains the contract, manifest, export, validation, and publish surface.
+- Same-origin iframes, nested iframes, popups, popup chains, and opener-return workflows preserve target context for replay.
+- Cross-origin iframe and popup recording requires explicit target-origin consent and otherwise blocks taught actions.
+- Clipboard paste/drop/copy/cut, file uploads, hidden file uploads, hover menus, context menus, keyboard controls, scroll/wheel, sliders, ARIA widgets, drag/sort/resize, native dialogs, rich text, code textareas, and animated dashboard interactions are covered by seeded live cases.
+- Auth checkpoint and refresh-provider durability paths are covered by fixtures and unit tests with redaction and expiry classification.
+- Mutation workflows default to prefix-safe replay and require same-session confirmation or isolated CI mutation replay.
+- CI-isolated replay requires explicit reset/profile/postcondition configuration and run-bound mutation attestation.
+- Exported Playwright scripts are executed by the live pipeline instead of only being inspected.
 
-## Commits From This Continuation
+## Latest Commits In This Continuation
 
-- `950f07aa` Prune stale hosted browser pages in workflow pipeline
-- `d217a4ff` Add stdio private workflow acceptance proof
-- `317d619a` Track explicit IdP grants for auth checkpoints
-- `21a74a49` Discard denied-origin workflow actions
-- `ecf62f31` Handle denied popup annotation races
-- `880fe397` Add denied-origin workflow pipeline fixtures
-- `68534bb3` Harden CI isolated workflow replay
-- `1b8c12cb` Preserve popup action targets during teaching
-- `75e3003f` Add Codex private workflow acceptance proof
-- `42856bee` Add popup iframe workflow pipeline coverage
-- `274f3185` Replay nested iframe workflow chains
-- `07ccf6d4` Require reset profile identity for CI replay
-- `28311f44` Make auth refresh provider checks async
+- `9db27d65` Correlate popup annotations across capture races
+- `36fbdac4` Suppress cut-derived fill parameters
+- `bce57661` Avoid private tool control parameter collisions
 
-Earlier commits in the same goal also covered parameter naming, private tool parameter proof, exported-script runner isolation, and expectation alignment for mutation-safe prefix exports.
+These sit on top of the earlier goal commits for private-tool registration, hosted overlay controls, exported-script runner isolation, target-origin consent, auth checkpointing, CI mutation replay, popup/iframe target handling, and visual replay proof.
 
 ## Remaining Gaps
 
-These are not blockers for the repo-local production-grade proof, but they are still the next hardening targets before broad external rollout:
-
-- Real LLM-agent prompt acceptance is now automated locally with Codex CLI and a temporary auth home. The remaining external rollout gap is validating the same private-tool discovery/call path in third-party MCP hosts and production hosted-runtime policy without the local-dev CDP fallback or Codex's noninteractive approval-bypass mode.
-- Real third-party IdP coverage is not yet complete. Auth storage/checkpoint/redaction paths are tested with fixtures and unit coverage; OAuth/SAML/magic-link providers against real external services still need environment-specific validation.
-- Popup and iframe coverage now includes same-origin success cases, opener-return workflows, and cross-origin denial fixtures. More hostile nested iframe, multiple popup, and cross-origin return-navigation cases should still be validated under production consent policy.
-- CI isolated replay is proven for resettable fixture mutation workflows with reset assertion, postcondition, and run-bound attestation. Production teams still need per-workspace reset profiles, fixture users, and postcondition definitions configured for their apps.
-- Git auto-gc still reports an unrelated bad tree object during commits: `be45a9be79c6f1bc8c246ace783ac807a93ab469`.
+- Validate the same private-tool discovery/call path in deployed third-party MCP hosts and production hosted-runtime policy, without local-dev CDP fallback.
+- Wire production hosted-browser deployment config for the runtime, workflow bridge, private workflow store, encrypted auth checkpoint store, and per-workspace CI reset profiles.
+- Expand adversarial target coverage for multiple simultaneous popups, hostile nested frame timing, and cross-origin return navigation under production consent rules.
+- Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
+- Add product UI for authoring mutation postconditions and reset profiles instead of configuring those only through workspace metadata.
+- Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when the CLI/auth environment is available there; the repo-local MCP/private-tool and generated-script paths already pass.
