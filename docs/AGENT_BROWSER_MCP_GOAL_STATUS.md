@@ -74,6 +74,7 @@ The stdio MCP private-tool acceptance harness was also verified through the host
 - deploy-host gate evidence: `--require-custom-mcp-command` / `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND=1` now fails the conformance harness if it falls back to the repo-local default MCP server. The latest visual run passed with this gate enabled and recorded `require_custom_mcp_command=true`, `custom_mcp_command=true`.
 - dedicated script evidence: `npm run live:browser:private-tool-host-conformance` now runs the stdio private-tool harness with the custom-command gate enabled by default. A negative check confirmed it fails without `--mcp-command`; the positive visual run passed with a structured custom command and hosted runtime attach.
 - hosted-runtime endpoint gate evidence: deployers can now add `--require-non-loopback-runtime` or `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME=1` to reject loopback/local-bind CDP endpoints such as `localhost`, `127/8`, and `0.0.0.0` when using the harness as a production hosted-runtime conformance gate. A negative check confirmed loopback CDP fails with `non_loopback_runtime_required`; the local headed visual run still passes without this deploy-only gate and records `runtime_host_class=loopback` in the transcript.
+- generic private-tool evidence: the stdio conformance harness now accepts an existing encrypted private-tool store, explicit `--tool-name`, structured `--tool-args-json`, `--expected-steps-min`, and optional `--expected-text`, so deployed-host acceptance is no longer coupled to the built-in `Open details` fixture or first private tool in `tools/list`. The latest visual run used explicit tool selection and postcondition settings and recorded them in the transcript.
 
 The latest host-conformance run used the existing live browser fixture harness to create a fresh headed hosted-CDP dev runtime because Docker Desktop was not reachable from this shell during the run. That does not count as deployed third-party host validation, but it did verify the MCP contract, strict schema behavior, hosted-runtime attach path, consent, private-tool execution, and visual proof without fixed ports, fixed slugs, local Chrome paths, or script-path handoff.
 
@@ -167,6 +168,7 @@ Visual artifacts inspected in this update:
 - `74d316a4` Require custom MCP command for host conformance
 - `400a2fa8` Add private tool host conformance script
 - `3a45a208` Gate host conformance on non-loopback runtime
+- `b10679ee` Generalize private tool stdio acceptance
 
 These sit on top of the earlier goal commits for private-tool registration, hosted overlay controls, exported-script runner isolation, target-origin consent, auth checkpointing, CI mutation replay, popup/iframe target handling, and visual replay proof.
 
