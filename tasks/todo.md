@@ -451,3 +451,12 @@ localhost scanner can no longer see it, so it must be detected + forwarded throu
 `/wsport` routing (port detection inside the runtime container + slug-scoped proxy + UI surfacing). Fold
 this into the Phase 1b port-system rework so terminal-launched servers and container-program ports share
 one consistent forwarded-port path.
+
+### Follow-up (Phase 1b / web previews) — apply COEP/CORP to the global /port/ proxy
+The container `/wsport` proxy now sets `Cross-Origin-Embedder-Policy: credentialless` +
+`Cross-Origin-Resource-Policy: cross-origin` so its App-tab iframe renders under the IDE's
+COEP:credentialless document (verified live). The EXISTING global `/port/<N>/` proxy
+(`proxyService.proxyHttpRequest`) has the SAME latent gap — web-program/dev-server previews
+embedded in the App tab will hit Chrome's blocked-frame error for the same reason. Mirror the
+two response headers in proxyService when wiring up web-program previews (was never noticed
+because web programs need a real package.json, which test workspaces lacked).
