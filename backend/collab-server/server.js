@@ -143,6 +143,10 @@ const managedProgramRuntime = createProgramRuntimeManager({
     // container; everything else keeps the existing shared-collab PTY path.
     if (runtimeType === 'container' && workspaceRuntime) {
       await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
+      // The rootless dockerd inside the runtime container takes ~15-25s to be
+      // ready; wait for it so the program's first `docker ...` command doesn't
+      // race a not-yet-listening daemon.
+      await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId);
       return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
     }
     const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });

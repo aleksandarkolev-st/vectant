@@ -31,6 +31,13 @@ const REPOS_VOLUME_SUBPATH = process.env.REPOS_VOLUME_SUBPATH || 'repos';
 // and supplies a runtimeClass instead. Defaults ON; any value other than '0'/'false' is on.
 const RUNTIME_PRIVILEGED = !['0', 'false', 'no'].includes(String(process.env.RUNTIME_PRIVILEGED ?? '').toLowerCase());
 
+// Host/shell system env vars that must come from the runtime container, NOT be
+// inherited from collab-server's process when exec'ing a container program.
+const HOST_ENV_DENYLIST = new Set([
+  'HOME', 'PATH', 'PWD', 'OLDPWD', 'USER', 'LOGNAME', 'SHELL', 'SHLVL',
+  'HOSTNAME', 'TMPDIR', 'TERM', 'NODE_ENV', '_',
+]);
+
 function safeName(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 40);
 }
@@ -90,6 +97,21 @@ function createRuntimeManager({
       sessions.delete(key);
     }
 
+    // Slow path: a container with this name may already exist but not be tracked
+    // in-memory (collab-server restart, or a prior failed launch). Adopt it if
+    // running; otherwise remove it so the create below doesn't 409-conflict.
+    try {
+      const existing = docker.getContainer(name);
+      const info = await existing.inspect();
+      if (info && info.State && info.State.Running) {
+        sessions.set(key, { containerId: info.Id, lastActive: now });
+        return { name, host: name, containerId: info.Id, created: false };
+      }
+      try { await existing.remove({ force: true }); } catch (_) {}
+    } catch (err) {
+      if (err && err.statusCode !== 404) throw err; // 404 = no such container → create below
+    }
+
     if (sessions.size >= maxContainers) {
       throw new Error(`Runtime container cap reached (${maxContainers})`);
     }
@@ -133,8 +155,45 @@ function createRuntimeManager({
     const container = await docker.createContainer(createOpts);
     await container.start();
     sessions.set(key, { containerId: container.id, lastActive: now });
-    logger.log(`[RuntimeContainer] Started ${name} (slug=${slug}, userId=${userId})`);
+    // Use the structured-logger convention (event, data). console (the test
+    // default) also accepts this. NB: collab-server's logger has no `.log`.
+    logger.info('runtime_container_started', { name, slug, userId });
     return { name, host: name, containerId: container.id, created: true };
+  }
+
+  /**
+   * Wait until the rootless dockerd INSIDE the runtime container is accepting
+   * connections. The container starts in seconds but its daemon takes ~15-25s to
+   * be ready, so a program's first `docker ...` command races it. The launch path
+   * awaits this between ensureRuntimeContainer and execInRuntime. Returns true if
+   * ready, false on timeout.
+   */
+  async function waitForRuntimeReady(slug, userId, { timeoutMs = 45000, intervalMs = 3000 } = {}) {
+    const s = sessions.get(keyOf(slug, userId));
+    if (!s) throw new Error('runtime container not started');
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const exec = await docker.getContainer(s.containerId).exec({
+          Cmd: ['docker', 'info', '--format', '{{.ServerVersion}}'],
+          AttachStdout: true, AttachStderr: true,
+        });
+        const stream = await exec.start({});
+        await new Promise((res) => {
+          if (stream && typeof stream.on === 'function') {
+            stream.on('data', () => {});
+            stream.on('end', res);
+            stream.on('error', res);
+          }
+          setTimeout(res, intervalMs);
+        });
+        const info = await exec.inspect();
+        if (info && info.ExitCode === 0) return true;
+      } catch (_) { /* daemon not up yet */ }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    logger.warn('runtime_daemon_not_ready', { slug, userId, timeoutMs });
+    return false;
   }
 
   function touch(slug, userId) {
@@ -152,7 +211,7 @@ function createRuntimeManager({
       try { await c.stop({ t: 5 }); } catch (_) {}
       await c.remove({ force: true });
     } catch (err) {
-      if (err.statusCode !== 404) logger.warn(`[RuntimeContainer] teardown ${id}: ${err.message}`);
+      if (err.statusCode !== 404) logger.warn('runtime_container_teardown_failed', { id }, err);
     }
   }
 
@@ -170,8 +229,13 @@ function createRuntimeManager({
     if (!s) throw new Error('runtime container not started');
     s.lastActive = Date.now();
 
+    // Forward the program's declared env, but NEVER the host/shell system vars
+    // inherited from collab-server's process — the runtime container provides its
+    // own HOME (/home/rootless), PATH (where `docker` lives), and DOCKER_HOST.
+    // Overriding HOME with collab's /home/synthi crashed the program ("mkdir
+    // /home/synthi: permission denied"); overriding PATH would hide `docker`.
     const Env = Object.entries(env)
-      .filter(([k, v]) => typeof k === 'string' && v != null)
+      .filter(([k, v]) => typeof k === 'string' && v != null && !HOST_ENV_DENYLIST.has(k.toUpperCase()))
       .map(([k, v]) => `${k}=${v}`);
 
     const exec = await docker.getContainer(s.containerId).exec({
@@ -203,7 +267,7 @@ function createRuntimeManager({
     return { ptyProcess, stop: () => ptyProcess.kill() };
   }
 
-  return { ensureRuntimeContainer, touch, teardown, cullIdle, execInRuntime, _sessions: sessions };
+  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, _sessions: sessions };
 }
 
 module.exports = {

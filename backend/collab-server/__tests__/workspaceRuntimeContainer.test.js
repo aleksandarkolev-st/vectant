@@ -107,6 +107,18 @@ test('ensureRuntimeContainer reuses a running container (no second create)', asy
   assert.equal(docker.created.length, 1);
 });
 
+test('ensureRuntimeContainer adopts an existing running container after a restart (no 409)', async () => {
+  const docker = fakeDocker();
+  const m1 = createRuntimeManager({ docker });
+  await m1.ensureRuntimeContainer('repo', 'u1');
+  // simulate a collab-server restart: a fresh manager with empty in-memory state
+  // but the container still exists in the (shared) daemon.
+  const m2 = createRuntimeManager({ docker });
+  const res = await m2.ensureRuntimeContainer('repo', 'u1');
+  assert.equal(res.created, false, 'should adopt, not recreate');
+  assert.equal(docker.created.length, 1, 'no second createContainer (would 409)');
+});
+
 test('teardown removes the container and forgets the session', async () => {
   const docker = fakeDocker();
   const mgr = createRuntimeManager({ docker });
@@ -120,6 +132,23 @@ test('ensureRuntimeContainer enforces the max-container cap', async () => {
   const mgr = createRuntimeManager({ docker, maxContainers: 1 });
   await mgr.ensureRuntimeContainer('a', 'u1');
   await assert.rejects(() => mgr.ensureRuntimeContainer('b', 'u2'), /cap reached/i);
+});
+
+test('execInRuntime drops host/shell env (HOME/PATH) but forwards app env', async () => {
+  let execOpts = null;
+  const docker = fakeDocker();
+  const origCreate = docker.createContainer;
+  docker.createContainer = async (o) => {
+    const c = await origCreate(o);
+    c.exec = async (opts) => { execOpts = opts; return { start: async () => ({ on: () => {}, write: () => {}, end: () => {} }) }; };
+    return c;
+  };
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+  await mgr.execInRuntime('repo', 'u1', { command: 'echo hi', env: { HOME: '/home/synthi', PATH: '/x', MY_APP: 'v1' } });
+  assert.ok(!execOpts.Env.some((e) => e.startsWith('HOME=')), 'HOME must be dropped');
+  assert.ok(!execOpts.Env.some((e) => e.startsWith('PATH=')), 'PATH must be dropped');
+  assert.ok(execOpts.Env.includes('MY_APP=v1'), 'app env must be forwarded');
 });
 
 test('execInRuntime returns a ptyProcess-shaped handle (onData/onExit/kill)', async () => {
