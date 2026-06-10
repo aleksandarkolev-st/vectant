@@ -12,7 +12,7 @@ agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screens
 
 Local CDP remains only the development harness. The verification run did not rely on fixed preview ports, fixed workspace slugs, local Chrome paths, fixed element positions, or generated-script shortcuts for a specific fixture.
 
-Excluding real deployed IdP testing, the remaining work is about 2-4 percent. The main unfinished items are production rollout validation in deployed third-party MCP hosts, deployed hosted-runtime/store configuration, and final account-available Codex `5.3-spark` acceptance from inside a workspace.
+Excluding real deployed IdP testing, the remaining work is about 1-3 percent. The main unfinished items are production rollout validation in deployed third-party MCP hosts and final account-available Codex `5.3-spark` acceptance from inside a workspace.
 
 ## Latest Verification
 
@@ -42,6 +42,8 @@ Codex CLI private-tool acceptance was also attempted with `SYNTHI_CODEX_ACCEPTAN
 
 The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
 
+Deployment readiness is now machine-checkable through `synthi_browser_get_deployment_readiness`. The report is redacted and verifies hosted runtime config, workflow bridge config/token policy, encrypted private workflow store config, encrypted auth checkpoint store config, workspace scope, replay-isolation profile state, and absence of local CDP env leakage in production mode.
+
 Targeted replay-isolation verification:
 
 - Portable replay-isolation profile manifests can be passed into MCP safety tools and merged with workspace overrides.
@@ -49,6 +51,7 @@ Targeted replay-isolation verification:
 - The IDE Workflows panel surfaces CI replay profile readiness from MCP state and dispatches `synthi_safety_run_ci_isolated_replay` without hardcoded workspace slugs, ports, or fixture assumptions.
 - The Workflows panel now hydrates replay-isolation profile state from the bridge, lets a developer edit base URL, CI/reset/assertion/postcondition commands, profile ids, seed ids, working directory, auth provider id, and mutation permission, then saves a portable `synthi.replayIsolationProfile.v1` manifest through the existing MCP safety tool.
 - Codex private-tool acceptance is wired to the hosted-runtime attach path and has unit coverage that rejects local CDP attach evidence.
+- Production deployment wiring has an MCP preflight with unit coverage for hosted runtime, workflow bridge, encrypted stores, workspace scope, and local CDP leakage.
 
 Visual artifacts inspected in this update:
 
@@ -63,6 +66,7 @@ Visual artifacts inspected in this update:
 - Private MCP workflow tools are registered from taught workflow manifests and can be discovered through `tools/list`.
 - Agents can call published `synthi_app_*` workflow tools without being handed script paths.
 - The Codex acceptance harness uses hosted workspace attach evidence for private MCP tools instead of local attach evidence, while remaining model-configurable for `5.3-spark`.
+- `synthi_browser_get_deployment_readiness` gives deployers and agents a redacted readiness gate before relying on browser workflow tools in production.
 - Managed-browser Observe/Teach/Stop controls are injected by the hosted runtime path; the IDE Workflows panel remains the contract, manifest, export, validation, and publish surface.
 - Same-origin iframes, nested iframes, popups, popup chains, and opener-return workflows preserve target context for replay.
 - Cross-origin iframe and popup recording requires explicit target-origin consent and otherwise blocks taught actions.
@@ -77,6 +81,7 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `d6494d3c` Add browser workflow deployment readiness preflight
 - `70df51f0` Use hosted runtime in Codex workflow acceptance
 - `6859f454` Add replay isolation profile authoring
 - `41053f36` Surface CI replay profiles in workflows panel
@@ -93,7 +98,6 @@ These sit on top of the earlier goal commits for private-tool registration, host
 ## Remaining Gaps
 
 - Validate the same private-tool discovery/call path in deployed third-party MCP hosts and production hosted-runtime policy, not just the repo-local Codex/fresh-MCP harness.
-- Wire production hosted-browser deployment config for the runtime, workflow bridge, private workflow store, encrypted auth checkpoint store, and per-workspace CI reset profiles.
 - Expand adversarial target coverage for multiple simultaneous popups, hostile nested frame timing, and cross-origin return navigation under production consent rules.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
 - Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
