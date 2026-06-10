@@ -47,6 +47,7 @@ Focused hosted-only harness regression:
 - result: 25 checks passed, 0 failed, including teach, compile, export, manifest, publish, fresh MCP private-tool discovery/call, validation, and exported Playwright execution.
 - fresh MCP evidence: `hosted_attach=true`, `local_attach=false`, `runtime_kind=hosted` in `tmp/workflow-pipeline-e2e/profile-form/fresh-mcp-private-tool-call.json`.
 - harness hardening: the pipeline no longer accepts `SYNTHI_BROWSER_CDP_URL` or a fixed CDP fallback for hosted workflow verification; it requires `SYNTHI_HOSTED_BROWSER_CDP_URL` from the hosted runtime harness.
+- latest rerun after Codex acceptance hardening: Docker frontend/collab services were rebuilt and started, a dynamic headless hosted-runtime CDP endpoint was launched for CI-style proof, and `profile-form` passed all 25 checks again. The rerun auto-detected preview port `45861`, taught `fill,click`, exported `exported-workflow.spec.mjs`, rejected forwarded `/port/<number>` literals, published `synthi_app_save_profile`, called it through a fresh MCP process in `prefixOnly`, validated with `stoppedAtMutationBoundary`, and ran the generated Playwright export successfully (`1 passed`).
 
 Codex CLI private-tool acceptance now passes with `gpt-5.3-codex-spark` through the hosted-runtime path:
 
