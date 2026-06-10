@@ -51,6 +51,7 @@ Targeted replay-isolation verification:
 - The IDE Workflows panel surfaces CI replay profile readiness from MCP state and dispatches `synthi_safety_run_ci_isolated_replay` without hardcoded workspace slugs, ports, or fixture assumptions.
 - The Workflows panel now hydrates replay-isolation profile state from the bridge, lets a developer edit base URL, CI/reset/assertion/postcondition commands, profile ids, seed ids, working directory, auth provider id, and mutation permission, then saves a portable `synthi.replayIsolationProfile.v1` manifest through the existing MCP safety tool.
 - Codex private-tool acceptance is wired to the hosted-runtime attach path and has unit coverage that rejects local CDP attach evidence.
+- Stdio private-tool acceptance is also wired to the hosted-runtime attach path; the spawned MCP process receives hosted runtime env only and strips `SYNTHI_BROWSER_CDP_URL`.
 - Production deployment wiring has an MCP preflight with unit coverage for hosted runtime, workflow bridge, encrypted stores, workspace scope, and local CDP leakage.
 - Simultaneous popup annotation races are hardened: queued popup annotations no longer attach backward to earlier opener clicks outside a bounded browser-event skew window.
 - Nested iframe workflow target ids include durable frame-locator chain context when needed, so repeated inner frame ids do not collapse distinct replay targets.
@@ -71,6 +72,7 @@ Visual artifacts inspected in this update:
 - Private MCP workflow tools are registered from taught workflow manifests and can be discovered through `tools/list`.
 - Agents can call published `synthi_app_*` workflow tools without being handed script paths.
 - The Codex acceptance harness uses hosted workspace attach evidence for private MCP tools instead of local attach evidence, while remaining model-configurable for `5.3-spark`.
+- The stdio MCP acceptance harness uses `synthi_browser_attach_current_workspace` and rejects local-dev CDP attachment evidence.
 - `synthi_browser_get_deployment_readiness` gives deployers and agents a redacted readiness gate before relying on browser workflow tools in production.
 - Managed-browser Observe/Teach/Stop controls are injected by the hosted runtime path; the IDE Workflows panel remains the contract, manifest, export, validation, and publish surface.
 - Same-origin iframes, nested iframes, popups, popup chains, and opener-return workflows preserve target context for replay.
@@ -87,6 +89,7 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `6977ff62` Use hosted attach in stdio private tool acceptance
 - `6760eff9` Mock hosted capture in teach alias test
 - `f3868e68` Enforce replay target origin consent
 - `f1ca5422` Advertise private workflow artifact root
