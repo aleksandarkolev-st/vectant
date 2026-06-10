@@ -57,6 +57,7 @@
     "live:browser:workspace": "node scripts/live-browser-smoke.mjs --workspace",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
+    "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
     "live:browser:install": "npx playwright-core install chromium",
     "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs",
