@@ -116,6 +116,7 @@ export interface BrowserRecordingIssue {
 
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 15_000;
+const PENDING_ANNOTATION_FUTURE_SKEW_MS = 75;
 
 export interface BrowserConsentGrantOptions {
   screenshot?: boolean;
@@ -675,7 +676,8 @@ export class BrowserBroker {
     if (annotation.actions && !annotation.actions.includes(event.action)) return false;
     if (event.origin !== annotation.origin) return false;
     const eventTs = typeof event.ts === "number" && Number.isFinite(event.ts) ? event.ts : Date.now();
-    return Math.abs(annotation.observed_at - eventTs) <= annotation.within_ms;
+    const elapsedSinceAnnotation = eventTs - annotation.observed_at;
+    return elapsedSinceAnnotation >= -PENDING_ANNOTATION_FUTURE_SKEW_MS && elapsedSinceAnnotation <= annotation.within_ms;
   }
 
   private discardDeniedTargetOriginAction(

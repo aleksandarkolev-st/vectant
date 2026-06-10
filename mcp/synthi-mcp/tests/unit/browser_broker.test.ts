@@ -626,6 +626,75 @@ describe("browser broker privacy boundary", () => {
     }));
   });
 
+  it("keeps simultaneous queued popup annotations bound to their own opener clicks", () => {
+    browserBroker.requestConsent("https://app.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://app.example.com", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    expect(browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/reports",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      observed_at: 10_000,
+      detail: {
+        popup_event: true,
+        popup_url: "https://app.example.com/audit-popup",
+        popup_tab_id: "popup-a",
+        opener_tab_id: "app",
+      },
+    })).toEqual({ ok: true, event: null });
+    expect(browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/reports",
+      origin: "https://app.example.com",
+      actions: ["click"],
+      within_ms: 5000,
+      observed_at: 10_240,
+      detail: {
+        popup_event: true,
+        popup_url: "https://app.example.com/receipt-popup",
+        popup_tab_id: "popup-b",
+        opener_tab_id: "app",
+      },
+    })).toEqual({ ok: true, event: null });
+
+    const firstOpener = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/reports",
+      origin: "https://app.example.com",
+      action: "click",
+      observed_at: 10_018,
+      detail: {},
+      element: { role: "button", name: "Open audit" },
+    });
+    expect(firstOpener.ok).toBe(true);
+    const secondOpener = browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://app.example.com/reports",
+      origin: "https://app.example.com",
+      action: "click",
+      observed_at: 10_258,
+      detail: {},
+      element: { role: "button", name: "Open receipt" },
+    });
+    expect(secondOpener.ok).toBe(true);
+
+    const trace = browserBroker.traceSnapshot();
+    expect(trace).toHaveLength(2);
+    expect(trace[0]?.detail).toEqual(expect.objectContaining({
+      popup_event: true,
+      popup_tab_id: "popup-a",
+      popup_url: "https://app.example.com/audit-popup",
+    }));
+    expect(trace[1]?.detail).toEqual(expect.objectContaining({
+      popup_event: true,
+      popup_tab_id: "popup-b",
+      popup_url: "https://app.example.com/receipt-popup",
+    }));
+  });
+
   it("derives popup consent metadata from delayed popup URL annotations", () => {
     browserBroker.requestConsent("https://app.example.com");
     browserBroker.requestConsent("https://billing.example.com");
