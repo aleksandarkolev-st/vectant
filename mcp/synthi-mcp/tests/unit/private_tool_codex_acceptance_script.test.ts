@@ -8,8 +8,11 @@ import {
   buildCodexAcceptancePrompt,
   codexExecArgs,
   extractCodexMcpEvidence,
+  findPageForVisualProof,
   findPageWithText,
   parseBooleanFlag,
+  parseJsonObjectArgument,
+  resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectCdpTargetsToClose,
   visualProofScreenshotOptions,
@@ -90,19 +93,57 @@ describe("private-tool Codex acceptance harness", () => {
     });
   });
 
+  it("accepts external private-tool store config and structured tool arguments", () => {
+    expect(resolvePrivateToolStoreSpec({
+      args: {
+        "private-tool-store-file": "/srv/synthi/private-tools.enc.json",
+        "private-tool-store-key": "external-key",
+        "private-tool-store-scope": "workspace-scope",
+      },
+      env: {},
+      defaultFile: "/tmp/default-private-tools.enc.json",
+      defaultKey: "default-key",
+      defaultScope: "default-scope",
+    })).toEqual({
+      file: "/srv/synthi/private-tools.enc.json",
+      key: "external-key",
+      scope: "workspace-scope",
+      external: true,
+    });
+    expect(parseJsonObjectArgument("{\"run_mode\":\"prefixOnly\",\"confirm_mutation\":false}", "tool_args")).toEqual({
+      run_mode: "prefixOnly",
+      confirm_mutation: false,
+    });
+  });
+
   it("prompts Codex to call the discovered private workflow tool instead of replaying manually", () => {
     const prompt = buildCodexAcceptancePrompt({
       targetUrl: "https://preview.example.test/workspace",
     });
 
     expect(prompt).toContain("synthi_browser_list_private_tools first");
+    expect(prompt).toContain("may not appear in static tool help");
     expect(prompt).toContain("tools[0].tool_name");
-    expect(prompt).toContain("directly call the discovered synthi_app_* private workflow tool");
+    expect(prompt).toContain("callable by that exact returned MCP tool name");
     expect(prompt).toContain("Do not call synthi_browser_begin_teach");
     expect(prompt).toContain("Do not use synthi_browser_action to manually click");
+    expect(prompt).toContain("Do not ask for user input");
+    expect(prompt).toContain("your next MCP call must be the discovered synthi_app_* private workflow tool");
     expect(prompt).toContain("Only after that private workflow tool returns ok=true");
     expect(prompt).toContain("https://preview.example.test/workspace");
     expect(prompt).not.toContain("synthi_app_open_details");
+  });
+
+  it("prompts Codex with an exact requested private tool and structured call args", () => {
+    const prompt = buildCodexAcceptancePrompt({
+      targetUrl: "https://preview.example.test/workspace",
+      requestedToolName: "synthi_app_export_csv",
+      toolArgs: { run_mode: "prefixOnly", confirm_mutation: false },
+    });
+
+    expect(prompt).toContain('tool_name is exactly "synthi_app_export_csv"');
+    expect(prompt).toContain('{"run_mode":"prefixOnly","confirm_mutation":false}');
+    expect(prompt).not.toContain("tools[0].tool_name");
   });
 
   it("runs Codex acceptance with unrelated built-in surfaces disabled", () => {
@@ -148,6 +189,7 @@ describe("private-tool Codex acceptance harness", () => {
       open_call: true,
       opened_by_hosted_attach: true,
       private_tool_call: true,
+      private_tool_called_name: toolName,
       private_tool_result_ok: true,
       private_tool_steps_run: 1,
       command_execution_count: 0,
@@ -161,6 +203,42 @@ describe("private-tool Codex acceptance harness", () => {
     });
     expect(localAttachEvidence.hosted_attach_call).toBe(false);
     expect(localAttachEvidence.local_attach_call).toBe(true);
+  });
+
+  it("can infer the private workflow tool call when the deployed harness selects by registry order", () => {
+    const toolName = "synthi_app_export_csv";
+    const evidence = extractCodexMcpEvidence({
+      toolName: "",
+      targetUrl: "https://preview.example.test/workspace",
+      events: [
+        completedCall("synthi_browser_attach_current_workspace", {}),
+        completedCall("synthi_browser_request_consent", { url: "https://preview.example.test/workspace" }),
+        completedCall(toolName, { run_mode: "prefixOnly" }, {
+          ok: true,
+          private_tool: { tool_name: toolName },
+          replay: { status: "passed", steps_run: 3 },
+        }),
+      ],
+    });
+
+    expect(evidence.private_tool_call).toBe(true);
+    expect(evidence.private_tool_called_name).toBe(toolName);
+    expect(evidence.private_tool_result_ok).toBe(true);
+    expect(evidence.private_tool_steps_run).toBe(3);
+
+    const mismatch = extractCodexMcpEvidence({
+      toolName: "",
+      targetUrl: "https://preview.example.test/workspace",
+      events: [
+        completedCall(toolName, {}, {
+          ok: true,
+          private_tool: { tool_name: "synthi_app_other" },
+          replay: { status: "passed", steps_run: 1 },
+        }),
+      ],
+    });
+    expect(mismatch.private_tool_called_name).toBe(toolName);
+    expect(mismatch.private_tool_result_ok).toBe(false);
   });
 
   it("flags shell command execution so private-tool acceptance stays MCP-only", () => {
@@ -246,6 +324,20 @@ describe("private-tool Codex acceptance harness", () => {
     expect(match?.page).toBe(postNavigationPage);
     expect(match?.url).toBe("https://preview.example.test/workspace/details");
     expect(match?.match).toBe("same-origin");
+  });
+
+  it("can capture generic visual proof from the target page without a fixture text postcondition", async () => {
+    const targetPage = mockPage("https://preview.example.test/workspace", "Workflow finished");
+    const otherPage = mockPage("https://other.example.test/workspace", "Workflow finished");
+
+    const match = await findPageForVisualProof({
+      pages: [otherPage, targetPage],
+      targetUrl: "https://preview.example.test/workspace",
+    });
+
+    expect(match?.page).toBe(targetPage);
+    expect(match?.text).toBe("Workflow finished");
+    expect(match?.match).toBe("exact-url");
   });
 
   it("keeps visual proof screenshots viewport-bounded with a capped timeout", () => {

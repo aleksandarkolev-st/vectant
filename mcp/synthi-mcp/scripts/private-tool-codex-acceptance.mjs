@@ -16,11 +16,20 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 import {
   assertRuntimeEndpointConformance,
+  normalizeOptionalText,
   parseBooleanFlag,
+  parseJsonObjectArgument,
+  parseNonNegativeInteger,
+  resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
 } from "./private-tool-acceptance-conformance.mjs";
 
-export { parseBooleanFlag, runtimeEndpointConformance };
+export {
+  parseBooleanFlag,
+  parseJsonObjectArgument,
+  resolvePrivateToolStoreSpec,
+  runtimeEndpointConformance,
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +53,10 @@ const CFG = {
   requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"]
     ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME
     ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
+  toolName: args["tool-name"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME || "",
+  toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}", "tool_args"),
+  expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
+  expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
 };
 
 function log(kind, message) {
@@ -68,14 +81,22 @@ async function main() {
   }
 
   await mkdir(CFG.outDir, { recursive: true });
-  const fixture = CFG.targetUrl ? null : await startFixtureServer();
-  const targetUrl = CFG.targetUrl || fixture.url;
   const artifactDir = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tool-codex-"));
   const codexHome = path.join(artifactDir, "codex-home");
   const codexWorkdir = path.join(artifactDir, "codex-workspace");
-  const storeFile = path.join(artifactDir, "private-tools.enc.json");
-  const storeKey = `codex-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const storeScope = `codex-acceptance-${process.pid}`;
+  const privateToolStore = resolvePrivateToolStoreSpec({
+    args,
+    env: process.env,
+    defaultFile: path.join(artifactDir, "private-tools.enc.json"),
+    defaultKey: `codex-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    defaultScope: `codex-acceptance-${process.pid}`,
+  });
+  if (privateToolStore.external && !CFG.targetUrl.trim()) {
+    throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
+  }
+  const fixture = privateToolStore.external || CFG.targetUrl ? null : await startFixtureServer();
+  const targetUrl = CFG.targetUrl || fixture.url;
+  const expectedText = CFG.expectedText ?? (privateToolStore.external ? "" : "Details opened");
   const workspaceId = CFG.workspaceId || `codex-private-tool-acceptance-${process.pid}`;
   const transcript = {
     generated_at: new Date().toISOString(),
@@ -88,38 +109,80 @@ async function main() {
       non_loopback_runtime: runtimeConformance.non_loopback_runtime,
       runtime_host_class: runtimeConformance.runtime_host_class,
     },
+    private_tool_store: {
+      external: privateToolStore.external,
+      file: privateToolStore.file,
+      scope: privateToolStore.scope,
+    },
+    acceptance: {
+      requested_tool_name: CFG.toolName || null,
+      tool_args_keys: Object.keys(CFG.toolArgs).sort(),
+      expected_steps_min: CFG.expectedStepsMin,
+      expected_text_required: Boolean(expectedText),
+    },
     codex_model: CFG.codexModel,
     steps: [],
   };
 
   try {
     await mkdir(codexWorkdir, { recursive: true });
-    await prepareCodexHome({ codexHome, authPath, storeFile, storeKey, storeScope, targetUrl, workspaceId });
-    const seeded = await seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl });
-    transcript.seeded = seeded;
-    log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
+    await prepareCodexHome({
+      codexHome,
+      authPath,
+      storeFile: privateToolStore.file,
+      storeKey: privateToolStore.key,
+      storeScope: privateToolStore.scope,
+      targetUrl,
+      workspaceId,
+    });
+    const seeded = privateToolStore.external
+      ? null
+      : await seedPrivateWorkflowStore({
+        storeFile: privateToolStore.file,
+        storeKey: privateToolStore.key,
+        storeScope: privateToolStore.scope,
+        targetUrl,
+      });
+    if (seeded) {
+      transcript.seeded = seeded;
+      log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
+    } else {
+      log("ok", `use existing private workflow store - scope=${privateToolStore.scope}`);
+    }
 
     await pruneExistingCdpPageTargets(CFG.cdpUrl);
-    const codexRun = await runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName: seeded.tool_name });
+    const requestedToolName = CFG.toolName || seeded?.tool_name || "";
+    const codexRun = await runCodexAgent({
+      codexHome,
+      codexWorkdir,
+      targetUrl,
+      toolName: requestedToolName,
+      toolArgs: CFG.toolArgs,
+    });
     transcript.codex = codexRun.summary;
     await writeFile(path.join(CFG.outDir, "codex-jsonl.log"), codexRun.stdout);
     await writeFile(path.join(CFG.outDir, "codex-stderr.log"), codexRun.stderr);
     await writeFile(path.join(CFG.outDir, "codex-final-message.txt"), codexRun.finalMessage);
     assert.equal(codexRun.exitCode, 0, `codex exited with ${codexRun.exitCode}: ${codexRun.stderr.slice(0, 1000)}`);
     assert(codexRun.finalMessage.includes("WORKFLOW_DONE"), `Codex did not report workflow completion: ${codexRun.finalMessage}`);
-    assert(codexRun.finalMessage.includes(seeded.tool_name), `Codex final message did not name discovered private tool ${seeded.tool_name}`);
+    const calledToolName = codexRun.evidence.private_tool_called_name;
+    assert(calledToolName, "Codex JSONL did not include a completed synthi_app_* private workflow tool call");
+    if (requestedToolName) {
+      assert.equal(calledToolName, requestedToolName, `Codex called ${calledToolName} instead of requested private tool ${requestedToolName}`);
+    }
+    assert(codexRun.finalMessage.includes(calledToolName), `Codex final message did not name discovered private tool ${calledToolName}`);
     assert(codexRun.evidence.hosted_attach_call, "Codex JSONL did not include a completed hosted browser attach MCP call");
     assert.equal(codexRun.evidence.local_attach_call, false, "Codex used local CDP attach instead of hosted workspace attach");
-    assert(codexRun.evidence.private_tool_call, `Codex JSONL did not include a completed MCP call to ${seeded.tool_name}`);
-    assert(codexRun.evidence.private_tool_result_ok, `Codex private workflow tool did not return ok=true for ${seeded.tool_name}`);
-    assert(codexRun.evidence.private_tool_steps_run > 0, `Codex private workflow tool ran no steps for ${seeded.tool_name}`);
+    assert(codexRun.evidence.private_tool_call, `Codex JSONL did not include a completed MCP call to ${calledToolName}`);
+    assert(codexRun.evidence.private_tool_result_ok, `Codex private workflow tool did not return ok=true for ${calledToolName}`);
+    assert(codexRun.evidence.private_tool_steps_run >= CFG.expectedStepsMin, `Codex private workflow tool ran too few steps: expected at least ${CFG.expectedStepsMin}, got ${codexRun.evidence.private_tool_steps_run}`);
     assert(codexRun.evidence.consent_call, "Codex JSONL did not include a completed screenshot consent MCP call");
     assert(codexRun.evidence.open_call, "Codex JSONL did not include a completed browser open MCP call");
     assert.equal(codexRun.evidence.command_execution_count, 0, `Codex used shell commands instead of MCP-only workflow acceptance: ${JSON.stringify(codexRun.evidence.command_executions)}`);
-    transcript.steps.push({ name: "codex discovered and called private MCP tool", ok: true, tool_name: seeded.tool_name });
-    log("ok", `codex reported private workflow tool - ${seeded.tool_name}`);
+    transcript.steps.push({ name: "codex discovered and called private MCP tool", ok: true, tool_name: calledToolName });
+    log("ok", `codex reported private workflow tool - ${calledToolName}`);
 
-    const visual = await captureVisualProof({ targetUrl });
+    const visual = await captureVisualProof({ targetUrl, expectedText });
     transcript.steps.push({
       name: "visual proof snapshot",
       ok: true,
@@ -127,8 +190,11 @@ async function main() {
       text: visual.text,
       url: visual.url,
       match: visual.match,
+      expected_text: expectedText || null,
     });
-    assert(visual.text.includes("Details opened"), `browser did not show workflow effect: ${visual.text}`);
+    if (expectedText) {
+      assert(visual.text.includes(expectedText), `browser did not show workflow effect: ${visual.text}`);
+    }
     log("ok", `visual proof snapshot - ${visual.screenshotPath}`);
 
     const transcriptPath = path.join(CFG.outDir, "codex-private-tool-acceptance.json");
@@ -191,8 +257,8 @@ export function buildCodexConfigToml({
   return config.join("\n");
 }
 
-async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
-  const prompt = buildCodexAcceptancePrompt({ targetUrl });
+async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName, toolArgs }) {
+  const prompt = buildCodexAcceptancePrompt({ targetUrl, requestedToolName: toolName, toolArgs });
   const proc = spawn(CFG.codexBin, codexExecArgs({
     codexWorkdir,
     prompt,
@@ -207,7 +273,7 @@ async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
     .filter((event) => event?.type === "item.completed" && event.item?.type === "agent_message")
     .map((event) => String(event.item?.text ?? ""))
     .at(-1) ?? "";
-  const sawPrivateToolName = output.stdout.includes(toolName);
+  const sawPrivateToolName = toolName ? output.stdout.includes(toolName) : false;
   const evidence = extractCodexMcpEvidence({ events, toolName, targetUrl });
   return {
     exitCode: output.code,
@@ -227,14 +293,19 @@ async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
   };
 }
 
-export function buildCodexAcceptancePrompt({ targetUrl }) {
+export function buildCodexAcceptancePrompt({ targetUrl, requestedToolName = "", toolArgs = {} } = {}) {
+  const toolSelection = requestedToolName
+    ? `Call synthi_browser_list_private_tools first. Find the returned tool whose tool_name is exactly ${JSON.stringify(requestedToolName)}. That exact value is the private workflow MCP tool you must call directly.`
+    : "Call synthi_browser_list_private_tools first. Read the returned tools[0].tool_name value. That exact value is the private workflow MCP tool you must call directly.";
+  const toolArgsJson = JSON.stringify(toolArgs && typeof toolArgs === "object" && !Array.isArray(toolArgs) ? toolArgs : {});
   return [
     "Use Synthi MCP tools only. Do not use shell commands. Do not read generated scripts or local files.",
-    "A saved Synthi app workflow private tool is available as an MCP tool with a synthi_app_ prefix.",
-    "Call synthi_browser_list_private_tools first. Read the returned tools[0].tool_name value. That exact value is the private workflow MCP tool you must call directly.",
+    "A saved Synthi app workflow private tool is available as a dynamic MCP tool with a synthi_app_ prefix.",
+    "The private workflow tool name returned by synthi_browser_list_private_tools may not appear in static tool help, but it is callable by that exact returned MCP tool name in this session.",
+    toolSelection,
     "Attach to the hosted browser with synthi_browser_attach_current_workspace, request screenshot consent for the exact target URL, and open the exact target URL.",
-    "Do not call synthi_browser_begin_teach. Do not record a new workflow. Do not use synthi_browser_action to manually click the page. Do not report success after only listing, opening, observing, or taking a snapshot.",
-    "After the target URL is open and consent is granted, directly call the discovered synthi_app_* private workflow tool with valid schema arguments. Use {} unless the private tool schema requires parameters.",
+    "Do not call synthi_browser_begin_teach. Do not record a new workflow. Do not use synthi_browser_action to manually click the page. Do not call observe/resource tools as a substitute for the private workflow call. Do not ask for user input.",
+    `After the target URL is open and consent is granted, your next MCP call must be the discovered synthi_app_* private workflow tool with this JSON argument object: ${toolArgsJson}.`,
     "Only after that private workflow tool returns ok=true with replay.steps_run > 0, reply exactly as: WORKFLOW_DONE <tool_name_you_called>.",
     `Target URL: ${targetUrl}`,
   ].join("\n");
@@ -267,8 +338,11 @@ export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
       exit_code: item.exit_code ?? null,
       command: redactCommandForEvidence(item.command),
     }));
-  const privateToolCall = completedCalls.find((item) => item.tool === toolName);
+  const privateToolCall = toolName
+    ? completedCalls.find((item) => item.tool === toolName)
+    : completedCalls.find((item) => typeof item.tool === "string" && item.tool.startsWith("synthi_app_"));
   const privateToolResult = privateToolCall?.result?.structured_content;
+  const privateToolCalledName = privateToolCall?.tool ?? null;
   const consentCall = completedCalls.find((item) => item.tool === "synthi_browser_request_consent"
     && sameUrl(String(item.arguments?.url ?? ""), targetUrl));
   const openCall = completedCalls.find((item) => item.tool === "synthi_browser_open"
@@ -285,8 +359,9 @@ export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
     open_call: Boolean(openCall) || Boolean(hostedAttachOpenedTarget),
     opened_by_hosted_attach: Boolean(hostedAttachOpenedTarget),
     private_tool_call: Boolean(privateToolCall),
+    private_tool_called_name: privateToolCalledName,
     private_tool_result_ok: privateToolResult?.ok === true
-      && privateToolResult?.private_tool?.tool_name === toolName,
+      && privateToolResult?.private_tool?.tool_name === privateToolCalledName,
     private_tool_steps_run: Number(privateToolResult?.replay?.steps_run ?? 0),
     private_tool_status: privateToolResult?.replay?.status ?? null,
     command_execution_count: commandExecutions.length,
@@ -294,13 +369,15 @@ export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
   };
 }
 
-async function captureVisualProof({ targetUrl }) {
+async function captureVisualProof({ targetUrl, expectedText }) {
   const browser = await chromium.connectOverCDP(CFG.cdpUrl);
   try {
     const deadline = Date.now() + CFG.timeoutMs;
     while (Date.now() < deadline) {
       const pages = browser.contexts().flatMap((context) => context.pages());
-      const match = await findPageWithText({ pages, targetUrl, expectedText: "Details opened" });
+      const match = expectedText
+        ? await findPageWithText({ pages, targetUrl, expectedText })
+        : await findPageForVisualProof({ pages, targetUrl });
       if (match) {
         const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
         await match.page.screenshot(visualProofScreenshotOptions({ path: screenshotPath, timeoutMs: CFG.timeoutMs }));
@@ -312,6 +389,20 @@ async function captureVisualProof({ targetUrl }) {
   } finally {
     await browser.close().catch(() => undefined);
   }
+}
+
+export async function findPageForVisualProof({ pages, targetUrl }) {
+  const sameOriginCandidates = [];
+  for (const page of pages) {
+    const pageUrl = page.url();
+    const exact = sameUrl(pageUrl, targetUrl);
+    if (!exact && !sameOrigin(pageUrl, targetUrl)) continue;
+    const text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+    const match = { page, text, url: pageUrl, match: exact ? "exact-url" : "same-origin" };
+    if (exact) return match;
+    sameOriginCandidates.push(match);
+  }
+  return sameOriginCandidates[0] ?? null;
 }
 
 export async function findPageWithText({ pages, targetUrl, expectedText }) {
