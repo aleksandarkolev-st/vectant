@@ -12,6 +12,7 @@ import {
   findPageWithText,
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreConformance,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectCdpTargetsToClose,
@@ -113,6 +114,35 @@ describe("private-tool Codex acceptance harness", () => {
     expect(parseJsonObjectArgument("{\"run_mode\":\"prefixOnly\",\"confirm_mutation\":false}", "tool_args")).toEqual({
       run_mode: "prefixOnly",
       confirm_mutation: false,
+    });
+  });
+
+  it("can require deployed Codex acceptance to use an existing private workflow store", () => {
+    expect(privateToolStoreConformance({
+      storeSpec: {
+        file: "/tmp/default-private-tools.enc.json",
+        key: "default-key",
+        scope: "default-scope",
+        external: false,
+      },
+      requireExternalStore: true,
+    })).toEqual({
+      ok: false,
+      require_external_private_tool_store: true,
+      external_private_tool_store: false,
+    });
+    expect(privateToolStoreConformance({
+      storeSpec: {
+        file: "/srv/synthi/private-tools.enc.json",
+        key: "external-key",
+        scope: "workspace-scope",
+        external: true,
+      },
+      requireExternalStore: true,
+    })).toEqual({
+      ok: true,
+      require_external_private_tool_store: true,
+      external_private_tool_store: true,
     });
   });
 

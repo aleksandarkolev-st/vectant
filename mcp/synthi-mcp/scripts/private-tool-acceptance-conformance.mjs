@@ -58,6 +58,24 @@ export function resolvePrivateToolStoreSpec({
   };
 }
 
+export function privateToolStoreConformance({ storeSpec, requireExternalStore = false }) {
+  const requireExternal = Boolean(requireExternalStore);
+  const externalStore = storeSpec?.external === true;
+  return {
+    ok: !requireExternal || externalStore,
+    require_external_private_tool_store: requireExternal,
+    external_private_tool_store: externalStore,
+  };
+}
+
+export function assertPrivateToolStoreConformance({ storeSpec, requireExternalStore }) {
+  const conformance = privateToolStoreConformance({ storeSpec, requireExternalStore });
+  if (!conformance.ok) {
+    throw new Error("external_private_tool_store_required: pass --private-tool-store-file, --private-tool-store-key, --private-tool-store-scope, and --target-url before using this harness as a deployed saved-workflow conformance gate");
+  }
+  return conformance;
+}
+
 export function parseJsonObjectArgument(value, label = "json_object_argument") {
   let parsed;
   try {

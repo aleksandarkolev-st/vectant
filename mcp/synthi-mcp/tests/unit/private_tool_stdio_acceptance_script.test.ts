@@ -5,6 +5,7 @@ import {
   mcpCommandConformance,
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreConformance,
   resolveMcpServerCommandSpec,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
@@ -159,6 +160,48 @@ describe("private-tool stdio acceptance harness", () => {
       defaultKey: "default-key",
       defaultScope: "default-scope",
     })).toThrow("private_tool_store_config_incomplete");
+  });
+
+  it("can require deployed-host conformance to use an existing private workflow store", () => {
+    expect(privateToolStoreConformance({
+      storeSpec: {
+        file: "/tmp/default-private-tools.enc.json",
+        key: "default-key",
+        scope: "default-scope",
+        external: false,
+      },
+      requireExternalStore: false,
+    })).toEqual({
+      ok: true,
+      require_external_private_tool_store: false,
+      external_private_tool_store: false,
+    });
+    expect(privateToolStoreConformance({
+      storeSpec: {
+        file: "/tmp/default-private-tools.enc.json",
+        key: "default-key",
+        scope: "default-scope",
+        external: false,
+      },
+      requireExternalStore: true,
+    })).toEqual({
+      ok: false,
+      require_external_private_tool_store: true,
+      external_private_tool_store: false,
+    });
+    expect(privateToolStoreConformance({
+      storeSpec: {
+        file: "/srv/synthi/private-tools.enc.json",
+        key: "external-key",
+        scope: "workspace-scope",
+        external: true,
+      },
+      requireExternalStore: true,
+    })).toEqual({
+      ok: true,
+      require_external_private_tool_store: true,
+      external_private_tool_store: true,
+    });
   });
 
   it("selects private workflow tools deterministically", () => {

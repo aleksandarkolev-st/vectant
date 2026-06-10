@@ -15,10 +15,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 import {
+  assertPrivateToolStoreConformance,
   assertRuntimeEndpointConformance,
   normalizeOptionalText,
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreConformance,
   parseNonNegativeInteger,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
@@ -27,6 +29,7 @@ import {
 export {
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreConformance,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
 };
@@ -53,6 +56,9 @@ const CFG = {
   requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"]
     ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME
     ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
+  requireExternalPrivateToolStore: parseBooleanFlag(args["require-external-private-tool-store"]
+    ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE
+    ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE),
   toolName: args["tool-name"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME || "",
   toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}", "tool_args"),
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
@@ -91,6 +97,10 @@ async function main() {
     defaultKey: `codex-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     defaultScope: `codex-acceptance-${process.pid}`,
   });
+  const privateToolStoreConformance = assertPrivateToolStoreConformance({
+    storeSpec: privateToolStore,
+    requireExternalStore: CFG.requireExternalPrivateToolStore,
+  });
   if (privateToolStore.external && !CFG.targetUrl.trim()) {
     throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
   }
@@ -108,6 +118,8 @@ async function main() {
       require_non_loopback_runtime: runtimeConformance.require_non_loopback_runtime,
       non_loopback_runtime: runtimeConformance.non_loopback_runtime,
       runtime_host_class: runtimeConformance.runtime_host_class,
+      require_external_private_tool_store: privateToolStoreConformance.require_external_private_tool_store,
+      external_private_tool_store: privateToolStoreConformance.external_private_tool_store,
     },
     private_tool_store: {
       external: privateToolStore.external,

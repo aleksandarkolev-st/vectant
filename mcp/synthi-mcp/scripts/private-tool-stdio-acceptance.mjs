@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  assertPrivateToolStoreConformance,
   assertRuntimeEndpointConformance,
   normalizeOptionalText,
   parseBooleanFlag,
@@ -27,11 +28,13 @@ import {
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectPrivateToolForAcceptance,
+  privateToolStoreConformance,
 } from "./private-tool-acceptance-conformance.mjs";
 
 export {
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreConformance,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectPrivateToolForAcceptance,
@@ -52,6 +55,7 @@ const CFG = {
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TIMEOUT_MS || 60_000),
   requireCustomMcpCommand: parseBooleanFlag(args["require-custom-mcp-command"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND),
   requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
+  requireExternalPrivateToolStore: parseBooleanFlag(args["require-external-private-tool-store"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE),
   toolName: args["tool-name"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME || "",
   toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}"),
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
@@ -96,6 +100,10 @@ async function main() {
     defaultKey: `stdio-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     defaultScope: `stdio-acceptance-${process.pid}`,
   });
+  const privateToolStoreConformance = assertPrivateToolStoreConformance({
+    storeSpec: privateToolStore,
+    requireExternalStore: CFG.requireExternalPrivateToolStore,
+  });
   if (privateToolStore.external && !CFG.targetUrl.trim()) {
     throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
   }
@@ -123,6 +131,8 @@ async function main() {
       require_non_loopback_runtime: runtimeConformance.require_non_loopback_runtime,
       non_loopback_runtime: runtimeConformance.non_loopback_runtime,
       runtime_host_class: runtimeConformance.runtime_host_class,
+      require_external_private_tool_store: privateToolStoreConformance.require_external_private_tool_store,
+      external_private_tool_store: privateToolStoreConformance.external_private_tool_store,
     },
     private_tool_store: {
       external: privateToolStore.external,
