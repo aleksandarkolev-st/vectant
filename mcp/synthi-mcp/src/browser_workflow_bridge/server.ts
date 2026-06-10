@@ -22,6 +22,11 @@
 import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import {
+  mutationSafetyPlanFor,
+  replayIsolationProfileManifestFor,
+  replayIsolationProfiles,
+} from "../browser/safety.js";
 import type { WorkflowStepContractV7 } from "../browser/workflow.js";
 import { AUTH_TOOL_NAMES, dispatchAuthTool } from "../tools/auth.js";
 import { BROWSER_TOOL_NAMES, browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
@@ -461,6 +466,8 @@ export function buildBrowserWorkflowPanelState(
   const lane0 = browserBroker.lane0Status();
   const workflow = browserBroker.compiledWorkflow();
   const prefixPlan = browserBroker.workflowReplayPlan("prefixOnly");
+  const workspaceId = runtime?.workspace_id ?? stringOpt(process.env["SYNTHI_WORKSPACE_ID"]);
+  const isolationProfile = replayIsolationProfiles.get(workspaceId);
   const workspaceUrl = selected?.url ?? runtime?.workspace_url ?? null;
   const consent = consentForPanelState(workspaceUrl);
   const screenshotAllowed = consent?.status === "granted" && consent.screenshot === "granted";
@@ -473,7 +480,7 @@ export function buildBrowserWorkflowPanelState(
   const recordingIssues = browserBroker.recordingIssueSnapshot();
 
   return {
-    workspaceLabel: runtime?.workspace_id ?? stringOpt(process.env["SYNTHI_WORKSPACE_ID"]) ?? "Current workspace",
+    workspaceLabel: workspaceId ?? "Current workspace",
     bridge: {
       status: "ready",
       lastTool: bridgeState.lastTool ?? null,
@@ -579,6 +586,9 @@ export function buildBrowserWorkflowPanelState(
       detail: limitationDetail(limitation),
     })),
     history: bridgeState.history ?? [],
+    isolation_profile: isolationProfile,
+    profile_manifest: replayIsolationProfileManifestFor(isolationProfile),
+    mutation_plan: mutationSafetyPlanFor(workflow.contract, isolationProfile),
     diagnostics: {
       eventCount: trace.length,
       authorizedTabCount: tabs.length,

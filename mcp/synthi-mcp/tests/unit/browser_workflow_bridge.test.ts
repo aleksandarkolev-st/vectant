@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { browserBroker } from "../../src/browser/broker.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
+import { replayIsolationProfiles } from "../../src/browser/safety.js";
 import {
   buildBrowserWorkflowPanelState,
   resolveBrowserWorkflowBridgePort,
@@ -22,6 +23,7 @@ describe("browser workflow bridge", () => {
 
   beforeEach(() => {
     browserBroker.resetForTests();
+    replayIsolationProfiles.resetForTests();
     privateWorkflowToolRegistry.resetForTests();
     eventLog._resetForTests();
   });
@@ -175,6 +177,63 @@ describe("browser workflow bridge", () => {
     const serialized = JSON.stringify(state);
     expect(serialized).not.toContain("screenshot_base64");
     expect(serialized).not.toMatch(/local chrome|desktop extension|C:\\\\/i);
+  });
+
+  it("hydrates replay isolation profile state for the workflows panel", async () => {
+    const workspaceId = "workspace-a";
+    replayIsolationProfiles.set({
+      workspace_id: workspaceId,
+      kind: "ciIsolated",
+      base_url: "https://preview.example.test",
+      ci_command: "npm run workflow:ci",
+      data_reset_command: "npm run workflow:reset",
+      reset_assertion_command: "npm run workflow:assert-reset",
+      postcondition_command: "npm run workflow:assert-saved",
+      reset_profile_id: "release-reset-v1",
+      state_seed_id: "release-fixture-v1",
+      allow_mutation_replay: true,
+    });
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: workspaceId,
+      runtime_id: "runtime-a",
+      workspace_url: "https://ide.example.test/workspace/workspace-a",
+      adapter: "hosted-playwright-cdp",
+    });
+
+    const state = buildBrowserWorkflowPanelState() as {
+      isolation_profile: {
+        workspace_id: string;
+        readiness: string;
+        can_run_full_mutation_replay: boolean;
+      };
+      profile_manifest: {
+        schema_version: string;
+        commands: Record<string, string>;
+        reset_profile_id: string;
+        state_seed_id: string;
+      };
+      mutation_plan: { ci_full_replay: { blockers: string[] } };
+    };
+
+    expect(state.isolation_profile).toEqual(expect.objectContaining({
+      workspace_id: workspaceId,
+      readiness: "ciIsolatedReady",
+      can_run_full_mutation_replay: true,
+    }));
+    expect(state.profile_manifest).toEqual(expect.objectContaining({
+      schema_version: "synthi.replayIsolationProfile.v1",
+      reset_profile_id: "release-reset-v1",
+      state_seed_id: "release-fixture-v1",
+      commands: expect.objectContaining({
+        ci: "npm run workflow:ci",
+        data_reset: "npm run workflow:reset",
+        reset_assertion: "npm run workflow:assert-reset",
+        postcondition: "npm run workflow:assert-saved",
+      }),
+    }));
+    expect(state.mutation_plan.ci_full_replay.blockers).toEqual(expect.any(Array));
+    expect(JSON.stringify(state)).not.toMatch(/local chrome|browser-mcp-live|\/port\/\d+|C:\\\\/i);
   });
 
   it("keeps panel state safe when the selected tab has no consentable origin", async () => {

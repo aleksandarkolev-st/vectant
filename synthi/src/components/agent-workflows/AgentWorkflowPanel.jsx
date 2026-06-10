@@ -30,6 +30,7 @@ export const WORKFLOW_ACTIONS = Object.freeze({
   OPEN_SOURCE: 'synthi_source_get_mapping_status',
   COMPILE_CONTRACT: 'synthi_browser_compile_workflow',
   GET_MUTATION_PLAN: 'synthi_safety_get_mutation_plan',
+  SET_REPLAY_ISOLATION_PROFILE: 'synthi_safety_set_replay_isolation_profile',
   PREFIX_VALIDATE: 'synthi_safety_run_prefix_validation',
   RUN_CI_ISOLATED_REPLAY: 'synthi_safety_run_ci_isolated_replay',
   GENERATE_SCRIPT: 'synthi_browser_generate_script',
@@ -166,9 +167,17 @@ function normalizeIsolationState(value = {}) {
     readiness,
     hasMutation,
     canRunFullMutationReplay,
+    baseUrl: profile.base_url || manifest.base_url || null,
+    ciCommand: profile.ci_command || commands.ci || null,
+    dataResetCommand: profile.data_reset_command || commands.data_reset || null,
+    resetAssertionCommand: profile.reset_assertion_command || commands.reset_assertion || null,
+    postconditionCommand: profile.postcondition_command || commands.postcondition || null,
+    workingDirectory: profile.working_directory || manifest.working_directory || null,
+    authProviderId: profile.auth_provider_id || manifest.auth_provider_id || null,
     resetProfileId: profile.reset_profile_id || manifest.reset_profile_id || null,
     stateSeedId: profile.state_seed_id || manifest.state_seed_id || null,
     postconditionConfigured: Boolean(profile.postcondition_command || commands.postcondition),
+    allowMutationReplay: Boolean(profile.allow_mutation_replay || manifest.allow_mutation_replay),
     missing,
     detail: profile.detail || manifest.detail || mutationPlan.background_hardening?.reason || '',
   };
@@ -565,6 +574,74 @@ function ActionButton({ action, label, icon, enabled = true, disabledReason, var
   );
 }
 
+function profileFormFromIsolation(isolation = {}) {
+  return {
+    baseUrl: isolation.baseUrl || '',
+    ciCommand: isolation.ciCommand || '',
+    dataResetCommand: isolation.dataResetCommand || '',
+    resetAssertionCommand: isolation.resetAssertionCommand || '',
+    postconditionCommand: isolation.postconditionCommand || '',
+    workingDirectory: isolation.workingDirectory || '',
+    authProviderId: isolation.authProviderId || '',
+    resetProfileId: isolation.resetProfileId || '',
+    stateSeedId: isolation.stateSeedId || '',
+    allowMutationReplay: Boolean(isolation.allowMutationReplay),
+  };
+}
+
+function trimOrUndefined(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function profilePayloadFromForm(form) {
+  const commands = {
+    ...(trimOrUndefined(form.ciCommand) ? { ci: trimOrUndefined(form.ciCommand) } : {}),
+    ...(trimOrUndefined(form.dataResetCommand) ? { data_reset: trimOrUndefined(form.dataResetCommand) } : {}),
+    ...(trimOrUndefined(form.resetAssertionCommand) ? { reset_assertion: trimOrUndefined(form.resetAssertionCommand) } : {}),
+    ...(trimOrUndefined(form.postconditionCommand) ? { postcondition: trimOrUndefined(form.postconditionCommand) } : {}),
+  };
+
+  return {
+    profile_manifest: {
+      schema_version: 'synthi.replayIsolationProfile.v1',
+      kind: 'ciIsolated',
+      ...(trimOrUndefined(form.baseUrl) ? { base_url: trimOrUndefined(form.baseUrl) } : {}),
+      ...(Object.keys(commands).length > 0 ? { commands } : {}),
+      ...(trimOrUndefined(form.workingDirectory) ? { working_directory: trimOrUndefined(form.workingDirectory) } : {}),
+      ...(trimOrUndefined(form.authProviderId) ? { auth_provider_id: trimOrUndefined(form.authProviderId) } : {}),
+      ...(trimOrUndefined(form.resetProfileId) ? { reset_profile_id: trimOrUndefined(form.resetProfileId) } : {}),
+      ...(trimOrUndefined(form.stateSeedId) ? { state_seed_id: trimOrUndefined(form.stateSeedId) } : {}),
+      allow_mutation_replay: Boolean(form.allowMutationReplay),
+    },
+  };
+}
+
+function ProfileField({ label, value, onChange, multiline = false }) {
+  const commonProps = {
+    className: 'w-full rounded-md border px-2 py-1.5 text-[11px] outline-none focus:ring-2',
+    style: {
+      borderColor: 'var(--border-subtle)',
+      background: 'var(--bg-panel)',
+      color: 'var(--text-primary)',
+    },
+    value,
+    onChange: (event) => onChange(event.target.value),
+  };
+
+  return (
+    <label className="grid gap-1">
+      <span className="text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </span>
+      {multiline ? (
+        <textarea {...commonProps} rows={2} />
+      ) : (
+        <input {...commonProps} />
+      )}
+    </label>
+  );
+}
+
 function WorkflowStage({ stage, onAction }) {
   const Icon = STAGE_ICONS[stage.id] || Workflow;
   const style = toneStyle(stage.tone);
@@ -693,11 +770,34 @@ function HistoryList({ history }) {
 }
 
 function IsolationProfileCard({ isolation, traceReady, onAction }) {
+  const safeIsolation = isolation || {};
+  const [editing, setEditing] = useState(!safeIsolation.canRunFullMutationReplay);
+  const [form, setForm] = useState(() => profileFormFromIsolation(safeIsolation));
+  useEffect(() => {
+    setForm(profileFormFromIsolation(safeIsolation));
+    if (!safeIsolation.canRunFullMutationReplay) setEditing(true);
+  }, [
+    safeIsolation.baseUrl,
+    safeIsolation.ciCommand,
+    safeIsolation.dataResetCommand,
+    safeIsolation.resetAssertionCommand,
+    safeIsolation.postconditionCommand,
+    safeIsolation.workingDirectory,
+    safeIsolation.authProviderId,
+    safeIsolation.resetProfileId,
+    safeIsolation.stateSeedId,
+    safeIsolation.allowMutationReplay,
+    safeIsolation.canRunFullMutationReplay,
+  ]);
   if (!isolation) return null;
   const ready = isolation.canRunFullMutationReplay || isolation.readiness === 'ciIsolatedReady';
   const missing = Array.isArray(isolation.missing) ? isolation.missing : [];
   const action = ready ? WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY : WORKFLOW_ACTIONS.GET_MUTATION_PLAN;
   const actionLabel = ready ? 'CI replay' : 'Plan';
+  const updateForm = (key) => (value) => setForm((current) => ({ ...current, [key]: value }));
+  const saveProfile = () => {
+    onAction?.(WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE, profilePayloadFromForm(form));
+  };
 
   return (
     <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-isolation">
@@ -736,15 +836,76 @@ function IsolationProfileCard({ isolation, traceReady, onAction }) {
           </div>
         ) : null}
       </dl>
+      {editing ? (
+        <form
+          className="grid gap-2 border-t px-3 py-2"
+          style={{ borderColor: 'var(--border-subtle)' }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveProfile();
+          }}
+        >
+          <ProfileField label="Base URL" value={form.baseUrl} onChange={updateForm('baseUrl')} />
+          <ProfileField label="CI command" value={form.ciCommand} onChange={updateForm('ciCommand')} multiline />
+          <ProfileField label="Reset command" value={form.dataResetCommand} onChange={updateForm('dataResetCommand')} multiline />
+          <ProfileField label="Reset assertion" value={form.resetAssertionCommand} onChange={updateForm('resetAssertionCommand')} multiline />
+          <ProfileField label="Postcondition" value={form.postconditionCommand} onChange={updateForm('postconditionCommand')} multiline />
+          <div className="grid grid-cols-2 gap-2">
+            <ProfileField label="Reset profile" value={form.resetProfileId} onChange={updateForm('resetProfileId')} />
+            <ProfileField label="State seed" value={form.stateSeedId} onChange={updateForm('stateSeedId')} />
+          </div>
+          <ProfileField label="Working directory" value={form.workingDirectory} onChange={updateForm('workingDirectory')} />
+          <ProfileField label="Auth provider" value={form.authProviderId} onChange={updateForm('authProviderId')} />
+          <label className="flex min-h-8 items-center gap-2 text-[11px]">
+            <input
+              type="checkbox"
+              checked={form.allowMutationReplay}
+              onChange={(event) => updateForm('allowMutationReplay')(event.target.checked)}
+            />
+            <span>Allow mutation replay in isolated CI</span>
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90"
+              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
+              <span className="truncate">Save profile</span>
+            </button>
+            {ready ? (
+              <button
+                type="button"
+                className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90"
+                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-muted)' }}
+                onClick={() => setEditing(false)}
+              >
+                <span className="truncate">Cancel</span>
+              </button>
+            ) : null}
+          </div>
+        </form>
+      ) : null}
       <div className="border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
-        <ActionButton
-          action={action}
-          label={actionLabel}
-          icon="run"
-          enabled={traceReady || ready}
-          disabledReason="Teach a workflow first"
-          onAction={onAction}
-        />
+        <div className="grid grid-cols-2 gap-2">
+          <ActionButton
+            action={action}
+            label={actionLabel}
+            icon="run"
+            enabled={traceReady || ready}
+            disabledReason="Teach a workflow first"
+            onAction={onAction}
+          />
+          <button
+            type="button"
+            className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
+            onClick={() => setEditing((current) => !current)}
+          >
+            <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
+            <span className="truncate">{editing ? 'Hide setup' : 'Edit profile'}</span>
+          </button>
+        </div>
       </div>
     </section>
   );

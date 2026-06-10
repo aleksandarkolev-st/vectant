@@ -459,6 +459,12 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
           });
           break;
+        case WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE, {
+            ...(detail?.payload && typeof detail.payload === 'object' ? detail.payload : {}),
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
         case WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY:
           await callWorkflowTool(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY, {
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
