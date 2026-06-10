@@ -40,9 +40,17 @@ Result:
 - Dynamic app ports were detected per case through the workspace/collab port service.
 - Generated scripts rejected forwarded `/port/<number>` literals and used runtime base URLs.
 
+Focused hosted-only harness regression:
+
+- case: `profile-form`
+- command: `SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1 SYNTHI_WORKFLOW_PIPELINE_CASES=profile-form npm run live:browser:workflow-pipeline`
+- result: 25 checks passed, 0 failed, including teach, compile, export, manifest, publish, fresh MCP private-tool discovery/call, validation, and exported Playwright execution.
+- fresh MCP evidence: `hosted_attach=true`, `local_attach=false`, `runtime_kind=hosted` in `tmp/workflow-pipeline-e2e/profile-form/fresh-mcp-private-tool-call.json`.
+- harness hardening: the pipeline no longer accepts `SYNTHI_BROWSER_CDP_URL` or a fixed CDP fallback for hosted workflow verification; it requires `SYNTHI_HOSTED_BROWSER_CDP_URL` from the hosted runtime harness.
+
 Codex CLI private-tool acceptance was also attempted with `SYNTHI_CODEX_ACCEPTANCE_MODEL=gpt-5.3-spark`. The local ChatGPT-auth Codex CLI rejected that model for this account before calling tools, so the harness is now override-driven and does not hardcode a 5.5 fallback. The repo-local fresh MCP/private-tool path still passes; the 5.3-spark Codex-agent pass remains an environment-availability gap.
 
-The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
+The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, strips `SYNTHI_BROWSER_CDP_URL` from the Codex child process, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
 
 The stdio MCP private-tool acceptance harness was also verified through the hosted attach path:
 
@@ -74,6 +82,8 @@ Visual artifacts inspected in this update:
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/popup-chain-checkout/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-ci-isolated-replay.png`
+- `tmp/workflow-pipeline-e2e/profile-form/observed-preview.png`
+- `tmp/workflow-pipeline-e2e/profile-form/after-validate-panel.png`
 - `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
 - `tmp/agent-workflow-ci-profile-card.png`
 - `tmp/agent-workflow-ci-profile-editor-card.png`
@@ -84,6 +94,7 @@ Visual artifacts inspected in this update:
 - Agents can call published `synthi_app_*` workflow tools without being handed script paths.
 - The Codex acceptance harness uses hosted workspace attach evidence for private MCP tools instead of local attach evidence, while remaining model-configurable for `5.3-spark`.
 - The stdio MCP acceptance harness uses `synthi_browser_attach_current_workspace` and rejects local-dev CDP attachment evidence.
+- The full workflow pipeline's fresh-MCP verifier now uses `synthi_browser_attach_current_workspace`, passes hosted runtime env explicitly, strips legacy local CDP env, and fails clearly when `SYNTHI_HOSTED_BROWSER_CDP_URL` is missing.
 - `synthi_browser_get_deployment_readiness` gives deployers and agents a redacted readiness gate before relying on browser workflow tools in production.
 - Managed-browser Observe/Teach/Stop controls are injected by the hosted runtime path; the IDE Workflows panel remains the contract, manifest, export, validation, and publish surface.
 - Same-origin iframes, nested iframes, popups, popup chains, and opener-return workflows preserve target context for replay.
@@ -100,6 +111,9 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `7c116e3b` Require hosted runtime in workflow acceptance harnesses
+- `7d6906d6` Record hosted stdio acceptance proof
+- `e1173b81` Update status for hosted stdio acceptance
 - `6977ff62` Use hosted attach in stdio private tool acceptance
 - `6760eff9` Mock hosted capture in teach alias test
 - `f3868e68` Enforce replay target origin consent
