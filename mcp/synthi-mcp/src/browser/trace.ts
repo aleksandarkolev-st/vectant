@@ -1274,7 +1274,7 @@ function urlExpression(url: string, baseOrigin: string | null): string {
   if (!baseOrigin) return JSON.stringify(url);
   try {
     const parsed = new URL(url);
-    if (parsed.origin === baseOrigin) {
+    if (parsed.origin === baseOrigin || isPreviewProxyUrl(url)) {
       return `workflowUrl(${JSON.stringify(routePathForGeneratedUrl(parsed))})`;
     }
   } catch {

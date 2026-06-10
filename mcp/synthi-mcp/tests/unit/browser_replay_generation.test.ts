@@ -53,6 +53,30 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).not.toContain("/port/37797");
   });
 
+  it("strips preview proxy ports even when captured loopback origins differ", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "nav",
+        kind: "navigation",
+        url: "http://127.0.0.1:1234/port/37797/start",
+      }),
+      event({
+        event_id: "click",
+        kind: "human_action",
+        action: "click",
+        url: "http://localhost:1234/port/37797/dashboard?framework=react",
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Create\" })", confidence: 0.98, reason: "accessible_role_and_name" },
+        ],
+      }),
+    ]);
+
+    expect(generated.code).toContain("const baseUrl = process.env.PLAYWRIGHT_BASE_URL;");
+    expect(generated.code).toContain("await page.goto(workflowUrl(\"/start\"));");
+    expect(generated.code).toContain("await page.goto(workflowUrl(\"/dashboard?framework=react\"));");
+    expect(generated.code).not.toContain("/port/37797");
+  });
+
   it("emits full mutation replay for CI-isolated scripts behind an explicit mutation guard", () => {
     const generated = generatePlaywrightScript([
       event({
