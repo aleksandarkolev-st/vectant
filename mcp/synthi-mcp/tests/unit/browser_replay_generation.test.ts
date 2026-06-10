@@ -965,6 +965,7 @@ describe("browser replay generation scenarios", () => {
       event({
         event_id: "cut-range",
         event_seq: 2,
+        ts: 1000,
         action: "cut",
         detail: {
           clipboard_event: true,
@@ -973,6 +974,7 @@ describe("browser replay generation scenarios", () => {
           selection_start: 6,
           selection_end: 10,
           selected_text_length: 4,
+          value_length: 16,
           selected_text_redacted: true,
           element: { tag: "textarea", role: "textbox", label: "Release notes", text: "alpha beta gamma", source_id: "notes.editor" },
           observed_effects: ["Cut 4 characters"],
@@ -984,12 +986,27 @@ describe("browser replay generation scenarios", () => {
       event({
         event_id: "post-cut-value",
         event_seq: 3,
+        ts: 1100,
         action: "fill",
         value: "alpha  gamma",
         detail: {
           input_debounced: true,
           element: { tag: "textarea", role: "textbox", label: "Release notes", text: "alpha beta gamma", source_id: "notes.editor" },
           observed_effects: ["Value alpha gamma"],
+        },
+        locator_candidates: [
+          { kind: "css", locator: "page.locator(\"[data-synthi-source-id=\\\"notes.editor\\\"]\")", confidence: 0.975, reason: "source_identity" },
+        ],
+      }),
+      event({
+        event_id: "post-cut-change",
+        event_seq: 4,
+        ts: 4700,
+        action: "fill",
+        value: "alpha  gamma",
+        detail: {
+          change_event: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", text: "alpha beta gamma", source_id: "notes.editor" },
         },
         locator_candidates: [
           { kind: "css", locator: "page.locator(\"[data-synthi-source-id=\\\"notes.editor\\\"]\")", confidence: 0.975, reason: "source_identity" },
@@ -1004,6 +1021,8 @@ describe("browser replay generation scenarios", () => {
     expect(generated.code).toContain("Cut 4 characters");
     expect(generated.code).toContain("Value alpha gamma");
     expect(generated.code).not.toContain("await target3.fill");
+    expect(generated.code).not.toContain("await target4.fill");
+    expect(generated.code).not.toContain("readRequiredEnv(\"RELEASE_NOTES\"");
     expect(generated.code).not.toContain("alpha beta gamma");
     expect(generated.code).not.toContain("beta");
   });

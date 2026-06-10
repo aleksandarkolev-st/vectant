@@ -973,28 +973,44 @@ describe("browser workflow contract compiler", () => {
       baseEvent({
         event_id: "cut-range",
         event_seq: 4,
+        ts: 1000,
         action: "cut",
         detail: {
           clipboard_event: true,
           clipboard_mode: "cut",
           selection_start: 6,
           selection_end: 10,
+          selected_text_length: 4,
+          value_length: 16,
           element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
         },
       }),
       baseEvent({
         event_id: "cut-fill-noise",
         event_seq: 5,
+        ts: 1100,
         action: "fill",
-        value: "alpha gamma",
+        value: "alpha  gamma",
         detail: {
           input_debounced: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-change-noise",
+        event_seq: 6,
+        ts: 4700,
+        action: "fill",
+        value: "alpha  gamma",
+        detail: {
+          change_event: true,
           element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
         },
       }),
     ]);
 
     expect(workflow.contract.steps).toHaveLength(2);
+    expect(workflow.contract.parameters).toEqual([]);
     expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
       kind: "clipboardCopy",
       replay: "durable",

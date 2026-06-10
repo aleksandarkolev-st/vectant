@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 
 const RELATED_DBLCLICK_CLICK_WINDOW_MS = 1000;
+const CLIPBOARD_DERIVED_FILL_WINDOW_MS = 5000;
 
 export interface TraceRecorderInput {
   tab_id: string;
@@ -1085,6 +1086,13 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
       result[result.length - 1] = mergeObservedEffectsFromSuppressedEvent(currentPrevious, event);
       continue;
     }
+    if (event.action === "fill") {
+      const recentCutIndex = recentClipboardCutIndexForSuppressedFill(result, event);
+      if (recentCutIndex >= 0) {
+        result[recentCutIndex] = mergeObservedEffectsFromSuppressedEvent(result[recentCutIndex]!, event);
+        continue;
+      }
+    }
     while (event.action === "dblclick" && result.length > 0) {
       const prior = result[result.length - 1];
       if (!prior || !sameActionTarget(prior, event) || prior.action !== "click") break;
@@ -1173,8 +1181,25 @@ function shouldDropFillAfterClipboardCut(previous: BrowserTraceEvent, next: Brow
   if (previous.action !== "cut" || next.action !== "fill") return false;
   if (previous.tab_id !== next.tab_id || previous.origin !== next.origin) return false;
   const elapsedMs = Math.abs((next.ts || 0) - (previous.ts || 0));
-  if (elapsedMs > 2000) return false;
+  if (elapsedMs > 2000 && !isLikelyClipboardCutDerivedFill(previous, next, elapsedMs)) return false;
   return eventsShareDurableTarget(previous, next);
+}
+
+function recentClipboardCutIndexForSuppressedFill(events: BrowserTraceEvent[], next: BrowserTraceEvent): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    if (shouldDropFillAfterClipboardCut(event, next)) return index;
+  }
+  return -1;
+}
+
+function isLikelyClipboardCutDerivedFill(cut: BrowserTraceEvent, fill: BrowserTraceEvent, elapsedMs: number): boolean {
+  if (elapsedMs > CLIPBOARD_DERIVED_FILL_WINDOW_MS) return false;
+  const selectedLength = numericDetail(cut, "selected_text_length");
+  const valueLength = numericDetail(cut, "value_length");
+  if (selectedLength === undefined || valueLength === undefined || typeof fill.value !== "string") return false;
+  return fill.value.length === Math.max(0, valueLength - selectedLength);
 }
 
 function shouldDropFillAfterClipboardDrop(previous: BrowserTraceEvent, next: BrowserTraceEvent): boolean {
