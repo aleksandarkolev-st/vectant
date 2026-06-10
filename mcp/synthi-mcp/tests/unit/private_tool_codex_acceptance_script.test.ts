@@ -5,6 +5,7 @@ import {
   buildCodexProcessEnv,
   buildCodexConfigToml,
   extractCodexMcpEvidence,
+  findPageWithText,
   selectCdpTargetsToClose,
 } from "../../scripts/private-tool-codex-acceptance.mjs";
 
@@ -119,6 +120,21 @@ describe("private-tool Codex acceptance harness", () => {
     expect(selectCdpTargetsToClose([{ id: "only-page", type: "page" }])).toEqual([]);
     expect(selectCdpTargetsToClose(targets).map((target) => target.id)).toEqual(["second-page", "webview"]);
   });
+
+  it("selects the matching page that shows visual proof text", async () => {
+    const waitingPage = mockPage("https://preview.example.test/workspace", "Waiting for workflow");
+    const donePage = mockPage("https://preview.example.test/workspace", "Details opened");
+    const otherPage = mockPage("https://other.example.test/workspace", "Details opened");
+
+    const match = await findPageWithText({
+      pages: [waitingPage, otherPage, donePage],
+      targetUrl: "https://preview.example.test/workspace",
+      expectedText: "Details opened",
+    });
+
+    expect(match?.page).toBe(donePage);
+    expect(match?.text).toBe("Details opened");
+  });
 });
 
 function completedCall(tool, args, structuredContent = {}) {
@@ -131,5 +147,14 @@ function completedCall(tool, args, structuredContent = {}) {
       arguments: args,
       result: { structured_content: structuredContent },
     },
+  };
+}
+
+function mockPage(url, bodyText) {
+  return {
+    url: () => url,
+    locator: () => ({
+      innerText: async () => bodyText,
+    }),
   };
 }

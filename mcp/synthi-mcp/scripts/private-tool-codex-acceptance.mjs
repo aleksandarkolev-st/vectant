@@ -246,14 +246,11 @@ async function captureVisualProof({ targetUrl }) {
     const deadline = Date.now() + CFG.timeoutMs;
     while (Date.now() < deadline) {
       const pages = browser.contexts().flatMap((context) => context.pages());
-      const page = pages.find((candidate) => sameUrl(candidate.url(), targetUrl));
-      if (page) {
-        const text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
-        if (text.includes("Details opened")) {
-          const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
-          await page.screenshot({ path: screenshotPath, fullPage: true });
-          return { screenshotPath, text };
-        }
+      const match = await findPageWithText({ pages, targetUrl, expectedText: "Details opened" });
+      if (match) {
+        const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
+        await match.page.screenshot({ path: screenshotPath, fullPage: true });
+        return { screenshotPath, text: match.text };
       }
       await sleep(500);
     }
@@ -261,6 +258,15 @@ async function captureVisualProof({ targetUrl }) {
   } finally {
     await browser.close().catch(() => undefined);
   }
+}
+
+export async function findPageWithText({ pages, targetUrl, expectedText }) {
+  for (const page of pages) {
+    if (!sameUrl(page.url(), targetUrl)) continue;
+    const text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+    if (text.includes(expectedText)) return { page, text };
+  }
+  return null;
 }
 
 async function seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl }) {
