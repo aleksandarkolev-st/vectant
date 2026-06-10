@@ -981,6 +981,11 @@ describe("safety MCP tool surface", () => {
       storage_state: interactiveStorageState,
     });
     if (!stored.ok) throw new Error(stored.error);
+    const selected = browserBroker.activateAuthCheckpointForTeach({
+      app_origin: appOrigin,
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+    });
+    if (!selected.ok) throw new Error(selected.error);
     teachSaveWorkflow();
 
     const provider = authCheckpointManager.configureRefreshProvider({
