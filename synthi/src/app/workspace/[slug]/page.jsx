@@ -115,11 +115,87 @@ const ADAPTED_MANIFEST_CANDIDATES = [
     ADAPTED_SIDECAR_PATH,
 ];
 const ADAPTED_FALLBACK_HOST_FILES = ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp'];
+const NATIVE_GUI_SOURCE_PATTERNS = [
+    /#\s*include\s*[<"]SDL2\/SDL\.h[>"]/,
+    /#\s*include\s*[<"]SDL\.h[>"]/,
+    /\bSDL_Init\s*\(\s*SDL_INIT_VIDEO\b/,
+    /\bSDL_CreateWindow\s*\(/,
+    /\bSDL_RenderPresent\s*\(/,
+    /\bSDL_RenderClear\s*\(/,
+    /\bSDL_RenderDraw(?:Line|Point|Rect)\s*\(/,
+    /\bSDL_RenderFillRect\s*\(/,
+    /#\s*include\s*[<"]GLFW\/glfw3\.h[>"]/,
+    /\bglfwInit\s*\(/,
+    /\bglfwCreateWindow\s*\(/,
+    /#\s*include\s*[<"]raylib\.h[>"]/,
+    /\bInitWindow\s*\(/,
+    /#\s*include\s*[<"]SFML\/Graphics\.hpp[>"]/,
+    /\bsf::RenderWindow\b/,
+    /#\s*include\s*[<"]X11\/Xlib\.h[>"]/,
+    /\bXOpenDisplay\s*\(/,
+    /\bXCreateWindow\s*\(/,
+    /\bglutCreateWindow\s*\(/,
+];
+const GPU_SOURCE_PATTERNS = [
+    /#\s*include\s*[<"]hip\/hip_runtime\.h[>"]/,
+    /#\s*include\s*[<"]hiprt\/hiprt\.h[>"]/,
+    /\bhipLaunchKernelGGL\b/,
+    /\bhipModule(?:Load|GetFunction|LaunchKernel)\b/,
+    /\bhiprt(?:Create|Build|Launch|Trace|Geometry|Scene|Context)\w*\b/,
+    /#\s*include\s*[<"]cuda_runtime\.h[>"]/,
+    /\bcuda(?:LaunchKernel|Memcpy|Malloc|Free|DeviceSynchronize)\b/,
+    /\b__global__\b/,
+    /\b__device__\b/,
+    /#\s*include\s*[<"]CL\/cl\.h[>"]/,
+    /\bcl(?:CreateProgramWithSource|BuildProgram|CreateKernel|EnqueueNDRangeKernel|EnqueueReadBuffer)\b/,
+    /#\s*include\s*[<"]vulkan\/vulkan\.h[>"]/,
+    /\bvk(?:CreateShaderModule|CreateGraphicsPipelines|CmdBindPipeline|CmdDispatch|CmdDraw)\b/,
+    /\b@(?:compute|vertex|fragment)\b/,
+    /\b@workgroup_size\s*\(/,
+    /\btexture_storage_2d\b/,
+    /\bvar<storage\b/,
+];
 
 const normalizeWorkspacePath = (path = '') => String(path)
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .replace(/^\.\//, '');
+
+const sourceHasNativeGuiSignals = (source = '') => (
+    typeof source === 'string' &&
+    NATIVE_GUI_SOURCE_PATTERNS.some((pattern) => pattern.test(source))
+);
+
+const filesHaveNativeGuiSignals = (files = []) => (
+    Array.isArray(files) &&
+    files.some((file) => sourceHasNativeGuiSignals(file?.content || ''))
+);
+
+const sourceHasGpuSignals = (source = '') => (
+    typeof source === 'string' &&
+    GPU_SOURCE_PATTERNS.some((pattern) => pattern.test(source))
+);
+
+const filesHaveGpuSignals = (files = []) => (
+    Array.isArray(files) &&
+    files.some((file) => sourceHasGpuSignals(file?.content || ''))
+);
+
+const isGeneratedGpuSplitPath = (path = '') => (
+    normalizeWorkspacePath(path).startsWith('.synthi/generated/gpu/')
+);
+
+const DEFAULT_NATIVE_GUI_VIEWPORT = Object.freeze({
+    width: 800,
+    height: 600,
+    dpr: 1,
+    viewport: { w: 800, h: 600, dpr: 1 },
+});
+
+const pendingNativeGuiConfig = () => ({
+    type: 'run-gui-pending',
+    ...DEFAULT_NATIVE_GUI_VIEWPORT,
+});
 
 const extractCompileManifest = (rawManifestContent, path = '') => {
     if (typeof rawManifestContent !== 'string' || rawManifestContent.trim().length === 0) {
@@ -2504,6 +2580,11 @@ export default function EditorPage({ params }) {
             javaGuiRe.test(source) ||
             additionalFiles.some(f => javaGuiRe.test(f.content || ''))
         );
+        const hasNativeGuiSignals = sourceHasNativeGuiSignals(source) || filesHaveNativeGuiSignals(additionalFiles);
+        const shouldUseGpuAiSplit =
+            preferGpuPipeline !== false &&
+            !isGeneratedGpuSplitPath(filename) &&
+            (sourceHasGpuSignals(source) || filesHaveGpuSignals(additionalFiles));
 
         let target = null;
         if (isReactNative) target = 'react-native-emulator';
@@ -2511,9 +2592,16 @@ export default function EditorPage({ params }) {
 
         const isMobile = isReactNative || isFlutter;
 
-        // If Java GUI imports are detected, override isGui to true so the
+        // If a desktop GUI is detected, override isGui to true so the
         // backend spawns Xvfb + GStreamer and streams to the in-app preview.
-        const effectiveGuiMode = runInGuiMode || hasJavaGuiImports;
+        const effectiveGuiMode = runInGuiMode || hasJavaGuiImports || hasNativeGuiSignals;
+        if (hasNativeGuiSignals && !runInGuiMode) {
+            appendBuildLog('Detected native GUI framework; opening floating preview.');
+        }
+        if (effectiveGuiMode && !isMobile) {
+            setGuiConfig((current) => current || pendingNativeGuiConfig());
+            setIsGuiRunning(true);
+        }
 
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
@@ -2556,6 +2644,9 @@ export default function EditorPage({ params }) {
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
                 sessionId: mobileSid,
+                useAiSplit: shouldUseGpuAiSplit,
+                userRequestedAi: shouldUseGpuAiSplit,
+                userRequestedDeterministic: shouldUseGpuAiSplit,
                 preferGpuPipeline,
                 gpuTarget,
                 onLog: (line) => {
@@ -2572,6 +2663,9 @@ export default function EditorPage({ params }) {
             }
             console.error('Compile failed', err);
             appendBuildLog(`error: ${msg}`);
+            if (effectiveGuiMode && !isMobile) {
+                setIsGuiRunning(false);
+            }
             if (isReactNative) {
                 setEmulatorForcedError(msg);
             }
@@ -2750,7 +2844,16 @@ export default function EditorPage({ params }) {
                 javaGuiRe.test(source) ||
                 additionalFiles.some(f => javaGuiRe.test(f.content || ''))
             );
-            const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui;
+            const hasNativeGuiSignals = sourceHasNativeGuiSignals(source) || filesHaveNativeGuiSignals(additionalFiles);
+            const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui || hasNativeGuiSignals;
+            const shouldUseGpuAiSplit =
+                preferGpuPipeline !== false &&
+                !isGeneratedGpuSplitPath(filename) &&
+                (sourceHasGpuSignals(source) || filesHaveGpuSignals(additionalFiles));
+            if (shouldRunGui) {
+                setGuiConfig((current) => current || pendingNativeGuiConfig());
+                setIsGuiRunning(true);
+            }
 
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {
@@ -2765,6 +2868,9 @@ export default function EditorPage({ params }) {
                 source,
                 files: additionalFiles,
                 isGui: shouldRunGui,
+                useAiSplit: shouldUseGpuAiSplit,
+                userRequestedAi: shouldUseGpuAiSplit,
+                userRequestedDeterministic: shouldUseGpuAiSplit,
                 preferGpuPipeline,
                 gpuTarget,
             });

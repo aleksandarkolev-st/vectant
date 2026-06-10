@@ -54,7 +54,8 @@ fn ai_split_cache_key(req: &CompileRequest) -> u64 {
     // Cache entries are accepted split artifacts. Keep this tied to the
     // prompt/verifier contract, not just source text, so newly hardened
     // deterministic split verifiers do not reuse stale generated roles.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v16-compile-verified-cache";
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str =
+        "gpu-strict-lifecycle-v17-live-update-verified-cache";
     calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
@@ -548,6 +549,279 @@ fn normalize_split_response(
     split
 }
 
+fn split_role_content<'a>(split: &'a serde_json::Value, role: &str) -> &'a str {
+    split
+        .get(role)
+        .and_then(|v| v.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
+fn split_generated_host_text(split: &serde_json::Value) -> String {
+    [
+        split_role_content(split, "core"),
+        split_role_content(split, "gui"),
+        split_role_content(split, "host_runner"),
+    ]
+    .join("\n")
+}
+
+fn strip_cpp_comments(source: &str, strip_literals: bool) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        String { escaped: bool },
+        Char { escaped: bool },
+    }
+
+    let mut result = String::with_capacity(source.len());
+    let mut state = State::Normal;
+    let mut chars = source.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match state {
+            State::Normal => match ch {
+                '/' if chars.peek() == Some(&'/') => {
+                    result.push(' ');
+                    result.push(' ');
+                    chars.next();
+                    state = State::LineComment;
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    result.push(' ');
+                    result.push(' ');
+                    chars.next();
+                    state = State::BlockComment;
+                }
+                '"' if strip_literals => {
+                    result.push('"');
+                    state = State::String { escaped: false };
+                }
+                '\'' if strip_literals => {
+                    result.push('\'');
+                    state = State::Char { escaped: false };
+                }
+                _ => result.push(ch),
+            },
+            State::LineComment => {
+                if ch == '\n' {
+                    result.push('\n');
+                    state = State::Normal;
+                } else {
+                    result.push(' ');
+                }
+            }
+            State::BlockComment => {
+                if ch == '*' && chars.peek() == Some(&'/') {
+                    result.push(' ');
+                    result.push(' ');
+                    chars.next();
+                    state = State::Normal;
+                } else if ch == '\n' {
+                    result.push('\n');
+                } else {
+                    result.push(' ');
+                }
+            }
+            State::String { escaped } => {
+                if ch == '\n' {
+                    result.push('\n');
+                    state = State::Normal;
+                } else if escaped {
+                    result.push(' ');
+                    state = State::String { escaped: false };
+                } else if ch == '\\' {
+                    result.push(' ');
+                    state = State::String { escaped: true };
+                } else if ch == '"' {
+                    result.push('"');
+                    state = State::Normal;
+                } else {
+                    result.push(' ');
+                }
+            }
+            State::Char { escaped } => {
+                if ch == '\n' {
+                    result.push('\n');
+                    state = State::Normal;
+                } else if escaped {
+                    result.push(' ');
+                    state = State::Char { escaped: false };
+                } else if ch == '\\' {
+                    result.push(' ');
+                    state = State::Char { escaped: true };
+                } else if ch == '\'' {
+                    result.push('\'');
+                    state = State::Normal;
+                } else {
+                    result.push(' ');
+                }
+            }
+        }
+    }
+
+    result
+}
+
+fn request_gpu_source_text(req: &CompileRequest) -> String {
+    request_file_context(req)
+        .into_iter()
+        .map(|(name, content)| format!("\n// file: {name}\n{content}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn push_unique_kernel(kernels: &mut Vec<String>, kernel: &str) {
+    let kernel = kernel.trim().trim_start_matches('&');
+    if kernel.is_empty() || kernel == "nullptr" || kernel == "NULL" {
+        return;
+    }
+    let kernel = kernel.rsplit("::").next().unwrap_or(kernel);
+    if !kernels.iter().any(|existing| existing == kernel) {
+        kernels.push(kernel.to_string());
+    }
+}
+
+fn source_update_kernel_launches(source: &str) -> Vec<String> {
+    let source = strip_cpp_comments(source, true);
+    let Ok(raw_re) = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_:]*)\s*<<<") else {
+        return Vec::new();
+    };
+    let mut kernels = Vec::new();
+    for caps in raw_re.captures_iter(&source) {
+        let Some(kernel) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        push_unique_kernel(&mut kernels, kernel);
+    }
+
+    let launch_patterns = [
+        r"\bhipLaunchKernelGGL\s*\(\s*HIP_KERNEL_NAME\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)",
+        r"\bhipLaunchKernelGGL\s*\(\s*\(?\s*([A-Za-z_][A-Za-z0-9_:]*)",
+        r"\bcudaLaunchKernel(?:Ex)?\s*\(\s*(?:\([^)]*\)\s*)?\s*([A-Za-z_][A-Za-z0-9_:]*)",
+        r"\bhipLaunchKernel\s*\(\s*(?:\([^)]*\)\s*)?\s*([A-Za-z_][A-Za-z0-9_:]*)",
+    ];
+    for pattern in launch_patterns {
+        let Ok(re) = regex::Regex::new(pattern) else {
+            continue;
+        };
+        for caps in re.captures_iter(&source) {
+            let Some(kernel) = caps.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            push_unique_kernel(&mut kernels, kernel);
+        }
+    }
+
+    kernels
+}
+
+fn source_has_host_visible_device_readback(source: &str) -> bool {
+    let lower = strip_cpp_comments(source, true).to_ascii_lowercase();
+    ((lower.contains("hipmemcpy") || lower.contains("cudamemcpy"))
+        && lower.contains("devicetohost"))
+        || lower.contains("hipmemcpydtoh")
+        || lower.contains("cudamemcpydtoh")
+        || lower.contains("oromemcpydtoh")
+        || lower.contains("oromemcpy_dtoh")
+        || lower.contains("oromemcpydevicetohost")
+        || lower.contains("memcpydtoh")
+}
+
+fn source_has_runtime_launch_api(source: &str) -> bool {
+    let lower = strip_cpp_comments(source, true).to_ascii_lowercase();
+    lower.contains("hiplaunchkernelggl")
+        || lower.contains("hiplaunchkernel")
+        || lower.contains("cudalaunchkernel")
+        || lower.contains("cumodulelaunchkernel")
+        || lower.contains("hipmodulelaunchkernel")
+        || lower.contains("oromodulelaunchkernel")
+}
+
+fn generated_has_gpu_launch_boundary(generated_host_text: &str) -> bool {
+    let generated = strip_cpp_comments(generated_host_text, true).to_ascii_lowercase();
+    generated.contains("synthi_gpu_launch")
+}
+
+fn generated_launches_kernel(generated_host_text: &str, kernel: &str) -> bool {
+    let generated_host_text = strip_cpp_comments(generated_host_text, false);
+    let escaped = regex::escape(kernel);
+    let boundary_pattern = format!(
+        r#"(?s)\bsynthi_gpu_launch(?:_[A-Za-z0-9_]+)?\s*\([^;]*["']{}["']"#,
+        escaped
+    );
+    regex::Regex::new(&boundary_pattern)
+        .ok()
+        .is_some_and(|re| re.is_match(&generated_host_text))
+}
+
+fn generated_preserves_host_visible_readback(generated_host_text: &str) -> bool {
+    let lower = strip_cpp_comments(generated_host_text, true).to_ascii_lowercase();
+    ((lower.contains("hipmemcpy") || lower.contains("cudamemcpy"))
+        && lower.contains("devicetohost"))
+        || lower.contains("hipmemcpydtoh")
+        || lower.contains("cudamemcpydtoh")
+        || lower.contains("oromemcpydtoh")
+        || lower.contains("oromemcpy_dtoh")
+        || lower.contains("oromemcpydevicetohost")
+        || lower.contains("memcpydtoh")
+}
+
+fn validate_gpu_split_live_update_contract(
+    req: &CompileRequest,
+    split: &serde_json::Value,
+) -> Result<()> {
+    if !req.prefer_gpu_pipeline || !request_has_gpu_markers(req) {
+        return Ok(());
+    }
+
+    let source_text = request_gpu_source_text(req);
+    let update_kernels = source_update_kernel_launches(&source_text);
+    let source_has_runtime_launch = source_has_runtime_launch_api(&source_text);
+    if update_kernels.is_empty() && !source_has_runtime_launch {
+        return Ok(());
+    }
+
+    let generated_host_text = split_generated_host_text(split);
+    let missing_kernels = update_kernels
+        .iter()
+        .filter(|kernel| !generated_launches_kernel(&generated_host_text, kernel))
+        .cloned()
+        .collect::<Vec<_>>();
+    let source_requires_readback = source_has_host_visible_device_readback(&source_text);
+    let generated_has_readback = generated_preserves_host_visible_readback(&generated_host_text);
+    let source_requires_launch_boundary = source_has_runtime_launch && update_kernels.is_empty();
+    let generated_has_launch_boundary = generated_has_gpu_launch_boundary(&generated_host_text);
+
+    if missing_kernels.is_empty()
+        && (!source_requires_launch_boundary || generated_has_launch_boundary)
+        && (!source_requires_readback || generated_has_readback)
+    {
+        return Ok(());
+    }
+
+    let mut reason_codes = Vec::new();
+    if !missing_kernels.is_empty() {
+        reason_codes.push(format!(
+            "gpu_split_live_update_missing_kernel_launch:{}",
+            missing_kernels.join(",")
+        ));
+    }
+    if source_requires_launch_boundary && !generated_has_launch_boundary {
+        reason_codes.push("gpu_split_live_update_missing_runtime_launch_boundary".to_string());
+    }
+    if source_requires_readback && !generated_has_readback {
+        reason_codes.push("gpu_split_live_update_missing_device_to_host_readback".to_string());
+    }
+
+    anyhow::bail!(
+        "GPU split verifier rejected non-live generated split: reason_codes={}",
+        reason_codes.join(",")
+    );
+}
+
 // NOTE: `detect_structural_additions` and `perform_structural_ai_update`
 // were removed together with the `Level 2.75` shortcut in `perform_ai_split`.
 // They implemented the SDL-hardcoded "X11→SDL2 translation" delta path
@@ -617,14 +891,15 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     eprintln!("[AI Split] Level 3 → full AI split via /refactor/split/verified");
     let client = reqwest::Client::new();
     let gpu_target_prompt = if req.prefer_gpu_pipeline {
+        let live_update_contract = " The generated split must preserve the real runtime update loop: every source update-path GPU kernel launch must be represented by a synthi_gpu_launch boundary in the generated host/core path, and every source host-visible device-to-host/readback copy must remain on the generated render/update path. Do not stub, fake, preview, synthesize, or replace GPU output with host-side approximations. If this cannot be preserved, report the split as unsupported instead of returning compiling-but-nonlive code.";
         let base = match gpu_mode.as_str() {
-            "cuda" => Some("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI."),
-            "rocm" | "hip" => Some("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI."),
-            _ => Some("GPU target preference: emit GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI."),
+            "cuda" => Some(format!("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}")),
+            "rocm" | "hip" => Some(format!("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}")),
+            _ => Some(format!("GPU target preference: emit GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI.{live_update_contract}")),
         };
         base.map(|text| match arch_hint.as_deref() {
             Some(arch) => format!("{text} Target device architecture: {arch}. The compile manifest gpu.arch must use this architecture."),
-            None => text.to_string(),
+            None => text,
         })
     } else {
         None
@@ -942,6 +1217,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             }
         }
     }
+
+    validate_gpu_split_live_update_contract(req, &res)?;
 
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
     // already carries `host_runner` as a sibling of `core`/`gui`/`shared`
@@ -1697,6 +1974,7 @@ pub async fn perform_ai_heal_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::messages::FileEntry;
     use serde_json::json;
 
     #[test]
@@ -1921,6 +2199,190 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("particle_flow"));
+    }
+
+    fn gpu_compile_request_for_source(source: &str) -> CompileRequest {
+        CompileRequest {
+            language: "cpp".to_string(),
+            filename: "main.cpp".to_string(),
+            source: source.to_string(),
+            session_id: None,
+            files: Vec::new(),
+            file_refs: Vec::new(),
+            is_gui: true,
+            width: None,
+            height: None,
+            supports_h265: None,
+            use_ai_split: true,
+            bypass_ai_split_cache: false,
+            user_requested_ai: false,
+            user_requested_deterministic: false,
+            force_gpu_ai_delta: false,
+            prefer_gpu_pipeline: true,
+            gpu_mode: Some("rocm".to_string()),
+            gpu_arch: Some("gfx1201".to_string()),
+            compile_manifest: None,
+            target: None,
+            project_root: None,
+            slug: None,
+        }
+    }
+
+    #[test]
+    fn live_update_contract_rejects_generated_split_that_omits_update_kernel_and_readback() {
+        let req = gpu_compile_request_for_source(
+            r#"
+#include <hip/hip_runtime.h>
+__global__ void initialize_positions(float* x) {}
+__global__ void advect_particles(float* x) {}
+int main() {
+    float* d = nullptr;
+    float h[16];
+    dim3 grid(1), block(64);
+    initialize_positions<<<grid, block>>>(d);
+    advect_particles<<<grid, block>>>(d);
+    hipMemcpy(h, d, sizeof(h), hipMemcpyDeviceToHost);
+}
+"#,
+        );
+        let split = json!({
+            "core": {
+                "content": "extern \"C\" void core_on_update(void*) { synthi_gpu_launch(nullptr, \"initialize_positions\", dim3(1), dim3(64), 0, nullptr, {}); }"
+            },
+            "gui": { "content": "extern \"C\" void gui_on_render(void*) {}" },
+            "host_runner": { "content": "int main() { return 0; }" },
+            "device": {
+                "content": "extern \"C\" __global__ void initialize_positions(float*) {} extern \"C\" __global__ void advect_particles(float*) {}"
+            }
+        });
+
+        let err = validate_gpu_split_live_update_contract(&req, &split).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("gpu_split_live_update_missing_kernel_launch:advect_particles"));
+        assert!(message.contains("gpu_split_live_update_missing_device_to_host_readback"));
+    }
+
+    #[test]
+    fn live_update_contract_accepts_generated_split_with_update_kernel_and_readback() {
+        let req = gpu_compile_request_for_source(
+            r#"
+#include <hip/hip_runtime.h>
+__global__ void advect_particles(float* x) {}
+int main() {
+    float* d = nullptr;
+    float h[16];
+    dim3 grid(1), block(64);
+    advect_particles<<<grid, block>>>(d);
+    hipMemcpy(h, d, sizeof(h), hipMemcpyDeviceToHost);
+}
+"#,
+        );
+        let split = json!({
+            "core": {
+                "content": "extern \"C\" void core_on_update(void*) { synthi_gpu_launch(nullptr, \"advect_particles\", dim3(1), dim3(64), 0, nullptr, {}); hipMemcpy(host_values, device_values, 64, hipMemcpyDeviceToHost); }"
+            },
+            "gui": { "content": "extern \"C\" void gui_on_render(void*) {}" },
+            "host_runner": { "content": "int main() { return 0; }" },
+            "device": {
+                "content": "extern \"C\" __global__ void advect_particles(float*) {}"
+            }
+        });
+
+        validate_gpu_split_live_update_contract(&req, &split).unwrap();
+    }
+
+    #[test]
+    fn live_update_contract_rejects_multi_file_split_that_omits_kernel() {
+        let mut req = gpu_compile_request_for_source(
+            r#"
+#include "kernels.hip"
+int main() { return 0; }
+"#,
+        );
+        req.files = vec![FileEntry {
+            name: "src/kernels.hip".to_string(),
+            content: r#"
+#include <hip/hip_runtime.h>
+__global__ void shade_tile(float* x) {}
+void launch_frame(float* d) {
+    dim3 grid(1), block(64);
+    shade_tile<<<grid, block>>>(d);
+}
+"#
+            .to_string(),
+        }];
+        let split = json!({
+            "core": {
+                "content": "extern \"C\" void core_on_update(void*) {}"
+            },
+            "gui": { "content": "extern \"C\" void gui_on_render(void*) {}" },
+            "host_runner": { "content": "int main() { return 0; }" },
+            "device": {
+                "content": "extern \"C\" __global__ void shade_tile(float*) {}"
+            }
+        });
+
+        let err = validate_gpu_split_live_update_contract(&req, &split).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("gpu_split_live_update_missing_kernel_launch:shade_tile"));
+    }
+
+    #[test]
+    fn live_update_contract_rejects_raw_generated_launch_without_hmr_boundary() {
+        let req = gpu_compile_request_for_source(
+            r#"
+#include <hip/hip_runtime.h>
+__global__ void shade_tile(float* x) {}
+int main() {
+    float* d = nullptr;
+    dim3 grid(1), block(64);
+    shade_tile<<<grid, block>>>(d);
+}
+"#,
+        );
+        let split = json!({
+            "core": {
+                "content": "extern \"C\" void core_on_update(void*) { dim3 grid(1), block(64); shade_tile<<<grid, block>>>(device_values); }"
+            },
+            "gui": { "content": "extern \"C\" void gui_on_render(void*) {}" },
+            "host_runner": { "content": "int main() { return 0; }" },
+            "device": {
+                "content": "extern \"C\" __global__ void shade_tile(float*) {}"
+            }
+        });
+
+        let err = validate_gpu_split_live_update_contract(&req, &split).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("gpu_split_live_update_missing_kernel_launch:shade_tile"));
+    }
+
+    #[test]
+    fn live_update_contract_accepts_hip_launch_kernel_ggl_boundary() {
+        let req = gpu_compile_request_for_source(
+            r#"
+#include <hip/hip_runtime.h>
+__global__ void shade_tile(float* x) {}
+int main() {
+    float* d = nullptr;
+    dim3 grid(1), block(64);
+    hipLaunchKernelGGL(shade_tile, grid, block, 0, 0, d);
+}
+"#,
+        );
+        let split = json!({
+            "core": {
+                "content": "extern \"C\" void core_on_update(void*) { synthi_gpu_launch(nullptr, \"shade_tile\", dim3(1), dim3(64), 0, nullptr, {}); }"
+            },
+            "gui": { "content": "extern \"C\" void gui_on_render(void*) {}" },
+            "host_runner": { "content": "int main() { return 0; }" },
+            "device": {
+                "content": "extern \"C\" __global__ void shade_tile(float*) {}"
+            }
+        });
+
+        validate_gpu_split_live_update_contract(&req, &split).unwrap();
     }
 
     #[tokio::test]

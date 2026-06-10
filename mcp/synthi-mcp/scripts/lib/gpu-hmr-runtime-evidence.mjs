@@ -718,6 +718,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
 
   const preservedRoles = [];
   const changedRoles = [];
+  const optionalChangedRoles = [];
   const lineageMissingRoles = [];
   const optionalLineageMissingRoles = [];
   for (const [role, roleRecords] of byRole) {
@@ -736,7 +737,11 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     if (identities.size === 1 && lineageComplete) {
       preservedRoles.push(role);
     } else if (identities.size > 1) {
-      changedRoles.push(role);
+      if (roleCategory === null) {
+        optionalChangedRoles.push(role);
+      } else {
+        changedRoles.push(role);
+      }
     } else if (expectedGenerationLineage && relevantRecords.length > 0 && !lineageComplete) {
       if (roleCategory === null) {
         optionalLineageMissingRoles.push(role);
@@ -747,6 +752,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
   }
   preservedRoles.sort();
   changedRoles.sort();
+  optionalChangedRoles.sort();
   lineageMissingRoles.sort();
   optionalLineageMissingRoles.sort();
   const preservedRoleCategories = compactStringList(
@@ -791,6 +797,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     optional_lineage_identity_roles_missing: optionalLineageMissingRoles,
     preserved_roles: preservedRoles,
     changed_roles: changedRoles,
+    optional_changed_roles: optionalChangedRoles,
     preserved_role_categories: preservedRoleCategories,
     required_roles_observed: requiredRolesObserved,
     identity_snapshot_observed: preservedRoles.length > 0,

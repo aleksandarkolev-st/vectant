@@ -44,6 +44,25 @@
     "minChangedPixelRatio": 0.05,
     "minMeanAbsDelta8bit": 1.0
   },
+  "deterministicVisualMode": {
+    "fixedSeed": "42",
+    "frozenCamera": true,
+    "temporalAccumulationDisabled": true,
+    "taaDisabled": true,
+    "denoiserDisabled": true,
+    "fixedResolution": true,
+    "presentationFenceOrFrameBoundary": "runtime-framebuffer-capture-after-kernel-dispatch",
+    "warmupFrames": 1,
+    "convergenceWindow": {
+      "frameStart": 1,
+      "frameEnd": 1,
+      "metric": "per_frame_delta"
+    },
+    "notes": [
+      "Camera state and random_number are set by the same-process probe before the proof frame.",
+      "Denoising/postprocess must not satisfy visual proof unless this mode is explicitly enforced by the adapter."
+    ]
+  },
   "proof": {
     "requireStrictProvenance": true
   }

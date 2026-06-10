@@ -433,6 +433,10 @@ fission_report:
   process_restarted: false
   full_rebuild_used: false
   unaffected_artifacts_hash_unchanged: true
+  selected_verifier_evidence_id:
+  deterministic_verifier_evidence_refs: []
+  selection_decision_hash:
+  output_oracle_contract:
   evidence_refs: []
 ```
 

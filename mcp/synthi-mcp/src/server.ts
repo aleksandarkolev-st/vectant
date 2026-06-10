@@ -134,6 +134,11 @@ const TOOLS = [
           type: "number",
           description: "SLA: return frame_stale if latest frame's age exceeds this many ms.",
         },
+        allow_unbrokered_frame: {
+          type: "boolean",
+          description:
+            "If true, return the decoded PNG even when producer DPR is unavailable for broker frame proof. The response is marked brokered=false and is not valid as input-gated proof.",
+        },
         after_frame_gate: {
           type: "object",
           properties: {

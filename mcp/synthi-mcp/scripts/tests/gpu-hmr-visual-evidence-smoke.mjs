@@ -6,6 +6,7 @@ import {
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
   DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
+  mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfied,
   mcpFrameGateSatisfiedByScreenshot,
   mcpFrameGateForScreenshot,
@@ -169,6 +170,20 @@ assert.equal(mcpFrameGateSatisfiedByScreenshot({
   frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },
 }, mcpAfterScreenshot), true);
+assert.equal(mcpFrameAtOrAfterFrameGate({
+  frame_gate: mcpGate,
+  gpu_proof_validation: { satisfied: true },
+}, {
+  seq: 13,
+  ts: 1300,
+}), true);
+assert.equal(mcpFrameAtOrAfterFrameGate({
+  frame_gate: mcpGate,
+  gpu_proof_validation: { satisfied: true },
+}, {
+  seq: 11,
+  ts: 1300,
+}), false);
 assert.equal(mcpFrameGateSatisfiedByScreenshot({
   frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },

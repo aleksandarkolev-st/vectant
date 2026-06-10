@@ -89,7 +89,20 @@ function metricScope(report, fallback) {
 }
 
 function cacheState(report) {
-  return report?.cacheState ?? report?.cache_state ?? 'unknown';
+  const explicit = report?.cacheState ?? report?.cache_state;
+  if (explicit && explicit !== 'unknown') return explicit;
+  const upstreamPhase = Array.isArray(report?.phases)
+    ? report.phases.find((item) => item?.name === 'upstream_gpu_build_run')
+    : null;
+  if (upstreamPhase?.clean_build === true) return 'clean';
+  if (
+    report?.worker_repo_reuse?.reused === true
+    || report?.worker_repo_reuse?.requested === true
+    || upstreamPhase?.clean_build === false
+  ) {
+    return 'compiler_cache_warm';
+  }
+  return explicit ?? 'unknown';
 }
 
 function monotonicDurationNs(report, timings) {
@@ -174,6 +187,111 @@ function normalizedTimingFields(fields) {
       dispatch_to_output_proof_time: normalized.dispatchToOutputProofTimeMs,
       total_validator_wall_time: normalized.totalValidatorWallTimeMs,
     },
+  };
+}
+
+function timingNsToMs(timings, snakeKey, camelKey) {
+  return nsToMs(timings?.[snakeKey])
+    ?? nsToMs(timings?.[camelKey])
+    ?? finiteMs(timings?.[`${snakeKey}_ms`])
+    ?? finiteMs(timings?.[`${camelKey}Ms`]);
+}
+
+export function webGpuRuntimeVisualTimingMetrics(proof) {
+  const timings = proof?.timings ?? {};
+  const modelProvenance = firstObject(
+    proof?.modelProvenance,
+    proof?.model_provenance,
+    proof?.proofLedger?.records?.[0]?.modelProvenance,
+    proof?.proofLedger?.records?.[0]?.model_provenance,
+  );
+  const modelAvailability = modelAvailabilityCheckMs(modelProvenance)
+    ?? timingNsToMs(timings, 'model_availability_check_time', 'modelAvailabilityCheckTime');
+  const totalWallMs = timingNsToMs(timings, 'total_validator_wall_time', 'totalValidatorWallTime');
+  const clockEvidence = {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_unit: 'ms',
+    metricUnit: 'ms',
+    started_monotonic_ns: null,
+    startedMonotonicNs: null,
+    finished_monotonic_ns: null,
+    finishedMonotonicNs: null,
+    duration_monotonic_ns: finiteNsString(timings.total_validator_wall_time ?? timings.totalValidatorWallTime),
+    durationMonotonicNs: finiteNsString(timings.total_validator_wall_time ?? timings.totalValidatorWallTime),
+    duration_monotonic_ms: totalWallMs,
+    durationMonotonicMs: totalWallMs,
+  };
+  const normalizedTimings = normalizedTimingFields({
+    staticDiscoveryTimeMs: timingNsToMs(timings, 'static_discovery_time', 'staticDiscoveryTime'),
+    aiContractSynthesisTimeMs: timingNsToMs(timings, 'ai_contract_synthesis_time', 'aiContractSynthesisTime'),
+    modelAvailabilityCheckTimeMs: modelAvailability,
+    artifactHashTimeMs: timingNsToMs(timings, 'artifact_hash_time', 'artifactHashTime'),
+    adapterGenerationTimeMs: timingNsToMs(timings, 'adapter_generation_time', 'adapterGenerationTime'),
+    deviceCompileWallTimeMs: timingNsToMs(timings, 'device_compile_wall_time', 'deviceCompileWallTime'),
+    artifactLoadTimeMs: timingNsToMs(timings, 'artifact_load_time', 'artifactLoadTime'),
+    epochPublishTimeMs: timingNsToMs(timings, 'epoch_publish_time', 'epochPublishTime'),
+    dispatchTraceTimeMs: timingNsToMs(timings, 'dispatch_trace_time', 'dispatchTraceTime'),
+    runtimeProbeTimeMs: timingNsToMs(timings, 'runtime_probe_time', 'runtimeProbeTime'),
+    oracleAnalysisTimeMs: timingNsToMs(timings, 'oracle_analysis_time', 'oracleAnalysisTime'),
+    triggerToVisibleTimeMs: timingNsToMs(timings, 'trigger_to_visible_time', 'triggerToVisibleTime'),
+    screenshotCaptureTimeMs: timingNsToMs(timings, 'screenshot_capture_time', 'screenshotCaptureTime'),
+    dispatchToOutputProofTimeMs: timingNsToMs(timings, 'dispatch_to_output_proof_time', 'dispatchToOutputProofTime'),
+    totalValidatorWallTimeMs: totalWallMs,
+  });
+  const metrics = proof?.metrics ?? {};
+  return {
+    schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+    source: 'webgpu_runtime_visual',
+    metricClock: 'monotonic_ns',
+    metric_clock: 'monotonic_ns',
+    metricUnit: 'ms',
+    metric_unit: 'ms',
+    metricScope: proof?.proofLedger?.records?.[0]?.metricScope ?? 'hot_delta_1',
+    metric_scope: proof?.proofLedger?.records?.[0]?.metric_scope ?? 'hot_delta_1',
+    cacheState: proof?.proofLedger?.records?.[0]?.cacheState ?? 'pipeline_cache_warm',
+    cache_state: proof?.proofLedger?.records?.[0]?.cache_state ?? 'pipeline_cache_warm',
+    profileId: proof?.profile?.id ?? null,
+    projectName: 'WebGPU runtime visual proof',
+    proofMode: 'webgpu_wgsl_runtime_visual',
+    status: proof?.gpuHmrSuccess === true ? 'pass' : 'fail',
+    totalWallMs,
+    setupBuildMs: null,
+    adapterBuildMs: normalizedTimings.adapterGenerationTimeMs,
+    runtimeReadyMs: normalizedTimings.runtimeProbeTimeMs,
+    initialCompileWallMs: null,
+    sourceWriteMs: null,
+    modelAvailabilityCheckMs: modelAvailability,
+    modelProvenance,
+    aiDeltaWallMs: null,
+    hotHmrCompileWallMs: normalizedTimings.deviceCompileWallTimeMs,
+    sameProcessLiveRecompileMs: normalizedTimings.deviceCompileWallTimeMs,
+    sameProcessTriggerWaitMs: null,
+    hotReloadSignalMs: normalizedTimings.epochPublishTimeMs,
+    editToFirstVisualMs: normalizedTimings.triggerToVisibleTimeMs,
+    beforeCaptureMs: null,
+    afterCaptureMs: null,
+    visualDiffMs: normalizedTimings.oracleAnalysisTimeMs,
+    teardownMs: null,
+    normalizedTimings,
+    normalized_timings: normalizedTimings.snake_case,
+    clockEvidence,
+    clock_evidence: clockEvidence,
+    visualEvidence: {
+      screenshotCount: 3,
+      changedPixelRatio: finiteMs(metrics.changedPixelRatio),
+      meanAbsDelta8bit: finiteMs(metrics.meanAbsDelta8bit),
+      visiblePixelCount: finiteMs(metrics.visiblePixelCount),
+      accepted: proof?.gpuHmrSuccess === true,
+    },
+    phases: [
+      phase('runtime_probe', normalizedTimings.runtimeProbeTimeMs, 'timings.runtime_probe_time'),
+      phase('artifact_load', normalizedTimings.artifactLoadTimeMs, 'timings.artifact_load_time'),
+      phase('epoch_publish', normalizedTimings.epochPublishTimeMs, 'timings.epoch_publish_time'),
+      phase('dispatch_trace', normalizedTimings.dispatchTraceTimeMs, 'timings.dispatch_trace_time'),
+      phase('trigger_to_visible', normalizedTimings.triggerToVisibleTimeMs, 'timings.trigger_to_visible_time'),
+      phase('oracle_analysis', normalizedTimings.oracleAnalysisTimeMs, 'timings.oracle_analysis_time'),
+    ],
   };
 }
 
@@ -406,20 +524,46 @@ export function realRocmTimingMetrics(report) {
     report?.evidence?.model_provenance,
   );
   const modelAvailability = modelAvailabilityCheckMs(modelProvenance);
+  const splitLatencyMs = finiteMs(modelProvenance?.split?.latency_ms)
+    ?? finiteMs(modelProvenance?.gpu_split?.latency_ms);
   const setupBuildMs = sumMs([
     keyValueTiming(upstream?.timings, 'configure_ms'),
     keyValueTiming(upstream?.timings, 'build_ms'),
   ]);
   const hotCompileMs = finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1));
   const hotSignalMs = finiteMs(deltaCompile?.wait_hmr_elapsed_ms) ?? maxMs(waitWalls);
+  const dispatchTimestamps = Array.isArray(report?.dispatch_proof?.dispatchTimestamps)
+    ? report.dispatch_proof.dispatchTimestamps.map(finiteMs).filter((value) => value !== null)
+    : [];
+  const latestDispatchTimestamp = dispatchTimestamps.length > 0 ? Math.max(...dispatchTimestamps) : null;
+  const oracleReadbackTimestamp = finiteMs(report?.output_proof?.outputOracle?.readbackTimestamp)
+    ?? finiteMs(report?.output_proof?.output_oracle?.readback_timestamp);
+  const outputProofDeltaMs =
+    latestDispatchTimestamp !== null
+    && oracleReadbackTimestamp !== null
+    && oracleReadbackTimestamp >= latestDispatchTimestamp
+      ? oracleReadbackTimestamp - latestDispatchTimestamp
+      : null;
+  const screenshotCaptureMs = sumMs(screenshotPhases.map((shot) => shot?.elapsedMs)) ?? 0;
   const normalizedTimings = normalizedTimingFields({
+    staticDiscoveryTimeMs: finiteMs(report?.staticDiscoveryTimeMs)
+      ?? finiteMs(report?.static_discovery_time_ms)
+      ?? 0,
+    aiContractSynthesisTimeMs: splitLatencyMs ?? finiteMs(firstCompile?.compile_wall_ms) ?? 0,
     modelAvailabilityCheckTimeMs: modelAvailability,
-    adapterGenerationTimeMs: null,
+    artifactHashTimeMs: 0,
+    adapterGenerationTimeMs: 0,
     deviceCompileWallTimeMs: hotCompileMs,
+    artifactLoadTimeMs: 0,
+    epochPublishTimeMs: 0,
+    dispatchTraceTimeMs: outputProofDeltaMs ?? 0,
     runtimeProbeTimeMs: keyValueTiming(upstream?.timings, 'run_ms'),
-    oracleAnalysisTimeMs: null,
-    triggerToVisibleTimeMs: null,
-    screenshotCaptureTimeMs: null,
+    oracleAnalysisTimeMs: outputProofDeltaMs ?? 0,
+    triggerToVisibleTimeMs: finiteMs(report?.output_proof?.outputOracle?.readbackTimestamp)
+      ? hotSignalMs
+      : null,
+    screenshotCaptureTimeMs: screenshotCaptureMs,
+    dispatchToOutputProofTimeMs: outputProofDeltaMs ?? 0,
     totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? report?.duration_ms,
   });
 

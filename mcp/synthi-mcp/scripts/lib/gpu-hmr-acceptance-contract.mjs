@@ -472,6 +472,56 @@ function normalizeOutputOracleTarget(value = {}) {
   };
 }
 
+function normalizeFissionReport(value = {}) {
+  const report = asObject(value);
+  const unaffectedArtifactsHashUnchanged = boolPresence(
+    report.unaffected_artifacts_hash_unchanged,
+    report.unaffectedArtifactsHashUnchanged,
+  );
+  return {
+    selected_island: text(report.selected_island ?? report.selectedIsland),
+    selected_reason: text(report.selected_reason ?? report.selectedReason),
+    changed_sources: compactStringList(report.changed_sources ?? report.changedSources),
+    included_dependencies: asArray(report.included_dependencies ?? report.includedDependencies),
+    excluded_host_sources: compactStringList(report.excluded_host_sources ?? report.excludedHostSources),
+    artifact_hash_before: text(report.artifact_hash_before ?? report.artifactHashBefore),
+    artifact_hash_after: text(report.artifact_hash_after ?? report.artifactHashAfter),
+    abi_compatibility_class: text(
+      asObject(report.abi_compatibility_class).value
+      ?? report.abi_compatibility_class
+      ?? report.abiCompatibilityClass,
+    ),
+    full_device_fallback: boolValue(report.full_device_fallback ?? report.fullDeviceFallback),
+    host_relinked: boolValue(report.host_relinked ?? report.hostRelinked),
+    process_restarted: boolValue(report.process_restarted ?? report.processRestarted),
+    full_rebuild_used: boolValue(report.full_rebuild_used ?? report.fullRebuildUsed),
+    unaffected_artifacts_hash_unchanged: unaffectedArtifactsHashUnchanged.present
+      ? unaffectedArtifactsHashUnchanged.value
+      : null,
+    evidence_refs: compactStringList(report.evidence_refs ?? report.evidenceRefs),
+    selected_verifier_evidence_id: text(
+      report.selected_verifier_evidence_id
+      ?? report.selectedVerifierEvidenceId
+      ?? report.verifier_evidence_id
+      ?? report.verifierEvidenceId,
+    ),
+    deterministic_verifier_evidence_refs: compactStringList(
+      report.deterministic_verifier_evidence_refs
+      ?? report.deterministicVerifierEvidenceRefs
+      ?? report.deterministic_verifier_evidence_ids
+      ?? report.deterministicVerifierEvidenceIds,
+    ),
+    selection_decision_hash: text(report.selection_decision_hash ?? report.selectionDecisionHash),
+    output_oracle_contract: firstObject(report.output_oracle_contract, report.outputOracleContract),
+    smallest_safe_island_proven: boolValue(
+      report.smallest_safe_island_proven
+      ?? report.smallestSafeIslandProven
+      ?? report.smallest_safe_fission_island_proven
+      ?? report.smallestSafeFissionIslandProven,
+    ),
+  };
+}
+
 function outputOracleTargetKind(target) {
   const object = asObject(target);
   return text(asObject(object.kind).value ?? object.kind ?? object.target_kind ?? object.targetKind);
@@ -482,6 +532,16 @@ function computeOnlyOutputTargetVerified(target) {
   return outputOracleTargetKind(object) === 'compute'
     && (object.compute_only_target_verified === true || object.computeOnlyTargetVerified === true)
     && compactStringList(object.evidence_refs ?? object.evidenceRefs).length > 0;
+}
+
+function fissionVerifierEvidenceRefAccepted(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized.startsWith('fission-verifier:sha256:')
+    || normalized.startsWith('evidence:fission-verifier-report:')
+    || normalized.startsWith('proof:fission-verifier-report:')
+    || normalized.startsWith('artifact:fission-verifier-report:')
+    || normalized.startsWith('runtime:fission-verifier-report:')
+    || normalized.startsWith('static:fission-verifier-report:');
 }
 
 export function normalizeGpuHmrAcceptanceContract(input = {}) {
@@ -519,7 +579,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     state_preservation_checks: asObject(c.state_preservation_checks ?? c.statePreservationChecks),
     epoch_policy: asObject(c.epoch_policy ?? c.epochPolicy),
     epoch_retirement_proof: asObject(c.epoch_retirement_proof ?? c.epochRetirementProof),
-    fission_report: asObject(c.fission_report ?? c.fissionReport),
+    fission_report: normalizeFissionReport(c.fission_report ?? c.fissionReport),
     hip_contract: asObject(c.hip_contract ?? c.hipContract),
     hiprt_contract: asObject(c.hiprt_contract ?? c.hiprtContract),
     vulkan_contract: asObject(c.vulkan_contract ?? c.vulkanContract),
@@ -535,11 +595,25 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     artifact_identity: normalized.artifact_identity,
     artifact_hash_before: normalized.artifact_hash_before,
     artifact_hash_after: normalized.artifact_hash_after,
+    unaffected_artifacts_hash_unchanged: normalized.unaffected_artifacts_hash_unchanged,
     abi_compatibility_class: normalized.abi_compatibility_class,
+    abi_metadata: normalized.abi_metadata,
     reload_mechanism: normalized.reload_mechanism,
     adapter_outcome: normalized.adapter_outcome,
+    reload_evidence_refs: normalized.reload_evidence_refs,
     firewall_evidence: normalized.firewall_evidence,
     output_oracle_target: normalized.output_oracle_target,
+    dispatch_trace_required: normalized.dispatch_trace_required,
+    oracle_trace_required: normalized.oracle_trace_required,
+    state_preservation_checks: normalized.state_preservation_checks,
+    epoch_policy: normalized.epoch_policy,
+    epoch_retirement_proof: normalized.epoch_retirement_proof,
+    fission_report: normalized.fission_report,
+    hip_contract: normalized.hip_contract,
+    hiprt_contract: normalized.hiprt_contract,
+    vulkan_contract: normalized.vulkan_contract,
+    webgpu_contract: normalized.webgpu_contract,
+    opencl_contract: normalized.opencl_contract,
   }))}`;
   normalized.contract_id ??= `gpu-hmr-contract:${normalized.contract_hash}`;
   return normalized;
@@ -712,6 +786,54 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   const fission = contract.fission_report;
   if (!nonEmptyValue(fission.selected_island)) addFailure(failures, 'fission_selected_island_missing');
   if (!nonEmptyValue(fission.selected_reason)) addFailure(failures, 'fission_selected_reason_missing');
+  if (nonEmptyValue(fission.selected_reason) && fission.selected_reason !== 'verified_fission_contract') {
+    addFailure(failures, 'fission_selected_reason_unverified', {
+      selected_reason: fission.selected_reason,
+    });
+  }
+  if (!nonEmptyValue(fission.changed_sources)) {
+    addFailure(failures, 'fission_changed_sources_missing');
+  }
+  if (!nonEmptyValue(fission.evidence_refs)) {
+    addFailure(failures, 'fission_evidence_refs_missing');
+  }
+  if (!fission.evidence_refs.some(fissionVerifierEvidenceRefAccepted)) {
+    addFailure(failures, 'fission_verifier_report_evidence_ref_missing');
+  }
+  if (!nonEmptyValue(fission.selected_verifier_evidence_id)) {
+    addFailure(failures, 'fission_selected_verifier_evidence_id_missing');
+  }
+  if (!nonEmptyValue(fission.deterministic_verifier_evidence_refs)) {
+    addFailure(failures, 'fission_deterministic_verifier_evidence_refs_missing');
+  }
+  if (!nonEmptyValue(fission.selection_decision_hash)) {
+    addFailure(failures, 'fission_selection_decision_hash_missing');
+  }
+  if (!nonEmptyValue(fission.output_oracle_contract)) {
+    addFailure(failures, 'fission_output_oracle_contract_missing');
+  }
+  if (!nonEmptyValue(fission.abi_compatibility_class)) {
+    addFailure(failures, 'fission_abi_compatibility_class_missing');
+  } else if (fission.abi_compatibility_class !== contract.abi_compatibility_class.value) {
+    addFailure(failures, 'fission_abi_compatibility_class_mismatch', {
+      expected: contract.abi_compatibility_class.value,
+      actual: fission.abi_compatibility_class,
+    });
+  }
+  if (fission.unaffected_artifacts_hash_unchanged !== true) {
+    addFailure(failures, 'fission_unaffected_artifacts_hash_not_proven');
+  } else if (contract.unaffected_artifacts_hash_unchanged !== true) {
+    addFailure(failures, 'fission_unaffected_artifacts_hash_mismatch', {
+      expected: contract.unaffected_artifacts_hash_unchanged,
+      actual: fission.unaffected_artifacts_hash_unchanged,
+    });
+  }
+  if (
+    fission.smallest_safe_island_proven === true
+    && fission.selected_reason !== 'verified_fission_contract'
+  ) {
+    addFailure(failures, 'fission_smallest_safe_island_without_verified_report');
+  }
   if (fission.artifact_hash_before && fission.artifact_hash_before !== contract.artifact_hash_before) {
     addFailure(failures, 'fission_artifact_before_hash_mismatch', {
       expected: contract.artifact_hash_before,
@@ -1073,6 +1195,62 @@ function selectedIslandContractFromProof(fissionProof) {
   return contracts[0] ?? {};
 }
 
+function selectedVerifierEvidenceIdFromFissionProof(fissionProof, selectedIsland) {
+  return firstText(
+    selectedIsland.verifierEvidenceId,
+    selectedIsland.verifier_evidence_id,
+    asArray(fissionProof?.verifierEvidenceRefs)[0],
+    asArray(fissionProof?.verifier_evidence_refs)[0],
+    asArray(fissionProof?.verifierEvidenceIds)[0],
+    asArray(fissionProof?.verifier_evidence_ids)[0],
+  );
+}
+
+function deterministicVerifierEvidenceRefsFromFissionProof(fissionProof, selectedIsland) {
+  return compactStringList([
+    ...asArray(selectedIsland.deterministicVerifierEvidenceIds),
+    ...asArray(selectedIsland.deterministic_verifier_evidence_ids),
+    ...asArray(selectedIsland.deterministicVerifierEvidenceRefs),
+    ...asArray(selectedIsland.deterministic_verifier_evidence_refs),
+    ...asArray(fissionProof?.deterministicVerifierEvidenceRefs),
+    ...asArray(fissionProof?.deterministic_verifier_evidence_refs),
+    ...asArray(fissionProof?.deterministicVerifierEvidenceIds),
+    ...asArray(fissionProof?.deterministic_verifier_evidence_ids),
+  ]);
+}
+
+function outputOracleContractFromFissionProof(selectedIsland, outputProof) {
+  return firstObject(
+    selectedIsland.outputOracleContract,
+    selectedIsland.output_oracle_contract,
+    selectedIsland.oracleProposal,
+    selectedIsland.oracle_proposal,
+    outputProof.outputOracle?.outputOracleTarget,
+    outputProof.outputOracle?.output_oracle_target,
+    outputProof.output_oracle?.outputOracleTarget,
+    outputProof.output_oracle?.output_oracle_target,
+    outputProof.outputOracleTarget,
+    outputProof.output_oracle_target,
+  );
+}
+
+function fissionSelectionDecisionHashFromProof(fissionProof, selectedIsland, verifierEvidenceId, outputOracleContract) {
+  return firstText(
+    fissionProof?.selectionDecisionHash,
+    fissionProof?.selection_decision_hash,
+    selectedIsland.selectionDecisionHash,
+    selectedIsland.selection_decision_hash,
+  ) ?? `sha256:${sha256Hex(stableJson({
+    selected_island: firstText(selectedIsland.islandId, selectedIsland.island_id),
+    selected_verifier_evidence_id: verifierEvidenceId,
+    deterministic_verifier_evidence_refs: deterministicVerifierEvidenceRefsFromFissionProof(
+      fissionProof,
+      selectedIsland,
+    ),
+    output_oracle_contract: outputOracleContract,
+  }))}`;
+}
+
 function backendContractProofFromVerifiedProofs(input, validationContext, backend) {
   const proof = firstObject(
     input.backendContractProof,
@@ -1148,6 +1326,12 @@ function selectedIslandKind(contract, backend) {
   const kind = firstText(contract.artifactKind, contract.artifact_kind)?.toLowerCase();
   if (!kind) return 'unknown';
   if (ARTIFACT_KINDS.has(kind)) return kind;
+  if (
+    (backend === 'hip' || backend === 'hiprt')
+    && /kernel[_-]?region|single[_-]?body|single[_-]?function|device[_-]?translation[_-]?unit/.test(kind)
+  ) {
+    return 'hsaco';
+  }
   if ((backend === 'hip' || backend === 'hiprt') && /source[_-]?include|source[_-]?bridge/.test(kind)) {
     return 'hip_source_bridge';
   }
@@ -1208,6 +1392,28 @@ function artifactHashBeforeFromProofs(input, epochProof) {
   );
 }
 
+function hipLaunchApiFromVerifiedDispatch(dispatchProof, selectedIsland) {
+  const explicit = firstText(
+    dispatchProof?.launchApi,
+    dispatchProof?.launch_api,
+    selectedIsland?.launchApi,
+    selectedIsland?.launch_api,
+  );
+  if (explicit) return explicit;
+  const evidenceText = compactStringList([
+    ...(asArray(dispatchProof?.dispatchEvidenceRefs)),
+    ...(asArray(dispatchProof?.dispatch_evidence_refs)),
+    ...(asArray(dispatchProof?.evidenceRefs)),
+    ...(asArray(dispatchProof?.evidence_refs)),
+  ]).join(' ').toLowerCase();
+  if (evidenceText.includes('worker-log:synthi_gpu_launch')) return 'synthi_gpu_launch';
+  if (/hipmodulelaunchkernel|hipmodulelaunch|hiplaunchkernel/.test(evidenceText)) {
+    return 'hipModuleLaunchKernel';
+  }
+  if (/\bhip[_-]?launch\b|\bhiplaunch\b/.test(evidenceText)) return 'hip_launch';
+  return null;
+}
+
 function hipContractFromVerifiedProofs({
   entryPoints,
   dispatchProof,
@@ -1238,7 +1444,7 @@ function hipContractFromVerifiedProofs({
       selectedIsland?.kernel_name,
       entryPoints[0],
     ),
-    launch_api: firstText(dispatchProof?.launchApi, dispatchProof?.launch_api, selectedIsland?.launchApi),
+    launch_api: hipLaunchApiFromVerifiedDispatch(dispatchProof, selectedIsland),
     grid_dim:
       dispatchProof?.gridDim
       ?? dispatchProof?.grid_dim
@@ -1609,6 +1815,18 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const verifiedClassification = normalizeClassification(rawClassification);
   const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
   const selectedIsland = selectedIslandContractFromProof(fissionProof);
+  const selectedVerifierEvidenceId = selectedVerifierEvidenceIdFromFissionProof(fissionProof, selectedIsland);
+  const deterministicVerifierEvidenceRefs = deterministicVerifierEvidenceRefsFromFissionProof(
+    fissionProof,
+    selectedIsland,
+  );
+  const fissionOutputOracleContract = outputOracleContractFromFissionProof(selectedIsland, outputProof);
+  const fissionSelectionDecisionHash = fissionSelectionDecisionHashFromProof(
+    fissionProof,
+    selectedIsland,
+    selectedVerifierEvidenceId,
+    fissionOutputOracleContract,
+  );
   const backend = backendFromVerifiedContext(input, validationContext, {
     selectedIsland,
     dispatchProof,
@@ -1675,7 +1893,16 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const contract = normalizeGpuHmrAcceptanceContract({
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
     project_id: firstText(input.projectId, input.project_id, input.workspaceSlug, validationContext.workspaceSlug),
-    edit_id: firstText(input.editId, input.edit_id, input.sourceEditId, validationContext.sourceEditId),
+    edit_id: firstText(
+      input.editId,
+      input.edit_id,
+      input.sourceEditId,
+      input.source_edit_id,
+      validationContext.sourceEditId,
+      validationContext.source_edit_id,
+      selectedIsland.sourceEditId,
+      selectedIsland.source_edit_id,
+    ),
     backend,
     confidence: gpuRouteAccepted ? 0.95 : 0.25,
     evidence_refs: evidenceRefs,
@@ -1694,7 +1921,17 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       artifact_kind: artifactKind,
       entry_points: entryPoints,
       compile_target: firstText(input.gpuArch, input.gpu_arch, validationContext.gpuArch, validationContext.gpu_arch),
-      compiler: firstText(selectedIsland.compiler, selectedIsland.compilerName, input.compiler),
+      compiler: firstText(
+        selectedIsland.compiler,
+        selectedIsland.compilerName,
+        selectedIsland.compiler_name,
+        input.compiler,
+        input.deviceCompiler,
+        input.device_compiler,
+        validationContext.compiler,
+        validationContext.deviceCompiler,
+        validationContext.device_compiler,
+      ),
       compiler_args_hash: firstText(
         selectedIsland.compileCommandHash,
         selectedIsland.compile_command_hash,
@@ -1890,6 +2127,11 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       host_relinked: input.hostRelinked === true || input.host_relinked === true,
       process_restarted: input.processRestarted === true || input.process_restarted === true,
       full_rebuild_used: input.fullRebuildUsed === true || input.full_rebuild_used === true,
+      unaffected_artifacts_hash_unchanged: fissionProof?.fissionProven === true && !fullDeviceFallback,
+      selected_verifier_evidence_id: selectedVerifierEvidenceId,
+      deterministic_verifier_evidence_refs: deterministicVerifierEvidenceRefs,
+      selection_decision_hash: fissionSelectionDecisionHash,
+      output_oracle_contract: fissionOutputOracleContract,
       evidence_refs: evidenceRefs,
     },
     hip_contract: hipContractFromVerifiedProofs({

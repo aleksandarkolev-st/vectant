@@ -3,126 +3,132 @@
     "name": "gpu vendor",
     "status": "pass",
     "detail": "rocm arch=gfx1201",
-    "ts": "2026-05-24T16:05:37.007Z"
+    "ts": "2026-06-09T08:00:24.646Z"
   },
   {
     "name": "fixture",
     "status": "pass",
-    "detail": "flow",
-    "ts": "2026-05-24T16:05:37.008Z"
+    "detail": "ray-light",
+    "ts": "2026-06-09T08:00:24.648Z"
   },
   {
     "name": "monolithic source has no Synthi ABI",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-24T16:05:37.008Z"
+    "ts": "2026-06-09T08:00:24.648Z"
   },
   {
-    "name": "validation workspace auth fallback",
+    "name": "validation workspace fallback",
     "status": "warn",
-    "detail": "frontend workspace API requires auth; using collab-backed validation workspace slug=gpu-agent-split-1779638736581",
-    "ts": "2026-05-24T16:05:37.075Z"
+    "detail": "frontend workspace API requires auth; using collab-backed validation workspace slug=ray-light-gpu-hmr-proof-20260609-run-modes-hardened",
+    "ts": "2026-06-09T08:00:24.742Z"
   },
   {
     "name": "create workspace",
     "status": "pass",
-    "detail": "id=gpu-agent-split-1779638736581 slug=gpu-agent-split-1779638736581",
-    "ts": "2026-05-24T16:05:37.075Z"
+    "detail": "id=ray-light-gpu-hmr-proof-20260609-run-modes-hardened slug=ray-light-gpu-hmr-proof-20260609-run-modes-hardened",
+    "ts": "2026-06-09T08:00:24.742Z"
   },
   {
     "name": "seed monolithic user source",
     "status": "pass",
     "detail": "main.cpp",
-    "ts": "2026-05-24T16:05:37.160Z"
+    "ts": "2026-06-09T08:00:24.861Z"
   },
   {
     "name": "workspace commit seed",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-24T16:05:37.247Z"
+    "ts": "2026-06-09T08:00:24.979Z"
   },
   {
     "name": "mcp tools/list",
     "status": "pass",
-    "detail": "count=42",
-    "ts": "2026-05-24T16:05:38.002Z"
+    "detail": "count=97",
+    "ts": "2026-06-09T08:00:26.586Z"
   },
   {
     "name": "mcp attach",
     "status": "pass",
     "detail": "attached",
-    "ts": "2026-05-24T16:05:39.249Z"
+    "ts": "2026-06-09T08:00:27.931Z"
+  },
+  {
+    "name": "mcp wait_hmr proof gate",
+    "status": "pass",
+    "detail": "{\"role\":null,\"module\":null,\"since_ts\":1780992027888,\"requireGpuFullRuntimeProof\":false,\"requiredGpuProofState\":null,\"status\":\"applied\",\"frame_gate\":{\"status\":\"satisfied\",\"frame_seq\":87,\"ts_ms\":1780992032300,\"session_id\":\"ray-light-gpu-hmr-proof-20260609-run-modes-hardened\",\"gate_token\":\"frame-gate:c008cbd2-d87e-4e8a-923d-8aea58318404\",\"gate_token_issued_at_ms\":1780992032332,\"gate_token_expires_at_ms\":1780993232332,\"capture_binding_required\":true,\"capture_binding_source\":\"decoded_frame\",\"pipeline_budget_ms\":80,\"frame_advance_fallback_used\":true},\"timingMetrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"cold\",\"metric_scope\":\"cold\",\"cacheState\":\"clean\",\"cache_state\":\"clean\",\"editId\":\"initial-ai-split\",\"edit_id\":\"initial-ai-split\",\"editHash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"edit_hash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"editKind\":\"cold_split\",\"edit_kind\":\"cold_split\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":10019500,\"runtime_probe_time\":4379571200,\"total_validator_wall_time\":4389908400}},\"timing_metrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"cold\",\"metric_scope\":\"cold\",\"cacheState\":\"clean\",\"cache_state\":\"clean\",\"editId\":\"initial-ai-split\",\"edit_id\":\"initial-ai-split\",\"editHash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"edit_hash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"editKind\":\"cold_split\",\"edit_kind\":\"cold_split\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":10019500,\"runtime_probe_time\":4379571200,\"total_validator_wall_time\":4389908400}},\"gpu_proof_validation\":{\"validated\":false,\"satisfied\":false,\"reason\":\"proof_state_not_requested\"},\"gpu_proof_telemetry\":{\"schemaVersion\":\"synthi.gpu.hmr.proof.v1\",\"proofId\":\"gpu-proof:76e266faef5ebc670b49e64e30c1a531c7267ab63af18ee4f9ec088ef5baf754\",\"proofArtifactPath\":\".synthi/gpu-hmr/proofs/gpu-proof_76e266faef5ebc670b49e64e30c1a531c7267ab63af18ee4f9ec088ef5baf754.json\",\"resultState\":\"gpu-hmr-compile-proven\",\"degradedState\":\"gpu-hmr-dispatch-unobserved\",\"degradedReason\":\"runtime_dispatch_not_observed\",\"label\":\"gpu-hmr-full-device\",\"source\":\"gpu-proof-state\",\"observedAt\":1780992031024}}",
+    "ts": "2026-06-09T08:00:32.321Z"
   },
   {
     "name": "first compile via MCP",
     "status": "pass",
     "detail": "use_ai_split=true prefer_gpu_pipeline=true",
-    "ts": "2026-05-24T16:06:34.051Z"
-  },
-  {
-    "name": "worker used GPU split endpoint",
-    "status": "pass",
-    "detail": "GPU markers detected; calling GPU split endpoint",
-    "ts": "2026-05-24T16:06:34.100Z"
+    "ts": "2026-06-09T08:00:32.322Z"
   },
   {
     "name": "generated device compiled",
     "status": "pass",
-    "detail": "compile-device] hipcc",
-    "ts": "2026-05-24T16:06:34.151Z"
+    "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpozv75x/build/device_1780992027.hsaco kernels=trace_light_rays result=Success",
+    "ts": "2026-06-09T08:04:36.072Z"
+  },
+  {
+    "name": "mcp screenshot before hmr",
+    "status": "pass",
+    "detail": "800x600 seq=7382->7402 visible=210015/210049 luma=20.2/20.2 bytes~101412/101343 frame_gate_after=false images=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\before-hmr-first.png,mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\before-hmr-second.png metadata=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\before-hmr-metadata.json",
+    "ts": "2026-06-09T08:04:36.751Z"
   },
   {
     "name": "read generated split from worker",
     "status": "pass",
-    "detail": "worker=/tmp/.tmpRrHjmY",
-    "ts": "2026-05-24T16:06:34.947Z"
+    "detail": "worker=/tmp/.tmpozv75x",
+    "ts": "2026-06-09T08:04:41.534Z"
+  },
+  {
+    "name": "worker used GPU split endpoint",
+    "status": "pass",
+    "detail": "gpu_manifest=true generated_files=5 sidecar_reports=device_mapping_report|launch_indirection_report|model_provenance",
+    "ts": "2026-06-09T08:04:41.535Z"
   },
   {
     "name": "generated split contains HMR ABI",
     "status": "pass",
     "detail": ".synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip",
-    "ts": "2026-05-24T16:06:34.947Z"
+    "ts": "2026-06-09T08:04:41.535Z"
+  },
+  {
+    "name": "generated split HMR granularity",
+    "status": "pass",
+    "detail": "claim=device_translation_unit_hmr device_tus=1 device_roles=1 kernels=1 smallest_safe_fission=not_proven rejected_claims=smallest_safe_fission_island|per_kernel_hmr",
+    "ts": "2026-06-09T08:04:41.536Z"
+  },
+  {
+    "name": "generated split granularity artifact",
+    "status": "pass",
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\generated-split-granularity.json",
+    "ts": "2026-06-09T08:04:41.537Z"
   },
   {
     "name": "persist generated split to workspace",
     "status": "pass",
-    "detail": "7 files",
-    "ts": "2026-05-24T16:06:34.985Z"
+    "detail": "16 files",
+    "ts": "2026-06-09T08:04:41.734Z"
   },
   {
     "name": "workspace commit generated split",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-24T16:06:35.068Z"
+    "ts": "2026-06-09T08:04:41.879Z"
   },
   {
-    "name": "device edit compile via MCP",
+    "name": "run-mode cold split proof artifact",
     "status": "pass",
-    "detail": ".synthi/generated/gpu/device.hip",
-    "ts": "2026-05-24T16:06:37.655Z"
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\run-mode-cold-split.json",
+    "ts": "2026-06-09T08:04:41.882Z"
   },
   {
-    "name": "generated device file used for HMR",
-    "status": "pass",
-    "detail": "FallbackDeterministic → split file edit (.synthi/generated/gpu/device.hip",
-    "ts": "2026-05-24T16:06:37.708Z"
-  },
-  {
-    "name": "device-only GPU HMR observed",
-    "status": "pass",
-    "detail": "[gpu-reload] plan=device_only",
-    "ts": "2026-05-24T16:06:37.765Z"
-  },
-  {
-    "name": "mcp screenshot after hmr",
-    "status": "pass",
-    "detail": "800x600 seq=99->114 visible=7788/7970 luma=9.6/9.6 bytes~111309/110733",
-    "ts": "2026-05-24T16:06:38.316Z"
-  },
-  {
-    "name": "runner stayed alive after GPU HMR",
-    "status": "pass",
-    "detail": "no runner crash marker",
-    "ts": "2026-05-24T16:06:40.376Z"
+    "name": "fatal",
+    "status": "fail",
+    "detail": "Error: generated split sidecar lacks compiler-emitted source baseline proof for .synthi/generated/gpu/device.hip: source_baseline_contents_missing|source_baseline_hash_missing\n    at compileGeneratedDevice (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:1640:11)\n    at run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:2240:39)",
+    "ts": "2026-06-09T08:04:41.884Z"
   }
 ]

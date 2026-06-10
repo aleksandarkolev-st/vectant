@@ -11,6 +11,7 @@ function parseArgs(argv) {
     width: 1280,
     height: 720,
     delayMs: 1000,
+    gpuEnabled: true,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -19,6 +20,8 @@ function parseArgs(argv) {
     else if (arg === '--width') args.width = Number(argv[++index] ?? args.width);
     else if (arg === '--height') args.height = Number(argv[++index] ?? args.height);
     else if (arg === '--delay-ms') args.delayMs = Number(argv[++index] ?? args.delayMs);
+    else if (arg === '--disable-gpu') args.gpuEnabled = false;
+    else if (arg === '--enable-gpu') args.gpuEnabled = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!args.url) throw new Error('--url is required');
@@ -55,7 +58,6 @@ async function main() {
   await mkdir(path.dirname(path.resolve(args.output)), { recursive: true });
   const chromeArgs = [
     '--headless=new',
-    '--disable-gpu',
     '--hide-scrollbars',
     '--no-first-run',
     '--no-default-browser-check',
@@ -64,6 +66,7 @@ async function main() {
     `--screenshot=${path.resolve(args.output)}`,
     args.url,
   ];
+  if (!args.gpuEnabled) chromeArgs.splice(1, 0, '--disable-gpu');
   const started = Date.now();
   const code = await new Promise((resolve, reject) => {
     const child = spawn(chrome, chromeArgs, {
@@ -91,6 +94,7 @@ async function main() {
     output: path.resolve(args.output),
     width: args.width,
     height: args.height,
+    gpuEnabled: args.gpuEnabled,
   }));
 }
 

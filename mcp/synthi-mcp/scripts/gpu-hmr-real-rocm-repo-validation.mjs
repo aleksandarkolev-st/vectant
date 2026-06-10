@@ -1178,15 +1178,16 @@ const CFG = {
   slug: process.env.SLUG ?? `gpu-real-rocm-${configuredRepoName}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
-  signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
+  signalingUrl: process.env.SIGNALING_URL ?? process.env.SYNTHI_SIGNALING_URL ?? null,
   hostId: process.env.HOST_ID ?? 'gpu-hmr-real-rocm-validation',
   mcpClientName: process.env.SYNTHI_REAL_ROCM_MCP_CLIENT_NAME ?? 'real-rocm-validation',
-  mcpContainer: process.env.MCP_CONTAINER ?? 'vectant-ade-mcp-1',
-  workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
-  aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? 'vectant-ade-ai-engine-1',
-  mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
+  mcpContainer: process.env.MCP_CONTAINER ?? process.env.SYNTHI_MCP_CONTAINER ?? null,
+  workerContainer: process.env.WORKER_CONTAINER ?? process.env.SYNTHI_WORKER_CONTAINER ?? null,
+  aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? process.env.SYNTHI_AI_ENGINE_CONTAINER ?? null,
+  mcpTransport: (process.env.MCP_TRANSPORT ?? 'local').toLowerCase(),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
-  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
+  mcpContainerEntry: process.env.MCP_CONTAINER_ENTRY ?? process.env.SYNTHI_MCP_CONTAINER_ENTRY ?? null,
+  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? process.env.SYNTHI_MCP_SIGNALING_URL ?? null,
   mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 300000),
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
@@ -1405,6 +1406,42 @@ function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}
   });
 }
 
+async function resolveDockerContainer(configured, service) {
+  const composeId = await execText(
+    'docker',
+    ['compose', '--project-directory', REPO_ROOT, 'ps', '-q', service],
+    8000,
+  );
+  const id = String(composeId || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
+  if (id) return id;
+  const labelIds = await execText(
+    'docker',
+    ['ps', '-q', '--filter', `label=com.docker.compose.service=${service}`],
+    8000,
+  );
+  const labelId = String(labelIds || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
+  return labelId || configured || null;
+}
+
+async function resolveDockerContainers() {
+  if (CFG.mcpTransport !== 'docker') return;
+  CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
+  CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
+  CFG.aiEngineContainer = await resolveDockerContainer(CFG.aiEngineContainer, 'ai-engine');
+  if (!CFG.mcpContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires an MCP container from MCP_CONTAINER, SYNTHI_MCP_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.workerContainer) {
+    throw new Error('MCP_TRANSPORT=docker requires a worker container from WORKER_CONTAINER, SYNTHI_WORKER_CONTAINER, or docker compose service discovery');
+  }
+  if (!CFG.mcpSignalingUrl) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_SIGNALING_URL or SYNTHI_MCP_SIGNALING_URL');
+  }
+  if (!CFG.mcpContainerEntry) {
+    throw new Error('MCP_TRANSPORT=docker requires explicit MCP_CONTAINER_ENTRY or SYNTHI_MCP_CONTAINER_ENTRY');
+  }
+}
+
 function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, ...opts }, (_err, stdout, stderr) => {
@@ -1484,6 +1521,118 @@ function proofArtifactFileName(proofArtifactPath) {
   return /^gpu-proof_[a-f0-9]{32,}\.json$/i.test(fileName) ? fileName : null;
 }
 
+function proofArtifactPathFromProofId(proofId) {
+  const match = String(proofId ?? '').trim().match(/^gpu-proof:([a-f0-9]{32,})$/i);
+  return match ? `.synthi/gpu-hmr/proofs/gpu-proof_${match[1].toLowerCase()}.json` : null;
+}
+
+function structuredLogJsonPayload(line) {
+  const text = String(line ?? '');
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const payload = JSON.parse(text.slice(start, end + 1));
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function proofRefLooksLikeGpuProof(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const schemaVersion = stringField(value, ['schemaVersion', 'schema_version']);
+  const type = stringField(value, ['type']);
+  const proofId = stringField(value, ['proofId', 'proof_id']);
+  const resultState = stringField(value, ['resultState', 'result_state']);
+  return schemaVersion === 'synthi.gpu.hmr.proof.v1'
+    || type === 'gpu_hmr_proof'
+    || /^gpu-proof:/i.test(proofId)
+    || /^gpu-hmr-/i.test(resultState);
+}
+
+function proofArtifactPathFromProofRef(value) {
+  if (typeof value === 'string') {
+    if (proofArtifactFileName(value)) return value;
+    return proofArtifactPathFromProofId(value);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const proofPath = stringField(value, ['proofArtifactPath', 'proof_artifact_path']);
+  if (proofPath && proofArtifactFileName(proofPath)) return proofPath;
+  return proofArtifactPathFromProofId(stringField(value, ['proofId', 'proof_id']));
+}
+
+function proofArtifactPathFromStructuredLogLine(line) {
+  const payload = structuredLogJsonPayload(line);
+  if (!proofRefLooksLikeGpuProof(payload)) return null;
+  return proofArtifactPathFromProofRef(payload);
+}
+
+function proofArtifactPathCandidatesFromValue(value, source, phase = null, depth = 0, out = []) {
+  if (depth > 5 || value == null) return out;
+  if (typeof value === 'string') {
+    const proofPath = proofArtifactPathFromProofRef(value);
+    if (proofPath) out.push({ proofPath, source, phase });
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      proofArtifactPathCandidatesFromValue(item, source, phase, depth + 1, out);
+    }
+    return out;
+  }
+  if (proofRefLooksLikeGpuProof(value)) {
+    const proofPath = proofArtifactPathFromProofRef(value);
+    if (proofPath) out.push({ proofPath, source, phase });
+  }
+  for (const nested of Object.values(value)) {
+    if (nested && typeof nested === 'object') {
+      proofArtifactPathCandidatesFromValue(nested, source, phase, depth + 1, out);
+    }
+  }
+  return out;
+}
+
+function proofArtifactPathCandidatesFromRuntimeEvidence() {
+  const lines = [
+    ...new Set([
+      ...((Array.isArray(report.evidence?.worker_log_lines) ? report.evidence.worker_log_lines : [])),
+      ...((Array.isArray(report.evidence?.worker_service_log_lines) ? report.evidence.worker_service_log_lines : [])),
+      ...((Array.isArray(report.evidence?.upstream_run_log_lines) ? report.evidence.upstream_run_log_lines : [])),
+    ]),
+  ];
+  return lines
+    .map((line) => proofArtifactPathFromStructuredLogLine(line))
+    .filter((proofPath) => typeof proofPath === 'string' && proofPath.trim())
+    .map((proofPath) => ({
+      proofPath,
+      source: 'runtime_structured_gpu_proof_log',
+    }));
+}
+
+function proofArtifactPathCandidatesFromPhases() {
+  const candidates = [];
+  for (const phase of report.phases) {
+    proofArtifactPathCandidatesFromValue(phase?.gpu_proof, 'phase_gpu_proof', phase, 0, candidates);
+    proofArtifactPathCandidatesFromValue(
+      phase?.gpu_proof_telemetry,
+      'phase_gpu_proof_telemetry',
+      phase,
+      0,
+      candidates,
+    );
+    proofArtifactPathCandidatesFromValue(
+      phase?.wait_hmr_detail,
+      'phase_wait_hmr_detail',
+      phase,
+      0,
+      candidates,
+    );
+  }
+  return candidates;
+}
+
 async function readWorkerProofArtifact(proofArtifactPath) {
   if (CFG.mcpTransport !== 'docker') {
     return { proofArtifactPath, found: false, reason: 'docker_transport_required' };
@@ -1543,17 +1692,29 @@ async function readWorkerProofArtifact(proofArtifactPath) {
 async function collectGpuProofArtifacts() {
   const records = [];
   const seen = new Set();
-  for (const phase of report.phases) {
-    const proofPath = phase?.gpu_proof?.proofArtifactPath;
+  const candidates = [
+    ...proofArtifactPathCandidatesFromPhases(),
+    ...proofArtifactPathCandidatesFromRuntimeEvidence(),
+  ];
+  report.proof_artifact_candidates = candidates.map((candidate) => ({
+    proofArtifactPath: candidate.proofPath,
+    source: candidate.source,
+    phase: candidate.phase?.name ?? null,
+  }));
+  for (const candidate of candidates) {
+    const proofPath = candidate.proofPath;
     if (typeof proofPath !== 'string' || !proofPath.trim() || seen.has(proofPath)) continue;
     seen.add(proofPath);
     const record = await readWorkerProofArtifact(proofPath);
+    record.source = candidate.source;
     records.push(record);
-    phase.gpu_proof_artifact = record.found
+    if (candidate.phase) {
+      candidate.phase.gpu_proof_artifact = record.found
       ? {
           found: true,
           proofId: record.artifact?.proofId ?? null,
           containerPath: record.containerPath,
+          source: candidate.source,
           evidenceKinds: Array.isArray(record.artifact?.evidenceRefs)
             ? record.artifact.evidenceRefs.map((evidence) => evidence?.kind).filter(Boolean)
             : [],
@@ -1561,7 +1722,9 @@ async function collectGpuProofArtifacts() {
       : {
           found: false,
           reason: record.reason,
+          source: candidate.source,
         };
+    }
   }
   report.proof_artifacts = records;
   return records;
@@ -1639,6 +1802,8 @@ function parseUpstreamRunExitCode(timings) {
 function parseRocmArrayAllocationPreflightOutput(output) {
   const text = String(output ?? '');
   const device = /\bdevice_count result=(\d+)\s+error=(.*?)\s+count=(\d+)/.exec(text);
+  const deviceIdentityMatch =
+    /\bdevice_identity result=(\d+)\s+error=(.*?)\s+index=(\d+)\s+name="([^"]*)"\s+pci_domain=(-?\d+)\s+pci_bus=(-?\d+)\s+pci_device=(-?\d+)\s+gcn_arch="([^"]*)"\s+multiprocessors=(\d+)/.exec(text);
   const allocationRecords = [...text.matchAll(
     /\b(hipMalloc(?:3D)?Array)\s+label=([^\s]+)\s+x=(\d+)\s+y=(\d+)\s+z=(\d+)\s+w=(\d+)\s+kind=(\d+)\s+result=(\d+)\s+error=(.*?)\s+array=([^\s]+)/g,
   )].map((match) => ({
@@ -1700,6 +1865,26 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     textureResourceRecords.filter((record) => !record.available).length;
   const textureResourceFallbackAvailable =
     textureResourceRecords.some((record) => record.available);
+  let deviceIdentity = null;
+  if (deviceIdentityMatch) {
+    const identityMaterial = {
+      backend: 'hip',
+      device_index: Number(deviceIdentityMatch[3]),
+      name: deviceIdentityMatch[4],
+      pci_domain_id: Number(deviceIdentityMatch[5]),
+      pci_bus_id: Number(deviceIdentityMatch[6]),
+      pci_device_id: Number(deviceIdentityMatch[7]),
+      gcn_arch_name: deviceIdentityMatch[8],
+      multiprocessor_count: Number(deviceIdentityMatch[9]),
+    };
+    const identityHash = createHash('sha256').update(stableJson(identityMaterial)).digest('hex');
+    deviceIdentity = {
+      ...identityMaterial,
+      device_uuid: `hip-device:sha256:${identityHash}`,
+      device_identity_key: `hip-device:sha256:${identityHash}`,
+      evidence_refs: ['runtime-capability-preflight:rocm:device_identity'],
+    };
+  }
   return {
     schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
     backend: 'rocm',
@@ -1709,6 +1894,8 @@ function parseRocmArrayAllocationPreflightOutput(output) {
     deviceCountResult: device ? Number(device[1]) : null,
     deviceCountError: device?.[2] ?? null,
     deviceCount: device ? Number(device[3]) : null,
+    deviceIdentity,
+    device_identity: deviceIdentity,
     allocationFormat: allocation?.label ?? null,
     allocationWidth: allocation ? 32 : null,
     allocationHeight: allocation ? 32 : null,
@@ -1850,6 +2037,19 @@ int main() {
   int count = 0;
   hipError_t count_result = hipGetDeviceCount(&count);
   std::printf("device_count result=%d error=%s count=%d\\n", (int)count_result, hipGetErrorString(count_result), count);
+  if (count_result == hipSuccess && count > 0) {
+    hipDeviceProp_t props = {};
+    hipError_t props_result = hipGetDeviceProperties(&props, 0);
+    std::printf("device_identity result=%d error=%s index=0 name=\\"%s\\" pci_domain=%d pci_bus=%d pci_device=%d gcn_arch=\\"%s\\" multiprocessors=%d\\n",
+      static_cast<int>(props_result),
+      hipGetErrorString(props_result),
+      props_result == hipSuccess ? props.name : "",
+      props_result == hipSuccess ? props.pciDomainID : -1,
+      props_result == hipSuccess ? props.pciBusID : -1,
+      props_result == hipSuccess ? props.pciDeviceID : -1,
+      props_result == hipSuccess ? props.gcnArchName : "",
+      props_result == hipSuccess ? props.multiProcessorCount : -1);
+  }
   test2d("u8x1", hipCreateChannelDesc(8, 0, 0, 0, hipChannelFormatKindUnsigned));
   test2d("u8x2", hipCreateChannelDesc(8, 8, 0, 0, hipChannelFormatKindUnsigned));
   test2d("u8x4", hipCreateChannelDesc(8, 8, 8, 8, hipChannelFormatKindUnsigned));
@@ -3307,12 +3507,16 @@ async function ensureMcpAttached() {
         '-e', `SYNTHI_GPU_DELTA_MODEL=${CFG.gpuDeltaModel}`,
         CFG.mcpContainer,
         'node',
-        '/app/dist/index.js',
+        CFG.mcpContainerEntry,
       ], { stdio: ['pipe', 'pipe', 'pipe'] });
     } else {
       proc = spawn('node', [CFG.mcpEntry], {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, SYNTHI_SESSION_ID: CFG.slug, SYNTHI_SIGNALING_URL: CFG.signalingUrl },
+        env: {
+          ...process.env,
+          SYNTHI_SESSION_ID: CFG.slug,
+          ...(CFG.signalingUrl ? { SYNTHI_SIGNALING_URL: CFG.signalingUrl } : {}),
+        },
       });
     }
     const client = new McpClient(proc);
@@ -3324,7 +3528,13 @@ async function ensureMcpAttached() {
     mcpState = { proc, client, attached: false };
   }
   if (!mcpState.attached) {
-    const attach = await mcpState.client.toolCall('synthi_attach', { sessionId: CFG.slug, 'i-understand-no-auth': true }, CFG.mcpAttachTimeoutMs);
+    const attachSignalingUrl = CFG.mcpTransport === 'docker' ? CFG.mcpSignalingUrl : CFG.signalingUrl;
+    const attachArgs = {
+      sessionId: CFG.slug,
+      'i-understand-no-auth': true,
+      ...(attachSignalingUrl ? { signalingUrl: attachSignalingUrl } : {}),
+    };
+    const attach = await mcpState.client.toolCall('synthi_attach', attachArgs, CFG.mcpAttachTimeoutMs);
     if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach)}`);
     mcpState.attached = true;
     record('mcp attach', 'pass', attach.resolution ? `${attach.resolution.w}x${attach.resolution.h}` : 'attached');
@@ -3496,6 +3706,11 @@ function deriveCpuGpuFirewallEvidence({
   const firewall = {
     schemaVersion: 'synthi.gpu.hmr.cpu_gpu_firewall_evidence.v1',
     source: 'real_rocm_runtime_proofs',
+    route: dispatchProven
+      && outputProven
+      && proofHasResultState(report.epoch_swap_proof, 'gpu-hmr-epoch-swap-proven')
+      ? 'gpu_runtime_epoch_reload'
+      : null,
     cpu_hmr_absence_basis: dispatchProven && outputProven
       ? 'gpu_artifact_dispatch_and_output_oracle_proven'
       : null,
@@ -3598,6 +3813,7 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
     wait_hmr_contract: wait?.wait_contract ?? wait?.waitContract ?? null,
     wait_hmr_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
     gpu_proof: wait?.gpu_proof ?? null,
+    gpu_proof_telemetry: wait?.gpu_proof_telemetry ?? null,
     gpu_proof_validation: wait?.gpu_proof_validation ?? null,
     runtime_identity: phaseRuntimeIdentitySummary(identityMonitor),
     wait_call_wall_ms: Date.now() - waitStart,
@@ -3733,6 +3949,26 @@ function hmrStatusFromEvent(entry) {
   return null;
 }
 
+function latestGpuProofTelemetryFromEventLogEntries(entries) {
+  for (const entry of Array.isArray(entries) ? entries.slice().reverse() : []) {
+    const raw = entry?.raw && typeof entry.raw === 'object' ? entry.raw : {};
+    const previewId = hmrPreviewId(raw);
+    if (previewId && previewId !== CFG.slug) continue;
+    const candidates = [
+      ...proofArtifactPathCandidatesFromValue(raw, 'event_log_gpu_proof'),
+      ...proofArtifactPathCandidatesFromValue(entry, 'event_log_gpu_proof'),
+    ];
+    const proofPath = candidates.find((candidate) => proofArtifactFileName(candidate.proofPath))?.proofPath;
+    if (proofPath) {
+      return {
+        proofArtifactPath: proofPath,
+        source: 'event_log_gpu_proof',
+      };
+    }
+  }
+  return null;
+}
+
 async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null, waitContract = null) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
@@ -3740,6 +3976,7 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
     10000,
   ).catch(() => null);
   const entries = Array.isArray(log?.entries) ? log.entries : [];
+  const latestGpuProofTelemetry = latestGpuProofTelemetryFromEventLogEntries(entries);
   for (const entry of entries.slice().reverse()) {
     const raw = entry?.raw && typeof entry.raw === 'object' ? entry.raw : {};
     const previewId = hmrPreviewId(raw);
@@ -3759,6 +3996,7 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt, waitArgs = null
       detail: raw.data && typeof raw.data === 'object' ? raw.data : raw,
       wait_args: waitArgs,
       wait_contract: waitContract ?? waitContractFromArgs(waitArgs ?? {}),
+      gpu_proof_telemetry: latestGpuProofTelemetry,
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered after ignoring a stale wait_hmr event',
@@ -3861,6 +4099,24 @@ function readbackSampleBytes(oracle) {
   if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
   const bytes = Buffer.from(hex, 'hex');
   return bytes.length > 0 ? bytes : null;
+}
+
+function digestBytes(value) {
+  if (Buffer.isBuffer(value)) {
+    return createHash('sha256').update(value).digest();
+  }
+  if (value instanceof Uint8Array) {
+    return createHash('sha256').update(Buffer.from(value)).digest();
+  }
+  if (Array.isArray(value) || (value && typeof value === 'object')) {
+    return createHash('sha256').update(stableJson(value)).digest();
+  }
+  const text = String(value ?? '').trim();
+  const sha256 = text.match(/^sha256:([0-9a-f]{64})$/i)?.[1]
+    ?? text.match(/^([0-9a-f]{64})$/i)?.[1]
+    ?? null;
+  if (sha256) return Buffer.from(sha256, 'hex');
+  return createHash('sha256').update(text).digest();
 }
 
 function computeProofArtifactName(oracle) {
@@ -6369,6 +6625,27 @@ async function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime host identity evidence parser failed');
   }
+  const structuredProofLine =
+    '[compile-device] {"schemaVersion":"synthi.gpu.hmr.proof.v1","type":"gpu_hmr_proof","resultState":"gpu-hmr-symbol-bound","proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"}';
+  const structuredProofPath = proofArtifactPathFromStructuredLogLine(structuredProofLine);
+  if (structuredProofPath !== '.synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json') {
+    throw new Error('structured GPU proof log artifact path parser failed');
+  }
+  const proofIdOnlyPath = proofArtifactPathFromStructuredLogLine(
+    '[compile-device] {"type":"gpu_hmr_proof","proofId":"gpu-proof:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","resultState":"gpu-hmr-symbol-bound"}',
+  );
+  if (proofIdOnlyPath !== '.synthi/gpu-hmr/proofs/gpu-proof_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json') {
+    throw new Error('structured GPU proof log proofId fallback parser failed');
+  }
+  const nonProofPath = proofArtifactPathFromStructuredLogLine(
+    '[compile-device] {"schemaVersion":"other.v1","proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"}',
+  );
+  const invalidProofPath = proofArtifactPathFromStructuredLogLine(
+    '[compile-device] {"schemaVersion":"synthi.gpu.hmr.proof.v1","proofArtifactPath":".synthi/gpu-hmr/proofs/not-a-proof.json"}',
+  );
+  if (nonProofPath !== null || invalidProofPath !== null) {
+    throw new Error('structured GPU proof log artifact path parser accepted an invalid line');
+  }
   const outputOracleEvidence = runtimeOutputOracleEvidence([
     '[gpu-runtime-boundary] output_oracle id=probe.checksum required_oracle_id=probe.checksum kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1',
   ]);
@@ -6593,6 +6870,25 @@ int main()
     hostRestartObserved: true,
   });
   const hostUnprovenProof = classifyGpuHmrHostPreservationProof({});
+  const selfCheckHostPreservationProof = classifyGpuHmrHostPreservationProof({
+    identityChecksPassed: true,
+    identitySnapshotObserved: true,
+    identitySnapshotLineageObserved: true,
+    requiredIdentityRolesObserved: true,
+    identityEvidenceRefs: [
+      'worker-log:host_identity:runner_process',
+      'worker-log:host_identity:host_state',
+      'worker-log:host_identity:stream_context',
+    ],
+    identitySnapshotEvidenceRefs: [
+      'worker-log:host_identity_snapshot:before:runner_process:sha256-runner',
+      'worker-log:host_identity_snapshot:after:runner_process:sha256-runner',
+      'worker-log:host_identity_snapshot:before:host_state:sha256-host',
+      'worker-log:host_identity_snapshot:after:host_state:sha256-host',
+      'worker-log:host_identity_snapshot:before:stream_context:sha256-resource',
+      'worker-log:host_identity_snapshot:after:stream_context:sha256-resource',
+    ],
+  });
   const abiMetadataOnlyProof = classifyGpuHmrAbiProof({
     metadataObserved: true,
     evidenceRefs: ['evidence:device-abi-metadata:test'],
@@ -6629,13 +6925,14 @@ int main()
       argProvenanceComplete: true,
     }),
     outputProof: visualOnlyProof,
-    hostPreservationProof: classifyGpuHmrHostPreservationProof({ identityChecksPassed: true }),
+    hostPreservationProof: selfCheckHostPreservationProof,
   });
   if (
     hostReplacedProof.degradedState !== 'gpu-hmr-host-replaced'
     || hostUnprovenProof.degradedReason !== 'host_identity_checks_not_collected'
+    || selfCheckHostPreservationProof.resultState !== 'gpu-hmr-host-preservation-proven'
     || fullRuntimeBlockedProof.degradedState !== 'gpu-hmr-abi-unverified'
-    || fullRuntimeBlockedProof.degradedReason !== 'abi_layout_size_alignment_unverified'
+    || fullRuntimeBlockedProof.degradedReason !== 'abi_compatibility_class_missing'
   ) {
     throw new Error('host preservation proof classifier failed');
   }
@@ -6824,6 +7121,7 @@ int main()
   ].join('\n'));
   const arrayCapabilityMatrix = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',
+    'device_identity result=0 error=no error index=0 name="AMD Radeon Test" pci_domain=0 pci_bus=3 pci_device=0 gcn_arch="gfx1201" multiprocessors=64',
     'hipMallocArray label=u8x1 x=8 y=0 z=0 w=0 kind=1 result=1 error=invalid argument array=(nil)',
     'hipMallocArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
     'hipMalloc3DArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
@@ -6849,6 +7147,8 @@ int main()
     || arrayCapabilityMatrix.textureResourceFallbackAvailable !== false
     || arrayCapabilityMatrix.textureResourceMatrix[0]?.resourceType !== 'linear'
     || arrayCapabilityMatrix.textureResourceMatrix[2]?.resourceType !== 'pitch2D'
+    || arrayCapabilityMatrix.deviceIdentity?.gcn_arch_name !== 'gfx1201'
+    || !arrayCapabilityMatrix.deviceIdentity?.device_uuid?.startsWith('hip-device:sha256:')
     || arrayCapabilityMatrix.allocationFormat !== 'f32x4'
     || !arrayCapabilityMatrix.degradedReason.includes('matrix failed 3/3')
     || !arrayCapabilityMatrix.degradedReason.includes('texture fallback available=false')
@@ -6917,7 +7217,24 @@ int main()
   const visualSelfCheckDir = await mkdtemp(path.join(visualSelfCheckRoot, 'visual-proof-self-check-'));
   try {
     const visualPath = path.join(visualSelfCheckDir, 'frame.png');
-    const visualBytes = Buffer.from('not-a-real-png-but-proof-writer-hashes-file-bytes');
+    const visualWidth = 320;
+    const visualHeight = 240;
+    const visualRaw = Buffer.alloc(visualWidth * visualHeight * 3);
+    for (let y = 0; y < visualHeight; y += 1) {
+      for (let x = 0; x < visualWidth; x += 1) {
+        const index = (y * visualWidth + x) * 3;
+        visualRaw[index] = (x * 7 + y * 3) & 0xff;
+        visualRaw[index + 1] = (x * 5 + y * 11) & 0xff;
+        visualRaw[index + 2] = (255 - ((x * 13 + y * 17) & 0xff)) & 0xff;
+      }
+    }
+    const visualBytes = await sharp(visualRaw, {
+      raw: {
+        width: visualWidth,
+        height: visualHeight,
+        channels: 3,
+      },
+    }).png().toBuffer();
     await writeFile(visualPath, visualBytes);
     const expectedVisualHash = `sha256:${createHash('sha256').update(visualBytes).digest('hex')}`;
     const written = await writeValidationRuntimeProofArtifact(visualSelfCheckDir, {
@@ -7004,21 +7321,32 @@ int main()
     ) {
       throw new Error('target progression ledger self-check did not hash visual file bytes');
     }
-    const rejectedVisualArtifacts = await visualEvidenceArtifactsFromFiles([visualPath], [{
-      path: visualPath,
+    const rejectedVisualPath = path.join(visualSelfCheckDir, 'flat-frame.png');
+    const rejectedRaw = Buffer.alloc(visualWidth * visualHeight * 3, 3);
+    const rejectedBytes = await sharp(rejectedRaw, {
+      raw: {
+        width: visualWidth,
+        height: visualHeight,
+        channels: 3,
+      },
+    }).png().toBuffer();
+    await writeFile(rejectedVisualPath, rejectedBytes);
+    const expectedRejectedVisualHash = `sha256:${createHash('sha256').update(rejectedBytes).digest('hex')}`;
+    const rejectedVisualArtifacts = await visualEvidenceArtifactsFromFiles([rejectedVisualPath], [{
+      path: rejectedVisualPath,
       visualQuality: 'gpu-hmr-visual-flat-frame',
       acceptedAsVisualEvidence: false,
     }]);
     const rejectedLedgerEntry = buildTargetProgressionLedgerEntry({
       report: ledgerReport,
-      visualArtifactPaths: [visualPath],
+      visualArtifactPaths: [rejectedVisualPath],
       visualEvidenceArtifacts: rejectedVisualArtifacts,
     });
     const rejectedVisualArtifact = rejectedLedgerEntry.visualEvidenceArtifacts
-      ?.find((artifact) => artifact.path === visualPath);
+      ?.find((artifact) => artifact.path === rejectedVisualPath);
     if (
-      rejectedVisualArtifact?.contentHash !== expectedVisualHash
-      || !rejectedLedgerEntry.visualEvidenceContentHashes?.includes(expectedVisualHash)
+      rejectedVisualArtifact?.contentHash !== expectedRejectedVisualHash
+      || !rejectedLedgerEntry.visualEvidenceContentHashes?.includes(expectedRejectedVisualHash)
       || rejectedLedgerEntry.visualEvidenceAcceptedCount !== 0
       || rejectedLedgerEntry.visualEvidenceReadErrorCount !== 0
     ) {
@@ -7407,7 +7735,9 @@ async function collectRuntimeEvidence() {
     report.phases.map((phase) => phase.gpu_proof).filter(Boolean).at(-1) ?? null,
   );
   report.source_proofs = [report.source_proof].filter(Boolean);
-  report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
+  report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords, {
+    runtimeArgProvenance,
+  });
   report.fission_proof = fissionProofFromProofArtifacts(proofArtifactRecords);
   report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(
     proofArtifactRecords,
@@ -7658,6 +7988,126 @@ async function dockerContainerSnapshot(containerName) {
   };
 }
 
+function selectedFissionIslandContract() {
+  const contracts = Array.isArray(report.fission_proof?.selectedIslandContracts)
+    ? report.fission_proof.selectedIslandContracts
+    : [];
+  return contracts[contracts.length - 1] ?? null;
+}
+
+function runtimeProofSourceEditId() {
+  const island = selectedFissionIslandContract();
+  const fromArtifacts = [...(Array.isArray(report.proof_artifacts) ? report.proof_artifacts : [])]
+    .reverse()
+    .map((record) => record?.artifact?.sourceEditId ?? record?.artifact?.source_edit_id)
+    .find((value) => typeof value === 'string' && value.trim());
+  return island?.sourceEditId
+    ?? island?.source_edit_id
+    ?? fromArtifacts
+    ?? null;
+}
+
+function runtimeProofCompiler() {
+  const island = selectedFissionIslandContract();
+  const fromArtifacts = [...(Array.isArray(report.proof_artifacts) ? report.proof_artifacts : [])]
+    .flatMap((record) => Array.isArray(record?.artifact?.evidenceRefs) ? record.artifact.evidenceRefs : [])
+    .map((evidence) =>
+      evidence?.metadata?.compileProvenance?.deviceCompiler
+      ?? evidence?.metadata?.compileProvenance?.compilerExecutable
+      ?? evidence?.metadata?.compile_provenance?.device_compiler
+      ?? evidence?.metadata?.compile_provenance?.compiler_executable
+    )
+    .find((value) => typeof value === 'string' && value.trim());
+  return island?.compiler
+    ?? island?.compilerName
+    ?? island?.compiler_name
+    ?? fromArtifacts
+    ?? null;
+}
+
+function runtimeProofBackend() {
+  const island = selectedFissionIslandContract();
+  const compiler = String(runtimeProofCompiler() ?? '').toLowerCase();
+  const launchEvidence = [
+    island?.launchApi,
+    island?.launch_api,
+    ...(Array.isArray(report.dispatch_proof?.dispatchEvidenceRefs)
+      ? report.dispatch_proof.dispatchEvidenceRefs
+      : []),
+    ...(Array.isArray(report.dispatch_proof?.evidenceRefs)
+      ? report.dispatch_proof.evidenceRefs
+      : []),
+  ].join(' ').toLowerCase();
+  if (
+    compiler.includes('hipcc')
+    || /\bhip(module|launch|stream|malloc|memcpy)?\b/.test(launchEvidence)
+  ) {
+    return 'hip';
+  }
+  return null;
+}
+
+function runtimeGpuClassification() {
+  if (report.full_runtime_proof?.fullRuntimeProven !== true) return null;
+  return {
+    project_kind: 'mixed_project',
+    edit_kind: 'gpu_artifact_edit',
+    route: 'gpu_hmr',
+    confidence: 0.95,
+    evidence_source: 'full_runtime_proof',
+    evidence_refs: compactStringList([
+      ...(Array.isArray(report.full_runtime_proof?.evidenceRefs)
+        ? report.full_runtime_proof.evidenceRefs
+        : []),
+      ...(Array.isArray(report.dispatch_proof?.evidenceRefs)
+        ? report.dispatch_proof.evidenceRefs
+        : []),
+      ...(Array.isArray(report.output_proof?.evidenceRefs)
+        ? report.output_proof.evidenceRefs
+        : []),
+    ]),
+  };
+}
+
+function runtimeContextHandleFromHostEvidence() {
+  const lines = Array.isArray(report.firewall_evidence?.host_preservation_evidence?.lines)
+    ? report.firewall_evidence.host_preservation_evidence.lines
+    : [];
+  for (const line of [...lines].reverse()) {
+    const match = /\brole=runtime_context\s+ptr=([^\s]+)/.exec(String(line ?? ''));
+    if (match?.[1]) return `runtime-context:${match[1]}`;
+  }
+  return null;
+}
+
+function runtimeOutputOracleTarget() {
+  const oracle = report.output_proof?.outputOracle ?? report.output_proof?.output_oracle ?? null;
+  const computeArtifacts =
+    report.output_proof?.oracleArtifacts?.compute_oracle_artifacts
+    ?? report.output_proof?.oracle_artifacts?.compute_oracle_artifacts
+    ?? null;
+  if (!oracle || !computeArtifacts) return null;
+  return {
+    kind: 'compute',
+    target_id:
+      oracle.outputTargetId
+      ?? oracle.output_target_id
+      ?? oracle.readbackTargetId
+      ?? oracle.readback_target_id
+      ?? oracle.oracleId
+      ?? oracle.oracle_id
+      ?? null,
+    compute_only_target_verified: oracle.passed === true
+      && report.output_proof?.resultState === 'gpu-hmr-output-oracle-proven',
+    evidence_refs: compactStringList([
+      ...(Array.isArray(oracle.evidenceRefs) ? oracle.evidenceRefs : []),
+      ...(Array.isArray(oracle.evidence_refs) ? oracle.evidence_refs : []),
+      ...(Array.isArray(report.output_proof?.evidenceRefs) ? report.output_proof.evidenceRefs : []),
+      'evidence:output-oracle:compute-readback-artifacts',
+    ]),
+  };
+}
+
 async function writeResults() {
   report.finished_at = new Date().toISOString();
   const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
@@ -7665,12 +8115,51 @@ async function writeResults() {
   report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
   report.duration_ms = timingFields.duration_ms;
   report.timingMetrics = realRocmTimingMetrics(report);
+  const runtimeBackend = runtimeProofBackend();
+  const runtimeSourceEditId = runtimeProofSourceEditId();
+  const runtimeCompiler = runtimeProofCompiler();
+  const runtimeDeviceIdentity =
+    report.runtime_capability_preflight?.deviceIdentity
+    ?? report.runtime_capability_preflight?.device_identity
+    ?? null;
+  const runtimeOutputTarget = runtimeOutputOracleTarget();
+  const runtimeClassification = runtimeGpuClassification();
+  const runtimeContextHandle = runtimeContextHandleFromHostEvidence();
   const validationContext = {
     command: report.command,
     docker: report.docker,
     containers: report.containers,
+    sourceEditId: runtimeSourceEditId,
+    source_edit_id: runtimeSourceEditId,
+    backend: runtimeBackend,
+    gpuBackend: runtimeBackend,
+    gpu_backend: runtimeBackend,
+    classification: runtimeClassification,
+    compiler: runtimeCompiler,
+    deviceIdentity: runtimeDeviceIdentity,
+    device_identity: runtimeDeviceIdentity,
+    deviceUuid:
+      runtimeDeviceIdentity?.device_uuid
+      ?? runtimeDeviceIdentity?.deviceIdentityKey
+      ?? runtimeDeviceIdentity?.device_identity_key
+      ?? null,
+    device_uuid:
+      runtimeDeviceIdentity?.device_uuid
+      ?? runtimeDeviceIdentity?.deviceIdentityKey
+      ?? runtimeDeviceIdentity?.device_identity_key
+      ?? null,
+    contextHandle: runtimeContextHandle,
+    context_handle: runtimeContextHandle,
+    contextOrDeviceHandle: runtimeContextHandle,
+    context_or_device_handle: runtimeContextHandle,
+    outputOracleTarget: runtimeOutputTarget,
+    output_oracle_target: runtimeOutputTarget,
+    proofArtifacts: report.proof_artifacts,
+    proof_artifacts: report.proof_artifacts,
     modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
     firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
+    firewallRoute: report.firewall_evidence?.route ?? null,
+    firewall_route: report.firewall_evidence?.route ?? null,
     cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
     full_rebuild_used: report.firewall_evidence?.full_rebuild_used,
     process_restarted: report.firewall_evidence?.process_restarted,
@@ -7741,6 +8230,24 @@ async function writeResults() {
   if (report.full_runtime_proof) {
     const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
       workspaceSlug: report.slug,
+      sourceEditId: runtimeSourceEditId,
+      editId: runtimeSourceEditId,
+      backend: runtimeBackend,
+      gpuBackend: runtimeBackend,
+      gpuArch: report.gpu_arch,
+      compiler: runtimeCompiler,
+      classification: runtimeClassification,
+      deviceIdentity: runtimeDeviceIdentity,
+      deviceUuid:
+        runtimeDeviceIdentity?.device_uuid
+        ?? runtimeDeviceIdentity?.deviceIdentityKey
+        ?? runtimeDeviceIdentity?.device_identity_key
+        ?? null,
+      contextHandle: runtimeContextHandle,
+      contextOrDeviceHandle: runtimeContextHandle,
+      outputOracleTarget: runtimeOutputTarget,
+      proofArtifacts: report.proof_artifacts,
+      proof_artifacts: report.proof_artifacts,
       runtimeSessionIds: report.dispatch_proof?.runtimeSessionIds ?? report.evidence?.runtime_session?.unique_ids ?? [],
       sourceProofs: report.source_proofs,
       fissionProof: report.fission_proof,
@@ -7754,6 +8261,7 @@ async function writeResults() {
       fullRuntimeProof: report.full_runtime_proof,
       runtimeEvidence: report.evidence,
       validationContext,
+      adversarialPreflight: report.adversarial_preflight,
       modelProvenance: report.modelProvenance ?? report.model_provenance ?? report.evidence?.model_provenance ?? {},
       firewallEvidence: report.firewall_evidence ?? report.evidence?.firewall_evidence ?? {},
       cpu_hmr_used: report.firewall_evidence?.cpu_hmr_used,
@@ -7777,10 +8285,14 @@ async function writeResults() {
       degradedState: written.artifact.degradedState,
       degradedReason: written.artifact.degradedReason,
       fullRuntimeProven: written.artifact.fullRuntimeProven,
+      stageResults: written.artifact.stageResults,
       limitations: written.artifact.limitations,
       acceptanceContract: written.artifact.acceptanceContract,
       acceptanceContractEvaluation: written.artifact.acceptanceContractEvaluation,
+      derivedAcceptanceContract: written.artifact.derivedAcceptanceContract,
+      derivedAcceptanceContractEvaluation: written.artifact.derivedAcceptanceContractEvaluation,
       acceptanceContractConsistency: written.artifact.acceptanceContractConsistency,
+      proofLedgerSourceConsistency: written.artifact.proofLedgerSourceConsistency,
       deterministicVisualMode: written.artifact.deterministicVisualMode,
       deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
       proofLedger: written.artifact.proofLedger,
@@ -7928,6 +8440,7 @@ async function writeResults() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  await resolveDockerContainers();
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
   });

@@ -429,6 +429,14 @@ function acceptanceContractEvaluationFromRecord(record) {
 
 function derivedAcceptanceContractFromRecord(record, validationContext) {
   if (!isObject(record)) return null;
+  if (isObject(record.derivedAcceptanceContract)) return record.derivedAcceptanceContract;
+  if (isObject(record.derived_acceptance_contract)) return record.derived_acceptance_contract;
+  if (isObject(record.artifact?.derivedAcceptanceContract)) {
+    return record.artifact.derivedAcceptanceContract;
+  }
+  if (isObject(record.artifact?.derived_acceptance_contract)) {
+    return record.artifact.derived_acceptance_contract;
+  }
   const material = isObject(record.proofMaterial)
     ? record.proofMaterial
     : isObject(record.proof_material)

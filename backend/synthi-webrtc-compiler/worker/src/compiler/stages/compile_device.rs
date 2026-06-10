@@ -2595,6 +2595,7 @@ mod tests {
             fatbin_strategy: FatbinStrategy::SidecarModule,
             device_roles: Vec::new(),
             device_link: Default::default(),
+            generated_split_granularity: None,
         }
     }
 
@@ -2609,6 +2610,7 @@ mod tests {
             fatbin_strategy: FatbinStrategy::SidecarModule,
             device_roles: Vec::new(),
             device_link: Default::default(),
+            generated_split_granularity: None,
         }
     }
 

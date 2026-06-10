@@ -273,6 +273,7 @@ function parseArgs(argv) {
   const args = {
     profilePath: '',
     profileJson: '',
+    rejectionReportPath: '',
     selfCheck: false,
     dryRun: false,
   };
@@ -282,6 +283,7 @@ function parseArgs(argv) {
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--profile' || arg === '--profile-path') args.profilePath = argv[++index] ?? '';
     else if (arg === '--profile-json') args.profileJson = argv[++index] ?? '';
+    else if (arg === '--rejection-proof-from-report') args.rejectionReportPath = argv[++index] ?? '';
     else throw new Error(`unknown argument: ${arg}`);
   }
   return args;
@@ -634,16 +636,18 @@ function mcpConfig(profile) {
     || previewEnv.SYNTHI_SESSION_ID
     || process.env.SYNTHI_SESSION_ID
     || profile.id;
+  const transport = process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT
+    || previewEnv.SYNTHI_MCP_TRANSPORT
+    || process.env.SYNTHI_MCP_TRANSPORT
+    || 'local';
+  const signalingUrl = process.env.SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL
+    || previewEnv.SYNTHI_SIGNALING_URL
+    || process.env.SYNTHI_SIGNALING_URL
+    || null;
   return {
     sessionId,
-    transport: process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT
-      || previewEnv.SYNTHI_MCP_TRANSPORT
-      || process.env.SYNTHI_MCP_TRANSPORT
-      || 'local',
-    signalingUrl: process.env.SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL
-      || previewEnv.SYNTHI_SIGNALING_URL
-      || process.env.SYNTHI_SIGNALING_URL
-      || 'ws://127.0.0.1:8787',
+    transport,
+    signalingUrl,
     mcpEntry: path.resolve(
       REPO_ROOT,
       process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_ENTRY
@@ -653,7 +657,11 @@ function mcpConfig(profile) {
     mcpContainer: process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER
       || previewEnv.SYNTHI_MCP_CONTAINER
       || process.env.SYNTHI_MCP_CONTAINER
-      || 'vectant-ade-mcp-1',
+      || null,
+    mcpContainerEntry: process.env.SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY
+      || previewEnv.SYNTHI_MCP_CONTAINER_ENTRY
+      || process.env.SYNTHI_MCP_CONTAINER_ENTRY
+      || null,
     googleApiKey: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || previewEnv.GOOGLE_API_KEY || '',
     splitModel: process.env.SYNTHI_GPU_SPLIT_MODEL || previewEnv.SYNTHI_GPU_SPLIT_MODEL || 'gemini-3.5-flash',
     deltaModel: process.env.SYNTHI_GPU_DELTA_MODEL || previewEnv.SYNTHI_GPU_DELTA_MODEL || 'gemini-3.1-flash-lite',
@@ -666,6 +674,27 @@ async function startMcpClient(profile) {
   const cfg = mcpConfig(profile);
   let proc;
   if (cfg.transport === 'docker') {
+    if (!cfg.signalingUrl) {
+      throw new Error(
+        'mcp_preview docker transport requires explicit signaling configuration; '
+        + 'set SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL, profile mcpPreview.env.SYNTHI_SIGNALING_URL, '
+        + 'or SYNTHI_SIGNALING_URL so the harness does not guess a project-specific endpoint',
+      );
+    }
+    if (!cfg.mcpContainer) {
+      throw new Error(
+        'mcp_preview docker transport requires explicit MCP container configuration; '
+        + 'set SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER, profile mcpPreview.env.SYNTHI_MCP_CONTAINER, '
+        + 'or SYNTHI_MCP_CONTAINER so the harness does not guess a project-specific container',
+      );
+    }
+    if (!cfg.mcpContainerEntry) {
+      throw new Error(
+        'mcp_preview docker transport requires explicit MCP container entry configuration; '
+        + 'set SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY, profile mcpPreview.env.SYNTHI_MCP_CONTAINER_ENTRY, '
+        + 'or SYNTHI_MCP_CONTAINER_ENTRY so the harness does not guess a project-specific container path',
+      );
+    }
     const args = [
       'exec',
       '-i',
@@ -677,7 +706,7 @@ async function startMcpClient(profile) {
       '-e', `SYNTHI_GPU_DELTA_MODEL=${cfg.deltaModel}`,
       cfg.mcpContainer,
       'node',
-      '/app/dist/index.js',
+      cfg.mcpContainerEntry,
     ];
     proc = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   } else {
@@ -690,7 +719,7 @@ async function startMcpClient(profile) {
       env: {
         ...process.env,
         SYNTHI_SESSION_ID: cfg.sessionId,
-        SYNTHI_SIGNALING_URL: cfg.signalingUrl,
+        ...(cfg.signalingUrl ? { SYNTHI_SIGNALING_URL: cfg.signalingUrl } : {}),
         GOOGLE_API_KEY: cfg.googleApiKey,
         GEMINI_API_KEY: cfg.googleApiKey,
         SYNTHI_GPU_SPLIT_MODEL: cfg.splitModel,
@@ -714,7 +743,11 @@ async function startMcpClient(profile) {
   }
   const attach = await client.toolCall(
     'synthi_attach',
-    { sessionId: cfg.sessionId, 'i-understand-no-auth': true, signalingUrl: cfg.signalingUrl },
+    {
+      sessionId: cfg.sessionId,
+      'i-understand-no-auth': true,
+      ...(cfg.signalingUrl ? { signalingUrl: cfg.signalingUrl } : {}),
+    },
     cfg.attachTimeoutMs,
   );
   if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach).slice(0, 2000)}`);
@@ -989,6 +1022,29 @@ function visualOraclePaths(report) {
   ].filter((value) => typeof value === 'string' && value.trim())));
 }
 
+function visualEvidenceArtifactAccepted(artifact) {
+  return artifact?.acceptedAsVisualEvidence === true
+    && artifact?.accepted_as_visual_evidence === true
+    && !artifact?.readError
+    && !artifact?.read_error
+    && !artifact?.visualAnalysisError
+    && !artifact?.visual_analysis_error;
+}
+
+function deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts) {
+  if (report.status && report.status !== 'pass') return report.status;
+  const artifactsByPath = new Map(
+    visualEvidenceArtifacts
+      .filter((artifact) => artifact?.path)
+      .map((artifact) => [artifact.path, artifact]),
+  );
+  const requiredPaths = (Array.isArray(paths) ? paths : [])
+    .filter((value) => typeof value === 'string' && value.trim());
+  const allRequiredAccepted = requiredPaths.length > 0
+    && requiredPaths.every((artifactPath) => visualEvidenceArtifactAccepted(artifactsByPath.get(artifactPath)));
+  return allRequiredAccepted ? 'pass' : 'fail';
+}
+
 async function writeExternalVisualProofArtifact(profile, report) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const paths = visualOraclePaths(report);
@@ -1005,12 +1061,13 @@ async function writeExternalVisualProofArtifact(profile, report) {
     }));
   const visualEvidenceArtifacts = await visualEvidenceArtifactsFromFiles(paths, existing);
   const acceptedVisualEvidenceArtifacts = visualEvidenceArtifacts
-    .filter((artifact) => artifact.acceptedAsVisualEvidence === true);
+    .filter((artifact) => visualEvidenceArtifactAccepted(artifact));
+  const status = deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts);
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
     profileId: profile.id,
     proofMode: report.proofMode,
-    status: report.status,
+    status,
     createdAt: new Date().toISOString(),
     visualOracleArtifacts: report.visualOracleArtifacts ?? null,
     visualDiff: report.visualDiff ?? null,
@@ -1056,6 +1113,140 @@ async function writeExternalVisualProofArtifact(profile, report) {
       .map((artifact) => artifact.contentHash)
       .filter(Boolean),
   };
+}
+
+function waitSummaryFromCompileResult(result) {
+  if (!result) return null;
+  return {
+    waitArgs: result.waitArgs ?? null,
+    waitContract: waitContractFromCompileResult(result),
+    waitStatus: result.waitStatus ?? null,
+    waitFrameGate: result.wait?.frame_gate ?? result.wait?.frameGate ?? null,
+    gpuProof: result.wait?.gpu_proof ?? null,
+    gpuProofValidation: result.wait?.gpu_proof_validation ?? null,
+    resultState: result.wait?.gpu_proof_validation?.summary?.resultState
+      ?? result.wait?.gpu_proof_validation?.resultState
+      ?? result.wait?.gpu_proof?.result_state
+      ?? result.wait?.gpu_proof?.resultState
+      ?? null,
+  };
+}
+
+function externalRejectionReasons(report) {
+  const reasons = new Set(['external_profile_failed']);
+  const message = String(report.error?.message ?? '');
+  if (/MCP request .* timed out after \d+ms/i.test(message)) reasons.add('mcp_request_timeout');
+  if (/tool synthi_wait_hmr isError/i.test(message)) reasons.add('mcp_wait_hmr_rejected');
+  if (message.includes('gpu_hmr_proof_insufficient')) reasons.add('gpu_hmr_proof_insufficient');
+  if (message.includes('proof_state_missing')) reasons.add('gpu_proof_state_missing');
+  if (/frames:\s*diag:/i.test(message) && /(?:rtp=0|vp8_ok=0|frames_flushed=0|latest=none)/i.test(message)) {
+    reasons.add('mcp_no_decoded_frames');
+  }
+  if (message.includes('visual diff below threshold')) reasons.add('visual_diff_below_threshold');
+  if (message.includes('gpu-hmr-visual-blank')) reasons.add('blank_frame_rejected');
+  if (/changedPixelRatio"?\s*:\s*0\b/.test(message) || /meanAbsDelta8bit"?\s*:\s*0\b/.test(message)) {
+    reasons.add('same_frame_or_zero_delta');
+  }
+  if (message.includes('MCP visual proof gate is not GPU-only')) reasons.add('mcp_visual_proof_gate_unsatisfied');
+  if (report.mcp?.visualProofGate && report.mcp.visualProofGate.satisfied !== true) {
+    reasons.add('mcp_visual_proof_gate_unsatisfied');
+  }
+  if (report.proofMode === 'mcp_preview' && !(Array.isArray(report.screenshots) && report.screenshots.length > 0)) {
+    reasons.add('visual_frame_missing');
+  }
+  for (const [phase, result] of Object.entries({
+    before: report.mcp?.before,
+    after: report.mcp?.after,
+  })) {
+    const waitStatus = result?.waitStatus;
+    if (waitStatus && waitStatus !== 'ok' && waitStatus !== 'pass') {
+      reasons.add(`${phase}_wait_${String(waitStatus).replace(/[^a-zA-Z0-9_.-]+/g, '_')}`);
+    }
+    const resultState = waitSummaryFromCompileResult(result)?.resultState;
+    if (resultState && resultState !== 'gpu-hmr-full-runtime-proven') {
+      reasons.add(`${phase}_gpu_proof_${String(resultState).replace(/[^a-zA-Z0-9_.-]+/g, '_')}`);
+    }
+  }
+  if (!report.visualOracleArtifacts) reasons.add('visual_oracle_not_accepted');
+  return [...reasons].sort();
+}
+
+async function writeExternalRejectionProofArtifact(profile, report) {
+  await fs.mkdir(LOG_DIR, { recursive: true });
+  const material = {
+    schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+    profileId: profile.id,
+    proofMode: report.proofMode,
+    status: report.status,
+    createdAt: new Date().toISOString(),
+    rejection: {
+      accepted: false,
+      reasons: externalRejectionReasons(report),
+      requiredGpuProofState: profile.mcpPreview?.requiredGpuProofState ?? null,
+      requireGpuFullRuntimeProof: profile.mcpPreview?.requireGpuFullRuntimeProof ?? null,
+      hmrModule: profile.mcpPreview?.hmrModule ?? null,
+    },
+    error: report.error ?? null,
+    visualOracleArtifacts: report.visualOracleArtifacts ?? null,
+    visualDiff: report.visualDiff ?? null,
+    deterministicVisualMode: report.deterministicVisualMode ?? null,
+    deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    mcp: report.mcp ? {
+      visualProofGate: report.mcp.visualProofGate ?? null,
+      before: waitSummaryFromCompileResult(report.mcp.before),
+      after: waitSummaryFromCompileResult(report.mcp.after),
+      modelProvenance: report.mcp.modelProvenance ?? null,
+    } : null,
+  };
+  const proofId = `external-rejection-proof:${sha256(stableJson(material)).replace(/^sha256:/, '')}`;
+  const artifact = {
+    ...material,
+    proofId,
+  };
+  const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-rejection-proof.json`);
+  await fs.writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    schemaVersion: artifact.schemaVersion,
+    proofId,
+    path: outPath,
+    reasons: artifact.rejection.reasons,
+  };
+}
+
+function profileFromReport(report) {
+  if (report?.profile && typeof report.profile === 'object') return report.profile;
+  return {
+    id:
+      report?.profileId
+      ?? report?.profile_id
+      ?? report?.profile?.id
+      ?? 'external-project-profile',
+    mcpPreview: report?.mcp?.visualProofGate
+      ? {
+          requiredGpuProofState: report.mcp.visualProofGate.requiredGpuProofState ?? null,
+          requireGpuFullRuntimeProof: report.mcp.visualProofGate.requireGpuFullRuntimeProof ?? null,
+          hmrModule: report.mcp.visualProofGate.hmrModule ?? null,
+        }
+      : {},
+  };
+}
+
+async function writeRejectionProofFromReport(reportPath) {
+  const resolved = path.resolve(REPO_ROOT, reportPath);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`external rejection report path must stay inside repo workspace: ${resolved}`);
+  }
+  const report = JSON.parse(await fs.readFile(resolved, 'utf8'));
+  if (report.status === 'pass') {
+    throw new Error(`external rejection proof requires a non-passing report: ${resolved}`);
+  }
+  const artifact = await writeExternalRejectionProofArtifact(profileFromReport(report), report);
+  console.log(JSON.stringify({
+    schemaVersion: 'synthi.gpu.hmr.external_project_rejection_from_report.v1',
+    reportPath: resolved,
+    rejectionProofArtifact: artifact,
+  }, null, 2));
+  return artifact;
 }
 
 async function loadProfile(args) {
@@ -1108,12 +1299,66 @@ async function selfCheckVisualProofArtifact() {
   const beforePath = path.join(ARTIFACT_DIR, `self-check-before-${stamp}.png`);
   const afterPath = path.join(ARTIFACT_DIR, `self-check-after-${stamp}.png`);
   const diffPath = path.join(ARTIFACT_DIR, `self-check-diff-${stamp}.png`);
-  const beforeBytes = Buffer.from('external-visual-proof-before');
-  const afterBytes = Buffer.from('external-visual-proof-after');
-  const diffBytes = Buffer.from('external-visual-proof-diff');
+  const invalidPath = path.join(ARTIFACT_DIR, `self-check-invalid-${stamp}.png`);
+  const selfCheckPng = async (variant) => {
+    const width = 320;
+    const height = 240;
+    const data = Buffer.alloc(width * height * 3);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 3;
+        data[i] = (x * 5 + y * 3 + variant * 41) & 0xff;
+        data[i + 1] = ((x ^ y) * 7 + variant * 53) & 0xff;
+        data[i + 2] = (255 - ((x * 2 + y * 11 + variant * 67) & 0xff)) & 0xff;
+      }
+    }
+    return sharp(data, {
+      raw: {
+        width,
+        height,
+        channels: 3,
+      },
+    }).png().toBuffer();
+  };
+  const beforeBytes = await selfCheckPng(0);
+  const afterBytes = await selfCheckPng(1);
+  const diffBytes = await selfCheckPng(2);
   await fs.writeFile(beforePath, beforeBytes);
   await fs.writeFile(afterPath, afterBytes);
   await fs.writeFile(diffPath, diffBytes);
+  await fs.writeFile(invalidPath, Buffer.from('external-visual-proof-invalid'));
+  const [invalidArtifact] = await visualEvidenceArtifactsFromFiles([invalidPath], [{
+    path: invalidPath,
+    visual_quality: 'gpu-hmr-visual-varied-frame',
+    accepted_as_visual_evidence: true,
+  }]);
+  const invalidArtifactRejected =
+    invalidArtifact?.acceptedAsVisualEvidence === false
+    && invalidArtifact?.accepted_as_visual_evidence === false
+    && typeof invalidArtifact?.visualAnalysisError === 'string'
+    && invalidArtifact.visualAnalysisError.length > 0;
+  const invalidWritten = await writeExternalVisualProofArtifact({
+    id: 'external-visual-proof-invalid-self-check',
+  }, {
+    proofMode: 'mcp_preview',
+    status: 'pass',
+    screenshots: [{
+      path: invalidPath,
+      visual_quality: 'gpu-hmr-visual-varied-frame',
+      accepted_as_visual_evidence: true,
+    }],
+    visualOracleArtifacts: {
+      before_image: invalidPath,
+      after_image: invalidPath,
+      diff_image: invalidPath,
+    },
+  });
+  const invalidProofArtifact = JSON.parse(await fs.readFile(invalidWritten.path, 'utf8'));
+  const invalidProofArtifactFailed =
+    invalidProofArtifact.status === 'fail'
+    && invalidProofArtifact.acceptedVisualEvidenceArtifactCount === 0
+    && (invalidProofArtifact.visualEvidenceArtifacts ?? [])
+      .every((row) => row.acceptedAsVisualEvidence === false);
   const expectedHashes = [beforeBytes, afterBytes, diffBytes]
     .map((bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
     .sort();
@@ -1197,17 +1442,25 @@ async function selfCheckVisualProofArtifact() {
   const waitContractPersisted =
     artifact.mcp?.after?.waitContract?.module === 'device'
     && artifact.visualOracleArtifacts?.wait_contract?.module === 'device';
+  const acceptedCount = (artifact.visualEvidenceArtifacts ?? [])
+    .filter((row) => row.acceptedAsVisualEvidence === true).length;
   return {
     ok:
       written.schemaVersion === 'synthi.gpu.hmr.external_visual_proof_artifact.v1'
       && typeof written.proofId === 'string'
       && written.proofId.startsWith('external-visual-proof:')
       && hashMatch
-      && waitContractPersisted,
+      && waitContractPersisted
+      && acceptedCount >= 2
+      && invalidArtifactRejected
+      && invalidProofArtifactFailed,
     path: written.path,
     proofId: written.proofId,
     expectedHashes,
     observedHashes,
+    acceptedCount,
+    invalidArtifactRejected,
+    invalidProofArtifactFailed,
   };
 }
 
@@ -1255,6 +1508,60 @@ async function selfCheck() {
     name: 'external-visual-proof-artifact-hashes-files',
     ok: visualProofArtifact.ok,
     visualProofArtifact,
+  });
+  const rejectionProofArtifact = await writeExternalRejectionProofArtifact(
+    {
+      id: 'external-rejection-self-check',
+      mcpPreview: {
+        requiredGpuProofState: 'gpu-hmr-full-runtime-proven',
+        requireGpuFullRuntimeProof: true,
+        hmrModule: 'device',
+      },
+    },
+    {
+      proofMode: 'mcp_preview',
+      status: 'fail',
+      error: { message: 'gpu_hmr_proof_insufficient' },
+      mcp: {
+        visualProofGate: { required: true, satisfied: true },
+        after: {
+          waitStatus: 'fail',
+          wait: {
+            gpu_proof_validation: {
+              summary: { resultState: 'missing' },
+            },
+          },
+        },
+      },
+    },
+  );
+  checks.push({
+    name: 'external-rejection-proof-artifact',
+    ok:
+      rejectionProofArtifact.proofId.startsWith('external-rejection-proof:')
+      && rejectionProofArtifact.reasons.includes('gpu_hmr_proof_insufficient')
+      && rejectionProofArtifact.reasons.includes('after_wait_fail'),
+    rejectionProofArtifact,
+  });
+  const timeoutRejectionReasons = externalRejectionReasons({
+    proofMode: 'mcp_preview',
+    status: 'fail',
+    screenshots: [],
+    error: {
+      message: 'MCP request tools/call timed out after 1200000ms. stderr=[mcp] frames: diag: rtp=0 vp8_ok=0 frames_flushed=0 latest=none',
+    },
+    mcp: {
+      visualProofGate: { required: true, satisfied: true },
+    },
+  });
+  checks.push({
+    name: 'external-rejection-timeout-no-frame-reasons',
+    ok:
+      timeoutRejectionReasons.includes('mcp_request_timeout')
+      && timeoutRejectionReasons.includes('mcp_no_decoded_frames')
+      && timeoutRejectionReasons.includes('visual_frame_missing')
+      && timeoutRejectionReasons.includes('visual_oracle_not_accepted'),
+    timeoutRejectionReasons,
   });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
@@ -1383,6 +1690,22 @@ async function runProfile(profile) {
     report.timings.duration_monotonic_ns = timingFields.duration_monotonic_ns;
     report.timings.totalMs = timingFields.duration_ms;
     report.timingMetrics = externalProjectTimingMetrics(report);
+    if (report.status !== 'pass') {
+      try {
+        report.rejectionProofArtifact = await writeExternalRejectionProofArtifact(profile, report);
+        report.proofArtifactPaths = [
+          ...new Set([
+            ...(Array.isArray(report.proofArtifactPaths) ? report.proofArtifactPaths : []),
+            report.rejectionProofArtifact.path,
+          ]),
+        ];
+      } catch (error) {
+        report.rejectionProofError = {
+          message: error?.message || String(error),
+          stack: error?.stack || null,
+        };
+      }
+    }
     const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-report.json`);
     await fs.writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`external_project_report=${outPath}`);
@@ -1483,6 +1806,10 @@ async function runMcpPreviewProfile(profile, dir, report) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.rejectionReportPath) {
+    await writeRejectionProofFromReport(args.rejectionReportPath);
+    return;
+  }
   if (args.selfCheck) {
     await selfCheck();
     return;

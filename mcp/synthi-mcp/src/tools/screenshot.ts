@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { session } from "../session.js";
 import { eventLog } from "../events/index.js";
-import { brokerSloRecorder, recordBrokerFrameObservation } from "../broker/index.js";
+import { brokerSloRecorder, recordBrokerFrameObservation, type BrokerFrameEvent } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -14,6 +14,7 @@ interface RawArgs {
   region?: unknown;
   max_dim?: unknown;
   freshness_max_ms?: unknown;
+  allow_unbrokered_frame?: unknown;
   after_frame_gate?: unknown;
   afterFrameGate?: unknown;
   frame_gate_timeout_ms?: unknown;
@@ -220,6 +221,14 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     freshnessMaxMs = a.freshness_max_ms;
   }
 
+  let allowUnbrokeredFrame = false;
+  if (a.allow_unbrokered_frame !== undefined) {
+    if (typeof a.allow_unbrokered_frame !== "boolean") {
+      return errorResponse("invalid_args", { field: "allow_unbrokered_frame", expected: "boolean" });
+    }
+    allowUnbrokeredFrame = a.allow_unbrokered_frame;
+  }
+
   const afterFrameGateValue = a.after_frame_gate ?? a.afterFrameGate;
   const afterFrameGate = parseFrameGate(afterFrameGateValue);
   if (afterFrameGate === "invalid") {
@@ -369,13 +378,21 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
 
     const base64 = png.toString("base64");
     const screenshotDpr = readOnlyScreenshotDpr(frame.dpr);
-    const brokerFrame = recordBrokerFrameObservation({
-      session_id: attached.sessionId,
-      frame: { ...frame, contentHash: sourceFrameHash },
-      dpr: screenshotDpr.dpr,
-    });
+    let brokerFrame: BrokerFrameEvent | undefined;
+    let brokerFrameError: string | undefined;
+    try {
+      const brokerDpr = allowUnbrokeredFrame && screenshotDpr.inferred ? undefined : screenshotDpr.dpr;
+      brokerFrame = recordBrokerFrameObservation({
+        session_id: attached.sessionId,
+        frame: { ...frame, contentHash: sourceFrameHash },
+        ...(brokerDpr !== undefined ? { dpr: brokerDpr } : {}),
+      });
+    } catch (err) {
+      if (!allowUnbrokeredFrame) throw err;
+      brokerFrameError = err instanceof Error ? err.message : String(err);
+    }
     const responseTs = Date.now();
-    const captureManifest = {
+    const captureManifest = brokerFrame ? {
       schema_version: CAPTURE_MANIFEST_SCHEMA_VERSION,
       session_id: attached.sessionId,
       capture_backend: "mcp_screenshot",
@@ -404,7 +421,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         : {
             gate_token_verified: false,
           }),
-    };
+    } : undefined;
     brokerSloRecorder.recordDuration("screenshot_age_p95", responseTs - frame.ts, responseTs);
     eventLog.push({
       kind: "usage",
@@ -430,15 +447,22 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       seq: frame.seq,
       original_w: frame.width,
       original_h: frame.height,
-      dpr: screenshotDpr.dpr,
-      dpr_inferred: screenshotDpr.inferred,
-      viewport: { w: frame.width, h: frame.height, dpr: screenshotDpr.dpr },
-      broker_frame: brokerFrame,
       image_sha256: imageHash,
       image_byte_length: png.length,
       source_frame_hash: sourceFrameHash,
-      capture_manifest: captureManifest,
-      ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
+      brokered: brokerFrame !== undefined,
+      ...(brokerFrame !== undefined
+        ? {
+            dpr: screenshotDpr.dpr,
+            dpr_inferred: screenshotDpr.inferred,
+            viewport: { w: frame.width, h: frame.height, dpr: screenshotDpr.dpr },
+            broker_frame: brokerFrame,
+            capture_manifest: captureManifest,
+            ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
+          }
+        : {
+            broker_frame_error: brokerFrameError ?? "unbrokered_frame",
+          }),
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),
       mimeType: "image/png",

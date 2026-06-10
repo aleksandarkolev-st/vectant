@@ -22,6 +22,12 @@ function firstArray(...values) {
   return values.find((value) => Array.isArray(value)) ?? null;
 }
 
+const VISUAL_OR_ENGINE_BACKENDS = new Set(['hiprt', 'vulkan', 'webgpu', 'bevy_wgsl']);
+const ACCEPTED_PROOF_LEDGER_SOURCE_CONSISTENCY_MODES = new Set([
+  'derived_only',
+  'explicit_vs_derived',
+]);
+
 function sortedCodes(values) {
   return compactStrings((Array.isArray(values) ? values : [])
     .map((value) => value?.code ?? value))
@@ -63,6 +69,63 @@ function proofArtifactLabel(record, index) {
     ?? record?.artifact?.proof_id
     ?? `artifact-${index + 1}`;
   return String(candidate || `artifact-${index + 1}`).replace(/\s+/g, '-');
+}
+
+function ledgerRecords(ledger) {
+  if (!isObject(ledger)) return [];
+  if (Array.isArray(ledger.records)) return ledger.records.filter(isObject);
+  if (isObject(ledger.record)) return [ledger.record];
+  return [];
+}
+
+function normalizedText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim().toLowerCase();
+    if (isObject(value) && typeof value.value === 'string' && value.value.trim()) {
+      return value.value.trim().toLowerCase();
+    }
+  }
+  return null;
+}
+
+function visualArtifactsPresent(record) {
+  const oracleArtifacts = firstObject(record.oracle_artifacts, record.oracleArtifacts);
+  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+  const outputArtifacts = firstObject(outputEvent.oracle_artifacts, outputEvent.oracleArtifacts);
+  const outputOracle = firstObject(outputEvent.output_oracle, outputEvent.outputOracle) ?? {};
+  const outputOracleArtifacts = firstObject(outputOracle.oracle_artifacts, outputOracle.oracleArtifacts);
+  return [
+    oracleArtifacts?.visual_oracle_artifacts,
+    oracleArtifacts?.visualOracleArtifacts,
+    outputArtifacts?.visual_oracle_artifacts,
+    outputArtifacts?.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts?.visual_oracle_artifacts,
+    outputOracleArtifacts?.visualOracleArtifacts,
+  ].some(isObject);
+}
+
+function recordRequiresDeterministicVisualMode(record) {
+  const backend = normalizedText(record.backend);
+  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+  const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
+  return VISUAL_OR_ENGINE_BACKENDS.has(backend)
+    || kind.includes('visual')
+    || kind.includes('render')
+    || kind.includes('frame')
+    || kind.includes('pixel')
+    || visualArtifactsPresent(record);
+}
+
+function ledgerRequiresDeterministicVisualMode(ledger) {
+  return ledgerRecords(ledger).some(recordRequiresDeterministicVisualMode);
+}
+
+function proofLedgerSourceConsistencyMode(sourceConsistency) {
+  return normalizedText(sourceConsistency?.mode);
 }
 
 export function adversarialPreflightStrictGate(preflight, options = {}) {
@@ -134,6 +197,8 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
     const limitations = firstArray(artifact.limitations);
     const gpuHmrSuccess = artifact.gpuHmrSuccess === true
       || artifact.gpu_hmr_success === true;
+    const visualLedgerRequiresDeterministicMode =
+      proofLedger && ledgerRequiresDeterministicVisualMode(proofLedger);
 
     if (artifact.fullRuntimeProven !== true && artifact.full_runtime_proven !== true) {
       failures.push('runtime_full_proof_not_proven');
@@ -202,6 +267,13 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       failures.push('proof_ledger_source_consistency_missing');
     } else if (proofLedgerSourceConsistency.accepted !== true) {
       failures.push('proof_ledger_source_consistency_rejected');
+    } else if (!ACCEPTED_PROOF_LEDGER_SOURCE_CONSISTENCY_MODES.has(
+      proofLedgerSourceConsistencyMode(proofLedgerSourceConsistency),
+    )) {
+      failures.push('proof_ledger_source_consistency_unverified_mode');
+    }
+    if (visualLedgerRequiresDeterministicMode && !deterministicVisualModeEvaluation) {
+      failures.push('deterministic_visual_mode_missing');
     }
     if (
       deterministicVisualModeEvaluation

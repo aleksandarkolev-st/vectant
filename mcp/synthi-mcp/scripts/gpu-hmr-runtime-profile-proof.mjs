@@ -245,6 +245,45 @@ async function selfCheck() {
     adapter: external.adapter.family,
     runner: path.relative(REPO_ROOT, externalAdapter.runner).replace(/\\/g, '/'),
   });
+  const controlled = normalizeRuntimeProofProfile({
+    ...baseProfile,
+    id: 'profile-controls-smoke',
+    build: {
+      cmakeArgs: ['-DSYNTHI_DEMO_CACHE=ON'],
+      env: { SYNTHI_BUILD_CACHE_ROOT: '/tmp/synthi-cache' },
+    },
+    runtime: {
+      ...baseProfile.runtime,
+      env: { SYNTHI_RENDER_DETERMINISTIC: '1' },
+    },
+    deterministicVisualMode: {
+      fixedSeed: '42',
+      frozenCamera: true,
+      temporalAccumulationDisabled: true,
+      denoiserDisabled: true,
+      fixedResolution: true,
+      presentationFenceOrFrameBoundary: 'framebuffer-capture-after-dispatch',
+      warmupFrames: 1,
+      convergenceWindow: {
+        frameStart: 1,
+        frameEnd: 1,
+        metric: 'per_frame_delta',
+      },
+    },
+  });
+  const controlledEnv = runtimeProfileToHiprtWarmEnv(controlled);
+  checks.push({
+    name: 'profile-controls-export-to-hiprt-env',
+    ok:
+      controlled.build.cmakeArgs[0] === '-DSYNTHI_DEMO_CACHE=ON'
+      && controlled.runtime.env.SYNTHI_RENDER_DETERMINISTIC === '1'
+      && controlled.deterministicVisualMode?.denoiserDisabled === true
+      && Boolean(controlledEnv.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON)
+      && Boolean(controlledEnv.SYNTHI_HIPRT_WARM_RUNTIME_ENV_JSON)
+      && Boolean(controlledEnv.SYNTHI_HIPRT_WARM_DETERMINISTIC_VISUAL_MODE_JSON),
+    cmakeArgs: controlled.build.cmakeArgs,
+    runtimeEnvKeys: Object.keys(controlled.runtime.env).sort(),
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.runtime_profile.self_check.v1',

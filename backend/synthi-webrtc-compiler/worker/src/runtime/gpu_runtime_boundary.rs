@@ -40,6 +40,8 @@ pub struct LaunchArgProvenance {
     pub index: usize,
     pub value_ptr: usize,
     pub value_size: usize,
+    pub value_kind: u32,
+    pub value_bytes: Option<Vec<u8>>,
     pub observed_value: Option<usize>,
     pub kind: String,
     pub allocation_id: Option<String>,
@@ -426,11 +428,23 @@ fn classify_arg_value(
     value_kind: u32,
 ) -> LaunchArgProvenance {
     let value_ptr_usize = value_ptr as usize;
+    let value_bytes = || -> Option<Vec<u8>> {
+        if value_ptr.is_null() || value_size == 0 || value_size > 64 {
+            return None;
+        }
+        let mut bytes = vec![0u8; value_size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(value_ptr.cast::<u8>(), bytes.as_mut_ptr(), value_size);
+        }
+        Some(bytes)
+    };
     if value_ptr.is_null() {
         return LaunchArgProvenance {
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: None,
             observed_value: None,
             kind: "missing-arg-storage".to_string(),
             allocation_id: None,
@@ -446,6 +460,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: None,
             observed_value: None,
             kind: "legacy-unknown-size".to_string(),
             allocation_id: None,
@@ -464,6 +480,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: value_bytes(),
             observed_value: None,
             kind: "scalar-value".to_string(),
             allocation_id: None,
@@ -479,6 +497,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: value_bytes(),
             observed_value: None,
             kind: "aggregate-value".to_string(),
             allocation_id: None,
@@ -494,6 +514,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: value_bytes(),
             observed_value: None,
             kind: "scalar-value".to_string(),
             allocation_id: None,
@@ -509,6 +531,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: None,
             observed_value: None,
             kind: "aggregate-value".to_string(),
             allocation_id: None,
@@ -525,6 +549,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: Some(0usize.to_ne_bytes().to_vec()),
             observed_value: Some(0),
             kind: "null-value".to_string(),
             allocation_id: None,
@@ -540,6 +566,8 @@ fn classify_arg_value(
             index,
             value_ptr: value_ptr_usize,
             value_size,
+            value_kind,
+            value_bytes: Some(observed_value.to_ne_bytes().to_vec()),
             observed_value: Some(observed_value),
             kind: "device-allocation".to_string(),
             allocation_id: Some(record.allocation_id.clone()),
@@ -560,6 +588,8 @@ fn classify_arg_value(
         index,
         value_ptr: value_ptr_usize,
         value_size,
+        value_kind,
+        value_bytes: Some(observed_value.to_ne_bytes().to_vec()),
         observed_value: Some(observed_value),
         kind: unknown_kind.to_string(),
         allocation_id: None,

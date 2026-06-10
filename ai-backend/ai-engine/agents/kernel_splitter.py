@@ -468,9 +468,13 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- For each real host-launched update kernel that receives device buffers, either add a dedicated init/seed kernel that writes every required device buffer before the update launch, or remove the host launch if it was a synthetic launch for a preserved-but-not-runtime-reachable source kernel. Preserved device kernels are mapping artifacts, not permission to launch every kernel in the project."
         )
-    if "device_kernels_not_launched" in joined:
+    if "device_kernels_not_launched" in joined or "source_launch_kernel_not_preserved" in joined:
         guidance.append(
             "- Use the SOURCE LAUNCH GRAPH records to preserve a real source-reachable launch path. If you emit a synthi_gpu_launch(...) for a listed source kernel, materialize the listed host argument owner expressions in generated core state and pass those owners by address in the same order. Do not invent a different aggregate, placeholder buffer, or synthetic kernel just to make a launch compile; a launch without source-owned arguments is verifier-rejected."
+        )
+    if "source_device_to_host_readback_not_preserved" in joined:
+        guidance.append(
+            "- Preserve host-visible GPU readbacks from the source update/render path. If the source copies device output back with cudaMemcpy/hipMemcpy DeviceToHost, generated core_on_update must perform the equivalent readback after a successful Synthi-launched source kernel and GUI rendering must consume that host-visible mirror."
         )
     if "constant_false_launch_guard" in joined:
         guidance.append(

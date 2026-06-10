@@ -4361,6 +4361,68 @@ fn upsert_compile_request_source_baselines(
     count
 }
 
+fn split_role_filename(result: &serde_json::Value, manifest: &serde_json::Value, role: &str) -> Option<String> {
+    result
+        .get(role)
+        .and_then(|v| v.get("filename"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(normalized_request_filename)
+        .or_else(|| {
+            manifest
+                .get("module_files")
+                .and_then(|v| v.get(role))
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+        })
+}
+
+fn split_role_content(result: &serde_json::Value, role: &str) -> Option<String> {
+    result
+        .get(role)
+        .and_then(|v| v.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|content| !content.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn upsert_generated_split_source_baselines(
+    meta: &mut serde_json::Value,
+    result: &serde_json::Value,
+) -> usize {
+    let Some(root) = meta.as_object_mut() else {
+        return 0;
+    };
+    let manifest = result
+        .get("_synthi_manifest")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .or_else(|| meta.get("compile_manifest").filter(|value| !value.is_null()).cloned())
+        .unwrap_or(serde_json::Value::Null);
+    let mut count = 0;
+    for role in ["shared", "core", "gui", "host_runner", "device"] {
+        let Some(filename) = split_role_filename(result, &manifest, role) else {
+            continue;
+        };
+        let Some(content) = split_role_content(result, role) else {
+            continue;
+        };
+        if upsert_source_baseline_content(root, &filename, &content).is_some() {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn upsert_compile_and_generated_source_baselines(
+    meta: &mut serde_json::Value,
+    req: &CompileRequest,
+    result: &serde_json::Value,
+) -> (usize, usize) {
+    let request_count = upsert_compile_request_source_baselines(meta, req);
+    let generated_count = upsert_generated_split_source_baselines(meta, result);
+    (request_count, generated_count)
+}
+
 async fn persist_direct_workspace_source_baseline(
     sidecar_path: &Path,
     filename: &str,
@@ -5646,6 +5708,27 @@ fn partial_fission_candidate_and_evidence(
         partial_fission_requires_original_host_path(artifact_kind, replacement_scope, sources);
     let original_host_launch_mapping =
         partial_fission_original_host_launch_mapping(sources, &outcome.target_symbols);
+    let generated_role_path = sources
+        .and_then(|sources| sources.full_filename.as_deref())
+        .or(outcome.proof_metadata.source_filename.as_deref())
+        .map(str::to_string);
+    let generated_topology_binding = serde_json::json!({
+        "schemaVersion": "synthi.gpu.generated_topology_binding.v1",
+        "source": "generated_manifest_device_role_topology",
+        "generatedRolePath": &generated_role_path,
+        "selectedArtifactId": selected_artifact_id,
+        "selectedArtifactHash": format!("sha256:{artifact_hash}"),
+        "artifactKind": artifact_kind,
+        "replacementScope": replacement_scope,
+        "materializedPartialArtifact": true,
+        "separatelyMaterializedPartialArtifact": true,
+        "contentAddressedPartialArtifact": true,
+        "sourcePaths": &source_paths,
+        "targetSymbols": &outcome.target_symbols,
+    });
+    let generated_topology_hash = sha256_hex_str(&generated_topology_binding.to_string());
+    let generated_topology_evidence_id =
+        format!("evidence:generated-topology:{generated_topology_hash}");
     let compile_recipe_material = serde_json::json!({
         "compileProvenance": &outcome.proof_metadata,
         "artifactKind": artifact_kind,
@@ -5709,9 +5792,9 @@ fn partial_fission_candidate_and_evidence(
         "artifactHash": format!("sha256:{artifact_hash}"),
         "sourcePaths": source_paths,
         "sourceSpans": source_spans,
-        "generatedRolePath": sources
-            .and_then(|sources| sources.full_filename.as_deref())
-            .or(outcome.proof_metadata.source_filename.as_deref()),
+        "generatedRolePath": &generated_role_path,
+        "generatedTopologyBinding": generated_topology_binding,
+        "generatedTopologyEvidenceIds": [generated_topology_evidence_id.clone()],
         "targetSymbols": &outcome.target_symbols,
         "exportedSymbolsExpected": exported_symbols,
         "symbolIdentityMappings": symbol_identity_mappings,
@@ -5733,7 +5816,8 @@ fn partial_fission_candidate_and_evidence(
             compiler_evidence_id,
             symbol_evidence_id,
             abi_evidence_id,
-            transport_evidence_id
+            transport_evidence_id,
+            generated_topology_evidence_id.clone()
         ],
         "sourceMappingEvidenceIds": [candidate_evidence_id.clone()],
         "includeClosureEvidenceIds": [candidate_evidence_id.clone()],
@@ -5887,6 +5971,29 @@ fn partial_fission_candidate_and_evidence(
         metadata: Some(candidate.clone()),
     };
     let mut evidence_refs = vec![evidence];
+    evidence_refs.push(GpuHmrProofEvidenceRef {
+        evidence_id: generated_topology_evidence_id,
+        kind: "generated-device-topology".to_string(),
+        content_hash: format!("sha256:{generated_topology_hash}"),
+        producer_subsystem: "worker.compile_device".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: format!(
+            "generated topology binding artifact_kind={} source_paths={} target_symbols={}",
+            artifact_kind,
+            candidate
+                .get("sourcePaths")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+            outcome.target_symbols.len()
+        ),
+        metadata: candidate
+            .get("generatedTopologyBinding")
+            .cloned(),
+    });
     if let Some((mapping, _, evidence_id)) = original_host_launch_mapping {
         let hash = sha256_hex_str(&mapping.to_string());
         evidence_refs.push(GpuHmrProofEvidenceRef {
@@ -8727,10 +8834,11 @@ pub async fn handle_compile_request(
                 "launch_indirection_report": launch_report,
                 "model_provenance": model_provenance,
             });
-            let baseline_count = upsert_compile_request_source_baselines(&mut meta, &req);
+            let (baseline_count, generated_baseline_count) =
+                upsert_compile_and_generated_source_baselines(&mut meta, &req, &result);
             eprintln!(
-                "[HMR] sidecar source baselines persisted: count={}",
-                baseline_count
+                "[HMR] sidecar source baselines persisted: request_count={} generated_count={}",
+                baseline_count, generated_baseline_count
             );
             write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
 
@@ -10282,8 +10390,8 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        upsert_compile_request_source_baselines(
-                                                            &mut meta, &req,
+                                                        upsert_compile_and_generated_source_baselines(
+                                                            &mut meta, &req, &result,
                                                         );
                                                         write_sidecar_logged(
                                                             &sidecar_path,
@@ -10332,8 +10440,8 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                upsert_compile_request_source_baselines(
-                                                    &mut meta, &req,
+                                                upsert_compile_and_generated_source_baselines(
+                                                    &mut meta, &req, &result,
                                                 );
                                                 write_sidecar_logged(
                                                     &sidecar_path,
@@ -10505,8 +10613,8 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        upsert_compile_request_source_baselines(
-                                                            &mut meta, &req,
+                                                        upsert_compile_and_generated_source_baselines(
+                                                            &mut meta, &req, &result,
                                                         );
                                                         write_sidecar_logged(
                                                             &sidecar_path,
@@ -10558,8 +10666,8 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                upsert_compile_request_source_baselines(
-                                                    &mut meta, &req,
+                                                upsert_compile_and_generated_source_baselines(
+                                                    &mut meta, &req, &result,
                                                 );
                                                 write_sidecar_logged(
                                                     &sidecar_path,
