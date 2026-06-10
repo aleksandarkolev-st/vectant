@@ -19,7 +19,7 @@ export const KNOWN_SCOPES = [
 ];
 
 /** Runtime types the program runtime can manage. */
-export const SUPPORTED_RUNTIME_TYPES = ['web', 'cli', 'tui', 'background', 'gui'];
+export const SUPPORTED_RUNTIME_TYPES = ['web', 'cli', 'tui', 'background', 'gui', 'container'];
 
 /** Sub-tabs a program session can surface. */
 export const ALLOWED_SURFACES = ['app', 'logs', 'terminal', 'ports', 'health', 'settings'];
@@ -156,7 +156,7 @@ export function normalizeCommands(cmds, field = 'install') {
 
 function deriveSurfaces(runtimeType, ports) {
   const out = [];
-  if (ports.length > 0 || runtimeType === 'gui') out.push('app');
+  if (ports.length > 0 || runtimeType === 'gui' || runtimeType === 'container') out.push('app');
   out.push('logs');
   if (runtimeType !== 'background') out.push('terminal');
   if (ports.length > 0) out.push('ports');

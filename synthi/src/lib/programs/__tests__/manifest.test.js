@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseProgramManifest, ProgramManifestError, KNOWN_SCOPES } from '../manifest';
+import { parseProgramManifest, ProgramManifestError, KNOWN_SCOPES, SUPPORTED_RUNTIME_TYPES } from '../manifest';
 
 /** Assert a thrown ProgramManifestError with a given code (and optional field). */
 function expectManifestError(fn, code, field) {
@@ -165,5 +165,16 @@ describe('parseProgramManifest — fail-closed validation', () => {
   it('rejects a non-object / empty input', () => {
     expectManifestError(() => parseProgramManifest(null), 'invalid_manifest');
     expectManifestError(() => parseProgramManifest('not json{'), 'invalid_manifest');
+  });
+});
+
+describe('container runtime type', () => {
+  it('accepts runtimeType "container"', () => {
+    expect(SUPPORTED_RUNTIME_TYPES).toContain('container');
+    const cfg = parseProgramManifest({
+      packageId: 'x', version: '1.0.0', runtimeType: 'container',
+      launch: 'docker run --rm hello-world',
+    });
+    expect(cfg.runtimeType).toBe('container');
   });
 });

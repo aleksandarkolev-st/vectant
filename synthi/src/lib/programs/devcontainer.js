@@ -89,10 +89,11 @@ function assertNoHostEscape(dc) {
  * Import a devcontainer.json into a NormalizedProgramConfig.
  *
  * @param {object|string} input - devcontainer object or JSON text
+ * @param {{ containerRuntime?: boolean }} [options]
  * @returns {{ config: import('./manifest').NormalizedProgramConfig, strippedEnvKeys: string[], warnings: string[] }}
  * @throws {ProgramManifestError}
  */
-export function importDevcontainer(input) {
+export function importDevcontainer(input, { containerRuntime = false } = {}) {
   const dc = coerceManifestObject(input);
   assertNoHostEscape(dc);
 
@@ -115,17 +116,6 @@ export function importDevcontainer(input) {
     else if (typeof v === 'number' || typeof v === 'boolean') env[k] = String(v);
   }
 
-  // install: onCreate → updateContent → postCreate, in order.
-  const install = [
-    ...flattenCommand(dc.onCreateCommand),
-    ...flattenCommand(dc.updateContentCommand),
-    ...flattenCommand(dc.postCreateCommand),
-  ];
-
-  // launch: postStartCommand, else a keep-alive so the session stays observable.
-  const launchCmds = flattenCommand(dc.postStartCommand);
-  const launch = launchCmds.length ? launchCmds.join(' && ') : 'sleep infinity';
-
   // ports: forwardPorts → declared web ports (accept "host:container" string form).
   const forwardPorts = Array.isArray(dc.forwardPorts) ? dc.forwardPorts : [];
   const ports = [];
@@ -134,7 +124,39 @@ export function importDevcontainer(input) {
     if (Number.isInteger(n) && n >= 1 && n <= 65535 && !ports.includes(n)) ports.push(n);
   }
 
-  const runtimeType = ports.length ? 'web' : 'background';
+  const image = typeof dc.image === 'string' && dc.image.trim() ? dc.image.trim() : null;
+  const dockerfile = (dc.build && typeof dc.build.dockerfile === 'string') ? dc.build.dockerfile
+    : (typeof dc.dockerFile === 'string' ? dc.dockerFile : null);
+
+  let runtimeType, install, launch;
+  const portFlags = ports.map((p) => `-p ${p}:${p}`).join(' ');
+  if (containerRuntime && (image || dockerfile)) {
+    runtimeType = 'container';
+    const tag = image || `${slugifyPackageId(dc.name)}:local`;
+    const inContainerCmd = [
+      ...flattenCommand(dc.onCreateCommand),
+      ...flattenCommand(dc.updateContentCommand),
+      ...flattenCommand(dc.postCreateCommand),
+      ...flattenCommand(dc.postStartCommand),
+    ].join(' && ') || 'sleep infinity';
+    install = image
+      ? [`docker pull ${image}`]
+      : [`docker build -t ${tag} -f ${dockerfile} .`];
+    launch = `docker run --rm ${portFlags} -v "$PWD":/workspace -w /workspace ${tag} sh -lc ${JSON.stringify(inContainerCmd)}`.trim();
+  } else {
+    // install: onCreate → updateContent → postCreate, in order.
+    install = [
+      ...flattenCommand(dc.onCreateCommand),
+      ...flattenCommand(dc.updateContentCommand),
+      ...flattenCommand(dc.postCreateCommand),
+    ];
+
+    // launch: postStartCommand, else a keep-alive so the session stays observable.
+    const launchCmds = flattenCommand(dc.postStartCommand);
+    launch = launchCmds.length ? launchCmds.join(' && ') : 'sleep infinity';
+
+    runtimeType = ports.length ? 'web' : 'background';
+  }
 
   // workspaceFolder is a container path, not a host-workspace-relative one — ignore it.
   if (dc.workspaceFolder != null) warnings.push('ignored:workspaceFolder');

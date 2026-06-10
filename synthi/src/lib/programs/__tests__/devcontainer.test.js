@@ -104,3 +104,21 @@ describe('importDevcontainer — host-escape rejection', () => {
     expectManifestError(() => importDevcontainer('not json{'), 'invalid_manifest');
   });
 });
+
+describe('container-mode devcontainer import', () => {
+  it('emits a container runtimeType with real docker build/run when enabled', () => {
+    const { config } = importDevcontainer({
+      name: 'Dev', image: 'node:20', forwardPorts: [3000], postStartCommand: 'npm run dev',
+    }, { containerRuntime: true });
+    expect(config.runtimeType).toBe('container');
+    expect(config.install.join(' ')).toMatch(/docker pull node:20/);
+    expect(config.launch).toMatch(/docker run/);
+    expect(config.launch).toMatch(/-p 3000:3000/);
+  });
+
+  it('still rejects host-escape recipes in container mode', () => {
+    expect(() => importDevcontainer(
+      { name: 'x', image: 'node:20', privileged: true }, { containerRuntime: true }
+    )).toThrow();
+  });
+});
