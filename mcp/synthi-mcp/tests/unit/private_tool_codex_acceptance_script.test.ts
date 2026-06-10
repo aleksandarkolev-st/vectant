@@ -9,6 +9,8 @@ import {
   codexExecArgs,
   extractCodexMcpEvidence,
   findPageWithText,
+  parseBooleanFlag,
+  runtimeEndpointConformance,
   selectCdpTargetsToClose,
   visualProofScreenshotOptions,
 } from "../../scripts/private-tool-codex-acceptance.mjs";
@@ -54,6 +56,38 @@ describe("private-tool Codex acceptance harness", () => {
 
     expect(config.split("\n")[0]).toBe('model = "gpt-5.3-codex-spark"');
     expect(config).not.toContain("gpt-5.5");
+  });
+
+  it("can require a non-loopback hosted runtime for deployed Codex acceptance", () => {
+    expect(parseBooleanFlag("off")).toBe(false);
+    expect(parseBooleanFlag("yes")).toBe(true);
+    expect(runtimeEndpointConformance({
+      cdpUrl: "http://127.0.0.1:37727",
+      requireNonLoopbackRuntime: false,
+    })).toEqual({
+      ok: true,
+      require_non_loopback_runtime: false,
+      non_loopback_runtime: false,
+      runtime_host_class: "loopback",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "http://127.0.0.1:37727",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: false,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: false,
+      runtime_host_class: "loopback",
+    });
+    expect(runtimeEndpointConformance({
+      cdpUrl: "wss://hosted-browser-runtime.example.test/devtools/browser/session",
+      requireNonLoopbackRuntime: true,
+    })).toEqual({
+      ok: true,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+    });
   });
 
   it("prompts Codex to call the discovered private workflow tool instead of replaying manually", () => {

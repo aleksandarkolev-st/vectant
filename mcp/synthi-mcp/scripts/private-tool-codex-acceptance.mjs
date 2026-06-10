@@ -14,6 +14,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
+import {
+  assertRuntimeEndpointConformance,
+  parseBooleanFlag,
+  runtimeEndpointConformance,
+} from "./private-tool-acceptance-conformance.mjs";
+
+export { parseBooleanFlag, runtimeEndpointConformance };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +41,9 @@ const CFG = {
   workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_TIMEOUT_MS || 120_000),
+  requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"]
+    ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME
+    ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
 };
 
 function log(kind, message) {
@@ -48,6 +58,10 @@ async function main() {
   if (!CFG.cdpUrl.trim()) {
     throw new Error("hosted_cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL");
   }
+  const runtimeConformance = assertRuntimeEndpointConformance({
+    cdpUrl: CFG.cdpUrl,
+    requireNonLoopbackRuntime: CFG.requireNonLoopbackRuntime,
+  });
   const authPath = path.join(CFG.codexAuthHome, "auth.json");
   if (!existsSync(authPath)) {
     throw new Error(`codex_auth_missing: ${authPath}`);
@@ -69,6 +83,11 @@ async function main() {
     target_url: targetUrl,
     workspace_id: workspaceId,
     product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    conformance: {
+      require_non_loopback_runtime: runtimeConformance.require_non_loopback_runtime,
+      non_loopback_runtime: runtimeConformance.non_loopback_runtime,
+      runtime_host_class: runtimeConformance.runtime_host_class,
+    },
     codex_model: CFG.codexModel,
     steps: [],
   };
