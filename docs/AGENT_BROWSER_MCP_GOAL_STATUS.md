@@ -12,7 +12,7 @@ agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screens
 
 Local CDP remains only the development harness. The verification run did not rely on fixed preview ports, fixed workspace slugs, local Chrome paths, fixed element positions, or generated-script shortcuts for a specific fixture.
 
-Excluding real deployed IdP testing, the remaining work is about 1-3 percent. The main unfinished items are production rollout validation in deployed third-party MCP hosts and final account-available Codex `5.3-spark` acceptance from inside a workspace.
+Excluding real deployed IdP testing, the remaining work is about 1 percent. The main unfinished items are production rollout validation in deployed third-party MCP hosts and final account-available Codex `5.3-spark` acceptance from inside a workspace.
 
 ## Latest Verification
 
@@ -53,6 +53,10 @@ Targeted replay-isolation verification:
 - Codex private-tool acceptance is wired to the hosted-runtime attach path and has unit coverage that rejects local CDP attach evidence.
 - Production deployment wiring has an MCP preflight with unit coverage for hosted runtime, workflow bridge, encrypted stores, workspace scope, and local CDP leakage.
 - Simultaneous popup annotation races are hardened: queued popup annotations no longer attach backward to earlier opener clicks outside a bounded browser-event skew window.
+- Nested iframe workflow target ids include durable frame-locator chain context when needed, so repeated inner frame ids do not collapse distinct replay targets.
+- Generated replay scripts now cover returning to the opener page after consented cross-origin popup actions.
+- Direct `synthi_browser_run_workflow` replay now re-checks current iframe and popup target-origin consent before dispatching adapter actions, matching the private-tool consent gate.
+- Published private workflow MCP schemas now advertise `artifact_root` for strict clients calling `ciOnly` isolated replay.
 
 Visual artifacts inspected in this update:
 
@@ -71,7 +75,7 @@ Visual artifacts inspected in this update:
 - Managed-browser Observe/Teach/Stop controls are injected by the hosted runtime path; the IDE Workflows panel remains the contract, manifest, export, validation, and publish surface.
 - Same-origin iframes, nested iframes, popups, popup chains, and opener-return workflows preserve target context for replay.
 - Close-together popup opener clicks preserve their own popup tab ids and URLs instead of sharing a broad queued annotation window.
-- Cross-origin iframe and popup recording requires explicit target-origin consent and otherwise blocks taught actions.
+- Cross-origin iframe and popup recording and direct replay require current explicit target-origin consent and otherwise block before adapter dispatch.
 - Clipboard paste/drop/copy/cut, file uploads, hidden file uploads, hover menus, context menus, keyboard controls, scroll/wheel, sliders, ARIA widgets, drag/sort/resize, native dialogs, rich text, code textareas, and animated dashboard interactions are covered by seeded live cases.
 - Auth checkpoint and refresh-provider durability paths are covered by fixtures and unit tests with redaction and expiry classification.
 - Mutation workflows default to prefix-safe replay and require same-session confirmation or isolated CI mutation replay.
@@ -83,6 +87,10 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `f3868e68` Enforce replay target origin consent
+- `f1ca5422` Advertise private workflow artifact root
+- `89b432c4` Cover cross-origin popup return replay
+- `d544bf77` Disambiguate nested iframe workflow targets
 - `94cec3a7` Disambiguate simultaneous popup annotations
 - `d6494d3c` Add browser workflow deployment readiness preflight
 - `70df51f0` Use hosted runtime in Codex workflow acceptance
@@ -101,6 +109,6 @@ These sit on top of the earlier goal commits for private-tool registration, host
 ## Remaining Gaps
 
 - Validate the same private-tool discovery/call path in deployed third-party MCP hosts and production hosted-runtime policy, not just the repo-local Codex/fresh-MCP harness.
-- Expand adversarial target coverage for hostile nested frame timing and cross-origin return navigation under production consent rules.
+- Expand adversarial target coverage only for production-host-specific timing/target-policy variants that cannot be simulated in local unit/live fixtures.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
 - Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
