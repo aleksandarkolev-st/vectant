@@ -151,6 +151,12 @@ services:
       # Used ONLY by collab-server to manage per-workspace runtime containers.
       # Never mounted into a runtime container or exposed to program env.
       - /var/run/docker.sock:/var/run/docker.sock
+    # collab-server runs as the non-root `synthi` user, but the bind-mounted
+    # docker socket is owned by root:root (mode 660), so dockerode would get
+    # EACCES. Grant the socket's group. On Docker Desktop the socket is gid 0;
+    # on a native Linux host set DOCKER_SOCKET_GID to the host `docker` group.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
     depends_on:
       redis:
         condition: service_healthy
