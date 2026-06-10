@@ -23,7 +23,7 @@ const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {
-  cdpUrl: args["cdp-url"] || process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || process.env.SYNTHI_BROWSER_CDP_URL || "",
+  cdpUrl: args["cdp-url"] || process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || "",
   targetUrl: args["target-url"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL || "",
   codexBin: args["codex-bin"] || process.env.CODEX_BIN || "codex",
   codexAuthHome: args["codex-auth-home"] || process.env.SYNTHI_CODEX_AUTH_HOME || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
@@ -44,7 +44,7 @@ async function main() {
     throw new Error(`dist entrypoint missing: ${DIST_INDEX}. Run npm run build first.`);
   }
   if (!CFG.cdpUrl.trim()) {
-    throw new Error("cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL/SYNTHI_BROWSER_CDP_URL");
+    throw new Error("hosted_cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL");
   }
   const authPath = path.join(CFG.codexAuthHome, "auth.json");
   if (!existsSync(authPath)) {
@@ -181,10 +181,7 @@ async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
     prompt,
   ], {
     cwd: codexWorkdir,
-    env: {
-      ...process.env,
-      CODEX_HOME: codexHome,
-    },
+    env: buildCodexProcessEnv({ baseEnv: process.env, codexHome }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = await collectProcess(proc, CFG.timeoutMs);
@@ -418,6 +415,12 @@ async function fetchWithTimeout(url, { timeoutMs }) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function buildCodexProcessEnv({ baseEnv = process.env, codexHome }) {
+  const env = { ...baseEnv, CODEX_HOME: codexHome };
+  delete env.SYNTHI_BROWSER_CDP_URL;
+  return env;
 }
 
 function parseCodexJsonl(stdout) {

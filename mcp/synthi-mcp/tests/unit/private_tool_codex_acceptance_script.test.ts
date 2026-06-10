@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, expect, it } from "vitest";
 import {
+  buildCodexProcessEnv,
   buildCodexConfigToml,
   extractCodexMcpEvidence,
 } from "../../scripts/private-tool-codex-acceptance.mjs";
@@ -63,6 +64,21 @@ describe("private-tool Codex acceptance harness", () => {
     });
     expect(localAttachEvidence.hosted_attach_call).toBe(false);
     expect(localAttachEvidence.local_attach_call).toBe(true);
+  });
+
+  it("strips local CDP env from the Codex child process", () => {
+    const env = buildCodexProcessEnv({
+      codexHome: "/tmp/synthi-codex-home",
+      baseEnv: {
+        CODEX_HOME: "/tmp/original-codex-home",
+        SYNTHI_BROWSER_CDP_URL: "ws://local-dev-cdp.example.test/devtools/browser/session",
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://hosted-runtime.example.test/devtools/browser/session",
+      },
+    });
+
+    expect(env.CODEX_HOME).toBe("/tmp/synthi-codex-home");
+    expect(env.SYNTHI_HOSTED_BROWSER_CDP_URL).toBe("ws://hosted-runtime.example.test/devtools/browser/session");
+    expect(env).not.toHaveProperty("SYNTHI_BROWSER_CDP_URL");
   });
 });
 

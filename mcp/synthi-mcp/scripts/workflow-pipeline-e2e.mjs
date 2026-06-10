@@ -33,7 +33,7 @@ const CFG = {
   frontendUrl: trimSlash(process.env.FRONTEND_URL || process.env.SYNTHI_FRONTEND_URL || "http://localhost:3000"),
   collabUrl: trimSlash(process.env.COLLAB_URL || process.env.SYNTHI_COLLAB_URL || "http://localhost:1234"),
   bridgeUrl: trimSlash(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL || "http://localhost:9466"),
-  cdpUrl: trimSlash(process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || process.env.SYNTHI_BROWSER_CDP_URL || "http://127.0.0.1:40101"),
+  cdpUrl: trimSlash(process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || ""),
   dockerComposeService: process.env.SYNTHI_COLLAB_COMPOSE_SERVICE || "collab-server",
   userId: process.env.SYNTHI_WORKFLOW_PIPELINE_USER_ID || DEFAULT_USER_ID,
   slugPrefix: process.env.SYNTHI_WORKFLOW_PIPELINE_SLUG_PREFIX || "workflow-pipeline",
@@ -202,6 +202,9 @@ async function main() {
   const selectedCases = CASES.filter((testCase) => CFG.cases.length === 0 || CFG.cases.includes(testCase.id));
   if (selectedCases.length === 0) {
     throw new Error(`no workflow pipeline cases selected: ${CFG.cases.join(",")}`);
+  }
+  if (!CFG.cdpUrl) {
+    throw new Error("hosted_cdp_url_required: set SYNTHI_HOSTED_BROWSER_CDP_URL to the Synthi-hosted runtime endpoint");
   }
   const ownedBridge = await startFreshMcpVerificationBridge(selectedCases);
   let browser;
@@ -1052,6 +1055,25 @@ async function workflowBridgeState() {
   return await httpJson("GET", `${CFG.bridgeUrl}/browser-workflows/state`);
 }
 
+export function freshMcpProcessEnv({
+  baseEnv = process.env,
+  privateWorkflowStoreEnv,
+  cdpUrl,
+  previewUrl,
+  workspaceId,
+}) {
+  const env = {
+    ...baseEnv,
+    ...privateWorkflowStoreEnv,
+    SYNTHI_HOSTED_BROWSER_CDP_URL: cdpUrl,
+    SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: previewUrl,
+    SYNTHI_WORKSPACE_ID: workspaceId,
+    SYNTHI_AGENT_ID: "workflow_pipeline_fresh_mcp_acceptance",
+  };
+  delete env.SYNTHI_BROWSER_CDP_URL;
+  return env;
+}
+
 async function verifyFreshMcpPrivateTool({
   caseDir,
   testCase,
@@ -1065,11 +1087,13 @@ async function verifyFreshMcpPrivateTool({
   if (!CFG.privateWorkflowStoreEnv) throw new Error("fresh_mcp_private_tool_store_env_missing");
   const proc = spawn(process.execPath, [DIST_INDEX], {
     cwd: MCP_ROOT,
-    env: {
-      ...process.env,
-      ...CFG.privateWorkflowStoreEnv,
-      SYNTHI_AGENT_ID: "workflow_pipeline_fresh_mcp_acceptance",
-    },
+    env: freshMcpProcessEnv({
+      baseEnv: process.env,
+      privateWorkflowStoreEnv: CFG.privateWorkflowStoreEnv,
+      cdpUrl: CFG.cdpUrl,
+      previewUrl,
+      workspaceId: `${CFG.userId}:${testCase.id}`,
+    }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   const client = new JsonRpcLineClient(proc, {
@@ -1112,14 +1136,28 @@ async function verifyFreshMcpPrivateTool({
     );
     transcript.steps.push({ name: "manifest", ok: true, result: manifestLookup.parsed });
 
-    const attach = await client.toolCall("synthi_browser_attach", { cdp_url: CFG.cdpUrl, bridge_port: 0 });
+    const attach = await client.toolCall("synthi_browser_attach_current_workspace", {
+      workspace_id: `${CFG.userId}:${testCase.id}`,
+      workspace_url: previewUrl,
+      open_workspace: true,
+    });
+    const hostedAttach = attach.parsed?.runtime?.kind === "hosted";
     record(
       testCase.id,
       "fresh MCP attach hosted browser",
-      toolCallOk(attach),
+      toolCallOk(attach) && hostedAttach,
       attach.parsed?.runtime?.kind || attach.parsed?.error || "attached"
     );
-    transcript.steps.push({ name: "attach", ok: toolCallOk(attach), result: attach.parsed });
+    transcript.steps.push({
+      name: "attach hosted workspace browser",
+      ok: toolCallOk(attach) && hostedAttach,
+      evidence: {
+        hosted_attach: hostedAttach,
+        local_attach: attach.parsed?.runtime?.kind === "local-dev-cdp",
+        runtime_kind: attach.parsed?.runtime?.kind ?? null,
+      },
+      result: attach.parsed,
+    });
 
     const consent = await client.toolCall("synthi_browser_request_consent", {
       url: previewUrl,
@@ -5924,12 +5962,14 @@ const CASES = [
   },
 ];
 
-main().then(() => {
-  // A CDP-attached Playwright client can keep sockets referenced after the
-  // harness has finished. Exiting here releases this process without issuing
-  // Browser.close() against the hosted runtime.
-  process.exit(0);
-}).catch((err) => {
-  log("fail", err instanceof Error ? err.stack || err.message : String(err));
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(() => {
+    // A CDP-attached Playwright client can keep sockets referenced after the
+    // harness has finished. Exiting here releases this process without issuing
+    // Browser.close() against the hosted runtime.
+    process.exit(0);
+  }).catch((err) => {
+    log("fail", err instanceof Error ? err.stack || err.message : String(err));
+    process.exit(1);
+  });
+}
