@@ -3,8 +3,9 @@
  * Prove private workflow acceptance across the real MCP stdio boundary.
  *
  * The harness seeds the encrypted saved-workflow store with one generic
- * workflow artifact, spawns dist/index.js, discovers the private tool from
- * tools/list, and calls it through tools/call against a real browser target.
+ * workflow artifact, spawns a configurable stdio MCP server command, discovers
+ * the private tool from tools/list, and calls it through tools/call against a
+ * real browser target.
  * No fixed preview port, workspace slug, Chrome path, or script path is handed
  * to the client.
  */
@@ -31,6 +32,13 @@ const CFG = {
   workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TIMEOUT_MS || 60_000),
+  mcpCommand: resolveMcpServerCommandSpec({
+    args,
+    env: process.env,
+    defaultCommand: process.execPath,
+    defaultArgs: [DIST_INDEX],
+    defaultCwd: MCP_ROOT,
+  }),
 };
 
 function log(kind, message) {
@@ -63,6 +71,12 @@ async function main() {
     target_url: targetUrl,
     workspace_id: workspaceId,
     product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    mcp_server: {
+      command: CFG.mcpCommand.command,
+      cwd: CFG.mcpCommand.cwd,
+      args_count: CFG.mcpCommand.args.length,
+      default_repo_dist: CFG.mcpCommand.default_repo_dist,
+    },
     steps: [],
   };
 
@@ -74,8 +88,8 @@ async function main() {
     log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
 
     await pruneExistingCdpPageTargets(CFG.cdpUrl);
-    proc = spawn(process.execPath, [DIST_INDEX], {
-      cwd: MCP_ROOT,
+    proc = spawn(CFG.mcpCommand.command, CFG.mcpCommand.args, {
+      cwd: CFG.mcpCommand.cwd,
       env: buildStdioMcpEnv({
         baseEnv: process.env,
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: storeFile,
@@ -575,6 +589,48 @@ function parseArgs(argv) {
     }
     parsed[key] = next;
     i += 1;
+  }
+  return parsed;
+}
+
+export function resolveMcpServerCommandSpec({
+  args = {},
+  env = process.env,
+  defaultCommand = process.execPath,
+  defaultArgs = [DIST_INDEX],
+  defaultCwd = MCP_ROOT,
+} = {}) {
+  const hasCustomCommand = Boolean(args["mcp-command"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND);
+  const command = String(args["mcp-command"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND || defaultCommand).trim();
+  if (!command) throw new Error("mcp_command_required");
+  const argsJson = args["mcp-args-json"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON;
+  const commandArgs = argsJson
+    ? parseMcpCommandArgsJson(argsJson)
+    : hasCustomCommand
+    ? []
+    : [...defaultArgs];
+  const cwdRaw = args["mcp-cwd"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD || defaultCwd;
+  const cwd = path.resolve(String(cwdRaw));
+  return {
+    command,
+    args: commandArgs,
+    cwd,
+    default_repo_dist: command === defaultCommand
+      && commandArgs.length === defaultArgs.length
+      && commandArgs.every((item, index) => item === defaultArgs[index])
+      && cwd === path.resolve(defaultCwd),
+  };
+}
+
+function parseMcpCommandArgsJson(value) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(value));
+  } catch {
+    throw new Error("mcp_args_json_invalid");
+  }
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
+    throw new Error("mcp_args_json_must_be_string_array");
   }
   return parsed;
 }

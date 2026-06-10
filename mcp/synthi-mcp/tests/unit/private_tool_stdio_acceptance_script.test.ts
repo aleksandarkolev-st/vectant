@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStdioMcpEnv,
+  resolveMcpServerCommandSpec,
   selectCdpTargetsToClose,
   strictHostValidateToolArgs,
   stdioAcceptanceAttachEvidence,
@@ -32,6 +33,55 @@ describe("private-tool stdio acceptance harness", () => {
     }));
     expect(env).not.toHaveProperty("SYNTHI_BROWSER_CDP_URL");
     expect(JSON.stringify(env)).not.toMatch(/browser-mcp-live|\/port\/\d+|C:\\\\/i);
+  });
+
+  it("defaults the conformance harness to the repo dist stdio server", () => {
+    const spec = resolveMcpServerCommandSpec({
+      args: {},
+      env: {},
+      defaultCommand: "/usr/bin/node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+
+    expect(spec).toEqual({
+      command: "/usr/bin/node",
+      args: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      cwd: "/repo/mcp/synthi-mcp",
+      default_repo_dist: true,
+    });
+  });
+
+  it("accepts a structured custom deployed MCP server command without shell parsing", () => {
+    const spec = resolveMcpServerCommandSpec({
+      args: {
+        "mcp-command": "synthi-mcp",
+        "mcp-args-json": "[\"--stdio\",\"--profile\",\"prod\"]",
+        "mcp-cwd": "/srv/synthi",
+      },
+      env: {},
+      defaultCommand: "/usr/bin/node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+
+    expect(spec).toEqual({
+      command: "synthi-mcp",
+      args: ["--stdio", "--profile", "prod"],
+      cwd: "/srv/synthi",
+      default_repo_dist: false,
+    });
+  });
+
+  it("rejects malformed custom MCP arg vectors", () => {
+    expect(() => resolveMcpServerCommandSpec({
+      args: { "mcp-command": "synthi-mcp", "mcp-args-json": "--stdio" },
+      env: {},
+    })).toThrow("mcp_args_json_invalid");
+    expect(() => resolveMcpServerCommandSpec({
+      args: { "mcp-command": "synthi-mcp", "mcp-args-json": "[\"--stdio\",42]" },
+      env: {},
+    })).toThrow("mcp_args_json_must_be_string_array");
   });
 
   it("requires hosted attach evidence instead of local CDP attach evidence", () => {
