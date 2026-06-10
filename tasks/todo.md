@@ -435,3 +435,19 @@ compose bind-mount fix remain (see "Open" below).
 
 **Phasing recap:** Phase 1b = uniform execution (all programs into the runtime container) + per-workspace
 port-system rework. Phase 2 = prod (k8s pod + Sysbox; replaces `Privileged: true`).
+
+### Follow-up (after all slices) — unify port forwarding for terminal-launched servers
+**Concern (user-raised):** when a user types e.g. `npm run dev` in a *terminal* (not a container
+program), the dev server's port must be reachable through the workspace's forwarded-port proxy, the
+same way container-program ports render as `/wsport/<slug>/<port>/` — not a bare, unreachable localhost.
+
+**Today (hybrid Phase 1):** this already works, but via a *different* path: interactive terminals run as
+PTYs in the shared collab-server, so `localhost:<port>` is detected by the global port scanner and served
+at `/port/<N>/`. Container programs use `/wsport/<slug>/<port>/`. Two paths = inconsistent.
+
+**Why it needs fixing (Phase 1b — uniform execution):** once terminals/all programs move INTO the
+per-workspace runtime container, a terminal's `npm run dev` binds *inside* that container; the global
+localhost scanner can no longer see it, so it must be detected + forwarded through the per-workspace
+`/wsport` routing (port detection inside the runtime container + slug-scoped proxy + UI surfacing). Fold
+this into the Phase 1b port-system rework so terminal-launched servers and container-program ports share
+one consistent forwarded-port path.
