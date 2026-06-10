@@ -36,6 +36,18 @@ describe('buildDefaultPrograms', () => {
     expect(dc.launch).toBe('npm run dev');
     expect(dc.description.length).toBeGreaterThan(0);
   });
+
+  it('ships the Dev Container as a real container program when containerRuntime is enabled', () => {
+    const builtC = buildDefaultPrograms({ containerRuntime: true });
+    const dc = builtC.find((b) => b.packageId === '@vectant/devcontainer').config;
+    expect(dc.runtimeType).toBe('container');
+    expect(dc.install.join(' ')).toMatch(/docker pull/);
+    expect(dc.launch).toMatch(/docker run/);
+    expect(dc.launch).toContain('-p 3000:3000');
+    // non-devcontainer recipes are unaffected by the flag
+    const web = builtC.find((b) => b.packageId === '@vectant/nextjs-dev').config;
+    expect(web.runtimeType).toBe('web');
+  });
 });
 
 import { ensureDefaultPrograms } from '../defaultPrograms';

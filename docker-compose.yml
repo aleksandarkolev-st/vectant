@@ -96,6 +96,9 @@ services:
       # not localhost. Without this, program manifest discovery / install / launch
       # / publish fall back to localhost:1234 inside this container and fail.
       COLLAB_SERVER_URL: "http://collab-server:1234"
+      # Match collab-server's gate so the default marketplace seed ships the
+      # Dev Container as a real `container` program (not managed commands).
+      ENABLE_CONTAINER_RUNTIME: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,8 +136,16 @@ services:
       CLOUD_SQL_INSTANCE: "" # Not used in local dev
       # Dev specific
       GCS_SYNC_ON_FLUSH: "false"
+      # Native Docker (hybrid Phase 1): run `container`-type programs in a
+      # per-workspace rootless-Docker runtime container. Requires the host
+      # docker socket mount below so collab-server can manage those containers.
+      ENABLE_CONTAINER_RUNTIME: "1"
+      RUNTIME_IMAGE: "synthi-runtime:local"
     volumes:
       - collab-data:/data
+      # Used ONLY by collab-server to manage per-workspace runtime containers.
+      # Never mounted into a runtime container or exposed to program env.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       redis:
         condition: service_healthy

@@ -94,7 +94,7 @@ export const DEFAULT_PROGRAM_RECIPES = [
     name: 'devcontainer',
     kind: 'devcontainer',
     description:
-      "Containerized dev environment (devcontainer.json / Docker image). Runs in Vectant's managed runtime today; native Docker execution is on the roadmap.",
+      'Containerized dev environment (devcontainer.json / Docker image). Builds and runs as a real container inside your workspace when native Docker is enabled.',
     recipe: {
       name: 'Dev Container', version: '1.0.0',
       image: 'mcr.microsoft.com/devcontainers/universal:2',
@@ -108,13 +108,21 @@ export const DEFAULT_PROGRAM_RECIPES = [
 /**
  * Build the validated default catalog. Manifest recipes go through
  * parseProgramManifest; the devcontainer recipe through importDevcontainer.
+ *
+ * When container runtime is enabled the devcontainer ships as a real `container`
+ * program (docker build/run inside the per-workspace rootless engine). When
+ * disabled (merge-dark default) it falls back to the managed-command behaviour
+ * so the catalog is byte-for-byte identical to today. The flag defaults to the
+ * `ENABLE_CONTAINER_RUNTIME` env so the seed matches the collab-server gate.
+ *
+ * @param {{ containerRuntime?: boolean }} [options]
  * @returns {{ packageId: string, config: object }[]}
  */
-export function buildDefaultPrograms() {
+export function buildDefaultPrograms({ containerRuntime = process.env.ENABLE_CONTAINER_RUNTIME === '1' } = {}) {
   return DEFAULT_PROGRAM_RECIPES.map((entry) => {
     let config;
     if (entry.kind === 'devcontainer') {
-      config = importDevcontainer(entry.recipe).config;
+      config = importDevcontainer(entry.recipe, { containerRuntime }).config;
       if (entry.description) config.description = entry.description;
     } else {
       config = parseProgramManifest(entry.recipe);

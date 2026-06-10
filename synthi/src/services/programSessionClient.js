@@ -49,9 +49,24 @@ export async function restartProgramSessionRuntime(workspaceSlug, sessionId) {
   return body.session || null;
 }
 
-export function getProgramSessionAppUrl(port) {
+/**
+ * Build the in-IDE preview URL for a program's web port.
+ *
+ * `container`-type programs bind ports inside their per-workspace runtime
+ * container, so they route through the workspace-scoped `/wsport/<slug>/<port>/`
+ * proxy. All other runtime types use the global `/port/<port>/` path. Both share
+ * the collab origin, so no CSP change is needed.
+ *
+ * @param {number} port
+ * @param {{ slug?: string, runtimeType?: string }} [opts]
+ */
+export function getProgramSessionAppUrl(port, { slug = null, runtimeType = null } = {}) {
   if (typeof port !== 'number' || !Number.isFinite(port)) {
     return null;
+  }
+
+  if (runtimeType === 'container' && slug) {
+    return `${COLLAB_BASE}/wsport/${encodeURIComponent(slug)}/${port}/`;
   }
 
   return `${COLLAB_BASE}/port/${port}/`;
