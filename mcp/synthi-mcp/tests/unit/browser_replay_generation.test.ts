@@ -806,6 +806,88 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
   });
 
+  it("returns to the opener page after consented cross-origin popup actions", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "open-billing-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        url: "https://app.example.com/settings",
+        origin: "https://app.example.com",
+        detail: {
+          popup_event: true,
+          popup_url: "https://billing.example.com/help",
+          popup_origin_approved: true,
+          popup_title: "Billing Help",
+          popup_tab_id: "billing-popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open billing help", test_id: "open-billing-help", source_id: "src_billing_help" },
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: false,
+          popup_origin_approved: true,
+          popup_screenshot_approved: true,
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"open-billing-help\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+      event({
+        event_id: "search-billing-help",
+        event_seq: 2,
+        tab_id: "billing-popup",
+        action: "fill",
+        value: "invoices",
+        url: "https://billing.example.com/help",
+        origin: "https://billing.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "billing-popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search billing help", source_id: "src_billing_search" },
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: false,
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search billing help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+      event({
+        event_id: "finish-main",
+        event_seq: 3,
+        tab_id: "main",
+        action: "click",
+        url: "https://app.example.com/settings",
+        origin: "https://app.example.com",
+        detail: {
+          observed_effects: ["Billing handoff complete"],
+          element: { role: "button", name: "Finish handoff", source_id: "src_finish" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Finish handoff\" })", confidence: 0.93, reason: "role_name" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("const [popup1] = await Promise.all([");
+    expect(generated.code).toContain("await expect(popup1).toHaveURL(\"https://billing.example.com/help\");");
+    expect(generated.code).toContain("const target2 = await firstVisible(popup1.getByLabel(\"Search billing help\"));");
+    expect(generated.code).toContain("const target3 = await firstVisible(page.getByRole(\"button\", { name: \"Finish handoff\" }));");
+    expect(generated.code).toContain("await expect(page.getByText(\"Billing handoff complete\", { exact: true })).toBeVisible();");
+    expect(generated.code).not.toContain("popup1.getByRole(\"button\", { name: \"Finish handoff\" })");
+    expect(generated.warnings).toContain("workflow limitation: crossOriginTrace");
+    expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
+  });
+
   it("asserts contenteditable fill replay with text content", () => {
     const generated = generatePlaywrightScript([
       event({
