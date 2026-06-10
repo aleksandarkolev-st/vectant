@@ -564,7 +564,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
   for (const event of coalesceReplayEvents(orderedEvents)) {
     if (event.kind !== "human_action" && event.kind !== "agent_action" && event.kind !== "navigation") continue;
     if (event.kind === "navigation" || event.action === "navigate") {
-      const pageVar = popupPageByTab.get(event.tab_id) ?? "page";
+      const pageVar = replayPageVariableForEvent(event, popupPageByTab, warnings, lines);
+      if (!pageVar) break;
       if (event.url !== currentUrlByPage.get(pageVar)) {
         lines.push(gotoLine(event.url, baseOrigin, pageVar));
         lines.push(`  await expect(${pageVar}).toHaveURL(/.*/);`);
@@ -578,7 +579,8 @@ export function generatePlaywrightScript(events: BrowserTraceEvent[], options: {
       warnings.push(`event ${event.event_id} has no locator candidates`);
       continue;
     }
-    const pageVar = popupPageByTab.get(event.tab_id) ?? "page";
+    const pageVar = replayPageVariableForEvent(event, popupPageByTab, warnings, lines);
+    if (!pageVar) break;
     if (!currentUrlByPage.has(pageVar)) {
       lines.push(gotoLine(event.url, baseOrigin, pageVar));
       currentUrlByPage.set(pageVar, event.url);
@@ -1071,6 +1073,23 @@ function coalesceReplayEvents(events: BrowserTraceEvent[]): BrowserTraceEvent[] 
     result.push(event);
   }
   return result;
+}
+
+function replayPageVariableForEvent(
+  event: BrowserTraceEvent,
+  popupPageByTab: Map<string, string>,
+  warnings: string[],
+  lines: string[]
+): string | null {
+  const pageVar = popupPageByTab.get(event.tab_id);
+  if (pageVar) return pageVar;
+  if (event.detail?.["popup_context"] === true) {
+    const reason = `Popup context for event ${event.event_id} has no opener mapping; regenerate the workflow with popup capture enabled.`;
+    warnings.push(reason);
+    lines.push(`  test.skip(true, ${JSON.stringify(reason)});`);
+    return null;
+  }
+  return "page";
 }
 
 function mergeObservedEffectsFromSuppressedEvent(target: BrowserTraceEvent, suppressed: BrowserTraceEvent): BrowserTraceEvent {

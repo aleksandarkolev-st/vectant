@@ -570,6 +570,33 @@ describe("browser replay generation scenarios", () => {
     expect(generated.warnings).not.toContain("workflow limitation: popupOrMultiTab");
   });
 
+  it("blocks popup continuation script generation when opener mapping is missing", () => {
+    const generated = generatePlaywrightScript([
+      event({
+        event_id: "orphan-popup-action",
+        event_seq: 1,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://app.example.com/help",
+        origin: "https://app.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ], { mode: "sameSession" });
+
+    expect(generated.code).toContain("test.skip(true, \"Popup context for event orphan-popup-action has no opener mapping");
+    expect(generated.code).not.toContain("page.getByLabel(\"Search help\")");
+    expect(generated.warnings).toContain("Popup context for event orphan-popup-action has no opener mapping; regenerate the workflow with popup capture enabled.");
+  });
+
   it("orders popup opener before popup actions when async capture arrives inverted", () => {
     const generated = generatePlaywrightScript([
       event({
