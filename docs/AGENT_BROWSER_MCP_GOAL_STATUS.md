@@ -21,12 +21,14 @@ Full workflow pipeline:
 ```bash
 cd mcp/synthi-mcp
 TMPDIR=/tmp TEMP=/tmp TMP=/tmp \
-  SYNTHI_HOSTED_BROWSER_CDP_URL=http://127.0.0.1:43521 \
-  FRONTEND_URL=http://localhost:3000 \
-  COLLAB_URL=http://localhost:1234 \
+  SYNTHI_HOSTED_BROWSER_CDP_URL="$DYNAMIC_HOSTED_CDP_URL" \
+  FRONTEND_URL="${FRONTEND_URL:-http://localhost:3000}" \
+  COLLAB_URL="${COLLAB_URL:-http://localhost:1234}" \
   SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1 \
   npm run live:browser:workflow-pipeline
 ```
+
+`DYNAMIC_HOSTED_CDP_URL` is supplied by the local hosted-runtime harness during verification. It is not a product default, a fixed port, or a workspace-specific value.
 
 Result:
 
@@ -41,6 +43,14 @@ Result:
 Codex CLI private-tool acceptance was also attempted with `SYNTHI_CODEX_ACCEPTANCE_MODEL=gpt-5.3-spark`. The local ChatGPT-auth Codex CLI rejected that model for this account before calling tools, so the harness is now override-driven and does not hardcode a 5.5 fallback. The repo-local fresh MCP/private-tool path still passes; the 5.3-spark Codex-agent pass remains an environment-availability gap.
 
 The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
+
+The stdio MCP private-tool acceptance harness was also verified through the hosted attach path:
+
+- transcript: `tmp/private-tool-stdio-acceptance/mcp-stdio-private-tool-acceptance.json`
+- visual proof: `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
+- discovered tool: `synthi_app_open_details`
+- attach evidence: `hosted_attach=true`, `local_attach=false`, `runtime_kind=hosted`
+- replay evidence: one private-tool workflow step replayed through MCP stdio and produced the expected app state.
 
 Deployment readiness is now machine-checkable through `synthi_browser_get_deployment_readiness`. The report is redacted and verifies hosted runtime config, workflow bridge config/token policy, encrypted private workflow store config, encrypted auth checkpoint store config, workspace scope, replay-isolation profile state, and absence of local CDP env leakage in production mode.
 
@@ -64,6 +74,7 @@ Visual artifacts inspected in this update:
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/popup-chain-checkout/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-ci-isolated-replay.png`
+- `tmp/private-tool-stdio-acceptance/after-private-tool-call.png`
 - `tmp/agent-workflow-ci-profile-card.png`
 - `tmp/agent-workflow-ci-profile-editor-card.png`
 
