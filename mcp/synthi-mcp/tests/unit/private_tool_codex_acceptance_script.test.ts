@@ -1,12 +1,17 @@
 // @ts-nocheck
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CODEX_ACCEPTANCE_MODEL,
   buildCodexProcessEnv,
   buildCodexConfigToml,
   extractCodexMcpEvidence,
 } from "../../scripts/private-tool-codex-acceptance.mjs";
 
 describe("private-tool Codex acceptance harness", () => {
+  it("defaults Codex acceptance to the 5.3-spark model", () => {
+    expect(DEFAULT_CODEX_ACCEPTANCE_MODEL).toBe("gpt-5.3-spark");
+  });
+
   it("configures Codex through the hosted browser runtime path", () => {
     const config = buildCodexConfigToml({
       codexReasoning: "low",
@@ -26,6 +31,23 @@ describe("private-tool Codex acceptance harness", () => {
     expect(config).toContain("SYNTHI_WORKSPACE_ID");
     expect(config).not.toContain("SYNTHI_BROWSER_CDP_URL");
     expect(config).not.toMatch(/browser-mcp-live|\/port\/\d+|C:\\\\/i);
+  });
+
+  it("writes the configured default model into Codex config", () => {
+    const config = buildCodexConfigToml({
+      codexReasoning: "low",
+      codexModel: DEFAULT_CODEX_ACCEPTANCE_MODEL,
+      distIndex: "/repo/mcp/synthi-mcp/dist/index.js",
+      storeFile: "/tmp/private-tools.enc.json",
+      storeKey: "private-tool-key",
+      storeScope: "acceptance-scope",
+      cdpUrl: "ws://runtime.example.test/devtools/browser/session",
+      targetUrl: "https://preview.example.test/workspace",
+      workspaceId: "acceptance-workspace",
+    });
+
+    expect(config.split("\n")[0]).toBe('model = "gpt-5.3-spark"');
+    expect(config).not.toContain("gpt-5.5");
   });
 
   it("requires hosted workspace attach evidence instead of local CDP attach", () => {

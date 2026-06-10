@@ -20,6 +20,7 @@ const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
+export const DEFAULT_CODEX_ACCEPTANCE_MODEL = "gpt-5.3-spark";
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {
@@ -27,7 +28,7 @@ const CFG = {
   targetUrl: args["target-url"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL || "",
   codexBin: args["codex-bin"] || process.env.CODEX_BIN || "codex",
   codexAuthHome: args["codex-auth-home"] || process.env.SYNTHI_CODEX_AUTH_HOME || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
-  codexModel: args["codex-model"] || process.env.SYNTHI_CODEX_ACCEPTANCE_MODEL || process.env.CODEX_MODEL || "",
+  codexModel: args["codex-model"] || process.env.SYNTHI_CODEX_ACCEPTANCE_MODEL || process.env.CODEX_MODEL || DEFAULT_CODEX_ACCEPTANCE_MODEL,
   codexReasoning: args["codex-reasoning"] || process.env.SYNTHI_CODEX_ACCEPTANCE_REASONING || "low",
   workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance")),
@@ -67,7 +68,7 @@ async function main() {
     target_url: targetUrl,
     workspace_id: workspaceId,
     product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
-    codex_model: CFG.codexModel || "codex-default",
+    codex_model: CFG.codexModel,
     steps: [],
   };
 
