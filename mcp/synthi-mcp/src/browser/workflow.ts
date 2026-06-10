@@ -40,6 +40,7 @@ export type FailureClassV7 =
   | "authExpired"
   | "authRefreshFailed"
   | "mutationBlocked"
+  | "originConsentMissing"
   | "unsafeEnvironment"
   | "testDataMissing"
   | "routeChanged"
@@ -836,6 +837,7 @@ export function classifyWorkflowReplayFailure(error: unknown, event?: BrowserTra
   if (/auth.*expired|expired.*auth|checkpoint.*expired/i.test(message)) return "authExpired";
   if (/auth|login|unauthorized|forbidden|checkpoint/i.test(message)) return "authMissing";
   if (/mutation.*blocked|mutation boundary|unsafe mutation/i.test(message)) return "mutationBlocked";
+  if (/origin_consent_required|screenshot_consent_required|diagnostics_consent_required|consent.*required/i.test(message)) return "originConsentMissing";
   if (/closed shadow/i.test(message)) return "closedShadowDomBlocked";
   if (/canvas/i.test(message)) return "canvasUnreliable";
   if (/pointer drag|pointer-drag/i.test(message)) return "pointerDragUnreliable";
@@ -1389,6 +1391,7 @@ function failureClassesFor(
   if (limitations.includes("closedShadowDomBlocked")) classes.add("closedShadowDomBlocked");
   if (limitations.includes("pointerDragUnreliable")) classes.add("pointerDragUnreliable");
   if (limitations.includes("popupOrMultiTab")) classes.add("unsafeEnvironment");
+  if (limitations.includes("crossOriginTrace")) classes.add("originConsentMissing");
   if (hasMutation) {
     classes.add("mutationBlocked");
     classes.add("unsafeEnvironment");

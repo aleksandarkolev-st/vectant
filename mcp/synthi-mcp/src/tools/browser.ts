@@ -14,6 +14,7 @@ import {
   classifyWorkflowReplayFailure,
   normalizeReplayMode,
   type AuthDurabilityV7,
+  type FailureClassV7,
   type WorkflowContractV7,
   type WorkflowReplayModeV7,
   type WorkflowStepContractV7,
@@ -1406,6 +1407,11 @@ function suggestedFailureTool(step: WorkflowStepContractV7): string {
   return "synthi_browser_compile_workflow";
 }
 
+function classifyBrokerValidationFailure(error: string): FailureClassV7 {
+  if (error === "browser_lease_required") return "unsafeEnvironment";
+  return classifyWorkflowReplayFailure(new Error(error));
+}
+
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
   const a = obj(args);
   const lease = browserBroker.acquireLease(
@@ -1506,7 +1512,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1564,7 +1570,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1619,7 +1625,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1674,7 +1680,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           status: "failed",
           steps_run: stepsRun,
           failed_step_id: event.event_id,
-          failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+          failure_class: classifyBrokerValidationFailure(validation.error),
           error: validation.error,
         },
       });
@@ -1826,6 +1832,21 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
     });
   }
 
+  const missingConsents = missingPrivateWorkflowTargetConsents(effectiveManifest, artifact.artifact.workflow.contract);
+  if (missingConsents.length > 0) {
+    return errorResponse("workflow_origin_consent_required", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      failure_class: "originConsentMissing",
+      required_tool: "synthi_browser_request_consent",
+      missing_origins: missingConsents,
+      notes: [
+        "Grant exact-origin consent for each missing origin before replaying this private workflow tool.",
+        "Screenshot consent is required only when the taught target needed screenshot access.",
+      ],
+    });
+  }
+
   const lease = browserBroker.acquireLease(
     process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
     numberOpt(a["lease_ms"]) ?? 15_000,
@@ -1906,6 +1927,63 @@ function manifestWithLiveAuthReadiness(
       notes,
     },
   };
+}
+
+function missingPrivateWorkflowTargetConsents(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): Array<Record<string, unknown>> {
+  const missing: Array<Record<string, unknown>> = [];
+  for (const target of targetOriginsForPrivateTool(manifest, contract)) {
+    const consent = browserBroker.getConsent(target.origin)[0];
+    const originMissing = consent?.status !== "granted";
+    const screenshotMissing = !originMissing && target.screenshot_consent_required && consent?.screenshot !== "granted";
+    const diagnosticsMissing = !originMissing && target.diagnostics_consent_required && consent?.diagnostics !== "granted";
+    if (!originMissing && !screenshotMissing && !diagnosticsMissing) continue;
+    missing.push({
+      origin: target.origin,
+      primary: target.primary,
+      kinds: target.kinds,
+      step_ids: target.step_ids,
+      reason: originMissing
+        ? "origin_consent_required"
+        : screenshotMissing
+        ? "screenshot_consent_required"
+        : "diagnostics_consent_required",
+      request: {
+        tool: "synthi_browser_request_consent",
+        arguments: {
+          url: target.origin,
+          status: "granted",
+          screenshot: target.screenshot_consent_required,
+          diagnostics: target.diagnostics_consent_required,
+        },
+      },
+    });
+  }
+  return missing;
+}
+
+function targetOriginsForPrivateTool(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): PrivateWorkflowToolManifestV7["target_origins"] {
+  const raw = (manifest as { target_origins?: unknown }).target_origins;
+  if (Array.isArray(raw) && raw.length > 0 && raw.every(isPrivateWorkflowTargetOrigin)) {
+    return raw;
+  }
+  return generatePrivateWorkflowToolManifest(contract).target_origins;
+}
+
+function isPrivateWorkflowTargetOrigin(value: unknown): value is PrivateWorkflowToolManifestV7["target_origins"][number] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<PrivateWorkflowToolManifestV7["target_origins"][number]>;
+  return typeof candidate.origin === "string" &&
+    typeof candidate.primary === "boolean" &&
+    Array.isArray(candidate.kinds) &&
+    Array.isArray(candidate.step_ids) &&
+    typeof candidate.screenshot_consent_required === "boolean" &&
+    typeof candidate.diagnostics_consent_required === "boolean";
 }
 
 function orderedRunModes<T extends string>(existing: T[], additions: T[]): T[] {

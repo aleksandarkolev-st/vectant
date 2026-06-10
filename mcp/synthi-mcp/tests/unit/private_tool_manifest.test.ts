@@ -68,6 +68,79 @@ describe("private browser workflow MCP tool manifest", () => {
     }));
   });
 
+  it("advertises target origins needed for popup and cross-origin replay", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "open-popup",
+        event_seq: 1,
+        tab_id: "main",
+        origin: "https://app.example.test",
+        url: "https://app.example.test/settings",
+        action: "click",
+        detail: {
+          element: { role: "button", name: "Open billing", source_id: "s_open_billing" },
+          popup_event: true,
+          popup_tab_id: "popup",
+          popup_origin: "https://billing.example.test",
+          popup_url: "https://billing.example.test/account",
+          popup_origin_approved: true,
+          popup_screenshot_approved: true,
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: false,
+          auth_checkpoint_approved: false,
+          popup_origin_approved: true,
+          popup_screenshot_approved: true,
+        },
+      }),
+      event({
+        event_id: "fill-popup",
+        event_seq: 2,
+        tab_id: "popup",
+        origin: "https://billing.example.test",
+        url: "https://billing.example.test/account",
+        action: "fill",
+        value: "Ops Ledger",
+        detail: {
+          element: { role: "textbox", label: "Account", source_id: "s_account" },
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.test",
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: false,
+          auth_checkpoint_approved: false,
+        },
+      }),
+    ]);
+
+    const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+
+    expect(manifest.target_origins).toEqual([
+      expect.objectContaining({
+        origin: "https://app.example.test",
+        primary: true,
+        kinds: ["page"],
+        step_ids: ["open-popup"],
+        screenshot_consent_required: true,
+      }),
+      expect.objectContaining({
+        origin: "https://billing.example.test",
+        primary: false,
+        kinds: ["popup"],
+        step_ids: ["fill-popup", "open-popup"],
+        screenshot_consent_required: true,
+        approved_during_teach: true,
+      }),
+    ]);
+    expect(manifest.safety.failure_classes).toContain("originConsentMissing");
+  });
+
   it("requires confirmation or CI for mutation workflows", () => {
     const workflow = compileWorkflowContract([
       event({
@@ -326,6 +399,10 @@ describe("private browser workflow MCP tool manifest", () => {
       },
     });
     expect(storedAuth.ok).toBe(true);
+    expect(browserBroker.activateAuthCheckpointForTeach({
+      app_origin: url,
+      checkpoint_id: checkpoint.checkpoint.checkpoint_id,
+    }).ok).toBe(true);
     expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
     registerSourceToken("s_secure");
     browserBroker.recordHumanAction({
@@ -431,6 +508,77 @@ describe("private browser workflow MCP tool manifest", () => {
       "page.locator(\"[data-synthi-source-id=\\\"s_open\\\"]\")",
       undefined
     );
+  });
+
+  it("tells agents which target origins need consent before a private tool replay", async () => {
+    const url = "https://app.example.test/settings";
+    const popupOrigin = "https://billing.example.test";
+    browserBroker.requestConsent(url);
+    browserBroker.requestConsent(popupOrigin);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open_billing");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open billing", source_id: "s_open_billing" },
+      detail: {
+        popup_event: true,
+        popup_tab_id: "popup-a",
+        popup_origin: popupOrigin,
+        popup_url: `${popupOrigin}/account`,
+        popup_origin_approved: true,
+        popup_screenshot_approved: true,
+      },
+      security: {
+        exact_origin_approved: true,
+        screenshot_approved: true,
+        diagnostics_approved: false,
+        auth_checkpoint_approved: false,
+        popup_origin_approved: true,
+        popup_screenshot_approved: true,
+      },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open billing\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(published?.isError).toBeUndefined();
+    const toolName = (published?.structuredContent as { tool_name: string }).tool_name;
+    browserBroker.revokeConsent(popupOrigin, "later-agent-session-missing-popup-consent");
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "tab-a",
+      url,
+    });
+
+    const blocked = await dispatchBrowserTool(toolName, {});
+
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      error: "workflow_origin_consent_required",
+      failure_class: "originConsentMissing",
+      required_tool: "synthi_browser_request_consent",
+      missing_origins: [
+        expect.objectContaining({
+          origin: popupOrigin,
+          reason: "origin_consent_required",
+          request: expect.objectContaining({
+            tool: "synthi_browser_request_consent",
+            arguments: expect.objectContaining({
+              url: popupOrigin,
+              screenshot: true,
+            }),
+          }),
+        }),
+      ],
+    }));
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it("requires explicit confirmation before a private MCP tool runs mutation steps", async () => {

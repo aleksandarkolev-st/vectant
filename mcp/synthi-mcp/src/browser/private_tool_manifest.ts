@@ -18,6 +18,16 @@ export interface PrivateWorkflowToolManifestV7 {
     redacted: boolean;
     value_shape: WorkflowParameterV7["valueShape"];
   }>;
+  target_origins: Array<{
+    origin: string;
+    primary: boolean;
+    kinds: NonNullable<WorkflowContractV7["steps"][number]["targetContext"]>["kind"][];
+    step_ids: string[];
+    origin_consent_required: true;
+    screenshot_consent_required: boolean;
+    diagnostics_consent_required: boolean;
+    approved_during_teach: boolean;
+  }>;
   run_modes: WorkflowContractV7["publishPlan"]["runModes"];
   default_run_mode: "sameSession" | "prefixOnly" | "coldSession" | "confirmBeforeCommit" | "ciOnly";
   auth: {
@@ -71,6 +81,7 @@ export function generatePrivateWorkflowToolManifest(contract: WorkflowContractV7
     title: contract.name,
     description: contract.description,
     parameters: manifestParameters(contract.parameters),
+    target_origins: manifestTargetOrigins(contract),
     run_modes: publish.runModes,
     default_run_mode: hasMutation ? "confirmBeforeCommit" : publish.runModes[0] ?? "sameSession",
     auth: {
@@ -113,6 +124,82 @@ export function generatePrivateWorkflowToolManifest(contract: WorkflowContractV7
       source_lookup: "synthi_source_lookup_token",
     },
   };
+}
+
+function manifestTargetOrigins(contract: WorkflowContractV7): PrivateWorkflowToolManifestV7["target_origins"] {
+  type TargetOrigin = PrivateWorkflowToolManifestV7["target_origins"][number];
+  const byOrigin = new Map<string, TargetOrigin>();
+  const addOrigin = (input: {
+    origin?: string;
+    kind: TargetOrigin["kinds"][number];
+    stepId: string;
+    screenshot: boolean;
+    diagnostics: boolean;
+    approved: boolean;
+  }) => {
+    const origin = input.origin?.trim();
+    if (!origin) return;
+    const existing = byOrigin.get(origin);
+    if (existing) {
+      if (!existing.kinds.includes(input.kind)) existing.kinds.push(input.kind);
+      if (!existing.step_ids.includes(input.stepId)) existing.step_ids.push(input.stepId);
+      existing.screenshot_consent_required = existing.screenshot_consent_required || input.screenshot;
+      existing.diagnostics_consent_required = existing.diagnostics_consent_required || input.diagnostics;
+      existing.approved_during_teach = existing.approved_during_teach || input.approved;
+      return;
+    }
+    byOrigin.set(origin, {
+      origin,
+      primary: origin === contract.appOrigin,
+      kinds: [input.kind],
+      step_ids: [input.stepId],
+      origin_consent_required: true,
+      screenshot_consent_required: input.screenshot,
+      diagnostics_consent_required: input.diagnostics,
+      approved_during_teach: input.approved,
+    });
+  };
+
+  for (const step of contract.steps) {
+    const context = step.targetContext;
+    if (!context) continue;
+    addOrigin({
+      origin: context.targetOrigin ?? context.origin,
+      kind: context.kind,
+      stepId: step.stepId,
+      screenshot: context.consent.screenshotApproved,
+      diagnostics: context.consent.diagnosticsApproved,
+      approved: context.consent.exactOriginApproved,
+    });
+    if (context.frame?.origin) {
+      addOrigin({
+        origin: context.frame.origin,
+        kind: context.kind === "popupIframe" ? "popupIframe" : "iframe",
+        stepId: step.stepId,
+        screenshot: context.consent.screenshotApproved,
+        diagnostics: context.consent.diagnosticsApproved,
+        approved: context.consent.exactOriginApproved,
+      });
+    }
+    if (context.popup?.origin) {
+      addOrigin({
+        origin: context.popup.origin,
+        kind: context.kind === "popupIframe" ? "popupIframe" : "popup",
+        stepId: step.stepId,
+        screenshot: context.consent.popupScreenshotApproved || context.consent.screenshotApproved,
+        diagnostics: context.consent.diagnosticsApproved,
+        approved: context.consent.popupOriginApproved || context.consent.exactOriginApproved,
+      });
+    }
+  }
+
+  return [...byOrigin.values()]
+    .sort((a, b) => Number(b.primary) - Number(a.primary) || a.origin.localeCompare(b.origin))
+    .map((target) => ({
+      ...target,
+      kinds: [...target.kinds].sort(),
+      step_ids: [...target.step_ids].sort(),
+    }));
 }
 
 function manifestParameters(parameters: WorkflowParameterV7[]): PrivateWorkflowToolManifestV7["parameters"] {

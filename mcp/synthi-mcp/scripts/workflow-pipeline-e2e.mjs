@@ -1136,6 +1136,14 @@ async function verifyFreshMcpPrivateTool({
     );
     transcript.steps.push({ name: "consent", ok: toolCallOk(consent), result: consent.parsed });
 
+    await grantFreshMcpTargetOriginConsents({
+      client,
+      testCase,
+      transcript,
+      manifest: manifestLookup.parsed?.manifest ?? privateManifest,
+      previewUrl,
+    });
+
     const opened = await client.toolCall("synthi_browser_open", { url: previewUrl });
     const tabId = opened.parsed?.tab?.tab_id;
     openedTabId = typeof tabId === "string" ? tabId : null;
@@ -1151,6 +1159,7 @@ async function verifyFreshMcpPrivateTool({
     const call = await client.toolCall(publishedToolName, args);
     const expectedSteps = privateToolRunMode === "prefixOnly" ? 0 : Math.max(1, Math.min(testCase.minSteps ?? 1, privateManifest?.steps?.length ?? 1));
     const stepsRun = Number(call.parsed?.replay?.steps_run ?? 0);
+    transcript.steps.push({ name: "call", ok: toolCallOk(call), result: call.parsed });
     record(
       testCase.id,
       "fresh MCP call discovered private tool",
@@ -1162,7 +1171,6 @@ async function verifyFreshMcpPrivateTool({
         ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${stepsRun}`
         : `error=${call.parsed?.error || "unknown"}`
     );
-    transcript.steps.push({ name: "call", ok: toolCallOk(call), result: call.parsed });
   } catch (err) {
     transcript.error = err instanceof Error ? err.message : String(err);
     throw err;
@@ -1177,6 +1185,46 @@ async function verifyFreshMcpPrivateTool({
     await writeJson(caseDir, "fresh-mcp-private-tool-call.json", transcript).catch(() => undefined);
     await client.close().catch(() => undefined);
     if (!proc.killed) proc.kill("SIGTERM");
+  }
+}
+
+async function grantFreshMcpTargetOriginConsents({ client, testCase, transcript, manifest, previewUrl }) {
+  const previewOrigin = originOf(previewUrl);
+  const seen = new Set([previewOrigin].filter(Boolean));
+  const targets = Array.isArray(manifest?.target_origins) ? manifest.target_origins : [];
+  for (const target of targets) {
+    if (!target || typeof target.origin !== "string") continue;
+    const origin = originOf(target.origin);
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    const response = await client.toolCall("synthi_browser_request_consent", {
+      url: origin,
+      status: "granted",
+      screenshot: target.screenshot_consent_required === true,
+      diagnostics: target.diagnostics_consent_required === true,
+      reason: `${testCase.id}:fresh-mcp-private-tool-target-origin`,
+    });
+    record(
+      testCase.id,
+      "fresh MCP grant target origin consent",
+      toolCallOk(response),
+      response.parsed?.consent?.origin || response.parsed?.error || origin
+    );
+    transcript.steps.push({
+      name: "target_origin_consent",
+      ok: toolCallOk(response),
+      origin,
+      result: response.parsed,
+    });
+  }
+}
+
+function originOf(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
   }
 }
 
