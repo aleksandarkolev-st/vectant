@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildStdioMcpEnv,
   selectCdpTargetsToClose,
+  strictHostValidateToolArgs,
   stdioAcceptanceAttachEvidence,
 } from "../../scripts/private-tool-stdio-acceptance.mjs";
 
@@ -77,5 +78,24 @@ describe("private-tool stdio acceptance harness", () => {
       { id: "keep", type: "webview" },
       { id: "close", type: "page" },
     ]).map((target) => target.id)).toEqual(["close"]);
+  });
+
+  it("validates private tool arguments like a strict deployed MCP host", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        run_mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"] },
+        confirm_mutation: { type: "boolean" },
+        timeout_ms: { type: "number" },
+      },
+      required: [],
+      additionalProperties: false,
+    };
+
+    expect(strictHostValidateToolArgs(schema, {})).toEqual([]);
+    expect(strictHostValidateToolArgs(schema, { run_mode: "sameSession", timeout_ms: 1000 })).toEqual([]);
+    expect(strictHostValidateToolArgs(schema, { script_path: "/tmp/generated.spec.ts" })).toEqual(["additional_property:script_path"]);
+    expect(strictHostValidateToolArgs(schema, { run_mode: "desktopChrome" })).toEqual(["enum:run_mode"]);
+    expect(strictHostValidateToolArgs(schema, { confirm_mutation: "yes" })).toEqual(["type:confirm_mutation"]);
   });
 });

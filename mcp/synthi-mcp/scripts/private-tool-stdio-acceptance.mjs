@@ -54,6 +54,9 @@ async function main() {
   const storeFile = path.join(artifactDir, "private-tools.enc.json");
   const storeKey = `stdio-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const storeScope = `stdio-acceptance-${process.pid}`;
+  const authStoreFile = path.join(artifactDir, "auth-checkpoints.enc.json");
+  const authStoreKey = `stdio-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const secretValues = [storeKey, authStoreKey, CFG.cdpUrl];
   const transcript = {
     generated_at: new Date().toISOString(),
     cdp_url: redactCdpUrl(CFG.cdpUrl),
@@ -78,6 +81,9 @@ async function main() {
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: storeFile,
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: storeKey,
         SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: storeScope,
+        SYNTHI_AUTH_CHECKPOINT_STORE_FILE: authStoreFile,
+        SYNTHI_AUTH_CHECKPOINT_STORE_KEY: authStoreKey,
+        SYNTHI_AUTH_CHECKPOINT_SCOPE: storeScope,
         SYNTHI_HOSTED_BROWSER_CDP_URL: CFG.cdpUrl,
         SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: targetUrl,
         SYNTHI_WORKSPACE_ID: workspaceId,
@@ -97,6 +103,26 @@ async function main() {
     transcript.steps.push({ name: "initialize", ok: true, serverInfo: init.serverInfo ?? null });
     log("ok", "initialize stdio MCP server");
 
+    const readiness = await client.toolCall("synthi_browser_get_deployment_readiness", {
+      mode: "production",
+      workspace_id: workspaceId,
+      require_workflow_bridge: false,
+    });
+    assertToolOk(readiness, "deployment readiness");
+    assert.equal(readiness.parsed?.readiness?.ok, true, "production readiness should pass for hosted runtime, scoped encrypted stores, and no local CDP env");
+    assertReadinessCheck(readiness.parsed?.readiness, "hosted_browser_runtime", "pass");
+    assertReadinessCheck(readiness.parsed?.readiness, "private_workflow_tool_store", "pass");
+    assertReadinessCheck(readiness.parsed?.readiness, "auth_checkpoint_store", "pass");
+    assertReadinessCheck(readiness.parsed?.readiness, "local_cdp_env_absent", "pass");
+    assertNoSecretLeak(readiness.parsed, secretValues, "deployment readiness");
+    transcript.steps.push({
+      name: "production-style deployment readiness through MCP",
+      ok: true,
+      readiness: readiness.parsed?.readiness ?? null,
+      workflow_bridge_required: false,
+    });
+    log("ok", "production-style deployment readiness through MCP");
+
     const listed = await client.request("tools/list", {});
     const tools = Array.isArray(listed?.tools) ? listed.tools : [];
     const privateTool = tools.find((tool) => typeof tool?.name === "string" && tool.name.startsWith("synthi_app_"));
@@ -110,9 +136,48 @@ async function main() {
     });
     log("ok", `discover private MCP tool - ${privateTool.name}`);
 
+    const strictRejectedScriptPath = strictHostValidateToolArgs(privateTool.inputSchema, {
+      script_path: "generated-workflow-script-is-not-a-tool-argument",
+    });
+    assert.deepEqual(strictRejectedScriptPath, ["additional_property:script_path"]);
+    const strictRejectedRunMode = strictHostValidateToolArgs(privateTool.inputSchema, {
+      run_mode: "desktopChrome",
+    });
+    assert.deepEqual(strictRejectedRunMode, ["enum:run_mode"]);
+    const strictAcceptedCall = strictHostValidateToolArgs(privateTool.inputSchema, {});
+    assert.deepEqual(strictAcceptedCall, []);
+    transcript.steps.push({
+      name: "strict host schema validation before execution",
+      ok: true,
+      rejected: [
+        { arguments: ["script_path"], errors: strictRejectedScriptPath },
+        { arguments: ["run_mode"], errors: strictRejectedRunMode },
+      ],
+      accepted_empty_call: true,
+    });
+    log("ok", "strict host schema validation before execution");
+
+    const registryList = await client.toolCall("synthi_browser_list_private_tools", {});
+    assertToolOk(registryList, "list private tools registry");
+    const registryTools = Array.isArray(registryList.parsed?.tools) ? registryList.parsed.tools : [];
+    const registryTool = registryTools.find((tool) => tool?.tool_name === privateTool.name);
+    assert(registryTool, `private registry did not include ${privateTool.name}`);
+    assert.deepEqual(registryTool?.tool?.inputSchema, privateTool.inputSchema);
+    assertNoSecretLeak(registryList.parsed, secretValues, "private tool registry");
+    transcript.steps.push({
+      name: "discover private workflow registry through MCP",
+      ok: true,
+      count: registryTools.length,
+      tool_name: registryTool.tool_name,
+      run_modes: registryTool.run_modes,
+      product_path: registryList.parsed?.product_path ?? null,
+    });
+    log("ok", "discover private workflow registry through MCP");
+
     const manifestLookup = await client.toolCall("synthi_browser_get_private_tool_manifest", { tool_name: privateTool.name });
     assertToolOk(manifestLookup, "manifest lookup");
     assert.equal(manifestLookup.parsed?.tool_name, privateTool.name);
+    assertNoSecretLeak(manifestLookup.parsed, secretValues, "private tool manifest");
     transcript.steps.push({ name: "lookup manifest through MCP", ok: true, result: manifestLookup.parsed });
     log("ok", "lookup private tool manifest through MCP");
 
@@ -383,6 +448,53 @@ class JsonRpcClient {
 function assertToolOk(call, label) {
   assert.equal(call.isError, false, `${label} returned MCP isError: ${JSON.stringify(call.parsed)}`);
   assert.equal(call.parsed?.ok, true, `${label} did not return ok=true: ${JSON.stringify(call.parsed)}`);
+}
+
+function assertReadinessCheck(readiness, id, expectedStatus) {
+  const check = readiness?.checks?.find((item) => item?.id === id);
+  assert(check, `deployment readiness check missing: ${id}`);
+  assert.equal(check.status, expectedStatus, `deployment readiness check ${id} expected ${expectedStatus}: ${JSON.stringify(check)}`);
+}
+
+function assertNoSecretLeak(value, secrets, label) {
+  const text = JSON.stringify(value);
+  for (const secret of secrets) {
+    if (typeof secret !== "string" || !secret) continue;
+    assert(!text.includes(secret), `${label} leaked secret value`);
+  }
+}
+
+export function strictHostValidateToolArgs(schema, args) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return ["schema_not_object"];
+  const errors = [];
+  if (schema.type !== "object") errors.push("schema_type_not_object");
+  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+    ? schema.properties
+    : {};
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((item) => typeof item === "string")
+    : [];
+  for (const name of required) {
+    if (!Object.prototype.hasOwnProperty.call(args, name)) errors.push(`missing_required:${name}`);
+  }
+  if (schema.additionalProperties === false) {
+    for (const name of Object.keys(args)) {
+      if (!Object.prototype.hasOwnProperty.call(properties, name)) errors.push(`additional_property:${name}`);
+    }
+  }
+  for (const [name, value] of Object.entries(args)) {
+    const property = properties[name];
+    if (!property || typeof property !== "object" || Array.isArray(property)) continue;
+    if (property.type === "string" && typeof value !== "string") errors.push(`type:${name}`);
+    if (property.type === "boolean" && typeof value !== "boolean") errors.push(`type:${name}`);
+    if (property.type === "number" && typeof value !== "number") errors.push(`type:${name}`);
+    if (Array.isArray(property.enum) && !property.enum.includes(value)) errors.push(`enum:${name}`);
+    if (typeof property.pattern === "string" && typeof value === "string") {
+      const pattern = new RegExp(property.pattern);
+      if (!pattern.test(value)) errors.push(`pattern:${name}`);
+    }
+  }
+  return errors;
 }
 
 async function writeSnapshotScreenshot(snapshot, outDir) {
