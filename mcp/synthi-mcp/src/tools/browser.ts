@@ -607,6 +607,12 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_list_private_tools",
+    description:
+      "List published private app-specific workflow tools registered with this MCP process. Use this to discover exact synthi_app_* tool names, run modes, parameters, auth policy, and mutation policy before calling a saved workflow.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "synthi_browser_get_private_tool_manifest",
     description:
       "Return the redacted registered manifest and MCP schema for a published private app-specific workflow tool by tool_name. Lets agents inspect run modes, parameters, auth durability, mutation policy, and blockers without a script path.",
@@ -855,6 +861,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserGeneratePrivateToolManifestTool(args);
       case "synthi_browser_publish_private_tool":
         return browserPublishPrivateToolTool(args);
+      case "synthi_browser_list_private_tools":
+        return browserListPrivateToolsTool();
       case "synthi_browser_get_private_tool_manifest":
         return browserGetPrivateToolManifestTool(args);
       case "synthi_browser_capture_auth_checkpoint_storage":
@@ -1221,6 +1229,62 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
     registered_at: published.registration.registered_at,
     manifest,
     tool: privateWorkflowToolDefinition(published.registration),
+  });
+}
+
+function browserListPrivateToolsTool(): ToolResponse {
+  const tools = privateWorkflowToolRegistry.list().map((registration) => {
+    const artifact = browserBroker.workflowArtifact(registration.workflow_id);
+    const contract = artifact.ok
+      ? artifact.artifact.workflow.contract
+      : registration.workflow_artifact?.workflow.contract;
+    const manifest = contract
+      ? manifestWithLiveAuthReadiness(registration.manifest, contract)
+      : registration.manifest;
+    const liveRegistration = { ...registration, manifest };
+    const definition = privateWorkflowToolDefinition(liveRegistration);
+    return {
+      tool_name: registration.tool_name,
+      workflow_id: registration.workflow_id,
+      title: manifest.title,
+      description: manifest.description,
+      status: manifest.status,
+      registered_at: registration.registered_at,
+      target_origins: manifest.target_origins,
+      run_modes: privateWorkflowAllowedRunModes(manifest),
+      default_run_mode: privateWorkflowDefaultReplayMode(manifest),
+      parameters: manifest.parameters.map((parameter) => ({
+        name: parameter.name,
+        required: parameter.required,
+        value_shape: parameter.value_shape,
+        redacted: parameter.redacted,
+      })),
+      auth: {
+        durability: manifest.auth.durability,
+        unattended_ready: manifest.auth.unattended_ready,
+        required: manifest.auth.required,
+      },
+      mutation: {
+        mode: manifest.mutation.mode,
+        requires_confirmation: manifest.mutation.requires_confirmation,
+        requires_ci_isolation: manifest.mutation.requires_ci_isolation,
+      },
+      safety: {
+        blockers: manifest.safety.blockers,
+        limitations: manifest.safety.limitations,
+      },
+      tool: {
+        name: definition.name,
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+      },
+    };
+  });
+  return jsonResponse({
+    ok: true,
+    count: tools.length,
+    tools,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
   });
 }
 

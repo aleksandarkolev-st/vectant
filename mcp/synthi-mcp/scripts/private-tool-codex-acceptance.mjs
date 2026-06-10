@@ -167,7 +167,7 @@ async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
   const prompt = [
     "Use the Synthi MCP browser workflow tools only. Do not use shell commands and do not read any script file.",
     "A saved Synthi app workflow private tool is available in the MCP tool list with a synthi_app_ prefix.",
-    "Discover the tool from MCP tools, attach to the hosted browser using synthi_browser_attach_current_workspace, request screenshot consent for the exact target URL, open the target URL, then call the saved private workflow tool.",
+    "Discover the exact saved workflow tool by calling synthi_browser_list_private_tools, attach to the hosted browser using synthi_browser_attach_current_workspace, request screenshot consent for the exact target URL, open the target URL, then call the saved private workflow tool.",
     `Target URL: ${targetUrl}`,
     "When the browser workflow succeeds, reply exactly as: WORKFLOW_DONE <tool_name_you_called>.",
   ].join("\n");

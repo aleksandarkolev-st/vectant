@@ -740,6 +740,7 @@ describe("private browser workflow MCP tool manifest", () => {
       });
       const beforePublish = await client.listTools();
       expect(beforePublish.tools.map((tool) => tool.name)).not.toContain("synthi_app_open_details");
+      expect(beforePublish.tools.map((tool) => tool.name)).toContain("synthi_browser_list_private_tools");
 
       const publish = await client.callTool({ name: "synthi_browser_publish_private_tool", arguments: {} });
       expect(publish.isError).not.toBe(true);
@@ -760,6 +761,29 @@ describe("private browser workflow MCP tool manifest", () => {
           }),
         }),
       ]));
+
+      const listedPrivateTools = await client.callTool({ name: "synthi_browser_list_private_tools", arguments: {} });
+      expect(listedPrivateTools.isError).not.toBe(true);
+      expect(JSON.parse(String(listedPrivateTools.content[0]?.text))).toEqual(expect.objectContaining({
+        ok: true,
+        count: 1,
+        tools: expect.arrayContaining([
+          expect.objectContaining({
+            tool_name: "synthi_app_open_details",
+            workflow_id: expect.any(String),
+            run_modes: ["sameSession", "prefixOnly", "coldSession"],
+            default_run_mode: "sameSession",
+            tool: expect.objectContaining({
+              name: "synthi_app_open_details",
+              inputSchema: expect.objectContaining({
+                properties: expect.objectContaining({
+                  run_mode: expect.objectContaining({ enum: ["sameSession", "prefixOnly", "coldSession"] }),
+                }),
+              }),
+            }),
+          }),
+        ]),
+      }));
 
       attachHostedRuntimeForTest(url);
       const run = await client.callTool({ name: "synthi_app_open_details", arguments: {} });
