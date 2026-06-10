@@ -52,6 +52,7 @@ Targeted replay-isolation verification:
 - The Workflows panel now hydrates replay-isolation profile state from the bridge, lets a developer edit base URL, CI/reset/assertion/postcondition commands, profile ids, seed ids, working directory, auth provider id, and mutation permission, then saves a portable `synthi.replayIsolationProfile.v1` manifest through the existing MCP safety tool.
 - Codex private-tool acceptance is wired to the hosted-runtime attach path and has unit coverage that rejects local CDP attach evidence.
 - Production deployment wiring has an MCP preflight with unit coverage for hosted runtime, workflow bridge, encrypted stores, workspace scope, and local CDP leakage.
+- Simultaneous popup annotation races are hardened: queued popup annotations no longer attach backward to earlier opener clicks outside a bounded browser-event skew window.
 
 Visual artifacts inspected in this update:
 
@@ -69,6 +70,7 @@ Visual artifacts inspected in this update:
 - `synthi_browser_get_deployment_readiness` gives deployers and agents a redacted readiness gate before relying on browser workflow tools in production.
 - Managed-browser Observe/Teach/Stop controls are injected by the hosted runtime path; the IDE Workflows panel remains the contract, manifest, export, validation, and publish surface.
 - Same-origin iframes, nested iframes, popups, popup chains, and opener-return workflows preserve target context for replay.
+- Close-together popup opener clicks preserve their own popup tab ids and URLs instead of sharing a broad queued annotation window.
 - Cross-origin iframe and popup recording requires explicit target-origin consent and otherwise blocks taught actions.
 - Clipboard paste/drop/copy/cut, file uploads, hidden file uploads, hover menus, context menus, keyboard controls, scroll/wheel, sliders, ARIA widgets, drag/sort/resize, native dialogs, rich text, code textareas, and animated dashboard interactions are covered by seeded live cases.
 - Auth checkpoint and refresh-provider durability paths are covered by fixtures and unit tests with redaction and expiry classification.
@@ -81,6 +83,7 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `94cec3a7` Disambiguate simultaneous popup annotations
 - `d6494d3c` Add browser workflow deployment readiness preflight
 - `70df51f0` Use hosted runtime in Codex workflow acceptance
 - `6859f454` Add replay isolation profile authoring
@@ -98,6 +101,6 @@ These sit on top of the earlier goal commits for private-tool registration, host
 ## Remaining Gaps
 
 - Validate the same private-tool discovery/call path in deployed third-party MCP hosts and production hosted-runtime policy, not just the repo-local Codex/fresh-MCP harness.
-- Expand adversarial target coverage for multiple simultaneous popups, hostile nested frame timing, and cross-origin return navigation under production consent rules.
+- Expand adversarial target coverage for hostile nested frame timing and cross-origin return navigation under production consent rules.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
 - Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
