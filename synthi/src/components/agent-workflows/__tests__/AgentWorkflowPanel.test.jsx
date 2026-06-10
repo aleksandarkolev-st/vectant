@@ -41,7 +41,9 @@ describe('AgentWorkflowPanel view model', () => {
     const summary = deriveWorkflowPanelSummary(model);
 
     expect(WORKFLOW_ACTIONS.COMPILE_CONTRACT).toBe('synthi_browser_compile_workflow');
+    expect(WORKFLOW_ACTIONS.GET_MUTATION_PLAN).toBe('synthi_safety_get_mutation_plan');
     expect(WORKFLOW_ACTIONS.PREFIX_VALIDATE).toBe('synthi_safety_run_prefix_validation');
+    expect(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY).toBe('synthi_safety_run_ci_isolated_replay');
     expect(WORKFLOW_ACTIONS.GENERATE_SCRIPT).toBe('synthi_browser_generate_script');
     expect(model.workspaceLabel).toBe('Current workspace');
     expect(summary.primaryAction).toBe(WORKFLOW_ACTIONS.ATTACH_WORKSPACE);
@@ -92,6 +94,44 @@ describe('AgentWorkflowPanel view model', () => {
     expect(summary.blockerCount).toBe(1);
     expect(summary.canPublish).toBe(false);
     expect(model.unresolvedSteps).toHaveLength(1);
+  });
+
+  it('surfaces ready CI isolation profiles as workflow actions', () => {
+    const model = normalizeWorkflowPanelState(
+      {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Publish release',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        profile_manifest: {
+          schema_version: 'synthi.replayIsolationProfile.v1',
+          readiness: 'ciIsolatedReady',
+          can_run_full_mutation_replay: true,
+          reset_profile_id: 'release-reset-v1',
+          state_seed_id: 'release-fixture-v1',
+          commands: { postcondition: 'npm run assert:release' },
+          missing: [],
+        },
+        mutation_plan: {
+          has_mutation: true,
+          ci_full_replay: { allowed: true, blockers: [] },
+        },
+      },
+      'developer-workspace',
+    );
+    const summary = deriveWorkflowPanelSummary(model);
+
+    expect(model.isolation).toEqual(expect.objectContaining({
+      canRunFullMutationReplay: true,
+      resetProfileId: 'release-reset-v1',
+      stateSeedId: 'release-fixture-v1',
+      postconditionConfigured: true,
+    }));
+    expect(summary.enabledActions).toContain(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY);
   });
 });
 
@@ -161,5 +201,55 @@ describe('AgentWorkflowPanel rendering', () => {
     expect(panel.textContent).toContain('Publish Hardening');
     expect(panel.textContent).toContain('Needs publish hardening');
     expect(panel.textContent).not.toContain('Review Queue');
+  });
+
+  it('renders CI replay profile readiness and dispatches isolated replay', () => {
+    const onWorkflowAction = vi.fn();
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      onWorkflowAction,
+      workflowState: {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Publish release',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        profile_manifest: {
+          schema_version: 'synthi.replayIsolationProfile.v1',
+          readiness: 'ciIsolatedReady',
+          can_run_full_mutation_replay: true,
+          reset_profile_id: 'release-reset-v1',
+          state_seed_id: 'release-fixture-v1',
+          commands: { postcondition: 'npm run assert:release' },
+          missing: [],
+        },
+        mutation_plan: {
+          has_mutation: true,
+          ci_full_replay: { allowed: true, blockers: [] },
+        },
+      },
+    });
+
+    expect(panel.textContent).toContain('CI replay profile');
+    expect(panel.textContent).toContain('release-reset-v1');
+    expect(panel.textContent).toContain('release-fixture-v1');
+    expect(panel.textContent).toContain('Configured');
+
+    const replayButton = [...panel.querySelectorAll('button')].find((button) => button.textContent.includes('CI replay'));
+    expect(replayButton).toBeTruthy();
+
+    act(() => {
+      replayButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onWorkflowAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY,
+        workspaceSlug: 'developer-workspace',
+      }),
+    );
   });
 });

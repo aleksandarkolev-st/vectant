@@ -454,6 +454,16 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
           });
           break;
+        case WORKFLOW_ACTIONS.GET_MUTATION_PLAN:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_MUTATION_PLAN, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
         case WORKFLOW_ACTIONS.GENERATE_SCRIPT:
           {
             const scriptBody = await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_SCRIPT, {});

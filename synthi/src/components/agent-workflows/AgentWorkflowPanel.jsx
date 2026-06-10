@@ -29,7 +29,9 @@ export const WORKFLOW_ACTIONS = Object.freeze({
   CONFIGURE_AUTH: 'synthi_auth_get_tool_auth_readiness',
   OPEN_SOURCE: 'synthi_source_get_mapping_status',
   COMPILE_CONTRACT: 'synthi_browser_compile_workflow',
+  GET_MUTATION_PLAN: 'synthi_safety_get_mutation_plan',
   PREFIX_VALIDATE: 'synthi_safety_run_prefix_validation',
+  RUN_CI_ISOLATED_REPLAY: 'synthi_safety_run_ci_isolated_replay',
   GENERATE_SCRIPT: 'synthi_browser_generate_script',
   GENERATE_MANIFEST: 'synthi_browser_generate_private_tool_manifest',
   PUBLISH_TOOL: 'synthi_workflow_publish_tool',
@@ -128,6 +130,56 @@ function unresolvedQuestionCount(model) {
   return Math.max(
     Number(model.workflow?.unresolvedCount || 0),
     Array.isArray(model.unresolvedSteps) ? model.unresolvedSteps.length : 0,
+  );
+}
+
+function pickObject(...values) {
+  return values.find((value) => value && typeof value === 'object' && !Array.isArray(value)) || null;
+}
+
+function normalizeArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : [];
+}
+
+function normalizeIsolationState(value = {}) {
+  const profile = pickObject(
+    value.isolation,
+    value.isolationProfile,
+    value.isolation_profile,
+    value.profileManifest,
+    value.profile_manifest,
+  ) || {};
+  const manifest = pickObject(value.profileManifest, value.profile_manifest, profile) || {};
+  const mutationPlan = pickObject(value.mutationPlan, value.mutation_plan) || {};
+  const ciReplay = pickObject(mutationPlan.ci_full_replay) || {};
+  const commands = pickObject(manifest.commands, profile.commands) || {};
+  const missing = normalizeArray(profile.missing || manifest.missing || ciReplay.blockers);
+  const readiness = profile.readiness || manifest.readiness || (missing.length > 0 ? 'ciIsolatedIncomplete' : 'notConfigured');
+  const canRunFullMutationReplay = Boolean(
+    profile.can_run_full_mutation_replay ||
+    manifest.can_run_full_mutation_replay ||
+    ciReplay.allowed,
+  );
+  const hasMutation = Boolean(mutationPlan.has_mutation || value.workflow?.hasMutation || canRunFullMutationReplay || missing.length > 0);
+
+  return {
+    readiness,
+    hasMutation,
+    canRunFullMutationReplay,
+    resetProfileId: profile.reset_profile_id || manifest.reset_profile_id || null,
+    stateSeedId: profile.state_seed_id || manifest.state_seed_id || null,
+    postconditionConfigured: Boolean(profile.postcondition_command || commands.postcondition),
+    missing,
+    detail: profile.detail || manifest.detail || mutationPlan.background_hardening?.reason || '',
+  };
+}
+
+function shouldShowIsolationProfile(model) {
+  return Boolean(
+    model.isolation?.hasMutation ||
+    model.isolation?.canRunFullMutationReplay ||
+    model.isolation?.readiness === 'ciIsolatedReady' ||
+    (Array.isArray(model.isolation?.missing) && model.isolation.missing.length > 0),
   );
 }
 
@@ -367,6 +419,7 @@ export function createDefaultWorkflowViewModel(workspaceSlug) {
     blockers: [],
     unresolvedSteps: [],
     history: [],
+    isolation: normalizeIsolationState(),
   };
 
   return {
@@ -395,6 +448,7 @@ export function normalizeWorkflowPanelState(input, workspaceSlug) {
     blockers: Array.isArray(value.blockers) ? value.blockers : base.blockers,
     unresolvedSteps: Array.isArray(value.unresolvedSteps) ? value.unresolvedSteps : base.unresolvedSteps,
     history: Array.isArray(value.history) ? value.history : base.history,
+    isolation: normalizeIsolationState(value),
   };
 
   const withDerived = {
@@ -427,6 +481,14 @@ export function deriveWorkflowPanelSummary(input) {
   const enabledFooterActions = [
     model.actions.primary,
     ...(Array.isArray(model.actions.secondary) ? model.actions.secondary : []),
+    shouldShowIsolationProfile(model)
+      ? {
+          action: model.isolation.canRunFullMutationReplay
+            ? WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY
+            : WORKFLOW_ACTIONS.GET_MUTATION_PLAN,
+          enabled: true,
+        }
+      : null,
   ]
     .filter((action) => action?.action && action.enabled)
     .map((action) => action.action);
@@ -630,6 +692,64 @@ function HistoryList({ history }) {
   );
 }
 
+function IsolationProfileCard({ isolation, traceReady, onAction }) {
+  if (!isolation) return null;
+  const ready = isolation.canRunFullMutationReplay || isolation.readiness === 'ciIsolatedReady';
+  const missing = Array.isArray(isolation.missing) ? isolation.missing : [];
+  const action = ready ? WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY : WORKFLOW_ACTIONS.GET_MUTATION_PLAN;
+  const actionLabel = ready ? 'CI replay' : 'Plan';
+
+  return (
+    <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-isolation">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-xs font-semibold">CI replay profile</h3>
+          <p className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {ready
+              ? 'Mutation replay is isolated by reset, seed, and postcondition checks.'
+              : isolation.detail || 'Full mutation replay needs a resettable profile and postcondition.'}
+          </p>
+        </div>
+        <StatusBadge
+          label={ready ? 'Ready' : missing.length > 0 ? 'Incomplete' : 'Plan'}
+          tone={ready ? 'ok' : missing.length > 0 ? 'warn' : 'neutral'}
+          icon={ShieldCheck}
+        />
+      </div>
+      <dl className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Reset profile</dt>
+          <dd className="min-w-0 truncate text-right">{isolation.resetProfileId || 'Not configured'}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>State seed</dt>
+          <dd className="min-w-0 truncate text-right">{isolation.stateSeedId || 'Not configured'}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Postcondition</dt>
+          <dd className="min-w-0 truncate text-right">{isolation.postconditionConfigured ? 'Configured' : 'Missing'}</dd>
+        </div>
+        {missing.length > 0 ? (
+          <div className="flex items-center justify-between gap-3">
+            <dt style={{ color: 'var(--text-muted)' }}>Missing</dt>
+            <dd className="min-w-0 truncate text-right">{missing.slice(0, 3).join(', ')}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <div className="border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ActionButton
+          action={action}
+          label={actionLabel}
+          icon="run"
+          enabled={traceReady || ready}
+          disabledReason="Teach a workflow first"
+          onAction={onAction}
+        />
+      </div>
+    </section>
+  );
+}
+
 export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   workspaceSlug,
   workflowState,
@@ -668,6 +788,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   const summary = useMemo(() => deriveWorkflowPanelSummary(model), [model]);
   const headerTone = summary.blockerCount > 0 ? 'warn' : hasGeneratedScript(model) ? 'ok' : 'neutral';
   const headerLabel = localRecording ? 'Teaching' : model.workflow?.label || 'Workflow draft';
+  const traceReady = hasRecordedTrace(model);
 
   const emitWorkflowAction = useCallback((action, payload = {}) => {
     if (!action) return;
@@ -748,6 +869,9 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
         </section>
 
         <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+        {shouldShowIsolationProfile(model) ? (
+          <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
+        ) : null}
         <HistoryList history={model.history} />
       </div>
 
