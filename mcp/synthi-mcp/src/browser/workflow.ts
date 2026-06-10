@@ -956,10 +956,11 @@ function targetContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7
   const frameRoutePattern = routePatternFromUrl(stringDetail(event, "frame_url"));
   const routePattern = routePatternFromUrl(event.url);
   const targetOrigin = frameOrigin ?? origin;
+  const frameTargetIdParts = frameTargetIdPartsFor(event.frame_id, frameLocatorChain);
   const targetIdParts = [
     `tab:${event.tab_id || "unknown"}`,
     ...(isPopupExecutionContext ? [`popup:${event.tab_id || popupContext?.recordedPopupTabId || "unknown"}`] : []),
-    ...(event.frame_id ? [`frame:${event.frame_id}`] : frameLocatorChain.length > 0 ? [`frame:${frameLocatorChain.join(">")}`] : []),
+    ...frameTargetIdParts,
   ];
   return {
     kind,
@@ -985,6 +986,14 @@ function targetContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7
       popupScreenshotApproved: event.security?.popup_screenshot_approved === true || boolDetail(event, "popup_screenshot_approved"),
     },
   };
+}
+
+function frameTargetIdPartsFor(frameId: string | undefined, frameLocatorChain: string[]): string[] {
+  if (frameLocatorChain.length === 0) return frameId ? [`frame:${frameId}`] : [];
+  const durableChainPart = `frameChain:${frameLocatorChain.join(">")}`;
+  if (!frameId) return [durableChainPart];
+  if (frameLocatorChain.length === 1) return [`frame:${frameId}`];
+  return [`frame:${frameId}`, durableChainPart];
 }
 
 function popupContextFor(event: BrowserTraceEvent): WorkflowStepTargetContextV7["popup"] | undefined {

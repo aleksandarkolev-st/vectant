@@ -749,6 +749,54 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("keeps nested iframe target contexts distinct when inner frame ids repeat", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "left-card",
+        event_seq: 1,
+        frame_id: "preview",
+        detail: {
+          frame_locator: "iframe[data-testid=\"preview\"]",
+          frame_locator_chain: [
+            "iframe[data-testid=\"left-panel\"]",
+            "iframe[data-testid=\"preview\"]",
+          ],
+          element: { role: "textbox", label: "Cardholder", source_id: "src_left_cardholder" },
+        },
+      }),
+      baseEvent({
+        event_id: "right-card",
+        event_seq: 2,
+        frame_id: "preview",
+        detail: {
+          frame_locator: "iframe[data-testid=\"preview\"]",
+          frame_locator_chain: [
+            "iframe[data-testid=\"right-panel\"]",
+            "iframe[data-testid=\"preview\"]",
+          ],
+          element: { role: "textbox", label: "Cardholder", source_id: "src_right_cardholder" },
+        },
+      }),
+    ]);
+
+    const targetIds = workflow.contract.steps.map((step) => step.targetContext?.traceTargetId);
+
+    expect(targetIds).toEqual([
+      "tab:tab|frame:preview|frameChain:iframe[data-testid=\"left-panel\"]>iframe[data-testid=\"preview\"]",
+      "tab:tab|frame:preview|frameChain:iframe[data-testid=\"right-panel\"]>iframe[data-testid=\"preview\"]",
+    ]);
+    expect(new Set(targetIds).size).toBe(targetIds.length);
+    expect(workflow.contract.steps[0]?.targetContext?.frame?.locatorChain).toEqual([
+      "iframe[data-testid=\"left-panel\"]",
+      "iframe[data-testid=\"preview\"]",
+    ]);
+    expect(workflow.contract.steps[1]?.targetContext?.frame?.locatorChain).toEqual([
+      "iframe[data-testid=\"right-panel\"]",
+      "iframe[data-testid=\"preview\"]",
+    ]);
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
+  });
+
   it("marks durable cross-origin iframe traces as cross-origin", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
