@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStdioMcpEnv,
+  selectCdpTargetsToClose,
   stdioAcceptanceAttachEvidence,
 } from "../../scripts/private-tool-stdio-acceptance.mjs";
 
@@ -68,5 +69,13 @@ describe("private-tool stdio acceptance harness", () => {
       local_attach: true,
       runtime_kind: "local-dev-cdp",
     }));
+  });
+
+  it("does not prune the final CDP page target out from under the hosted runtime", () => {
+    expect(selectCdpTargetsToClose([{ id: "keep", type: "webview" }])).toEqual([]);
+    expect(selectCdpTargetsToClose([
+      { id: "keep", type: "webview" },
+      { id: "close", type: "page" },
+    ]).map((target) => target.id)).toEqual(["close"]);
   });
 });

@@ -381,14 +381,24 @@ async function pruneExistingCdpPageTargets(cdpUrl) {
     if (!response.ok) return;
     const targets = await response.json();
     if (!Array.isArray(targets)) return;
-    await Promise.all(targets
-      .filter((target) => target && typeof target.id === "string" && (target.type === "page" || target.type === "webview"))
+    await Promise.all(selectCdpTargetsToClose(targets)
       .map((target) => fetchWithTimeout(`${baseUrl}/json/close/${encodeURIComponent(target.id)}`, {
         timeoutMs: Math.min(CFG.timeoutMs, 10_000),
       }).catch(() => undefined)));
   } catch {
     // Target pruning is a harness optimization; attach reports the real failure if CDP is unavailable.
   }
+}
+
+export function selectCdpTargetsToClose(targets) {
+  if (!Array.isArray(targets)) return [];
+  const pageTargets = targets.filter((target) => (
+    target
+    && typeof target.id === "string"
+    && (target.type === "page" || target.type === "webview")
+  ));
+  if (pageTargets.length <= 1) return [];
+  return pageTargets.slice(1);
 }
 
 function cdpHttpBaseUrl(cdpUrl) {

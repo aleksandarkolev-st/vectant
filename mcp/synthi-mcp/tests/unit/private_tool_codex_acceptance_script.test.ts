@@ -5,6 +5,7 @@ import {
   buildCodexProcessEnv,
   buildCodexConfigToml,
   extractCodexMcpEvidence,
+  selectCdpTargetsToClose,
 } from "../../scripts/private-tool-codex-acceptance.mjs";
 
 describe("private-tool Codex acceptance harness", () => {
@@ -101,6 +102,19 @@ describe("private-tool Codex acceptance harness", () => {
     expect(env.CODEX_HOME).toBe("/tmp/synthi-codex-home");
     expect(env.SYNTHI_HOSTED_BROWSER_CDP_URL).toBe("ws://hosted-runtime.example.test/devtools/browser/session");
     expect(env).not.toHaveProperty("SYNTHI_BROWSER_CDP_URL");
+  });
+
+  it("preserves one CDP page target while pruning stale pages", () => {
+    const targets = [
+      { id: "browser", type: "browser" },
+      { id: "first-page", type: "page" },
+      { id: "worker", type: "service_worker" },
+      { id: "second-page", type: "page" },
+      { id: "webview", type: "webview" },
+    ];
+
+    expect(selectCdpTargetsToClose([{ id: "only-page", type: "page" }])).toEqual([]);
+    expect(selectCdpTargetsToClose(targets).map((target) => target.id)).toEqual(["second-page", "webview"]);
   });
 });
 
