@@ -222,13 +222,16 @@ export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
   const openCall = completedCalls.find((item) => item.tool === "synthi_browser_open"
     && sameUrl(String(item.arguments?.url ?? ""), targetUrl));
   const hostedAttachCall = completedCalls.find((item) => item.tool === "synthi_browser_attach_current_workspace");
+  const hostedAttachOpenedTarget = hostedAttachCall
+    && sameUrl(String(hostedAttachCall.result?.structured_content?.opened_workspace_url ?? ""), targetUrl);
   const localAttachCall = completedCalls.find((item) => item.tool === "synthi_browser_attach");
   return {
     attach_call: Boolean(hostedAttachCall),
     hosted_attach_call: Boolean(hostedAttachCall),
     local_attach_call: Boolean(localAttachCall),
     consent_call: Boolean(consentCall),
-    open_call: Boolean(openCall),
+    open_call: Boolean(openCall) || Boolean(hostedAttachOpenedTarget),
+    opened_by_hosted_attach: Boolean(hostedAttachOpenedTarget),
     private_tool_call: Boolean(privateToolCall),
     private_tool_result_ok: privateToolResult?.ok === true
       && privateToolResult?.private_tool?.tool_name === toolName,

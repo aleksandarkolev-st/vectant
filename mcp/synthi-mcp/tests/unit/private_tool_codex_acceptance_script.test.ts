@@ -58,9 +58,11 @@ describe("private-tool Codex acceptance harness", () => {
       toolName,
       targetUrl,
       events: [
-        completedCall("synthi_browser_attach_current_workspace", {}),
+        completedCall("synthi_browser_attach_current_workspace", { workspace_url: targetUrl }, {
+          ok: true,
+          opened_workspace_url: targetUrl,
+        }),
         completedCall("synthi_browser_request_consent", { url: targetUrl }),
-        completedCall("synthi_browser_open", { url: targetUrl }),
         completedCall(toolName, {}, {
           ok: true,
           private_tool: { tool_name: toolName },
@@ -75,6 +77,7 @@ describe("private-tool Codex acceptance harness", () => {
       local_attach_call: false,
       consent_call: true,
       open_call: true,
+      opened_by_hosted_attach: true,
       private_tool_call: true,
       private_tool_result_ok: true,
       private_tool_steps_run: 1,
