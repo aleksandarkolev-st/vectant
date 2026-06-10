@@ -1908,6 +1908,9 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
     });
   }
 
+  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a);
+  if (hostedRuntimeGate) return hostedRuntimeGate;
+
   const lease = browserBroker.acquireLease(
     process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
     numberOpt(a["lease_ms"]) ?? 15_000,
@@ -1938,6 +1941,39 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   } finally {
     browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
   }
+}
+
+function privateWorkflowHostedRuntimeGate(
+  toolName: string,
+  manifest: PrivateWorkflowToolManifestV7,
+  args: Record<string, unknown>
+): ToolResponse | null {
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind === "hosted") return null;
+  const workspaceId = stringOpt(args["workspace_id"]);
+  const readiness = resolveHostedBrowserRuntime({
+    workspace_id: workspaceId,
+  });
+  return errorResponse("private_workflow_hosted_runtime_required", {
+    tool_name: toolName,
+    workflow_id: manifest.workflow_id,
+    required_tool: "synthi_browser_attach_current_workspace",
+    runtime: runtime ?? null,
+    readiness,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    next_action: {
+      tool: "synthi_browser_attach_current_workspace",
+      arguments: {
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
+        ...(readiness.workspace_url ? { workspace_url: readiness.workspace_url } : {}),
+        open_workspace: true,
+      },
+    },
+    notes: [
+      "Attach the Synthi-hosted workspace browser before running browser-backed private workflow tools.",
+      "Local Chrome, local CDP, desktop extensions, and script paths are not part of the normal user path.",
+    ],
+  });
 }
 
 function manifestWithLiveAuthReadiness(

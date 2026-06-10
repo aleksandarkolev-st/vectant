@@ -541,6 +541,7 @@ describe("private browser workflow MCP tool manifest", () => {
       tab_id: "tab-a",
       url,
     });
+    attachHostedRuntimeForTest(url);
 
     const response = await dispatchBrowserTool("synthi_app_open_details", {});
 
@@ -683,6 +684,7 @@ describe("private browser workflow MCP tool manifest", () => {
       tab_id: "tab-a",
       url,
     });
+    attachHostedRuntimeForTest(url);
     const confirmed = await dispatchBrowserTool("synthi_app_save_settings", {
       run_mode: "sameSession",
       confirm_mutation: true,
@@ -759,6 +761,7 @@ describe("private browser workflow MCP tool manifest", () => {
         }),
       ]));
 
+      attachHostedRuntimeForTest(url);
       const run = await client.callTool({ name: "synthi_app_open_details", arguments: {} });
       expect(run.isError).not.toBe(true);
       expect(JSON.parse(String(run.content[0]?.text))).toEqual(expect.objectContaining({
@@ -773,6 +776,49 @@ describe("private browser workflow MCP tool manifest", () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it("tells strict agents to attach the hosted runtime before browser-backed private tool replay", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open details", source_id: "s_open" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(published?.isError).toBeUndefined();
+
+    const response = await dispatchBrowserTool("synthi_app_open_details", {});
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "private_workflow_hosted_runtime_required",
+      tool_name: "synthi_app_open_details",
+      required_tool: "synthi_browser_attach_current_workspace",
+      product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+      next_action: expect.objectContaining({
+        tool: "synthi_browser_attach_current_workspace",
+        arguments: expect.objectContaining({
+          open_workspace: true,
+        }),
+      }),
+      readiness: expect.objectContaining({
+        product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+        ignored_local_dev_env: expect.any(Array),
+      }),
+    }));
+    expect(JSON.stringify(response?.structuredContent)).not.toContain("SYNTHI_BROWSER_CDP_URL=");
   });
 
   it("persists published private tools with encrypted workflow artifacts for later MCP discovery", async () => {
@@ -822,6 +868,7 @@ describe("private browser workflow MCP tool manifest", () => {
     browserBroker.requestConsent(url);
     browserBroker.registerTabs([{ tab_id: "tab-b", url, active: true }]);
     browserBroker.selectTab("tab-b");
+    attachHostedRuntimeForTest(url);
     const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
       ok: true,
       action: "fill",
@@ -987,6 +1034,16 @@ function registerSourceToken(token: string): void {
     adapter: "unit-test",
     transformVersion: "unit_source_identity_v1",
     tokens: [{ token, file: filePath, tag: "button", line: 1, column: 1 }],
+  });
+}
+
+function attachHostedRuntimeForTest(workspaceUrl: string): void {
+  browserBroker.setRuntimeAttachment({
+    kind: "hosted",
+    workspace_id: "manifest-tests",
+    runtime_id: null,
+    workspace_url: workspaceUrl,
+    adapter: "hosted-playwright-cdp",
   });
 }
 
