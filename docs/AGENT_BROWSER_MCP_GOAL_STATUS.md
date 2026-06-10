@@ -61,6 +61,7 @@ Codex CLI private-tool acceptance now passes with `gpt-5.3-codex-spark` through 
 - visual assertion: the managed browser page showed `Details opened`, with the hosted browser toolbox still injected.
 - latest hardened run evidence: the Codex acceptance harness now disables unrelated built-in Codex feature surfaces for this MCP-only run, prompts the agent to call the discovered `synthi_app_*` private workflow tool directly instead of teaching or manually clicking, and accepts exact-url or same-origin visual proof after app navigation. The latest run with `gpt-5.3-codex-spark` recorded `private_tool_call=true`, `private_tool_result_ok=true`, `private_tool_steps_run=1`, `hosted_attach_call=true`, and `local_attach_call=false`.
 - MCP-only agent evidence: the Codex acceptance harness now disables the shell tool in the temporary Codex feature surface and fails if any `command_execution` event appears in the JSONL transcript. The latest Spark run recorded `command_execution_count=0`, called the private workflow MCP tool, and captured viewport visual proof of the browser state.
+- hosted-runtime endpoint gate evidence: the Codex private-tool acceptance harness now shares the same non-loopback hosted-runtime conformance gate as the stdio harness. Local headed proof can still run against a loopback dev runtime with the gate disabled, but deployer conformance runs can add `--require-non-loopback-runtime`, `SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME=1`, or the shared `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME=1` to reject loopback/local-bind CDP endpoints before any agent work starts. A negative check against `http://127.0.0.1:37727` failed with `non_loopback_runtime_required`; the visual local-dev Spark run still passed and recorded `runtime_host_class=loopback`.
 
 The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, strips `SYNTHI_BROWSER_CDP_URL` from the Codex child process, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
 
@@ -173,6 +174,7 @@ Visual artifacts inspected in this update:
 - `b10679ee` Generalize private tool stdio acceptance
 - `6eca77c1` Harden Codex private tool acceptance
 - `e76478a6` Enforce MCP-only Codex workflow acceptance
+- `028491a2` Gate Codex acceptance on non-loopback runtime
 
 These sit on top of the earlier goal commits for private-tool registration, hosted overlay controls, exported-script runner isolation, target-origin consent, auth checkpointing, CI mutation replay, popup/iframe target handling, and visual replay proof.
 
