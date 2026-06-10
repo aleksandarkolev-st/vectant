@@ -29,6 +29,7 @@ const CFG = {
   codexAuthHome: args["codex-auth-home"] || process.env.SYNTHI_CODEX_AUTH_HOME || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
   codexModel: args["codex-model"] || process.env.SYNTHI_CODEX_ACCEPTANCE_MODEL || process.env.CODEX_MODEL || "",
   codexReasoning: args["codex-reasoning"] || process.env.SYNTHI_CODEX_ACCEPTANCE_REASONING || "low",
+  workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_TIMEOUT_MS || 120_000),
 };
@@ -59,17 +60,20 @@ async function main() {
   const storeFile = path.join(artifactDir, "private-tools.enc.json");
   const storeKey = `codex-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const storeScope = `codex-acceptance-${process.pid}`;
+  const workspaceId = CFG.workspaceId || `codex-private-tool-acceptance-${process.pid}`;
   const transcript = {
     generated_at: new Date().toISOString(),
     cdp_url: redactCdpUrl(CFG.cdpUrl),
     target_url: targetUrl,
+    workspace_id: workspaceId,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
     codex_model: CFG.codexModel || "codex-default",
     steps: [],
   };
 
   try {
     await mkdir(codexWorkdir, { recursive: true });
-    await prepareCodexHome({ codexHome, authPath, storeFile, storeKey, storeScope });
+    await prepareCodexHome({ codexHome, authPath, storeFile, storeKey, storeScope, targetUrl, workspaceId });
     const seeded = await seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl });
     transcript.seeded = seeded;
     log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
@@ -83,7 +87,8 @@ async function main() {
     assert.equal(codexRun.exitCode, 0, `codex exited with ${codexRun.exitCode}: ${codexRun.stderr.slice(0, 1000)}`);
     assert(codexRun.finalMessage.includes("WORKFLOW_DONE"), `Codex did not report workflow completion: ${codexRun.finalMessage}`);
     assert(codexRun.finalMessage.includes(seeded.tool_name), `Codex final message did not name discovered private tool ${seeded.tool_name}`);
-    assert(codexRun.evidence.attach_call, "Codex JSONL did not include a completed browser attach MCP call");
+    assert(codexRun.evidence.hosted_attach_call, "Codex JSONL did not include a completed hosted browser attach MCP call");
+    assert.equal(codexRun.evidence.local_attach_call, false, "Codex used local CDP attach instead of hosted workspace attach");
     assert(codexRun.evidence.private_tool_call, `Codex JSONL did not include a completed MCP call to ${seeded.tool_name}`);
     assert(codexRun.evidence.private_tool_result_ok, `Codex private workflow tool did not return ok=true for ${seeded.tool_name}`);
     assert(codexRun.evidence.private_tool_steps_run > 0, `Codex private workflow tool ran no steps for ${seeded.tool_name}`);
@@ -106,35 +111,62 @@ async function main() {
   }
 }
 
-async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, storeScope }) {
+async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, storeScope, targetUrl, workspaceId }) {
   await mkdir(codexHome, { recursive: true });
   await copyFile(authPath, path.join(codexHome, "auth.json"));
+  const configText = buildCodexConfigToml({
+    codexReasoning: CFG.codexReasoning,
+    codexModel: CFG.codexModel,
+    distIndex: DIST_INDEX,
+    storeFile,
+    storeKey,
+    storeScope,
+    cdpUrl: CFG.cdpUrl,
+    targetUrl,
+    workspaceId,
+  });
+  await writeFile(path.join(codexHome, "config.toml"), configText);
+}
+
+export function buildCodexConfigToml({
+  codexReasoning,
+  codexModel,
+  distIndex,
+  storeFile,
+  storeKey,
+  storeScope,
+  cdpUrl,
+  targetUrl,
+  workspaceId,
+}) {
   const config = [
-    `model_reasoning_effort = ${JSON.stringify(CFG.codexReasoning)}`,
+    `model_reasoning_effort = ${JSON.stringify(codexReasoning || "low")}`,
     "",
     "[mcp_servers.synthi]",
     'command = "node"',
-    `args = [${JSON.stringify(DIST_INDEX)}]`,
+    `args = [${JSON.stringify(distIndex)}]`,
     "",
     "[mcp_servers.synthi.env]",
     `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE = ${JSON.stringify(storeFile)}`,
     `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY = ${JSON.stringify(storeKey)}`,
     `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE = ${JSON.stringify(storeScope)}`,
-    `SYNTHI_BROWSER_CDP_URL = ${JSON.stringify(CFG.cdpUrl)}`,
+    `SYNTHI_HOSTED_BROWSER_CDP_URL = ${JSON.stringify(cdpUrl)}`,
+    `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL = ${JSON.stringify(targetUrl)}`,
+    `SYNTHI_WORKSPACE_ID = ${JSON.stringify(workspaceId)}`,
     'SYNTHI_AGENT_ID = "codex_private_tool_acceptance"',
     "",
   ];
-  if (CFG.codexModel) {
-    config.unshift(`model = ${JSON.stringify(CFG.codexModel)}`);
+  if (codexModel) {
+    config.unshift(`model = ${JSON.stringify(codexModel)}`);
   }
-  await writeFile(path.join(codexHome, "config.toml"), config.join("\n"));
+  return config.join("\n");
 }
 
 async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
   const prompt = [
     "Use the Synthi MCP browser workflow tools only. Do not use shell commands and do not read any script file.",
     "A saved Synthi app workflow private tool is available in the MCP tool list with a synthi_app_ prefix.",
-    "Discover the tool from MCP tools, attach to the hosted browser using the MCP attach tool, request screenshot consent for the exact target URL, open the target URL, then call the saved private workflow tool.",
+    "Discover the tool from MCP tools, attach to the hosted browser using synthi_browser_attach_current_workspace, request screenshot consent for the exact target URL, open the target URL, then call the saved private workflow tool.",
     `Target URL: ${targetUrl}`,
     "When the browser workflow succeeds, reply exactly as: WORKFLOW_DONE <tool_name_you_called>.",
   ].join("\n");
@@ -181,7 +213,7 @@ async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
   };
 }
 
-function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
+export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
   const completedCalls = events
     .map((event) => event?.item)
     .filter((item) => item?.type === "mcp_tool_call" && item.status === "completed");
@@ -191,10 +223,12 @@ function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
     && sameUrl(String(item.arguments?.url ?? ""), targetUrl));
   const openCall = completedCalls.find((item) => item.tool === "synthi_browser_open"
     && sameUrl(String(item.arguments?.url ?? ""), targetUrl));
-  const attachCall = completedCalls.find((item) => item.tool === "synthi_browser_attach"
-    || item.tool === "synthi_browser_attach_current_workspace");
+  const hostedAttachCall = completedCalls.find((item) => item.tool === "synthi_browser_attach_current_workspace");
+  const localAttachCall = completedCalls.find((item) => item.tool === "synthi_browser_attach");
   return {
-    attach_call: Boolean(attachCall),
+    attach_call: Boolean(hostedAttachCall),
+    hosted_attach_call: Boolean(hostedAttachCall),
+    local_attach_call: Boolean(localAttachCall),
     consent_call: Boolean(consentCall),
     open_call: Boolean(openCall),
     private_tool_call: Boolean(privateToolCall),
@@ -473,7 +507,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-main().catch((err) => {
-  log("fail", err instanceof Error ? err.stack || err.message : String(err));
-  process.exit(1);
-});
+if (isDirectRun()) {
+  main().catch((err) => {
+    log("fail", err instanceof Error ? err.stack || err.message : String(err));
+    process.exit(1);
+  });
+}
+
+function isDirectRun() {
+  return process.argv[1] && path.resolve(process.argv[1]) === __filename;
+}
