@@ -12,7 +12,7 @@ agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screens
 
 Local CDP remains only the development harness. The verification run did not rely on fixed preview ports, fixed workspace slugs, local Chrome paths, fixed element positions, or generated-script shortcuts for a specific fixture.
 
-Excluding real deployed IdP testing, the remaining work is about 1 percent. The main unfinished items are production rollout validation in deployed third-party MCP hosts and final account-available Codex `5.3-spark` acceptance from inside a workspace.
+Excluding real deployed IdP testing, the remaining work is about 1 percent. The main unfinished item is production rollout validation in deployed third-party MCP hosts and their hosted-runtime policy, outside the repo-local Docker/Codex harness.
 
 ## Latest Verification
 
@@ -48,7 +48,17 @@ Focused hosted-only harness regression:
 - fresh MCP evidence: `hosted_attach=true`, `local_attach=false`, `runtime_kind=hosted` in `tmp/workflow-pipeline-e2e/profile-form/fresh-mcp-private-tool-call.json`.
 - harness hardening: the pipeline no longer accepts `SYNTHI_BROWSER_CDP_URL` or a fixed CDP fallback for hosted workflow verification; it requires `SYNTHI_HOSTED_BROWSER_CDP_URL` from the hosted runtime harness.
 
-Codex CLI private-tool acceptance was also attempted with `SYNTHI_CODEX_ACCEPTANCE_MODEL=gpt-5.3-spark`. The local ChatGPT-auth Codex CLI rejected that model for this account before calling tools, so the harness is now override-driven and does not hardcode a 5.5 fallback. The repo-local fresh MCP/private-tool path still passes; the 5.3-spark Codex-agent pass remains an environment-availability gap.
+Codex CLI private-tool acceptance now passes with `gpt-5.3-codex-spark` through the hosted-runtime path:
+
+- command: `SYNTHI_HOSTED_BROWSER_CDP_URL="$DYNAMIC_HOSTED_CDP_URL" SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_TIMEOUT_MS=180000 npm run live:browser:private-tool-codex`
+- transcript: `tmp/private-tool-codex-acceptance/codex-private-tool-acceptance.json`
+- visual proof: `tmp/private-tool-codex-acceptance/after-codex-private-tool-call.png`
+- final agent response: `WORKFLOW_DONE synthi_app_open_details`
+- discovered registry tool: `synthi_browser_list_private_tools`
+- called private workflow tool: `synthi_app_open_details`
+- attach evidence: `hosted_attach=true`, `local_attach=false`
+- replay evidence: one private-tool workflow step replayed through MCP and produced the expected app state.
+- visual assertion: the managed browser page showed `Details opened`, with the hosted browser toolbox still injected.
 
 The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, strips `SYNTHI_BROWSER_CDP_URL` from the Codex child process, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
 
@@ -97,7 +107,7 @@ Visual artifacts inspected in this update:
 - Agents can call published `synthi_app_*` workflow tools without being handed script paths.
 - Strict MCP hosts get deterministic private-tool errors for missing hosted runtime attach and invalid `run_mode`, instead of local-CDP fallback or silent mode coercion.
 - Strict MCP host behavior is now covered by a local simulator that consumes the actual advertised `inputSchema` from `tools/list`, proving schema compatibility without handing an agent a script path.
-- The Codex acceptance harness uses hosted workspace attach evidence for private MCP tools instead of local attach evidence, while remaining model-configurable for `5.3-spark`.
+- The Codex acceptance harness uses hosted workspace attach evidence for private MCP tools instead of local attach evidence, while remaining model-configurable for `gpt-5.3-codex-spark`.
 - The stdio MCP acceptance harness uses `synthi_browser_attach_current_workspace` and rejects local-dev CDP attachment evidence.
 - The full workflow pipeline's fresh-MCP verifier now uses `synthi_browser_attach_current_workspace`, passes hosted runtime env explicitly, strips legacy local CDP env, and fails clearly when `SYNTHI_HOSTED_BROWSER_CDP_URL` is missing.
 - `synthi_browser_get_deployment_readiness` gives deployers and agents a redacted readiness gate before relying on browser workflow tools in production.
@@ -140,6 +150,11 @@ Visual artifacts inspected in this update:
 - `9db27d65` Correlate popup annotations across capture races
 - `36fbdac4` Suppress cut-derived fill parameters
 - `bce57661` Avoid private tool control parameter collisions
+- `cc1986bb` Use corrected Codex spark model id
+- `3d32a203` Preserve headed runtime during CDP pruning
+- `2622d3bf` Expose private workflow registry to agents
+- `d115aad3` Accept hosted attach open evidence
+- `3e68d172` Scan duplicate targets for Codex visual proof
 
 These sit on top of the earlier goal commits for private-tool registration, hosted overlay controls, exported-script runner isolation, target-origin consent, auth checkpointing, CI mutation replay, popup/iframe target handling, and visual replay proof.
 
@@ -148,4 +163,3 @@ These sit on top of the earlier goal commits for private-tool registration, host
 - Validate the same private-tool discovery/call path in deployed third-party MCP hosts and production hosted-runtime policy, not just the repo-local Codex/fresh-MCP harness.
 - Expand adversarial target coverage only for production-host-specific timing/target-policy variants that cannot be simulated in local unit/live fixtures.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
-- Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
