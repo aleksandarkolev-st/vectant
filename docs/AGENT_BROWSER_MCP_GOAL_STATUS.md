@@ -70,6 +70,8 @@ Targeted replay-isolation verification:
 - The Workflows panel now hydrates replay-isolation profile state from the bridge, lets a developer edit base URL, CI/reset/assertion/postcondition commands, profile ids, seed ids, working directory, auth provider id, and mutation permission, then saves a portable `synthi.replayIsolationProfile.v1` manifest through the existing MCP safety tool.
 - Codex private-tool acceptance is wired to the hosted-runtime attach path and has unit coverage that rejects local CDP attach evidence.
 - Stdio private-tool acceptance is also wired to the hosted-runtime attach path; the spawned MCP process receives hosted runtime env only and strips `SYNTHI_BROWSER_CDP_URL`.
+- Browser-backed private workflow tools now fail with `private_workflow_hosted_runtime_required` and an actionable `synthi_browser_attach_current_workspace` next action when a strict MCP host calls them before hosted runtime attachment.
+- Private workflow tools now reject unknown `run_mode` values with `private_workflow_invalid_run_mode` instead of coercing malformed input into `sameSession`.
 - Production deployment wiring has an MCP preflight with unit coverage for hosted runtime, workflow bridge, encrypted stores, workspace scope, and local CDP leakage.
 - Simultaneous popup annotation races are hardened: queued popup annotations no longer attach backward to earlier opener clicks outside a bounded browser-event skew window.
 - Nested iframe workflow target ids include durable frame-locator chain context when needed, so repeated inner frame ids do not collapse distinct replay targets.
@@ -92,6 +94,7 @@ Visual artifacts inspected in this update:
 
 - Private MCP workflow tools are registered from taught workflow manifests and can be discovered through `tools/list`.
 - Agents can call published `synthi_app_*` workflow tools without being handed script paths.
+- Strict MCP hosts get deterministic private-tool errors for missing hosted runtime attach and invalid `run_mode`, instead of local-CDP fallback or silent mode coercion.
 - The Codex acceptance harness uses hosted workspace attach evidence for private MCP tools instead of local attach evidence, while remaining model-configurable for `5.3-spark`.
 - The stdio MCP acceptance harness uses `synthi_browser_attach_current_workspace` and rejects local-dev CDP attachment evidence.
 - The full workflow pipeline's fresh-MCP verifier now uses `synthi_browser_attach_current_workspace`, passes hosted runtime env explicitly, strips legacy local CDP env, and fails clearly when `SYNTHI_HOSTED_BROWSER_CDP_URL` is missing.
@@ -111,6 +114,8 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `6eda4258` Reject invalid private workflow run modes
+- `6f5d87d0` Guide private tools to hosted runtime attach
 - `7c116e3b` Require hosted runtime in workflow acceptance harnesses
 - `7d6906d6` Record hosted stdio acceptance proof
 - `e1173b81` Update status for hosted stdio acceptance
