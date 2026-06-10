@@ -59,6 +59,7 @@ Codex CLI private-tool acceptance now passes with `gpt-5.3-codex-spark` through 
 - attach evidence: `hosted_attach=true`, `local_attach=false`
 - replay evidence: one private-tool workflow step replayed through MCP and produced the expected app state.
 - visual assertion: the managed browser page showed `Details opened`, with the hosted browser toolbox still injected.
+- latest hardened run evidence: the Codex acceptance harness now disables unrelated built-in Codex feature surfaces for this MCP-only run, prompts the agent to call the discovered `synthi_app_*` private workflow tool directly instead of teaching or manually clicking, and accepts exact-url or same-origin visual proof after app navigation. The latest run with `gpt-5.3-codex-spark` recorded `private_tool_call=true`, `private_tool_result_ok=true`, `private_tool_steps_run=1`, `hosted_attach_call=true`, and `local_attach_call=false`.
 
 The Codex private-tool acceptance harness now configures the MCP server through `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL`, and `SYNTHI_WORKSPACE_ID`, strips `SYNTHI_BROWSER_CDP_URL` from the Codex child process, prompts the agent to call `synthi_browser_attach_current_workspace`, and rejects evidence that used the local `synthi_browser_attach` CDP path. Local CDP remains only the outer dev harness used to supply a Synthi-hosted runtime endpoint during local verification.
 
@@ -169,6 +170,7 @@ Visual artifacts inspected in this update:
 - `400a2fa8` Add private tool host conformance script
 - `3a45a208` Gate host conformance on non-loopback runtime
 - `b10679ee` Generalize private tool stdio acceptance
+- `6eca77c1` Harden Codex private tool acceptance
 
 These sit on top of the earlier goal commits for private-tool registration, hosted overlay controls, exported-script runner isolation, target-origin consent, auth checkpointing, CI mutation replay, popup/iframe target handling, and visual replay proof.
 
