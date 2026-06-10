@@ -821,6 +821,43 @@ describe("private browser workflow MCP tool manifest", () => {
     expect(JSON.stringify(response?.structuredContent)).not.toContain("SYNTHI_BROWSER_CDP_URL=");
   });
 
+  it("rejects invalid private tool run modes instead of coercing them", async () => {
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open details", source_id: "s_open" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "tab-a",
+      url,
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(published?.isError).toBeUndefined();
+    const response = await dispatchBrowserTool("synthi_app_open_details", { run_mode: "desktopChrome" });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "private_workflow_invalid_run_mode",
+      received_run_mode: "desktopChrome",
+      allowed_run_modes: ["sameSession", "prefixOnly", "coldSession"],
+    }));
+    expect(replay).not.toHaveBeenCalled();
+  });
+
   it("persists published private tools with encrypted workflow artifacts for later MCP discovery", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tools-"));
     const filePath = path.join(directory, "private-tools.enc.json");

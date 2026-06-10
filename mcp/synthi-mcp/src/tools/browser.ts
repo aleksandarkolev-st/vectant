@@ -1836,7 +1836,16 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
     });
   }
 
-  const requestedMode = privateWorkflowRunMode(a["run_mode"]);
+  const requestedModeResult = privateWorkflowRunMode(a["run_mode"]);
+  if (!requestedModeResult.ok) {
+    return errorResponse("private_workflow_invalid_run_mode", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      received_run_mode: typeof a["run_mode"] === "string" ? a["run_mode"] : typeof a["run_mode"],
+      allowed_run_modes: privateWorkflowAllowedRunModes(effectiveManifest),
+    });
+  }
+  const requestedMode = requestedModeResult.mode;
   const confirmMutation = boolOpt(a["confirm_mutation"]) === true;
   if (requestedMode === "ciOnly") {
     const authGate = replayAuthGate(artifact.artifact.workflow.contract, "ciIsolated");
@@ -2215,10 +2224,24 @@ function privateWorkflowDefaultReplayMode(manifest: PrivateWorkflowToolManifestV
   return "sameSession";
 }
 
-function privateWorkflowRunMode(value: unknown): PrivateWorkflowRunMode | undefined {
-  if (value === undefined) return undefined;
-  if (value === "confirmBeforeCommit" || value === "ciOnly") return value;
-  return normalizeReplayMode(value);
+function privateWorkflowAllowedRunModes(manifest: PrivateWorkflowToolManifestV7): PrivateWorkflowRunMode[] {
+  return manifest.mutation.requires_confirmation
+    ? ["prefixOnly", "confirmBeforeCommit", "ciOnly", "sameSession", "coldSession"]
+    : ["sameSession", "prefixOnly", "coldSession"];
+}
+
+function privateWorkflowRunMode(value: unknown): { ok: true; mode?: PrivateWorkflowRunMode } | { ok: false } {
+  if (value === undefined) return { ok: true };
+  if (
+    value === "sameSession" ||
+    value === "prefixOnly" ||
+    value === "coldSession" ||
+    value === "confirmBeforeCommit" ||
+    value === "ciOnly"
+  ) {
+    return { ok: true, mode: value };
+  }
+  return { ok: false };
 }
 
 function privateWorkflowMutationConfirmationToken(toolName: string, manifest: PrivateWorkflowToolManifestV7): string {
