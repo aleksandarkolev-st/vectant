@@ -26,8 +26,9 @@ const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {
-  cdpUrl: args["cdp-url"] || process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || process.env.SYNTHI_BROWSER_CDP_URL || "",
+  cdpUrl: args["cdp-url"] || process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || "",
   targetUrl: args["target-url"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL || "",
+  workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TIMEOUT_MS || 60_000),
 };
@@ -42,12 +43,13 @@ async function main() {
     throw new Error(`dist entrypoint missing: ${DIST_INDEX}. Run npm run build first.`);
   }
   if (!CFG.cdpUrl.trim()) {
-    throw new Error("cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL/SYNTHI_BROWSER_CDP_URL");
+    throw new Error("hosted_cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL");
   }
 
   await mkdir(CFG.outDir, { recursive: true });
   const fixture = CFG.targetUrl ? null : await startFixtureServer();
   const targetUrl = CFG.targetUrl || fixture.url;
+  const workspaceId = CFG.workspaceId || `stdio-private-tool-acceptance-${process.pid}`;
   const artifactDir = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tool-stdio-"));
   const storeFile = path.join(artifactDir, "private-tools.enc.json");
   const storeKey = `stdio-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -56,6 +58,8 @@ async function main() {
     generated_at: new Date().toISOString(),
     cdp_url: redactCdpUrl(CFG.cdpUrl),
     target_url: targetUrl,
+    workspace_id: workspaceId,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
     steps: [],
   };
 
@@ -69,13 +73,16 @@ async function main() {
     await pruneExistingCdpPageTargets(CFG.cdpUrl);
     proc = spawn(process.execPath, [DIST_INDEX], {
       cwd: MCP_ROOT,
-      env: {
-        ...process.env,
+      env: buildStdioMcpEnv({
+        baseEnv: process.env,
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: storeFile,
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: storeKey,
         SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: storeScope,
+        SYNTHI_HOSTED_BROWSER_CDP_URL: CFG.cdpUrl,
+        SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: targetUrl,
+        SYNTHI_WORKSPACE_ID: workspaceId,
         SYNTHI_AGENT_ID: "stdio_private_tool_acceptance",
-      },
+      }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     client = new JsonRpcClient(proc, { timeoutMs: CFG.timeoutMs, label: "synthi-mcp-stdio" });
@@ -109,15 +116,23 @@ async function main() {
     transcript.steps.push({ name: "lookup manifest through MCP", ok: true, result: manifestLookup.parsed });
     log("ok", "lookup private tool manifest through MCP");
 
-    const attach = await client.toolCall("synthi_browser_attach", { cdp_url: CFG.cdpUrl, bridge_port: 0 });
-    assertToolOk(attach, "browser attach");
+    const attach = await client.toolCall("synthi_browser_attach_current_workspace", {
+      workspace_id: workspaceId,
+      workspace_url: targetUrl,
+      open_workspace: true,
+    });
+    assertToolOk(attach, "hosted browser attach");
+    const attachEvidence = stdioAcceptanceAttachEvidence({ attachResult: attach });
+    assert.equal(attachEvidence.hosted_attach, true, "stdio acceptance must attach through hosted runtime");
+    assert.equal(attachEvidence.local_attach, false, "stdio acceptance must not use local CDP attach");
     transcript.steps.push({
-      name: "attach hosted browser through MCP",
+      name: "attach hosted workspace browser through MCP",
       ok: true,
       runtime: attach.parsed?.runtime ?? null,
       hidden_tabs: attach.parsed?.hidden_tabs ?? null,
+      evidence: attachEvidence,
     });
-    log("ok", "attach browser through MCP stdio");
+    log("ok", "attach hosted workspace browser through MCP stdio");
 
     const consent = await client.toolCall("synthi_browser_request_consent", {
       url: targetUrl,
@@ -446,6 +461,22 @@ function importDist(relativePath) {
   return import(pathToFileURL(path.join(MCP_ROOT, "dist", relativePath)).href);
 }
 
+export function buildStdioMcpEnv({ baseEnv = process.env, ...overrides }) {
+  const env = { ...baseEnv, ...overrides };
+  delete env.SYNTHI_BROWSER_CDP_URL;
+  return env;
+}
+
+export function stdioAcceptanceAttachEvidence({ attachResult }) {
+  const runtimeKind = attachResult?.parsed?.runtime?.kind ?? null;
+  return {
+    hosted_attach: attachResult?.parsed?.ok === true && runtimeKind === "hosted",
+    local_attach: runtimeKind === "local-dev-cdp",
+    runtime_kind: runtimeKind,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+  };
+}
+
 function redactCdpUrl(value) {
   try {
     const parsed = new URL(value);
@@ -457,7 +488,13 @@ function redactCdpUrl(value) {
   }
 }
 
-main().catch((err) => {
-  log("fail", err instanceof Error ? err.stack || err.message : String(err));
-  process.exit(1);
-});
+if (isDirectRun()) {
+  main().catch((err) => {
+    log("fail", err instanceof Error ? err.stack || err.message : String(err));
+    process.exit(1);
+  });
+}
+
+function isDirectRun() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+}
