@@ -71,6 +71,7 @@ The stdio MCP private-tool acceptance harness was also verified through the host
 - replay evidence: one private-tool workflow step replayed through MCP stdio and produced the expected app state.
 - strict host conformance evidence: the stdio client now checks production-style deployment readiness through MCP, discovers the dynamic tool through both `tools/list` and `synthi_browser_list_private_tools`, rejects `script_path` and invalid `run_mode` arguments with advertised schema validation before execution, verifies manifest/registry redaction, then calls the private workflow tool through hosted runtime.
 - packaged/deployed command evidence: the same stdio conformance harness can now spawn a structured custom MCP server command via `--mcp-command`, `--mcp-args-json`, and `--mcp-cwd` or matching env vars. The latest visual run used this custom-command path with `default_repo_dist=false`, proving the harness is no longer limited to `node dist/index.js` as an internal shortcut.
+- deploy-host gate evidence: `--require-custom-mcp-command` / `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND=1` now fails the conformance harness if it falls back to the repo-local default MCP server. The latest visual run passed with this gate enabled and recorded `require_custom_mcp_command=true`, `custom_mcp_command=true`.
 
 The latest host-conformance run used the existing live browser fixture harness to create a fresh headed hosted-CDP dev runtime because Docker Desktop was not reachable from this shell during the run. That does not count as deployed third-party host validation, but it did verify the MCP contract, strict schema behavior, hosted-runtime attach path, consent, private-tool execution, and visual proof without fixed ports, fixed slugs, local Chrome paths, or script-path handoff.
 
@@ -161,6 +162,7 @@ Visual artifacts inspected in this update:
 - `3e68d172` Scan duplicate targets for Codex visual proof
 - `91cae47f` Harden stdio private tool host conformance
 - `6c4a3bd1` Allow configurable stdio conformance command
+- `74d316a4` Require custom MCP command for host conformance
 
 These sit on top of the earlier goal commits for private-tool registration, hosted overlay controls, exported-script runner isolation, target-origin consent, auth checkpointing, CI mutation replay, popup/iframe target handling, and visual replay proof.
 
