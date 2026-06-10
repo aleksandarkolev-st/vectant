@@ -32,6 +32,7 @@ const CFG = {
   workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
   outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance")),
   timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TIMEOUT_MS || 60_000),
+  requireCustomMcpCommand: parseBooleanFlag(args["require-custom-mcp-command"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND),
   mcpCommand: resolveMcpServerCommandSpec({
     args,
     env: process.env,
@@ -53,6 +54,10 @@ async function main() {
   if (!CFG.cdpUrl.trim()) {
     throw new Error("hosted_cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL");
   }
+  const mcpCommandConformance = assertMcpCommandConformance({
+    commandSpec: CFG.mcpCommand,
+    requireCustomCommand: CFG.requireCustomMcpCommand,
+  });
 
   await mkdir(CFG.outDir, { recursive: true });
   const fixture = CFG.targetUrl ? null : await startFixtureServer();
@@ -76,6 +81,10 @@ async function main() {
       cwd: CFG.mcpCommand.cwd,
       args_count: CFG.mcpCommand.args.length,
       default_repo_dist: CFG.mcpCommand.default_repo_dist,
+    },
+    conformance: {
+      require_custom_mcp_command: mcpCommandConformance.require_custom_mcp_command,
+      custom_mcp_command: mcpCommandConformance.custom_mcp_command,
     },
     steps: [],
   };
@@ -620,6 +629,32 @@ export function resolveMcpServerCommandSpec({
       && commandArgs.every((item, index) => item === defaultArgs[index])
       && cwd === path.resolve(defaultCwd),
   };
+}
+
+export function mcpCommandConformance({ commandSpec, requireCustomCommand = false }) {
+  const customMcpCommand = commandSpec?.default_repo_dist === false;
+  const requireCustom = Boolean(requireCustomCommand);
+  return {
+    ok: !requireCustom || customMcpCommand,
+    require_custom_mcp_command: requireCustom,
+    custom_mcp_command: customMcpCommand,
+  };
+}
+
+function assertMcpCommandConformance({ commandSpec, requireCustomCommand }) {
+  const conformance = mcpCommandConformance({ commandSpec, requireCustomCommand });
+  if (!conformance.ok) {
+    throw new Error("custom_mcp_command_required: pass --mcp-command with --mcp-args-json, or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND, before using this harness as a deployed-host conformance gate");
+  }
+  return conformance;
+}
+
+export function parseBooleanFlag(value) {
+  if (value === undefined || value === null || value === false) return false;
+  if (value === true) return true;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return false;
+  return !["0", "false", "no", "off"].includes(normalized);
 }
 
 function parseMcpCommandArgsJson(value) {

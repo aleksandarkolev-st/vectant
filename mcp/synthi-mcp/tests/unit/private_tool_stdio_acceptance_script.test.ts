@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStdioMcpEnv,
+  mcpCommandConformance,
+  parseBooleanFlag,
   resolveMcpServerCommandSpec,
   selectCdpTargetsToClose,
   strictHostValidateToolArgs,
@@ -71,6 +73,59 @@ describe("private-tool stdio acceptance harness", () => {
       cwd: "/srv/synthi",
       default_repo_dist: false,
     });
+  });
+
+  it("can require deployed-host conformance to use a custom MCP command", () => {
+    const defaultSpec = resolveMcpServerCommandSpec({
+      args: {},
+      env: {},
+      defaultCommand: "/usr/bin/node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+    const customSpec = resolveMcpServerCommandSpec({
+      args: { "mcp-command": "synthi-mcp" },
+      env: {},
+      defaultCommand: "/usr/bin/node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+
+    expect(mcpCommandConformance({
+      commandSpec: defaultSpec,
+      requireCustomCommand: false,
+    })).toEqual({
+      ok: true,
+      require_custom_mcp_command: false,
+      custom_mcp_command: false,
+    });
+    expect(mcpCommandConformance({
+      commandSpec: defaultSpec,
+      requireCustomCommand: true,
+    })).toEqual({
+      ok: false,
+      require_custom_mcp_command: true,
+      custom_mcp_command: false,
+    });
+    expect(mcpCommandConformance({
+      commandSpec: customSpec,
+      requireCustomCommand: true,
+    })).toEqual({
+      ok: true,
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+    });
+  });
+
+  it("parses explicit boolean flags for conformance gates", () => {
+    expect(parseBooleanFlag(undefined)).toBe(false);
+    expect(parseBooleanFlag("")).toBe(false);
+    expect(parseBooleanFlag("0")).toBe(false);
+    expect(parseBooleanFlag("false")).toBe(false);
+    expect(parseBooleanFlag("off")).toBe(false);
+    expect(parseBooleanFlag("1")).toBe(true);
+    expect(parseBooleanFlag("true")).toBe(true);
+    expect(parseBooleanFlag("yes")).toBe(true);
   });
 
   it("rejects malformed custom MCP arg vectors", () => {
