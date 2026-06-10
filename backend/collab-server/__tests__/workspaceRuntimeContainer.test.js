@@ -84,6 +84,21 @@ test('createRuntimeManager honours privileged=false (prod Sysbox path)', async (
   assert.equal(docker.created[0].HostConfig.Privileged, false);
 });
 
+test('with a dataVolume, the per-user repo is mounted into /workspace via a volume Subpath (not a host bind)', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker, dataVolume: 'synthi-ide_collab-data', reposSubpath: 'repos' });
+  await mgr.ensureRuntimeContainer('My_Repo', '242593757');
+  const hc = docker.created[0].HostConfig;
+  assert.equal(hc.Binds, undefined, 'must not use a host-path bind in volume mode');
+  assert.equal(hc.Mounts.length, 1);
+  const m = hc.Mounts[0];
+  assert.equal(m.Type, 'volume');
+  assert.equal(m.Source, 'synthi-ide_collab-data');
+  assert.equal(m.Target, '/workspace');
+  // safeName lowercases/sanitizes slug+user; subpath is repos/<slug>/<user>
+  assert.equal(m.VolumeOptions.Subpath, 'repos/my-repo/242593757');
+});
+
 test('ensureRuntimeContainer reuses a running container (no second create)', async () => {
   const docker = fakeDocker();
   const mgr = createRuntimeManager({ docker });

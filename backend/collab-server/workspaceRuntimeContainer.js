@@ -17,6 +17,15 @@ const RUNTIME_NETWORK = process.env.WORKER_NETWORK || 'synthi-ide_default';
 const RUNTIME_IDLE_TTL_MS = Number(process.env.RUNTIME_IDLE_TTL_MS) || 10 * 60 * 1000;
 const MAX_RUNTIME_CONTAINERS = Number(process.env.MAX_RUNTIME_CONTAINERS) || 25;
 const REPOS_DIR = process.env.REPOS_DIR || '/data/repos';
+// When collab-server itself runs as a container (compose/prod), the per-user repo
+// dir lives on the SHARED `collab-data` named volume — a host-path bind would point
+// the daemon at a non-existent host path. Set WORKSPACE_DATA_VOLUME to that named
+// volume so the runtime container mounts the per-user subpath into /workspace via
+// the same volume. Empty (default) → host-path bind (collab-server running directly
+// on the host / dev-direct). REPOS_VOLUME_SUBPATH is the repo prefix WITHIN the
+// volume (collab-data mounts at /data, repos at /data/repos → prefix 'repos').
+const WORKSPACE_DATA_VOLUME = process.env.WORKSPACE_DATA_VOLUME || '';
+const REPOS_VOLUME_SUBPATH = process.env.REPOS_VOLUME_SUBPATH || 'repos';
 // Outer-container privilege. Dev (Docker Desktop/WSL2) needs it so rootless
 // dockerd can set up user namespaces; prod (k8s + Sysbox) sets RUNTIME_PRIVILEGED=0
 // and supplies a runtimeClass instead. Defaults ON; any value other than '0'/'false' is on.
@@ -54,6 +63,8 @@ function createRuntimeManager({
   image = RUNTIME_IMAGE,
   network = RUNTIME_NETWORK,
   privileged = RUNTIME_PRIVILEGED,
+  dataVolume = WORKSPACE_DATA_VOLUME,
+  reposSubpath = REPOS_VOLUME_SUBPATH,
   logger = console,
 } = {}) {
   if (!docker) throw new TypeError('docker client is required');
@@ -83,8 +94,22 @@ function createRuntimeManager({
       throw new Error(`Runtime container cap reached (${maxContainers})`);
     }
 
-    // Per-user workspace dir on the host-side named volume, bind-mounted into /workspace.
-    const hostRepoDir = path.posix.join(reposDir, safeName(slug), safeName(userId));
+    // Mount the per-user repo dir into /workspace. Two modes:
+    //  - dataVolume set (compose/prod, collab-server is a container): mount the
+    //    SHARED named volume with a per-user Subpath so the runtime container and
+    //    collab-server see the exact same files. A host-path bind would fail here
+    //    because the daemon resolves bind sources on the host, not inside collab.
+    //  - dataVolume empty (collab-server on the host): bind the host path directly.
+    const workspaceMount = dataVolume
+      ? {
+          Mounts: [{
+            Type: 'volume',
+            Source: dataVolume,
+            Target: '/workspace',
+            VolumeOptions: { Subpath: path.posix.join(reposSubpath, safeName(slug), safeName(userId)) },
+          }],
+        }
+      : { Binds: [`${path.posix.join(reposDir, safeName(slug), safeName(userId))}:/workspace`] };
     const createOpts = {
       name,
       Image: image,
@@ -100,7 +125,7 @@ function createRuntimeManager({
         // sets RUNTIME_PRIVILEGED=0 and supplies a runtimeClass instead.
         Privileged: privileged,
         NetworkMode: network,
-        Binds: [`${hostRepoDir}:/workspace`],
+        ...workspaceMount,
         RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 3 },
       },
     };
@@ -188,6 +213,8 @@ module.exports = {
   MAX_RUNTIME_CONTAINERS,
   REPOS_DIR,
   RUNTIME_PRIVILEGED,
+  WORKSPACE_DATA_VOLUME,
+  REPOS_VOLUME_SUBPATH,
   safeName,
   runtimeContainerName,
   runtimeContainerHost,
