@@ -27,11 +27,15 @@ test('proxyHttp forwards to the resolved runtime host', async () => {
   await new Promise((r) => front.listen(0, '127.0.0.1', r));
   const fp = front.address().port;
 
-  const body = await new Promise((resolve, reject) => {
-    http.get(`http://127.0.0.1:${fp}/wsport/repo/${port}/hello`, (res) => {
-      let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => resolve(d));
+  const res = await new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:${fp}/wsport/repo/${port}/hello`, (r) => {
+      let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => resolve({ body: d, headers: r.headers }));
     }).on('error', reject);
   });
-  assert.equal(body, 'OK:/hello');
+  assert.equal(res.body, 'OK:/hello');
+  // App-tab iframe embeds this under the IDE's COEP — must assert an embedder
+  // policy + be resource-shareable or Chrome blocks the frame.
+  assert.equal(res.headers['cross-origin-embedder-policy'], 'credentialless');
+  assert.equal(res.headers['cross-origin-resource-policy'], 'cross-origin');
   upstream.close(); front.close();
 });

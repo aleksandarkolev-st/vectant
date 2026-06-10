@@ -31,7 +31,17 @@ function createContainerPortProxy({ resolveHost } = {}) {
       hostname: host, port: parsed.port, path: parsed.downstream, method: req.method,
       headers: { ...req.headers, host: `localhost:${parsed.port}` }, timeout: 30000,
     }, (up) => {
-      const headers = { ...up.headers, 'access-control-allow-origin': '*' };
+      // The IDE document is served under COEP (credentialless), so a cross-origin
+      // iframe is only embeddable if its response asserts an embedder policy and is
+      // resource-shareable. credentialless keeps the embedded app's OWN subresources
+      // working without requiring CORP on each of them. Without these, the App tab
+      // shows Chrome's blocked-frame error page even though the body loads fine.
+      const headers = {
+        ...up.headers,
+        'access-control-allow-origin': '*',
+        'cross-origin-resource-policy': 'cross-origin',
+        'cross-origin-embedder-policy': 'credentialless',
+      };
       res.writeHead(up.statusCode, headers);
       up.pipe(res, { end: true });
     });
