@@ -87,6 +87,7 @@ Visual artifacts inspected in this update:
 
 ## Latest Commits In This Continuation
 
+- `6760eff9` Mock hosted capture in teach alias test
 - `f3868e68` Enforce replay target origin consent
 - `f1ca5422` Advertise private workflow artifact root
 - `89b432c4` Cover cross-origin popup return replay
