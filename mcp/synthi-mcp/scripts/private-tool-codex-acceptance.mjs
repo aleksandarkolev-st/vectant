@@ -20,7 +20,7 @@ const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
-export const DEFAULT_CODEX_ACCEPTANCE_MODEL = "gpt-5.3-spark";
+export const DEFAULT_CODEX_ACCEPTANCE_MODEL = "gpt-5.3-codex-spark";
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {

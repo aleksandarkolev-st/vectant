@@ -8,14 +8,14 @@ import {
 } from "../../scripts/private-tool-codex-acceptance.mjs";
 
 describe("private-tool Codex acceptance harness", () => {
-  it("defaults Codex acceptance to the 5.3-spark model", () => {
-    expect(DEFAULT_CODEX_ACCEPTANCE_MODEL).toBe("gpt-5.3-spark");
+  it("defaults Codex acceptance to the 5.3-codex-spark model", () => {
+    expect(DEFAULT_CODEX_ACCEPTANCE_MODEL).toBe("gpt-5.3-codex-spark");
   });
 
   it("configures Codex through the hosted browser runtime path", () => {
     const config = buildCodexConfigToml({
       codexReasoning: "low",
-      codexModel: "gpt-5.3-spark",
+      codexModel: "gpt-5.3-codex-spark",
       distIndex: "/repo/mcp/synthi-mcp/dist/index.js",
       storeFile: "/tmp/private-tools.enc.json",
       storeKey: "private-tool-key",
@@ -25,7 +25,7 @@ describe("private-tool Codex acceptance harness", () => {
       workspaceId: "acceptance-workspace",
     });
 
-    expect(config).toContain('model = "gpt-5.3-spark"');
+    expect(config).toContain('model = "gpt-5.3-codex-spark"');
     expect(config).toContain("SYNTHI_HOSTED_BROWSER_CDP_URL");
     expect(config).toContain("SYNTHI_HOSTED_BROWSER_WORKSPACE_URL");
     expect(config).toContain("SYNTHI_WORKSPACE_ID");
@@ -46,7 +46,7 @@ describe("private-tool Codex acceptance harness", () => {
       workspaceId: "acceptance-workspace",
     });
 
-    expect(config.split("\n")[0]).toBe('model = "gpt-5.3-spark"');
+    expect(config.split("\n")[0]).toBe('model = "gpt-5.3-codex-spark"');
     expect(config).not.toContain("gpt-5.5");
   });
 
