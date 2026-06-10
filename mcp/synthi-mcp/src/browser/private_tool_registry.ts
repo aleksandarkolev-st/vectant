@@ -324,6 +324,10 @@ function privateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7)
       type: "number",
       description: "Optional timeout for ciOnly reset and replay commands.",
     },
+    artifact_root: {
+      type: "string",
+      description: "Optional artifact directory for ciOnly replay reports and visual proof, visible to the isolated replay runner.",
+    },
   };
   const required = new Set<string>();
   const parameterArgNames = privateWorkflowToolParameterArgNames(manifest);

@@ -343,6 +343,10 @@ describe("private browser workflow MCP tool manifest", () => {
     expect(tool.inputSchema.properties?.["run_mode"]).toEqual(expect.objectContaining({
       enum: ["sameSession", "prefixOnly", "coldSession"],
     }));
+    expect(tool.inputSchema.properties?.["artifact_root"]).toEqual(expect.objectContaining({
+      type: "string",
+      description: expect.stringContaining("ciOnly replay reports"),
+    }));
     expect(tool.inputSchema.properties?.["workflow_run_mode"]).toEqual(expect.objectContaining({
       type: "string",
       description: expect.stringContaining("workflow parameter: run_mode"),
