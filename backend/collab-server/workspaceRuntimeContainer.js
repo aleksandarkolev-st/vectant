@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('path');
+
 /**
  * Per-workspace rootless-Docker runtime container lifecycle.
  *
@@ -35,6 +37,107 @@ function shouldCull(entry, now, ttlMs = RUNTIME_IDLE_TTL_MS) {
   return now - entry.lastActive > ttlMs;
 }
 
+/**
+ * @param {object} opts
+ * @param {object} opts.docker - dockerode-compatible client (injected for tests)
+ * @param {number} [opts.maxContainers]
+ * @param {string} [opts.reposDir]
+ */
+function createRuntimeManager({
+  docker,
+  maxContainers = MAX_RUNTIME_CONTAINERS,
+  reposDir = REPOS_DIR,
+  image = RUNTIME_IMAGE,
+  network = RUNTIME_NETWORK,
+  logger = console,
+} = {}) {
+  if (!docker) throw new TypeError('docker client is required');
+  /** key `${slug} ${userId}` -> { containerId, lastActive } */
+  const sessions = new Map();
+  const keyOf = (slug, userId) => `${slug} ${userId}`;
+
+  async function ensureRuntimeContainer(slug, userId) {
+    const name = runtimeContainerName(slug, userId);
+    const key = keyOf(slug, userId);
+    const now = Date.now();
+
+    const tracked = sessions.get(key);
+    if (tracked) {
+      try {
+        const info = await docker.getContainer(tracked.containerId).inspect();
+        if (info.State.Running) {
+          tracked.lastActive = now;
+          return { name, host: name, containerId: tracked.containerId, created: false };
+        }
+        try { await docker.getContainer(tracked.containerId).remove({ force: true }); } catch (_) {}
+      } catch (_) {}
+      sessions.delete(key);
+    }
+
+    if (sessions.size >= maxContainers) {
+      throw new Error(`Runtime container cap reached (${maxContainers})`);
+    }
+
+    // Per-user workspace dir on the host-side named volume, bind-mounted into /workspace.
+    const hostRepoDir = path.posix.join(reposDir, safeName(slug), safeName(userId));
+    const createOpts = {
+      name,
+      Image: image,
+      Labels: {
+        'synthi/runtime': 'workspace-runtime-local',
+        'synthi/slug': String(slug),
+        'synthi/userId': String(userId),
+        'synthi/lastActive': String(now),
+      },
+      HostConfig: {
+        // Privileged on the OUTER container is required for rootless dockerd to
+        // set up its user namespaces in the Docker Desktop/WSL2 dev stack.
+        // Prod (Phase 2) replaces this with Sysbox.
+        Privileged: true,
+        NetworkMode: network,
+        Binds: [`${hostRepoDir}:/workspace`],
+        RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 3 },
+      },
+    };
+
+    const container = await docker.createContainer(createOpts);
+    await container.start();
+    sessions.set(key, { containerId: container.id, lastActive: now });
+    logger.log(`[RuntimeContainer] Started ${name} (slug=${slug}, userId=${userId})`);
+    return { name, host: name, containerId: container.id, created: true };
+  }
+
+  function touch(slug, userId) {
+    const s = sessions.get(keyOf(slug, userId));
+    if (s) s.lastActive = Date.now();
+  }
+
+  async function teardown(slug, userId) {
+    const key = keyOf(slug, userId);
+    const s = sessions.get(key);
+    sessions.delete(key);
+    const id = s?.containerId || runtimeContainerName(slug, userId);
+    try {
+      const c = docker.getContainer(id);
+      try { await c.stop({ t: 5 }); } catch (_) {}
+      await c.remove({ force: true });
+    } catch (err) {
+      if (err.statusCode !== 404) logger.warn(`[RuntimeContainer] teardown ${id}: ${err.message}`);
+    }
+  }
+
+  async function cullIdle(now = Date.now()) {
+    for (const [key, entry] of [...sessions.entries()]) {
+      if (shouldCull(entry, now)) {
+        const [slug, userId] = key.split(' ');
+        await teardown(slug, userId);
+      }
+    }
+  }
+
+  return { ensureRuntimeContainer, touch, teardown, cullIdle, _sessions: sessions };
+}
+
 module.exports = {
   RUNTIME_IMAGE,
   RUNTIME_NETWORK,
@@ -45,4 +148,5 @@ module.exports = {
   runtimeContainerName,
   runtimeContainerHost,
   shouldCull,
+  createRuntimeManager,
 };
