@@ -21,6 +21,7 @@ const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 export const DEFAULT_CODEX_ACCEPTANCE_MODEL = "gpt-5.3-codex-spark";
+export const CODEX_ACCEPTANCE_DISABLED_FEATURES = ["image_generation", "apps", "plugins"];
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {
@@ -99,7 +100,14 @@ async function main() {
     log("ok", `codex reported private workflow tool - ${seeded.tool_name}`);
 
     const visual = await captureVisualProof({ targetUrl });
-    transcript.steps.push({ name: "visual proof snapshot", ok: true, screenshot_path: visual.screenshotPath, text: visual.text });
+    transcript.steps.push({
+      name: "visual proof snapshot",
+      ok: true,
+      screenshot_path: visual.screenshotPath,
+      text: visual.text,
+      url: visual.url,
+      match: visual.match,
+    });
     assert(visual.text.includes("Details opened"), `browser did not show workflow effect: ${visual.text}`);
     log("ok", `visual proof snapshot - ${visual.screenshotPath}`);
 
@@ -164,23 +172,11 @@ export function buildCodexConfigToml({
 }
 
 async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
-  const prompt = [
-    "Use the Synthi MCP browser workflow tools only. Do not use shell commands and do not read any script file.",
-    "A saved Synthi app workflow private tool is available in the MCP tool list with a synthi_app_ prefix.",
-    "Discover the exact saved workflow tool by calling synthi_browser_list_private_tools, attach to the hosted browser using synthi_browser_attach_current_workspace, request screenshot consent for the exact target URL, open the target URL, then call the saved private workflow tool.",
-    `Target URL: ${targetUrl}`,
-    "When the browser workflow succeeds, reply exactly as: WORKFLOW_DONE <tool_name_you_called>.",
-  ].join("\n");
-  const proc = spawn(CFG.codexBin, [
-    "exec",
-    "--json",
-    "--ephemeral",
-    "--ignore-rules",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "-C",
+  const prompt = buildCodexAcceptancePrompt({ targetUrl });
+  const proc = spawn(CFG.codexBin, codexExecArgs({
     codexWorkdir,
     prompt,
-  ], {
+  }), {
     cwd: codexWorkdir,
     env: buildCodexProcessEnv({ baseEnv: process.env, codexHome }),
     stdio: ["ignore", "pipe", "pipe"],
@@ -209,6 +205,34 @@ async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName }) {
       mcp_evidence: evidence,
     },
   };
+}
+
+export function buildCodexAcceptancePrompt({ targetUrl }) {
+  return [
+    "Use Synthi MCP tools only. Do not use shell commands. Do not read generated scripts or local files.",
+    "A saved Synthi app workflow private tool is available as an MCP tool with a synthi_app_ prefix.",
+    "Call synthi_browser_list_private_tools first. Read the returned tools[0].tool_name value. That exact value is the private workflow MCP tool you must call directly.",
+    "Attach to the hosted browser with synthi_browser_attach_current_workspace, request screenshot consent for the exact target URL, and open the exact target URL.",
+    "Do not call synthi_browser_begin_teach. Do not record a new workflow. Do not use synthi_browser_action to manually click the page. Do not report success after only listing, opening, observing, or taking a snapshot.",
+    "After the target URL is open and consent is granted, directly call the discovered synthi_app_* private workflow tool with valid schema arguments. Use {} unless the private tool schema requires parameters.",
+    "Only after that private workflow tool returns ok=true with replay.steps_run > 0, reply exactly as: WORKFLOW_DONE <tool_name_you_called>.",
+    `Target URL: ${targetUrl}`,
+  ].join("\n");
+}
+
+export function codexExecArgs({ codexWorkdir, prompt }) {
+  const disabledFeatureArgs = CODEX_ACCEPTANCE_DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]);
+  return [
+    "exec",
+    "--json",
+    "--ephemeral",
+    "--ignore-rules",
+    ...disabledFeatureArgs,
+    "--dangerously-bypass-approvals-and-sandbox",
+    "-C",
+    codexWorkdir,
+    prompt,
+  ];
 }
 
 export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
@@ -250,7 +274,7 @@ async function captureVisualProof({ targetUrl }) {
       if (match) {
         const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
         await match.page.screenshot({ path: screenshotPath, fullPage: true });
-        return { screenshotPath, text: match.text };
+        return { screenshotPath, text: match.text, url: match.url, match: match.match };
       }
       await sleep(500);
     }
@@ -261,12 +285,18 @@ async function captureVisualProof({ targetUrl }) {
 }
 
 export async function findPageWithText({ pages, targetUrl, expectedText }) {
+  const sameOriginCandidates = [];
   for (const page of pages) {
-    if (!sameUrl(page.url(), targetUrl)) continue;
+    const pageUrl = page.url();
+    const exact = sameUrl(pageUrl, targetUrl);
+    if (!exact && !sameOrigin(pageUrl, targetUrl)) continue;
     const text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
-    if (text.includes(expectedText)) return { page, text };
+    if (!text.includes(expectedText)) continue;
+    const match = { page, text, url: pageUrl, match: exact ? "exact-url" : "same-origin" };
+    if (exact) return match;
+    sameOriginCandidates.push(match);
   }
-  return null;
+  return sameOriginCandidates[0] ?? null;
 }
 
 async function seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl }) {
@@ -466,6 +496,14 @@ function sameUrl(a, b) {
     return left.toString() === right.toString();
   } catch {
     return a === b;
+  }
+}
+
+function sameOrigin(a, b) {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
   }
 }
 

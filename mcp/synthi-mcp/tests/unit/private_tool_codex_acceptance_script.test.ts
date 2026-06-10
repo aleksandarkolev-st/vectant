@@ -1,9 +1,12 @@
 // @ts-nocheck
 import { describe, expect, it } from "vitest";
 import {
+  CODEX_ACCEPTANCE_DISABLED_FEATURES,
   DEFAULT_CODEX_ACCEPTANCE_MODEL,
   buildCodexProcessEnv,
   buildCodexConfigToml,
+  buildCodexAcceptancePrompt,
+  codexExecArgs,
   extractCodexMcpEvidence,
   findPageWithText,
   selectCdpTargetsToClose,
@@ -50,6 +53,36 @@ describe("private-tool Codex acceptance harness", () => {
 
     expect(config.split("\n")[0]).toBe('model = "gpt-5.3-codex-spark"');
     expect(config).not.toContain("gpt-5.5");
+  });
+
+  it("prompts Codex to call the discovered private workflow tool instead of replaying manually", () => {
+    const prompt = buildCodexAcceptancePrompt({
+      targetUrl: "https://preview.example.test/workspace",
+    });
+
+    expect(prompt).toContain("synthi_browser_list_private_tools first");
+    expect(prompt).toContain("tools[0].tool_name");
+    expect(prompt).toContain("directly call the discovered synthi_app_* private workflow tool");
+    expect(prompt).toContain("Do not call synthi_browser_begin_teach");
+    expect(prompt).toContain("Do not use synthi_browser_action to manually click");
+    expect(prompt).toContain("Only after that private workflow tool returns ok=true");
+    expect(prompt).toContain("https://preview.example.test/workspace");
+    expect(prompt).not.toContain("synthi_app_open_details");
+  });
+
+  it("runs Codex acceptance with unrelated built-in surfaces disabled", () => {
+    const args = codexExecArgs({
+      codexWorkdir: "/tmp/codex-workspace",
+      prompt: "Use the saved workflow.",
+    });
+
+    const disabledFeatures = args
+      .flatMap((arg, index) => arg === "--disable" ? [args[index + 1]] : [])
+      .filter(Boolean);
+    expect(disabledFeatures).toEqual(CODEX_ACCEPTANCE_DISABLED_FEATURES);
+    expect(args).toContain("--json");
+    expect(args).toContain("/tmp/codex-workspace");
+    expect(args.at(-1)).toBe("Use the saved workflow.");
   });
 
   it("requires hosted workspace attach evidence instead of local CDP attach", () => {
@@ -125,15 +158,33 @@ describe("private-tool Codex acceptance harness", () => {
     const waitingPage = mockPage("https://preview.example.test/workspace", "Waiting for workflow");
     const donePage = mockPage("https://preview.example.test/workspace", "Details opened");
     const otherPage = mockPage("https://other.example.test/workspace", "Details opened");
+    const postNavigationPage = mockPage("https://preview.example.test/workspace/details", "Details opened");
 
     const match = await findPageWithText({
-      pages: [waitingPage, otherPage, donePage],
+      pages: [waitingPage, otherPage, postNavigationPage, donePage],
       targetUrl: "https://preview.example.test/workspace",
       expectedText: "Details opened",
     });
 
     expect(match?.page).toBe(donePage);
     expect(match?.text).toBe("Details opened");
+    expect(match?.url).toBe("https://preview.example.test/workspace");
+    expect(match?.match).toBe("exact-url");
+  });
+
+  it("accepts same-origin visual proof after in-app navigation", async () => {
+    const postNavigationPage = mockPage("https://preview.example.test/workspace/details", "Details opened");
+    const otherPage = mockPage("https://other.example.test/workspace/details", "Details opened");
+
+    const match = await findPageWithText({
+      pages: [otherPage, postNavigationPage],
+      targetUrl: "https://preview.example.test/workspace",
+      expectedText: "Details opened",
+    });
+
+    expect(match?.page).toBe(postNavigationPage);
+    expect(match?.url).toBe("https://preview.example.test/workspace/details");
+    expect(match?.match).toBe("same-origin");
   });
 });
 
