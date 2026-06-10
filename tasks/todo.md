@@ -406,3 +406,32 @@ Live testing surfaced that the program runtime (collab-server image, node:20/Deb
 **Goal:** Let programs actually run as containers (e.g. `docker compose up`, devcontainer build/run), not just as managed commands in the workspace session.
 **Why deferred:** the sandbox deliberately blocks real Docker today — devcontainer import rejects `docker.sock`/`--privileged`/host mounts/`--device`/`--cap-add` (`host_escape`), and the runtime manager scrubs `DOCKER_HOST`/`DOCKER_SOCKET` + blocks `/var/run/docker.sock`. There is no `container`/`docker` runtime type.
 **Scope (later):** add a `container`/`docker` runtime type; provide a real container runtime to the managed session (mount `docker.sock` carefully, or a rootless/DinD sidecar per workspace); a security review to safely relax the host-escape block for *this* path only; execute devcontainer `image`/`build` (currently informational `sourceHints` only); surface container logs/exec in the program tab. The current task's **Dev Container** default (`@vectant/devcontainer`) becomes natively runnable once this lands.
+
+---
+
+## Native Docker — Phase 1 (hybrid dev slice) — Review (2026-06-10)
+
+**Status:** code complete + reviewed; backend core live-verified. UI-level criterion #3 and the
+compose bind-mount fix remain (see "Open" below).
+
+**Done & verified live (against real Docker + the synthi-runtime:local image):**
+- #1 `docker run hello-world` works inside a container program (rootless per-workspace daemon). PASS
+- #2 `docker compose` available inside the runtime. PASS
+- #4 isolation: workspace B cannot see workspace A's containers. PASS
+- Security: host `/var/run/docker.sock` is NOT reachable from inside a program. PASS
+- Spike gate (Task 1): rootless dind runs under Docker Desktop/WSL2 (needs `--privileged` outer container);
+  published ports reachable cross-container by DNS name (validates `/wsport`).
+- synthi-runtime:local image built; bakes `ENV DOCKER_HOST=unix:///run/user/1000/docker.sock`
+  (base image does not set it — discovered in the spike).
+
+**Open (blocks the deployed compose UI flow, not the core):**
+- **Bind-mount of workspace files (correctness):** `ensureRuntimeContainer` binds `${REPOS_DIR}/<slug>/<user>:/workspace`.
+  That works when collab-server runs on the host, but in compose collab-server is a container and that path
+  lives on the `collab-data` *named volume* — the host daemon would mount an empty `/workspace`. Fix: mount the
+  named volume (e.g. `Binds: ['<project>_collab-data:/data']`) and point the program cwd at `/data/repos/<slug>/<user>`,
+  or use a Docker volume subpath mount. Needs full-stack verification.
+- **Criterion #3 (UI):** devcontainer building a real image + the App tab rendering via `/wsport/<slug>/<port>/`
+  in the actual IDE — needs the full compose stack + browser.
+
+**Phasing recap:** Phase 1b = uniform execution (all programs into the runtime container) + per-workspace
+port-system rework. Phase 2 = prod (k8s pod + Sysbox; replaces `Privileged: true`).
