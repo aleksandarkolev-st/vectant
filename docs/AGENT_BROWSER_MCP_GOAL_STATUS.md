@@ -12,7 +12,7 @@ agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screens
 
 Local CDP remains only the development harness. The verification run did not rely on fixed preview ports, fixed workspace slugs, local Chrome paths, fixed element positions, or generated-script shortcuts for a specific fixture.
 
-Excluding real deployed IdP testing, the remaining work is about 5-8 percent. The main unfinished items are production rollout validation in third-party MCP hosts, hosted-runtime deployment wiring, and more adversarial target/auth fixtures under production policy.
+Excluding real deployed IdP testing, the remaining work is about 4-6 percent. The main unfinished items are production rollout validation in third-party MCP hosts, hosted-runtime deployment wiring, and product UI for authoring reset/profile/postcondition inputs rather than only consuming configured profiles.
 
 ## Latest Verification
 
@@ -40,11 +40,18 @@ Result:
 
 Codex CLI private-tool acceptance was also attempted with `SYNTHI_CODEX_ACCEPTANCE_MODEL=gpt-5.3-spark`. The local ChatGPT-auth Codex CLI rejected that model for this account before calling tools, so the harness is now override-driven and does not hardcode a 5.5 fallback. The repo-local fresh MCP/private-tool path still passes; the 5.3-spark Codex-agent pass remains an environment-availability gap.
 
+Targeted replay-isolation verification:
+
+- Portable replay-isolation profile manifests can be passed into MCP safety tools and merged with workspace overrides.
+- CI-isolated replay now requires the selected auth checkpoint to be explicitly active for the taught workflow.
+- The IDE Workflows panel surfaces CI replay profile readiness from MCP state and dispatches `synthi_safety_run_ci_isolated_replay` without hardcoded workspace slugs, ports, or fixture assumptions.
+
 Visual artifacts inspected in this update:
 
 - `tmp/workflow-pipeline-e2e/animated-saas-dashboard/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/popup-chain-checkout/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-ci-isolated-replay.png`
+- `tmp/agent-workflow-ci-profile-card.png`
 
 ## Implemented
 
@@ -57,10 +64,17 @@ Visual artifacts inspected in this update:
 - Auth checkpoint and refresh-provider durability paths are covered by fixtures and unit tests with redaction and expiry classification.
 - Mutation workflows default to prefix-safe replay and require same-session confirmation or isolated CI mutation replay.
 - CI-isolated replay requires explicit reset/profile/postcondition configuration and run-bound mutation attestation.
+- Replay-isolation profiles have a portable manifest schema that can be registered with MCP safety tools and carried across workspace/runtime boundaries.
+- The Workflows panel now shows CI replay profile readiness and exposes a CI replay action when the MCP profile state is ready.
 - Exported Playwright scripts are executed by the live pipeline instead of only being inspected.
 
 ## Latest Commits In This Continuation
 
+- `41053f36` Surface CI replay profiles in workflows panel
+- `7b9006d7` Select auth checkpoint in CI replay test
+- `174ccfc1` Add replay isolation profile manifests
+- `a234240f` Make Codex workflow acceptance model configurable
+- `c054e919` Update browser workflow goal status
 - `9db27d65` Correlate popup annotations across capture races
 - `36fbdac4` Suppress cut-derived fill parameters
 - `bce57661` Avoid private tool control parameter collisions
@@ -73,5 +87,5 @@ These sit on top of the earlier goal commits for private-tool registration, host
 - Wire production hosted-browser deployment config for the runtime, workflow bridge, private workflow store, encrypted auth checkpoint store, and per-workspace CI reset profiles.
 - Expand adversarial target coverage for multiple simultaneous popups, hostile nested frame timing, and cross-origin return navigation under production consent rules.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
-- Add product UI for authoring mutation postconditions and reset profiles instead of configuring those only through workspace metadata.
+- Add product UI for authoring and editing mutation postconditions and reset profiles; the current UI consumes and runs profiles but does not yet author them.
 - Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
