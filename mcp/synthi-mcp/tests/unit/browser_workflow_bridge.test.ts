@@ -410,6 +410,40 @@ describe("browser workflow bridge", () => {
     expect(body.error).toBe("unknown_workflow_tool");
     expect(body.state).toBeTruthy();
   });
+
+  it("surfaces preview discovery config errors instead of assuming a local collab server", async () => {
+    const envKeys = ["SYNTHI_COLLAB_SERVER_URL", "COLLAB_SERVER_URL", "NEXT_PUBLIC_COLLAB_SERVER_URL", "COLLAB_URL"];
+    const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+    for (const key of envKeys) delete process.env[key];
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    try {
+      const res = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tool: "synthi_browser_observe_preview",
+          arguments: { workspace_url: "https://ide.example.test/workspace/workspace-a" },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as { ok: boolean; error: string; env?: string[]; requested_tool?: string; state?: unknown };
+      expect(body).toEqual(expect.objectContaining({
+        ok: false,
+        error: "collab_server_url_required",
+        requested_tool: "synthi_browser_observe_preview",
+      }));
+      expect(body.env).toContain("COLLAB_URL");
+      expect(body.state).toBeTruthy();
+    } finally {
+      for (const [key, value] of previous.entries()) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });
 
 function seedSaveWorkflow(): void {

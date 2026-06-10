@@ -62,6 +62,13 @@ interface BrowserWorkflowOverlayBody {
   url?: unknown;
 }
 
+interface PreviewDiscoveryResult {
+  ok: boolean;
+  url?: string;
+  error?: string;
+  detail?: Record<string, unknown>;
+}
+
 const MAX_HISTORY = 8;
 const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
 const CORS_HEADERS = {
@@ -99,6 +106,19 @@ const REVIEW_LIMITATIONS = new Set([
   "closedShadowDomBlocked",
   "pointerDragUnreliable",
 ]);
+
+class BridgeToolInputError extends Error {
+  readonly code: string;
+  readonly detail: Record<string, unknown>;
+  readonly status: number;
+
+  constructor(code: string, detail: Record<string, unknown> = {}, status = 400) {
+    super(code);
+    this.code = code;
+    this.detail = detail;
+    this.status = status;
+  }
+}
 
 async function readJsonBody<T>(req: http.IncomingMessage, maxBytes: number = 1_000_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -230,30 +250,66 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
     !stringOpt(base["preferred_url"]) &&
     !stringOpt(base["preview_url"])
   ) {
-    const previewUrl = await discoverWorkspacePreviewUrl(base);
-    if (previewUrl) {
-      return { ...base, preferred_url: previewUrl, preview_url: previewUrl };
+    const preview = await discoverWorkspacePreviewUrl(base);
+    if (preview.ok && preview.url) {
+      return { ...base, preferred_url: preview.url, preview_url: preview.url };
+    }
+    if (!preview.ok) {
+      throw new BridgeToolInputError(preview.error ?? "preview_discovery_failed", {
+        tool: toolName,
+        ...preview.detail,
+      });
     }
   }
   return base;
 }
 
-async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<string | undefined> {
+async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<PreviewDiscoveryResult> {
   const slug = workspaceSlugFromArgs(args);
-  if (!slug) return undefined;
-  const collabUrl = resolveCollabServerUrl();
+  if (!slug) return { ok: true };
+  const collab = resolveCollabServerUrl();
+  if (!collab) {
+    return {
+      ok: false,
+      error: "collab_server_url_required",
+      detail: {
+        workspace: slug,
+        env: ["SYNTHI_COLLAB_SERVER_URL", "COLLAB_SERVER_URL", "NEXT_PUBLIC_COLLAB_SERVER_URL", "COLLAB_URL"],
+      },
+    };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
   try {
-    const response = await fetch(`${collabUrl}/ports?workspace=${encodeURIComponent(slug)}`, {
+    const response = await fetch(`${collab.url}/ports?workspace=${encodeURIComponent(slug)}`, {
       signal: controller.signal,
     });
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: "preview_discovery_failed",
+        detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source, status: response.status },
+      };
+    }
     const payload = await response.json() as Record<string, unknown>;
-    const preview = previewUrlFromPortsPayload(payload, collabUrl);
-    return preview ?? undefined;
-  } catch {
-    return undefined;
+    const preview = previewUrlFromPortsPayload(payload, collab.url);
+    if (preview) return { ok: true, url: preview };
+    return {
+      ok: false,
+      error: "preview_not_found",
+      detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "preview_discovery_failed",
+      detail: {
+        workspace: slug,
+        collab_url: collab.url,
+        collab_url_source: collab.source,
+        message: err instanceof Error ? err.message : String(err),
+      },
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -273,12 +329,18 @@ function workspaceSlugFromArgs(args: Record<string, unknown>): string | undefine
   }
 }
 
-function resolveCollabServerUrl(): string {
+function resolveCollabServerUrl(): { url: string; source: string } | null {
   const configured =
-    stringOpt(process.env["SYNTHI_COLLAB_SERVER_URL"]) ??
-    stringOpt(process.env["COLLAB_SERVER_URL"]) ??
-    stringOpt(process.env["NEXT_PUBLIC_COLLAB_SERVER_URL"]);
-  return (configured ?? "http://localhost:1234").replace(/\/$/, "");
+    envUrl("SYNTHI_COLLAB_SERVER_URL") ??
+    envUrl("COLLAB_SERVER_URL") ??
+    envUrl("NEXT_PUBLIC_COLLAB_SERVER_URL") ??
+    envUrl("COLLAB_URL");
+  return configured;
+}
+
+function envUrl(name: string): { url: string; source: string } | null {
+  const value = stringOpt(process.env[name]);
+  return value ? { url: value.replace(/\/$/, ""), source: name } : null;
 }
 
 function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl: string): string | null {
@@ -614,7 +676,23 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
 
       const requestedTool = body.tool;
       const tool = normalizeToolName(requestedTool);
-      const args = await enrichToolArgs(tool, body.arguments);
+      let args: Record<string, unknown>;
+      try {
+        args = await enrichToolArgs(tool, body.arguments);
+      } catch (err) {
+        if (err instanceof BridgeToolInputError) {
+          writeJson(res, err.status, {
+            ok: false,
+            error: err.code,
+            requested_tool: requestedTool,
+            tool,
+            ...err.detail,
+            state: buildBrowserWorkflowPanelState(bridgeState),
+          });
+          return;
+        }
+        throw err;
+      }
       const result = await dispatchWorkflowTool(tool, args);
       if (!result) {
         writeJson(res, 404, {
