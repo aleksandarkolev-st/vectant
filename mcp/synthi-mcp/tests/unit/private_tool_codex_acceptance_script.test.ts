@@ -10,6 +10,7 @@ import {
   extractCodexMcpEvidence,
   findPageWithText,
   selectCdpTargetsToClose,
+  visualProofScreenshotOptions,
 } from "../../scripts/private-tool-codex-acceptance.mjs";
 
 describe("private-tool Codex acceptance harness", () => {
@@ -115,6 +116,8 @@ describe("private-tool Codex acceptance harness", () => {
       private_tool_call: true,
       private_tool_result_ok: true,
       private_tool_steps_run: 1,
+      command_execution_count: 0,
+      command_executions: [],
     }));
 
     const localAttachEvidence = extractCodexMcpEvidence({
@@ -124,6 +127,30 @@ describe("private-tool Codex acceptance harness", () => {
     });
     expect(localAttachEvidence.hosted_attach_call).toBe(false);
     expect(localAttachEvidence.local_attach_call).toBe(true);
+  });
+
+  it("flags shell command execution so private-tool acceptance stays MCP-only", () => {
+    const toolName = "synthi_app_open_details";
+    const evidence = extractCodexMcpEvidence({
+      toolName,
+      targetUrl: "https://preview.example.test/workspace",
+      events: [
+        completedCall("synthi_browser_attach_current_workspace", {}),
+        commandExecution("/bin/bash -lc 'cat generated.spec.ts'", 0),
+        completedCall(toolName, {}, {
+          ok: true,
+          private_tool: { tool_name: toolName },
+          replay: { status: "passed", steps_run: 1 },
+        }),
+      ],
+    });
+
+    expect(evidence.command_execution_count).toBe(1);
+    expect(evidence.command_executions).toEqual([{
+      status: "completed",
+      exit_code: 0,
+      command: "[redacted-command]",
+    }]);
   });
 
   it("strips local CDP env from the Codex child process", () => {
@@ -186,6 +213,25 @@ describe("private-tool Codex acceptance harness", () => {
     expect(match?.url).toBe("https://preview.example.test/workspace/details");
     expect(match?.match).toBe("same-origin");
   });
+
+  it("keeps visual proof screenshots viewport-bounded with a capped timeout", () => {
+    expect(visualProofScreenshotOptions({
+      path: "/tmp/after.png",
+      timeoutMs: 300_000,
+    })).toEqual({
+      path: "/tmp/after.png",
+      fullPage: false,
+      timeout: 60_000,
+    });
+    expect(visualProofScreenshotOptions({
+      path: "/tmp/after.png",
+      timeoutMs: 1,
+    })).toEqual({
+      path: "/tmp/after.png",
+      fullPage: false,
+      timeout: 5_000,
+    });
+  });
 });
 
 function completedCall(tool, args, structuredContent = {}) {
@@ -197,6 +243,18 @@ function completedCall(tool, args, structuredContent = {}) {
       tool,
       arguments: args,
       result: { structured_content: structuredContent },
+    },
+  };
+}
+
+function commandExecution(command, exitCode) {
+  return {
+    type: "item.completed",
+    item: {
+      type: "command_execution",
+      status: "completed",
+      command,
+      exit_code: exitCode,
     },
   };
 }

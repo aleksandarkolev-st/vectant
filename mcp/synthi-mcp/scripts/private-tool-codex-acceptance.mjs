@@ -21,7 +21,7 @@ const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 export const DEFAULT_CODEX_ACCEPTANCE_MODEL = "gpt-5.3-codex-spark";
-export const CODEX_ACCEPTANCE_DISABLED_FEATURES = ["image_generation", "apps", "plugins"];
+export const CODEX_ACCEPTANCE_DISABLED_FEATURES = ["image_generation", "apps", "plugins", "shell_tool"];
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {
@@ -96,6 +96,7 @@ async function main() {
     assert(codexRun.evidence.private_tool_steps_run > 0, `Codex private workflow tool ran no steps for ${seeded.tool_name}`);
     assert(codexRun.evidence.consent_call, "Codex JSONL did not include a completed screenshot consent MCP call");
     assert(codexRun.evidence.open_call, "Codex JSONL did not include a completed browser open MCP call");
+    assert.equal(codexRun.evidence.command_execution_count, 0, `Codex used shell commands instead of MCP-only workflow acceptance: ${JSON.stringify(codexRun.evidence.command_executions)}`);
     transcript.steps.push({ name: "codex discovered and called private MCP tool", ok: true, tool_name: seeded.tool_name });
     log("ok", `codex reported private workflow tool - ${seeded.tool_name}`);
 
@@ -239,6 +240,14 @@ export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
   const completedCalls = events
     .map((event) => event?.item)
     .filter((item) => item?.type === "mcp_tool_call" && item.status === "completed");
+  const commandExecutions = events
+    .map((event) => event?.item)
+    .filter((item) => item?.type === "command_execution")
+    .map((item) => ({
+      status: item.status ?? null,
+      exit_code: item.exit_code ?? null,
+      command: redactCommandForEvidence(item.command),
+    }));
   const privateToolCall = completedCalls.find((item) => item.tool === toolName);
   const privateToolResult = privateToolCall?.result?.structured_content;
   const consentCall = completedCalls.find((item) => item.tool === "synthi_browser_request_consent"
@@ -261,6 +270,8 @@ export function extractCodexMcpEvidence({ events, toolName, targetUrl }) {
       && privateToolResult?.private_tool?.tool_name === toolName,
     private_tool_steps_run: Number(privateToolResult?.replay?.steps_run ?? 0),
     private_tool_status: privateToolResult?.replay?.status ?? null,
+    command_execution_count: commandExecutions.length,
+    command_executions: commandExecutions,
   };
 }
 
@@ -273,7 +284,7 @@ async function captureVisualProof({ targetUrl }) {
       const match = await findPageWithText({ pages, targetUrl, expectedText: "Details opened" });
       if (match) {
         const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
-        await match.page.screenshot({ path: screenshotPath, fullPage: true });
+        await match.page.screenshot(visualProofScreenshotOptions({ path: screenshotPath, timeoutMs: CFG.timeoutMs }));
         return { screenshotPath, text: match.text, url: match.url, match: match.match };
       }
       await sleep(500);
@@ -297,6 +308,14 @@ export async function findPageWithText({ pages, targetUrl, expectedText }) {
     sameOriginCandidates.push(match);
   }
   return sameOriginCandidates[0] ?? null;
+}
+
+export function visualProofScreenshotOptions({ path: screenshotPath, timeoutMs }) {
+  return {
+    path: screenshotPath,
+    fullPage: false,
+    timeout: Math.min(Math.max(Number(timeoutMs) || 30_000, 5_000), 60_000),
+  };
 }
 
 async function seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl }) {
@@ -505,6 +524,10 @@ function sameOrigin(a, b) {
   } catch {
     return false;
   }
+}
+
+function redactCommandForEvidence(command) {
+  return typeof command === "string" && command.trim() ? "[redacted-command]" : null;
 }
 
 function collectProcess(proc, timeoutMs) {
