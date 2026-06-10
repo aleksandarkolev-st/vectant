@@ -111,9 +111,59 @@ describe('container-mode devcontainer import', () => {
       name: 'Dev', image: 'node:20', forwardPorts: [3000], postStartCommand: 'npm run dev',
     }, { containerRuntime: true });
     expect(config.runtimeType).toBe('container');
-    expect(config.install.join(' ')).toMatch(/docker pull node:20/);
     expect(config.launch).toMatch(/docker run/);
     expect(config.launch).toMatch(/-p 3000:3000/);
+  });
+
+  it('exact-matches the generated image-mode install/launch (quoted, single-spaced)', () => {
+    const { config } = importDevcontainer({
+      name: 'Dev', image: 'node:20', forwardPorts: [3000], postStartCommand: 'npm run dev',
+    }, { containerRuntime: true });
+    expect(config.install).toEqual(["docker pull 'node:20'"]);
+    expect(config.launch).toBe(
+      `docker run --rm -p 3000:3000 -v "$PWD":/workspace -w /workspace 'node:20' sh -lc "npm run dev"`,
+    );
+    // no double space when ports are present or absent
+    expect(config.launch).not.toMatch(/ {2}/);
+  });
+
+  it('no-ports container launch has no double space', () => {
+    const { config } = importDevcontainer({
+      name: 'Worker', image: 'node:20', postStartCommand: 'node worker.js',
+    }, { containerRuntime: true });
+    expect(config.runtimeType).toBe('container');
+    expect(config.launch).not.toMatch(/ {2}/);
+    expect(config.launch).toContain('docker run --rm -v "$PWD":/workspace');
+  });
+
+  it('container mode with build.dockerfile emits a quoted docker build', () => {
+    const { config } = importDevcontainer({
+      name: 'My App', build: { dockerfile: 'Dockerfile' }, forwardPorts: [8080],
+    }, { containerRuntime: true });
+    expect(config.runtimeType).toBe('container');
+    expect(config.install[0]).toBe("docker build -t 'my-app:local' -f 'Dockerfile' .");
+    expect(config.launch).toContain('-p 8080:8080');
+  });
+
+  it('shell-injection in image is neutralized by quoting', () => {
+    const { config } = importDevcontainer(
+      { name: 'x', image: 'node:20; rm -rf /' }, { containerRuntime: true },
+    );
+    expect(config.install[0]).toBe("docker pull 'node:20; rm -rf /'");
+  });
+
+  it('rejects a dockerfile path that escapes the workspace', () => {
+    expect(() => importDevcontainer(
+      { name: 'x', build: { dockerfile: '../../etc/evil' } }, { containerRuntime: true },
+    )).toThrow();
+  });
+
+  it('falls back to managed-commands when containerRuntime=true but no image/dockerfile', () => {
+    const { config } = importDevcontainer(
+      { name: 'x', postStartCommand: 'run' }, { containerRuntime: true },
+    );
+    expect(config.runtimeType).not.toBe('container');
+    expect(config.launch).toBe('run');
   });
 
   it('still rejects host-escape recipes in container mode', () => {

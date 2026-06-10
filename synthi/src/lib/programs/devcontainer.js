@@ -11,7 +11,7 @@
  * scrub still happens in the collab-server runtime manager at launch time.
  */
 
-import { coerceManifestObject, parseProgramManifest, ProgramManifestError } from './manifest';
+import { coerceManifestObject, parseProgramManifest, ProgramManifestError, normalizeWorkingDir } from './manifest';
 
 /** Env key prefixes mirrored from the runtime scrub denylist (transparency only). */
 const BLOCKED_ENV_PREFIXES = [
@@ -43,6 +43,11 @@ function flattenCommand(cmd) {
     return out;
   }
   return [];
+}
+
+/** Minimal POSIX shell quoting: single-quote wrap, escape embedded single quotes. */
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
 }
 
 function slugifyPackageId(name) {
@@ -125,8 +130,11 @@ export function importDevcontainer(input, { containerRuntime = false } = {}) {
   }
 
   const image = typeof dc.image === 'string' && dc.image.trim() ? dc.image.trim() : null;
-  const dockerfile = (dc.build && typeof dc.build.dockerfile === 'string') ? dc.build.dockerfile
+  // A devcontainer dockerfile is a workspace-relative path; run it through the
+  // shared normalizer so absolute paths / `..` traversal are rejected (throws).
+  const rawDockerfile = (dc.build && typeof dc.build.dockerfile === 'string') ? dc.build.dockerfile
     : (typeof dc.dockerFile === 'string' ? dc.dockerFile : null);
+  const dockerfile = rawDockerfile ? (normalizeWorkingDir(rawDockerfile, 'dockerfile') || null) : null;
 
   let runtimeType, install, launch;
   const portFlags = ports.map((p) => `-p ${p}:${p}`).join(' ');
@@ -139,10 +147,14 @@ export function importDevcontainer(input, { containerRuntime = false } = {}) {
       ...flattenCommand(dc.postCreateCommand),
       ...flattenCommand(dc.postStartCommand),
     ].join(' && ') || 'sleep infinity';
+    // Shell-quote user-controlled image/tag/dockerfile so a recipe value like
+    // `node:20; rm -rf /` cannot break out into a separate command. The sh -lc
+    // argument is safely encoded via JSON.stringify (one double-quoted arg).
+    const portFragment = portFlags ? `${portFlags} ` : '';
     install = image
-      ? [`docker pull ${image}`]
-      : [`docker build -t ${tag} -f ${dockerfile} .`];
-    launch = `docker run --rm ${portFlags} -v "$PWD":/workspace -w /workspace ${tag} sh -lc ${JSON.stringify(inContainerCmd)}`.trim();
+      ? [`docker pull ${shellQuote(image)}`]
+      : [`docker build -t ${shellQuote(tag)} -f ${shellQuote(dockerfile)} .`];
+    launch = `docker run --rm ${portFragment}-v "$PWD":/workspace -w /workspace ${shellQuote(tag)} sh -lc ${JSON.stringify(inContainerCmd)}`;
   } else {
     // install: onCreate → updateContent → postCreate, in order.
     install = [

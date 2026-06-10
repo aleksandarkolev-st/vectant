@@ -156,6 +156,8 @@ export function normalizeCommands(cmds, field = 'install') {
 
 function deriveSurfaces(runtimeType, ports) {
   const out = [];
+  // container runtimes always surface the app tab: the runtime manager maps
+  // their published ports at run time even when none are declared up front.
   if (ports.length > 0 || runtimeType === 'gui' || runtimeType === 'container') out.push('app');
   out.push('logs');
   if (runtimeType !== 'background') out.push('terminal');
