@@ -12,7 +12,7 @@ agent client -> Synthi MCP -> broker -> Synthi-hosted browser/runtime -> screens
 
 Local CDP remains only the development harness. The verification run did not rely on fixed preview ports, fixed workspace slugs, local Chrome paths, fixed element positions, or generated-script shortcuts for a specific fixture.
 
-Excluding real deployed IdP testing, the remaining work is about 4-6 percent. The main unfinished items are production rollout validation in third-party MCP hosts, hosted-runtime deployment wiring, and product UI for authoring reset/profile/postcondition inputs rather than only consuming configured profiles.
+Excluding real deployed IdP testing, the remaining work is about 3-5 percent. The main unfinished items are production rollout validation in third-party MCP hosts, hosted-runtime deployment wiring, and final account-available Codex `5.3-spark` acceptance from inside a workspace.
 
 ## Latest Verification
 
@@ -45,6 +45,7 @@ Targeted replay-isolation verification:
 - Portable replay-isolation profile manifests can be passed into MCP safety tools and merged with workspace overrides.
 - CI-isolated replay now requires the selected auth checkpoint to be explicitly active for the taught workflow.
 - The IDE Workflows panel surfaces CI replay profile readiness from MCP state and dispatches `synthi_safety_run_ci_isolated_replay` without hardcoded workspace slugs, ports, or fixture assumptions.
+- The Workflows panel now hydrates replay-isolation profile state from the bridge, lets a developer edit base URL, CI/reset/assertion/postcondition commands, profile ids, seed ids, working directory, auth provider id, and mutation permission, then saves a portable `synthi.replayIsolationProfile.v1` manifest through the existing MCP safety tool.
 
 Visual artifacts inspected in this update:
 
@@ -52,6 +53,7 @@ Visual artifacts inspected in this update:
 - `tmp/workflow-pipeline-e2e/popup-chain-checkout/after-live-replay.png`
 - `tmp/workflow-pipeline-e2e/ci-isolated-visual-mutation/after-ci-isolated-replay.png`
 - `tmp/agent-workflow-ci-profile-card.png`
+- `tmp/agent-workflow-ci-profile-editor-card.png`
 
 ## Implemented
 
@@ -66,10 +68,12 @@ Visual artifacts inspected in this update:
 - CI-isolated replay requires explicit reset/profile/postcondition configuration and run-bound mutation attestation.
 - Replay-isolation profiles have a portable manifest schema that can be registered with MCP safety tools and carried across workspace/runtime boundaries.
 - The Workflows panel now shows CI replay profile readiness and exposes a CI replay action when the MCP profile state is ready.
+- The Workflows panel can author and edit replay-isolation profiles without fixed ports, fixed workspace slugs, local Chrome paths, or fixture-specific command guesses.
 - Exported Playwright scripts are executed by the live pipeline instead of only being inspected.
 
 ## Latest Commits In This Continuation
 
+- `6859f454` Add replay isolation profile authoring
 - `41053f36` Surface CI replay profiles in workflows panel
 - `7b9006d7` Select auth checkpoint in CI replay test
 - `174ccfc1` Add replay isolation profile manifests
@@ -87,5 +91,4 @@ These sit on top of the earlier goal commits for private-tool registration, host
 - Wire production hosted-browser deployment config for the runtime, workflow bridge, private workflow store, encrypted auth checkpoint store, and per-workspace CI reset profiles.
 - Expand adversarial target coverage for multiple simultaneous popups, hostile nested frame timing, and cross-origin return navigation under production consent rules.
 - Keep real external IdP validation out of this run per current direction, but preserve fixture coverage for OAuth-like popups, refresh providers, checkpoint expiry, and re-auth classification.
-- Add product UI for authoring and editing mutation postconditions and reset profiles; the current UI consumes and runs profiles but does not yet author them.
 - Run a final Codex CLI acceptance pass from inside a workspace with model `5.3-spark` when that model is available to the local/prod Codex account; the current local ChatGPT-auth Codex CLI rejects it before tool execution.
