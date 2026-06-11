@@ -211,3 +211,42 @@ test('execInteractiveShell throws if the runtime container was not started', asy
   const mgr = createRuntimeManager({ docker });
   await assert.rejects(() => mgr.execInteractiveShell('repo', 'u1', { cols: 80, rows: 24 }), /not started/i);
 });
+
+test('runOnce execs argv and resolves the collected stdout', async () => {
+  let execOpts = null;
+  const docker = fakeDocker();
+  const origCreate = docker.createContainer;
+  docker.createContainer = async (o) => {
+    const c = await origCreate(o);
+    c.exec = async (opts) => {
+      execOpts = opts;
+      return {
+        start: async () => {
+          const handlers = {};
+          const stream = { on: (ev, cb) => { handlers[ev] = cb; return stream; } };
+          setImmediate(() => {
+            handlers.data && handlers.data(Buffer.from('hello-stdout'));
+            handlers.end && handlers.end();
+          });
+          return stream;
+        },
+        inspect: async () => ({ ExitCode: 0 }),
+      };
+    };
+    return c;
+  };
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+
+  const out = await mgr.runOnce('repo', 'u1', ['/bin/sh', '-lc', 'cat /proc/net/tcp']);
+  assert.equal(execOpts.Cmd[0], '/bin/sh');
+  assert.equal(execOpts.AttachStdout, true);
+  assert.equal(execOpts.Tty, false);
+  assert.equal(out, 'hello-stdout');
+});
+
+test('runOnce throws if the runtime container was not started', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await assert.rejects(() => mgr.runOnce('repo', 'u1', ['/bin/sh', '-lc', 'true']), /not started/i);
+});

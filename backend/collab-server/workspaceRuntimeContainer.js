@@ -319,7 +319,38 @@ function createRuntimeManager({
     return { ptyProcess, stop: () => ptyProcess.kill() };
   }
 
-  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, _sessions: sessions };
+  /**
+   * Run a single command in the runtime container and resolve its collected
+   * stdout+stderr as a string. Non-TTY (so the dockerode stream is the raw,
+   * un-multiplexed-enough output we just concatenate — adequate for parsing
+   * /proc/net/tcp). Used by the container port monitor. Best-effort: resolves
+   * '' on stream error so a transient daemon hiccup doesn't reject the poll.
+   */
+  async function runOnce(slug, userId, argv) {
+    const s = sessions.get(keyOf(slug, userId));
+    if (!s) throw new Error('runtime container not started');
+    s.lastActive = Date.now();
+    const exec = await docker.getContainer(s.containerId).exec({
+      Cmd: argv,
+      AttachStdin: false,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+    });
+    const stream = await exec.start({});
+    return await new Promise((resolve) => {
+      let buf = '';
+      if (stream && typeof stream.on === 'function') {
+        stream.on('data', (chunk) => { buf += chunk.toString('utf8'); });
+        stream.on('end', () => resolve(buf));
+        stream.on('error', () => resolve(buf));
+      } else {
+        resolve('');
+      }
+    });
+  }
+
+  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, runOnce, _sessions: sessions };
 }
 
 module.exports = {
