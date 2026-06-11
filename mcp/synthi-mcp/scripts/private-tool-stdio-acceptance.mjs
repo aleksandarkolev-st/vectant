@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assertPrivateToolStoreConformance,
   assertRuntimeEndpointConformance,
+  hostedRuntimePolicyEnv,
   normalizeOptionalText,
   parseBooleanFlag,
   parseJsonObjectArgument,
@@ -32,6 +33,7 @@ import {
 } from "./private-tool-acceptance-conformance.mjs";
 
 export {
+  hostedRuntimePolicyEnv,
   parseBooleanFlag,
   parseJsonObjectArgument,
   privateToolStoreConformance,
@@ -60,6 +62,7 @@ const CFG = {
   toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}"),
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
   expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
+  hostedSessionTtlMs: parseNonNegativeInteger(args["hosted-session-ttl-ms"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_HOSTED_SESSION_TTL_MS ?? "900000", "hosted_session_ttl_ms"),
   mcpCommand: resolveMcpServerCommandSpec({
     args,
     env: process.env,
@@ -179,6 +182,7 @@ async function main() {
         SYNTHI_AUTH_CHECKPOINT_SCOPE: privateToolStore.scope,
         SYNTHI_HOSTED_BROWSER_CDP_URL: CFG.cdpUrl,
         SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: targetUrl,
+        ...hostedRuntimePolicyEnv({ targetUrl, sessionTtlMs: CFG.hostedSessionTtlMs }),
         SYNTHI_WORKSPACE_ID: workspaceId,
         SYNTHI_AGENT_ID: "stdio_private_tool_acceptance",
       }),

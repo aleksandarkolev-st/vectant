@@ -17,6 +17,7 @@ import { chromium } from "playwright-core";
 import {
   assertPrivateToolStoreConformance,
   assertRuntimeEndpointConformance,
+  hostedRuntimePolicyEnv,
   normalizeOptionalText,
   parseBooleanFlag,
   parseJsonObjectArgument,
@@ -63,6 +64,7 @@ const CFG = {
   toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}", "tool_args"),
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
   expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
+  hostedSessionTtlMs: parseNonNegativeInteger(args["hosted-session-ttl-ms"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_HOSTED_SESSION_TTL_MS ?? "900000", "hosted_session_ttl_ms"),
 };
 
 function log(kind, message) {
@@ -231,6 +233,7 @@ async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, stor
     cdpUrl: CFG.cdpUrl,
     targetUrl,
     workspaceId,
+    hostedSessionTtlMs: CFG.hostedSessionTtlMs,
   });
   await writeFile(path.join(codexHome, "config.toml"), configText);
 }
@@ -245,7 +248,9 @@ export function buildCodexConfigToml({
   cdpUrl,
   targetUrl,
   workspaceId,
+  hostedSessionTtlMs = 900_000,
 }) {
+  const hostedPolicy = hostedRuntimePolicyEnv({ targetUrl, sessionTtlMs: hostedSessionTtlMs });
   const config = [
     `model_reasoning_effort = ${JSON.stringify(codexReasoning || "low")}`,
     "",
@@ -259,6 +264,9 @@ export function buildCodexConfigToml({
     `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE = ${JSON.stringify(storeScope)}`,
     `SYNTHI_HOSTED_BROWSER_CDP_URL = ${JSON.stringify(cdpUrl)}`,
     `SYNTHI_HOSTED_BROWSER_WORKSPACE_URL = ${JSON.stringify(targetUrl)}`,
+    `SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST = ${JSON.stringify(hostedPolicy.SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST)}`,
+    `SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS = ${JSON.stringify(hostedPolicy.SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS)}`,
+    `SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS = ${JSON.stringify(hostedPolicy.SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS)}`,
     `SYNTHI_WORKSPACE_ID = ${JSON.stringify(workspaceId)}`,
     'SYNTHI_AGENT_ID = "codex_private_tool_acceptance"',
     "",
