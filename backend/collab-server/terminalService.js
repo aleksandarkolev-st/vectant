@@ -64,6 +64,15 @@ try {
 const activeSessions = new Map();
 const programRuntimeManager = createProgramRuntimeManager({ activeSessions });
 
+/**
+ * Decide whether a terminal session should run inside the per-workspace runtime
+ * container (Phase 2a) vs the local host shell. Requires the flag, a constructed
+ * runtime manager, and a slug to key the container on. Pure for testability.
+ */
+function shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug }) {
+  return Boolean(enableContainerRuntime && workspaceRuntime && workspaceSlug);
+}
+
 // ─── Shell Detection ────────────────────────────────────────────────────────
 
 function shellExists(shellPath) {
@@ -1142,7 +1151,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   return { ptyProcess, shell, cwd, sessionId };
 }
 
-function createTerminalWSS() {
+function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = null, flushWorkspaceDocsToDisk = null } = {}) {
   // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
   // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
   const wss = new WebSocket.Server({
@@ -1285,22 +1294,45 @@ function createTerminalWSS() {
     console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
 
 
-    // ── Spawn PTY ───────────────────────────────────────────────────────
+    // ── Spawn PTY (host shell) or attach an in-container shell ───────────
     let ptyProcess, shell;
-    try {
-      ({ ptyProcess, shell } = createPtyProcess({
-        cwd,
-        cols: initialCols,
-        rows: initialRows,
-        shellType: requestedShellType,
-        workspaceName,
-        workspaceSlug,
-      }));
-    } catch (err) {
-      console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
-      ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
-      ws.close(1011, 'PTY spawn failed');
-      return;
+    if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) {
+      try {
+        // Editor edits live in the yjsWsServer rooms until saved; flush them to
+        // disk so `cat`/`git`/builds in this terminal see current content.
+        if (flushWorkspaceDocsToDisk) {
+          await flushWorkspaceDocsToDisk(workspaceSlug, requestedUserId).catch(() => {});
+        }
+        ws.send(JSON.stringify({ type: 'status', message: 'starting runtime…' }));
+        await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId);
+        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId);
+        const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
+          cols: initialCols, rows: initialRows,
+        });
+        ptyProcess = handle.ptyProcess;
+        shell = 'bash';
+      } catch (err) {
+        console.error(`[Terminal] container shell failed for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to start container terminal: ' + err.message }));
+        ws.close(1011, 'container shell failed');
+        return;
+      }
+    } else {
+      try {
+        ({ ptyProcess, shell } = createPtyProcess({
+          cwd,
+          cols: initialCols,
+          rows: initialRows,
+          shellType: requestedShellType,
+          workspaceName,
+          workspaceSlug,
+        }));
+      } catch (err) {
+        console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
+        ws.close(1011, 'PTY spawn failed');
+        return;
+      }
     }
 
     // ── Start filesystem watcher for this workspace ────────────────────
@@ -1439,6 +1471,7 @@ function broadcastToAll(message) {
 
 module.exports = {
   createTerminalWSS,
+  shouldUseContainerTerminal,
   createHeadlessSession,
   activeSessions,
   broadcastToAll,
