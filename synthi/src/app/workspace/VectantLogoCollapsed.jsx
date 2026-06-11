@@ -49,7 +49,7 @@ export default function VectantLogoCollapsed({
   phase = 'logo',
   pendingCount = 0,
   onActivate,
-  onSecondaryDragStart,
+  onPointerDragStart,
   isCompact = false,
   onSetCompact,
   isPositionLocked = false,
@@ -68,12 +68,13 @@ export default function VectantLogoCollapsed({
   onResetPosition,
   onOpenFullSettings,
   isDragging = false,
+  isMobileView = false,
 }) {
   const handleClick = useCallback(() => onActivate?.(), [onActivate]);
-  const handleMouseDown = useCallback((event) => {
-    if (phase !== 'logo' || event.button !== 2) return;
-    onSecondaryDragStart?.(event);
-  }, [onSecondaryDragStart, phase]);
+  const handlePointerDown = useCallback((event) => {
+    if (phase !== 'logo') return;
+    onPointerDragStart?.(event);
+  }, [onPointerDragStart, phase]);
   // is-v-fading drives the V fade-out. Active during expanding only.
   const isVFading = phase === 'expanding';
 
@@ -82,12 +83,14 @@ export default function VectantLogoCollapsed({
       type="button"
       aria-label={phase === 'logo' ? 'Open status island' : 'Vectant'}
       onClick={phase === 'logo' ? handleClick : undefined}
-      onMouseDown={handleMouseDown}
+      onPointerDown={handlePointerDown}
       tabIndex={phase === 'logo' ? 0 : -1}
       title={phase === 'logo'
         ? (isPositionLocked
-            ? 'Left click to open. Right click for actions. Movement locked.'
-            : 'Left click to open. Right click for actions. Right-drag to move.')
+            ? 'Tap to open. Right click for actions. Movement locked.'
+            : (isMobileView
+                ? 'Tap to open. Drag to move. Right click for actions.'
+                : 'Left click to open. Right click for actions. Right-drag to move.'))
         : undefined}
       className={[
         'vectant-logo-button th-focus-ring',

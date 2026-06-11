@@ -144,6 +144,7 @@ export const DOCK_POSITION = Object.freeze({
  * @property {string} [icon] - codicon name
  * @property {React.ComponentType} component - the panel React component
  * @property {boolean} [singleton] - only one instance allowed
+ * @property {boolean} [allowMultiple] - when true, the docking reducer skips singleton dedupe
  * @property {boolean} [closable] - default true
  * @property {string} [defaultLocation] - 'left' | 'right' | 'bottom' | 'center'
  * @property {Object} [defaultData]

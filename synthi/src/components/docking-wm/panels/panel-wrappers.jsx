@@ -171,6 +171,26 @@ const HealingSettingsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const ConnectedToolsPanel = dynamic(
+  () => import('@/components/integrations/ConnectedToolsPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
+const PortsPanel = dynamic(
+  () => import('@/components/ports/PortsPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
+const ProgramsPanel = dynamic(
+  () => import('@/components/programs/ProgramsPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
+const ProgramSessionPanel = dynamic(
+  () => import('@/components/programs/ProgramSessionPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -751,6 +771,72 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
 });
 
 // ────────────────────────────────────────────────────────
+//  Integrations Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const IntegrationsPanelWrapper = memo(function IntegrationsPanelWrapper({ data }) {
+  return (
+    <div
+      data-panel-type="integrations"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ConnectedToolsPanel />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Ports Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const PortsPanelWrapper = memo(function PortsPanelWrapper({ data }) {
+  return (
+    <div
+      data-panel-type="ports"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <PortsPanel />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Programs Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const ProgramsPanelWrapper = memo(function ProgramsPanelWrapper({ data }) {
+  return (
+    <div
+      data-panel-type="programs"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ProgramsPanel />
+    </div>
+  );
+});
+
+export const ProgramSessionPanelWrapper = memo(function ProgramSessionPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="program-session"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-editor)' }}
+    >
+      <ProgramSessionPanel
+        workspaceSlug={data?.workspaceSlug || ctx?.workspaceSlug}
+        sessionId={data?.programSessionId}
+        title={data?.title || 'Program Session'}
+      />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
 //  Wrapper registry (type → component)
 // ────────────────────────────────────────────────────────
 
@@ -771,4 +857,7 @@ export const PANEL_WRAPPERS = {
   pullrequests:    PullRequestsPanelWrapper,
   commithistory:   CommitHistoryPanelWrapper,
   'ai-healing':    AIHealingPanelWrapper,
+  integrations:    IntegrationsPanelWrapper,
+  programs:        ProgramsPanelWrapper,
+  'program-session': ProgramSessionPanelWrapper,
 };

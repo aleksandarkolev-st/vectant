@@ -171,10 +171,11 @@ class MacroConfig:
 class MicroConfig:
     """Configuration for micro-navigation (Step 3)."""
 
-    # Routing model (fast LLM for ToC navigation). gemini-3-flash-preview is
-    # the newest preview tier; previous defaults (gemini-2.0-flash,
-    # gemini-3.1-flash-lite) hit rate limits in bench runs.
-    routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-3-flash-preview")
+    # Routing model (fast LLM for ToC navigation). Must be a model the
+    # configured Gemini API key can actually serve — gemini-3-flash-preview
+    # 404s on the v1beta endpoint for current keys, so we default to
+    # gemini-3.1-flash-lite-preview. Override via RAG_ROUTING_MODEL.
+    routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-3.1-flash-lite-preview")
     routing_api_key: Optional[str] = field(
         default_factory=_resolve_gemini_key
     )
@@ -225,7 +226,7 @@ class SynthesisConfig:
     """Configuration for heavy synthesis (Step 4)."""
 
     # Synthesis model (heavy reasoning LLM)
-    synthesis_model: str = "gemini-3-flash-preview"
+    synthesis_model: str = os.getenv("RAG_SYNTHESIS_MODEL", "gemini-3.1-flash-lite-preview")
     synthesis_api_key: Optional[str] = field(
         default_factory=_resolve_gemini_key
     )

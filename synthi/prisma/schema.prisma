@@ -36,6 +36,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships WorkspaceMembership[]
+  tokens      PersonalAccessToken[]
 
   @@index([email])
 }
@@ -44,6 +45,9 @@ model WorkspaceMembership {
   id          String    @id @default(cuid())
   userId      String
   workspaceId String
+  // Workspace authorization role: 'owner' | 'admin' | 'member'. Backfill sets the
+  // earliest membership per workspace to 'owner' (Workspace has no creatorId). (Plan 1a R1-9)
+  role        String    @default("member")
   createdAt   DateTime  @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -52,4 +56,214 @@ model WorkspaceMembership {
   @@unique([userId, workspaceId])
   @@index([userId])
   @@index([workspaceId])
+}
+
+model EncryptedSecret {
+  id        String   @id @default(cuid())
+  // AES-256-GCM blob from src/lib/tokenCrypto.js, format "iv:tag:ct".
+  cipher    String
+  // Non-sensitive last-4 chars of the plaintext, for display only.
+  last4     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connection         McpConnection?
+  gitProvider        GitProvider? @relation("GitProviderSecret")
+  gitProviderRefresh GitProvider? @relation("GitProviderRefresh")
+}
+
+model McpConnection {
+  id            String   @id @default(cuid())
+  name          String
+  url           String
+  transport     String   @default("http") // 'http' | 'sse'
+  scope         String                     // 'personal' | 'workspace'
+  ownerUserId   String?
+  workspaceSlug String?
+  authType      String   @default("none")  // 'none' | 'bearer' | 'header'
+  headerName    String?
+  secretId      String?  @unique
+  secret        EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  // Tool names the AI may call. Empty array = none enabled (fail-closed). (R1-1)
+  toolAllowlist String[] @default([])
+  enabled       Boolean  @default(true)
+  lastHealthState String?
+  lastHealthAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  audits McpCallAudit[]
+
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
+}
+
+model McpCallAudit {
+  id            String   @id @default(cuid())
+  connectionId  String?                    // null for unknown-alias audit rows
+  connection    McpConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  serverName    String
+  toolName      String                     // original MCP tool name
+  userId        String?
+  workspaceSlug String?
+  outcome       String                     // 'ok' | 'error' | 'blocked'
+  errorCode     String?
+  // Richer audit columns (R1-8) — never store raw secrets or full payloads.
+  alias         String?                    // the ext_<i> alias presented to the model
+  callerType    String?                    // 'chat' | 'cli'
+  durationMs    Int?
+  argsHash      String?                    // sha256 hex of the JSON args (NOT raw args)
+  argsBytes     Int?
+  resultBytes   Int?
+  createdAt     DateTime @default(now())
+
+  @@index([connectionId])
+  @@index([createdAt])
+}
+
+model PersonalAccessToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  last4      String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([userId])
+}
+
+model GitProvider {
+  id                   String    @id @default(cuid())
+  name                 String
+  providerType         String                       // 'github' | 'gitlab' | 'generic'
+  baseUrl              String?
+  scope                String                        // 'personal' | 'workspace'
+  ownerUserId          String?
+  workspaceSlug        String?
+  authType             String    @default("pat")     // 'oauth' | 'pat'
+  secretId             String?   @unique
+  secret               EncryptedSecret? @relation("GitProviderSecret", fields: [secretId], references: [id], onDelete: SetNull)
+  refreshSecretId      String?   @unique
+  refreshSecret        EncryptedSecret? @relation("GitProviderRefresh", fields: [refreshSecretId], references: [id], onDelete: SetNull)
+  accessTokenExpiresAt DateTime?
+  oauthScopes          String[]  @default([])
+  accountLogin         String?
+  enabled              Boolean   @default(true)
+  needsRelink          Boolean   @default(false)
+  lastHealthState      String?
+  lastHealthAt         DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
+}
+
+model MarketplaceProgram {
+  id            String   @id @default(cuid())
+  packageId     String   @unique
+  publisher     String
+  verified      Boolean  @default(false)
+  latestVersion String
+  // Phase 5 (open marketplace): publish + reputation metadata. publishedByUserId
+  // is the user who published; installCount is the denormalized reputation signal.
+  displayName       String?
+  description       String?
+  publishedByUserId String?
+  installCount      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  versions ProgramVersion[]
+  installs ProgramInstall[]
+}
+
+model ProgramVersion {
+  id            String   @id @default(cuid())
+  programId     String
+  version       String
+  manifestJson  String
+  requiredTools String[] @default([])
+  ports         String[] @default([])
+  createdAt     DateTime @default(now())
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@unique([programId, version])
+  @@index([programId])
+}
+
+model ProgramInstall {
+  id                String   @id @default(cuid())
+  programId         String
+  workspaceSlug     String
+  version           String
+  status            String   @default("pending")
+  installedByUserId String
+  grantId           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  program  MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  grant    PermissionGrant?   @relation(fields: [grantId], references: [id], onDelete: SetNull)
+  sessions ProgramSession[]
+
+  @@index([programId])
+  @@index([workspaceSlug])
+  @@index([installedByUserId])
+  @@index([grantId])
+}
+
+model ProgramSession {
+  id              String   @id @default(cuid())
+  installId       String?
+  workspaceSlug   String
+  runtimeType     String
+  state           String   @default("starting")
+  startedByUserId String
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+  lastHealthState String?
+  lastHealthAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  install ProgramInstall? @relation(fields: [installId], references: [id], onDelete: SetNull)
+  events  ProgramRuntimeEvent[]
+
+  @@index([installId])
+  @@index([workspaceSlug])
+  @@index([startedByUserId])
+  @@index([state])
+  @@index([startedAt])
+}
+
+model PermissionGrant {
+  id              String   @id @default(cuid())
+  workspaceSlug   String
+  scopesJson      String
+  grantedByUserId String
+  grantedAt       DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  installs ProgramInstall[]
+
+  @@index([workspaceSlug])
+  @@index([grantedByUserId])
+}
+
+model ProgramRuntimeEvent {
+  id        String   @id @default(cuid())
+  sessionId String
+  type      String
+  dataJson  String?
+  createdAt DateTime @default(now())
+
+  session ProgramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([createdAt])
 }

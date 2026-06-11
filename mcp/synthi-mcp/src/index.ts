@@ -23,6 +23,7 @@ if (
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createSynthiServer } from "./server.js";
+import { resolveExternalTools } from "./external/index.js";
 import { session } from "./session.js";
 import { requestRegistry } from "./util/request_registry.js";
 import { eventLog } from "./events/index.js";
@@ -89,9 +90,17 @@ async function main(): Promise<void> {
     process.stderr.write(`synthi-mcp snapshots: file-backed at ${snapshotDir}\n`);
   }
 
+  // External MCP tools (Slice 1b): resolved once at startup when SYNTHI_API_URL +
+  // SYNTHI_PAT are configured; otherwise empty (feature off, no behavior change).
+  const externalTools = await resolveExternalTools();
+  if (externalTools.descriptors.length > 0) {
+    process.stderr.write(`synthi-mcp external: ${externalTools.descriptors.length} proxied tool(s) advertised\n`);
+  }
+
   const server = createSynthiServer({
     defaultSessionId,
     defaultSignalingUrl,
+    externalTools,
   });
 
   const transport = new StdioServerTransport();

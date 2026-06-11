@@ -31,12 +31,14 @@ const SIDEBAR_TYPES = new Set([
   IDE_PANEL.SEARCH,
   IDE_PANEL.GIT,
   IDE_PANEL.EXTENSIONS,
+  IDE_PANEL.PROGRAMS,
   IDE_PANEL.EXTENSION_VIEW,
   IDE_PANEL.CHAT,
   IDE_PANEL.AGENT_WORKFLOWS,
   IDE_PANEL.SETTINGS,
   IDE_PANEL.PULL_REQUESTS,
   IDE_PANEL.AI_HEALING,
+  IDE_PANEL.INTEGRATIONS,
 ]);
 
 const BOTTOM_TYPES = new Set([
@@ -182,6 +184,7 @@ export function useActivityBarDocking() {
       search:     () => togglePanel(IDE_PANEL.SEARCH, 'Search'),
       git:        () => togglePanel(IDE_PANEL.GIT, 'Source Control'),
       extensions: () => togglePanel(IDE_PANEL.EXTENSIONS, 'Extensions'),
+      programs:   () => togglePanel(IDE_PANEL.PROGRAMS, 'Programs'),
       terminal:   () => togglePanel(IDE_PANEL.TERMINAL, 'Terminal'),
       chat:       () => togglePanel(IDE_PANEL.CHAT, 'AI Chat'),
       workflows:  () => togglePanel(IDE_PANEL.AGENT_WORKFLOWS, 'Workflows'),
@@ -191,6 +194,8 @@ export function useActivityBarDocking() {
       settings:      () => togglePanel(IDE_PANEL.SETTINGS, 'Settings'),
       pullrequests:  () => togglePanel(IDE_PANEL.PULL_REQUESTS, 'Pull Requests'),
       'ai-healing':  () => togglePanel(IDE_PANEL.AI_HEALING, 'AI Healing'),
+      integrations:  () => togglePanel(IDE_PANEL.INTEGRATIONS, 'Connected Tools'),
+      ports:         () => togglePanel(IDE_PANEL.PORTS, 'Ports'),
     }),
     [togglePanel],
   );

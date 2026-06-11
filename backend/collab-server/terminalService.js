@@ -1276,6 +1276,11 @@ function sanitizeResize(cols, rows) {
 async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null, options = {}) {
   const runtimeScope = options.runtimeScope || '';
   const filesystemUserId = options.filesystemUserId || userId;
+  // Programs (managedProgramRuntime) launch headless sessions with an explicit
+  // env + shellType; merge those on top of the runtime-scope env so neither the
+  // pod/runtime-scope plumbing nor the program's declared env is lost.
+  const extraEnv = options.env && typeof options.env === 'object' ? options.env : {};
+  const shellType = options.shellType || null;
   const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
   const runtimeLaunch = await buildRuntimeLaunch({
     runtimeScope,
@@ -1288,7 +1293,8 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   try {
     ({ ptyProcess, shell } = await createTerminalProcess({
       cwd, cols, rows,
-      env: runtimeLaunch.env,
+      env: { ...runtimeLaunch.env, ...extraEnv },
+      shellType,
       workspaceName: name,
       workspaceSlug: slug,
       runtimeScope,
@@ -1369,7 +1375,18 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   return { ptyProcess, shell, cwd, sessionId };
 }
 
-function createTerminalWSS() {
+/**
+ * Decide whether a terminal session should run inside the per-workspace rootless
+ * Docker runtime container (the local-dev / self-host path; production K8s uses
+ * the pod-exec path instead). Requires the flag, a constructed runtime manager,
+ * and a slug. Pure for testability. Mutually exclusive with the pod path, which
+ * only fires when SYNTHI_TERMINAL_BACKEND=k8s-exec + spawner.mode=k8s.
+ */
+function shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug }) {
+  return Boolean(enableContainerRuntime && workspaceRuntime && workspaceSlug);
+}
+
+function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = null, flushWorkspaceDocsToDisk = null } = {}) {
   // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
   // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
   const wss = new WebSocket.Server({
@@ -1537,33 +1554,62 @@ function createTerminalWSS() {
 
 
     // ── Spawn PTY ───────────────────────────────────────────────────────
+    // Three-way routing (mutually exclusive by environment):
+    //   1. K8s pod exec      — production isolation (handled inside createTerminalProcess
+    //                          via shouldUseRuntimePodTerminal on the runtimeScope path)
+    //   2. rootless container — local-dev / self-host: run the terminal inside the
+    //                          per-workspace Docker runtime container so `docker` works
+    //   3. host shell         — fallback (no runtime configured)
     let ptyProcess, shell;
-    let runtimeLaunch;
-    try {
-      runtimeLaunch = await buildRuntimeLaunch({
-        runtimeScope,
-        workspaceSlug,
-        actorUserId: requestedUserId,
-        filesystemUserId: requestedFilesystemUserId,
-      });
-      ({ ptyProcess, shell } = await createTerminalProcess({
-        cwd,
-        cols: initialCols,
-        rows: initialRows,
-        env: runtimeLaunch.env,
-        shellType: requestedShellType,
-        workspaceName,
-        workspaceSlug,
-        runtimeScope,
-        actorUserId: requestedUserId,
-        filesystemUserId: requestedFilesystemUserId,
-      }));
-    } catch (err) {
-      try { runtimeLaunch?.releasePort?.(); } catch (_) {}
-      console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
-      ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
-      ws.close(1011, 'PTY spawn failed');
-      return;
+    let runtimeLaunch = null;
+    if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) {
+      try {
+        // Editor edits live in the yjsWsServer rooms until saved; flush them to
+        // disk so `cat`/`git`/builds in this terminal see current content.
+        if (flushWorkspaceDocsToDisk) {
+          await flushWorkspaceDocsToDisk(workspaceSlug, requestedUserId).catch(() => {});
+        }
+        ws.send(JSON.stringify({ type: 'status', message: 'starting runtime…' }));
+        await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId);
+        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId);
+        const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
+          cols: initialCols, rows: initialRows,
+        });
+        ptyProcess = handle.ptyProcess;
+        shell = 'bash';
+      } catch (err) {
+        console.error(`[Terminal] container shell failed for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to start container terminal: ' + err.message }));
+        ws.close(1011, 'container shell failed');
+        return;
+      }
+    } else {
+      try {
+        runtimeLaunch = await buildRuntimeLaunch({
+          runtimeScope,
+          workspaceSlug,
+          actorUserId: requestedUserId,
+          filesystemUserId: requestedFilesystemUserId,
+        });
+        ({ ptyProcess, shell } = await createTerminalProcess({
+          cwd,
+          cols: initialCols,
+          rows: initialRows,
+          env: runtimeLaunch.env,
+          shellType: requestedShellType,
+          workspaceName,
+          workspaceSlug,
+          runtimeScope,
+          actorUserId: requestedUserId,
+          filesystemUserId: requestedFilesystemUserId,
+        }));
+      } catch (err) {
+        try { runtimeLaunch?.releasePort?.(); } catch (_) {}
+        console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
+        ws.close(1011, 'PTY spawn failed');
+        return;
+      }
     }
 
     // ── Start filesystem watcher for this workspace ────────────────────
@@ -1586,7 +1632,7 @@ function createTerminalWSS() {
       workspaceSlug,
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,
-      releasePort: runtimeLaunch.releasePort,
+      releasePort: runtimeLaunch?.releasePort || (() => {}),
       unwatchFs,
     });
 
@@ -1716,6 +1762,7 @@ function broadcastToAll(message) {
 
 module.exports = {
   createTerminalWSS,
+  shouldUseContainerTerminal,
   createHeadlessSession,
   activeSessions,
   broadcastToAll,

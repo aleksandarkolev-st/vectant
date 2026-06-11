@@ -8,8 +8,13 @@ const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
-const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
+const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
+const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const proxyService = require('./proxyService');
+const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
+const { handleEnsureRuntime } = require('./ensureRuntime');
+const { createContainerPortMonitor } = require('./containerPortMonitor');
+const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
@@ -24,6 +29,152 @@ const sseService = require('./sseService');
 const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
+
+function queueHeadlessCommandStart(ptyProcess, command) {
+  const isWin = require('os').platform() === 'win32';
+  const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+  let promptBuffer = '';
+  let commandSent = false;
+  let promptCheckInterval = null;
+  let promptWaitTimeout = null;
+  let resolveCommandStarted;
+
+  const commandStartedPromise = new Promise((resolve) => {
+    resolveCommandStarted = resolve;
+  });
+
+  const promptDisposable = ptyProcess.onData((data) => {
+    if (commandSent) {
+      return;
+    }
+
+    promptBuffer = `${promptBuffer}${data}`.slice(-16_384);
+    if (promptPattern.test(promptBuffer)) {
+      sendCommand();
+    }
+  });
+
+  function cleanup() {
+    if (promptCheckInterval) {
+      clearInterval(promptCheckInterval);
+      promptCheckInterval = null;
+    }
+    if (promptWaitTimeout) {
+      clearTimeout(promptWaitTimeout);
+      promptWaitTimeout = null;
+    }
+    try { promptDisposable.dispose?.(); } catch (_) {}
+  }
+
+  function sendCommand() {
+    if (commandSent) {
+      return;
+    }
+
+    commandSent = true;
+    cleanup();
+    ptyProcess.write(`${command}\r`);
+    resolveCommandStarted();
+  }
+
+  promptCheckInterval = setInterval(() => {
+    if (!commandSent && promptPattern.test(promptBuffer)) {
+      sendCommand();
+    }
+  }, 100);
+  if (typeof promptCheckInterval.unref === 'function') {
+    promptCheckInterval.unref();
+  }
+
+  promptWaitTimeout = setTimeout(() => {
+    if (!commandSent) {
+      logger.info({ commandPreview: command.slice(0, 120) }, 'Prompt not detected, sending command anyway');
+      sendCommand();
+    }
+  }, 1000);
+  if (typeof promptWaitTimeout.unref === 'function') {
+    promptWaitTimeout.unref();
+  }
+
+  ptyProcess.onExit(() => {
+    if (!commandSent) {
+      cleanup();
+      resolveCommandStarted();
+    }
+  });
+
+  return { commandStartedPromise };
+}
+
+// ── Container runtime (hybrid Phase 1) ───────────────────────────────────────
+// When ENABLE_CONTAINER_RUNTIME=1, `container`-type programs run inside a
+// per-workspace rootless-Docker runtime container (managed via dockerode) and
+// their published ports are reverse-proxied through /wsport/<slug>/<port>/.
+// When the flag is unset everything below is null and container programs fall
+// back to the existing headless PTY path — so this slice can merge dark.
+const ENABLE_CONTAINER_RUNTIME = process.env.ENABLE_CONTAINER_RUNTIME === '1';
+const workspaceRuntime = ENABLE_CONTAINER_RUNTIME
+  ? createRuntimeManager({
+      docker: new (require('dockerode'))({
+        socketPath: process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock',
+      }),
+      logger,
+    })
+  : null;
+const containerPortProxy = ENABLE_CONTAINER_RUNTIME
+  ? createContainerPortProxy({
+      // Resolve the running runtime-container host for a slug. Dev is effectively
+      // single-user per workspace, so match the first session keyed by `${slug} `.
+      resolveHost: (slug) => {
+        const match = [...workspaceRuntime._sessions.keys()].find((k) => k.startsWith(`${slug} `));
+        if (!match) return null;
+        // Keys are `${slug} ${userId}`; split on the FIRST space only so a userId
+        // that itself contains a space is reconstructed intact.
+        const spaceIdx = match.indexOf(' ');
+        return runtimeContainerHost(match.slice(0, spaceIdx), match.slice(spaceIdx + 1));
+      },
+    })
+  : null;
+
+// Phase 2b — detect ports opened by servers INSIDE the runtime container (e.g.
+// `npm run dev` from the in-app terminal) and push the live set to the frontend
+// Ports panel. Reads /proc/net/tcp[6] via runOnce; broadcasts over notifyWss.
+const containerPortMonitor = ENABLE_CONTAINER_RUNTIME
+  ? createContainerPortMonitor({
+      // Active runtime containers, keyed `${slug} ${userId}` in the manager.
+      listContainers: () => [...workspaceRuntime._sessions.keys()].map((k) => {
+        const i = k.indexOf(' ');
+        return { slug: k.slice(0, i), userId: k.slice(i + 1) };
+      }),
+      runOnce: (slug, userId, argv) => workspaceRuntime.runOnce(slug, userId, argv),
+      onPortsChanged: (slug, _userId, ports) => broadcastContainerPorts(slug, ports),
+      logger,
+    })
+  : null;
+
+const managedProgramRuntime = createProgramRuntimeManager({
+  activeSessions: terminalSessions,
+  logger,
+  getActivePorts: () => proxyService.getActivePorts(),
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType }) => {
+    // `container` programs route into the per-workspace rootless-Docker runtime
+    // container; everything else keeps the existing shared-collab PTY path.
+    if (runtimeType === 'container' && workspaceRuntime) {
+      await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
+      // The rootless dockerd inside the runtime container takes ~15-25s to be
+      // ready; wait for it so the program's first `docker ...` command doesn't
+      // race a not-yet-listening daemon.
+      await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId);
+      return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
+    }
+    const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
+    const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
+    return {
+      ...runtime,
+      commandStartedPromise,
+    };
+  },
+});
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -645,7 +796,12 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   // Read current CRDT content from Y-Sweet and write to the git worktree.
   // This ensures the on-disk content matches the editor state before git ops.
   const docName = buildDocName(slug, filePath, scope);
-  const content = await ySweetBridge.readDocContent(docName);
+  // Prefer the LIVE editor doc: the frontend syncs to the yjsWsServer relay, so
+  // its in-memory room holds the authoritative (incl. unsaved) content. Y-Sweet
+  // is not in the editor's sync path, so it's only a fallback for docs that
+  // aren't currently open.
+  let content = require('./yjsWsServer').getRoomText(docName);
+  if (content == null) content = await ySweetBridge.readDocContent(docName);
   if (content == null) return;
 
   const effectiveUser = scope.userId || null;
@@ -659,6 +815,35 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   await fsPromises.writeFile(fullPath, content, 'utf-8');
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
+}
+
+/**
+ * Flush a workspace's LIVE editor docs to disk before a server-side consumer
+ * reads the working tree (a `container`/`web` program's `docker build .` /
+ * `npm install`). The frontend syncs edits to the yjsWsServer relay, so the
+ * authoritative (incl. unsaved) content is its in-memory rooms — NOT Y-Sweet
+ * and NOT necessarily disk. We enumerate the open rooms for this workspace and
+ * flush each via flushYjsDocForFile (which reads the room first). Only
+ * currently-open docs need flushing; closed docs were already written on save.
+ * @returns {Promise<number>} number of docs flushed
+ */
+async function flushWorkspaceDocsToDisk(slug, userId) {
+  if (!slug || !userId) return 0;
+  const prefix = `workspace:${slug}:user:${encodeURIComponent(String(userId))}:`;
+  const docNames = require('./yjsWsServer').listRoomNames().filter((n) => n.startsWith(prefix));
+  let flushed = 0;
+  for (const docName of docNames) {
+    const filePath = docName.slice(prefix.length);
+    try { validateFilePath(filePath); } catch { continue; } // skip unsafe paths
+    try {
+      await flushYjsDocForFile(slug, filePath, { userId });
+      flushed += 1;
+    } catch (e) {
+      logger.warn('workspace_doc_flush_failed', { slug, filePath }, e);
+    }
+  }
+  if (flushed) logger.info('workspace_docs_flushed', { slug, userId, count: flushed });
+  return flushed;
 }
 
 async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
@@ -800,6 +985,21 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
   });
   // Also push via SSE so polling-free clients receive the event
   sseService.emitFileSaved(slug, filePath);
+}
+
+/**
+ * Broadcast the live set of forwardable ports detected inside a workspace's
+ * runtime container. The frontend Ports panel renders these at
+ * /wsport/<slug>/<port>/. Workspace-wide (no per-user scope filtering).
+ */
+function broadcastContainerPorts(slug, ports) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'container-ports', slug, ports: Array.isArray(ports) ? ports : [] });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
 }
 
 /**
@@ -1249,6 +1449,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // ========================================================================
+  // CONTAINER REVERSE PROXY — /wsport/<slug>/<N>/... → <runtime-container>:<N>
+  // Additive, workspace-scoped path for `container`-type programs whose ports
+  // bind inside a per-workspace runtime container (not collab's localhost).
+  // The global /port/<N>/ path below is left untouched.
+  // ========================================================================
+  if (req.url.startsWith('/wsport/')) {
+    if (containerPortProxy) {
+      containerPortProxy.proxyHttp(req, res);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'container_runtime_disabled' }));
+    }
+    return;
+  }
+
   // REVERSE PROXY — /port/<N>/... or /runtime/<scope>/port/<N>/...
   // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
   // ========================================================================
@@ -1483,6 +1699,196 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const programRuntimeUrl = new URL(req.url, `http://${req.headers.host}`);
+  const programRuntimeMatch = /^\/program-runtime\/([^/]+)\/sessions(?:\/([^/]+)(?:\/(stop|restart|events))?)?$/.exec(programRuntimeUrl.pathname);
+  if (programRuntimeMatch) {
+    const runtimeSlug = decodeURIComponent(programRuntimeMatch[1]);
+    const runtimeSessionId = programRuntimeMatch[2] ? decodeURIComponent(programRuntimeMatch[2]) : null;
+    const runtimeAction = programRuntimeMatch[3] || null;
+    const runtimeSession = runtimeSessionId ? managedProgramRuntime.getManagedSession(runtimeSessionId) : null;
+
+    if (runtimeSessionId && (!runtimeSession || runtimeSession.workspaceSlug !== runtimeSlug)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Managed program session not found' }));
+      return;
+    }
+
+    if (!runtimeSessionId && req.method === 'GET') {
+      const sessions = managedProgramRuntime
+        .listManagedSessions()
+        .filter((session) => session.workspaceSlug === runtimeSlug);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions }));
+      return;
+    }
+
+    if (runtimeSessionId && !runtimeAction && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session: runtimeSession }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'events' && req.method === 'GET') {
+      const events = managedProgramRuntime.listManagedSessionEvents(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'stop' && req.method === 'POST') {
+      const session = await managedProgramRuntime.stopManagedSession(runtimeSessionId, { reason: 'user_stop' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'restart' && req.method === 'POST') {
+      const session = await managedProgramRuntime.restartManagedSession(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+      return;
+    }
+
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  // POST /program-runtime/:slug/launch-program  { sessionId, userId?, title?, config }
+  // Launch an installed program from its NormalizedProgramConfig recipe (Phase 2).
+  const launchProgramMatch = /^\/program-runtime\/([^/]+)\/launch-program$/.exec(programRuntimeUrl.pathname);
+  if (launchProgramMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(launchProgramMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const config = parsed && typeof parsed.config === 'object' ? parsed.config : null;
+    const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+    if (!config || !sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing config or sessionId' }));
+      return;
+    }
+
+    try {
+      // Reconcile the working tree from Y-Sweet first: a program's install/launch
+      // (docker build ., npm install) reads files from disk, but unsaved editor
+      // content lives only in Y-Sweet until flushed. Without this the build sees
+      // stale/empty files (e.g. an unsaved Dockerfile or package.json).
+      await flushWorkspaceDocsToDisk(slug, parsed.userId || '').catch((e) =>
+        logger.warn('workspace_flush_before_launch_failed', { slug }, e));
+      const session = await managedProgramRuntime.launchManagedProgram({
+        sessionId,
+        workspaceSlug: slug,
+        userId: parsed.userId || '',
+        title: parsed.title || null,
+        config,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Program launch failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/ensure-runtime  { userId? }  → pre-warm container
+  // Fired by the frontend on workspace mount so the first terminal doesn't eat
+  // the rootless-dockerd cold start. Returns immediately (202); the daemon warms
+  // in the background.
+  const ensureRuntimeMatch = /^\/program-runtime\/([^/]+)\/ensure-runtime$/.exec(programRuntimeUrl.pathname);
+  if (ensureRuntimeMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(ensureRuntimeMatch[1]);
+    let parsed = {};
+    try {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      parsed = body ? JSON.parse(body) : {};
+    } catch (_) { parsed = {}; }
+    try {
+      const { status, body: out } = await handleEnsureRuntime({
+        workspaceRuntime, slug, userId: parsed.userId || '',
+      });
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    } catch (err) {
+      logger.warn('ensure_runtime_failed', { slug }, err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ensure_runtime_failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/manifest  → { found, source, raw }
+  // Reads the workspace recipe manifest (vectant.programs.json preferred, else
+  // .devcontainer/devcontainer.json). Returns raw bytes for the caller to parse.
+  const manifestMatch = /^\/program-runtime\/([^/]+)\/manifest$/.exec(programRuntimeUrl.pathname);
+  if (manifestMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(manifestMatch[1]);
+    // userId is required to resolve a per-user workspace repo (repos/<slug>/<userId>);
+    // without it we'd read the shared slug dir and miss the user's manifest.
+    const manifestUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const cwd = await resolveWorkspaceCwd(slug, manifestUserId);
+      const candidates = [
+        { source: 'vectant.programs.json', file: path.join(cwd, 'vectant.programs.json') },
+        { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer', 'devcontainer.json') },
+        { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer.json') },
+      ];
+      let result = { found: false };
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate.file)) {
+          result = { found: true, source: candidate.source, raw: fs.readFileSync(candidate.file, 'utf8') };
+          break;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Manifest read failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}] }
+  // Writes starter files into the workspace dir, ONLY when missing. Path-guarded.
+  const scaffoldMatch = /^\/program-runtime\/([^/]+)\/scaffold$/.exec(programRuntimeUrl.pathname);
+  if (scaffoldMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(scaffoldMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    try {
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const { applyScaffoldFiles } = require('./scaffold');
+      const cwd = await resolveWorkspaceCwd(slug, parsed.userId || undefined);
+      const result = applyScaffoldFiles(cwd, parsed.files || []);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      const code = err?.message === 'path_escape' ? 400 : 500;
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message || 'scaffold failed' }));
+    }
+    return;
+  }
+
   // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
   // ========================================================================
   // POST /exec-terminal/:slug  { command: string, timeout?: number }
@@ -1517,9 +1923,11 @@ const server = http.createServer(async (req, res) => {
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
 
     try {
-      const { createHeadlessSession } = require('./terminalService');
-      const crypto = require('crypto');
-      const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
+      // Launch via the managed program runtime (tracks output/lifecycle, which
+      // the completion-detection below relies on). Carry dev's runtime-scope /
+      // filesystem-user identity so the pod path can route on it where active.
+      const requestedSessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+      const sessionId = requestedSessionId || `ai-${crypto.randomUUID().slice(0, 8)}`;
       const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
       const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
       const terminalUserId = parsed.userId || headerUserId || '';
@@ -1527,75 +1935,60 @@ const server = http.createServer(async (req, res) => {
         parsed.filesystemUserId ||
         (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
         terminalUserId;
+      const launchEnv = parsed.env && typeof parsed.env === 'object' ? parsed.env : {};
+
+      await managedProgramRuntime.launchManagedSession({
+        sessionId,
+        workspaceSlug: slug,
+        userId: terminalUserId,
+        command,
+        env: launchEnv,
+        title: parsed.name || null,
+        runtimeScope,
+        filesystemUserId,
+      });
+
+      const terminalSession = terminalSessions.get(sessionId);
+      if (!terminalSession?.pty || !terminalSession.cwd) {
+        throw new Error(`Managed runtime ${sessionId} failed to initialize`);
+      }
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = await createHeadlessSession(
-        sessionId,
-        slug,
-        terminalUserId,
-        120,
-        30,
-        parsed.name || null,
-        { runtimeScope, filesystemUserId },
-      );
+      const { pty: ptyProcess, cwd } = terminalSession;
+      const runtimeHandle = managedProgramRuntime.getManagedRuntime(sessionId);
+      const commandStartedPromise = runtimeHandle?.commandStartedPromise || Promise.resolve();
 
       console.log(`[ExecTerminal] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
-      // Collect output from the PTY
-      let output = '';
-      const MAX_OUT = 50000;
       let commandDone = false;
       let commandSent = false;
+      let timedOut = false;
 
-      const outputCollector = (data) => {
-        if (output.length < MAX_OUT) output += data;
-      };
-      ptyProcess.onData(outputCollector);
-
-      // Write the command after the shell finishes its banner output.
-      // We detect the shell is ready by waiting for the first prompt.
-      // PowerShell prompt: "PS C:\...>" | Bash prompt: "$" or "#"
-      const isWin = require('os').platform() === 'win32';
-      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
-      let promptCheckInterval;
-      let promptWaitTimeout;
-
-      function sendCommand() {
-        if (commandSent) return;
-        commandSent = true;
-        if (promptCheckInterval) clearInterval(promptCheckInterval);
-        if (promptWaitTimeout) clearTimeout(promptWaitTimeout);
-        ptyProcess.write(command + '\r');
-        // Start stability checking AFTER the command is sent + a grace period
-        // for the command to start producing output
-        setTimeout(startStabilityCheck, 1500);
+      function getManagedOutput() {
+        return managedProgramRuntime.getManagedSession(sessionId)?.output || '';
       }
 
-      // Check every 100ms if prompt appeared
-      promptCheckInterval = setInterval(() => {
-        if (promptPattern.test(output)) {
-          sendCommand();
-        }
-      }, 100);
-
-      // Fallback: if prompt never detected, send command anyway after 1s
-      promptWaitTimeout = setTimeout(() => {
-        if (!commandSent) {
-          console.log(`[ExecTerminal] Prompt not detected, sending command anyway`);
-          sendCommand();
-        }
-      }, 1000);
+      const isWin = require('os').platform() === 'win32';
+      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+      commandStartedPromise.then(() => {
+        commandSent = true;
+        // Start stability checking AFTER the command is sent + a grace period
+        // for the command to start producing output.
+        setTimeout(startStabilityCheck, 1500);
+      });
 
       // Wait for the command to finish by detecting the shell prompt returning
       // AFTER the command output. Also use a stability fallback.
       function startStabilityCheck() {
-        let lastOutputLen = output.length;
+        let lastOutputLen = getManagedOutput().length;
         let stableCount = 0;
         const STABLE_THRESHOLD = 4; // 4 consecutive checks × 500ms = 2s of silence
         const CHECK_INTERVAL = 500;
         let promptSeenAfterCmd = false;
 
         const checkDone = setInterval(() => {
+          const output = getManagedOutput();
+
           // Primary: detect the shell prompt reappearing after command output
           // This means the command finished and the shell is ready for input
           if (commandSent && output.length > lastOutputLen) {
@@ -1624,6 +2017,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const hardTimeout = setTimeout(() => {
+        timedOut = true;
         respond();
       }, timeoutMs);
 
@@ -1631,6 +2025,8 @@ const server = http.createServer(async (req, res) => {
       function respond() {
         if (responded) return;
         responded = true;
+
+        const output = getManagedOutput();
 
         // Extract the command output: find the echoed command and take everything after it
         // up to (but not including) the next shell prompt
@@ -1654,6 +2050,10 @@ const server = http.createServer(async (req, res) => {
           && !/\b(0 error|no error|fixed|resolved|warning)\b/i.test(cleanOutput);
         const inferredExitCode = looksLikeError ? 1 : 0;
 
+        managedProgramRuntime.refreshManagedSessionPorts(sessionId).catch((portErr) => {
+          logger.warn({ err: portErr, sessionId }, 'Failed to refresh managed session ports');
+        });
+
         console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -1663,7 +2063,7 @@ const server = http.createServer(async (req, res) => {
           command,
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
-          timedOut: false,
+          timedOut,
         }));
       }
 
@@ -3866,7 +4266,11 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
-const terminalWss = createTerminalWSS();
+const terminalWss = createTerminalWSS({
+  enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
+  workspaceRuntime,
+  flushWorkspaceDocsToDisk,
+});
 
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
 const GUEST_DISCONNECT_GRACE_MS = 30_000;
@@ -3974,7 +4378,13 @@ server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
 
-  if (pathname === 'notifications') {
+  if (pathname.startsWith('wsport/')) {
+    // Container-program port proxy WS upgrade (HMR etc.) → runtime container.
+    // request.url is `/wsport/<slug>/<port>/...` at this point.
+    if (!containerPortProxy || !containerPortProxy.proxyWsUpgrade(request, socket, head)) {
+      socket.destroy();
+    }
+  } else if (pathname === 'notifications') {
     // Route to lightweight notification WebSocket server
     notifyWss.handleUpgrade(request, socket, head, (ws) => {
       notifyWss.emit('connection', ws, request);
@@ -4318,5 +4728,21 @@ process.on('uncaughtException', (err) => {
     // Synthi Genome — bridge fs-change events to the ai-engine's
     // continuous-shadow watcher (master plan §14).
     shadowContinuousProducer.start();
+
+    // Slice 3 Phase 3 — live web-port auto-detection. Run the port scanner
+    // (excluding our own port) and push detected port-set changes into the
+    // managed program sessions so their App/Ports surfaces light up live.
+    proxyService.startScanner(PORT);
+    if (containerPortMonitor) {
+      containerPortMonitor.start();
+      logger.info('container_port_monitor_started', {});
+    }
+    proxyService.onPortsChanged((ports) => {
+      try {
+        managedProgramRuntime.recomputeManagedPorts(ports);
+      } catch (err) {
+        logger.warn({ err }, 'recomputeManagedPorts failed');
+      }
+    });
   });
 })();

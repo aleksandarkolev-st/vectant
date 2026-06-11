@@ -70,10 +70,12 @@ import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
+import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
 
 export interface SynthiServerOptions {
   defaultSessionId?: string;
   defaultSignalingUrl: string;
+  externalTools?: ExternalTools;
 }
 
 const TOOLS = [
@@ -1158,11 +1160,19 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...TOOLS, ...browserPrivateWorkflowTools()].map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
+    tools: [
+      ...[...TOOLS, ...browserPrivateWorkflowTools()].map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+      // External MCP tools proxied through the hub (Slice 1b), advertised as ext_<i>.
+      ...(options.externalTools?.descriptors ?? []).map((d) => ({
+        name: d.name,
+        description: d.description,
+        inputSchema: d.inputSchema as Record<string, unknown>,
+      })),
+    ],
   }));
 
   // ---------------------------------------------------------------------
@@ -1357,6 +1367,17 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         content: [{ type: "text" as const, text: JSON.stringify(quotaError) }],
         isError: true,
       };
+    }
+    // External MCP tools (ext_<i>) are proxied through the hub (Slice 1b),
+    // sourced from the same connection registry the in-app AI uses.
+    if (isExternalToolName(toolName)) {
+      const result = await callExternalTool(
+        toolName,
+        (args ?? {}) as Record<string, unknown>,
+        options.externalTools?.aliasMap ?? {},
+      );
+      recordToolCall(toolName, result.isError ? "error" : "ok");
+      return result as CallToolResult;
     }
     const response = await dispatchTool(toolName, args, signal);
     // Record the outcome for Prometheus. Most tools return structured error

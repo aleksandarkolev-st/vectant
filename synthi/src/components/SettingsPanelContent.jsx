@@ -26,12 +26,15 @@ import {
   selectSidebarAutoCollapseDelay,
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
+import { useViewport } from '@/hooks/useViewport';
 import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import { toast } from 'sonner';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 import {
   STATUS_ISLAND_DOCK_PRESETS,
+  STATUS_ISLAND_MOBILE_SCOPE,
   STATUS_ISLAND_MENU_PRESETS,
+  STATUS_ISLAND_SHARED_SCOPE,
   applyStatusIslandPreferenceState,
   deleteStatusIslandSavedPreset,
   doesPresetMatchState,
@@ -203,8 +206,12 @@ export function SettingsPanelContent() {
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const gpuTarget = useAppSelector(selectGpuTarget);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
+  const viewport = useViewport();
   const { open: openThemePicker } = useThemePicker();
   const { data: session, status: sessionStatus, update: refreshSession } = useSession();
+  const statusIslandPreferenceScope = viewport.isMobile
+    ? STATUS_ISLAND_MOBILE_SCOPE
+    : STATUS_ISLAND_SHARED_SCOPE;
 
   // ── Per-user GitHub Token state ─────
   const [tokenInput, setTokenInput] = useState('');
@@ -213,7 +220,7 @@ export function SettingsPanelContent() {
   const [tokenError, setTokenError] = useState('');
   const [testRunning, setTestRunning] = useState(false);
   const [testResults, setTestResults] = useState(null); // null | array of step results
-  const [statusIslandPreferences, setStatusIslandPreferences] = useState(() => readStatusIslandPreferences());
+  const [statusIslandPreferences, setStatusIslandPreferences] = useState(() => readStatusIslandPreferences(statusIslandPreferenceScope));
   const [isStatusIslandPresetDialogOpen, setIsStatusIslandPresetDialogOpen] = useState(false);
   const [statusIslandPresetInitialName, setStatusIslandPresetInitialName] = useState('');
 
@@ -227,9 +234,9 @@ export function SettingsPanelContent() {
   const tokenSource = session?.githubTokenSource || null;
 
   useEffect(() => {
-    setStatusIslandPreferences(readStatusIslandPreferences());
-    return subscribeStatusIslandPreferences(setStatusIslandPreferences);
-  }, []);
+    setStatusIslandPreferences(readStatusIslandPreferences(statusIslandPreferenceScope));
+    return subscribeStatusIslandPreferences(setStatusIslandPreferences, statusIslandPreferenceScope);
+  }, [statusIslandPreferenceScope]);
 
   const currentStatusIslandState = {
     isCompact: Boolean(statusIslandPreferences?.isCompact),
@@ -258,32 +265,32 @@ export function SettingsPanelContent() {
   }, [currentStatusIslandState.isCompact]);
 
   const handleToggleStatusIslandLock = useCallback(() => {
-    persistStatusIslandPositionLocked(!currentStatusIslandState.isPositionLocked);
+    persistStatusIslandPositionLocked(!currentStatusIslandState.isPositionLocked, statusIslandPreferenceScope);
     toast(currentStatusIslandState.isPositionLocked ? 'Status island movement unlocked' : 'Status island movement locked', {
       duration: 1800,
     });
-  }, [currentStatusIslandState.isPositionLocked]);
+  }, [currentStatusIslandState.isPositionLocked, statusIslandPreferenceScope]);
 
   const handleStatusIslandDockChange = useCallback((dockPreset) => {
     applyStatusIslandPreferenceState({
       ...currentStatusIslandState,
       dockPreset,
-    });
-  }, [currentStatusIslandState]);
+    }, statusIslandPreferenceScope);
+  }, [currentStatusIslandState, statusIslandPreferenceScope]);
 
   const handleApplyStatusIslandPreset = useCallback((presetId) => {
     const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
     if (!preset) return;
-    applyStatusIslandPreferenceState(preset);
+    applyStatusIslandPreferenceState(preset, statusIslandPreferenceScope);
     toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
-  }, []);
+  }, [statusIslandPreferenceScope]);
 
   const handleApplySavedStatusIslandPreset = useCallback((presetId) => {
     const preset = (statusIslandPreferences.savedPresets || []).find((entry) => entry.id === presetId);
     if (!preset) return;
-    applyStatusIslandPreferenceState(preset);
+    applyStatusIslandPreferenceState(preset, statusIslandPreferenceScope);
     toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
-  }, [statusIslandPreferences.savedPresets]);
+  }, [statusIslandPreferenceScope, statusIslandPreferences.savedPresets]);
 
   const openStatusIslandPresetDialog = useCallback(() => {
     const nextDefaultLabel = activeSavedStatusIslandPreset?.label || `Preset ${(statusIslandPreferences.savedPresets || []).length + 1}`;
@@ -661,7 +668,7 @@ export function SettingsPanelContent() {
           <span className="text-sm">Bring Your Own Runner</span>
           <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
             Preserve your own <code className="font-mono">host_runner.cpp</code> instead of regenerating it.
-            Requires <code className="font-mono">// SYNTHI_USER_RUNNER</code> on the first non-blank line.
+            Requires <code className="font-mono">{'// SYNTHI_USER_RUNNER'}</code> on the first non-blank line.
           </span>
         </div>
         <button
