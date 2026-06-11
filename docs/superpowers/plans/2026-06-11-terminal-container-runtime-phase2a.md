@@ -649,3 +649,26 @@ git commit -m "docs: Phase 2a terminal-in-container live verification results"
 **Placeholder scan:** Task 5 (frontend) intentionally defers exact base-URL/userId accessors to a `grep` discovery step rather than inventing config — this is a directed lookup with a concrete command, not a placeholder. Task 4 Step 5b flags confirming the JSON-body helper name — also a directed lookup. All code steps contain real code.
 
 **Type/name consistency:** `execInteractiveShell(slug, userId, {cols,rows})` returns `{ ptyProcess: {onData,onExit,write,kill,resize}, stop }` — consumed in Task 2 as `handle.ptyProcess`; `resize(cols,rows)` maps to `exec.resize({h:rows,w:cols})` consistently (Tasks 1 & 2). `shouldUseContainerTerminal` signature identical in test (Task 2 Step 1) and impl (Step 3a). `handleEnsureRuntime({workspaceRuntime,slug,userId})` identical across test (Task 4 Step 1) and impl (Step 3). Container handle uses `kill` (not `destroy`), matching `ws.on('close')` handlers in terminalService.
+
+---
+
+## Verification Results (2026-06-11)
+
+All 7 tasks implemented and committed (`7a9c02c2`, `fa303b95`, `4d45b631`, `fc884a1a`, `c788785c`, `8396f2a5`, + this doc).
+
+**Unit tests — 19/19 pass** (`node --test` on the three suites):
+- `workspaceRuntimeContainer.test.js` (15) — incl. `execInteractiveShell` bash -l / rootless / `/workspace` / TTY / resize-order, and not-started guard.
+- `terminalRouting.test.js` (1) — `shouldUseContainerTerminal` gating (flag + manager + slug).
+- `ensureRuntimeRoute.test.js` (3) — 202 warming + background readiness, 200 disabled no-op, 400 missing slug.
+
+**Runtime image** built `vectant-runtime:local` (576MB→897MB). `claude-code` npm install = 23s (no hang — the earlier multi-hour stall was two concurrent builds saturating the daemon + a session reload orphaning the tracked tasks, not a real build hang). Smoke test: `docker`,`claude`(2.1.173),`git`,`sudo`,`bash`,`node`,`npm` all present; `git config --system user.name`→`Synthi Autocommit`; `sudo whoami`→`root`; `HOME=/home/rootless`; prompt file installed.
+
+**Live (dev compose, `ENABLE_CONTAINER_RUNTIME=1`, collab-server rebuilt):**
+- `POST /program-runtime/0naokfjy/ensure-runtime` → `202 {"warming":true}`; runtime container `workspace-runtime-0naokfjy-242593757` created.
+- Terminal WSS (driven by a WS client exactly like the frontend): `status: starting runtime…` → `ready` → ran `docker run --rm hello-world` → **"Hello from Docker!"** (rootless daemon inside the runtime container). Prompt rendered `~/workspace$` (env-parity PS1).
+- Same terminal: `claude --version`→`2.1.173`, `git config user.name`→`Synthi Autocommit`, `sudo whoami`→`root`, `pwd`→`/workspace`.
+- `ls /workspace` shows the real working tree (`.git`, `cpp`, `pom.xml`, `src`) == per-user repo `/data/repos/0naokfjy/242593757` (terminal cwd == editor tree). Create-time `flushWorkspaceDocsToDisk` ran with no errors in collab logs (no `container shell failed`, no exceptions).
+
+**Caveat (honest):** the literal "type unsaved text in the editor → `cat` in terminal" round-trip needs a live Yjs editing client and was not exercised end-to-end in a browser. The create-time flush call is wired (Task 2) and runs without error; the flush itself reuses the pre-existing, already-tested `flushWorkspaceDocsToDisk` used by the program-launch path.
+
+**No-regression:** flag-off path unchanged — `shouldUseContainerTerminal` returns false without the flag, so the WSS still uses `createPtyProcess`; unit test asserts this.
