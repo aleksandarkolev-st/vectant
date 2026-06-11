@@ -1,15 +1,27 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { dojoPostgresMigrationStatements } from "./migrations.js";
-import type { DojoProofCapsuleRecord } from "./interfaces.js";
+import type { DojoAuditActor, DojoAuditStore, DojoProofCapsuleRecord } from "./interfaces.js";
 
 export interface DojoPostgresQueryable {
   query<T extends QueryResultRow = QueryResultRow>(text: string, values?: readonly unknown[]): Promise<QueryResult<T>>;
+}
+
+export interface DojoPostgresClient extends DojoPostgresQueryable {
+  release?(): void;
+}
+
+export interface DojoPostgresConnectable extends DojoPostgresQueryable {
+  connect?(): Promise<DojoPostgresClient>;
 }
 
 export interface PostgresDojoProofStoreOptions {
   tenant_id: string;
   workspace_id: string;
   queryable: DojoPostgresQueryable;
+  audit_store?: DojoAuditStore;
+  audit_actor?: DojoAuditActor;
+  request_id?: string;
+  correlation_id?: string;
 }
 
 export interface DojoPostgresProofConsumeResult {
@@ -33,9 +45,21 @@ interface ProofRecordRow {
   revoked_reason: string | null;
 }
 
-export async function applyDojoPostgresMigrations(queryable: DojoPostgresQueryable): Promise<void> {
-  for (const statement of dojoPostgresMigrationStatements()) {
-    await queryable.query(statement);
+const DOJO_POSTGRES_MIGRATION_ADVISORY_LOCK_ID = 770110011;
+
+export async function applyDojoPostgresMigrations(queryable: DojoPostgresConnectable): Promise<void> {
+  const client: DojoPostgresClient = queryable.connect ? await queryable.connect() : queryable;
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [DOJO_POSTGRES_MIGRATION_ADVISORY_LOCK_ID]);
+    for (const statement of dojoPostgresMigrationStatements()) {
+      await client.query(statement);
+    }
+  } finally {
+    try {
+      await client.query("SELECT pg_advisory_unlock($1)", [DOJO_POSTGRES_MIGRATION_ADVISORY_LOCK_ID]);
+    } finally {
+      client.release?.();
+    }
   }
 }
 
@@ -43,11 +67,19 @@ export class PostgresDojoProofStore {
   private readonly tenantId: string;
   private readonly workspaceId: string;
   private readonly queryable: DojoPostgresQueryable;
+  private readonly auditStore?: DojoAuditStore;
+  private readonly auditActor: DojoAuditActor;
+  private readonly requestId: string;
+  private readonly correlationId: string;
 
   constructor(options: PostgresDojoProofStoreOptions) {
     this.tenantId = requiredId(options.tenant_id, "tenant_id");
     this.workspaceId = requiredId(options.workspace_id, "workspace_id");
     this.queryable = options.queryable;
+    this.auditStore = options.audit_store;
+    this.auditActor = options.audit_actor ?? { actor_id: "dojo-postgres-proof-store", actor_type: "service" };
+    this.requestId = options.request_id ?? "dojo-postgres-proof-store";
+    this.correlationId = options.correlation_id ?? this.requestId;
   }
 
   async saveProofRecord(record: DojoProofCapsuleRecord): Promise<DojoProofCapsuleRecord> {
@@ -102,6 +134,10 @@ export class PostgresDojoProofStore {
     );
     const saved = await this.getProofRecord(record.capsule_id);
     if (!saved) throw new Error("dojo_postgres_proof_save_failed");
+    await this.appendProofAudit("proof_issued", saved, {
+      requested_action: saved.requested_action,
+      proof_status: saved.status,
+    });
     return saved;
   }
 
@@ -144,7 +180,15 @@ export class PostgresDojoProofStore {
         first_used_at, last_validated_at, revoked_at, revoked_reason`,
       [this.tenantId, this.workspaceId, capsuleId, now, reason]
     );
-    return rowToProofRecord(result.rows[0]);
+    const revoked = rowToProofRecord(result.rows[0]);
+    if (revoked) {
+      await this.appendProofAudit("proof_revoked", revoked, {
+        requested_action: revoked.requested_action,
+        proof_status: revoked.status,
+        revoked_reason: reason,
+      });
+    }
+    return revoked;
   }
 
   async markProofCapsuleUsed(
@@ -165,19 +209,85 @@ export class PostgresDojoProofStore {
       [this.tenantId, this.workspaceId, capsuleId, now, runId]
     );
     const consumed = rowToProofRecord(result.rows[0]);
-    if (consumed) return { ok: true, record: consumed, status: "used", blocked_by: [] };
+    if (consumed) {
+      await this.appendProofAudit("proof_used", consumed, {
+        requested_action: consumed.requested_action,
+        proof_status: consumed.status,
+        run_id: runId,
+      });
+      return { ok: true, record: consumed, status: "used", blocked_by: [] };
+    }
 
     const current = await this.getProofRecord(capsuleId);
     if (!current) {
+      await this.appendProofRejectedAudit(capsuleId, ["proof_capsule_not_issued_by_registry"], runId);
       return { ok: false, record: null, status: "missing", blocked_by: ["proof_capsule_not_issued_by_registry"] };
     }
     if (current.status === "revoked") {
+      await this.appendProofAudit("proof_rejected", current, {
+        requested_action: current.requested_action,
+        proof_status: current.status,
+        run_id: runId,
+        blocked_by: ["proof_capsule_revoked"],
+      });
       return { ok: false, record: current, status: "revoked", blocked_by: ["proof_capsule_revoked"] };
     }
     if (current.status === "used") {
+      await this.appendProofAudit("proof_rejected", current, {
+        requested_action: current.requested_action,
+        proof_status: current.status,
+        run_id: runId,
+        blocked_by: ["proof_capsule_replay_detected"],
+      });
       return { ok: false, record: current, status: "already_used", blocked_by: ["proof_capsule_replay_detected"] };
     }
+    await this.appendProofAudit("proof_rejected", current, {
+      requested_action: current.requested_action,
+      proof_status: current.status,
+      run_id: runId,
+      blocked_by: ["proof_capsule_not_issued_by_registry"],
+    });
     return { ok: false, record: current, status: "missing", blocked_by: ["proof_capsule_not_issued_by_registry"] };
+  }
+
+  private async appendProofAudit(
+    eventType: "proof_issued" | "proof_used" | "proof_rejected" | "proof_revoked",
+    record: DojoProofCapsuleRecord,
+    details: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.auditStore) return;
+    await this.auditStore.appendAuditEvent({
+      tenant_id: this.tenantId,
+      workspace_id: this.workspaceId,
+      actor: this.auditActor,
+      event_type: eventType,
+      request_id: this.requestId,
+      correlation_id: this.correlationId,
+      entity_kind: "proof_capsule",
+      entity_id: record.capsule_id,
+      details: {
+        skill_id: record.skill_id,
+        ...details,
+      },
+    });
+  }
+
+  private async appendProofRejectedAudit(capsuleId: string, blockedBy: string[], runId: string): Promise<void> {
+    if (!this.auditStore) return;
+    await this.auditStore.appendAuditEvent({
+      tenant_id: this.tenantId,
+      workspace_id: this.workspaceId,
+      actor: this.auditActor,
+      event_type: "proof_rejected",
+      request_id: this.requestId,
+      correlation_id: this.correlationId,
+      entity_kind: "proof_capsule",
+      entity_id: capsuleId,
+      details: {
+        run_id: runId,
+        blocked_by: blockedBy,
+      },
+    });
   }
 }
 

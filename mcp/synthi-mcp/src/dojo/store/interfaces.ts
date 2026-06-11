@@ -68,8 +68,73 @@ export interface DojoApprovalStore {
   readonly store_contract_kind?: "approval";
 }
 
+export type DojoAuditActorType = "human" | "agent" | "service";
+
+export type DojoAuditEventType =
+  | "skill_created"
+  | "skill_version_created"
+  | "checkride_run_started"
+  | "checkride_run_completed"
+  | "license_issued"
+  | "license_revoked"
+  | "proof_issued"
+  | "proof_validated"
+  | "proof_used"
+  | "proof_rejected"
+  | "proof_revoked"
+  | "case_law_proposed"
+  | "case_law_approved"
+  | "guardrail_activated"
+  | "source_contract_changed"
+  | "skill_expired"
+  | "permission_upgrade_requested"
+  | "approval_granted"
+  | "approval_denied";
+
+export interface DojoAuditActor {
+  actor_id: string;
+  actor_type: DojoAuditActorType;
+}
+
+export interface DojoAuditEventInput {
+  tenant_id: string;
+  workspace_id: string;
+  audit_event_id?: string;
+  actor: DojoAuditActor;
+  event_type: DojoAuditEventType;
+  request_id: string;
+  correlation_id: string;
+  entity_kind?: string;
+  entity_id?: string;
+  details?: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface DojoAuditEventRecord {
+  tenant_id: string;
+  workspace_id: string;
+  audit_event_id: string;
+  actor: DojoAuditActor;
+  event_type: DojoAuditEventType;
+  request_id: string;
+  correlation_id: string;
+  entity_kind?: string;
+  entity_id?: string;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DojoAuditEventListFilter {
+  event_type?: DojoAuditEventType;
+  entity_kind?: string;
+  entity_id?: string;
+  correlation_id?: string;
+  limit?: number;
+}
+
 export interface DojoAuditStore {
-  readonly store_contract_kind?: "audit";
+  appendAuditEvent(event: DojoAuditEventInput): MaybePromise<DojoAuditEventRecord>;
+  listAuditEvents(filter?: DojoAuditEventListFilter): MaybePromise<DojoAuditEventRecord[]>;
 }
 
 export interface DojoCaseLawStore {
