@@ -21,6 +21,7 @@ import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/p
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
+import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -1330,7 +1331,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `${root}/skill.graph.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.skill_cortex),
+      content: json(skillGraphArtifact(skill)),
     },
     {
       path: `${root}/vivarium.manifest.json`,
@@ -1503,7 +1504,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `.synthi/dojo/workflows/${segment}.graph.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.skill_cortex),
+      content: json(skillGraphArtifact(skill)),
     },
     {
       path: `.synthi/dojo/organoids/${segment}.organoid.json`,
@@ -2763,32 +2764,11 @@ function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
 }
 
 function skillGraphArtifact(skill: DojoSkill): Record<string, unknown> {
+  const compiled = compileDojoSkillGraphForSkill(skill);
   return {
-    schema_version: "synthi.dojo.skillGraph.v1",
-    skill_id: skill.skill_id,
+    ...compiled.graph,
     workflow_id: skill.workflow_id,
-    nodes: [
-      { id: "trigger", kind: "Trigger", label: "MCP skill call" },
-      { id: "input", kind: "Input", label: "Validate input schema", inputs: skill.skill_seed.input_schema },
-      { id: "permission", kind: "Permission", label: skill.permission_license.entrustment_level },
-      ...skill.guardrails.map((guardrail) => ({
-        id: guardrail.guardrail_id,
-        kind: "Guardrail",
-        label: guardrail.title,
-        rule: guardrail.rule,
-      })),
-      { id: "proof", kind: "Proof", label: "Validate proof capsule" },
-      { id: "action", kind: "Action", label: skill.published_tool_name ?? "Workflow replay" },
-      { id: "assertion", kind: "Assertion", label: "Verify success assertions" },
-    ],
-    edges: [
-      ["trigger", "input"],
-      ["input", "permission"],
-      ["permission", "proof"],
-      ...skill.guardrails.map((guardrail) => ["permission", guardrail.guardrail_id]),
-      ["proof", "action"],
-      ["action", "assertion"],
-    ],
+    validation: compiled.validation,
   };
 }
 
