@@ -9,6 +9,7 @@ import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSa
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
@@ -319,6 +320,22 @@ export default function EditorPage({ params }) {
 
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
+
+    // Pre-warm the per-workspace runtime container on workspace open so the first
+    // terminal doesn't wait out the rootless-dockerd cold start (~15-25s). Uses
+    // the SAME localStorage userId the terminal connects with, so it warms the
+    // exact container the terminal will exec into. Fire-and-forget — the terminal
+    // path re-ensures, so a failure here is non-fatal (and a no-op when the
+    // container runtime is disabled server-side).
+    useEffect(() => {
+        if (!slug) return;
+        const userId = (typeof window !== 'undefined' && localStorage.getItem(USER_ID_KEY)) || '';
+        fetch(`${resolveCollabHttpUrl()}/program-runtime/${encodeURIComponent(slug)}/ensure-runtime`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId }),
+        }).catch(() => {});
+    }, [slug]);
 
     const [floatingChatVisible, setFloatingChatVisible] = useState(false);
 
