@@ -831,3 +831,26 @@ git commit -m "docs: Phase 2b live verification results"
 - `IDE_PANEL.PORTS = 'ports'` — defined Task 7 Step 1, used in panel definition (Step 3), activity bar (Step 4), toggle (Step 5), `data-panel-type="ports"` (Step 2), SIDEBAR_PANELS (Step 4). ✓
 - `getProgramSessionAppUrl(port, { slug, runtimeType: 'container' })` → `/wsport/<slug>/<port>/` — existing function, consumed Task 6. ✓
 ```
+
+---
+
+## Verification Results (2026-06-11)
+
+All 8 tasks implemented and committed. **Unit: 18/18** across the two backend suites
+(`workspaceRuntimeContainer.test.js` 17 incl. `runOnce`; `containerPortMonitor.test.js` 5 incl. parse, baseline-subtraction, daemon-warmup, and disappear). Two refinements were made during live verification (committed):
+- **Baseline subtraction** — the rootless dockerd (2376) + an ephemeral containerd port listen on 0.0.0.0 at startup; the monitor snapshots them as a per-container baseline and reports only ports opened afterward.
+- **Baseline on first non-empty scan** — the daemon takes ~15-25s to come up, so baselining the empty early scans would later report the daemon's own ports as user ports; skip empty scans until it's listening.
+
+**Backend live (dev stack, `ENABLE_CONTAINER_RUNTIME=1`):** a WS harness opened the in-container terminal, ran `python3 -m http.server 8000 --bind 0.0.0.0`, and the notifications WS received `{type:'container-ports', ports:[8000]}` — **only 8000**, infra ports correctly hidden.
+
+**Frontend live (browser, the running stack):**
+- The **Ports** entry appears in the activity bar (registered between Connected Tools and Pull Requests).
+- Running `python3 -m http.server 8000 --bind 0.0.0.0` in the terminal → the **Ports panel renders "Port 8000"** with Open/Copy (and only 8000 — infra hidden).
+- Clicking **Open** targets `/wsport/0naokfjy/8000/`; `curl` of that URL returns **200**, `server: SimpleHTTP/0.6 Python/3.12.13` (the in-container server), the directory-listing body, and the `cross-origin-resource-policy: cross-origin` + `cross-origin-embedder-policy: credentialless` headers for iframe embedding.
+- Stopping the server → the panel returns to the **empty state** within ~4s (removal path).
+
+**Notes / environment:**
+- The frontend production build initially failed on a **transient Google Fonts `ETIMEDOUT`** (`next/font`) — unrelated to this feature, same outbound-network restriction as the DB/GCP; it cleared on retry (`✓ Compiled successfully`). The build compiled all Ports modules with zero errors.
+- DB-independent as designed: the whole path is `notifyWss → Redux → panel`, so this works even though the frontend's remote DB is unreachable in this environment.
+
+**No-regression:** `containerPortMonitor` is null when the flag is unset (never starts); the Ports panel simply shows its empty state.
