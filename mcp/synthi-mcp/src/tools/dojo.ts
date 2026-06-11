@@ -1460,21 +1460,57 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
   }
   const toolArgs = objectOpt(a["tool_args"]) ?? {};
   const dryRun = boolOpt(a["dry_run"]);
-  const decision = evaluateDojoLicenseKernel({
-    skill: skill.skill,
-    registry: dojoSkillRegistry,
-    proof_capsule: capsule,
+  let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
+  const skillBus = createInProcessDojoMcpSkillBus({
+    listSkills: () => dojoSkillRegistry.list(),
+    validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action, args: proofArgs }) => {
+      decision = evaluateDojoLicenseKernel({
+        skill: resolvedSkill,
+        registry: dojoSkillRegistry,
+        proof_capsule: proofCapsule,
+        requested_action: action,
+        tool_args: proofArgs,
+        dry_run: dryRun,
+      });
+      return {
+        ok: decision.ok,
+        status: decision.status,
+        blocked_by: decision.blocked_by,
+        error_codes: decision.error_codes,
+      };
+    },
+    executeTool: async ({ skill: resolvedSkill, args: executionArgs }) => requestedAction === "run_prefix_validation"
+      ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", executionArgs)
+      : await dispatchBackingSkillTool(resolvedSkill, executionArgs),
+  });
+  const skillBusResult = await skillBus.dispatch({
+    tenant: dojoTenantContextFromArgs({
+      ...a,
+      workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
+    }),
+    tool_name: skill.skill.published_tool_name ?? skill.skill.private_tool_manifest?.tool_name ?? "",
     requested_action: requestedAction,
-    tool_args: toolArgs,
+    args: toolArgs,
+    proof_capsule: capsule,
     dry_run: dryRun,
   });
-  if (!decision.ok) {
-    return errorResponse(decision.validation.error ?? "dojo_license_kernel_blocked", {
+  const licenseDecision = decision;
+  if (!licenseDecision) {
+    return errorResponse("dojo_license_kernel_not_evaluated", {
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
-      validation: decision.validation,
-      license_kernel: decision,
-      refusal: refusalFor(skill.skill, decision.blocked_by),
+      skill_bus: skillBusResult,
+      refusal: refusalFor(skill.skill, ["dojo_license_kernel_not_evaluated"]),
+    });
+  }
+  if (!skillBusResult.ok || !licenseDecision.ok) {
+    return errorResponse(licenseDecision?.validation.error ?? skillBusResult.blocked_by[0] ?? "dojo_skill_bus_blocked", {
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      validation: licenseDecision.validation,
+      license_kernel: licenseDecision,
+      skill_bus: skillBusResult,
+      refusal: refusalFor(skill.skill, licenseDecision.blocked_by.length > 0 ? licenseDecision.blocked_by : skillBusResult.blocked_by),
     });
   }
   if (dryRun) {
@@ -1483,22 +1519,24 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       dry_run: true,
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
-      validation: decision.validation,
-      license_kernel: decision,
+      validation: licenseDecision.validation,
+      license_kernel: licenseDecision,
+      skill_bus: skillBusResult,
     });
   }
 
-  const run = requestedAction === "run_prefix_validation"
-    ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", toolArgs)
-    : await dispatchBackingSkillTool(skill.skill, toolArgs);
+  const run = skillBusResult.result && typeof skillBusResult.result === "object"
+    ? skillBusResult.result as ToolResponse
+    : null;
   if (!run) {
     return errorResponse("dojo_backing_tool_unavailable", {
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
       published_tool_name: skill.skill.published_tool_name ?? null,
+      skill_bus: skillBusResult,
     });
   }
-  const proofRecord = run.isError === true ? decision.proof_record ?? null : markDojoProofExecution({
+  const proofRecord = run.isError === true ? licenseDecision.proof_record ?? null : markDojoProofExecution({
     registry: dojoSkillRegistry,
     proof_capsule: capsule,
   });
@@ -1506,8 +1544,9 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     ok: run.isError !== true,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
-    validation: decision.validation,
-    license_kernel: decision,
+    validation: licenseDecision.validation,
+    license_kernel: licenseDecision,
+    skill_bus: skillBusResult,
     proof_capsule_id: capsule.capsule_id,
     proof_record: proofRecord,
     backing_tool: requestedAction === "run_prefix_validation" ? "synthi_safety_run_prefix_validation" : skill.skill.published_tool_name,

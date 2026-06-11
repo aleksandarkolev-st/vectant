@@ -62,6 +62,7 @@ export interface DojoMcpSkillBus {
     tenant: DojoTenantContext;
     tool_name: string;
     tool_version?: string;
+    requested_action?: string;
     args: Record<string, unknown>;
     proof_capsule?: DojoProofCarryingSkillCapsule;
     dry_run?: boolean;
@@ -193,6 +194,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     tenant: DojoTenantContext;
     tool_name: string;
     tool_version?: string;
+    requested_action?: string;
     args: Record<string, unknown>;
     proof_capsule?: DojoProofCarryingSkillCapsule;
     dry_run?: boolean;
@@ -223,7 +225,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         tenant: input.tenant,
         skill: resolution.skill,
         proof_capsule: input.proof_capsule,
-        requested_action: "run_workflow",
+        requested_action: input.requested_action ?? "run_workflow",
         args: input.args,
       });
       if (!validation.ok) {
@@ -258,6 +260,9 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       args: input.args,
       proof_capsule: input.proof_capsule,
     });
+    if (result === null || typeof result === "undefined") {
+      return blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unavailable"], validation);
+    }
     return {
       ok: true,
       status: "allowed",

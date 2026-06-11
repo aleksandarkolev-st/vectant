@@ -346,6 +346,12 @@ describe("Agent Dojo MCP tools", () => {
       implementation_status: "executable",
       runtime_enforced: true,
       validation: expect.objectContaining({ ok: true, status: "allowed" }),
+      skill_bus: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        dry_run: true,
+        resolution: expect.objectContaining({ status: "resolved" }),
+      }),
     }));
 
     dojoSkillRegistry.markProofCapsuleUsed((capsule as { capsule_id: string }).capsule_id, "2026-06-11T00:01:00.000Z");

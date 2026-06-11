@@ -81,13 +81,13 @@ describe("Dojo MCP skill bus", () => {
       substrate_claim: "mcp",
       now: "2026-06-11T00:00:00.000Z",
     });
-    const validations: string[] = [];
+    const validations: Array<{ capsule_id: string; requested_action: string }> = [];
     const executions: string[] = [];
     const bus = createInProcessDojoMcpSkillBus({
       listSkills: () => [skill],
       env: manifestEnv(),
-      validateProof: ({ proof_capsule }): DojoSkillBusProofValidation => {
-        validations.push(proof_capsule.capsule_id);
+      validateProof: ({ proof_capsule, requested_action }): DojoSkillBusProofValidation => {
+        validations.push({ capsule_id: proof_capsule.capsule_id, requested_action });
         return { ok: true, status: "allowed", blocked_by: [] };
       },
       executeTool: ({ tool_name }) => {
@@ -108,6 +108,7 @@ describe("Dojo MCP skill bus", () => {
     await expect(bus.dispatch({
       tenant: tenant("workspace-a"),
       tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
       args: { client_id: "client-a" },
       proof_capsule: proof,
       dry_run: true,
@@ -117,7 +118,7 @@ describe("Dojo MCP skill bus", () => {
       dry_run: true,
       validation: expect.objectContaining({ ok: true }),
     }));
-    expect(validations).toEqual([proof.capsule_id]);
+    expect(validations).toEqual([{ capsule_id: proof.capsule_id, requested_action: "run_workflow" }]);
     expect(executions).toEqual([]);
     await expect(bus.dispatch({
       tenant: tenant("workspace-a"),
