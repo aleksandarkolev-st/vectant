@@ -476,6 +476,17 @@ describe("Agent Dojo MCP tools", () => {
       expected_skill_id: published.skill.skill_id,
       expected_tool_name: "synthi_app_open_details",
     })).toEqual(expect.objectContaining({ ok: true, blocked_by: [] }));
+    const crossWorkspaceList = await dispatchDojoTool("synthi_dojo_list_competencies", {
+      tenant_id: "tenant-a",
+      organization_id: "org-a",
+      workspace_id: "workspace-b",
+      actor_id: "agent-a",
+      roles: ["agent"],
+    });
+    expect(crossWorkspaceList?.structuredContent).toEqual(expect.objectContaining({
+      count: 0,
+      competencies: [],
+    }));
 
     const exported = await dispatchDojoTool("synthi_dojo_export_artifacts", { skill_id: published.skill.skill_id });
     expect(exported?.isError).toBeUndefined();

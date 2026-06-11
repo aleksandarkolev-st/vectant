@@ -29,6 +29,11 @@ import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/do
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
+import {
+  createInProcessDojoMcpSkillBus,
+  createLegacyDojoTenantContext,
+} from "../dojo/mcp/skill_bus.js";
+import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchBrowserPrivateWorkflowToolAfterDojoProof } from "./browser.js";
@@ -87,7 +92,20 @@ export const DOJO_TOOLS = [
     name: "synthi_dojo_list_competencies",
     description:
       "List licensed Agent Dojo competencies published from taught workflows. Returns skill cards, entrustment levels, readiness, proof requirements, and backing MCP tool names without exposing raw scripts.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string" },
+        organization_id: { type: "string" },
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        roles: { type: "array", items: { type: "string" } },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
+      },
+      required: [],
+    },
   },
   {
     name: "synthi_dojo_get_skill",
@@ -546,7 +564,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
     let response: ToolResponse | null;
     switch (toolName) {
       case "synthi_dojo_list_competencies":
-        response = dojoListCompetenciesTool();
+        response = await dojoListCompetenciesTool(args);
         break;
       case "synthi_dojo_get_skill":
         response = dojoGetSkillTool(args);
@@ -703,12 +721,15 @@ function withDojoImplementationMetadata(toolName: string, response: ToolResponse
   };
 }
 
-function dojoListCompetenciesTool(): ToolResponse {
+async function dojoListCompetenciesTool(args: unknown): Promise<ToolResponse> {
   const skills = dojoSkillRegistry.list();
+  const skillBus = createInProcessDojoMcpSkillBus({ listSkills: () => skills });
+  const visible = await skillBus.listCompetencies({ tenant: dojoTenantContextFromArgs(args) });
+  const visibleSkillIds = new Set(visible.map((item) => item.skill_id));
   return jsonResponse({
     ok: true,
-    count: skills.length,
-    competencies: skills.map(skillListItem),
+    count: visible.length,
+    competencies: skills.filter((skill) => visibleSkillIds.has(skill.skill_id)).map(skillListItem),
     product_path: "agent_to_mcp_skill_bus_to_proof_validator_to_license_kernel_to_dojo_runtime",
   });
 }
@@ -1716,6 +1737,33 @@ function evidenceClaimsOpt(value: unknown): DojoEvidenceClaim[] | undefined {
 
 function substrateOpt(value: unknown): DojoExecutionSubstrate | undefined {
   return value === "vision" || value === "dom" || value === "source" || value === "api" || value === "mcp" ? value : undefined;
+}
+
+function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {
+  const a = obj(args);
+  const roles = stringArrayOpt(a["roles"]);
+  const hasTenantInput = Boolean(
+    stringOpt(a["tenant_id"])
+      || stringOpt(a["organization_id"])
+      || stringOpt(a["workspace_id"])
+      || stringOpt(a["actor_id"])
+      || roles.length > 0
+  );
+  if (!hasTenantInput) return createLegacyDojoTenantContext();
+  return {
+    tenant_id: stringOpt(a["tenant_id"]) ?? "local-tenant",
+    organization_id: stringOpt(a["organization_id"]) ?? "local-org",
+    workspace_id: stringOpt(a["workspace_id"]) ?? "local-workspace",
+    actor_id: stringOpt(a["actor_id"]) ?? "anonymous-agent",
+    actor_type: actorTypeOpt(a["actor_type"]),
+    roles: roles.length > 0 ? roles : ["agent"],
+    request_id: stringOpt(a["request_id"]) ?? `dojo-list-${hashId(JSON.stringify(a))}`,
+    correlation_id: stringOpt(a["correlation_id"]) ?? `dojo-list-${hashId(`${Date.now()}:${JSON.stringify(a)}`)}`,
+  };
+}
+
+function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {
+  return value === "human" || value === "service" ? value : "agent";
 }
 
 function persistDojoRuns(
