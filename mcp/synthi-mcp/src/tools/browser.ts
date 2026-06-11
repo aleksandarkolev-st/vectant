@@ -2,12 +2,14 @@ import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
+import { dojoSkillRegistry } from "../browser/dojo.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
 import {
   privateWorkflowToolParameterArgNames,
   privateWorkflowToolDefinition,
   privateWorkflowToolRegistry,
+  type PrivateWorkflowToolRegistration,
 } from "../browser/private_tool_registry.js";
 import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../browser/preview_target.js";
 import { browserPlaywrightAdapter, type BrowserWorkflowOverlayResponse } from "../browser/playwright_adapter.js";
@@ -29,6 +31,12 @@ import {
 } from "../browser/project_runner.js";
 import { BROWSER_ACTION_KINDS } from "../browser/types.js";
 import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
+import {
+  createDojoExecutionPolicyGate,
+  type DojoExecutionPolicyDecision,
+  type DojoPublishedSkillBinding,
+  type DojoTenantContext,
+} from "../dojo/mcp/execution_policy_gate.js";
 import { eventLog } from "../events/index.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchSafetyTool } from "./safety.js";
@@ -807,7 +815,7 @@ export function browserPrivateWorkflowTools(): Array<{ name: string; description
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
     const privateTool = privateWorkflowToolRegistry.get(toolName);
-    if (privateTool) return browserDirectPrivateToolRequiresDojoProof(toolName, privateTool.workflow_id);
+    if (privateTool) return await browserDirectPrivateWorkflowTool(toolName, args, privateTool);
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
@@ -902,6 +910,36 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
 }
 
 export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(toolName: string, args: unknown): Promise<ToolResponse> {
+  return await browserRunPublishedPrivateTool(toolName, args);
+}
+
+async function browserDirectPrivateWorkflowTool(
+  toolName: string,
+  args: unknown,
+  registration: PrivateWorkflowToolRegistration
+): Promise<ToolResponse> {
+  const binding = dojoBindingForPrivateTool(toolName, registration.workflow_id);
+  const gate = createDojoExecutionPolicyGate({
+    resolvePublishedSkill: () => binding ?? ({ status: "unpublished" }),
+  });
+  const decision = await gate.evaluate({
+    tenant: dojoTenantContext(args, registration.workflow_id),
+    entrypoint: "private_tool",
+    workflow_id: registration.workflow_id,
+    tool_name: toolName,
+    requested_action: "run_workflow",
+  });
+
+  if (binding) return browserDirectPrivateToolRequiresDojoProof(toolName, registration.workflow_id, decision);
+  if (!decision.ok) {
+    return errorResponse("dojo_execution_policy_blocked", {
+      tool_name: toolName,
+      workflow_id: registration.workflow_id,
+      requested_action: "run_workflow",
+      blocked_by: decision.blocked_by,
+      dojo_execution_policy: decision,
+    });
+  }
   return await browserRunPublishedPrivateTool(toolName, args);
 }
 
@@ -2020,20 +2058,60 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   }
 }
 
-function browserDirectPrivateToolRequiresDojoProof(toolName: string, workflowId: string): ToolResponse {
+function browserDirectPrivateToolRequiresDojoProof(
+  toolName: string,
+  workflowId: string,
+  decision?: DojoExecutionPolicyDecision
+): ToolResponse {
   return errorResponse("dojo_proof_capsule_required", {
     tool_name: toolName,
     workflow_id: workflowId,
     required_tool: "synthi_dojo_run_with_proof_capsule",
     issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
     requested_action: "run_workflow",
-    blocked_by: ["direct_private_workflow_tool_call"],
+    blocked_by: decision?.blocked_by ?? ["direct_private_workflow_tool_call"],
+    dojo_execution_policy: decision ?? null,
     product_path: "agent_to_dojo_license_kernel_to_proof_validator_to_private_workflow_tool",
     notes: [
       "Private workflow tools are backing capabilities for Dojo skills.",
       "Issue a proof-carrying skill capsule, then call synthi_dojo_run_with_proof_capsule with tool_args for this workflow.",
     ],
   });
+}
+
+function dojoBindingForPrivateTool(toolName: string, workflowId: string): DojoPublishedSkillBinding | null {
+  const binding =
+    dojoSkillRegistry.getPublishedWorkflowBindingByToolName(toolName) ??
+    dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(workflowId);
+  if (!binding) return null;
+  return {
+    status: "published",
+    skill_id: binding.skill_id,
+    workflow_id: binding.workflow_id,
+    tool_name: toolName,
+  };
+}
+
+function dojoTenantContext(args: unknown, workflowId: string): DojoTenantContext {
+  const a = obj(args);
+  const workspaceId =
+    stringOpt(a["workspace_id"]) ??
+    process.env["SYNTHI_WORKSPACE_ID"]?.trim() ??
+    workflowId;
+  const tenantId =
+    process.env["SYNTHI_TENANT_ID"]?.trim() ??
+    workspaceId.split(":")[0] ??
+    "default";
+  return {
+    tenant_id: tenantId,
+    organization_id: process.env["SYNTHI_ORGANIZATION_ID"]?.trim() ?? tenantId,
+    workspace_id: workspaceId,
+    actor_id: process.env["SYNTHI_AGENT_ID"]?.trim() ?? "private_workflow_tool_caller",
+    actor_type: "agent",
+    roles: ["agent"],
+    request_id: stringOpt(a["request_id"]) ?? `req_${workflowId}`,
+    correlation_id: stringOpt(a["correlation_id"]) ?? `corr_${workflowId}`,
+  };
 }
 
 function privateWorkflowHostedRuntimeGate(
