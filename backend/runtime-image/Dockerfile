@@ -32,6 +32,31 @@ RUN apk add --no-cache \
 # http-server for static container programs.
 RUN npm install -g http-server
 
+# ── Terminal env parity (Phase 2a) ───────────────────────────────────────────
+# The in-app terminal runs as `bash -l` inside this container, so it must match
+# the collab-server terminal's tooling.
+
+# Claude Code CLI — exposed in the terminal (lands in /usr/local/bin, on PATH).
+RUN npm install -g @anthropic-ai/claude-code
+
+# sudo for ad-hoc installs from the terminal, passwordless for the rootless user
+# (this container is the user's own isolated sandbox).
+RUN apk add --no-cache sudo \
+ && echo 'rootless ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/rootless \
+ && chmod 0440 /etc/sudoers.d/rootless
+
+# Git identity (system-level so it applies regardless of HOME), matching the
+# collab-server autocommit identity.
+RUN git config --system user.email "synthi@overview-synti.com" \
+ && git config --system user.name "Synthi Autocommit"
+
+# Ensure the rootless user has a writable HOME for git/npm/claude config, and a
+# friendly login-shell prompt so the terminal reads "~/workspace $".
+RUN mkdir -p /home/rootless \
+ && chown -R rootless:rootless /home/rootless \
+ && printf 'export PS1="\\[\\e[36m\\]~/workspace\\[\\e[0m\\]\\$ "\n' > /etc/profile.d/00-vectant-prompt.sh
+ENV HOME=/home/rootless
+
 # The rootless daemon's socket. Baking it as ENV makes every `docker exec`
 # (i.e. every container-program launch) talk to this workspace's own daemon.
 ENV DOCKER_HOST=unix:///run/user/${ROOTLESS_UID}/docker.sock
