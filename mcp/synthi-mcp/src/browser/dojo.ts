@@ -23,6 +23,7 @@ import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { toDojoScenarioDefinitions } from "../dojo/vivarium/scenario_dsl.js";
+import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -1494,12 +1495,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `${root}/mcp.manifest.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.private_tool_manifest ?? {
-        kind: "dojoMcpSkillBusManifest",
-        skill_id: skill.skill_id,
-        workflow_id: skill.workflow_id,
-        published_tool_name: skill.published_tool_name ?? null,
-      }),
+      content: json(buildDojoMcpSkillManifest(skill)),
     },
     {
       path: `.synthi/dojo/workflows/${segment}.graph.json`,
@@ -1584,12 +1580,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `.synthi/dojo/mcp/${segment}.manifest.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.private_tool_manifest ?? {
-        kind: "dojoMcpSkillBusManifest",
-        skill_id: skill.skill_id,
-        workflow_id: skill.workflow_id,
-        published_tool_name: skill.published_tool_name ?? null,
-      }),
+      content: json(buildDojoMcpSkillManifest(skill)),
     },
   ];
 }

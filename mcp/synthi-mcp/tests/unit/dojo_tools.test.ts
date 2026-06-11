@@ -18,6 +18,7 @@ import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { createSynthiServer } from "../../src/server.js";
+import { validateDojoMcpSkillManifest, type DojoMcpSkillManifestV1 } from "../../src/dojo/mcp/manifest_signing.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
@@ -286,6 +287,19 @@ describe("Agent Dojo MCP tools", () => {
       tool_name: "synthi_app_open_details",
     }));
     expect((publish?.structuredContent as { tool_name: string }).tool_name).toBe("synthi_app_open_details");
+    const publishedManifest = (publish?.structuredContent as {
+      mcp_skill_manifest: DojoMcpSkillManifestV1;
+    }).mcp_skill_manifest;
+    expect(publishedManifest).toEqual(expect.objectContaining({
+      kind: "dojoMcpSkillManifest",
+      schema_version: "synthi.dojo.mcpSkillManifest.v1",
+      manifest_digest: expect.stringMatching(/^sha256:/),
+      signature: expect.stringMatching(/^hmac-sha256:/),
+    }));
+    expect(validateDojoMcpSkillManifest(publishedManifest, {
+      expected_skill_id: published.skill.skill_id,
+      expected_tool_name: "synthi_app_open_details",
+    })).toEqual(expect.objectContaining({ ok: true, blocked_by: [] }));
     expect((publish?.structuredContent as { repo_artifacts: Array<{ path: string }> }).repo_artifacts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: ".synthi/dojo/skills/open_details/license.json" }),
@@ -449,12 +463,32 @@ describe("Agent Dojo MCP tools", () => {
     }));
 
     const listed = await dispatchDojoTool("synthi_dojo_list_competencies", {});
-    expect((listed?.structuredContent as { competencies: Array<{ skill_id: string }> }).competencies).toEqual([
-      expect.objectContaining({ skill_id: "dojo_open_details" }),
+    const listedCompetencies = (listed?.structuredContent as {
+      competencies: Array<{ skill_id: string; mcp_skill_manifest: DojoMcpSkillManifestV1 }>;
+    }).competencies;
+    expect(listedCompetencies).toEqual([
+      expect.objectContaining({
+        skill_id: "dojo_open_details",
+        mcp_skill_manifest: expect.objectContaining({ manifest_digest: expect.stringMatching(/^sha256:/) }),
+      }),
     ]);
+    expect(validateDojoMcpSkillManifest(listedCompetencies[0]!.mcp_skill_manifest, {
+      expected_skill_id: published.skill.skill_id,
+      expected_tool_name: "synthi_app_open_details",
+    })).toEqual(expect.objectContaining({ ok: true, blocked_by: [] }));
 
     const exported = await dispatchDojoTool("synthi_dojo_export_artifacts", { skill_id: published.skill.skill_id });
     expect(exported?.isError).toBeUndefined();
+    const exportedArtifacts = (exported?.structuredContent as {
+      artifacts: Array<{ path: string; content: string }>;
+    }).artifacts;
+    const exportedManifest = JSON.parse(exportedArtifacts.find((artifact) =>
+      artifact.path === ".synthi/dojo/skills/open_details/mcp.manifest.json"
+    )?.content ?? "null") as DojoMcpSkillManifestV1;
+    expect(validateDojoMcpSkillManifest(exportedManifest, {
+      expected_skill_id: published.skill.skill_id,
+      expected_tool_name: "synthi_app_open_details",
+    })).toEqual(expect.objectContaining({ ok: true, blocked_by: [] }));
     expect(exported?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
       skill_id: "dojo_open_details",

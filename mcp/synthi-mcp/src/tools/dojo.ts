@@ -28,6 +28,7 @@ import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../b
 import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/dojo_license_kernel.js";
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
+import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchBrowserPrivateWorkflowToolAfterDojoProof } from "./browser.js";
@@ -715,7 +716,7 @@ function dojoListCompetenciesTool(): ToolResponse {
 function dojoGetSkillTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill: skill.skill });
+  return jsonResponse({ ok: true, skill: skill.skill, mcp_skill_manifest: buildDojoMcpSkillManifest(skill.skill) });
 }
 
 function dojoGetSkillCortexTool(args: unknown): ToolResponse {
@@ -1141,6 +1142,7 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
     tool_name: publishedTool.tool_name,
     published_tool_name: publishedTool.ok ? publishedTool.tool_name : null,
     skill: skillListItem(skill),
+    mcp_skill_manifest: buildDojoMcpSkillManifest(skill),
     skill_card: skill.skill_card,
     skill_passport: skill.skill_passport,
     license: skill.permission_license,
@@ -1166,6 +1168,7 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
   return jsonResponse({
     ok: true,
     skill: skillListItem(recertified),
+    mcp_skill_manifest: buildDojoMcpSkillManifest(recertified),
     checkride: recertified.checkride,
     license: recertified.permission_license,
     assurance_case: recertified.assurance_case,
@@ -1584,6 +1587,7 @@ function skillListItem(skill: DojoSkill): Record<string, unknown> {
     preferred_substrate: skill.preferred_substrate,
     execution_substrates: skill.execution_substrates,
     published_tool_name: skill.published_tool_name ?? null,
+    mcp_skill_manifest: buildDojoMcpSkillManifest(skill),
     checkride: {
       checkride_id: skill.checkride.checkride_id,
       coverage_score: skill.checkride.coverage_score,
