@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { browserBroker } from "../browser/broker.js";
 import {
   buildDojoSkill,
@@ -13,8 +14,19 @@ import {
   type DojoExecutionSubstrate,
   type DojoSkill,
 } from "../browser/dojo.js";
+import {
+  buildDojoGovernanceReport,
+  buildDojoLifecycleReport,
+  buildDojoOrganizationRegistry,
+  buildDojoSourceAffordancePrPlan,
+  buildDojoUniverseDossier,
+  buildDojoUniverseMetrics,
+  runDojoTimeMachineDebugger,
+} from "../browser/dojo_universe.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
+import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/dojo_license_kernel.js";
+import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchBrowserPrivateWorkflowToolAfterDojoProof } from "./browser.js";
@@ -35,6 +47,12 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_antibodies",
   "synthi_dojo_get_agent_ready_ui_contract",
   "synthi_dojo_get_cost_policy",
+  "synthi_dojo_get_universe_dossier",
+  "synthi_dojo_get_lifecycle",
+  "synthi_dojo_get_governance_report",
+  "synthi_dojo_get_metrics",
+  "synthi_dojo_get_source_affordance_pr_plan",
+  "synthi_dojo_get_registry",
   "synthi_dojo_get_skill_assurance_case",
   "synthi_dojo_get_entrustment_level",
   "synthi_dojo_get_license",
@@ -43,14 +61,22 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_explain_block",
   "synthi_dojo_explain_failure",
   "synthi_dojo_debug_counterfactual",
+  "synthi_dojo_run_time_machine_debugger",
   "synthi_dojo_run_ghost_mode",
   "synthi_dojo_request_permission_upgrade",
   "synthi_dojo_generate_vivarium_scenarios",
+  "synthi_dojo_run_vivarium_scenario",
+  "synthi_dojo_run_wind_tunnel",
   "synthi_dojo_run_checkride",
   "synthi_dojo_publish_skill",
   "synthi_dojo_recertify_skill",
+  "synthi_dojo_get_license_health",
+  "synthi_dojo_revoke_license",
+  "synthi_dojo_record_case_law",
   "synthi_dojo_export_artifacts",
   "synthi_dojo_issue_proof_capsule",
+  "synthi_dojo_validate_proof_capsule",
+  "synthi_dojo_revoke_proof_capsule",
   "synthi_dojo_run_with_proof_capsule",
 ] as const;
 
@@ -131,6 +157,46 @@ export const DOJO_TOOLS = [
     name: "synthi_dojo_get_cost_policy",
     description: "Return the Dojo cost-control policy for scenario budgets, tier use, stop conditions, and recertification triggers.",
     inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_universe_dossier",
+    description:
+      "Return the full Vivarium Cortex dossier for a skill: lifecycle, governance, metrics, evidence ledger, source-affordance PR plan, package readiness, and time-machine debug summary.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        question: { type: "string" },
+        mutation_kind: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_get_lifecycle",
+    description: "Return revocable entrustment lifecycle state, expiry, recertification triggers, and release gates for a Dojo skill.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_governance_report",
+    description: "Return approval queue, policy gates, audit report, compliance exports, and review workflows for a Dojo skill.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_metrics",
+    description: "Return technical, business, and trust metrics across the Dojo skill registry or a single selected skill.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_source_affordance_pr_plan",
+    description: "Return a reviewable generated PR plan for adding stable Agent-Ready UI affordances and proof hooks to source files.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_registry",
+    description: "Return the organization-level Dojo skill registry, case-law registry, antibody registry, and aggregate metrics.",
+    inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
     name: "synthi_dojo_get_skill_assurance_case",
@@ -237,6 +303,22 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_run_time_machine_debugger",
+    description:
+      "Run causal time-machine debugging for a skill by selecting a failed or requested counterfactual branch and explaining the license impact and replay plan.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        scenario_id: { type: "string" },
+        mutation_kind: { type: "string" },
+        question: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_dojo_run_ghost_mode",
     description: "Run non-mutating ghost-mode analysis by comparing an observed human action with the agent's planned action under the skill license.",
     inputSchema: {
@@ -273,6 +355,33 @@ export const DOJO_TOOLS = [
       properties: {
         workflow_id: { type: "string" },
         workspace_id: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_run_vivarium_scenario",
+    description: "Materialize and run one synthetic Workspace Organoid scenario for a licensed Dojo skill, returning evidence refs, guardrails, and license checks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        scenario_id: { type: "string" },
+        mutation_kind: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_run_wind_tunnel",
+    description: "Run the Workflow Wind Tunnel over the skill's synthetic scenario set with an optional scenario budget.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        max_scenarios: { type: "number" },
       },
       required: [],
     },
@@ -317,6 +426,41 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_get_license_health",
+    description: "Return combined license lifecycle, governance, proof-record, expiry, and recertification health for a Dojo skill.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_revoke_license",
+    description: "Revoke a Dojo skill license and republish the skill as EX/blocked without deleting its evidence, case law, or repo artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        reason: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_record_case_law",
+    description: "Record a new failure-derived case-law item and binding guardrail for a Dojo skill.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        title: { type: "string" },
+        finding: { type: "string" },
+        impact: { type: "string" },
+        rule: { type: "string" },
+        applies_to: { type: "array", items: { type: "string" } },
+      },
+      required: ["finding", "rule"],
+    },
+  },
+  {
     name: "synthi_dojo_export_artifacts",
     description:
       "Return reviewable repo artifact files for a licensed Dojo skill, including seed, graph, vivarium, checkride report, assurance case, license, proof schema, guardrails, case law, and MCP manifest. Artifacts contain metadata and references, not secrets.",
@@ -345,6 +489,34 @@ export const DOJO_TOOLS = [
         expires_at: { type: "string" },
       },
       required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_validate_proof_capsule",
+    description:
+      "Validate a proof-carrying skill capsule through the license kernel without executing the backing skill. Checks signature, issuer, registry issuance, expiry, revocation, workspace, action, substrate, evidence, and guardrails.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        requested_action: { type: "string", default: "run_workflow" },
+        proof_capsule: { type: "object" },
+        tool_args: { type: "object" },
+      },
+      required: ["proof_capsule"],
+    },
+  },
+  {
+    name: "synthi_dojo_revoke_proof_capsule",
+    description: "Revoke an issued proof capsule so it can no longer be used for production execution.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        capsule_id: { type: "string" },
+        reason: { type: "string" },
+      },
+      required: ["capsule_id"],
     },
   },
   {
@@ -396,6 +568,18 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         return dojoGetAgentReadyUiContractTool(args);
       case "synthi_dojo_get_cost_policy":
         return dojoGetCostPolicyTool(args);
+      case "synthi_dojo_get_universe_dossier":
+        return dojoGetUniverseDossierTool(args);
+      case "synthi_dojo_get_lifecycle":
+        return dojoGetLifecycleTool(args);
+      case "synthi_dojo_get_governance_report":
+        return dojoGetGovernanceReportTool(args);
+      case "synthi_dojo_get_metrics":
+        return dojoGetMetricsTool(args);
+      case "synthi_dojo_get_source_affordance_pr_plan":
+        return dojoGetSourceAffordancePrPlanTool(args);
+      case "synthi_dojo_get_registry":
+        return dojoGetRegistryTool();
       case "synthi_dojo_get_skill_assurance_case":
         return dojoGetAssuranceCaseTool(args);
       case "synthi_dojo_get_entrustment_level":
@@ -412,22 +596,38 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         return dojoExplainFailureTool(args);
       case "synthi_dojo_debug_counterfactual":
         return dojoDebugCounterfactualTool(args);
+      case "synthi_dojo_run_time_machine_debugger":
+        return dojoRunTimeMachineDebuggerTool(args);
       case "synthi_dojo_run_ghost_mode":
         return dojoRunGhostModeTool(args);
       case "synthi_dojo_request_permission_upgrade":
         return dojoPermissionUpgradeTool(args);
       case "synthi_dojo_generate_vivarium_scenarios":
         return dojoGenerateVivariumScenariosTool(args);
+      case "synthi_dojo_run_vivarium_scenario":
+        return dojoRunVivariumScenarioTool(args);
+      case "synthi_dojo_run_wind_tunnel":
+        return dojoRunWindTunnelTool(args);
       case "synthi_dojo_run_checkride":
         return dojoRunCheckrideTool(args);
       case "synthi_dojo_publish_skill":
         return dojoPublishSkillTool(args);
       case "synthi_dojo_recertify_skill":
         return dojoRecertifySkillTool(args);
+      case "synthi_dojo_get_license_health":
+        return dojoGetLicenseHealthTool(args);
+      case "synthi_dojo_revoke_license":
+        return dojoRevokeLicenseTool(args);
+      case "synthi_dojo_record_case_law":
+        return dojoRecordCaseLawTool(args);
       case "synthi_dojo_export_artifacts":
         return dojoExportArtifactsTool(args);
       case "synthi_dojo_issue_proof_capsule":
         return dojoIssueProofCapsuleTool(args);
+      case "synthi_dojo_validate_proof_capsule":
+        return dojoValidateProofCapsuleTool(args);
+      case "synthi_dojo_revoke_proof_capsule":
+        return dojoRevokeProofCapsuleTool(args);
       case "synthi_dojo_run_with_proof_capsule":
         return await dojoRunWithProofCapsuleTool(args);
       default:
@@ -527,6 +727,55 @@ function dojoGetCostPolicyTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, cost_control_policy: skill.skill.cost_control_policy });
+}
+
+function dojoGetUniverseDossierTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    universe_dossier: buildDojoUniverseDossier(skill.skill, dojoSkillRegistry.list(), {
+      question: stringOpt(a["question"]),
+      mutation_kind: stringOpt(a["mutation_kind"]),
+    }),
+  });
+}
+
+function dojoGetLifecycleTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, lifecycle: buildDojoLifecycleReport(skill.skill) });
+}
+
+function dojoGetGovernanceReportTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, governance_report: buildDojoGovernanceReport(skill.skill) });
+}
+
+function dojoGetMetricsTool(args: unknown): ToolResponse {
+  const selected = skillByArgs(args);
+  const skills = selected ? [selected] : dojoSkillRegistry.list();
+  return jsonResponse({ ok: true, metrics: buildDojoUniverseMetrics(skills) });
+}
+
+function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    source_affordance_pr_plan: buildDojoSourceAffordancePrPlan(skill.skill),
+  });
+}
+
+function dojoGetRegistryTool(): ToolResponse {
+  return jsonResponse({
+    ok: true,
+    registry: buildDojoOrganizationRegistry(dojoSkillRegistry.list()),
+  });
 }
 
 function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
@@ -649,6 +898,21 @@ function dojoDebugCounterfactualTool(args: unknown): ToolResponse {
   });
 }
 
+function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    time_machine_debugger: runDojoTimeMachineDebugger(skill.skill, {
+      scenario_id: stringOpt(a["scenario_id"]),
+      mutation_kind: stringOpt(a["mutation_kind"]),
+      question: stringOpt(a["question"]),
+    }),
+  });
+}
+
 function dojoRunGhostModeTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
@@ -735,6 +999,40 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
   });
 }
 
+function dojoRunVivariumScenarioTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const scenarioRun = runDojoVivariumScenario(skill.skill, {
+    scenario_id: stringOpt(a["scenario_id"]),
+    mutation_kind: stringOpt(a["mutation_kind"]),
+  });
+  const updated = persistDojoRuns(skill.skill, [scenarioRun.run]);
+  return jsonResponse({
+    ok: true,
+    skill_id: updated.skill_id,
+    vivarium_run: scenarioRun,
+    persisted_skill: skillListItem(updated),
+    license_health: licenseHealthFor(updated),
+  });
+}
+
+function dojoRunWindTunnelTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const tunnel = runDojoWindTunnel(skill.skill, {
+    max_scenarios: numberOpt(obj(args)["max_scenarios"]),
+  });
+  const updated = persistDojoRuns(skill.skill, tunnel.runs.map((run) => run.run), tunnel);
+  return jsonResponse({
+    ok: true,
+    skill_id: updated.skill_id,
+    wind_tunnel_execution: tunnel,
+    persisted_skill: skillListItem(updated),
+    license_health: licenseHealthFor(updated),
+  });
+}
+
 function dojoRunCheckrideTool(args: unknown): ToolResponse {
   const artifact = requiredWorkflowArtifact(args);
   if (!artifact.ok) return artifact.error;
@@ -810,6 +1108,178 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
   });
 }
 
+function dojoGetLicenseHealthTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    license_health: licenseHealthFor(skill.skill),
+  });
+}
+
+function dojoRevokeLicenseTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const now = new Date().toISOString();
+  const reason = stringOpt(obj(args)["reason"]) ?? "operator_revoked";
+  const blocked = new Map<string, string[]>();
+  for (const action of [
+    ...skill.skill.permission_license.blocked_actions,
+    ...skill.skill.permission_license.allowed_actions,
+    ...skill.skill.permission_license.gated_actions,
+  ]) {
+    blocked.set(action.action, [...new Set([...(blocked.get(action.action) ?? []), ...action.constraints, `revoked:${reason}`])]);
+  }
+  const revoked = cloneJson(skill.skill);
+  revoked.entrustment_level = "EX";
+  revoked.skill_readiness_level = Math.min(revoked.skill_readiness_level, 5) as DojoSkill["skill_readiness_level"];
+  revoked.permission_license = {
+    ...revoked.permission_license,
+    license_version: bumpVersion(revoked.permission_license.license_version),
+    entrustment_level: "EX",
+    autonomy_level: "blocked",
+    allowed_actions: [],
+    gated_actions: [],
+    blocked_actions: [...blocked.entries()].map(([action, constraints]) => ({ action, constraints })),
+    approval_requirements: [],
+    issued_at: now,
+  };
+  revoked.skill_card = {
+    ...revoked.skill_card,
+    status: "Blocked pending recertification",
+    can_do_alone: [],
+    will_ask_before: [],
+    will_not_do: revoked.permission_license.blocked_actions.map((action) => action.action),
+    proof_badge: "License revoked; proof capsules rejected",
+  };
+  revoked.skill_passport = {
+    ...revoked.skill_passport,
+    entrustment_level: "EX",
+    readiness_level: revoked.skill_readiness_level,
+    license_id: revoked.permission_license.license_id,
+    proof_required: true,
+    issued_at: now,
+  };
+  revoked.training_report = {
+    ...revoked.training_report,
+    summary: {
+      ...revoked.training_report.summary,
+      readiness_level: revoked.skill_readiness_level,
+      entrustment_level: "EX",
+    },
+    readiness_decision: `License revoked: ${reason}. Recertification required before production execution.`,
+    limitations: [...new Set([...revoked.training_report.limitations, `revoked:${reason}`])],
+  };
+  revoked.retrain_triggers = [
+    ...revoked.retrain_triggers,
+    {
+      trigger_id: `retrain_${hashId(`${revoked.skill_id}:revoked:${now}:${reason}`)}`,
+      source: "incident",
+      condition: `license_revoked:${reason}`,
+    },
+  ];
+  revoked.license_expires_at = now;
+  revoked.last_trained_at = now;
+  const saved = dojoSkillRegistry.publish(revoked);
+  return jsonResponse({
+    ok: true,
+    skill_id: saved.skill_id,
+    reason,
+    license: saved.permission_license,
+    lifecycle: buildDojoLifecycleReport(saved),
+    governance_report: buildDojoGovernanceReport(saved),
+  });
+}
+
+function dojoRecordCaseLawTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const finding = stringOpt(a["finding"]);
+  const rule = stringOpt(a["rule"]);
+  if (!finding || !rule) return errorResponse("dojo_case_law_finding_and_rule_required");
+  const now = new Date().toISOString();
+  const title = stringOpt(a["title"]) ?? titleFromFinding(finding);
+  const impact = stringOpt(a["impact"]) ?? "The skill could act outside its licensed tested conditions.";
+  const appliesTo = stringArrayOpt(a["applies_to"]);
+  const scope = bindingScopeOpt(a["binding_scope"]);
+  const sourceRunId = stringOpt(a["source_run_id"])
+    ?? skill.skill.training_runs[skill.skill.training_runs.length - 1]?.run_id
+    ?? skill.skill.checkride.checkride_id;
+  const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
+  const caseId = `case_${hashId(`${skill.skill.skill_id}:${sourceRunId}:${finding}:${rule}`)}`;
+  const guardrailId = `guard_${hashId(`${caseId}:${rule}`)}`;
+  const antibodyId = `antibody_${hashId(`${caseId}:${guardrailId}`)}`;
+  const caseLaw: DojoSkill["case_law"][number] = {
+    case_id: caseId,
+    title,
+    date: now.slice(0, 10),
+    source_skill_id: skill.skill.skill_id,
+    source_run_id: sourceRunId,
+    finding,
+    impact,
+    rule_created: rule,
+    applies_to: appliesTo.length > 0 ? appliesTo : [...new Set(skill.skill.skill_seed.risk_clues.map((risk) => risk.label))],
+    binding_scope: scope,
+    status: stringOpt(a["status"]) === "proposed" ? "proposed" : "binding",
+    evidence_refs: evidenceRefs.length > 0 ? evidenceRefs : [`skill:${skill.skill.skill_id}`, `run:${sourceRunId}`],
+  };
+  const guardrail: DojoSkill["guardrails"][number] = {
+    guardrail_id: guardrailId,
+    title: `${title} guardrail`,
+    rule,
+    blocks_actions: stringArrayOpt(a["blocks_actions"]).length > 0 ? stringArrayOpt(a["blocks_actions"]) : ["run_workflow"],
+    source_case_id: caseId,
+    severity: severityOpt(a["severity"]),
+  };
+  const antibody: DojoSkill["antibodies"][number] = {
+    antibody_id: antibodyId,
+    case_id: caseId,
+    guardrail_id: guardrailId,
+    trigger: finding,
+    response: rule,
+    applies_to: caseLaw.applies_to,
+    binding_scope: caseLaw.binding_scope,
+    evidence_refs: caseLaw.evidence_refs,
+    created_at: now,
+  };
+  const updated = cloneJson(skill.skill);
+  updated.case_law = upsertBy(updated.case_law, caseLaw, "case_id");
+  updated.guardrails = upsertBy(updated.guardrails, guardrail, "guardrail_id");
+  updated.antibodies = upsertBy(updated.antibodies, antibody, "antibody_id");
+  updated.case_law_refs = [...new Set([...updated.case_law_refs, caseId])];
+  updated.permission_license = {
+    ...updated.permission_license,
+    license_version: bumpVersion(updated.permission_license.license_version),
+    proof_requirements: {
+      ...updated.permission_license.proof_requirements,
+      required_guardrails: [...new Set([...updated.permission_license.proof_requirements.required_guardrails, guardrailId])],
+    },
+  };
+  updated.training_report = {
+    ...updated.training_report,
+    summary: {
+      ...updated.training_report.summary,
+      guardrail_count: updated.guardrails.length,
+      antibody_count: updated.antibodies.length,
+    },
+    evidence_refs: [...new Set([...updated.training_report.evidence_refs, ...caseLaw.evidence_refs])],
+    readiness_decision: `Case law ${caseId} recorded; guardrail ${guardrailId} is ${caseLaw.status}.`,
+  };
+  updated.last_trained_at = now;
+  const saved = dojoSkillRegistry.publish(updated);
+  return jsonResponse({
+    ok: true,
+    skill_id: saved.skill_id,
+    case_law: caseLaw,
+    guardrail,
+    antibody,
+    license: saved.permission_license,
+    governance_report: buildDojoGovernanceReport(saved),
+  });
+}
+
 function dojoExportArtifactsTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
@@ -833,14 +1303,55 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
     substrate_claim: substrateOpt(a["substrate_claim"]),
     expires_at: stringOpt(a["expires_at"]),
   });
+  const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule);
   const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction);
   return jsonResponse({
     ok: validation.ok,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
     proof_capsule: capsule,
+    proof_record: proofRecord,
     validation,
   });
+}
+
+function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
+  const capsule = proofCapsuleOpt(a["proof_capsule"]);
+  if (!capsule) {
+    return errorResponse("dojo_proof_capsule_required", {
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      proof_capsule_schema: skill.skill.proof_capsule_schema,
+    });
+  }
+  const decision = evaluateDojoLicenseKernel({
+    skill: skill.skill,
+    registry: dojoSkillRegistry,
+    proof_capsule: capsule,
+    requested_action: requestedAction,
+    tool_args: objectOpt(a["tool_args"]) ?? {},
+    dry_run: true,
+  });
+  return jsonResponse({
+    ok: decision.ok,
+    skill_id: skill.skill.skill_id,
+    requested_action: requestedAction,
+    license_kernel: decision,
+  });
+}
+
+function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const capsuleId = stringOpt(a["capsule_id"]);
+  if (!capsuleId) return errorResponse("dojo_proof_capsule_id_required");
+  const reason = stringOpt(a["reason"]) ?? "operator_revoked";
+  const record = dojoSkillRegistry.revokeProofCapsule(capsuleId, reason);
+  if (!record) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
+  return jsonResponse({ ok: true, proof_record: record });
 }
 
 async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse> {
@@ -856,26 +1367,36 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       proof_capsule_schema: skill.skill.proof_capsule_schema,
     });
   }
-  const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction);
-  if (!validation.ok) {
-    return errorResponse(validation.error ?? "dojo_proof_capsule_invalid", {
+  const toolArgs = objectOpt(a["tool_args"]) ?? {};
+  const dryRun = boolOpt(a["dry_run"]);
+  const decision = evaluateDojoLicenseKernel({
+    skill: skill.skill,
+    registry: dojoSkillRegistry,
+    proof_capsule: capsule,
+    requested_action: requestedAction,
+    tool_args: toolArgs,
+    dry_run: dryRun,
+  });
+  if (!decision.ok) {
+    return errorResponse(decision.validation.error ?? "dojo_license_kernel_blocked", {
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
-      validation,
-      refusal: refusalFor(skill.skill, validation.blocked_by),
+      validation: decision.validation,
+      license_kernel: decision,
+      refusal: refusalFor(skill.skill, decision.blocked_by),
     });
   }
-  if (boolOpt(a["dry_run"])) {
+  if (dryRun) {
     return jsonResponse({
       ok: true,
       dry_run: true,
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
-      validation,
+      validation: decision.validation,
+      license_kernel: decision,
     });
   }
 
-  const toolArgs = objectOpt(a["tool_args"]) ?? {};
   const run = requestedAction === "run_prefix_validation"
     ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", toolArgs)
     : await dispatchBackingSkillTool(skill.skill, toolArgs);
@@ -886,12 +1407,18 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       published_tool_name: skill.skill.published_tool_name ?? null,
     });
   }
+  const proofRecord = run.isError === true ? decision.proof_record ?? null : markDojoProofExecution({
+    registry: dojoSkillRegistry,
+    proof_capsule: capsule,
+  });
   return jsonResponse({
     ok: run.isError !== true,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
-    validation,
+    validation: decision.validation,
+    license_kernel: decision,
     proof_capsule_id: capsule.capsule_id,
+    proof_record: proofRecord,
     backing_tool: requestedAction === "run_prefix_validation" ? "synthi_safety_run_prefix_validation" : skill.skill.published_tool_name,
     result: run.structuredContent ?? {},
   });
@@ -1120,6 +1647,126 @@ function substrateOpt(value: unknown): DojoExecutionSubstrate | undefined {
   return value === "vision" || value === "dom" || value === "source" || value === "api" || value === "mcp" ? value : undefined;
 }
 
+function persistDojoRuns(
+  skill: DojoSkill,
+  runs: DojoSkill["training_runs"],
+  windTunnelExecution?: ReturnType<typeof runDojoWindTunnel>
+): DojoSkill {
+  if (runs.length === 0) return skill;
+  const updated = cloneJson(skill);
+  const runById = new Map(updated.training_runs.map((run) => [run.run_id, run]));
+  for (const run of runs) runById.set(run.run_id, cloneJson(run));
+  updated.training_runs = [...runById.values()];
+  const runRefs = updated.training_runs.map((run) => run.run_id);
+  updated.training_report = {
+    ...updated.training_report,
+    run_refs: [...new Set([...updated.training_report.run_refs, ...runRefs])],
+    summary: {
+      ...updated.training_report.summary,
+      run_count: updated.training_runs.length,
+    },
+    evidence_refs: [...new Set([
+      ...updated.training_report.evidence_refs,
+      ...runs.flatMap((run) => run.evidence_refs),
+    ])],
+  };
+  if (windTunnelExecution) {
+    updated.wind_tunnel = {
+      ...updated.wind_tunnel,
+      generated_at: new Date().toISOString(),
+      run_count: windTunnelExecution.run_count,
+      runs: windTunnelExecution.runs.map((run) => run.run),
+      summary: {
+        ...updated.wind_tunnel.summary,
+        passed: windTunnelExecution.pass_count,
+        failed: windTunnelExecution.fail_count,
+        blocked: windTunnelExecution.blocked_count,
+        stop_reason: windTunnelExecution.stop_reason,
+      },
+    };
+  }
+  updated.last_trained_at = new Date().toISOString();
+  return dojoSkillRegistry.publish(updated);
+}
+
+function licenseHealthFor(skill: DojoSkill): Record<string, unknown> {
+  const proofRecords = dojoSkillRegistry.listProofRecords().filter((record) => record.skill_id === skill.skill_id);
+  const proofRecordCounts = proofRecords.reduce<Record<string, number>>((counts, record) => {
+    counts[record.status] = (counts[record.status] ?? 0) + 1;
+    return counts;
+  }, {});
+  const now = Date.now();
+  const expiresAt = Date.parse(skill.license_expires_at);
+  const daysUntilExpiry = Number.isFinite(expiresAt) ? Math.ceil((expiresAt - now) / 86_400_000) : null;
+  const lifecycle = buildDojoLifecycleReport(skill);
+  const governance = buildDojoGovernanceReport(skill);
+  return {
+    schema_version: "synthi.dojo.licenseHealth.v1",
+    skill_id: skill.skill_id,
+    workflow_id: skill.workflow_id,
+    status: skill.entrustment_level === "EX" || (typeof daysUntilExpiry === "number" && daysUntilExpiry <= 0)
+      ? "blocked"
+      : lifecycle.status,
+    entrustment_level: skill.entrustment_level,
+    skill_readiness_level: skill.skill_readiness_level,
+    license_version: skill.permission_license.license_version,
+    license_expires_at: skill.license_expires_at,
+    days_until_expiry: daysUntilExpiry,
+    proof_records: proofRecordCounts,
+    active_guardrails: skill.guardrails.length,
+    binding_case_law: skill.case_law.filter((item) => item.status === "binding").length,
+    lifecycle,
+    governance,
+    metrics: buildDojoUniverseMetrics([skill]),
+  };
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function hashId(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 12);
+}
+
+function bumpVersion(version: string): string {
+  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
+  const major = Number.isFinite(parts[0]) ? parts[0] : 1;
+  const minor = Number.isFinite(parts[1]) ? parts[1] : 0;
+  const patch = Number.isFinite(parts[2]) ? parts[2] ?? 0 : 0;
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+function titleFromFinding(finding: string): string {
+  const words = finding
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 6);
+  return words.length === 0
+    ? "Recorded Dojo Case"
+    : words.map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`).join(" ");
+}
+
+function upsertBy<T extends Record<K, string>, K extends keyof T>(items: T[], item: T, key: K): T[] {
+  const without = items.filter((existing) => existing[key] !== item[key]);
+  return [...without, item];
+}
+
+function stringArrayOpt(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
+    : [];
+}
+
+function severityOpt(value: unknown): DojoSkill["guardrails"][number]["severity"] {
+  return value === "low" || value === "medium" || value === "critical" ? value : "high";
+}
+
+function bindingScopeOpt(value: unknown): DojoSkill["case_law"][number]["binding_scope"] {
+  return value === "workspace" || value === "organization" ? value : "skill";
+}
+
 function obj(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -1130,6 +1777,10 @@ function objectOpt(value: unknown): Record<string, unknown> | undefined {
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function numberOpt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function boolOpt(value: unknown): boolean {

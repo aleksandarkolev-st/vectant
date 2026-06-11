@@ -12,6 +12,7 @@ import {
   runDojoCheckride,
   validateDojoProofCapsule,
 } from "../../src/browser/dojo.js";
+import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
@@ -25,6 +26,7 @@ beforeEach(() => {
   sourceIdentityRegistry.resetForTests();
   privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
   privateWorkflowToolRegistry.resetForTests();
+  dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
   dojoSkillRegistry.resetForTests();
   vi.restoreAllMocks();
 });
@@ -125,6 +127,13 @@ describe("Agent Dojo core", () => {
       ".synthi/dojo/skills/save_invoice/agent-ready-ui-contract.json",
       ".synthi/dojo/skills/save_invoice/cost-control.policy.json",
       ".synthi/dojo/skills/save_invoice/training-report.md",
+      ".synthi/dojo/skills/save_invoice/universe.dossier.json",
+      ".synthi/dojo/skills/save_invoice/lifecycle.report.json",
+      ".synthi/dojo/skills/save_invoice/governance.report.json",
+      ".synthi/dojo/skills/save_invoice/source-affordance-pr-plan.json",
+      ".synthi/dojo/skills/save_invoice/metrics.json",
+      ".synthi/dojo/skills/save_invoice/evidence-ledger.json",
+      ".synthi/dojo/skills/save_invoice/time-machine-debugger.json",
       ".synthi/dojo/skills/save_invoice/evidence-manifest.json",
       ".synthi/dojo/skills/save_invoice/playwright.spec.ts",
       ".synthi/dojo/skills/save_invoice/mcp.manifest.json",
@@ -134,6 +143,11 @@ describe("Agent Dojo core", () => {
       ".synthi/dojo/antibodies/save_invoice.antibodies.json",
       ".synthi/dojo/reports/save_invoice.training-report.md",
       ".synthi/dojo/evidence/save_invoice.redacted-evidence-manifest.json",
+      ".synthi/dojo/evidence/save_invoice.ledger.json",
+      ".synthi/dojo/governance/save_invoice.governance-report.json",
+      ".synthi/dojo/source/save_invoice.affordance-pr-plan.json",
+      ".synthi/dojo/registry/save_invoice.universe-dossier.json",
+      ".synthi/dojo/registry/organization-registry.json",
       ".synthi/dojo/playwright/save_invoice.spec.ts",
       ".synthi/dojo/mcp/save_invoice.manifest.json",
     ]));
@@ -197,9 +211,15 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_get_skill_cortex" }),
         expect.objectContaining({ name: "synthi_dojo_get_workspace_organoid" }),
         expect.objectContaining({ name: "synthi_dojo_get_evil_twin_report" }),
+        expect.objectContaining({ name: "synthi_dojo_get_universe_dossier" }),
+        expect.objectContaining({ name: "synthi_dojo_run_vivarium_scenario" }),
+        expect.objectContaining({ name: "synthi_dojo_run_wind_tunnel" }),
         expect.objectContaining({ name: "synthi_dojo_get_agent_ready_ui_contract" }),
         expect.objectContaining({ name: "synthi_dojo_explain_failure" }),
         expect.objectContaining({ name: "synthi_dojo_publish_skill" }),
+        expect.objectContaining({ name: "synthi_dojo_get_license_health" }),
+        expect.objectContaining({ name: "synthi_dojo_record_case_law" }),
+        expect.objectContaining({ name: "synthi_dojo_revoke_license" }),
         expect.objectContaining({ name: "synthi_dojo_export_artifacts" }),
         expect.objectContaining({ name: "synthi_dojo_run_with_proof_capsule" }),
       ]));
@@ -265,6 +285,16 @@ describe("Agent Dojo MCP tools", () => {
     expect(capsuleResponse?.isError).toBeUndefined();
     const capsule = (capsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
 
+    const validate = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+    });
+    expect(validate?.isError).toBeUndefined();
+    expect(validate?.structuredContent).toEqual(expect.objectContaining({
+      license_kernel: expect.objectContaining({ ok: true, status: "allowed" }),
+    }));
+
     const dryRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: published.skill.skill_id,
       requested_action: "run_workflow",
@@ -277,6 +307,116 @@ describe("Agent Dojo MCP tools", () => {
       dry_run: true,
       requested_action: "run_workflow",
       validation: expect.objectContaining({ ok: true, status: "allowed" }),
+    }));
+
+    dojoSkillRegistry.markProofCapsuleUsed((capsule as { capsule_id: string }).capsule_id, "2026-06-11T00:01:00.000Z");
+    const replay = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      dry_run: false,
+    });
+    expect(replay?.isError).toBe(true);
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      license_kernel: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      }),
+    }));
+
+    const secondCapsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+    });
+    const secondCapsule = (secondCapsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string } }).proof_capsule;
+    const revokedProof = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: secondCapsule.capsule_id,
+      reason: "unit_test_revocation",
+    });
+    expect(revokedProof?.structuredContent).toEqual(expect.objectContaining({
+      proof_record: expect.objectContaining({ status: "revoked" }),
+    }));
+    const revokedProofValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_workflow",
+      proof_capsule: secondCapsule,
+    });
+    expect(revokedProofValidation?.isError).toBeUndefined();
+    expect(revokedProofValidation?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      license_kernel: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["proof_capsule_revoked"]),
+      }),
+    }));
+
+    const universe = await dispatchDojoTool("synthi_dojo_get_universe_dossier", { skill_id: published.skill.skill_id });
+    expect(universe?.structuredContent).toEqual(expect.objectContaining({
+      universe_dossier: expect.objectContaining({
+        lifecycle: expect.objectContaining({ schema_version: "synthi.dojo.lifecycleReport.v1" }),
+        evidence_ledger: expect.objectContaining({ schema_version: "synthi.dojo.evidenceLedger.v1" }),
+      }),
+    }));
+    const sourcePlan = await dispatchDojoTool("synthi_dojo_get_source_affordance_pr_plan", { skill_id: published.skill.skill_id });
+    expect(sourcePlan?.structuredContent).toEqual(expect.objectContaining({
+      source_affordance_pr_plan: expect.objectContaining({
+        patch_count: expect.any(Number),
+        files: expect.any(Array),
+      }),
+    }));
+    const registry = await dispatchDojoTool("synthi_dojo_get_registry", {});
+    expect(registry?.structuredContent).toEqual(expect.objectContaining({
+      registry: expect.objectContaining({
+        skill_count: 1,
+        competencies: expect.arrayContaining([expect.objectContaining({ skill_id: published.skill.skill_id })]),
+      }),
+    }));
+    const timeMachine = await dispatchDojoTool("synthi_dojo_run_time_machine_debugger", {
+      skill_id: published.skill.skill_id,
+      mutation_kind: "duplicate_entity",
+      question: "What if the entity were unique?",
+    });
+    expect(timeMachine?.structuredContent).toEqual(expect.objectContaining({
+      time_machine_debugger: expect.objectContaining({
+        baseline: expect.any(Object),
+        counterfactual: expect.any(Object),
+      }),
+    }));
+    const scenarioRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
+      skill_id: published.skill.skill_id,
+      mutation_kind: "duplicate_entity",
+    });
+    expect(scenarioRun?.structuredContent).toEqual(expect.objectContaining({
+      vivarium_run: expect.objectContaining({
+        schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        materialized_fixture: expect.objectContaining({ synthetic_data_only: true }),
+      }),
+      license_health: expect.objectContaining({ schema_version: "synthi.dojo.licenseHealth.v1" }),
+    }));
+    const windTunnel = await dispatchDojoTool("synthi_dojo_run_wind_tunnel", {
+      skill_id: published.skill.skill_id,
+      max_scenarios: 3,
+    });
+    expect(windTunnel?.structuredContent).toEqual(expect.objectContaining({
+      wind_tunnel_execution: expect.objectContaining({
+        schema_version: "synthi.dojo.windTunnelExecution.v1",
+        run_count: 3,
+      }),
+    }));
+    const health = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: published.skill.skill_id });
+    expect(health?.structuredContent).toEqual(expect.objectContaining({
+      license_health: expect.objectContaining({
+        proof_records: expect.objectContaining({ used: 1, revoked: 1 }),
+      }),
+    }));
+    const recordedCase = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      skill_id: published.skill.skill_id,
+      finding: "A unit test discovered an unsafe action boundary",
+      rule: "Require a verified context boundary before workflow execution",
+      applies_to: ["workflow_execution"],
+    });
+    expect(recordedCase?.structuredContent).toEqual(expect.objectContaining({
+      case_law: expect.objectContaining({ status: "binding" }),
+      guardrail: expect.objectContaining({ blocks_actions: ["run_workflow"] }),
     }));
 
     const listed = await dispatchDojoTool("synthi_dojo_list_competencies", {});
@@ -324,6 +464,18 @@ describe("Agent Dojo MCP tools", () => {
       ok: true,
       explanation: expect.stringContaining("Duplicate display entity"),
       guardrails: expect.any(Array),
+    }));
+
+    const revoke = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: published.skill.skill_id,
+      reason: "unit_test_policy_change",
+    });
+    expect(revoke?.structuredContent).toEqual(expect.objectContaining({
+      license: expect.objectContaining({ entrustment_level: "EX", autonomy_level: "blocked" }),
+    }));
+    const revokedHealth = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: published.skill.skill_id });
+    expect(revokedHealth?.structuredContent).toEqual(expect.objectContaining({
+      license_health: expect.objectContaining({ status: "blocked", entrustment_level: "EX" }),
     }));
   });
 });

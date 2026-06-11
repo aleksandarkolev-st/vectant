@@ -128,6 +128,7 @@ async function main() {
     { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry },
     { sourceIdentityRegistry },
     { dojoSkillRegistry, validateDojoProofCapsule },
+    { InMemoryDojoSkillStore },
     { dispatchBrowserTool },
     { dispatchDojoTool },
   ] = await Promise.all([
@@ -135,6 +136,7 @@ async function main() {
     import("../dist/browser/private_tool_registry.js"),
     import("../dist/browser/source_identity.js"),
     import("../dist/browser/dojo.js"),
+    import("../dist/browser/dojo_store.js"),
     import("../dist/tools/browser.js"),
     import("../dist/tools/dojo.js"),
   ]);
@@ -143,6 +145,7 @@ async function main() {
   sourceIdentityRegistry.resetForTests();
   privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
   privateWorkflowToolRegistry.resetForTests();
+  dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
   dojoSkillRegistry.resetForTests();
 
   await rm(RUN_ROOT, { recursive: true, force: true });
@@ -203,6 +206,12 @@ async function main() {
   assert(skill, "published skill should be registered");
   const validation = validateDojoProofCapsule(skill, capsuleResponse.proof_capsule, "run_workflow");
   assert.equal(validation.ok, true, "proof capsule should validate through core validator");
+  const kernelValidation = structured(await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+    skill_id: publish.skill.skill_id,
+    requested_action: "run_workflow",
+    proof_capsule: capsuleResponse.proof_capsule,
+  }));
+  assert.equal(kernelValidation.license_kernel.ok, true, "proof capsule should validate through license kernel");
   await writeFile(path.join(RUN_ROOT, "proof-capsule.json"), `${JSON.stringify(capsuleResponse.proof_capsule, null, 2)}\n`, "utf8");
   log("ok", "issued and validated proof capsule");
 
@@ -216,8 +225,31 @@ async function main() {
   assert.equal(dryRun.validation.ok, true, "dry run should pass proof validation");
   log("ok", "ran proof-gated dry run");
 
+  const vivariumRun = structured(await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
+    skill_id: publish.skill.skill_id,
+  }));
+  assert.equal(vivariumRun.vivarium_run.schema_version, "synthi.dojo.vivariumScenarioRun.v1", "vivarium run schema should match");
+  assert.equal(vivariumRun.vivarium_run.materialized_fixture.synthetic_data_only, true, "vivarium fixture must stay synthetic");
+  log("ok", "ran executable vivarium scenario");
+
+  const windTunnel = structured(await dispatchDojoTool("synthi_dojo_run_wind_tunnel", {
+    skill_id: publish.skill.skill_id,
+    max_scenarios: 5,
+  }));
+  assert.equal(windTunnel.wind_tunnel_execution.run_count, 5, "wind tunnel should honor scenario budget");
+  assert.equal(windTunnel.wind_tunnel_execution.schema_version, "synthi.dojo.windTunnelExecution.v1", "wind tunnel schema should match");
+  log("ok", "ran Workflow Wind Tunnel");
+
+  const universe = structured(await dispatchDojoTool("synthi_dojo_get_universe_dossier", { skill_id: publish.skill.skill_id }));
+  assert.equal(universe.universe_dossier.schema_version, "synthi.dojo.universeDossier.v1", "universe dossier schema should match");
+  const sourcePlan = structured(await dispatchDojoTool("synthi_dojo_get_source_affordance_pr_plan", { skill_id: publish.skill.skill_id }));
+  assert(sourcePlan.source_affordance_pr_plan.patch_count >= 1, "source affordance plan should include reviewable patches");
+  const licenseHealth = structured(await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: publish.skill.skill_id }));
+  assert.equal(licenseHealth.license_health.schema_version, "synthi.dojo.licenseHealth.v1", "license health schema should match");
+  log("ok", "queried universe, source affordance, and license health reports");
+
   const exported = structured(await dispatchDojoTool("synthi_dojo_export_artifacts", { skill_id: publish.skill.skill_id }));
-  assert(exported.artifact_count > 20, "Dojo export should include the full artifact set");
+  assert(exported.artifact_count > 35, "Dojo export should include the full Vivarium Cortex artifact set");
   const written = await writeArtifacts(RUN_ROOT, exported.artifacts);
   const parsedJson = validateJsonArtifacts(exported.artifacts);
   const generatedSpec = written.find((file) => file.endsWith(path.normalize(".synthi/dojo/skills/open_details/playwright.spec.ts")));
@@ -240,6 +272,10 @@ async function main() {
     written_artifacts: written.map((file) => path.relative(RUN_ROOT, file).replace(/\\/g, "/")),
     parsed_json_artifacts: parsedJson,
     proof_capsule_id: capsuleResponse.proof_capsule.capsule_id,
+    vivarium_run_id: vivariumRun.vivarium_run.run.run_id,
+    wind_tunnel_run_count: windTunnel.wind_tunnel_execution.run_count,
+    source_affordance_patch_count: sourcePlan.source_affordance_pr_plan.patch_count,
+    license_health_status: licenseHealth.license_health.status,
     generated_playwright_spec: path.relative(RUN_ROOT, generatedSpec).replace(/\\/g, "/"),
     executed_playwright_spec: path.relative(RUN_ROOT, executableSpec).replace(/\\/g, "/"),
     generated_playwright_command: playwright.command,

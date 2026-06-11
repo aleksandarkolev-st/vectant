@@ -1,6 +1,22 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { PrivateWorkflowToolManifestV7 } from "./private_tool_manifest.js";
 import type { WorkflowContractV7, WorkflowLimitationV7, WorkflowStepContractV7 } from "./workflow.js";
+import {
+  buildDojoEvidenceLedger,
+  buildDojoGovernanceReport,
+  buildDojoLifecycleReport,
+  buildDojoOrganizationRegistry,
+  buildDojoSourceAffordancePrPlan,
+  buildDojoUniverseDossier,
+  buildDojoUniverseMetrics,
+  runDojoTimeMachineDebugger,
+} from "./dojo_universe.js";
+import {
+  createDefaultDojoSkillStore,
+  InMemoryDojoSkillStore,
+  type DojoProofCapsuleRecord,
+  type DojoSkillStore,
+} from "./dojo_store.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -232,6 +248,9 @@ export interface DojoProofCarryingSkillCapsule {
   requested_action: string;
   license_version: string;
   entrustment_level: DojoEntrustmentLevel;
+  issuer: string;
+  key_id: string;
+  nonce: string;
   context_claims: Record<string, unknown>;
   evidence_claims: DojoEvidenceClaim[];
   guardrails_active: string[];
@@ -239,6 +258,7 @@ export interface DojoProofCarryingSkillCapsule {
   assurance_case_ref: string;
   issued_at: string;
   expires_at: string;
+  signature_algorithm: "hmac-sha256";
   signature: string;
 }
 
@@ -655,35 +675,73 @@ export interface DojoProofValidation {
 }
 
 export class DojoSkillRegistry {
-  private readonly bySkillId = new Map<string, DojoSkill>();
-  private readonly byWorkflowId = new Map<string, string>();
+  constructor(private store: DojoSkillStore = createDefaultDojoSkillStore()) {}
 
   publish(skill: DojoSkill): DojoSkill {
     const clone = cloneJson(skill);
-    this.bySkillId.set(clone.skill_id, clone);
-    this.byWorkflowId.set(clone.workflow_id, clone.skill_id);
+    this.store.saveSkill(clone);
     return cloneJson(clone);
   }
 
   get(skillId: string): DojoSkill | null {
-    const skill = this.bySkillId.get(skillId);
-    return skill ? cloneJson(skill) : null;
+    return this.store.getSkill(skillId);
   }
 
   getByWorkflowId(workflowId: string): DojoSkill | null {
-    const skillId = this.byWorkflowId.get(workflowId);
-    return skillId ? this.get(skillId) : null;
+    return this.store.getSkillByWorkflowId(workflowId);
   }
 
   list(): DojoSkill[] {
-    return [...this.bySkillId.values()]
+    return this.store.listSkills()
       .sort((a, b) => a.name.localeCompare(b.name) || a.skill_id.localeCompare(b.skill_id))
       .map(cloneJson);
   }
 
+  recordProofCapsule(capsule: DojoProofCarryingSkillCapsule): DojoProofCapsuleRecord {
+    const record: DojoProofCapsuleRecord = {
+      capsule_id: capsule.capsule_id,
+      skill_id: capsule.skill_id,
+      requested_action: capsule.requested_action,
+      nonce: capsule.nonce,
+      issued_at: capsule.issued_at,
+      expires_at: capsule.expires_at,
+      status: "issued",
+    };
+    this.store.saveProofRecord(record);
+    return cloneJson(record);
+  }
+
+  getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null {
+    return this.store.getProofRecord(capsuleId);
+  }
+
+  markProofCapsuleUsed(capsuleId: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
+    const record = this.store.getProofRecord(capsuleId);
+    if (!record) return null;
+    const used = {
+      ...record,
+      status: "used" as const,
+      first_used_at: record.first_used_at ?? now,
+      last_validated_at: now,
+    };
+    this.store.saveProofRecord(used);
+    return cloneJson(used);
+  }
+
+  revokeProofCapsule(capsuleId: string, reason: string, now?: string): DojoProofCapsuleRecord | null {
+    return this.store.revokeProofCapsule(capsuleId, reason, now);
+  }
+
+  listProofRecords(): DojoProofCapsuleRecord[] {
+    return this.store.listProofRecords();
+  }
+
+  useStoreForTests(store: DojoSkillStore = new InMemoryDojoSkillStore()): void {
+    this.store = store;
+  }
+
   resetForTests(): void {
-    this.bySkillId.clear();
-    this.byWorkflowId.clear();
+    this.store.clear();
   }
 }
 
@@ -1122,6 +1180,9 @@ export function issueDojoProofCapsule(
     requested_action: requestedAction,
     license_version: skill.permission_license.license_version,
     entrustment_level: skill.entrustment_level,
+    issuer: dojoProofIssuer(),
+    key_id: dojoProofKeyId(),
+    nonce: randomUUID(),
     context_claims: input.context_claims ?? {},
     evidence_claims: input.evidence_claims ?? defaultEvidenceClaimsFor(skill),
     guardrails_active: skill.guardrails.map((guardrail) => guardrail.guardrail_id),
@@ -1129,6 +1190,7 @@ export function issueDojoProofCapsule(
     assurance_case_ref: skill.assurance_case.assurance_case_id,
     issued_at: now,
     expires_at: expiresAt,
+    signature_algorithm: "hmac-sha256" as const,
   };
   return {
     ...capsuleWithoutSignature,
@@ -1150,6 +1212,10 @@ export function validateDojoProofCapsule(
   if (capsule.skill_version !== skill.skill_version) blockedBy.push("proof_capsule_skill_version_mismatch");
   if (capsule.license_version !== license.license_version) blockedBy.push("proof_capsule_license_version_mismatch");
   if (capsule.requested_action !== requestedAction) blockedBy.push("proof_capsule_action_mismatch");
+  if (capsule.issuer !== dojoProofIssuer()) blockedBy.push("proof_capsule_issuer_mismatch");
+  if (capsule.key_id !== dojoProofKeyId()) blockedBy.push("proof_capsule_key_mismatch");
+  if (capsule.signature_algorithm !== "hmac-sha256") blockedBy.push("proof_capsule_signature_algorithm_mismatch");
+  if (!capsule.nonce) blockedBy.push("proof_capsule_nonce_missing");
   if (Date.parse(capsule.expires_at) <= Date.parse(now)) blockedBy.push("proof_capsule_expired");
   if (capsule.signature !== signatureForCapsule(unsignedCapsule(capsule))) blockedBy.push("proof_capsule_signature_invalid");
 
@@ -1340,6 +1406,48 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       content: json(skill.training_report),
     },
     {
+      path: `${root}/universe.dossier.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoUniverseDossier(skill, [skill])),
+    },
+    {
+      path: `${root}/lifecycle.report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoLifecycleReport(skill)),
+    },
+    {
+      path: `${root}/governance.report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoGovernanceReport(skill)),
+    },
+    {
+      path: `${root}/source-affordance-pr-plan.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoSourceAffordancePrPlan(skill)),
+    },
+    {
+      path: `${root}/metrics.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoUniverseMetrics([skill])),
+    },
+    {
+      path: `${root}/evidence-ledger.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoEvidenceLedger(skill)),
+    },
+    {
+      path: `${root}/time-machine-debugger.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(runDojoTimeMachineDebugger(skill)),
+    },
+    {
       path: `${root}/evidence-manifest.json`,
       content_type: "application/json",
       sensitive: false,
@@ -1404,6 +1512,36 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       content_type: "application/json",
       sensitive: false,
       content: json(evidenceManifestFor(skill)),
+    },
+    {
+      path: `.synthi/dojo/evidence/${segment}.ledger.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoEvidenceLedger(skill)),
+    },
+    {
+      path: `.synthi/dojo/governance/${segment}.governance-report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoGovernanceReport(skill)),
+    },
+    {
+      path: `.synthi/dojo/source/${segment}.affordance-pr-plan.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoSourceAffordancePrPlan(skill)),
+    },
+    {
+      path: `.synthi/dojo/registry/${segment}.universe-dossier.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoUniverseDossier(skill, [skill])),
+    },
+    {
+      path: `.synthi/dojo/registry/organization-registry.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(buildDojoOrganizationRegistry([skill])),
     },
     {
       path: `.synthi/dojo/playwright/${segment}.spec.ts`,
@@ -2871,12 +3009,24 @@ function defaultEvidenceClaimsFor(skill: DojoSkill): DojoEvidenceClaim[] {
 }
 
 function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">): string {
-  return `sha256:${createHash("sha256").update(stableStringify(capsule)).digest("hex")}`;
+  return `hmac-sha256:${createHmac("sha256", dojoProofSigningKey()).update(stableStringify(capsule)).digest("hex")}`;
 }
 
 function unsignedCapsule(capsule: DojoProofCarryingSkillCapsule): Omit<DojoProofCarryingSkillCapsule, "signature"> {
   const { signature: _signature, ...rest } = capsule;
   return rest;
+}
+
+function dojoProofIssuer(): string {
+  return process.env["SYNTHI_DOJO_PROOF_ISSUER"]?.trim() || "synthi-dojo-license-kernel";
+}
+
+function dojoProofSigningKey(): string {
+  return process.env["SYNTHI_DOJO_PROOF_SIGNING_KEY"]?.trim() || "synthi-dojo-local-development-signing-key";
+}
+
+function dojoProofKeyId(): string {
+  return `dojo-key-${createHash("sha256").update(dojoProofSigningKey()).digest("hex").slice(0, 12)}`;
 }
 
 function workflowWorkspaceId(contract: WorkflowContractV7): string {
