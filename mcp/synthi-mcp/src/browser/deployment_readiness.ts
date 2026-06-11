@@ -1,5 +1,24 @@
 import { resolveHostedBrowserRuntime } from "./hosted_runtime.js";
 import { replayIsolationProfiles } from "./safety.js";
+import {
+  configuredDojoEvidenceLedgerEnv,
+  configuredDojoExternalSigningEnv,
+  configuredDojoStoreEnv,
+  DOJO_EVIDENCE_LEDGER_STORE_ENV,
+  DOJO_PRODUCTION_ENFORCEMENT_ENV,
+  DOJO_PROOF_SIGNING_KEY_ENV,
+  DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_PROVIDER_ENV,
+  DOJO_REQUIRE_DURABLE_STORE_ENV,
+  DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+  DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
+  DOJO_STORE_FILE_ENV,
+  DOJO_STORE_KEY_ENV,
+  DOJO_STORE_SCOPE_ENV,
+  isDojoDefaultLocalProofSigningKey,
+  resolveDojoEnforcementConfig,
+  type DojoEnforcementConfig,
+} from "../dojo/config/enforcement.js";
 
 export type BrowserWorkflowDeploymentMode = "production" | "development";
 export type BrowserWorkflowDeploymentCheckStatus = "pass" | "warn" | "fail";
@@ -31,6 +50,7 @@ export interface BrowserWorkflowDeploymentReadiness {
     failed: number;
   };
   hosted_runtime: ReturnType<typeof resolveHostedBrowserRuntime>;
+  dojo_enforcement: DojoEnforcementConfig;
   replay_isolation_profile: {
     workspace_id: string;
     readiness: string;
@@ -48,6 +68,7 @@ export function browserWorkflowDeploymentReadiness(
   const requireWorkflowBridge = input.require_workflow_bridge !== false;
   const workspaceId = nonEmpty(input.workspace_id) ?? nonEmpty(env["SYNTHI_WORKSPACE_ID"]);
   const hostedRuntime = resolveHostedBrowserRuntime({ workspace_id: workspaceId }, env);
+  const dojoEnforcement = resolveDojoEnforcementConfig(env);
   const profile = replayIsolationProfiles.get(workspaceId);
   const checks: BrowserWorkflowDeploymentCheck[] = [];
 
@@ -77,6 +98,7 @@ export function browserWorkflowDeploymentReadiness(
   }));
   checks.push(checkWorkflowBridge(env, production, requireWorkflowBridge));
   checks.push(checkLocalCdpLeak(env, production));
+  checks.push(...checkDojoProductionBoundary(dojoEnforcement, env, production));
 
   const summary = {
     passed: checks.filter((check) => check.status === "pass").length,
@@ -92,12 +114,142 @@ export function browserWorkflowDeploymentReadiness(
     checks,
     summary,
     hosted_runtime: hostedRuntime,
+    dojo_enforcement: dojoEnforcement,
     replay_isolation_profile: {
       workspace_id: profile.workspace_id,
       readiness: profile.readiness,
       can_run_full_mutation_replay: profile.can_run_full_mutation_replay,
       missing: [...profile.missing],
     },
+  };
+}
+
+function checkDojoProductionBoundary(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck[] {
+  const checks: BrowserWorkflowDeploymentCheck[] = [];
+  if (config.invalid_env.length > 0) {
+    checks.push({
+      id: "dojo_enforcement_flag_values",
+      status: "fail",
+      message: `Dojo enforcement flags have invalid boolean values: ${config.invalid_env.map((item) => item.name).join(", ")}.`,
+      required_env: [
+        DOJO_PRODUCTION_ENFORCEMENT_ENV,
+        DOJO_REQUIRE_DURABLE_STORE_ENV,
+        DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
+        DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+      ],
+      configured_env: config.configured_env,
+    });
+    return checks;
+  }
+
+  checks.push(checkDojoProductionEnforcement(config, production));
+  checks.push(checkDojoDurableStore(config, env, production));
+  checks.push(checkDojoExternalSigning(config, env, production));
+  checks.push(checkDojoEvidenceLedger(config, env, production));
+  return checks;
+}
+
+function checkDojoProductionEnforcement(
+  config: DojoEnforcementConfig,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  if (config.production_enforcement) {
+    return pass(
+      "dojo_production_enforcement",
+      "Dojo production enforcement flag is enabled.",
+      [DOJO_PRODUCTION_ENFORCEMENT_ENV],
+      [DOJO_PRODUCTION_ENFORCEMENT_ENV]
+    );
+  }
+  return {
+    id: "dojo_production_enforcement",
+    status: production ? "fail" : "warn",
+    message: "Dojo production enforcement is disabled; published competencies may run under development compatibility semantics.",
+    required_env: [DOJO_PRODUCTION_ENFORCEMENT_ENV],
+    configured_env: [],
+  };
+}
+
+function checkDojoDurableStore(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [DOJO_REQUIRE_DURABLE_STORE_ENV, DOJO_STORE_FILE_ENV, DOJO_STORE_KEY_ENV, DOJO_STORE_SCOPE_ENV];
+  const storeEnv = configuredDojoStoreEnv(env);
+  const configured = [
+    ...(config.require_durable_store ? [DOJO_REQUIRE_DURABLE_STORE_ENV] : []),
+    ...storeEnv,
+  ];
+  if (config.require_durable_store && storeEnv.length === 3) {
+    return pass("dojo_durable_store", "Dojo durable store is required and configured.", required, configured);
+  }
+  return {
+    id: "dojo_durable_store",
+    status: production ? "fail" : "warn",
+    message: "Dojo durable store is not fully configured; production proof, license, and skill state must not be process-local.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkDojoExternalSigning(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [
+    DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
+    DOJO_PROOF_SIGNING_PROVIDER_ENV,
+    DOJO_PROOF_SIGNING_KEY_ID_ENV,
+    DOJO_PROOF_SIGNING_KEY_ENV,
+  ];
+  const configured = [
+    ...(config.require_external_signing ? [DOJO_REQUIRE_EXTERNAL_SIGNING_ENV] : []),
+    ...configuredDojoExternalSigningEnv(env),
+  ];
+  const hasExternalSigner = nonEmpty(env[DOJO_PROOF_SIGNING_PROVIDER_ENV]) && nonEmpty(env[DOJO_PROOF_SIGNING_KEY_ID_ENV]);
+  if (config.require_external_signing && hasExternalSigner && !isDojoDefaultLocalProofSigningKey(env)) {
+    return pass("dojo_external_signing", "Dojo proof signing is configured without the default local signing key.", required, configured);
+  }
+  return {
+    id: "dojo_external_signing",
+    status: production ? "fail" : "warn",
+    message: "Dojo proof signing is not production-ready; external signer identity and a non-default signing key are required.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkDojoEvidenceLedger(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV, DOJO_EVIDENCE_LEDGER_STORE_ENV];
+  const ledgerEnv = configuredDojoEvidenceLedgerEnv(env);
+  const configured = [
+    ...(config.require_evidence_ledger ? [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV] : []),
+    ...ledgerEnv,
+  ];
+  if (config.require_evidence_ledger && ledgerEnv.length === 1) {
+    return pass(
+      "dojo_evidence_ledger",
+      "Dojo evidence ledger requirement is enabled and ledger store configuration is present.",
+      required,
+      configured
+    );
+  }
+  return {
+    id: "dojo_evidence_ledger",
+    status: production ? "fail" : "warn",
+    message: "Dojo evidence ledger is not configured; production proof claims cannot be treated as evidence-backed.",
+    required_env: required,
+    configured_env: configured,
   };
 }
 

@@ -4,19 +4,7 @@ import { dispatchBrowserTool } from "../../src/tools/browser.js";
 
 describe("browser workflow deployment readiness", () => {
   it("passes production readiness with hosted runtime, scoped stores, bridge token, and no local CDP env", () => {
-    const readiness = browserWorkflowDeploymentReadiness({}, {
-      SYNTHI_HOSTED_BROWSER_CDP_URL: "wss://runtime.example.test/devtools/browser/session-secret",
-      SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: "https://app.example.test/workspace/acme",
-      SYNTHI_WORKSPACE_ID: "tenant-a:workspace-a",
-      SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "/var/lib/synthi/private-tools.enc.json",
-      SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "private-tool-secret",
-      SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant-a:workspace-a",
-      SYNTHI_AUTH_CHECKPOINT_STORE_FILE: "/var/lib/synthi/auth-checkpoints.enc.json",
-      SYNTHI_AUTH_CHECKPOINT_STORE_KEY: "auth-store-secret",
-      SYNTHI_AUTH_CHECKPOINT_SCOPE: "tenant-a:workspace-a",
-      SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL: "https://workflow-bridge.example.test",
-      SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN: "bridge-secret",
-    });
+    const readiness = browserWorkflowDeploymentReadiness({}, productionReadyEnv());
 
     expect(readiness.ok).toBe(true);
     expect(readiness.summary.failed).toBe(0);
@@ -26,7 +14,20 @@ describe("browser workflow deployment readiness", () => {
       workspace_id: "tenant-a:workspace-a",
       workspace_url: "https://app.example.test/workspace/acme",
     }));
-    expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret/);
+    expect(readiness.dojo_enforcement).toEqual(expect.objectContaining({
+      enforcement_mode: "production",
+      production_enforcement: true,
+      require_durable_store: true,
+      require_external_signing: true,
+      require_evidence_ledger: true,
+    }));
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "dojo_production_enforcement", status: "pass" }),
+      expect.objectContaining({ id: "dojo_durable_store", status: "pass" }),
+      expect.objectContaining({ id: "dojo_external_signing", status: "pass" }),
+      expect.objectContaining({ id: "dojo_evidence_ledger", status: "pass" }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret/);
     expect(JSON.stringify(readiness)).not.toMatch(/SYNTHI_BROWSER_CDP_URL/);
   });
 
@@ -44,33 +45,82 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "private_workflow_tool_store", status: "fail" }),
       expect.objectContaining({ id: "auth_checkpoint_store", status: "fail" }),
       expect.objectContaining({ id: "local_cdp_env_absent", status: "fail" }),
+      expect.objectContaining({ id: "dojo_production_enforcement", status: "fail" }),
+      expect.objectContaining({ id: "dojo_durable_store", status: "fail" }),
+      expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
+      expect.objectContaining({ id: "dojo_evidence_ledger", status: "fail" }),
     ]));
     expect(JSON.stringify(readiness)).not.toMatch(/127\.0\.0\.1:9222|\/port\/\d+|browser-mcp-live/i);
+  });
+
+  it("fails production readiness for invalid Dojo enforcement flag values", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "maybe",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.dojo_enforcement.invalid_env).toEqual([
+      expect.objectContaining({ name: "SYNTHI_DOJO_PRODUCTION_ENFORCEMENT", value: "maybe" }),
+    ]);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "dojo_enforcement_flag_values", status: "fail" }),
+    ]));
+  });
+
+  it("fails production readiness when Dojo proof signing falls back to the default local key", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_PROOF_SIGNING_KEY: "synthi-dojo-local-development-signing-key",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
+    ]));
   });
 
   it("exposes a redacted MCP tool report without secret values", async () => {
     const originalEnv = { ...process.env };
     try {
-      process.env.SYNTHI_HOSTED_BROWSER_CDP_URL = "wss://runtime.example.test/devtools/browser/session-secret";
-      process.env.SYNTHI_HOSTED_BROWSER_WORKSPACE_URL = "https://app.example.test/workspace/acme";
-      process.env.SYNTHI_WORKSPACE_ID = "tenant-a:workspace-a";
-      process.env.SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE = "/var/lib/synthi/private-tools.enc.json";
-      process.env.SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY = "private-tool-secret";
-      process.env.SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE = "tenant-a:workspace-a";
-      process.env.SYNTHI_AUTH_CHECKPOINT_STORE_FILE = "/var/lib/synthi/auth-checkpoints.enc.json";
-      process.env.SYNTHI_AUTH_CHECKPOINT_STORE_KEY = "auth-store-secret";
-      process.env.SYNTHI_AUTH_CHECKPOINT_SCOPE = "tenant-a:workspace-a";
-      process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL = "https://workflow-bridge.example.test";
-      process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN = "bridge-secret";
+      Object.assign(process.env, productionReadyEnv());
       delete process.env.SYNTHI_BROWSER_CDP_URL;
 
       const response = await dispatchBrowserTool("synthi_browser_get_deployment_readiness", { mode: "production" });
       expect(response?.isError).not.toBe(true);
       const text = response?.content?.[0]?.type === "text" ? response.content[0].text : "";
       expect(text).toContain("synthi.browserWorkflowDeploymentReadiness.v1");
-      expect(text).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret/);
+      expect(text).toContain("synthi.dojo.enforcementConfig.v1");
+      expect(text).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret/);
     } finally {
       process.env = originalEnv;
     }
   });
 });
+
+function productionReadyEnv(): NodeJS.ProcessEnv {
+  return {
+    SYNTHI_HOSTED_BROWSER_CDP_URL: "wss://runtime.example.test/devtools/browser/session-secret",
+    SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: "https://app.example.test/workspace/acme",
+    SYNTHI_WORKSPACE_ID: "tenant-a:workspace-a",
+    SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "/var/lib/synthi/private-tools.enc.json",
+    SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "private-tool-secret",
+    SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant-a:workspace-a",
+    SYNTHI_AUTH_CHECKPOINT_STORE_FILE: "/var/lib/synthi/auth-checkpoints.enc.json",
+    SYNTHI_AUTH_CHECKPOINT_STORE_KEY: "auth-store-secret",
+    SYNTHI_AUTH_CHECKPOINT_SCOPE: "tenant-a:workspace-a",
+    SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL: "https://workflow-bridge.example.test",
+    SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN: "bridge-secret",
+    SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1",
+    SYNTHI_DOJO_REQUIRE_DURABLE_STORE: "1",
+    SYNTHI_DOJO_STORE_FILE: "/var/lib/synthi/dojo.enc.json",
+    SYNTHI_DOJO_STORE_KEY: "dojo-store-secret",
+    SYNTHI_DOJO_STORE_SCOPE: "tenant-a:workspace-a",
+    SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "1",
+    SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "test-kms",
+    SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "dojo-prod-key-1",
+    SYNTHI_DOJO_PROOF_SIGNING_KEY: "dojo-signing-secret",
+    SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: "1",
+    SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres://dojo-evidence-ledger",
+  };
+}
