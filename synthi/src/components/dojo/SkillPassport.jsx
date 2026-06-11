@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BadgeCheck, ShieldCheck, Timer, Wrench } from 'lucide-react';
 import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
+import ProofCapsuleDrawer from './ProofCapsuleDrawer';
+import RefusalExplainerDrawer from './RefusalExplainerDrawer';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
@@ -116,6 +118,13 @@ export default function SkillPassport({
               <ProofPanel skill={skill} />
               <ToolsPanel tools={skill.publishedTools} />
             </section>
+
+            {(skill.proofRequired || skill.proofCapsule || skill.refusal) ? (
+              <section className="grid gap-4 lg:grid-cols-2">
+                <ProofCapsuleDrawer proof={skill.proofCapsule} requirements={skill.proofRequirements} />
+                <RefusalExplainerDrawer refusal={skill.refusal} />
+              </section>
+            ) : null}
 
             <section className="grid gap-4 lg:grid-cols-2">
               <TimelinePanel entries={skill.entrustmentTimeline} />

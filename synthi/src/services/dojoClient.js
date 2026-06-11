@@ -172,6 +172,97 @@ function normalizeSkillGraph(dojo, skill) {
   };
 }
 
+function normalizeEvidenceClaims(values) {
+  return asArray(values)
+    .map((claim) => {
+      if (typeof claim === 'string') return { claim, status: 'unknown', satisfied: false, evidenceRecordIds: [] };
+      return {
+        claim: claim?.claim || claim?.claim_id || claim?.id || '',
+        status: claim?.status || (claim?.satisfied ? 'satisfied' : 'unsatisfied'),
+        satisfied: Boolean(claim?.satisfied ?? claim?.ok),
+        evidenceRecordIds: compactStrings(claim?.evidence_record_ids || claim?.evidenceRecordIds || claim?.record_ids || claim?.recordIds),
+      };
+    })
+    .filter((claim) => claim.claim);
+}
+
+function normalizeProofCapsule(dojo) {
+  const proof = dojo.proof || dojo.proofCapsule || dojo.proof_capsule || {};
+  const validation = proof.validation || dojo.proofValidation || dojo.proof_validation || {};
+  const dryRun = dojo.proofDryRun || dojo.proof_dry_run || {};
+  const capsuleId = proof.capsuleId || proof.capsule_id || proof.id || '';
+  if (!capsuleId && !validation.status && !dryRun.status) return null;
+  const evidenceClaims = normalizeEvidenceClaims(proof.evidence_claims || proof.evidenceClaims || validation.evidence_claim_results || validation.evidenceClaimResults);
+  const timeline = asArray(proof.validationTimeline || proof.validation_timeline || validation.timeline || validation.events)
+    .map((event) => {
+      if (typeof event === 'string') return { label: event, status: '', at: '' };
+      return {
+        label: event?.label || event?.event || event?.step || event?.status || '',
+        status: event?.status || '',
+        at: event?.at || event?.createdAt || event?.created_at || event?.timestamp || '',
+      };
+    })
+    .filter((event) => event.label || event.status);
+  if (dryRun.status) {
+    timeline.push({ label: dryRun.dryRun || dryRun.dry_run ? 'Dry-run validation' : 'Proof run', status: dryRun.status, at: dryRun.at || '' });
+  }
+  return {
+    capsuleId,
+    status: proof.status || validation.status || dryRun.status || 'issued',
+    requestedAction: proof.requestedAction || proof.requested_action || validation.requested_action || '',
+    issuer: proof.issuer || '',
+    keyId: proof.keyId || proof.key_id || '',
+    nonce: proof.nonce || '',
+    issuedAt: proof.issuedAt || proof.issued_at || '',
+    expiresAt: proof.expiresAt || proof.expires_at || '',
+    signatureAlgorithm: proof.signatureAlgorithm || proof.signature_algorithm || '',
+    substrate: proof.substrateClaim || proof.substrate_claim || '',
+    replayState: proof.replayState || proof.replay_state || proof.status || '',
+    revocationReason: proof.revocationReason || proof.revocation_reason || '',
+    blockedBy: compactStrings(validation.blocked_by || validation.blockedBy),
+    errorCodes: compactStrings(validation.error_codes || validation.errorCodes),
+    evidenceClaims,
+    evidenceRecordIds: compactStrings(proof.evidence_record_ids || proof.evidenceRecordIds),
+    guardrailsActive: compactStrings(proof.guardrails_active || proof.guardrailsActive),
+    validationTimeline: timeline,
+  };
+}
+
+function normalizeCaseLawRefs(values) {
+  return asArray(values)
+    .map((item) => {
+      if (typeof item === 'string') return { id: item, title: item, status: '' };
+      return {
+        id: item?.case_id || item?.caseId || item?.id || item?.title || '',
+        title: item?.title || item?.finding || item?.case_id || item?.caseId || '',
+        status: item?.status || '',
+      };
+    })
+    .filter((item) => item.id || item.title);
+}
+
+function normalizeRefusal(dojo, skill) {
+  const block = dojo.blockExplanation || dojo.block_explanation || {};
+  const validation = block.validation || {};
+  const upgrade = dojo.permissionUpgrade || dojo.permission_upgrade || {};
+  const refusalText = block.refusal || block.message || validation.refusal || '';
+  const blockedBy = compactStrings(block.blocked_by || block.blockedBy || validation.blocked_by || validation.blockedBy);
+  const errorCodes = compactStrings(block.error_codes || block.errorCodes || validation.error_codes || validation.errorCodes);
+  const caseLawRefs = normalizeCaseLawRefs(block.relevant_case_law || block.relevantCaseLaw || block.caseLawRefs || block.case_law_refs)
+    .concat(normalizeCaseLawRefs(skill.caseLawRefs));
+  if (!refusalText && !blockedBy.length && !errorCodes.length && !caseLawRefs.length) return null;
+  return {
+    status: block.status || validation.status || 'blocked',
+    requestedAction: block.requestedAction || block.requested_action || validation.requested_action || '',
+    refusal: refusalText,
+    blockedBy,
+    errorCodes,
+    caseLawRefs,
+    requiredSteps: compactStrings(upgrade.requiredSteps || upgrade.required_steps),
+    nextStep: block.nextStep || block.next_step || '',
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -211,6 +302,8 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     entrustmentTimeline: normalizeTimeline(dojo),
   };
   skill.graph = normalizeSkillGraph(dojo, skill);
+  skill.proofCapsule = normalizeProofCapsule(dojo);
+  skill.refusal = normalizeRefusal(dojo, skill);
 
   return {
     ...empty,
