@@ -60,6 +60,21 @@ describe("Dojo Postgres schema migration", () => {
     expect(auditEvents).toContain("check (actor_type in ('human', 'agent', 'service'))");
   });
 
+  it("defines append-only evidence ledger tables and hash constraints", () => {
+    const evidenceRecords = normalizedStatements()["dojo_evidence_records"];
+    const checkpoints = normalizedStatements()["dojo_ledger_checkpoints"];
+
+    expect(evidenceRecords).toContain("primary key (tenant_id, workspace_id, record_id)");
+    expect(evidenceRecords).toContain("unique (tenant_id, workspace_id, record_hash)");
+    expect(evidenceRecords).toContain(
+      "foreign key (tenant_id, workspace_id) references dojo_workspaces(tenant_id, workspace_id) on delete restrict"
+    );
+    expect(evidenceRecords).toContain("check (artifact_sha256 ~ '^[a-fa-f0-9]{64}$')");
+    expect(evidenceRecords).toContain("check (retention_class in ('ephemeral', 'standard', 'regulated', 'legal_hold'))");
+    expect(checkpoints).toContain("primary key (tenant_id, workspace_id, checkpoint_id)");
+    expect(checkpoints).toContain("check (record_count >= 0)");
+  });
+
   it("rejects duplicate migration identifiers before SQL generation", () => {
     expect(() => assertUniqueMigrationIds([
       DOJO_POSTGRES_MIGRATIONS[0],
