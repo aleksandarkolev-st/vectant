@@ -62,6 +62,12 @@ interface BrowserWorkflowBridgeState {
   publishedAt?: string;
   lastTool?: string;
   lastToolAt?: string;
+  latestCheckride?: Record<string, unknown>;
+  latestDojoArtifactExport?: Record<string, unknown>;
+  latestProof?: Record<string, unknown>;
+  latestProofDryRun?: Record<string, unknown>;
+  latestBlockExplanation?: Record<string, unknown>;
+  latestPermissionUpgrade?: Record<string, unknown>;
   history: BridgeHistoryEntry[];
 }
 
@@ -394,6 +400,12 @@ function updateBridgeState(
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
     state.publishedAt = undefined;
+    state.latestCheckride = undefined;
+    state.latestDojoArtifactExport = undefined;
+    state.latestProof = undefined;
+    state.latestProofDryRun = undefined;
+    state.latestBlockExplanation = undefined;
+    state.latestPermissionUpgrade = undefined;
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_begin_teach") {
@@ -401,6 +413,12 @@ function updateBridgeState(
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
     state.publishedAt = undefined;
+    state.latestCheckride = undefined;
+    state.latestDojoArtifactExport = undefined;
+    state.latestProof = undefined;
+    state.latestProofDryRun = undefined;
+    state.latestBlockExplanation = undefined;
+    state.latestPermissionUpgrade = undefined;
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_observe") state.lastObserveAt = now;
@@ -410,6 +428,20 @@ function updateBridgeState(
   }
   if (ok && toolName === "synthi_browser_generate_script") state.scriptGeneratedAt = now;
   if (ok && toolName === "synthi_browser_generate_private_tool_manifest") state.manifestGeneratedAt = now;
+  if (ok && toolName === "synthi_dojo_run_checkride") {
+    state.latestCheckride = payload;
+    const checkride = payload["checkride"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_checkride_${Date.now()}`,
+      label: "Dojo checkride",
+      detail: stringOpt(checkride?.["entrustment_recommendation"]) ?? "Checkride completed",
+      status: "passed",
+      statusLabel: "Checked",
+      tone: Number(checkride?.["critical_failures"] ?? 0) > 0 ? "warn" : "ok",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
   if (ok && toolName === "synthi_browser_publish_private_tool") {
     state.manifestGeneratedAt = state.manifestGeneratedAt ?? now;
     state.publishedAt = now;
@@ -445,6 +477,75 @@ function updateBridgeState(
       entry,
       ...state.history,
     ].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_export_artifacts") {
+    state.latestDojoArtifactExport = payload;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_export_${Date.now()}`,
+      label: "Dojo artifacts exported",
+      detail: `${Number(payload["artifact_count"] ?? 0)} files`,
+      status: "passed",
+      statusLabel: "Exported",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_issue_proof_capsule") {
+    state.latestProof = payload;
+    const capsule = payload["proof_capsule"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_proof_${Date.now()}`,
+      label: "Proof capsule issued",
+      detail: stringOpt(capsule?.["capsule_id"]) ?? "Proof capsule",
+      status: "passed",
+      statusLabel: "Issued",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (toolName === "synthi_dojo_run_with_proof_capsule") {
+    state.latestProofDryRun = payload;
+    const validation = payload["validation"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_proof_run_${Date.now()}`,
+      label: boolPayload(payload["dry_run"]) ? "Proof dry-run" : "Proof-gated run",
+      detail: stringOpt(validation?.["status"]) ?? (ok ? "Validated" : "Blocked"),
+      status: ok ? "passed" : "blocked",
+      statusLabel: ok ? "Proof" : "Blocked",
+      tone: ok ? "ok" : "warn",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (toolName === "synthi_dojo_explain_block") {
+    state.latestBlockExplanation = payload;
+    const validation = payload["validation"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_block_${Date.now()}`,
+      label: "Dojo block explained",
+      detail: stringOpt(payload["refusal"]) ?? stringOpt(validation?.["error"]) ?? "License explanation",
+      status: "blocked",
+      statusLabel: "Explained",
+      tone: "warn",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_request_permission_upgrade") {
+    state.latestPermissionUpgrade = payload;
+    const steps = Array.isArray(payload["required_steps"]) ? payload["required_steps"] : [];
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_upgrade_${Date.now()}`,
+      label: "Dojo upgrade path",
+      detail: steps.slice(0, 2).join(", ") || "No upgrade required",
+      status: "passed",
+      statusLabel: "Scoped",
+      tone: steps.includes("no_upgrade_required_for_current_license") ? "ok" : "warn",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
   }
   if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow" || toolName === "synthi_safety_run_ci_isolated_replay") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
@@ -592,7 +693,7 @@ export function buildBrowserWorkflowPanelState(
       workflowId: workflow.contract.workflowId,
       publishReadiness: publish.readiness,
     },
-    dojo: dojoPanelStateFor(workflow.contract, workspaceId),
+    dojo: dojoPanelStateFor(workflow.contract, workspaceId, bridgeState),
     steps: workflow.contract.steps.map(panelStepForContract),
     unresolvedSteps: workflow.contract.steps
       .filter((step) => step.limitations.some((limitation) => REVIEW_LIMITATIONS.has(limitation)))
@@ -860,7 +961,11 @@ function limitationDetail(limitation: string): string {
   }
 }
 
-function dojoPanelStateFor(contract: WorkflowContractV7, workspaceId: string | undefined): Record<string, unknown> {
+function dojoPanelStateFor(
+  contract: WorkflowContractV7,
+  workspaceId: string | undefined,
+  bridgeState: Partial<BrowserWorkflowBridgeState> = {}
+): Record<string, unknown> {
   const published = dojoSkillRegistry.getByWorkflowId(contract.workflowId);
   const skill = published ?? (contract.steps.length > 0
     ? buildDojoSkill(contract, {
@@ -893,6 +998,13 @@ function dojoPanelStateFor(contract: WorkflowContractV7, workspaceId: string | u
     entrustmentLevel: skill.entrustment_level,
     readinessLevel: skill.skill_readiness_level,
     proofRequired: skill.skill_passport.proof_required,
+    artifactCount: Number(bridgeState.latestDojoArtifactExport?.["artifact_count"] ?? 0),
+    licenseExpiresAt: skill.license_expires_at,
+    attackSuccessRate: skill.attack_success_rate,
+    proof: proofPanelState(bridgeState.latestProof),
+    proofDryRun: proofRunPanelState(bridgeState.latestProofDryRun),
+    blockExplanation: blockExplanationPanelState(bridgeState.latestBlockExplanation),
+    permissionUpgrade: permissionUpgradePanelState(bridgeState.latestPermissionUpgrade),
     publishedToolName: skill.published_tool_name ?? null,
     checkride: {
       checkrideId: skill.checkride.checkride_id,
@@ -920,10 +1032,50 @@ function dojoPanelStateFor(contract: WorkflowContractV7, workspaceId: string | u
   };
 }
 
+function proofPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  const capsule = payload["proof_capsule"] as Record<string, unknown> | undefined;
+  const validation = payload["validation"] as Record<string, unknown> | undefined;
+  return {
+    capsuleId: stringOpt(capsule?.["capsule_id"]) ?? null,
+    requestedAction: stringOpt(payload["requested_action"]) ?? stringOpt(capsule?.["requested_action"]) ?? null,
+    status: stringOpt(validation?.["status"]) ?? null,
+  };
+}
+
+function proofRunPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  const validation = payload["validation"] as Record<string, unknown> | undefined;
+  return {
+    dryRun: boolPayload(payload["dry_run"]),
+    status: stringOpt(validation?.["status"]) ?? (payload["ok"] === true ? "allowed" : null),
+  };
+}
+
+function blockExplanationPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  const validation = payload["validation"] as Record<string, unknown> | undefined;
+  return {
+    status: stringOpt(validation?.["status"]) ?? null,
+    refusal: stringOpt(payload["refusal"]) ?? null,
+  };
+}
+
+function permissionUpgradePanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  return {
+    requiredSteps: Array.isArray(payload["required_steps"]) ? payload["required_steps"].filter((item): item is string => typeof item === "string") : [],
+  };
+}
+
 function objectArgs(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function boolPayload(value: unknown): boolean {
+  return value === true;
 }

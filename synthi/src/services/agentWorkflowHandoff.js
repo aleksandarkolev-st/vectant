@@ -1,6 +1,7 @@
 'use client';
 
 export const SYNTHI_WORKFLOW_ROOT = '.synthi/workflows';
+export const SYNTHI_DOJO_ROOT = '.synthi/dojo';
 export const SYNTHI_AGENTS_SECTION_START = '<!-- SYNTHI_BROWSER_WORKFLOWS_START -->';
 export const SYNTHI_AGENTS_SECTION_END = '<!-- SYNTHI_BROWSER_WORKFLOWS_END -->';
 
@@ -166,4 +167,28 @@ export function buildAgentWorkflowHandoffFiles({ generated, manifest, existingIn
       { path: 'AGENTS.md', content: upsertAgentsWorkflowSection(existingAgentsRaw) },
     ],
   };
+}
+
+function isSafeDojoArtifactPath(path) {
+  const value = cleanText(path);
+  return (
+    value.startsWith(`${SYNTHI_DOJO_ROOT}/`) &&
+    !value.includes('..') &&
+    !value.startsWith('/') &&
+    !/^[a-zA-Z]:[\\/]/.test(value)
+  );
+}
+
+export function buildDojoArtifactFiles({ artifacts }) {
+  const files = Array.isArray(artifacts)
+    ? artifacts
+      .map((artifact) => asObject(artifact))
+      .filter((artifact) => isSafeDojoArtifactPath(artifact.path) && typeof artifact.content === 'string')
+      .map((artifact) => ({
+        path: artifact.path,
+        content: artifact.content.endsWith('\n') ? artifact.content : `${artifact.content}\n`,
+      }))
+    : [];
+  if (!files.length) throw new Error('dojo_export_missing_artifacts');
+  return { files };
 }

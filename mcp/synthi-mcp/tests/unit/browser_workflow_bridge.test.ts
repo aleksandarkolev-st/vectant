@@ -509,18 +509,15 @@ describe("browser workflow bridge", () => {
     expect(call.status).toBe(200);
     const callBody = await call.json() as {
       ok: boolean;
-      result?: { private_tool?: { tool_name?: string; run_mode?: string }; replay?: { status?: string; steps_run?: number } };
+      result?: { error?: string; required_tool?: string; tool_name?: string };
     };
-    expect(callBody.ok).toBe(true);
-    expect(callBody.result?.private_tool).toEqual(expect.objectContaining({
+    expect(callBody.ok).toBe(false);
+    expect(callBody.result).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
       tool_name: toolName,
-      run_mode: "prefixOnly",
     }));
-    expect(callBody.result?.replay).toEqual(expect.objectContaining({
-      status: "stoppedAtMutationBoundary",
-      steps_run: 1,
-    }));
-    expect(replay).toHaveBeenCalledTimes(1);
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it("returns unknown tool errors with the current state snapshot", async () => {

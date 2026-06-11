@@ -37,6 +37,11 @@ export const WORKFLOW_ACTIONS = Object.freeze({
   GENERATE_SCRIPT: 'synthi_browser_generate_script',
   GENERATE_MANIFEST: 'synthi_browser_generate_private_tool_manifest',
   PUBLISH_TOOL: 'synthi_dojo_publish_skill',
+  EXPORT_DOJO_ARTIFACTS: 'synthi_dojo_export_artifacts',
+  ISSUE_PROOF_CAPSULE: 'synthi_dojo_issue_proof_capsule',
+  RUN_PROOF_DRY_RUN: 'synthi_dojo_run_with_proof_capsule',
+  EXPLAIN_BLOCK: 'synthi_dojo_explain_block',
+  REQUEST_PERMISSION_UPGRADE: 'synthi_dojo_request_permission_upgrade',
 });
 
 const DEFAULT_WORKSPACE_LABEL = 'Current workspace';
@@ -190,6 +195,11 @@ function normalizeDojoState(value = {}) {
   const skillPassport = pickObject(raw.skillPassport, raw.skill_passport) || {};
   const checkride = pickObject(raw.checkride) || {};
   const license = pickObject(raw.license) || {};
+  const artifactExport = pickObject(raw.artifactExport, raw.artifact_export) || {};
+  const proof = pickObject(raw.proof, raw.proofCapsule, raw.proof_capsule) || {};
+  const proofDryRun = pickObject(raw.proofDryRun, raw.proof_dry_run) || {};
+  const blockExplanation = pickObject(raw.blockExplanation, raw.block_explanation) || {};
+  const permissionUpgrade = pickObject(raw.permissionUpgrade, raw.permission_upgrade) || {};
   const guardrails = Array.isArray(raw.guardrails) ? raw.guardrails : [];
   const allowedActions = Array.isArray(license.allowedActions) ? license.allowedActions : Array.isArray(license.allowed_actions) ? license.allowed_actions : [];
   const gatedActions = Array.isArray(license.gatedActions) ? license.gatedActions : Array.isArray(license.gated_actions) ? license.gated_actions : [];
@@ -208,6 +218,29 @@ function normalizeDojoState(value = {}) {
     publishedToolName: raw.publishedToolName || raw.published_tool_name || null,
     scenarioCount: Number(raw.scenarioCount ?? raw.scenario_count ?? 0),
     caseLawCount: Number(raw.caseLawCount ?? raw.case_law_count ?? 0),
+    artifactCount: Number(raw.artifactCount ?? raw.artifact_count ?? artifactExport.artifact_count ?? 0),
+    licenseExpiresAt: raw.licenseExpiresAt || raw.license_expires_at || skillPassport.license_expires_at || null,
+    attackSuccessRate: Number(raw.attackSuccessRate ?? raw.attack_success_rate ?? skillPassport.attack_success_rate ?? 0),
+    proof: {
+      capsuleId: proof.capsuleId || proof.capsule_id || null,
+      status: proof.status || proof.validation?.status || null,
+      requestedAction: proof.requestedAction || proof.requested_action || null,
+    },
+    proofDryRun: {
+      status: proofDryRun.status || proofDryRun.validation?.status || null,
+      dryRun: Boolean(proofDryRun.dryRun ?? proofDryRun.dry_run),
+    },
+    blockExplanation: {
+      status: blockExplanation.status || blockExplanation.validation?.status || null,
+      refusal: blockExplanation.refusal || null,
+    },
+    permissionUpgrade: {
+      requiredSteps: Array.isArray(permissionUpgrade.requiredSteps)
+        ? permissionUpgrade.requiredSteps
+        : Array.isArray(permissionUpgrade.required_steps)
+          ? permissionUpgrade.required_steps
+          : [],
+    },
     checkride: {
       coverageScore: Number(checkride.coverageScore ?? checkride.coverage_score ?? 0),
       criticalFailures: Number(checkride.criticalFailures ?? checkride.critical_failures ?? 0),
@@ -385,6 +418,8 @@ function buildActions(model) {
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
   const unresolvedCount = unresolvedQuestionCount(model);
+  const dojoSkillReady = Boolean(model.dojo?.skillId);
+  const dojoLicensed = Boolean(model.dojo?.published || model.dojo?.status === 'licensed');
 
   return {
     primary: {
@@ -435,6 +470,20 @@ function buildActions(model) {
         icon: 'teach',
         enabled: compiled && unresolvedCount === 0,
         disabledReason: compiled ? 'Resolve workflow questions first' : 'Compile the workflow contract first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS,
+        label: 'Dojo Export',
+        icon: 'export',
+        enabled: dojoSkillReady,
+        disabledReason: 'License or preview a skill first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN,
+        label: 'Proof Dry-run',
+        icon: 'run',
+        enabled: dojoLicensed,
+        disabledReason: 'License this skill first',
       },
     ],
   };
@@ -844,6 +893,20 @@ function DojoSkillCredential({ dojo, traceReady, onAction }) {
           <dt style={{ color: 'var(--text-muted)' }}>Proof</dt>
           <dd className="min-w-0 truncate text-right">{dojo.proofRequired ? 'Required' : 'Optional'}</dd>
         </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Artifacts</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.artifactCount || 0} exported</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Evil twin</dt>
+          <dd className="min-w-0 truncate text-right">{Math.round(Number(dojo.attackSuccessRate || 0) * 100)}% escaped</dd>
+        </div>
+        {dojo.licenseExpiresAt ? (
+          <div className="flex items-center justify-between gap-3">
+            <dt style={{ color: 'var(--text-muted)' }}>Expires</dt>
+            <dd className="min-w-0 truncate text-right">{String(dojo.licenseExpiresAt).slice(0, 10)}</dd>
+          </div>
+        ) : null}
         {dojo.publishedToolName ? (
           <div className="flex items-center justify-between gap-3">
             <dt style={{ color: 'var(--text-muted)' }}>MCP tool</dt>
@@ -855,6 +918,18 @@ function DojoSkillCredential({ dojo, traceReady, onAction }) {
         <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Can:</span> {allowed.slice(0, 4).join(', ') || 'Practice only'}</div>
         <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Ask:</span> {gated.slice(0, 4).join(', ') || 'None'}</div>
         <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Block:</span> {blocked.slice(0, 4).join(', ') || 'None'}</div>
+        {dojo.proof?.capsuleId ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Capsule:</span> {dojo.proof.capsuleId}</div>
+        ) : null}
+        {dojo.proofDryRun?.status ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Dry-run:</span> {dojo.proofDryRun.status}</div>
+        ) : null}
+        {dojo.blockExplanation?.refusal ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Why:</span> {dojo.blockExplanation.refusal}</div>
+        ) : null}
+        {dojo.permissionUpgrade?.requiredSteps?.length ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Upgrade:</span> {dojo.permissionUpgrade.requiredSteps.slice(0, 3).join(', ')}</div>
+        ) : null}
       </div>
       <div className="grid grid-cols-2 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
         <ActionButton
@@ -871,6 +946,48 @@ function DojoSkillCredential({ dojo, traceReady, onAction }) {
           icon="teach"
           enabled={traceReady}
           disabledReason="Teach a workflow first"
+          onAction={onAction}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ActionButton
+          action={WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS}
+          label="Export"
+          icon="export"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE}
+          label="Proof"
+          icon="auth"
+          enabled={licensed}
+          disabledReason="License this skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN}
+          label="Dry-run"
+          icon="run"
+          enabled={licensed}
+          disabledReason="License this skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.EXPLAIN_BLOCK}
+          label="Why"
+          icon="manifest"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.REQUEST_PERMISSION_UPGRADE}
+          label="Upgrade"
+          icon="teach"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
           onAction={onAction}
         />
       </div>

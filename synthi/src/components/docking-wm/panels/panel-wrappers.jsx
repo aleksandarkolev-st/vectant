@@ -20,7 +20,7 @@ import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 import EditorPaneHeader from '@/components/EditorPaneHeader';
 import { WORKFLOW_ACTIONS } from '@/components/agent-workflows/AgentWorkflowPanel';
-import { buildAgentWorkflowHandoffFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
+import { buildAgentWorkflowHandoffFiles, buildDojoArtifactFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
 import {
   callAgentWorkflowTool,
   getAgentWorkflowState,
@@ -392,6 +392,13 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     await gitClient.writeFilesBatch(workspaceId, files, { syncToGcs: true });
   }, [ctx?.workspaceSlug, readWorkspaceFileOrEmpty]);
 
+  const persistDojoArtifacts = useCallback(async (artifacts) => {
+    const workspaceId = ctx?.workspaceSlug;
+    if (!workspaceId) throw new Error('dojo_artifact_workspace_unavailable');
+    const { files } = buildDojoArtifactFiles({ artifacts });
+    await gitClient.writeFilesBatch(workspaceId, files, { syncToGcs: true });
+  }, [ctx?.workspaceSlug]);
+
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
@@ -454,6 +461,51 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
           });
           break;
+        case WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS:
+          {
+            const skillId = workflowState?.dojo?.skillId;
+            const exportBody = await callWorkflowTool(WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS, {
+              ...(skillId ? { skill_id: skillId } : {}),
+              ...(workspaceId ? { workspace_id: workspaceId } : {}),
+            });
+            await persistDojoArtifacts(exportBody?.result?.artifacts);
+          }
+          break;
+        case WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            requested_action: 'run_workflow',
+            context_claims: { workspace_verified: true },
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN:
+          {
+            const skillId = workflowState?.dojo?.skillId;
+            const capsuleBody = await callWorkflowTool(WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE, {
+              ...(skillId ? { skill_id: skillId } : {}),
+              requested_action: 'run_workflow',
+              context_claims: { workspace_verified: true },
+            });
+            await callWorkflowTool(WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN, {
+              ...(skillId ? { skill_id: skillId } : {}),
+              requested_action: 'run_workflow',
+              proof_capsule: capsuleBody?.result?.proof_capsule,
+              dry_run: true,
+            });
+          }
+          break;
+        case WORKFLOW_ACTIONS.EXPLAIN_BLOCK:
+          await callWorkflowTool(WORKFLOW_ACTIONS.EXPLAIN_BLOCK, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            requested_action: 'run_workflow',
+          });
+          break;
+        case WORKFLOW_ACTIONS.REQUEST_PERMISSION_UPGRADE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.REQUEST_PERMISSION_UPGRADE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            requested_action: 'run_workflow',
+          });
+          break;
         case WORKFLOW_ACTIONS.PREFIX_VALIDATE:
           await callWorkflowTool(WORKFLOW_ACTIONS.PREFIX_VALIDATE, {
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
@@ -489,9 +541,16 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
           break;
         case WORKFLOW_ACTIONS.PUBLISH_TOOL:
-          await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {
-            ...(workspaceId ? { workspace_id: workspaceId } : {}),
-          });
+          {
+            const publishBody = await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {
+              ...(workspaceId ? { workspace_id: workspaceId } : {}),
+            });
+            const skillId = publishBody?.result?.skill?.skill_id;
+            if (skillId) {
+              const exportBody = await callWorkflowTool(WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS, { skill_id: skillId });
+              await persistDojoArtifacts(exportBody?.result?.artifacts);
+            }
+          }
           break;
         default:
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);
@@ -501,7 +560,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     } finally {
       setBusyAction(null);
     }
-  }, [callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workflowState, workspaceUrl]);
+  }, [callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, persistDojoArtifacts, persistWorkflowHandoff, stateWithBridgeError, workflowState, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
