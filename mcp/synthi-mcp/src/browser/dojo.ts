@@ -22,6 +22,7 @@ import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workf
 import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
+import { toDojoScenarioDefinitions } from "../dojo/vivarium/scenario_dsl.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -1337,7 +1338,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `${root}/vivarium.manifest.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.workspace_organoid),
+      content: json(vivariumArtifact(skill)),
     },
     {
       path: `${root}/wind-tunnel.report.json`,
@@ -1510,7 +1511,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `.synthi/dojo/organoids/${segment}.organoid.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.workspace_organoid),
+      content: json(vivariumArtifact(skill)),
     },
     {
       path: `.synthi/dojo/guardrails/${segment}.guardrails.json`,
@@ -2774,26 +2775,10 @@ function skillGraphArtifact(skill: DojoSkill): Record<string, unknown> {
 
 function vivariumArtifact(skill: DojoSkill): Record<string, unknown> {
   return {
-    schema_version: "synthi.dojo.workspaceOrganoid.v1",
-    organoid_id: `organoid_${skill.skill_seed.seed_id}`,
-    skill_seed_id: skill.skill_seed.seed_id,
-    workspace_id: skill.workspace_id,
-    generated_at: skill.generated_at,
-    version: "0.1.0",
-    tissues: {
-      ui: { surfaces: skill.skill_seed.touched_surfaces },
-      data: { models: skill.skill_seed.touched_data_models, inputs: skill.skill_seed.input_schema },
-      policy: { clues: skill.skill_seed.policy_clues },
-      identity: { auth_required: skill.skill_seed.policy_clues.some((clue) => clue.source === "auth") },
-      document: { synthetic_only: true },
-      api: { anchors: skill.skill_seed.source_or_api_anchors.filter((anchor) => anchor.kind === "api") },
-      failure: { modes: skill.skill_seed.candidate_failure_modes },
-      adversary: { scenarios: skill.scenarios.filter((scenario) => scenario.layer === "risk").map((scenario) => scenario.scenario_id) },
-      evidence: { expected: skill.skill_seed.output_schema.evidence },
-      source: { anchors: skill.skill_seed.source_or_api_anchors },
-      license: { license_id: skill.permission_license.license_id },
-    },
-    scenarios: skill.scenarios,
+    ...skill.workspace_organoid,
+    scenario_definitions: toDojoScenarioDefinitions(skill.scenarios, {
+      target_graph_node_ids: ["action", "assertion"],
+    }),
     safety_constraints: ["synthetic_data_only", "no_secrets_in_repo_artifacts", "no_production_mutation"],
     data_policy: { production_data_allowed: false, redact_screenshots_by_default: true },
   };
