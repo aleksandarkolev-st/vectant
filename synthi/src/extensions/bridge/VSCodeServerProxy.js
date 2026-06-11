@@ -27,7 +27,7 @@ import {
 // ============================================================================
 
 const DEFAULT_TIMEOUT = 30000;      // Server ops may be slow (binary download, VSIX install)
-const SERVER_START_TIMEOUT = 60000; // Starting the server + downloading binary can take a minute
+const SERVER_START_TIMEOUT = 120000; // Cold installs can download and unpack code-server.
 const HEARTBEAT_INTERVAL = 10000;
 
 // ============================================================================

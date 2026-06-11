@@ -651,6 +651,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
     };
 
+    const VSCODE_MANAGER_CONNECT_TIMEOUT_MS = 30000;
+    const VSCODE_SERVER_START_TIMEOUT_MS = 120000;
+
     if (vscodeServerConnectedRef.current && vscodeServerSlugRef.current === desiredSlug) {
       return;
     }
@@ -674,7 +677,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
         await withTimeout(
           systemRef.current.bridge.connectVSCodeServer(channel),
-          20000,
+          VSCODE_MANAGER_CONNECT_TIMEOUT_MS,
           'VS Code Server manager connection'
         );
       } else {
@@ -685,7 +688,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       console.log('[useExtensions] connectVSCodeServer: starting server for slug:', desiredSlug);
       const serverInfo = await withTimeout(
         systemRef.current.bridge.startVSCodeServer(desiredSlug),
-        20000,
+        VSCODE_SERVER_START_TIMEOUT_MS,
         'VS Code Server startup'
       );
       console.log('[useExtensions] ✓ VS Code Server started:', serverInfo);

@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Puzzle, Plus, Search, Download, Star, ArrowDownCircle, Loader2, ExternalLink, X, Check, AlertTriangle, Upload, FileArchive } from 'lucide-react';
+import { Puzzle, Plus, Search, Download, Star, ArrowDownCircle, Loader2, ExternalLink, X, Check, AlertTriangle, Upload, FileArchive, Play, Bug } from 'lucide-react';
 
 // ─── Sample extension for quick testing ──────────────────────
 const SAMPLE_EXTENSION = {
@@ -52,6 +52,41 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+function getContributedCommands(ext) {
+  const commands = ext?.manifest?.contributes?.commands;
+  if (!Array.isArray(commands)) return [];
+  const seen = new Set();
+  return commands
+    .filter(cmd => cmd && typeof cmd.command === 'string' && !cmd.command.startsWith('_'))
+    .map(cmd => ({
+      id: cmd.command,
+      title: typeof cmd.title === 'string' ? cmd.title : cmd.command,
+      category: typeof cmd.category === 'string' ? cmd.category : '',
+    }))
+    .filter(cmd => {
+      if (seen.has(cmd.id)) return false;
+      seen.add(cmd.id);
+      return true;
+    });
+}
+
+function getDebuggerContributions(ext) {
+  const debuggers = ext?.manifest?.contributes?.debuggers;
+  return Array.isArray(debuggers) ? debuggers.filter(Boolean) : [];
+}
+
+function getPrimaryCommands(commands) {
+  const safeCommands = commands.filter(cmd => {
+    const text = `${cmd.title} ${cmd.id}`.toLowerCase();
+    if (/debugpy\.|^python\.|^python-envs\.|^testing\./.test(cmd.id)) return false;
+    if (/(debug|run|re-run|rerun) in terminal|copy test id|select interpreter|create environment|re-run failed tests|rerun failed tests/.test(text)) return false;
+    return true;
+  });
+  const preferred = safeCommands.filter(cmd => /run|start|test|launch/i.test(`${cmd.title} ${cmd.id}`));
+  const source = preferred.length > 0 ? preferred : safeCommands;
+  return source.slice(0, 4);
+}
+
 // ─── State colors ────────────────────────────────────────────
 // Style objects (not Tailwind utility strings) so the dots respect the
 // active theme — `--accent-*` are remapped by ThemeProvider on swap.
@@ -74,10 +109,30 @@ const STATE_LABELS = {
 };
 
 // ─── Installed extension row ─────────────────────────────────
-function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
+function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart, onExecuteCommand }) {
   const [expanded, setExpanded] = useState(false);
+  const [runningAction, setRunningAction] = useState(null);
+  const [actionError, setActionError] = useState(null);
   const isActive = ext.state === 'active';
   const isDisabled = ext.state === 'disabled' || ext.state === 'quarantined';
+  const contributedCommands = getContributedCommands(ext);
+  const primaryCommands = getPrimaryCommands(contributedCommands);
+  const debuggerContributions = getDebuggerContributions(ext);
+  const hasDebugger = debuggerContributions.length > 0;
+  const quickCommand = primaryCommands[0] || null;
+
+  const runCommand = async (commandId) => {
+    if (!onExecuteCommand || !commandId) return;
+    setRunningAction(commandId);
+    setActionError(null);
+    try {
+      await onExecuteCommand(commandId);
+    } catch (err) {
+      setActionError(err?.message || `Failed to run ${commandId}`);
+    } finally {
+      setRunningAction(null);
+    }
+  };
 
   return (
     <div className="border rounded-lg mb-1.5 overflow-hidden" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
@@ -87,7 +142,7 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
         onClick={() => setExpanded(!expanded)}
       >
         <div className="w-7 h-7 rounded flex items-center justify-center text-sm shrink-0" style={{ background: 'var(--bg-elevated)' }}>
-          {ext.icon ? <img src={ext.icon} className="w-5 h-5 rounded" alt="" /> : '🧩'}
+          {ext.icon ? <img src={ext.icon} className="w-5 h-5 rounded" alt="" /> : <Puzzle className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
@@ -103,6 +158,22 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
             )}
           </div>
         </div>
+        {quickCommand && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              runCommand(quickCommand.id);
+            }}
+            disabled={!isActive || runningAction === quickCommand.id}
+            className="shrink-0 inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors disabled:opacity-45"
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+            title={quickCommand.id}
+          >
+            {runningAction === quickCommand.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+            Run
+          </button>
+        )}
         <span
           className={`shrink-0 inline-block w-2 h-2 rounded-full ${STATE_PULSE.has(ext.state) ? 'animate-pulse' : ''}`}
           style={STATE_STYLES[ext.state] || { background: 'var(--text-muted)' }}
@@ -127,6 +198,47 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
               Failed: {ext.failedReason || 'Extension activation failed'}
             </div>
           )}
+
+          {(primaryCommands.length > 0 || hasDebugger) && (
+            <div className="mb-2 border rounded-md" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-elevated) 48%, transparent)' }}>
+              <div className="px-2 py-1.5 flex items-center justify-between gap-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+                <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Use</span>
+                {ext.remote && (
+                  <span className="text-[10px]" style={{ color: 'var(--accent-success)' }}>Hosted</span>
+                )}
+              </div>
+              <div className="p-1.5 flex flex-wrap gap-1.5">
+                {primaryCommands.map(cmd => (
+                  <button
+                    key={cmd.id}
+                    onClick={() => runCommand(cmd.id)}
+                    disabled={!isActive || runningAction === cmd.id}
+                    className="inline-flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] transition-colors disabled:opacity-45"
+                    style={{ background: 'var(--bg-editor)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+                    title={cmd.id}
+                  >
+                    {runningAction === cmd.id ? <Loader2 className="w-3 h-3 animate-spin shrink-0" /> : <Play className="w-3 h-3 shrink-0" />}
+                    <span className="truncate max-w-[170px]">{cmd.category ? `${cmd.category}: ${cmd.title}` : cmd.title}</span>
+                  </button>
+                ))}
+              </div>
+              {hasDebugger && (
+                <div className="px-2 pb-1.5 text-[10px] flex items-center gap-1.5" style={{ color: 'var(--text-dim)' }}>
+                  <Bug className="w-3 h-3 shrink-0" />
+                  <span>
+                    {debuggerContributions.map(d => d.label || d.type).filter(Boolean).join(', ')} debug adapter{debuggerContributions.length === 1 ? '' : 's'} installed
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {actionError && (
+            <div className="border rounded px-2 py-1.5 text-[11px] mb-2" style={{ background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-danger) 30%, transparent)', color: 'var(--accent-danger)' }}>
+              {actionError}
+            </div>
+          )}
+
           <div className="flex gap-1.5">
             {isDisabled ? (
               <button onClick={() => onEnable(ext.id)} className="px-2 py-1 text-[11px] rounded" style={{ background: 'var(--accent-success)', color: 'var(--bg-app)' }}>Enable</button>
@@ -258,7 +370,6 @@ export default function ExtensionSidebar({
   errors = [],
   ready = false,
   hostStatus = 'idle',
-  vscodeServerState = 'disconnected',
   onInstall,
   onEnable,
   onDisable,
@@ -578,17 +689,6 @@ module.exports = { activate, deactivate };
             <span style={{ color: hostStatus === 'ready' ? 'var(--accent-success)' : hostStatus === 'error' ? 'var(--accent-danger)' : 'var(--accent-warning)' }}>
               {hostStatus === 'ready' ? '● Ready' : hostStatus === 'initializing' ? '◌ Starting…' : hostStatus === 'error' ? '● Error' : '○ Idle'}
             </span>
-            {vscodeServerState !== 'disconnected' && (
-              <span style={{ color:
-                vscodeServerState === 'running' ? 'var(--accent-success)' :
-                vscodeServerState === 'connecting' ? 'var(--accent-warning)' :
-                vscodeServerState === 'error' ? 'var(--accent-danger)' : 'var(--text-muted)'
-              }}>
-                {vscodeServerState === 'running' ? '● Server' :
-                 vscodeServerState === 'connecting' ? '◌ Server…' :
-                 vscodeServerState === 'error' ? '● Server ✖' : ''}
-              </span>
-            )}
             <span>{activeCount} active</span>
             {issueCount > 0 && <span style={{ color: 'var(--accent-danger)' }}>{issueCount} issues</span>}
           </div>
@@ -760,6 +860,7 @@ module.exports = { activate, deactivate };
                 onDisable={onDisable}
                 onUninstall={onUninstall}
                 onRestart={onRestart}
+                onExecuteCommand={onExecuteCommand}
               />
             ))
           )

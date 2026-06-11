@@ -282,6 +282,7 @@ services:
       # Turn on debug_log! output so the new force-key-unit + candidate
       # buffer log lines are visible during this debugging session.
       SYNTHI_WORKER_VERBOSE: "1"
+      SYNTHI_VSCODE_VERBOSE: "1"
       # Build-time gpu-hmr enables the Rust modules; this runtime flag keeps
       # the local stack explicit for harnesses and diagnostics.
       SYNTHI_GPU_HMR: "1"

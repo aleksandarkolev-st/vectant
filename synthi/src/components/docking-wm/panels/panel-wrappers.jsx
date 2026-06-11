@@ -144,6 +144,11 @@ const ExtensionSidebar = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const ExtensionViewContainer = dynamic(
+  () => import('@/components/extensions/ExtensionViewContainer'),
+  { ssr: false, loading: Placeholder },
+);
+
 const ThemeEditorPanel = dynamic(
   () => import('@/components/ThemeEditorPanel'),
   { ssr: false, loading: Placeholder },
@@ -571,6 +576,34 @@ export const ExtensionsPanelWrapper = memo(function ExtensionsPanelWrapper({ dat
   );
 });
 
+export const ExtensionViewPanelWrapper = memo(function ExtensionViewPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+  const extensionApi = ctx?.extensionApi || {};
+  const containerId = data?.containerId;
+  const container = (extensionApi.contributedContainers || []).find((item) => item.id === containerId) || null;
+
+  return (
+    <div
+      data-panel-type="extension-view"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ExtensionViewContainer
+        containerId={containerId}
+        container={container}
+        views={extensionApi.contributedViews?.[containerId] || []}
+        treeDataMap={extensionApi.treeDataMap || {}}
+        webviewPanels={extensionApi.webviewPanels || []}
+        webviewManager={extensionApi.webviewManager || null}
+        extensions={extensionApi.extensions || []}
+        onExecuteCommand={extensionApi.onExecuteCommand}
+        onRequestTreeRefresh={extensionApi.onRequestTreeRefresh}
+        viewsWelcome={extensionApi.viewsWelcome || {}}
+      />
+    </div>
+  );
+});
+
 // ────────────────────────────────────────────────────────
 //  Output Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -705,6 +738,7 @@ export const PANEL_WRAPPERS = {
   search:         SearchPanelWrapper,
   git:            GitPanelWrapper,
   extensions:     ExtensionsPanelWrapper,
+  'extension-view': ExtensionViewPanelWrapper,
   editor:         EditorPanelWrapper,
   terminal:       TerminalPanelWrapper,
   chat:           ChatPanelWrapper,

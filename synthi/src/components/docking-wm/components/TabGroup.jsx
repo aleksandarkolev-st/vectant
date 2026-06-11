@@ -21,6 +21,7 @@ import {
 import { useDropZone } from '../hooks/use-drop-zone';
 import { useSidebarAutoCollapse } from '../hooks/use-sidebar-auto-collapse';
 import { IDE_PANEL } from '../panels/panel-types';
+import { usePanelRegistry } from '../state/panel-registry';
 import { TabBar } from './TabBar';
 import { PanelContentArea } from './PanelContainer';
 import { DropOverlay } from './DropOverlay';
@@ -88,6 +89,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
   const node = useSelector((state) => selectNode(state, nodeId));
   const nodes = useSelector(selectNodes);
   const allTabs = useSelector(selectTabs);
+  const registry = usePanelRegistry();
   const focusedGroupId = useSelector(selectFocusedTabGroupId);
   const dragSourceTabId = useSelector(selectDragSourceTabId);
 
@@ -99,8 +101,10 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
   // Resolve tab objects
   const tabs = useMemo(() => {
     if (!node || !node.tabs) return [];
-    return node.tabs.map((tid) => allTabs[tid]).filter(Boolean);
-  }, [node, allTabs]);
+    return node.tabs
+      .map((tid) => allTabs[tid])
+      .filter((tab) => tab && registry.has(tab.panelType));
+  }, [node, allTabs, registry]);
 
   const isEditorSurface = useMemo(
     () => tabs.length > 0 && tabs.every((tab) => tab?.panelType === 'editor'),
