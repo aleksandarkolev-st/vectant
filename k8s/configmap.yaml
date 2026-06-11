@@ -24,20 +24,42 @@ data:
   BACKEND_URL: "https://synthi-ai-engine-767721372193.europe-west10.run.app"
   SIGNALING_URL: "ws://signaling-server.synthi.svc.cluster.local:9000"
   REDIS_URL: "redis://redis.synthi.svc.cluster.local:6379"
+  # Optional internal HTTP endpoint for the MCP browser-workflow bridge.
+  # Browser clients call the same-origin Next.js proxy at /api/browser-workflows/*.
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL: ""
+  # Optional runtime-scoped preview proxy target. Production previews route to
+  # a pod-local preview sidecar so user apps may bind localhost-only ports.
+  SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  SYNTHI_PREVIEW_SIDECAR_PORT: "18080"
+  SYNTHI_PREVIEW_SIDECAR_PREFIX: "/__synthi_preview"
+  SYNTHI_PREVIEW_SIDECAR_IMAGE: "node:20-alpine"
+  SYNTHI_PREVIEW_SCAN_PORTS: ""
+  SYNTHI_TERMINAL_PORT_POOL: ""
+  SYNTHI_TERMINAL_BACKEND: "k8s-exec"
+  # Do not inject PORT/NEXT_PORT/VITE_PORT in Kubernetes. Separate runtime pods
+  # give each private/collab runtime its own network namespace, so :5173 in two
+  # private sessions does not collide.
+  SYNTHI_TERMINAL_SCOPE_PORTS: "false"
+  SYNTHI_PREVIEW_BIND_HOST: ""
+  WORKSPACE_DATA_PVC: "collab-data-pvc"
+  WORKSPACE_DATA_MOUNT: "/data"
+  WORKSPACE_REPOS_PATH: "/data/repos"
 
   # ── Public URLs (replace with your domain) ──────────────────────────────────
-  NEXTAUTH_URL: "https://beta.synthi.app"
-  CORS_ORIGIN: "https://beta.synthi.app"
+  NEXTAUTH_URL: "https://beta.vectant.dev"
+  CORS_ORIGIN: "https://beta.vectant.dev"
+  SYNTHI_PUBLIC_APP_URL: "https://beta.vectant.dev"
+  SYNTHI_APP_INTERNAL_URL: "http://frontend.synthi.svc.cluster.local:3000"
 
   # ── Next.js public env (baked into client bundle at build time) ─────────────
   # These MUST be set at `next build` time, not just runtime.
-  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
-  NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
+  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.vectant.dev/collab"
+  NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/ysweet"
   NEXT_PUBLIC_COLLAB_PORT: "443"
-  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
-  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
-  NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
-  NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
+  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.vectant.dev/signal"
+  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.vectant.dev/gateway/ws"
+  NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
+  NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
 
   # ── Feature flags ──────────────────────────────────────────────────────────
   GCS_SYNC_ON_FLUSH: "true"

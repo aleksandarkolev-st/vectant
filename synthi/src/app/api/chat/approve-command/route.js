@@ -48,6 +48,11 @@ export async function POST(request) {
                             { path: file.path, content: file.content },
                             deferred.workspacePath,
                             AbortSignal.timeout(10000),
+                            {
+                                userId: deferred.userId || null,
+                                runtimeScope: deferred.runtimeScope || '',
+                                filesystemUserId: deferred.filesystemUserId || deferred.userId || null,
+                            },
                         );
                         filesWritten++;
                     } catch (writeErr) {
@@ -63,6 +68,11 @@ export async function POST(request) {
                     { command: deferred.command },
                     deferred.workspacePath,
                     AbortSignal.timeout(35000),
+                    {
+                        userId: deferred.userId || null,
+                        runtimeScope: deferred.runtimeScope || '',
+                        filesystemUserId: deferred.filesystemUserId || deferred.userId || null,
+                    },
                 );
                 return NextResponse.json({
                     ok: true,

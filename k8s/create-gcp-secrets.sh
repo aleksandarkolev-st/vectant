@@ -34,6 +34,7 @@ SECRETS=(
   synthi-gcp-private-key
   synthi-cloudflare-turn-token-id
   synthi-cloudflare-turn-api-token
+  synthi-runtime-id-secret
   synthi-google-ai-api-key
   synthi-openai-api-key
   synthi-ysweet-auth-key

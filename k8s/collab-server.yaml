@@ -53,8 +53,76 @@ spec:
             # ── Networking ──────────────────────────────────────────────────
             - name: COLLAB_PORT
               value: "1235"
-            - name: SYNTHI_APP_URL
-              value: "http://frontend:3000"
+            - name: SYNTHI_PUBLIC_APP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PUBLIC_APP_URL
+            - name: SYNTHI_APP_INTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_APP_INTERNAL_URL
+            - name: SYNTHI_PREVIEW_TARGET_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_TARGET_TEMPLATE
+            - name: SYNTHI_PREVIEW_SIDECAR_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_PORT
+            - name: SYNTHI_PREVIEW_SIDECAR_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_PREFIX
+            - name: SYNTHI_PREVIEW_SIDECAR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_IMAGE
+            - name: SYNTHI_PREVIEW_SCAN_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SCAN_PORTS
+            - name: SYNTHI_TERMINAL_PORT_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_PORT_POOL
+            - name: SYNTHI_TERMINAL_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_BACKEND
+            - name: SYNTHI_TERMINAL_SCOPE_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_SCOPE_PORTS
+            - name: SYNTHI_PREVIEW_BIND_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_BIND_HOST
+            - name: WORKSPACE_DATA_PVC
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_PVC
+            - name: WORKSPACE_DATA_MOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_MOUNT
+            - name: WORKSPACE_REPOS_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_REPOS_PATH
             - name: CORS_ORIGIN
               valueFrom:
                 configMapKeyRef:
@@ -70,6 +138,11 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: AI_BACKEND_AUTH_TOKEN
+            - name: SYNTHI_RUNTIME_ID_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_RUNTIME_ID_SECRET
             # ── Y-Sweet CRDT server ──────────────────────────────────────
             - name: YSWEET_URL
               valueFrom:
@@ -300,7 +373,12 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  accessModes: ["ReadWriteOnce"]
+  # Runtime pods and the collab server both mount /data/repos. In GKE this
+  # must be RWX storage when pods can schedule on different node pools.
+  # The Filestore CSI driver installs enterprise-multishare-rwx on supported
+  # clusters; override this if you use a pre-provisioned Filestore/NFS class.
+  storageClassName: enterprise-multishare-rwx
+  accessModes: ["ReadWriteMany"]
   resources:
     requests:
       storage: 10Gi    # repo cache only — LevelDB no longer used

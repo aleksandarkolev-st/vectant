@@ -35,8 +35,11 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
+const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
+const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -61,6 +64,210 @@ try {
 
 /** @type {Map<string, { pty: IPty, ws: WebSocket, cwd: string, shell: string }>} */
 const activeSessions = new Map();
+
+/** @type {Map<string, { port: number, refCount: number, lastActive: number }>} */
+const runtimePortLeases = new Map();
+
+function hashRuntimeScope(value) {
+  const text = String(value || 'unknown');
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function parsePortList(value) {
+  const ports = new Set();
+  for (const rawPart of String(value || '').split(',')) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+      const low = Math.max(1, Math.min(start, end));
+      const high = Math.min(65535, Math.max(start, end));
+      for (let port = low; port <= high; port += 1) ports.add(port);
+      continue;
+    }
+    const port = Number(part);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
+  }
+  return [...ports].sort((a, b) => a - b);
+}
+
+function configuredTerminalPortCandidates() {
+  const explicitDefault = Number(process.env.SYNTHI_TERMINAL_DEFAULT_PORT);
+  const explicitDefaults = Number.isInteger(explicitDefault) && explicitDefault > 0 && explicitDefault <= 65535
+    ? [explicitDefault]
+    : [];
+
+  const pooledPorts = parsePortList(process.env.SYNTHI_TERMINAL_PORT_POOL || '');
+  const hasLegacyRange =
+    process.env.SYNTHI_TERMINAL_PORT_RANGE_START ||
+    process.env.SYNTHI_TERMINAL_PORT_RANGE_SIZE;
+  const legacyRange = hasLegacyRange
+    ? (() => {
+        const start = Number(process.env.SYNTHI_TERMINAL_PORT_RANGE_START);
+        const size = Number(process.env.SYNTHI_TERMINAL_PORT_RANGE_SIZE);
+        if (!Number.isInteger(start) || !Number.isInteger(size) || size <= 0) return [];
+        const safeStart = Math.max(1, Math.min(65535, start));
+        const safeSize = Math.max(1, Math.min(size, 65535 - safeStart + 1));
+        return Array.from({ length: safeSize }, (_, index) => safeStart + index);
+      })()
+    : [];
+
+  return [...new Set([...explicitDefaults, ...pooledPorts, ...legacyRange])];
+}
+
+function orderedPortCandidates(runtimeScope) {
+  const candidates = configuredTerminalPortCandidates();
+  if (candidates.length <= 1) return candidates;
+
+  const [first, ...rest] = candidates;
+  if (rest.length === 0) return candidates;
+
+  const offset = hashRuntimeScope(runtimeScope) % rest.length;
+  return [first, ...rest.slice(offset), ...rest.slice(0, offset)];
+}
+
+function portAlreadyLeasedByOtherRuntime(port, runtimeScope) {
+  for (const [scope, lease] of runtimePortLeases) {
+    if (scope !== runtimeScope && lease.port === port) return true;
+  }
+  return false;
+}
+
+function isPortAvailable(port, host = process.env.SYNTHI_PREVIEW_BIND_HOST || '127.0.0.1') {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref?.();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen({ port, host });
+  });
+}
+
+async function leaseRuntimePort(runtimeScope) {
+  if (!runtimeScope || process.env.SYNTHI_TERMINAL_SCOPE_PORTS !== 'true') return null;
+
+  const existing = runtimePortLeases.get(runtimeScope);
+  if (existing) {
+    existing.refCount += 1;
+    existing.lastActive = Date.now();
+    return existing.port;
+  }
+
+  const candidates = orderedPortCandidates(runtimeScope);
+  if (candidates.length === 0) return null;
+
+  for (const port of candidates) {
+    if (portAlreadyLeasedByOtherRuntime(port, runtimeScope)) continue;
+    if (!(await isPortAvailable(port))) continue;
+    runtimePortLeases.set(runtimeScope, { port, refCount: 1, lastActive: Date.now() });
+    return port;
+  }
+
+  console.warn(`[Terminal] No available terminal port lease for runtimeScope=${runtimeScope}; not injecting PORT`);
+  return null;
+}
+
+function releaseRuntimePort(runtimeScope) {
+  if (!runtimeScope) return;
+  const lease = runtimePortLeases.get(runtimeScope);
+  if (!lease) return;
+  lease.refCount -= 1;
+  lease.lastActive = Date.now();
+  if (lease.refCount <= 0) runtimePortLeases.delete(runtimeScope);
+}
+
+function once(fn) {
+  let called = false;
+  return (...args) => {
+    if (called) return undefined;
+    called = true;
+    return fn(...args);
+  };
+}
+
+async function buildRuntimeLaunch({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId }) {
+  const port = shouldUseRuntimePodTerminal(runtimeScope) ? null : await leaseRuntimePort(runtimeScope);
+  return {
+    env: buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port }),
+    port,
+    releasePort: once(() => releaseRuntimePort(runtimeScope)),
+  };
+}
+
+function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port = null }) {
+  const env = {};
+  if (runtimeScope) {
+    env.SYNTHI_RUNTIME_SCOPE = runtimeScope;
+    if (port) {
+      const portValue = String(port);
+      env.SYNTHI_DEFAULT_PORT = portValue;
+      env.SYNTHI_PORT_LEASE = portValue;
+      env.PORT = portValue;
+      env.NEXT_PORT = portValue;
+      env.VITE_PORT = portValue;
+      env.NUXT_PORT = portValue;
+      env.ASTRO_PORT = portValue;
+      env.SVELTEKIT_PORT = portValue;
+      env.npm_config_port = portValue;
+    }
+  }
+  if (workspaceSlug) env.SYNTHI_WORKSPACE_SLUG = workspaceSlug;
+  if (actorUserId) env.SYNTHI_ACTOR_USER_ID = actorUserId;
+  if (filesystemUserId) env.SYNTHI_RUNTIME_FS_USER_ID = filesystemUserId;
+
+  const bindHost = process.env.SYNTHI_PREVIEW_BIND_HOST;
+  if (bindHost) {
+    env.HOST = bindHost;
+    env.VITE_HOST = bindHost;
+  }
+  return env;
+}
+
+async function createTerminalProcess({
+  cwd,
+  cols,
+  rows,
+  env,
+  shellType = null,
+  workspaceName = null,
+  workspaceSlug = null,
+  runtimeScope = '',
+  actorUserId = '',
+  filesystemUserId = '',
+}) {
+  if (shouldUseRuntimePodTerminal(runtimeScope)) {
+    return createRuntimePodPty({
+      runtimeScope,
+      workspaceSlug,
+      actorUserId,
+      filesystemUserId,
+      cwd,
+      env,
+      cols,
+      rows,
+    });
+  }
+
+  return createPtyProcess({
+    cwd,
+    cols,
+    rows,
+    env,
+    shellType,
+    workspaceName,
+    workspaceSlug,
+  });
+}
 
 // ─── Shell Detection ────────────────────────────────────────────────────────
 
@@ -1067,13 +1274,38 @@ function sanitizeResize(cols, rows) {
  * @param {number} rows      - Terminal rows (default 30)
  * @returns {{ ptyProcess, shell, cwd, sessionId }}
  */
-async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null) {
-  const cwd = await resolveWorkspaceCwd(slug, userId);
-  const { ptyProcess, shell } = createPtyProcess({
-    cwd, cols, rows,
-    workspaceName: name,
+async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null, options = {}) {
+  const runtimeScope = options.runtimeScope || '';
+  const filesystemUserId = options.filesystemUserId || userId;
+  await ensureRuntimeFilesystem({
     workspaceSlug: slug,
+    filesystemUserId,
+    runtimeScope,
+    reason: 'headless_terminal',
   });
+  const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  const runtimeLaunch = await buildRuntimeLaunch({
+    runtimeScope,
+    workspaceSlug: slug,
+    actorUserId: userId,
+    filesystemUserId,
+  });
+  let ptyProcess;
+  let shell;
+  try {
+    ({ ptyProcess, shell } = await createTerminalProcess({
+      cwd, cols, rows,
+      env: runtimeLaunch.env,
+      workspaceName: name,
+      workspaceSlug: slug,
+      runtimeScope,
+      actorUserId: userId,
+      filesystemUserId,
+    }));
+  } catch (err) {
+    runtimeLaunch.releasePort();
+    throw err;
+  }
 
   // Ring buffer for replay when the frontend connects. We keep the *most
   // recent* MAX_BUFFER chars rather than the oldest — when a long build log
@@ -1110,6 +1342,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     console.warn(`[Terminal] Headless session ${sessionId} orphaned for ${HEADLESS_TTL_MS}ms — killing PTY`);
     try { bufferDisposable.dispose?.(); } catch (_) {}
     try { ptyProcess.kill(); } catch (_) {}
+    runtimeLaunch.releasePort();
     activeSessions.delete(sessionId);
   }, HEADLESS_TTL_MS);
   // Don't hold the event loop open on this timer alone.
@@ -1120,6 +1353,11 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     ws: null,           // No WebSocket yet — frontend will connect later
     cwd,
     shell,
+    runtimeScope,
+    workspaceSlug: slug,
+    userId,
+    filesystemUserId,
+    releasePort: runtimeLaunch.releasePort,
     unwatchFs: () => {},
     headless: true,     // Flag so WSS handler knows to reattach
     outputBuffer,       // Buffered output for replay
@@ -1130,7 +1368,11 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     orphanTimer,        // Cleared by the reattach handler
   });
 
-  console.log(`[Terminal] Headless session ${sessionId} created | cwd=${cwd} | shell=${shell}`);
+  ptyProcess.onExit(() => {
+    runtimeLaunch.releasePort();
+  });
+
+  console.log(`[Terminal] Headless session ${sessionId} created | runtimeScope=${runtimeScope || 'legacy'} | fsUser=${filesystemUserId || 'none'} | cwd=${cwd} | shell=${shell}`);
   return { ptyProcess, shell, cwd, sessionId };
 }
 
@@ -1163,6 +1405,11 @@ function createTerminalWSS() {
     const workspaceSlug = parsedUrl.searchParams.get('workspace') || '';
     const workspaceName = parsedUrl.searchParams.get('name') || '';
     const requestedUserId = parsedUrl.searchParams.get('userId') || '';
+    const requestedFilesystemUserId =
+      parsedUrl.searchParams.get('filesystemUserId') ||
+      parsedUrl.searchParams.get('fsUserId') ||
+      requestedUserId;
+    const runtimeScope = parsedUrl.searchParams.get('runtimeScope') || '';
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
     const requestedShellType = parsedUrl.searchParams.get('shell') || null;
@@ -1193,7 +1440,19 @@ function createTerminalWSS() {
       }
 
       // Update session: replace headless state with full WebSocket session
-      activeSessions.set(sessionId, { pty: ptyProcess, ws, cwd, shell, unwatchFs, headless: false });
+      activeSessions.set(sessionId, {
+        pty: ptyProcess,
+        ws,
+        cwd,
+        shell,
+        runtimeScope: existingSession.runtimeScope || runtimeScope,
+        workspaceSlug: existingSession.workspaceSlug || workspaceSlug,
+        userId: existingSession.userId || requestedUserId,
+        filesystemUserId: existingSession.filesystemUserId || requestedFilesystemUserId,
+        releasePort: existingSession.releasePort || (() => {}),
+        unwatchFs,
+        headless: false,
+      });
 
       // Send ready acknowledgement
       ws.send(JSON.stringify({
@@ -1229,6 +1488,7 @@ function createTerminalWSS() {
           ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
           ws.close(1000, 'PTY exited');
         }
+        try { existingSession.releasePort?.(); } catch (_) {}
         activeSessions.delete(sessionId);
       });
 
@@ -1261,6 +1521,7 @@ function createTerminalWSS() {
         console.log(`[Terminal] WS closed for reattached session ${sessionId} (code=${code})`);
         try { unwatchFs(); } catch (_) {}
         try { ptyProcess.kill(); } catch (_) {}
+        try { existingSession.releasePort?.(); } catch (_) {}
         activeSessions.delete(sessionId);
       });
 
@@ -1268,6 +1529,7 @@ function createTerminalWSS() {
         console.error(`[Terminal] WS error for reattached session ${sessionId}:`, err.message);
         try { unwatchFs(); } catch (_) {}
         try { ptyProcess.kill(); } catch (_) {}
+        try { existingSession.releasePort?.(); } catch (_) {}
         activeSessions.delete(sessionId);
       });
 
@@ -1276,23 +1538,49 @@ function createTerminalWSS() {
 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
-    const cwd = await resolveWorkspaceCwd(workspaceSlug, requestedUserId);
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug,
+        filesystemUserId: requestedFilesystemUserId,
+        runtimeScope,
+        reason: 'interactive_terminal',
+      });
+      cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
+    } catch (err) {
+      console.error(`[Terminal] Failed to prepare filesystem for session ${sessionId}:`, err.message);
+      ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare workspace filesystem: ' + err.message }));
+      ws.close(1011, 'Workspace filesystem preparation failed');
+      return;
+    }
 
-    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
+    console.log(`[Terminal] New session ${sessionId} | runtimeScope=${runtimeScope || 'legacy'} | workspace=${workspaceSlug} | userId=${requestedUserId} | fsUser=${requestedFilesystemUserId || 'none'} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
 
 
     // ── Spawn PTY ───────────────────────────────────────────────────────
     let ptyProcess, shell;
+    let runtimeLaunch;
     try {
-      ({ ptyProcess, shell } = createPtyProcess({
+      runtimeLaunch = await buildRuntimeLaunch({
+        runtimeScope,
+        workspaceSlug,
+        actorUserId: requestedUserId,
+        filesystemUserId: requestedFilesystemUserId,
+      });
+      ({ ptyProcess, shell } = await createTerminalProcess({
         cwd,
         cols: initialCols,
         rows: initialRows,
+        env: runtimeLaunch.env,
         shellType: requestedShellType,
         workspaceName,
         workspaceSlug,
+        runtimeScope,
+        actorUserId: requestedUserId,
+        filesystemUserId: requestedFilesystemUserId,
       }));
     } catch (err) {
+      try { runtimeLaunch?.releasePort?.(); } catch (_) {}
       console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
       ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
       ws.close(1011, 'PTY spawn failed');
@@ -1310,7 +1598,18 @@ function createTerminalWSS() {
     }
 
     // Register session
-    activeSessions.set(sessionId, { pty: ptyProcess, ws, cwd, shell, unwatchFs });
+    activeSessions.set(sessionId, {
+      pty: ptyProcess,
+      ws,
+      cwd,
+      shell,
+      runtimeScope,
+      workspaceSlug,
+      userId: requestedUserId,
+      filesystemUserId: requestedFilesystemUserId,
+      releasePort: runtimeLaunch.releasePort,
+      unwatchFs,
+    });
 
     // ── Send ready acknowledgement ──────────────────────────────────────
     ws.send(JSON.stringify({
@@ -1340,6 +1639,7 @@ function createTerminalWSS() {
         ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
         ws.close(1000, 'PTY exited');
       }
+      try { runtimeLaunch.releasePort(); } catch (_) {}
       activeSessions.delete(sessionId);
     });
 
@@ -1397,6 +1697,7 @@ function createTerminalWSS() {
       console.log(`[Terminal] WS closed for session ${sessionId} (code=${code})`);
       try { unwatchFs(); } catch (_) {}
       try { ptyProcess.kill(); } catch (_) { /* already dead */ }
+      try { runtimeLaunch.releasePort(); } catch (_) {}
       activeSessions.delete(sessionId);
     });
 
@@ -1404,6 +1705,7 @@ function createTerminalWSS() {
       console.error(`[Terminal] WS error for session ${sessionId}:`, err.message);
       try { unwatchFs(); } catch (_) {}
       try { ptyProcess.kill(); } catch (_) { /* ignore */ }
+      try { runtimeLaunch.releasePort(); } catch (_) {}
       activeSessions.delete(sessionId);
     });
   });

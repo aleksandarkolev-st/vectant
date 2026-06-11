@@ -4,7 +4,7 @@
 #  Grants the collab-server ServiceAccount permission to manage
 #  workspace Deployments, watch Pods, and manage per-workspace Services
 #  in the synthi namespace. The spawner creates/patches/deletes
-#  Deployments named "workspace-*" and Services named "ws-svc-*".
+#  opaque runtime Deployments and Services named "rt-<base32-hmac>".
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ServiceAccount
@@ -33,6 +33,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # Open interactive shells inside per-runtime pods for the terminal service.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   # Create/delete ClusterIP Services per workspace for health checks.
   - apiGroups: [""]
     resources: ["services"]

@@ -27,21 +27,23 @@ const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const { runtimeResourceId } = require('./runtimeIdentity');
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
 /** Where proxied requests are forwarded to.  127.0.0.1 locally, pod IP in K8s. */
 const PROXY_HOST = process.env.PROXY_TARGET_HOST || '127.0.0.1';
 
+/**
+ * Optional production target template for runtime-scoped previews.
+ * Example: http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}
+ */
+const PREVIEW_TARGET_TEMPLATE = process.env.SYNTHI_PREVIEW_TARGET_TEMPLATE || '';
+const PREVIEW_SIDECAR_PORT = String(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');
+const PREVIEW_SIDECAR_PREFIX = normalizePathPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview') || '/__synthi_preview';
+
 /** Fallback ports to actively scan when socket discovery is unavailable. */
-const DEFAULT_SCAN_PORTS = [
-  3000, 3001, 3002, 3003,   // React / Next.js
-  4000, 4001, 4200,          // Angular / NestJS
-  5000, 5001,                // Flask / .NET
-  5173, 5174,                // Vite
-  8000,                      // Django / FastAPI (8001 excluded — used by WebRTC worker WS)
-  8080, 8081, 8888,          // misc / Jupyter
-];
+const DEFAULT_SCAN_PORTS = [];
 
 /** Extra/fallback scan ports. Comma-separated values and ranges are accepted. */
 const CONFIGURED_SCAN_PORTS = parsePortList(
@@ -74,7 +76,7 @@ const activePorts = new Set();
 /** @type {Map<number, string>} Maps port → resolved host (127.0.0.1 or ::1). */
 const portHostMap = new Map();
 
-/** @type {Map<number, { port: number, pid?: number, cwd?: string, command?: string, workspaceSlug?: string, userId?: string }>} */
+/** @type {Map<number, { port: number, pid?: number, cwd?: string, command?: string, workspaceSlug?: string, runtimeScope?: string }>} */
 const portProcessMap = new Map();
 
 /** Listeners notified when the active port set changes. */
@@ -233,15 +235,89 @@ function inferMime(urlPath) {
 // ─── HTTP Reverse Proxy ─────────────────────────────────────────────────────
 
 /**
- * Parse a `/port/<N>/rest/of/path` URL.
- * @returns {{ port: number, downstream: string } | null}
+ * Parse a `/port/<N>/rest/of/path` or
+ * `/runtime/<scope>/port/<N>/rest/of/path` URL.
+ * @returns {{ port: number, downstream: string, runtimeScope: string|null } | null}
  */
 function parsePortUrl(urlString) {
-  const match = /^\/port\/(\d+)(\/.*)?$/.exec(urlString);
+  let pathname = urlString || '/';
+  let search = '';
+  try {
+    const parsed = new URL(urlString || '/', 'http://proxy.local');
+    pathname = parsed.pathname;
+    search = parsed.search || '';
+  } catch (_) {
+    const q = pathname.indexOf('?');
+    if (q !== -1) {
+      search = pathname.slice(q);
+      pathname = pathname.slice(0, q);
+    }
+  }
+
+  let match = /^\/runtime\/([^/]+)\/port\/(\d+)(\/.*)?$/.exec(pathname);
+  if (match) {
+    const port = parseInt(match[2], 10);
+    const downstream = (match[3] || '/') + search;
+    return { port, downstream, runtimeScope: decodeURIComponent(match[1]) };
+  }
+
+  match = /^\/port\/(\d+)(\/.*)?$/.exec(pathname);
   if (!match) return null;
   const port = parseInt(match[1], 10);
-  const downstream = match[2] || '/';
-  return { port, downstream };
+  const downstream = (match[2] || '/') + search;
+  return { port, downstream, runtimeScope: null };
+}
+
+function normalizePathPrefix(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '/') return '';
+  return `/${raw.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function joinTargetPath(pathPrefix, downstream) {
+  const prefix = normalizePathPrefix(pathPrefix);
+  const tail = downstream && downstream.startsWith('/') ? downstream : `/${downstream || ''}`;
+  return `${prefix}${tail}` || '/';
+}
+
+function previewTargetFor(port, runtimeScope) {
+  if (runtimeScope && PREVIEW_TARGET_TEMPLATE) {
+    const runtimeId = runtimeResourceId(runtimeScope);
+    const rendered = PREVIEW_TARGET_TEMPLATE
+      .replaceAll('{runtimeId}', runtimeId)
+      .replaceAll('{runtimeScope}', runtimeId)
+      .replaceAll('{sidecarPort}', PREVIEW_SIDECAR_PORT)
+      .replaceAll('{sidecarPrefix}', PREVIEW_SIDECAR_PREFIX)
+      .replaceAll('{port}', String(port));
+    try {
+      const url = new URL(rendered);
+      return {
+        hostname: url.hostname,
+        port: Number(url.port) || port,
+        protocol: url.protocol,
+        pathPrefix: normalizePathPrefix(url.pathname),
+      };
+    } catch (err) {
+      console.error('[Proxy] Invalid SYNTHI_PREVIEW_TARGET_TEMPLATE:', err.message);
+    }
+  }
+  return {
+    hostname: portHostMap.get(port) || PROXY_HOST,
+    port,
+    protocol: 'http:',
+    pathPrefix: '',
+  };
+}
+
+function portAllowedForRuntime(port, runtimeScope) {
+  if (!runtimeScope) return true;
+  const processInfo = portProcessMap.get(port);
+  if (!processInfo?.runtimeScope) return true; // legacy process; keep local preview usable
+  return processInfo.runtimeScope === runtimeScope;
+}
+
+function usesRemoteRuntimeTarget(runtimeScope) {
+  return Boolean(runtimeScope && PREVIEW_TARGET_TEMPLATE);
 }
 
 /**
@@ -256,20 +332,27 @@ function proxyHttpRequest(clientReq, clientRes) {
     return;
   }
 
-  const { port, downstream } = parsed;
+  const { port, downstream, runtimeScope } = parsed;
 
-  if (!activePorts.has(port)) {
+  if (!usesRemoteRuntimeTarget(runtimeScope) && !activePorts.has(port)) {
     clientRes.writeHead(502, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ error: `Port ${port} is not active`, activePorts: [...activePorts] }));
     return;
   }
 
+  if (!portAllowedForRuntime(port, runtimeScope)) {
+    clientRes.writeHead(404, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({ error: `Port ${port} is not active for this runtime scope` }));
+    return;
+  }
+
   // Build the proxied request
-  const targetHost = portHostMap.get(port) || PROXY_HOST;
+  const target = previewTargetFor(port, runtimeScope);
+  const targetPath = joinTargetPath(target.pathPrefix, downstream);
   const options = {
-    hostname: targetHost,
-    port,
-    path: downstream,
+    hostname: target.hostname,
+    port: target.port,
+    path: targetPath,
     method: clientReq.method,
     headers: {
       ...clientReq.headers,
@@ -296,7 +379,7 @@ function proxyHttpRequest(clientReq, clientRes) {
       proxyRes.on('data', (chunk) => chunks.push(chunk));
       proxyRes.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
-        const rewritten = rewriteRootAbsoluteUrls(body, port);
+        const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope);
         delete headers['content-length'];
         delete headers['content-encoding'];
         clientRes.writeHead(proxyRes.statusCode, headers);
@@ -310,7 +393,7 @@ function proxyHttpRequest(clientReq, clientRes) {
   });
 
   proxyReq.on('error', (err) => {
-    console.error(`[Proxy] HTTP proxy error for port ${port}:`, err.message);
+    console.error(`[Proxy] HTTP proxy error for port ${port} runtime=${runtimeScope || 'legacy'}:`, err.message);
     if (!clientRes.headersSent) {
       clientRes.writeHead(502, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify({ error: 'Upstream unreachable', detail: err.message }));
@@ -339,11 +422,13 @@ function shouldRewriteBody(headers) {
   );
 }
 
-function rewriteRootAbsoluteUrls(body, port) {
-  const prefix = `/port/${port}`;
+function rewriteRootAbsoluteUrls(body, port, runtimeScope = null) {
+  const prefix = runtimeScope
+    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}`
+    : `/port/${port}`;
   return body
-    .replace(/(["'`])\/(?!\/|port\/)/g, `$1${prefix}/`)
-    .replace(/(url\(\s*["']?)\/(?!\/|port\/)/g, `$1${prefix}/`);
+    .replace(/(["'`])\/(?!\/|port\/|runtime\/)/g, `$1${prefix}/`)
+    .replace(/(url\(\s*["']?)\/(?!\/|port\/|runtime\/)/g, `$1${prefix}/`);
 }
 
 // ─── WebSocket Reverse Proxy ────────────────────────────────────────────────
@@ -359,18 +444,24 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
     return false;
   }
 
-  const { port, downstream } = parsed;
+  const { port, downstream, runtimeScope } = parsed;
 
-  if (!activePorts.has(port)) {
+  if (!usesRemoteRuntimeTarget(runtimeScope) && !activePorts.has(port)) {
+    clientSocket.destroy();
+    return false;
+  }
+
+  if (!portAllowedForRuntime(port, runtimeScope)) {
     clientSocket.destroy();
     return false;
   }
 
   // Open a raw TCP connection to the upstream
-  const targetHost = portHostMap.get(port) || PROXY_HOST;
-  const upstreamSocket = net.connect(port, targetHost, () => {
+  const target = previewTargetFor(port, runtimeScope);
+  const upstreamSocket = net.connect(target.port, target.hostname, () => {
     // Reconstruct the HTTP upgrade request for the upstream
-    const reqLine = `${clientReq.method} ${downstream} HTTP/1.1\r\n`;
+    const targetPath = joinTargetPath(target.pathPrefix, downstream);
+    const reqLine = `${clientReq.method} ${targetPath} HTTP/1.1\r\n`;
     const headers = Object.entries(clientReq.headers)
       .filter(([k]) => k.toLowerCase() !== 'host')
       .map(([k, v]) => `${k}: ${v}`)
@@ -389,7 +480,7 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
   });
 
   upstreamSocket.on('error', (err) => {
-    console.error(`[Proxy] WS proxy error for port ${port}:`, err.message);
+    console.error(`[Proxy] WS proxy error for port ${port} runtime=${runtimeScope || 'legacy'}:`, err.message);
     clientSocket.destroy();
   });
 
@@ -410,12 +501,19 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
  */
 function handlePortsStatus(req, res) {
   const requestedWorkspace = workspaceFilterFromReq(req);
+  const requestedRuntimeScope = runtimeScopeFilterFromReq(req);
   const allPorts = [...activePorts].sort((a, b) => a - b);
-  const workspacePorts = requestedWorkspace
-    ? allPorts.filter((port) => portMatchesWorkspace(port, requestedWorkspace))
+  const hasRuntimeAttribution = allPorts.some((port) => Boolean(portProcessMap.get(port)?.runtimeScope));
+  const runtimePorts = requestedRuntimeScope && hasRuntimeAttribution
+    ? allPorts.filter((port) => portMatchesRuntimeScope(port, requestedRuntimeScope))
     : allPorts;
+  const workspacePorts = requestedWorkspace
+    ? runtimePorts.filter((port) => portMatchesWorkspace(port, requestedWorkspace))
+    : runtimePorts;
   const hasWorkspaceAttribution = allPorts.some((port) => Boolean(portProcessMap.get(port)?.workspaceSlug));
-  const ports = requestedWorkspace && (workspacePorts.length > 0 || hasWorkspaceAttribution)
+  const ports = requestedRuntimeScope && (runtimePorts.length > 0 || hasRuntimeAttribution)
+    ? workspacePorts
+    : requestedWorkspace && (workspacePorts.length > 0 || hasWorkspaceAttribution)
     ? workspacePorts
     : allPorts;
   res.writeHead(200, {
@@ -427,17 +525,23 @@ function handlePortsStatus(req, res) {
     allActivePorts: allPorts,
     host: PROXY_HOST,
     workspace: requestedWorkspace,
-    previews: ports.map(previewForPort),
+    runtimeScope: requestedRuntimeScope,
+    previews: ports.map((port) => previewForPort(port, requestedRuntimeScope)),
   }));
 }
 
-function previewForPort(port) {
+function previewForPort(port, requestedRuntimeScope = null) {
   const processInfo = portProcessMap.get(port);
+  const runtimeScope = processInfo?.runtimeScope || requestedRuntimeScope || null;
+  const target = previewTargetFor(port, runtimeScope);
   return {
     port,
-    url: `/port/${port}/`,
-    target: `http://${portHostMap.get(port) || PROXY_HOST}:${port}/`,
+    url: runtimeScope
+      ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`
+      : `/port/${port}/`,
+    target: `http://${target.hostname}:${target.port}${target.pathPrefix || '/'}`,
     workspace: processInfo?.workspaceSlug ?? null,
+    runtimeScope,
     attributed: Boolean(processInfo?.workspaceSlug),
   };
 }
@@ -452,8 +556,22 @@ function workspaceFilterFromReq(req) {
   }
 }
 
+function runtimeScopeFilterFromReq(req) {
+  try {
+    const parsed = new URL(req.url || '/ports', 'http://collab.local');
+    const value = parsed.searchParams.get('runtimeScope') || parsed.searchParams.get('scope');
+    return value && value.trim() ? value.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 function portMatchesWorkspace(port, workspaceSlug) {
   return portProcessMap.get(port)?.workspaceSlug === workspaceSlug;
+}
+
+function portMatchesRuntimeScope(port, runtimeScope) {
+  return portProcessMap.get(port)?.runtimeScope === runtimeScope;
 }
 
 function parsePortList(value) {
@@ -546,12 +664,15 @@ function enrichListeningPortProcesses(ports) {
       if (!info || info.pid) continue;
       const cwd = readProcLink(`/proc/${entry.name}/cwd`);
       const command = readProcCommand(entry.name);
+      const procEnv = readProcEnv(entry.name);
       const workspace = inferWorkspaceFromCwd(cwd);
       ports.set(port, {
         ...info,
         pid,
         cwd,
         command,
+        ...(procEnv.SYNTHI_RUNTIME_SCOPE ? { runtimeScope: procEnv.SYNTHI_RUNTIME_SCOPE } : {}),
+        ...(procEnv.SYNTHI_WORKSPACE_SLUG ? { workspaceSlug: procEnv.SYNTHI_WORKSPACE_SLUG } : {}),
         ...(workspace || {}),
       });
     }
@@ -575,6 +696,23 @@ function readProcCommand(pid) {
       .slice(0, 240) || undefined;
   } catch {
     return undefined;
+  }
+}
+
+function readProcEnv(pid) {
+  try {
+    const entries = fs.readFileSync(`/proc/${pid}/environ`, 'utf8')
+      .split('\0')
+      .filter(Boolean);
+    const out = {};
+    for (const entry of entries) {
+      const idx = entry.indexOf('=');
+      if (idx <= 0) continue;
+      out[entry.slice(0, idx)] = entry.slice(idx + 1);
+    }
+    return out;
+  } catch {
+    return {};
   }
 }
 

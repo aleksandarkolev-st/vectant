@@ -106,6 +106,10 @@ Production deploys use `k8s/external-secrets.yaml`, which syncs the
 `synthi-secrets` Kubernetes Secret from GCP Secret Manager. Create the remote
 secrets named in that manifest before applying `k8s/`.
 
+Set `synthi-runtime-id-secret` once and keep it stable. It is used to derive
+opaque `rt-...` runtime pod/service names; rotating it changes those names and
+breaks existing preview routes until runtimes are recreated.
+
 For a local/manual deployment without External Secrets Operator, copy
 `k8s/secrets.yaml.example` to `k8s/secrets.yaml`, replace every placeholder with
 real base64-encoded values, and swap the foundation resource in
@@ -231,7 +235,10 @@ These are baked into the JavaScript bundle at **build time**, not runtime. You m
 The GCE Ingress default backend timeout is 30s, which kills WebSocket connections. The `BackendConfig` resources in `ingress.yaml` set a 1-hour timeout for WS services.
 
 ### Worker Scaling
-Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active compiler session via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends.
+Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active runtime scope via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends. Each runtime pod includes a preview sidecar on the configured internal sidecar port, so user dev servers can keep binding localhost-only app ports such as `3000` or `5173`.
+
+### Runtime Filesystem Storage
+Runtime pods and the collab server both mount `/data/repos`, so `collab-data-pvc` must use ReadWriteMany storage when pods can schedule on different node pools. The production manifest defaults to GKE Filestore CSI `enterprise-multishare-rwx`; override the StorageClass if your cluster uses another RWX Filestore or NFS class.
 
 ### WebSocket Health Checks
 For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:

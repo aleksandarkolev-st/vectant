@@ -150,14 +150,27 @@ const encodePath = (p = '') =>
         .map(encodeURIComponent)
         .join('/');
 
+function workspaceRequestHeaders(options = {}, extra = {}) {
+    const headers = { ...extra };
+    const filesystemUserId = options.filesystemUserId || options.userId || null;
+    if (filesystemUserId) headers['x-user-id'] = filesystemUserId;
+    if (options.runtimeScope) headers['x-runtime-scope'] = options.runtimeScope;
+    if (options.filesystemUserId) headers['x-runtime-fs-user-id'] = options.filesystemUserId;
+    return headers;
+}
+
 /* ─── Tool executors ──────────────────────────────────────────────── */
 
-async function execReadFile(slug, args, signal) {
+async function execReadFile(slug, args, signal, options = {}) {
     const filePath = args?.path;
     if (!filePath) return { error: 'Missing required parameter: path' };
     try {
         const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${encodePath(filePath)}`;
-        const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: workspaceRequestHeaders(options),
+            signal: AbortSignal.timeout(5000),
+        });
         if (!res.ok) return { error: `File not found or unreadable: ${filePath} (${res.status})` };
         let text = await res.text();
         if (text.length > MAX_READ_CHARS) text = text.slice(0, MAX_READ_CHARS) + '\n…[truncated]';
@@ -167,12 +180,16 @@ async function execReadFile(slug, args, signal) {
     }
 }
 
-async function execSearchWorkspace(slug, args, signal) {
+async function execSearchWorkspace(slug, args, signal, options = {}) {
     const query = (args?.query || '').toLowerCase();
     if (!query) return { error: 'Missing required parameter: query' };
     try {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
-        const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: workspaceRequestHeaders(options),
+            signal: AbortSignal.timeout(5000),
+        });
         if (!res.ok) return { matches: [], note: 'Could not retrieve workspace file list' };
         const data = await res.json();
         const files = Array.isArray(data?.files) ? data.files : [];
@@ -186,11 +203,15 @@ async function execSearchWorkspace(slug, args, signal) {
     }
 }
 
-async function execListDirectory(slug, args, signal) {
+async function execListDirectory(slug, args, signal, options = {}) {
     const dirPath = (args?.path || '').replace(/^[./\\]+/, '');
     try {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
-        const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: workspaceRequestHeaders(options),
+            signal: AbortSignal.timeout(5000),
+        });
         if (!res.ok) return { error: `Could not list directory (${res.status})` };
         const data = await res.json();
         const files = Array.isArray(data?.files) ? data.files : [];
@@ -215,6 +236,21 @@ async function execListDirectory(slug, args, signal) {
 const MAX_CMD_OUTPUT = 20_000;
 const CMD_TIMEOUT_MS = 30_000;
 
+function hashRuntimeScopePart(value) {
+    const text = String(value || 'unknown');
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function buildUserRuntimeScope(slug, userId) {
+    if (!slug) return '';
+    return `ws-${hashRuntimeScopePart(slug)}-user-${hashRuntimeScopePart(userId || 'guest')}`;
+}
+
 /**
  * Blocked commands / patterns that could damage the workspace or host.
  */
@@ -228,9 +264,16 @@ const BLOCKED_PATTERNS = [
     /\bkill\s+-9\s+1\b/i,
 ];
 
-async function execRunCommand(slug, args) {
+async function execRunCommand(slug, args, _signal, options = {}) {
     let command = (args?.command || '').trim();
     if (!command) return { error: 'Missing required parameter: command' };
+    const userId = options.userId || args?.userId || null;
+    const runtimeScope = options.runtimeScope || args?.runtimeScope || buildUserRuntimeScope(slug, userId);
+    const filesystemUserId = options.filesystemUserId || args?.filesystemUserId || userId;
+    const commandHeaders = { 'content-type': 'application/json' };
+    if (userId) commandHeaders['x-user-id'] = userId;
+    if (runtimeScope) commandHeaders['x-runtime-scope'] = runtimeScope;
+    if (filesystemUserId) commandHeaders['x-runtime-fs-user-id'] = filesystemUserId;
 
     // Safety: block obviously destructive patterns
     for (const pattern of BLOCKED_PATTERNS) {
@@ -260,8 +303,8 @@ async function execRunCommand(slug, args) {
         try {
             res = await fetch(terminalUrl, {
                 method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS }),
+                headers: commandHeaders,
+                body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS, userId, runtimeScope, filesystemUserId }),
                 signal: AbortSignal.timeout(CMD_TIMEOUT_MS + 5000),
             });
             usedTerminal = res.ok;
@@ -272,8 +315,8 @@ async function execRunCommand(slug, args) {
         if (!usedTerminal) {
             res = await fetch(execUrl, {
                 method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS }),
+                headers: commandHeaders,
+                body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS, userId, runtimeScope, filesystemUserId }),
                 signal: AbortSignal.timeout(CMD_TIMEOUT_MS + 5000),
             });
         }
@@ -438,7 +481,7 @@ async function execWebSearch(_slug, args, _signal, options = {}) {
 
 /* ─── Create File executor ─────────────────────────────────────── */
 
-async function execCreateFile(slug, args) {
+async function execCreateFile(slug, args, _signal, options = {}) {
     const filePath = (args?.path || '').trim();
     const content = args?.content ?? '';
     if (!filePath) return { error: 'Missing required parameter: path' };
@@ -446,7 +489,7 @@ async function execCreateFile(slug, args) {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/write-file`;
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: workspaceRequestHeaders(options, { 'Content-Type': 'application/json' }),
             body: JSON.stringify({ path: filePath, content }),
             signal: AbortSignal.timeout(10000),
         });
@@ -462,14 +505,14 @@ async function execCreateFile(slug, args) {
 
 /* ─── Create Directory executor ───────────────────────────────── */
 
-async function execCreateDirectory(slug, args) {
+async function execCreateDirectory(slug, args, _signal, options = {}) {
     const dirPath = (args?.path || '').trim();
     if (!dirPath) return { error: 'Missing required parameter: path' };
     try {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/create-directory`;
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: workspaceRequestHeaders(options, { 'Content-Type': 'application/json' }),
             body: JSON.stringify({ path: dirPath }),
             signal: AbortSignal.timeout(10000),
         });
