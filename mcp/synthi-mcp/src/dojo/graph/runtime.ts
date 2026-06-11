@@ -1,4 +1,5 @@
 import { type DojoGraphNode, type DojoGraphMode, type DojoSkillGraph, validateDojoSkillGraph } from "./types.js";
+import { evaluateDojoGuardrailPredicate } from "./guardrail_runtime.js";
 
 export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped";
 export type DojoGraphRunStatus = "completed" | "blocked" | "failed";
@@ -79,6 +80,13 @@ function blockedByForNode(node: DojoGraphNode, mode: DojoGraphMode, inputs: Reco
   const blockedBy = node.preconditions
     .filter((condition) => !evaluateStaticCondition(condition, inputs))
     .map((condition) => `precondition_failed:${condition}`);
+  if (blockedBy.length > 0) return blockedBy;
+  for (const guardrail of node.guardrails) {
+    const result = evaluateDojoGuardrailPredicate(guardrail.predicate, inputs);
+    if (!result.ok && guardrail.severity === "block") {
+      blockedBy.push(`guardrail_failed:${guardrail.guardrail_id}`);
+    }
+  }
   if (mode === "production" && node.kind === "Action" && node.proof?.required === true && inputs["proof_capsule_valid"] !== true) {
     blockedBy.push("proof_capsule_missing");
   }

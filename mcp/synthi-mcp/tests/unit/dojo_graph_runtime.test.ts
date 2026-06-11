@@ -10,6 +10,7 @@ describe("Dojo graph runtime skeleton", () => {
       graph: graphFixture(),
       inputs: {
         workspace_verified: true,
+        client_id_verified: true,
         proof_capsule_valid: true,
       },
     })).resolves.toEqual(expect.objectContaining({
@@ -28,7 +29,7 @@ describe("Dojo graph runtime skeleton", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
-      inputs: { proof_capsule_valid: true },
+      inputs: { proof_capsule_valid: true, client_id_verified: true },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -48,7 +49,7 @@ describe("Dojo graph runtime skeleton", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
-      inputs: { workspace_verified: true },
+      inputs: { workspace_verified: true, client_id_verified: true },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
