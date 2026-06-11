@@ -3039,7 +3039,6 @@ export default function EditorPage({ params }) {
                             errors={extensionErrors}
                             ready={extensionsReady}
                             hostStatus={extensionHostStatus}
-                            vscodeServerState={vscodeServerState}
                             onInstall={installExtension}
                             onEnable={enableExtension}
                             onDisable={disableExtension}
@@ -3268,7 +3267,13 @@ export default function EditorPage({ params }) {
             errors: extensionErrors,
             ready: extensionsReady,
             hostStatus: extensionHostStatus,
-            vscodeServerState,
+            contributedContainers,
+            contributedViews,
+            treeDataMap: extensionTreeDataMap,
+            webviewPanels: extensionWebviewPanels,
+            webviewManager: extensionWebviewManager,
+            viewsWelcome: extensionViewsWelcome,
+            vscodeTunnelService: extensionTunnelService,
             onInstall: installExtension,
             onEnable: enableExtension,
             onDisable: disableExtension,
@@ -3276,6 +3281,7 @@ export default function EditorPage({ params }) {
             onRestart: restartExtension,
             onDismissError: dismissExtensionError,
             onExecuteCommand: executeExtensionCommand,
+            onRequestTreeRefresh: requestTreeRefresh,
         },
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
@@ -3284,8 +3290,11 @@ export default function EditorPage({ params }) {
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
         aiHealing, workspaceName,
         installedExtensions, extensionErrors, extensionsReady, extensionHostStatus,
-        vscodeServerState, installExtension, enableExtension, disableExtension,
+        installExtension, enableExtension, disableExtension,
         uninstallExtension, restartExtension, dismissExtensionError, executeExtensionCommand,
+        requestTreeRefresh, contributedContainers, contributedViews, extensionTreeDataMap,
+        extensionWebviewPanels, extensionWebviewManager, extensionViewsWelcome,
+        extensionTunnelService,
     ]);
 
     if (workspaceMissing) {
