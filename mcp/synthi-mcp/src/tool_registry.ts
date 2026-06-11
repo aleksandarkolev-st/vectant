@@ -67,6 +67,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_dojo_run_checkride",
   "synthi_dojo_publish_skill",
   "synthi_dojo_recertify_skill",
+  "synthi_dojo_export_artifacts",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_run_with_proof_capsule",
   // Auth checkpoint readiness

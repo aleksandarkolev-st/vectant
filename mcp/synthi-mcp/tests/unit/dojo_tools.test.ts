@@ -5,6 +5,7 @@ import { browserBroker } from "../../src/browser/broker.js";
 import {
   buildDojoSkill,
   dojoSkillRegistry,
+  exportDojoRepoArtifacts,
   extractDojoSkillSeed,
   generateDojoVivariumScenarios,
   issueDojoProofCapsule,
@@ -77,6 +78,20 @@ describe("Agent Dojo core", () => {
     expect(skill.permission_license.entrustment_level).toBe("E2");
     expect(skill.permission_license.blocked_actions.map((action) => action.action)).toContain("run_workflow");
     expect(skill.skill_card.practiced).toBe("20 synthetic cases");
+    const artifacts = exportDojoRepoArtifacts(skill);
+    expect(artifacts.map((artifact) => artifact.path)).toEqual(expect.arrayContaining([
+      ".synthi/dojo/skills/save_invoice/seed.json",
+      ".synthi/dojo/skills/save_invoice/skill.graph.json",
+      ".synthi/dojo/skills/save_invoice/vivarium.manifest.json",
+      ".synthi/dojo/skills/save_invoice/checkride.report.md",
+      ".synthi/dojo/skills/save_invoice/assurance.case.md",
+      ".synthi/dojo/skills/save_invoice/license.json",
+      ".synthi/dojo/skills/save_invoice/proof-capsule.schema.json",
+      ".synthi/dojo/skills/save_invoice/guardrails.json",
+      ".synthi/dojo/skills/save_invoice/case-law.md",
+      ".synthi/dojo/skills/save_invoice/mcp.manifest.json",
+    ]));
+    expect(JSON.stringify(artifacts)).not.toMatch(/password|token-value/i);
   });
 
   it("validates proof capsules against action scope, context claims, evidence claims, guardrails, and signature", () => {
@@ -134,6 +149,7 @@ describe("Agent Dojo MCP tools", () => {
       expect(listed.tools).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "synthi_dojo_list_competencies" }),
         expect.objectContaining({ name: "synthi_dojo_publish_skill" }),
+        expect.objectContaining({ name: "synthi_dojo_export_artifacts" }),
         expect.objectContaining({ name: "synthi_dojo_run_with_proof_capsule" }),
       ]));
     } finally {
@@ -175,6 +191,12 @@ describe("Agent Dojo MCP tools", () => {
       ok: true,
       tool_name: "synthi_app_open_details",
     }));
+    expect((publish?.structuredContent as { repo_artifacts: Array<{ path: string }> }).repo_artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: ".synthi/dojo/skills/open_details/license.json" }),
+        expect.objectContaining({ path: ".synthi/dojo/skills/open_details/proof-capsule.schema.json" }),
+      ])
+    );
     expect(privateWorkflowToolRegistry.get("synthi_app_open_details")).toBeTruthy();
 
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
@@ -203,6 +225,21 @@ describe("Agent Dojo MCP tools", () => {
     expect((listed?.structuredContent as { competencies: Array<{ skill_id: string }> }).competencies).toEqual([
       expect.objectContaining({ skill_id: "dojo_open_details" }),
     ]);
+
+    const exported = await dispatchDojoTool("synthi_dojo_export_artifacts", { skill_id: published.skill.skill_id });
+    expect(exported?.isError).toBeUndefined();
+    expect(exported?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: "dojo_open_details",
+      artifact_count: 11,
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({
+          path: ".synthi/dojo/skills/open_details/assurance.case.md",
+          content: expect.stringContaining("Skill Assurance Case"),
+          sensitive: false,
+        }),
+      ]),
+    }));
   });
 });
 

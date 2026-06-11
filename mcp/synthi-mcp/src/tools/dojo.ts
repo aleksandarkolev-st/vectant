@@ -2,6 +2,7 @@ import { browserBroker } from "../browser/broker.js";
 import {
   buildDojoSkill,
   dojoSkillRegistry,
+  exportDojoRepoArtifacts,
   extractDojoSkillSeed,
   generateDojoVivariumScenarios,
   issueDojoProofCapsule,
@@ -34,6 +35,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_run_checkride",
   "synthi_dojo_publish_skill",
   "synthi_dojo_recertify_skill",
+  "synthi_dojo_export_artifacts",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_run_with_proof_capsule",
 ] as const;
@@ -198,6 +200,19 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_export_artifacts",
+    description:
+      "Return reviewable repo artifact files for a licensed Dojo skill, including seed, graph, vivarium, checkride report, assurance case, license, proof schema, guardrails, case law, and MCP manifest. Artifacts contain metadata and references, not secrets.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_dojo_issue_proof_capsule",
     description:
       "Issue a proof-carrying skill capsule for a licensed Dojo skill and requested action. The capsule must be supplied to synthi_dojo_run_with_proof_capsule before execution.",
@@ -264,6 +279,8 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         return dojoPublishSkillTool(args);
       case "synthi_dojo_recertify_skill":
         return dojoRecertifySkillTool(args);
+      case "synthi_dojo_export_artifacts":
+        return dojoExportArtifactsTool(args);
       case "synthi_dojo_issue_proof_capsule":
         return dojoIssueProofCapsuleTool(args);
       case "synthi_dojo_run_with_proof_capsule":
@@ -447,6 +464,7 @@ function dojoRunCheckrideTool(args: unknown): ToolResponse {
     guardrails: previewSkill.guardrails,
     license_preview: previewSkill.permission_license,
     skill_card: previewSkill.skill_card,
+    repo_artifacts: artifactSummary(exportDojoRepoArtifacts(previewSkill)),
   });
 }
 
@@ -470,6 +488,7 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
     license: skill.permission_license,
     assurance_case: skill.assurance_case,
     private_tool: publishedTool,
+    repo_artifacts: artifactSummary(exportDojoRepoArtifacts(skill)),
   });
 }
 
@@ -492,6 +511,19 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
     checkride: recertified.checkride,
     license: recertified.permission_license,
     assurance_case: recertified.assurance_case,
+    repo_artifacts: artifactSummary(exportDojoRepoArtifacts(recertified)),
+  });
+}
+
+function dojoExportArtifactsTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const artifacts = exportDojoRepoArtifacts(skill.skill);
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    artifact_count: artifacts.length,
+    artifacts,
   });
 }
 
@@ -678,6 +710,14 @@ function skillListItem(skill: DojoSkill): Record<string, unknown> {
     },
     skill_card: skill.skill_card,
   };
+}
+
+function artifactSummary(artifacts: ReturnType<typeof exportDojoRepoArtifacts>): Array<{ path: string; content_type: string; sensitive: false }> {
+  return artifacts.map((artifact) => ({
+    path: artifact.path,
+    content_type: artifact.content_type,
+    sensitive: artifact.sensitive,
+  }));
 }
 
 function refusalFor(skill: DojoSkill, blockedBy: string[]): string {

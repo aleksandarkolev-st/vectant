@@ -283,6 +283,13 @@ export interface DojoSkill {
   generated_at: string;
 }
 
+export interface DojoRepoArtifact {
+  path: string;
+  content: string;
+  content_type: "application/json" | "text/markdown";
+  sensitive: false;
+}
+
 export interface DojoProofValidation {
   ok: boolean;
   status: "allowed" | "blocked" | "approval_required";
@@ -778,6 +785,84 @@ export function validateDojoProofCapsule(
   };
 }
 
+export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
+  const root = `.synthi/dojo/skills/${skillPathSegment(skill)}`;
+  const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+  return [
+    {
+      path: `${root}/seed.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.skill_seed),
+    },
+    {
+      path: `${root}/skill.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(redactedSkillArtifact(skill)),
+    },
+    {
+      path: `${root}/skill.graph.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skillGraphArtifact(skill)),
+    },
+    {
+      path: `${root}/vivarium.manifest.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(vivariumArtifact(skill)),
+    },
+    {
+      path: `${root}/checkride.report.md`,
+      content_type: "text/markdown",
+      sensitive: false,
+      content: checkrideMarkdown(skill),
+    },
+    {
+      path: `${root}/assurance.case.md`,
+      content_type: "text/markdown",
+      sensitive: false,
+      content: assuranceMarkdown(skill),
+    },
+    {
+      path: `${root}/license.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.permission_license),
+    },
+    {
+      path: `${root}/proof-capsule.schema.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.proof_capsule_schema),
+    },
+    {
+      path: `${root}/guardrails.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.guardrails),
+    },
+    {
+      path: `${root}/case-law.md`,
+      content_type: "text/markdown",
+      sensitive: false,
+      content: caseLawMarkdown(skill),
+    },
+    {
+      path: `${root}/mcp.manifest.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.private_tool_manifest ?? {
+        kind: "dojoMcpSkillBusManifest",
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        published_tool_name: skill.published_tool_name ?? null,
+      }),
+    },
+  ];
+}
+
 function evaluateScenario(
   seed: DojoSkillSeed,
   scenario: DojoScenario,
@@ -1133,6 +1218,162 @@ function proofCapsuleSchemaFor(license: DojoPermissionLicense): Record<string, u
       signature: { type: "string" },
     },
   };
+}
+
+function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
+  return {
+    schema_version: skill.schema_version,
+    skill_id: skill.skill_id,
+    workspace_id: skill.workspace_id,
+    workflow_id: skill.workflow_id,
+    skill_version: skill.skill_version,
+    name: skill.name,
+    intent: skill.intent,
+    app_origin: skill.app_origin,
+    entrustment_level: skill.entrustment_level,
+    skill_readiness_level: skill.skill_readiness_level,
+    proof_required: skill.skill_passport.proof_required,
+    preferred_substrate: skill.preferred_substrate,
+    execution_substrates: skill.execution_substrates,
+    published_tool_name: skill.published_tool_name ?? null,
+    generated_at: skill.generated_at,
+  };
+}
+
+function skillGraphArtifact(skill: DojoSkill): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    skill_id: skill.skill_id,
+    workflow_id: skill.workflow_id,
+    nodes: [
+      { id: "trigger", kind: "Trigger", label: "MCP skill call" },
+      { id: "input", kind: "Input", label: "Validate input schema", inputs: skill.skill_seed.input_schema },
+      { id: "permission", kind: "Permission", label: skill.permission_license.entrustment_level },
+      ...skill.guardrails.map((guardrail) => ({
+        id: guardrail.guardrail_id,
+        kind: "Guardrail",
+        label: guardrail.title,
+        rule: guardrail.rule,
+      })),
+      { id: "proof", kind: "Proof", label: "Validate proof capsule" },
+      { id: "action", kind: "Action", label: skill.published_tool_name ?? "Workflow replay" },
+      { id: "assertion", kind: "Assertion", label: "Verify success assertions" },
+    ],
+    edges: [
+      ["trigger", "input"],
+      ["input", "permission"],
+      ["permission", "proof"],
+      ...skill.guardrails.map((guardrail) => ["permission", guardrail.guardrail_id]),
+      ["proof", "action"],
+      ["action", "assertion"],
+    ],
+  };
+}
+
+function vivariumArtifact(skill: DojoSkill): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.workspaceOrganoid.v1",
+    organoid_id: `organoid_${skill.skill_seed.seed_id}`,
+    skill_seed_id: skill.skill_seed.seed_id,
+    workspace_id: skill.workspace_id,
+    generated_at: skill.generated_at,
+    version: "0.1.0",
+    tissues: {
+      ui: { surfaces: skill.skill_seed.touched_surfaces },
+      data: { models: skill.skill_seed.touched_data_models, inputs: skill.skill_seed.input_schema },
+      policy: { clues: skill.skill_seed.policy_clues },
+      identity: { auth_required: skill.skill_seed.policy_clues.some((clue) => clue.source === "auth") },
+      document: { synthetic_only: true },
+      api: { anchors: skill.skill_seed.source_or_api_anchors.filter((anchor) => anchor.kind === "api") },
+      failure: { modes: skill.skill_seed.candidate_failure_modes },
+      adversary: { scenarios: skill.scenarios.filter((scenario) => scenario.layer === "risk").map((scenario) => scenario.scenario_id) },
+      evidence: { expected: skill.skill_seed.output_schema.evidence },
+      source: { anchors: skill.skill_seed.source_or_api_anchors },
+      license: { license_id: skill.permission_license.license_id },
+    },
+    scenarios: skill.scenarios,
+    safety_constraints: ["synthetic_data_only", "no_secrets_in_repo_artifacts", "no_production_mutation"],
+    data_policy: { production_data_allowed: false, redact_screenshots_by_default: true },
+  };
+}
+
+function checkrideMarkdown(skill: DojoSkill): string {
+  const report = skill.checkride;
+  const lines = [
+    `# Checkride Report: ${skill.name}`,
+    "",
+    `Skill: ${skill.skill_id}`,
+    `Workflow: ${skill.workflow_id}`,
+    `Entrustment recommendation: ${report.entrustment_recommendation}`,
+    `Skill readiness level: SRL ${report.readiness_level}`,
+    `Coverage score: ${Math.round(report.coverage_score * 100)}%`,
+    `Critical failures: ${report.critical_failures}`,
+    `Blocked scenarios: ${report.blocked_scenarios}`,
+    "",
+    "## Sections",
+    "",
+    `- Knowledge: ${report.knowledge.passed}/${report.knowledge.total}`,
+    `- Risk: ${report.risk.passed}/${report.risk.total}`,
+    `- Skill: ${report.skill.passed}/${report.skill.total}`,
+    "",
+    "## Findings",
+    "",
+    ...report.results.map((result) => `- ${result.status.toUpperCase()} ${result.scenario_id}: ${result.finding}`),
+    "",
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function assuranceMarkdown(skill: DojoSkill): string {
+  const assurance = skill.assurance_case;
+  return [
+    `# Skill Assurance Case: ${skill.name}`,
+    "",
+    `Claim: ${assurance.claim}`,
+    "",
+    `Context: ${assurance.context}`,
+    "",
+    `Argument: ${assurance.argument}`,
+    "",
+    "## Evidence",
+    "",
+    ...assurance.evidence_refs.map((ref) => `- ${ref}`),
+    "",
+    "## Limits",
+    "",
+    ...assurance.limits.map((limit) => `- ${limit}`),
+    "",
+    "## Expiration",
+    "",
+    ...assurance.expiration.map((item) => `- ${item}`),
+    "",
+  ].join("\n");
+}
+
+function caseLawMarkdown(skill: DojoSkill): string {
+  const lines = [`# Skill Case Law: ${skill.name}`, ""];
+  if (skill.case_law.length === 0) {
+    lines.push("No binding case law has been generated for this skill yet.", "");
+    return lines.join("\n");
+  }
+  for (const item of skill.case_law) {
+    lines.push(
+      `## ${item.title}`,
+      "",
+      `Case: ${item.case_id}`,
+      `Date: ${item.date}`,
+      `Finding: ${item.finding}`,
+      `Impact: ${item.impact}`,
+      `Rule: ${item.rule_created}`,
+      `Status: ${item.status}`,
+      ""
+    );
+  }
+  return lines.join("\n");
+}
+
+function skillPathSegment(skill: DojoSkill): string {
+  return slug(skill.skill_id.replace(/^dojo_/, "") || skill.name);
 }
 
 function defaultEvidenceClaimsFor(skill: DojoSkill): DojoEvidenceClaim[] {
