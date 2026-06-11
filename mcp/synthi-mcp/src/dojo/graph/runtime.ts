@@ -2,6 +2,11 @@ import { type DojoGraphNode, type DojoGraphMode, type DojoSkillGraph, validateDo
 import { evaluateDojoGuardrailPredicate } from "./guardrail_runtime.js";
 import { evaluateDojoGraphAssertions, type DojoAssertionRuntimeResult } from "./assertion_runtime.js";
 import { decideDojoRollbackForAssertionFailure, noRollbackRequired, type DojoRollbackDecision } from "./rollback_runtime.js";
+import {
+  createFakeDojoSubstrateExecutor,
+  type DojoSubstrateExecutionResult,
+  type DojoSubstrateExecutor,
+} from "./substrate_executor.js";
 
 export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped";
 export type DojoGraphRunStatus = "completed" | "blocked" | "failed";
@@ -13,6 +18,7 @@ export interface DojoGraphNodeRunResult {
   blocked_by: string[];
   assertion_results: DojoAssertionRuntimeResult[];
   rollback_decision: DojoRollbackDecision;
+  substrate_result?: DojoSubstrateExecutionResult;
 }
 
 export interface DojoGraphRunResult {
@@ -27,6 +33,7 @@ export interface DojoSkillGraphRuntimeInput {
   graph: DojoSkillGraph;
   mode?: DojoGraphMode;
   inputs?: Record<string, unknown>;
+  substrate_executor?: DojoSubstrateExecutor;
 }
 
 export class DojoSkillGraphRuntime {
@@ -49,6 +56,7 @@ export class DojoSkillGraphRuntime {
     }
 
     const inputs = input.inputs ?? {};
+    const substrateExecutor = input.substrate_executor ?? createFakeDojoSubstrateExecutor();
     const nodeResults: DojoGraphNodeRunResult[] = [];
     for (const node of graph.nodes) {
       const blockedBy = blockedByForNode(node, mode, inputs);
@@ -68,6 +76,30 @@ export class DojoSkillGraphRuntime {
           mode,
           node_results: nodeResults,
           blocked_by: blockedBy,
+        };
+      }
+
+      if (node.kind === "Action") {
+        const substrateResult = await substrateExecutor.execute({ node, inputs });
+        if (!substrateResult.ok) {
+          const substrateNodeResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "blocked",
+            blocked_by: substrateResult.blocked_by,
+            substrate_result: substrateResult,
+          };
+          nodeResults[nodeResults.length - 1] = substrateNodeResult;
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            node_results: nodeResults,
+            blocked_by: substrateResult.blocked_by,
+          };
+        }
+        nodeResults[nodeResults.length - 1] = {
+          ...result,
+          substrate_result: substrateResult,
         };
       }
 
@@ -95,7 +127,7 @@ export class DojoSkillGraphRuntime {
       }
 
       nodeResults[nodeResults.length - 1] = {
-        ...result,
+        ...nodeResults[nodeResults.length - 1]!,
         assertion_results: assertionResults,
       };
     }

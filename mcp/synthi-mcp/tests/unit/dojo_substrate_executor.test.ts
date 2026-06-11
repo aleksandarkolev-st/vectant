@@ -1,0 +1,121 @@
+import { describe, expect, it } from "vitest";
+import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
+import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
+import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
+
+describe("Dojo substrate executor", () => {
+  it("rejects API substrate actions without approved candidate", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_candidate_not_approved"],
+    }));
+  });
+
+  it("rejects UI fallback when license allows only API or MCP substrates", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["dom"] }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        license_allowed_substrates: ["api", "mcp"],
+        assertion_results: { assert_submission_state: true },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["substrate_not_allowed"],
+    }));
+  });
+
+  it("executes approved API substrate and records substrate evidence", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        approved_api_candidates: ["api-a"],
+        assertion_results: { assert_submission_state: true },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: true,
+            substrate: "api",
+            evidence_refs: ["substrate:api:action_submit"],
+          }),
+        }),
+      ]),
+    }));
+  });
+});
+
+function graphFixture(input: { substrate_options: string[]; metadata?: Record<string, unknown> }): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-a",
+    skill_id: "skill-a",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "production",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      {
+        node_id: "action_submit",
+        kind: "Action",
+        label: "Submit invoice",
+        risk: "dangerous",
+        action: "run_workflow",
+        preconditions: ["workspace_verified == true"],
+        postconditions: ["submission_state == success"],
+        guardrails: [
+          {
+            guardrail_id: "guard_client_stable_id",
+            predicate: "client_id_verified == true",
+            severity: "block",
+          },
+        ],
+        proof: {
+          required: true,
+          required_claims: ["checkride_passed", "workspace_verified"],
+          required_guardrails: ["guard_client_stable_id"],
+        },
+        assertions: [
+          {
+            assertion_id: "assert_submission_state",
+            description: "Submission state is success.",
+            required: true,
+          },
+        ],
+        substrate_options: input.substrate_options,
+        evidence_policy: ["append_action_trace"],
+        case_law_refs: [],
+        expiry_triggers: [],
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+      },
+    ],
+    edges: [],
+  };
+}
