@@ -24,6 +24,7 @@ const sseService = require('./sseService');
 const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
+const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -45,6 +46,39 @@ if (typeof fetch === 'function') {
 const CODE_INTEL_URL = config.CODE_INTEL_URL;
 
 const PORT = config.PORT;
+
+function normalizeBaseUrl(value, fallback) {
+  const raw = String(value || fallback || '').trim();
+  if (!raw) return '';
+  return raw.replace(/\/+$/, '');
+}
+
+function publicAppBaseUrl() {
+  return normalizeBaseUrl(
+    process.env.SYNTHI_PUBLIC_APP_URL || process.env.SYNTHI_APP_URL,
+    'http://localhost:3000',
+  );
+}
+
+function internalAppBaseUrl() {
+  return normalizeBaseUrl(
+    process.env.SYNTHI_APP_INTERNAL_URL || process.env.SYNTHI_APP_URL,
+    'http://localhost:3000',
+  );
+}
+
+function makeInviteLink({ sessionId, inviteToken, roomCode, slug }) {
+  const style = String(process.env.SYNTHI_INVITE_LINK_STYLE || 'slug').trim().toLowerCase();
+  const useSlugPath = style !== 'legacy' && slug;
+  const url = new URL(
+    useSlugPath ? `/${encodeURIComponent(slug)}` : `/collab/${encodeURIComponent(sessionId)}`,
+    publicAppBaseUrl(),
+  );
+  if (useSlugPath) url.searchParams.set('collab', sessionId);
+  url.searchParams.set('token', inviteToken);
+  if (roomCode) url.searchParams.set('code', roomCode);
+  return url.toString();
+}
 
 // PERF: Bounded LRU cache replaces unbounded Map to prevent memory leak and
 // GC pauses on long-running servers with many files.  1000 entries covers the
@@ -1033,7 +1067,7 @@ const server = http.createServer(async (req, res) => {
   if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id, x-user-name, x-user-email');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id, x-user-name, x-user-email, x-runtime-scope, x-runtime-fs-user-id');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1160,7 +1194,26 @@ const server = http.createServer(async (req, res) => {
     const { session_id, user_id } = parsed;
     if (!session_id || !user_id) { res.writeHead(400); res.end('Missing session_id or user_id'); return; }
     try {
-      const result = await spawner.ensurePod(session_id, user_id);
+      const workspaceSlug = parsed.workspace_slug || parsed.workspaceSlug || '';
+      const runtimeKind = parsed.runtime_kind || parsed.runtimeKind || '';
+      const filesystemUserId =
+        parsed.filesystemUserId ||
+        parsed.filesystem_user_id ||
+        parsed.fsUserId ||
+        user_id;
+      if (workspaceSlug) {
+        await ensureRuntimeFilesystem({
+          workspaceSlug,
+          filesystemUserId,
+          runtimeScope: session_id,
+          reason: 'spawner_ensure',
+        });
+      }
+      const result = await spawner.ensurePod(session_id, user_id, {
+        workspaceSlug,
+        runtimeKind,
+        filesystemUserId,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
@@ -1213,10 +1266,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
-  // REVERSE PROXY — /port/<N>/... → http://127.0.0.1:<N>/...
+  // REVERSE PROXY — /port/<N>/... or /runtime/<scope>/port/<N>/...
   // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
   // ========================================================================
-  if (req.url.startsWith('/port/')) {
+  if (req.url.startsWith('/port/') || req.url.startsWith('/runtime/')) {
     proxyService.proxyHttpRequest(req, res);
     return;
   }
@@ -1484,11 +1537,26 @@ const server = http.createServer(async (req, res) => {
       const { createHeadlessSession } = require('./terminalService');
       const crypto = require('crypto');
       const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
+      const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+      const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+      const terminalUserId = parsed.userId || headerUserId || '';
+      const filesystemUserId =
+        parsed.filesystemUserId ||
+        (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+        terminalUserId;
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = await createHeadlessSession(sessionId, slug, parsed.userId || '');
+      const { ptyProcess, cwd } = await createHeadlessSession(
+        sessionId,
+        slug,
+        terminalUserId,
+        120,
+        30,
+        parsed.name || null,
+        { runtimeScope, filesystemUserId },
+      );
 
-      console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
+      console.log(`[ExecTerminal] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
       // Collect output from the PTY
       let output = '';
@@ -1607,6 +1675,8 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           sessionId,
+          runtimeScope: runtimeScope || null,
+          filesystemScoped: Boolean(filesystemUserId),
           command,
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
@@ -1661,14 +1731,37 @@ const server = http.createServer(async (req, res) => {
 
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
     const { resolveWorkspaceCwd } = require('./terminalService');
-    const cwd = resolveWorkspaceCwd(slug);
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const terminalUserId = parsed.userId || headerUserId || '';
+    const filesystemUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      terminalUserId;
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: slug,
+        filesystemUserId,
+        runtimeScope,
+        reason: 'exec_pty',
+      });
+      cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    } catch (err) {
+      console.error('[ExecPTY] Workspace filesystem preparation failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
+      return;
+    }
 
-    console.log(`[ExecPTY] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+    console.log(`[ExecPTY] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
     // Find active PTY session for this workspace to mirror output
     let targetSession = null;
     for (const [, session] of terminalSessions) {
-      if (session.cwd && session.cwd.endsWith(slug) && session.pty) {
+      const sameWorkspace = session.workspaceSlug === slug || (session.cwd && session.cwd.endsWith(slug));
+      const sameFilesystem = !filesystemUserId || !session.filesystemUserId || session.filesystemUserId === filesystemUserId;
+      if (sameWorkspace && sameFilesystem && session.pty) {
         targetSession = session;
         break;
       }
@@ -1763,9 +1856,30 @@ const server = http.createServer(async (req, res) => {
 
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
     const { resolveWorkspaceCwd } = require('./terminalService');
-    const cwd = resolveWorkspaceCwd(slug);
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const terminalUserId = parsed.userId || headerUserId || '';
+    const filesystemUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      terminalUserId;
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: slug,
+        filesystemUserId,
+        runtimeScope,
+        reason: 'exec',
+      });
+      cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    } catch (err) {
+      console.error('[Exec] Workspace filesystem preparation failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
+      return;
+    }
 
-    console.log(`[Exec] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+    console.log(`[Exec] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
     const { spawn } = require('child_process');
     const isWin = require('os').platform() === 'win32';
@@ -2452,8 +2566,12 @@ const server = http.createServer(async (req, res) => {
           .then((r) => logger.info('invite_delivery', { targetUserId, slug, delivered: r.delivered, queued: r.queued }))
           .catch((err) => logger.warn('invite_delivery_failed', { targetUserId, slug }, err));
 
-        const appUrl = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
-        const inviteLink = `${appUrl}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`;
+        const inviteLink = makeInviteLink({
+          sessionId: session.id,
+          inviteToken: session.inviteToken,
+          roomCode: session.roomCode,
+          slug,
+        });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -2766,7 +2884,12 @@ const server = http.createServer(async (req, res) => {
               worktreePath: session.worktreePath,
               roomCode: session.roomCode || null,
               createdAt: session.createdAt,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug,
+              }),
             };
             break;
           }
@@ -2911,7 +3034,12 @@ const server = http.createServer(async (req, res) => {
             result = {
               inviteToken: regenResult.inviteToken,
               roomCode: regenResult.roomCode,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${regenResult.inviteToken}${regenResult.roomCode ? `&code=${regenResult.roomCode}` : ''}`,
+              inviteLink: makeInviteLink({
+                sessionId: sessionIdParam,
+                inviteToken: regenResult.inviteToken,
+                roomCode: regenResult.roomCode,
+                slug: sessionManager.getSession(sessionIdParam)?.slug,
+              }),
             };
             break;
           }
@@ -3149,8 +3277,8 @@ const server = http.createServer(async (req, res) => {
                   };
 
                   // Try to create the workspace in the main Synthi app DB so the web UI finds it.
-                  // Use environment var SYNTHI_APP_URL or default to http://localhost:3000
-                  const SYNTHI_APP_URL = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
+                  // Use the internal app URL when deployed; public invite links use SYNTHI_PUBLIC_APP_URL.
+                  const appInternalUrl = internalAppBaseUrl();
 
                   // Determine fetch function - prefer global fetch (Node 18+), otherwise require node-fetch
                   let fetchFunc = null;
@@ -3179,7 +3307,7 @@ const server = http.createServer(async (req, res) => {
                     while (attempt < maxAttempts && !created) {
                       attempt += 1;
                       try {
-                        const res = await fetchFunc(`${SYNTHI_APP_URL}/api/workspace`, {
+                        const res = await fetchFunc(`${appInternalUrl}/api/workspace`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify(payload),
@@ -3211,7 +3339,7 @@ const server = http.createServer(async (req, res) => {
 
                     workspaceRegistration.created = created;
                   } else {
-                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
+                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_INTERNAL_URL or install node-fetch.');
                     workspaceRegistration.pending = true;
                   }
 
@@ -3897,7 +4025,7 @@ server.on('upgrade', (request, socket, head) => {
   // Use replace to safely strip the prefix
   request.url = request.url.replace(/^\/collab/, '');
   if (!request.url.startsWith('/')) request.url = '/' + request.url;
-  if (request.url.startsWith('/port/')) {
+  if (request.url.startsWith('/port/') || request.url.startsWith('/runtime/')) {
     if (!proxyService.proxyWsUpgrade(request, socket, head)) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();

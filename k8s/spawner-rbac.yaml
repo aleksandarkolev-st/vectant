@@ -4,7 +4,7 @@
 #  Grants the collab-server ServiceAccount permission to manage
 #  workspace Deployments, watch Pods, and manage per-workspace Services
 #  in the synthi namespace. The spawner creates/patches/deletes
-#  Deployments named "workspace-*" and Services named "ws-svc-*".
+#  opaque runtime Deployments and Services named "rt-<base32-hmac>".
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ServiceAccount
@@ -15,7 +15,40 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    iam.gke.io/gcp-service-account: synthi-gcs-sa@overview-synti.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frontend-sa
+  namespace: synthi
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: y-sweet-sa
+  namespace: synthi
+  labels:
+    app: y-sweet
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-runtime-sa
+  namespace: synthi
+  labels:
+    app: workspace
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -33,6 +66,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # Open interactive shells inside per-runtime pods for the terminal service.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   # Create/delete ClusterIP Services per workspace for health checks.
   - apiGroups: [""]
     resources: ["services"]

@@ -5,7 +5,7 @@
  * Mirrors the public API of workspacePodSpawner.js but uses the Docker
  * Engine API (via dockerode + /var/run/docker.sock) instead of Kubernetes.
  * Each active session maps to a single worker container named
- * "workspace-<sanitised-session-id>" with SESSION_ID wired into its env.
+ * "rt-<base32-hmac>" with SESSION_ID wired into its env.
  *
  * The signaling server multiplexes peers by (session_id, role), so a
  * dedicated container per session is the local equivalent of the cloud's
@@ -15,6 +15,7 @@
 
 const Docker = require('dockerode');
 const lifecycle = require('./sessionLifecycle');
+const { runtimeResourceId, metadataHash } = require('./runtimeIdentity');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -45,12 +46,8 @@ const activeSessions = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function safeName(sessionId) {
-  return String(sessionId).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 48);
-}
-
 function containerName(sessionId) {
-  return `workspace-${safeName(sessionId)}`;
+  return runtimeResourceId(sessionId);
 }
 
 function getActiveWorkspaceCount() {
@@ -131,9 +128,9 @@ async function ensurePod(sessionId, userId) {
     Env: env,
     Labels: {
       [MANAGED_LABEL]: MANAGED_VALUE,
-      'synthi/session': safeName(sessionId),
-      'synthi/sessionIdRaw': String(sessionId),
-      'synthi/userId': String(userId || ''),
+      'synthi/runtime-id': runtimeResourceId(sessionId),
+      'synthi/runtimeScopeFull': String(sessionId),
+      ...(userId ? { 'synthi/userIdHash': metadataHash(userId) } : {}),
       'synthi/lastActive': String(now),
     },
     HostConfig: {
@@ -283,7 +280,7 @@ async function cullIdleWorkspaces() {
       filters: { label: [`${MANAGED_LABEL}=${MANAGED_VALUE}`] },
     });
     for (const c of containers) {
-      const sid = c.Labels?.['synthi/sessionIdRaw'];
+      const sid = c.Labels?.['synthi/runtimeScopeFull'];
       if (!sid || activeSessions.has(sid)) continue;
       const lastActive = Number(c.Labels?.['synthi/lastActive'] || 0);
       if (now - lastActive > IDLE_TIMEOUT_MS) {

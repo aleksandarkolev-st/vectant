@@ -33,7 +33,9 @@ spec:
         app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
-        #runAsNonRoot: true
+        runAsUser: 0
+        runAsGroup: 0
+      serviceAccountName: frontend-sa
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -47,7 +49,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: nextjs
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-frontend:build-tag-required
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-frontend:build-tag-required
           ports:
             - containerPort: 3000
               name: http
@@ -115,6 +117,38 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: AI_BACKEND_AUTH_TOKEN
+            - name: GCP_PROJECT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCP_PROJECT_ID
+            - name: GCS_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCS_BUCKET_NAME
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GEMINI_API_KEY
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
+                  optional: true
             # ── TURN credentials (server-side API route) ────────────────────
             - name: CLOUDFLARE_TURN_TOKEN_ID
               valueFrom:
@@ -150,30 +184,6 @@ spec:
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 30
-        # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
-        # Securely tunnels PostgreSQL traffic to the managed Cloud SQL
-        # instance.  The app connects to 127.0.0.1:5432 (localhost) and the
-        # proxy handles IAM auth + TLS to Google's network.
-        - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
-          args:
-            - "--port=5432"
-            - "$(CLOUD_SQL_INSTANCE)"
-          env:
-            - name: CLOUD_SQL_INSTANCE
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: CLOUD_SQL_INSTANCE
-          securityContext:
-            #runAsNonRoot: true
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 200m
-              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -184,7 +194,11 @@ metadata:
     app: frontend
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"ports":{"3000":"frontend-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
+  type: NodePort
   selector:
     app: frontend
   ports:

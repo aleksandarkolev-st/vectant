@@ -580,9 +580,6 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
         spec: {
           restartPolicy: 'Never',
           securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 1000,
-            runAsGroup: 1000,
             fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
@@ -592,8 +589,9 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
             name: 'prep',
             image: WORKER_IMAGE,
             securityContext: {
-              allowPrivilegeEscalation: false,
-              capabilities: { drop: ['ALL'] },
+              runAsUser: 0,
+              runAsGroup: 0,
+              allowPrivilegeEscalation: true,
             },
             command: ['/bin/bash', '-lc', shellCommand],
             workingDir: runtime.taskCwd,

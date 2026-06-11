@@ -290,7 +290,7 @@ app = FastAPI()
 def _parse_allowed_origins() -> List[str]:
     raw = os.environ.get(
         "AI_ENGINE_ALLOWED_ORIGINS",
-        "http://localhost:3000,https://beta.synthi.app",
+        "http://localhost:3000,https://beta.vectant.dev",
     )
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 

@@ -1,11 +1,11 @@
 import SynthiException from "@/components/SynthiException";
+import { buildWorkspaceRuntimeScope, getWorkspaceRuntimeIdentity, USER_ID_STORAGE_KEY } from "@/services/runtimeScope";
 
 const SIGNAL_URL = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
     || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
         ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/signal`
         : 'ws://localhost:9000');
 const WORKER_SPAWNER_HEARTBEAT_MS = 60_000;
-const USER_ID_STORAGE_KEY = 'synthi-user-id';
 
 function shouldUseWorkspaceSpawner() {
     const override = process.env.NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER;
@@ -168,8 +168,7 @@ export class CompilerClient {
     /** Build the session_id sent in the signaling "register" message. */
     _getSignalingSessionId() {
         if (this._signalingSessionId) return this._signalingSessionId;
-        // Fallback: derive from slug (single-user session).
-        if (this.slug) return this.slug;
+        if (this.slug) return buildWorkspaceRuntimeScope(this.slug, { userId: this._getCompilerUserId() });
         return undefined; // omit → server falls back to __legacy__
     }
 
@@ -180,6 +179,9 @@ export class CompilerClient {
 
     async _ensureWorkerPod(sessionId = this._getSignalingSessionId()) {
         if (!sessionId) return;
+        const runtimeIdentity = this.slug
+            ? getWorkspaceRuntimeIdentity(this.slug, { userId: this._getCompilerUserId() })
+            : null;
 
         const response = await fetch(`${getCollabHttpBaseUrl()}/api/spawner/ensure`, {
             method: 'POST',
@@ -187,7 +189,10 @@ export class CompilerClient {
             credentials: 'omit',
             body: JSON.stringify({
                 session_id: sessionId,
-                user_id: this._getCompilerUserId() || sessionId,
+                user_id: runtimeIdentity?.actorUserId || this._getCompilerUserId() || sessionId,
+                workspaceSlug: this.slug || '',
+                runtimeKind: runtimeIdentity?.runtimeKind || '',
+                filesystemUserId: runtimeIdentity?.filesystemUserId || '',
             }),
         });
 
