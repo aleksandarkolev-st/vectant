@@ -26,6 +26,7 @@ export const WORKFLOW_ACTIONS = Object.freeze({
   OBSERVE: 'synthi_browser_observe_preview',
   BEGIN_TEACH: 'synthi_browser_begin_teach',
   END_TEACH: 'synthi_browser_end_teach',
+  RUN_CHECKRIDE: 'synthi_dojo_run_checkride',
   CONFIGURE_AUTH: 'synthi_auth_get_tool_auth_readiness',
   OPEN_SOURCE: 'synthi_source_get_mapping_status',
   COMPILE_CONTRACT: 'synthi_browser_compile_workflow',
@@ -35,7 +36,7 @@ export const WORKFLOW_ACTIONS = Object.freeze({
   RUN_CI_ISOLATED_REPLAY: 'synthi_safety_run_ci_isolated_replay',
   GENERATE_SCRIPT: 'synthi_browser_generate_script',
   GENERATE_MANIFEST: 'synthi_browser_generate_private_tool_manifest',
-  PUBLISH_TOOL: 'synthi_workflow_publish_tool',
+  PUBLISH_TOOL: 'synthi_dojo_publish_skill',
 });
 
 const DEFAULT_WORKSPACE_LABEL = 'Current workspace';
@@ -183,6 +184,54 @@ function normalizeIsolationState(value = {}) {
   };
 }
 
+function normalizeDojoState(value = {}) {
+  const raw = pickObject(value.dojo, value.skillCredential, value.skill_credential) || {};
+  const skillCard = pickObject(raw.skillCard, raw.skill_card) || {};
+  const skillPassport = pickObject(raw.skillPassport, raw.skill_passport) || {};
+  const checkride = pickObject(raw.checkride) || {};
+  const license = pickObject(raw.license) || {};
+  const guardrails = Array.isArray(raw.guardrails) ? raw.guardrails : [];
+  const allowedActions = Array.isArray(license.allowedActions) ? license.allowedActions : Array.isArray(license.allowed_actions) ? license.allowed_actions : [];
+  const gatedActions = Array.isArray(license.gatedActions) ? license.gatedActions : Array.isArray(license.gated_actions) ? license.gated_actions : [];
+  const blockedActions = Array.isArray(license.blockedActions) ? license.blockedActions : Array.isArray(license.blocked_actions) ? license.blocked_actions : [];
+
+  return {
+    status: raw.status || 'notStarted',
+    label: raw.label || skillCard.status || 'No Dojo skill',
+    detail: raw.detail || 'Teach a workflow before Dojo can issue a skill license.',
+    published: Boolean(raw.published),
+    skillId: raw.skillId || raw.skill_id || skillPassport.skill_id || null,
+    workflowId: raw.workflowId || raw.workflow_id || null,
+    entrustmentLevel: raw.entrustmentLevel || raw.entrustment_level || skillPassport.entrustment_level || 'E0',
+    readinessLevel: Number(raw.readinessLevel ?? raw.readiness_level ?? skillPassport.readiness_level ?? 0),
+    proofRequired: Boolean(raw.proofRequired ?? raw.proof_required ?? skillPassport.proof_required),
+    publishedToolName: raw.publishedToolName || raw.published_tool_name || null,
+    scenarioCount: Number(raw.scenarioCount ?? raw.scenario_count ?? 0),
+    caseLawCount: Number(raw.caseLawCount ?? raw.case_law_count ?? 0),
+    checkride: {
+      coverageScore: Number(checkride.coverageScore ?? checkride.coverage_score ?? 0),
+      criticalFailures: Number(checkride.criticalFailures ?? checkride.critical_failures ?? 0),
+      blockedScenarios: Number(checkride.blockedScenarios ?? checkride.blocked_scenarios ?? 0),
+    },
+    skillCard: {
+      title: skillCard.title || raw.label || 'Dojo skill',
+      status: skillCard.status || raw.label || 'Draft',
+      canDoAlone: Array.isArray(skillCard.can_do_alone) ? skillCard.can_do_alone : Array.isArray(skillCard.canDoAlone) ? skillCard.canDoAlone : [],
+      willAskBefore: Array.isArray(skillCard.will_ask_before) ? skillCard.will_ask_before : Array.isArray(skillCard.willAskBefore) ? skillCard.willAskBefore : [],
+      willNotDo: Array.isArray(skillCard.will_not_do) ? skillCard.will_not_do : Array.isArray(skillCard.willNotDo) ? skillCard.willNotDo : [],
+      practiced: skillCard.practiced || '',
+      foundAndFixed: skillCard.found_and_fixed || skillCard.foundAndFixed || '',
+      proofBadge: skillCard.proof_badge || skillCard.proofBadge || (raw.proofRequired ? 'Proof required' : 'Proof optional'),
+    },
+    license: {
+      allowedActions,
+      gatedActions,
+      blockedActions,
+    },
+    guardrails,
+  };
+}
+
 function shouldShowIsolationProfile(model) {
   return Boolean(
     model.isolation?.hasMutation ||
@@ -190,6 +239,10 @@ function shouldShowIsolationProfile(model) {
     model.isolation?.readiness === 'ciIsolatedReady' ||
     (Array.isArray(model.isolation?.missing) && model.isolation.missing.length > 0),
   );
+}
+
+function shouldShowDojoSkill(model) {
+  return Boolean(model.dojo?.skillId || model.dojo?.status === 'draft' || model.dojo?.status === 'licensed');
 }
 
 function buildReadinessRows(model) {
@@ -342,6 +395,13 @@ function buildActions(model) {
     },
     secondary: [
       {
+        action: WORKFLOW_ACTIONS.RUN_CHECKRIDE,
+        label: 'Checkride',
+        icon: 'run',
+        enabled: compiled || traceReady,
+        disabledReason: 'Teach a workflow first',
+      },
+      {
         action: WORKFLOW_ACTIONS.COMPILE_CONTRACT,
         label: 'Compile',
         icon: 'manifest',
@@ -371,10 +431,10 @@ function buildActions(model) {
       },
       {
         action: WORKFLOW_ACTIONS.PUBLISH_TOOL,
-        label: 'Publish',
+        label: 'License',
         icon: 'teach',
-        enabled: scriptReady && unresolvedCount === 0,
-        disabledReason: scriptReady ? 'Resolve workflow questions first' : 'Generate the Playwright workflow first',
+        enabled: compiled && unresolvedCount === 0,
+        disabledReason: compiled ? 'Resolve workflow questions first' : 'Compile the workflow contract first',
       },
     ],
   };
@@ -429,6 +489,7 @@ export function createDefaultWorkflowViewModel(workspaceSlug) {
     unresolvedSteps: [],
     history: [],
     isolation: normalizeIsolationState(),
+    dojo: normalizeDojoState(),
   };
 
   return {
@@ -458,6 +519,7 @@ export function normalizeWorkflowPanelState(input, workspaceSlug) {
     unresolvedSteps: Array.isArray(value.unresolvedSteps) ? value.unresolvedSteps : base.unresolvedSteps,
     history: Array.isArray(value.history) ? value.history : base.history,
     isolation: normalizeIsolationState(value),
+    dojo: normalizeDojoState(value),
   };
 
   const withDerived = {
@@ -735,6 +797,83 @@ function ReviewQueue({ items, blockers }) {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+function DojoSkillCredential({ dojo, traceReady, onAction }) {
+  if (!dojo || !shouldShowDojoSkill({ dojo })) return null;
+  const licensed = dojo.status === 'licensed' || dojo.published;
+  const criticalFailures = Number(dojo.checkride?.criticalFailures || 0);
+  const tone = licensed ? 'ok' : criticalFailures > 0 ? 'warn' : 'neutral';
+  const allowed = dojo.skillCard?.canDoAlone?.length ? dojo.skillCard.canDoAlone : dojo.license?.allowedActions || [];
+  const gated = dojo.skillCard?.willAskBefore?.length ? dojo.skillCard.willAskBefore : dojo.license?.gatedActions || [];
+  const blocked = dojo.skillCard?.willNotDo?.length ? dojo.skillCard.willNotDo : dojo.license?.blockedActions || [];
+
+  return (
+    <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-dojo">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-xs font-semibold">Dojo Skill</h3>
+          <p className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {dojo.detail}
+          </p>
+        </div>
+        <StatusBadge label={dojo.entrustmentLevel || 'E0'} tone={tone} icon={ShieldCheck} />
+      </div>
+      <dl className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Readiness</dt>
+          <dd className="min-w-0 truncate text-right">SRL {dojo.readinessLevel}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Checkride</dt>
+          <dd className="min-w-0 truncate text-right">
+            {Math.round(Number(dojo.checkride?.coverageScore || 0) * 100)}% coverage
+          </dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Practice</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.skillCard?.practiced || `${dojo.scenarioCount || 0} synthetic cases`}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Guardrails</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.skillCard?.foundAndFixed || `${dojo.guardrails?.length || 0} active`}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Proof</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.proofRequired ? 'Required' : 'Optional'}</dd>
+        </div>
+        {dojo.publishedToolName ? (
+          <div className="flex items-center justify-between gap-3">
+            <dt style={{ color: 'var(--text-muted)' }}>MCP tool</dt>
+            <dd className="min-w-0 truncate text-right">{dojo.publishedToolName}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <div className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Can:</span> {allowed.slice(0, 4).join(', ') || 'Practice only'}</div>
+        <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Ask:</span> {gated.slice(0, 4).join(', ') || 'None'}</div>
+        <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Block:</span> {blocked.slice(0, 4).join(', ') || 'None'}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_CHECKRIDE}
+          label="Checkride"
+          icon="run"
+          enabled={traceReady}
+          disabledReason="Teach a workflow first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.PUBLISH_TOOL}
+          label={licensed ? 'Relicense' : 'License'}
+          icon="teach"
+          enabled={traceReady}
+          disabledReason="Teach a workflow first"
+          onAction={onAction}
+        />
+      </div>
     </section>
   );
 }
@@ -1030,6 +1169,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
         </section>
 
         <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+        <DojoSkillCredential dojo={model.dojo} traceReady={traceReady} onAction={emitWorkflowAction} />
         {shouldShowIsolationProfile(model) ? (
           <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
         ) : null}

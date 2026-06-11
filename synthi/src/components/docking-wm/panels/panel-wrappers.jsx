@@ -449,6 +449,11 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
         case WORKFLOW_ACTIONS.COMPILE_CONTRACT:
           await callWorkflowTool(WORKFLOW_ACTIONS.COMPILE_CONTRACT, {});
           break;
+        case WORKFLOW_ACTIONS.RUN_CHECKRIDE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_CHECKRIDE, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
         case WORKFLOW_ACTIONS.PREFIX_VALIDATE:
           await callWorkflowTool(WORKFLOW_ACTIONS.PREFIX_VALIDATE, {
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
@@ -484,7 +489,9 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
           break;
         case WORKFLOW_ACTIONS.PUBLISH_TOOL:
-          await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {});
+          await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
           break;
         default:
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);

@@ -21,15 +21,18 @@
 
 import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
+import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import {
   mutationSafetyPlanFor,
   replayIsolationProfileManifestFor,
   replayIsolationProfiles,
 } from "../browser/safety.js";
-import type { WorkflowStepContractV7 } from "../browser/workflow.js";
+import type { WorkflowContractV7, WorkflowStepContractV7 } from "../browser/workflow.js";
 import { AUTH_TOOL_NAMES, dispatchAuthTool } from "../tools/auth.js";
 import { BROWSER_TOOL_NAMES, browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
+import { DOJO_TOOL_NAMES, dispatchDojoTool } from "../tools/dojo.js";
 import { SAFETY_TOOL_NAMES, dispatchSafetyTool } from "../tools/safety.js";
 import { SOURCE_TOOL_NAMES, dispatchSourceTool } from "../tools/source.js";
 import type { ToolResponse } from "../tools/shared.js";
@@ -91,11 +94,12 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_workflow_ci_replay: "synthi_safety_run_ci_isolated_replay",
   synthi_workflow_generate_playwright: "synthi_browser_generate_script",
   synthi_workflow_generate_tool_manifest: "synthi_browser_generate_private_tool_manifest",
-  synthi_workflow_publish_tool: "synthi_browser_publish_private_tool",
+  synthi_workflow_publish_tool: "synthi_dojo_publish_skill",
 };
 
 const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set<string>([
   ...BROWSER_TOOL_NAMES,
+  ...DOJO_TOOL_NAMES,
   ...AUTH_TOOL_NAMES,
   ...SOURCE_TOOL_NAMES,
   ...SAFETY_TOOL_NAMES,
@@ -170,6 +174,7 @@ async function dispatchWorkflowTool(toolName: string, args: unknown): Promise<To
   if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName) && !toolName.startsWith("synthi_app_")) return null;
   return (
     (await dispatchBrowserTool(toolName, args)) ??
+    (await dispatchDojoTool(toolName, args)) ??
     (await dispatchSafetyTool(toolName, args)) ??
     (await dispatchSourceTool(toolName, args)) ??
     (await dispatchAuthTool(toolName, args))
@@ -423,6 +428,24 @@ function updateBridgeState(
       ...state.history,
     ].slice(0, MAX_HISTORY);
   }
+  if (ok && toolName === "synthi_dojo_publish_skill") {
+    state.manifestGeneratedAt = state.manifestGeneratedAt ?? now;
+    state.publishedAt = now;
+    const skill = payload["skill"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_publish_${Date.now()}`,
+      label: "Dojo skill licensed",
+      detail: stringOpt(skill?.["skill_id"]) ?? stringOpt(skill?.["name"]) ?? "Licensed competency",
+      status: "passed",
+      statusLabel: "Licensed",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [
+      entry,
+      ...state.history,
+    ].slice(0, MAX_HISTORY);
+  }
   if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow" || toolName === "synthi_safety_run_ci_isolated_replay") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
     const replay = payload["replay"] as Record<string, unknown> | undefined;
@@ -569,6 +592,7 @@ export function buildBrowserWorkflowPanelState(
       workflowId: workflow.contract.workflowId,
       publishReadiness: publish.readiness,
     },
+    dojo: dojoPanelStateFor(workflow.contract, workspaceId),
     steps: workflow.contract.steps.map(panelStepForContract),
     unresolvedSteps: workflow.contract.steps
       .filter((step) => step.limitations.some((limitation) => REVIEW_LIMITATIONS.has(limitation)))
@@ -834,6 +858,66 @@ function limitationDetail(limitation: string): string {
     default:
       return "Review this workflow limitation before publishing.";
   }
+}
+
+function dojoPanelStateFor(contract: WorkflowContractV7, workspaceId: string | undefined): Record<string, unknown> {
+  const published = dojoSkillRegistry.getByWorkflowId(contract.workflowId);
+  const skill = published ?? (contract.steps.length > 0
+    ? buildDojoSkill(contract, {
+        workspace_id: workspaceId,
+        private_tool_manifest: generatePrivateWorkflowToolManifest(contract),
+        now: "1970-01-01T00:00:00.000Z",
+      })
+    : null);
+
+  if (!skill) {
+    return {
+      status: "notStarted",
+      label: "No Dojo skill",
+      detail: "Teach a workflow before Dojo can create a skill seed.",
+      published: false,
+    };
+  }
+
+  return {
+    status: published ? "licensed" : "draft",
+    label: published ? skill.skill_card.status : "Checkride preview",
+    detail: published
+      ? "This workflow has a licensed Dojo competency."
+      : "Dojo can run a checkride and issue a scoped license from this taught workflow.",
+    published: Boolean(published),
+    skillId: skill.skill_id,
+    workflowId: skill.workflow_id,
+    skillCard: skill.skill_card,
+    skillPassport: skill.skill_passport,
+    entrustmentLevel: skill.entrustment_level,
+    readinessLevel: skill.skill_readiness_level,
+    proofRequired: skill.skill_passport.proof_required,
+    publishedToolName: skill.published_tool_name ?? null,
+    checkride: {
+      checkrideId: skill.checkride.checkride_id,
+      coverageScore: skill.checkride.coverage_score,
+      criticalFailures: skill.checkride.critical_failures,
+      blockedScenarios: skill.checkride.blocked_scenarios,
+      knowledge: skill.checkride.knowledge,
+      risk: skill.checkride.risk,
+      skill: skill.checkride.skill,
+    },
+    license: {
+      licenseId: skill.permission_license.license_id,
+      allowedActions: skill.permission_license.allowed_actions.map((action) => action.action),
+      gatedActions: skill.permission_license.gated_actions.map((action) => action.action),
+      blockedActions: skill.permission_license.blocked_actions.map((action) => action.action),
+    },
+    guardrails: skill.guardrails.slice(0, 4).map((guardrail) => ({
+      id: guardrail.guardrail_id,
+      title: guardrail.title,
+      rule: guardrail.rule,
+      severity: guardrail.severity,
+    })),
+    caseLawCount: skill.case_law.length,
+    scenarioCount: skill.scenarios.length,
+  };
 }
 
 function objectArgs(value: unknown): Record<string, unknown> {

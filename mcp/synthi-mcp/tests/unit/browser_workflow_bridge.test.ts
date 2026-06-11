@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import { browserBroker } from "../../src/browser/broker.js";
+import { dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { replayIsolationProfiles } from "../../src/browser/safety.js";
@@ -23,6 +24,7 @@ describe("browser workflow bridge", () => {
 
   beforeEach(() => {
     browserBroker.resetForTests();
+    dojoSkillRegistry.resetForTests();
     replayIsolationProfiles.resetForTests();
     privateWorkflowToolRegistry.resetForTests();
     eventLog._resetForTests();
@@ -366,6 +368,72 @@ describe("browser workflow bridge", () => {
     expect(body.state.steps.map((step) => step.label)).toEqual([
       "Fill Email",
       "Click Save settings",
+    ]);
+  });
+
+  it("surfaces Dojo skill-card state and routes the panel publish alias through license-first publishing", async () => {
+    seedSaveWorkflow();
+    const draft = buildBrowserWorkflowPanelState() as {
+      dojo: {
+        status: string;
+        skillId: string;
+        scenarioCount: number;
+        skillCard: { practiced: string };
+        license: { blockedActions: string[] };
+      };
+    };
+    expect(draft.dojo).toEqual(expect.objectContaining({
+      status: "draft",
+      skillId: "dojo_save_settings",
+      scenarioCount: 20,
+      skillCard: expect.objectContaining({ practiced: "20 synthetic cases" }),
+    }));
+    expect(draft.dojo.license.blockedActions).toContain("run_workflow");
+
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+    const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_workflow_publish_tool",
+        arguments: { workspace_id: "workspace-a" },
+      }),
+    });
+
+    expect(publish.status).toBe(200);
+    const body = await publish.json() as {
+      ok: boolean;
+      requested_tool: string;
+      tool: string;
+      result: { skill: { skill_id: string }; private_tool: { tool_name?: string } };
+      state: {
+        dojo: {
+          status: string;
+          published: boolean;
+          skillId: string;
+          publishedToolName: string | null;
+          skillPassport: { proof_required?: boolean };
+        };
+        history: Array<{ label: string; statusLabel: string }>;
+      };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.requested_tool).toBe("synthi_workflow_publish_tool");
+    expect(body.tool).toBe("synthi_dojo_publish_skill");
+    expect(body.result.skill.skill_id).toBe("dojo_save_settings");
+    expect(body.result.private_tool.tool_name).toBe("synthi_app_save_settings");
+    expect(body.state.dojo).toEqual(expect.objectContaining({
+      status: "licensed",
+      published: true,
+      skillId: "dojo_save_settings",
+      publishedToolName: "synthi_app_save_settings",
+    }));
+    expect(body.state.history).toEqual([
+      expect.objectContaining({
+        label: "Dojo skill licensed",
+        statusLabel: "Licensed",
+      }),
     ]);
   });
 
