@@ -21,6 +21,7 @@ import {
   Sparkles,
   MessageSquare,
   Box,
+  Network,
   ChevronRight,
 } from 'lucide-react';
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
@@ -68,6 +69,7 @@ const TOP_ITEMS = [
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
   { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: Sparkles },
   { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
+  { id: 'ports',        panelType: IDE_PANEL.PORTS,        label: 'Ports',           Icon: Network },
   { id: 'pullrequests', panelType: IDE_PANEL.PULL_REQUESTS, label: 'Pull Requests', Icon: GitPullRequest },
 ];
 
@@ -132,7 +134,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
     // Find a sidebar group — look for a group that already has sidebar-type tabs
     const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
-    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'programs', 'extension-view', 'chat', 'pullrequests', 'ai-healing', 'integrations']);
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'programs', 'extension-view', 'chat', 'pullrequests', 'ai-healing', 'integrations', 'ports']);
     let targetGroupId = null;
     for (const [groupId, group] of groups) {
       for (const tId of group.tabs || []) {

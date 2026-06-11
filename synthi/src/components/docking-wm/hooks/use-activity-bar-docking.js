@@ -193,6 +193,7 @@ export function useActivityBarDocking() {
       pullrequests:  () => togglePanel(IDE_PANEL.PULL_REQUESTS, 'Pull Requests'),
       'ai-healing':  () => togglePanel(IDE_PANEL.AI_HEALING, 'AI Healing'),
       integrations:  () => togglePanel(IDE_PANEL.INTEGRATIONS, 'Connected Tools'),
+      ports:         () => togglePanel(IDE_PANEL.PORTS, 'Ports'),
     }),
     [togglePanel],
   );

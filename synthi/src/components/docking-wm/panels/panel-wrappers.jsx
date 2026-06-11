@@ -100,6 +100,11 @@ const ConnectedToolsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const PortsPanel = dynamic(
+  () => import('@/components/ports/PortsPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 const ProgramsPanel = dynamic(
   () => import('@/components/programs/ProgramsPanel'),
   { ssr: false, loading: Placeholder },
@@ -438,6 +443,22 @@ export const IntegrationsPanelWrapper = memo(function IntegrationsPanelWrapper({
       style={{ background: 'var(--bg-sidebar)' }}
     >
       <ConnectedToolsPanel />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Ports Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const PortsPanelWrapper = memo(function PortsPanelWrapper({ data }) {
+  return (
+    <div
+      data-panel-type="ports"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <PortsPanel />
     </div>
   );
 });
