@@ -197,6 +197,24 @@ describe("Agent Dojo core", () => {
 });
 
 describe("Agent Dojo MCP tools", () => {
+  it("adds implementation-status metadata to Dojo tool responses", async () => {
+    const listed = await dispatchDojoTool("synthi_dojo_list_competencies", {});
+
+    expect(listed?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "executable",
+      runtime_enforced: true,
+      evidence_backing: "runtime_validation",
+      simulation_backing: "none",
+      dojo_implementation: expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: true,
+      }),
+    }));
+    expect(JSON.parse((listed?.content[0] as { type: "text"; text: string }).text)).toEqual(
+      expect.objectContaining({ implementation_status: "executable" })
+    );
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
@@ -249,6 +267,11 @@ describe("Agent Dojo MCP tools", () => {
 
     const scenarios = await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", { workspace_id: "workspace-a" });
     expect(scenarios?.isError).toBeUndefined();
+    expect(scenarios?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "deterministic_projection",
+      runtime_enforced: false,
+      simulation_backing: "scenario_catalog",
+    }));
     expect((scenarios?.structuredContent as { organoid: { scenarios: unknown[] } }).organoid.scenarios).toHaveLength(20);
 
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
@@ -306,6 +329,8 @@ describe("Agent Dojo MCP tools", () => {
       ok: true,
       dry_run: true,
       requested_action: "run_workflow",
+      implementation_status: "executable",
+      runtime_enforced: true,
       validation: expect.objectContaining({ ok: true, status: "allowed" }),
     }));
 
@@ -351,6 +376,8 @@ describe("Agent Dojo MCP tools", () => {
 
     const universe = await dispatchDojoTool("synthi_dojo_get_universe_dossier", { skill_id: published.skill.skill_id });
     expect(universe?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "report_only",
+      runtime_enforced: false,
       universe_dossier: expect.objectContaining({
         lifecycle: expect.objectContaining({ schema_version: "synthi.dojo.lifecycleReport.v1" }),
         evidence_ledger: expect.objectContaining({ schema_version: "synthi.dojo.evidenceLedger.v1" }),
@@ -386,6 +413,8 @@ describe("Agent Dojo MCP tools", () => {
       mutation_kind: "duplicate_entity",
     });
     expect(scenarioRun?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "deterministic_projection",
+      runtime_enforced: false,
       vivarium_run: expect.objectContaining({
         schema_version: "synthi.dojo.vivariumScenarioRun.v1",
         materialized_fixture: expect.objectContaining({ synthetic_data_only: true }),

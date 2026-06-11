@@ -27,6 +27,7 @@ import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_man
 import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
 import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/dojo_license_kernel.js";
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
+import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchBrowserPrivateWorkflowToolAfterDojoProof } from "./browser.js";
@@ -541,101 +542,164 @@ export const DOJO_TOOLS = [
 export async function dispatchDojoTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   if (!DOJO_TOOL_NAMES.includes(toolName as (typeof DOJO_TOOL_NAMES)[number])) return null;
   try {
+    let response: ToolResponse | null;
     switch (toolName) {
       case "synthi_dojo_list_competencies":
-        return dojoListCompetenciesTool();
+        response = dojoListCompetenciesTool();
+        break;
       case "synthi_dojo_get_skill":
-        return dojoGetSkillTool(args);
+        response = dojoGetSkillTool(args);
+        break;
       case "synthi_dojo_get_skill_cortex":
-        return dojoGetSkillCortexTool(args);
+        response = dojoGetSkillCortexTool(args);
+        break;
       case "synthi_dojo_get_workspace_organoid":
-        return dojoGetWorkspaceOrganoidTool(args);
+        response = dojoGetWorkspaceOrganoidTool(args);
+        break;
       case "synthi_dojo_get_wind_tunnel_report":
-        return dojoGetWindTunnelReportTool(args);
+        response = dojoGetWindTunnelReportTool(args);
+        break;
       case "synthi_dojo_get_counterfactual_twin":
-        return dojoGetCounterfactualTwinTool(args);
+        response = dojoGetCounterfactualTwinTool(args);
+        break;
       case "synthi_dojo_get_evil_twin_report":
-        return dojoGetEvilTwinReportTool(args);
+        response = dojoGetEvilTwinReportTool(args);
+        break;
       case "synthi_dojo_get_training_report":
-        return dojoGetTrainingReportTool(args);
+        response = dojoGetTrainingReportTool(args);
+        break;
       case "synthi_dojo_get_skill_passport":
-        return dojoGetSkillPassportTool(args);
+        response = dojoGetSkillPassportTool(args);
+        break;
       case "synthi_dojo_get_skill_genome":
-        return dojoGetSkillGenomeTool(args);
+        response = dojoGetSkillGenomeTool(args);
+        break;
       case "synthi_dojo_get_antibodies":
-        return dojoGetAntibodiesTool(args);
+        response = dojoGetAntibodiesTool(args);
+        break;
       case "synthi_dojo_get_agent_ready_ui_contract":
-        return dojoGetAgentReadyUiContractTool(args);
+        response = dojoGetAgentReadyUiContractTool(args);
+        break;
       case "synthi_dojo_get_cost_policy":
-        return dojoGetCostPolicyTool(args);
+        response = dojoGetCostPolicyTool(args);
+        break;
       case "synthi_dojo_get_universe_dossier":
-        return dojoGetUniverseDossierTool(args);
+        response = dojoGetUniverseDossierTool(args);
+        break;
       case "synthi_dojo_get_lifecycle":
-        return dojoGetLifecycleTool(args);
+        response = dojoGetLifecycleTool(args);
+        break;
       case "synthi_dojo_get_governance_report":
-        return dojoGetGovernanceReportTool(args);
+        response = dojoGetGovernanceReportTool(args);
+        break;
       case "synthi_dojo_get_metrics":
-        return dojoGetMetricsTool(args);
+        response = dojoGetMetricsTool(args);
+        break;
       case "synthi_dojo_get_source_affordance_pr_plan":
-        return dojoGetSourceAffordancePrPlanTool(args);
+        response = dojoGetSourceAffordancePrPlanTool(args);
+        break;
       case "synthi_dojo_get_registry":
-        return dojoGetRegistryTool();
+        response = dojoGetRegistryTool();
+        break;
       case "synthi_dojo_get_skill_assurance_case":
-        return dojoGetAssuranceCaseTool(args);
+        response = dojoGetAssuranceCaseTool(args);
+        break;
       case "synthi_dojo_get_entrustment_level":
-        return dojoGetEntrustmentLevelTool(args);
+        response = dojoGetEntrustmentLevelTool(args);
+        break;
       case "synthi_dojo_get_license":
-        return dojoGetLicenseTool(args);
+        response = dojoGetLicenseTool(args);
+        break;
       case "synthi_dojo_get_guardrails":
-        return dojoGetGuardrailsTool(args);
+        response = dojoGetGuardrailsTool(args);
+        break;
       case "synthi_dojo_get_case_law":
-        return dojoGetCaseLawTool(args);
+        response = dojoGetCaseLawTool(args);
+        break;
       case "synthi_dojo_explain_block":
-        return dojoExplainBlockTool(args);
+        response = dojoExplainBlockTool(args);
+        break;
       case "synthi_dojo_explain_failure":
-        return dojoExplainFailureTool(args);
+        response = dojoExplainFailureTool(args);
+        break;
       case "synthi_dojo_debug_counterfactual":
-        return dojoDebugCounterfactualTool(args);
+        response = dojoDebugCounterfactualTool(args);
+        break;
       case "synthi_dojo_run_time_machine_debugger":
-        return dojoRunTimeMachineDebuggerTool(args);
+        response = dojoRunTimeMachineDebuggerTool(args);
+        break;
       case "synthi_dojo_run_ghost_mode":
-        return dojoRunGhostModeTool(args);
+        response = dojoRunGhostModeTool(args);
+        break;
       case "synthi_dojo_request_permission_upgrade":
-        return dojoPermissionUpgradeTool(args);
+        response = dojoPermissionUpgradeTool(args);
+        break;
       case "synthi_dojo_generate_vivarium_scenarios":
-        return dojoGenerateVivariumScenariosTool(args);
+        response = dojoGenerateVivariumScenariosTool(args);
+        break;
       case "synthi_dojo_run_vivarium_scenario":
-        return dojoRunVivariumScenarioTool(args);
+        response = dojoRunVivariumScenarioTool(args);
+        break;
       case "synthi_dojo_run_wind_tunnel":
-        return dojoRunWindTunnelTool(args);
+        response = dojoRunWindTunnelTool(args);
+        break;
       case "synthi_dojo_run_checkride":
-        return dojoRunCheckrideTool(args);
+        response = dojoRunCheckrideTool(args);
+        break;
       case "synthi_dojo_publish_skill":
-        return dojoPublishSkillTool(args);
+        response = dojoPublishSkillTool(args);
+        break;
       case "synthi_dojo_recertify_skill":
-        return dojoRecertifySkillTool(args);
+        response = dojoRecertifySkillTool(args);
+        break;
       case "synthi_dojo_get_license_health":
-        return dojoGetLicenseHealthTool(args);
+        response = dojoGetLicenseHealthTool(args);
+        break;
       case "synthi_dojo_revoke_license":
-        return dojoRevokeLicenseTool(args);
+        response = dojoRevokeLicenseTool(args);
+        break;
       case "synthi_dojo_record_case_law":
-        return dojoRecordCaseLawTool(args);
+        response = dojoRecordCaseLawTool(args);
+        break;
       case "synthi_dojo_export_artifacts":
-        return dojoExportArtifactsTool(args);
+        response = dojoExportArtifactsTool(args);
+        break;
       case "synthi_dojo_issue_proof_capsule":
-        return dojoIssueProofCapsuleTool(args);
+        response = dojoIssueProofCapsuleTool(args);
+        break;
       case "synthi_dojo_validate_proof_capsule":
-        return dojoValidateProofCapsuleTool(args);
+        response = dojoValidateProofCapsuleTool(args);
+        break;
       case "synthi_dojo_revoke_proof_capsule":
-        return dojoRevokeProofCapsuleTool(args);
+        response = dojoRevokeProofCapsuleTool(args);
+        break;
       case "synthi_dojo_run_with_proof_capsule":
-        return await dojoRunWithProofCapsuleTool(args);
+        response = await dojoRunWithProofCapsuleTool(args);
+        break;
       default:
         return null;
     }
+    return response ? withDojoImplementationMetadata(toolName, response) : null;
   } catch (err) {
-    return errorFromException("dojo_tool_failed", err);
+    return withDojoImplementationMetadata(toolName, errorFromException("dojo_tool_failed", err));
   }
+}
+
+function withDojoImplementationMetadata(toolName: string, response: ToolResponse): ToolResponse {
+  const dojoImplementation = buildDojoImplementationMetadata(toolName);
+  const structuredContent = {
+    ...(response.structuredContent ?? {}),
+    implementation_status: dojoImplementation.implementation_status,
+    runtime_enforced: dojoImplementation.runtime_enforced,
+    evidence_backing: dojoImplementation.evidence_backing,
+    simulation_backing: dojoImplementation.simulation_backing,
+    dojo_implementation: dojoImplementation,
+  };
+  return {
+    ...response,
+    structuredContent,
+    content: response.content.map((block) => block.type === "text" ? { ...block, text: JSON.stringify(structuredContent) } : block),
+  };
 }
 
 function dojoListCompetenciesTool(): ToolResponse {
