@@ -1,0 +1,85 @@
+import { describe, expect, it } from "vitest";
+import { DOJO_TOOL_NAMES } from "../../src/tools/dojo.js";
+import {
+  buildDojoImplementationMetadata,
+  DOJO_IMPLEMENTATION_STATUS_VALUES,
+  DOJO_REPORT_IMPLEMENTATION_STATUS,
+  DOJO_TOOL_IMPLEMENTATION_STATUS,
+  getDojoReportImplementationMetadata,
+  getDojoToolImplementationMetadata,
+} from "../../src/dojo/status/implementation_status.js";
+
+describe("Dojo implementation status registry", () => {
+  it("uses the stable maturity status vocabulary", () => {
+    expect(DOJO_IMPLEMENTATION_STATUS_VALUES).toEqual([
+      "executable",
+      "deterministic_projection",
+      "report_only",
+      "planned",
+    ]);
+  });
+
+  it("classifies every current Dojo MCP tool", () => {
+    const missing = DOJO_TOOL_NAMES.filter((toolName) => !DOJO_TOOL_IMPLEMENTATION_STATUS[toolName]);
+    expect(missing).toEqual([]);
+  });
+
+  it("does not classify unknown tool names as executable", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_future_runtime")).toEqual(
+      expect.objectContaining({
+        implementation_status: "planned",
+        runtime_enforced: false,
+        evidence_backing: "none",
+      })
+    );
+  });
+
+  it("marks current Vivarium and graph surfaces as deterministic projections", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_get_skill_cortex")).toEqual(
+      expect.objectContaining({
+        implementation_status: "deterministic_projection",
+        runtime_enforced: false,
+      })
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_run_vivarium_scenario")).toEqual(
+      expect.objectContaining({
+        implementation_status: "deterministic_projection",
+        simulation_backing: "scenario_catalog",
+      })
+    );
+  });
+
+  it("marks the current proof-gated execution path as executable", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_run_with_proof_capsule")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: true,
+        evidence_backing: "runtime_validation",
+      })
+    );
+  });
+
+  it("classifies current report artifacts without implying mature runtime backing", () => {
+    expect(DOJO_REPORT_IMPLEMENTATION_STATUS.evidence_ledger).toEqual(
+      expect.objectContaining({
+        implementation_status: "report_only",
+        runtime_enforced: false,
+      })
+    );
+    expect(getDojoReportImplementationMetadata("skill_cortex")).toEqual(
+      expect.objectContaining({
+        implementation_status: "deterministic_projection",
+        maturity_blockers: expect.arrayContaining(["no_executable_graph_runtime"]),
+      })
+    );
+  });
+
+  it("returns cloned metadata so callers cannot mutate the registry", () => {
+    const metadata = buildDojoImplementationMetadata("synthi_dojo_get_workspace_organoid");
+    metadata.maturity_blockers.push("mutated_by_test");
+
+    expect(getDojoToolImplementationMetadata("synthi_dojo_get_workspace_organoid").maturity_blockers).not.toContain(
+      "mutated_by_test"
+    );
+  });
+});
