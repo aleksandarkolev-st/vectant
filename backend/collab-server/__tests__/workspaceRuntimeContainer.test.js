@@ -162,3 +162,52 @@ test('execInRuntime returns a ptyProcess-shaped handle (onData/onExit/kill)', as
   const d = handle.ptyProcess.onData(() => {});
   assert.equal(typeof d.dispose, 'function');
 });
+
+test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless and wires resize', async () => {
+  let execOpts = null;
+  let resizeArg = null;
+  const docker = fakeDocker();
+  const origCreate = docker.createContainer;
+  docker.createContainer = async (o) => {
+    const c = await origCreate(o);
+    c.exec = async (opts) => {
+      execOpts = opts;
+      return {
+        start: async () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        resize: async ({ h, w }) => { resizeArg = { h, w }; },
+        inspect: async () => ({ ExitCode: 0 }),
+      };
+    };
+    return c;
+  };
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+
+  const handle = await mgr.execInteractiveShell('repo', 'u1', { cols: 120, rows: 40 });
+
+  // Interactive login shell, in the workspace, as the rootless user, with a TTY.
+  assert.deepEqual(execOpts.Cmd, ['/bin/bash', '-l']);
+  assert.equal(execOpts.WorkingDir, '/workspace');
+  assert.equal(execOpts.User, 'rootless');
+  assert.equal(execOpts.Tty, true);
+  assert.equal(execOpts.AttachStdin, true);
+  assert.ok(execOpts.Env.includes('TERM=xterm-256color'), 'TERM must be set for a real terminal');
+
+  // PTY-shaped handle + resize.
+  assert.equal(typeof handle.ptyProcess.onData, 'function');
+  assert.equal(typeof handle.ptyProcess.onExit, 'function');
+  assert.equal(typeof handle.ptyProcess.write, 'function');
+  assert.equal(typeof handle.ptyProcess.kill, 'function');
+  assert.equal(typeof handle.ptyProcess.resize, 'function');
+
+  // Initial size is applied after start (h=rows, w=cols — Docker's resize order).
+  assert.deepEqual(resizeArg, { h: 40, w: 120 });
+  handle.ptyProcess.resize(80, 24);
+  assert.deepEqual(resizeArg, { h: 24, w: 80 });
+});
+
+test('execInteractiveShell throws if the runtime container was not started', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await assert.rejects(() => mgr.execInteractiveShell('repo', 'u1', { cols: 80, rows: 24 }), /not started/i);
+});

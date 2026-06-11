@@ -267,7 +267,59 @@ function createRuntimeManager({
     return { ptyProcess, stop: () => ptyProcess.kill() };
   }
 
-  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, _sessions: sessions };
+  /**
+   * Open an interactive login shell (`bash -l`) inside the runtime container for
+   * the in-app terminal. Unlike execInRuntime (which runs one program command),
+   * this is a long-lived TTY the user drives directly, so it adds resize(). The
+   * shell's environment (PATH, git identity, claude CLI, sudo) comes from the
+   * runtime IMAGE via `bash -l`, not from collab-server's process — so there is
+   * nothing host-leaked to scrub here; we only set TERM + a friendly PS1.
+   * @returns {{ ptyProcess: {onData,onExit,write,kill,resize}, stop } }
+   */
+  async function execInteractiveShell(slug, userId, { cols = 80, rows = 24 } = {}) {
+    const s = sessions.get(keyOf(slug, userId));
+    if (!s) throw new Error('runtime container not started');
+    s.lastActive = Date.now();
+
+    // ~/<workspace> style prompt parity with the host-shell terminal. /workspace
+    // is the mount target; show it as "~/workspace" so the path reads cleanly.
+    const PS1 = String.raw`\[\e[36m\]~/workspace\[\e[0m\]$ `;
+    const exec = await docker.getContainer(s.containerId).exec({
+      Cmd: ['/bin/bash', '-l'],
+      User: 'rootless',
+      Env: ['TERM=xterm-256color', 'COLORTERM=truecolor', `PS1=${PS1}`],
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: true,
+      WorkingDir: '/workspace',
+    });
+    const stream = await exec.start({ hijack: true, stdin: true, Tty: true });
+    // Apply the initial terminal size once the exec is live. Docker's resize
+    // API is { h: rows, w: cols }. Best-effort — a daemon hiccup here must not
+    // kill the session.
+    try { await exec.resize({ h: rows, w: cols }); } catch (_) {}
+
+    const dataCbs = new Set();
+    const exitCbs = new Set();
+    stream.on('data', (chunk) => { for (const cb of dataCbs) cb(chunk.toString('utf8')); });
+    stream.on('end', async () => {
+      let exitCode = null;
+      try { exitCode = (await exec.inspect()).ExitCode; } catch (_) {}
+      for (const cb of exitCbs) cb({ exitCode });
+    });
+
+    const ptyProcess = {
+      onData: (cb) => { dataCbs.add(cb); return { dispose: () => dataCbs.delete(cb) }; },
+      onExit: (cb) => { exitCbs.add(cb); return { dispose: () => exitCbs.delete(cb) }; },
+      write: (data) => { try { stream.write(data); } catch (_) {} },
+      kill: () => { try { stream.end(); } catch (_) {} },
+      resize: (c, r) => { exec.resize({ h: r, w: c }).catch(() => {}); },
+    };
+    return { ptyProcess, stop: () => ptyProcess.kill() };
+  }
+
+  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, _sessions: sessions };
 }
 
 module.exports = {
