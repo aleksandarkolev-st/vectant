@@ -374,6 +374,9 @@ describe('AgentWorkflowPanel rendering', () => {
     expect(panel.textContent).toContain('90% coverage');
     expect(panel.textContent).toContain('20 synthetic cases');
     expect(panel.textContent).toContain('synthi_app_save_settings');
+    expect(panel.textContent).toContain('Dojo Export');
+    expect([...panel.querySelectorAll('button')]
+      .filter((button) => button.textContent.trim() === 'Export')).toHaveLength(1);
 
     const checkrideButton = [...panel.querySelectorAll('button')]
       .find((button) => button.textContent.includes('Checkride'));

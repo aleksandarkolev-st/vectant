@@ -952,7 +952,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction }) {
       <div className="grid grid-cols-3 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
         <ActionButton
           action={WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS}
-          label="Export"
+          label="Dojo Export"
           icon="export"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
