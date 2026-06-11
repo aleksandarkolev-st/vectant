@@ -12,6 +12,7 @@ const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessio
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const proxyService = require('./proxyService');
 const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
+const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -1726,6 +1727,33 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message || 'Program launch failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/ensure-runtime  { userId? }  → pre-warm container
+  // Fired by the frontend on workspace mount so the first terminal doesn't eat
+  // the rootless-dockerd cold start. Returns immediately (202); the daemon warms
+  // in the background.
+  const ensureRuntimeMatch = /^\/program-runtime\/([^/]+)\/ensure-runtime$/.exec(programRuntimeUrl.pathname);
+  if (ensureRuntimeMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(ensureRuntimeMatch[1]);
+    let parsed = {};
+    try {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      parsed = body ? JSON.parse(body) : {};
+    } catch (_) { parsed = {}; }
+    try {
+      const { status, body: out } = await handleEnsureRuntime({
+        workspaceRuntime, slug, userId: parsed.userId || '',
+      });
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    } catch (err) {
+      logger.warn('ensure_runtime_failed', { slug }, err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ensure_runtime_failed' }));
     }
     return;
   }
