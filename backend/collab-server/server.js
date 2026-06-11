@@ -4141,7 +4141,11 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
-const terminalWss = createTerminalWSS();
+const terminalWss = createTerminalWSS({
+  enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
+  workspaceRuntime,
+  flushWorkspaceDocsToDisk,
+});
 
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
 const GUEST_DISCONNECT_GRACE_MS = 30_000;
