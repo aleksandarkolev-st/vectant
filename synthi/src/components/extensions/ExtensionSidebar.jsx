@@ -143,6 +143,7 @@ async function installOpenVsxExtension(marketplaceExt, onInstall) {
   manifest.icon = marketplaceExt.files?.icon || detail?.files?.icon || manifest.icon || null;
 
   let code = null;
+  let vsixBase64 = null;
   try {
     const dlParams = new URLSearchParams({
       action: 'download-vsix',
@@ -153,6 +154,7 @@ async function installOpenVsxExtension(marketplaceExt, onInstall) {
     const vsixRes = await fetch(`/api/extensions/search?${dlParams}`);
     if (vsixRes.ok) {
       const vsixBuffer = await vsixRes.arrayBuffer();
+      vsixBase64 = arrayBufferToBase64(vsixBuffer);
       const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
       const extracted = await parseVSIX(vsixBuffer);
       code = extracted.code;
@@ -188,7 +190,12 @@ module.exports = { activate, deactivate };
 `;
   }
 
-  return onInstall(extId, manifest, code, { source: 'marketplace' });
+  const needsServerVsix = manifest.main || manifest._nodeCode || (code && code.length > 500_000);
+
+  return onInstall(extId, manifest, code, {
+    source: 'marketplace',
+    ...(vsixBase64 && needsServerVsix ? { vsixBase64 } : {}),
+  });
 }
 
 async function runWithConcurrency(items, limit, worker) {

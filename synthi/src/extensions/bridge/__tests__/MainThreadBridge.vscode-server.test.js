@@ -33,6 +33,22 @@ describe('MainThreadBridge VS Code Server install routing', () => {
     expect(bridge.installExtensionOnServer).not.toHaveBeenCalled();
   });
 
+  it('uploads downloaded VSIX bytes for marketplace extensions when available', async () => {
+    const bridge = new MainThreadBridge();
+    bridge.installExtensionOnServer = vi.fn(async (id, vsixBase64) => ({ success: true, extensionId: id, vsixBase64 }));
+    bridge.installMarketplaceExtensionOnServer = vi.fn();
+
+    const result = await bridge._installOnVSCodeServerFromInfo({
+      id: 'GitHub.vscode-pull-request-github',
+      installSource: 'marketplace',
+      vsixBase64: 'UEsDBAo=',
+    });
+
+    expect(result.success).toBe(true);
+    expect(bridge.installExtensionOnServer).toHaveBeenCalledWith('GitHub.vscode-pull-request-github', 'UEsDBAo=');
+    expect(bridge.installMarketplaceExtensionOnServer).not.toHaveBeenCalled();
+  });
+
   it('fails with an actionable reason when a restored local VSIX has no bytes', async () => {
     const bridge = new MainThreadBridge();
     bridge.installExtensionOnServer = vi.fn();

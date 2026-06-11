@@ -932,11 +932,20 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             bridge._emitSyntheticWebviewEvents(id, extInfo.manifest);
           }
         } else {
-          dispatch(setExtensionState({ id, extensionState: 'crashed', reason: result.error || 'VS Code Server install failed' }));
+          const reason = result.error || 'VS Code Server install failed';
+          if (isRemoteHostNotReadyError(reason)) {
+            queueRemoteExtensionInstall(id, reason);
+          } else {
+            dispatch(setExtensionState({ id, extensionState: 'crashed', reason }));
+          }
         }
       } catch (err) {
         console.warn(`[useExtensions] Failed to install ${id} on VS Code Server:`, err.message);
-        dispatch(setExtensionState({ id, extensionState: 'crashed', reason: err.message }));
+        if (isRemoteHostNotReadyError(err)) {
+          queueRemoteExtensionInstall(id, err.message);
+        } else {
+          dispatch(setExtensionState({ id, extensionState: 'crashed', reason: err.message }));
+        }
       }
     }
     if (found === 0) {
