@@ -282,8 +282,10 @@ steps:
         # Applying raw k8s/ directly would briefly roll Deployments to the
         # placeholder image tag "build-tag-required".
         RENDERED="/workspace/.cloudbuild/synthi-k8s.yaml"
+        DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"
         mkdir -p "$$(dirname "$${RENDERED}")"
         kubectl kustomize k8s > "$${RENDERED}"
+        sed -i "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
         sed -i "s|build-tag-required|$${TAG}|g" "$${RENDERED}"
         if grep -n "build-tag-required" "$${RENDERED}"; then
           echo "Rendered manifests still contain build-tag-required." >&2
@@ -292,7 +294,7 @@ steps:
 
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
-        sed "s|build-tag-required|$${TAG}|g" \
+        sed "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
           k8s/prisma-migrate-job.yaml | kubectl apply -f -
         if ! kubectl wait --for=condition=complete job/prisma-migrate -n $${NS} --timeout=300s; then
           kubectl logs job/prisma-migrate -n $${NS} -c migrate || true
