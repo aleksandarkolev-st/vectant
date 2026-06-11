@@ -19,6 +19,8 @@ import {
 } from "./dojo_store.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
+import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
+import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -255,6 +257,8 @@ export interface DojoProofCarryingSkillCapsule {
   nonce: string;
   context_claims: Record<string, unknown>;
   evidence_claims: DojoEvidenceClaim[];
+  evidence_record_ids: string[];
+  ledger_checkpoint_hash?: string;
   guardrails_active: string[];
   substrate_claim: DojoExecutionSubstrate;
   assurance_case_ref: string;
@@ -1180,6 +1184,10 @@ export function issueDojoProofCapsule(
   input: {
     context_claims?: Record<string, unknown>;
     evidence_claims?: DojoEvidenceClaim[];
+    evidence_ledger_records?: DojoEvidenceLedgerRecord[];
+    evidence_max_age_ms?: number;
+    ledger_checkpoint_hash?: string;
+    require_verified_evidence?: boolean;
     substrate_claim?: DojoExecutionSubstrate;
     expires_at?: string;
     now?: string;
@@ -1187,6 +1195,7 @@ export function issueDojoProofCapsule(
 ): DojoProofCarryingSkillCapsule {
   const now = input.now ?? new Date().toISOString();
   const expiresAt = input.expires_at ?? new Date(Date.parse(now) + 15 * 60_000).toISOString();
+  const evidence = evidenceClaimsForProofIssue(skill, input, now);
   const capsuleWithoutSignature = {
     schema_version: "synthi.dojo.proofCapsule.v1" as const,
     capsule_id: `capsule_${randomUUID()}`,
@@ -1199,7 +1208,9 @@ export function issueDojoProofCapsule(
     key_id: dojoProofKeyId(),
     nonce: randomUUID(),
     context_claims: input.context_claims ?? {},
-    evidence_claims: input.evidence_claims ?? defaultEvidenceClaimsFor(skill),
+    evidence_claims: evidence.claims,
+    evidence_record_ids: evidence.recordIds,
+    ...(evidence.ledgerCheckpointHash ? { ledger_checkpoint_hash: evidence.ledgerCheckpointHash } : {}),
     guardrails_active: skill.guardrails.map((guardrail) => guardrail.guardrail_id),
     substrate_claim: input.substrate_claim ?? skill.preferred_substrate,
     assurance_case_ref: skill.assurance_case.assurance_case_id,
@@ -3024,6 +3035,62 @@ function defaultEvidenceClaimsFor(skill: DojoSkill): DojoEvidenceClaim[] {
     satisfied: requirement.required,
     evidence_refs: [`checkride:${skill.checkride.checkride_id}`, `license:${skill.permission_license.license_id}`],
   }));
+}
+
+function evidenceClaimsForProofIssue(
+  skill: DojoSkill,
+  input: {
+    evidence_claims?: DojoEvidenceClaim[];
+    evidence_ledger_records?: DojoEvidenceLedgerRecord[];
+    evidence_max_age_ms?: number;
+    ledger_checkpoint_hash?: string;
+    require_verified_evidence?: boolean;
+  },
+  checkedAt: string
+): { claims: DojoEvidenceClaim[]; recordIds: string[]; ledgerCheckpointHash?: string } {
+  const records = input.evidence_ledger_records ?? [];
+  const strictEvidence = input.require_verified_evidence === true || records.length > 0;
+  if (!strictEvidence) {
+    return {
+      claims: input.evidence_claims ?? defaultEvidenceClaimsFor(skill),
+      recordIds: [],
+      ledgerCheckpointHash: input.ledger_checkpoint_hash,
+    };
+  }
+
+  const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
+  const results = resolveDojoEvidenceClaims({
+    claim_ids: requiredClaims,
+    records,
+    checked_at: checkedAt,
+    max_age_ms: input.evidence_max_age_ms,
+  });
+  const failed = results.filter((result) => !result.ok);
+  if (failed.length > 0) {
+    throw new Error(`dojo_proof_evidence_claim_unverified:${failed.map((result) => result.claim_id).join(",")}`);
+  }
+
+  const recordIds = [...new Set(results.flatMap((result) => result.evidence_record_ids))].sort();
+  const ledgerCheckpointHash = input.ledger_checkpoint_hash
+    ?? latestLedgerHeadForEvidenceRecords(records, recordIds);
+  return {
+    claims: results.map((result) => ({
+      claim: result.claim_id,
+      satisfied: result.ok,
+      evidence_refs: result.evidence_record_ids.map((recordId) => `evidence:${recordId}`),
+    })),
+    recordIds,
+    ledgerCheckpointHash,
+  };
+}
+
+function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[], recordIds: string[]): string | undefined {
+  const ids = new Set(recordIds);
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record && ids.has(record.record_id)) return record.ledger_head_hash;
+  }
+  return undefined;
 }
 
 function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">): string {
