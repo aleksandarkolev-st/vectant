@@ -303,6 +303,7 @@ function workflowOverlayError(label: string, response: ToolResponse): BrowserWor
 
 export const BROWSER_TOOL_NAMES = [
   "synthi_browser_attach_current_workspace",
+  "synthi_browser_revoke_hosted_runtime_session",
   "synthi_browser_observe",
   "synthi_browser_observe_preview",
   "synthi_browser_begin_teach",
@@ -357,6 +358,18 @@ export const BROWSER_TOOLS = [
         workspace_url: { type: "string", description: "Optional workspace URL to open in the hosted runtime. Defaults to SYNTHI_WORKSPACE_URL or SYNTHI_HOSTED_BROWSER_WORKSPACE_URL." },
         runtime_id: { type: "string", description: "Optional hosted runtime id for diagnostics." },
         open_workspace: { type: "boolean", description: "Open the workspace URL in the hosted runtime after attach. Defaults true when a workspace URL is known." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_revoke_hosted_runtime_session",
+    description:
+      "Revoke the current Synthi-hosted browser runtime session. Revocation clears active leases and blocks subsequent browser actions or snapshots until a new hosted session is attached.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Operator or policy reason for revocation. Defaults to operator_revoked." },
       },
       required: [],
     },
@@ -819,6 +832,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
+      case "synthi_browser_revoke_hosted_runtime_session":
+        return browserRevokeHostedRuntimeSessionTool(args);
       case "synthi_browser_observe":
         return await browserSnapshotTool(args);
       case "synthi_browser_observe_preview":
@@ -986,6 +1001,22 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
     opened_workspace_url: result.opened_workspace_url,
     consent_required_for: result.consent_required_for,
     permission_tiers: result.permission_tiers,
+  });
+}
+
+function browserRevokeHostedRuntimeSessionTool(args: unknown): ToolResponse {
+  const reason = stringOpt(obj(args)["reason"]) ?? "operator_revoked";
+  const revoked = browserBroker.revokeRuntimeAttachment(reason);
+  if (!revoked.revoked) {
+    return errorResponse("hosted_runtime_not_attached", {
+      runtime: revoked.runtime,
+      required_tool: "synthi_browser_attach_current_workspace",
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    revoked: true,
+    runtime: revoked.runtime,
   });
 }
 

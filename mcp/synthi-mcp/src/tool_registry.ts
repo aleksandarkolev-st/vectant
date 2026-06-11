@@ -12,6 +12,7 @@
 export const ADVERTISED_TOOLS = [
   // General browser runtime
   "synthi_browser_attach_current_workspace",
+  "synthi_browser_revoke_hosted_runtime_session",
   "synthi_browser_observe",
   "synthi_browser_observe_preview",
   "synthi_browser_begin_teach",

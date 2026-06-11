@@ -124,4 +124,59 @@ describe("hosted browser runtime resolver", () => {
     }));
     expect(broker.runtimeAttachment()).toBeNull();
   });
+
+  it("blocks browser actions after a hosted runtime session expires", () => {
+    const broker = new BrowserBroker();
+    const url = "https://workspace.example.test/workspace/browser";
+    broker.requestConsent(url);
+    broker.registerTabs([{ tab_id: "hosted_tab", url, active: true }]);
+    const lease = broker.acquireLease("agent", 5000, "unit");
+    broker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: url,
+      adapter: "hosted-playwright-cdp",
+      expires_at: Date.now() - 1,
+      origin_allowlist: ["https://workspace.example.test"],
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+    });
+
+    const queued = broker.queueAction({
+      lease_id: lease.lease_id,
+      tab_id: "hosted_tab",
+      action: "click",
+      url,
+    });
+
+    expect(queued).toEqual({ ok: false, error: "hosted_runtime_session_expired" });
+    expect(broker.runtimeAttachment()).toEqual(expect.objectContaining({
+      revoked_reason: "expired",
+    }));
+  });
+
+  it("blocks snapshots after a hosted runtime session is revoked", () => {
+    const broker = new BrowserBroker();
+    const url = "https://workspace.example.test/workspace/browser";
+    broker.requestConsent(url, "granted", "unit", { screenshot: true });
+    broker.registerTabs([{ tab_id: "hosted_tab", url, active: true }]);
+    broker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: url,
+      adapter: "hosted-playwright-cdp",
+      expires_at: Date.now() + 60_000,
+      origin_allowlist: ["https://workspace.example.test"],
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+    });
+
+    const revoked = broker.revokeRuntimeAttachment("operator_revoked");
+    const snapshot = broker.snapshot({ tab_id: "hosted_tab", url });
+
+    expect(revoked).toEqual(expect.objectContaining({ revoked: true }));
+    expect(snapshot).toEqual({ ok: false, error: "hosted_runtime_session_revoked" });
+  });
 });
