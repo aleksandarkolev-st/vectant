@@ -1,18 +1,12 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { Storage } from '@google-cloud/storage';
+import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
 
 
-const storage = new Storage({
-    projectId: process.env.GCP_PROJECT_ID,
-    credentials: {
-        client_email: process.env.GCP_CLIENT_EMAIL,
-        private_key: process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    },
-});
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
+const storage = createGcsStorage();
+const BUCKET_NAME = getGcsBucketName();
 
 
 export async function GET(request) {

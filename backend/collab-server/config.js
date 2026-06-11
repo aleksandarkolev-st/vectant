@@ -36,19 +36,24 @@ const AI_BACKEND_AUTH_TOKEN = process.env.AI_BACKEND_AUTH_TOKEN || process.env.A
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
 
 // ── GCS (Google Cloud Storage) ───────────────────────────────────────────────
-const GCS_PROJECT_ID   = process.env.GCP_PROJECT_ID   || 'overview-synti';
-const GCS_BUCKET_NAME  = process.env.GCS_BUCKET_NAME  || 'synthi-cloud-storage';
+const GCS_PROJECT_ID   = process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || '';
+const GCS_BUCKET_NAME  = process.env.GCS_BUCKET_NAME || '';
 const GCS_CLIENT_EMAIL = process.env.GCP_CLIENT_EMAIL || '';
 const GCS_PRIVATE_KEY  = (process.env.GCP_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-const GCS_CREDENTIALS  = process.env.GCP_CREDENTIALS
-    ? JSON.parse(process.env.GCP_CREDENTIALS)
-    : { client_email: GCS_CLIENT_EMAIL, private_key: GCS_PRIVATE_KEY };
+function loadGcsCredentials() {
+    if (process.env.GCP_CREDENTIALS) return JSON.parse(process.env.GCP_CREDENTIALS);
+    if (GCS_CLIENT_EMAIL && GCS_PRIVATE_KEY) {
+        return { client_email: GCS_CLIENT_EMAIL, private_key: GCS_PRIVATE_KEY };
+    }
+    return undefined;
+}
+const GCS_CREDENTIALS = loadGcsCredentials();
 
 // Validate PEM at startup. A silent-but-corrupt key surfaces as
 // "Cannot call write after a stream was destroyed" from @google-cloud/storage
 // mid-upload (JWT signing fails → auth lib destroys the request stream).
 // Parsing here turns that into a loud, actionable boot error.
-if (GCS_CREDENTIALS.private_key) {
+if (GCS_CREDENTIALS?.private_key) {
     try {
         require('crypto').createPrivateKey(GCS_CREDENTIALS.private_key);
     } catch (e) {

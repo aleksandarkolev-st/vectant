@@ -38,9 +38,11 @@ spec:
         app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
-        #runAsNonRoot: true
+        runAsUser: 0
+        runAsGroup: 0
       nodeSelector:
-        cloud.google.com/gke-nodepool: core-pool
+        cloud.google.com/gke-nodepool: default-pool
+      serviceAccountName: y-sweet-sa
       containers:
         - name: y-sweet
           image: ghcr.io/jamsocket/y-sweet:latest@sha256:d61ba0fa5671cc522e3f4a4c0f6cafbccbfbe66561a9ddba40041e14a22bcff0
@@ -63,17 +65,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: GCS_BUCKET_NAME
-            # GCS auth via Workload Identity or service-account key
-            - name: GCP_CLIENT_EMAIL
-              valueFrom:
-                secretKeyRef:
-                  name: synthi-secrets
-                  key: GCP_CLIENT_EMAIL
-            - name: GCP_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: synthi-secrets
-                  key: GCP_PRIVATE_KEY
             # ── Auth ────────────────────────────────────────────────────────
             - name: Y_SWEET_AUTH_KEY
               valueFrom:
@@ -107,9 +98,6 @@ metadata:
   labels:
     app: y-sweet
     app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
-    cloud.google.com/neg: '{"exposed_ports":{"8080":{"name":"y-sweet-alb-neg"}}}'
 spec:
   selector:
     app: y-sweet

@@ -1,16 +1,10 @@
-import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
 import { requireWorkspaceAccess } from '@/lib/workspaceAccess';
+import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
 
-const storage = new Storage({
-    projectId: process.env.GCP_PROJECT_ID,
-    credentials: {
-        client_email: process.env.GCP_CLIENT_EMAIL,
-        private_key: process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    },
-});
+const storage = createGcsStorage();
 
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
+const BUCKET_NAME = getGcsBucketName();
 
 function buildFileTree(flatFiles, prefixLength) {
     const root = { name: 'root', isFolder: true, children: [], path: '' };

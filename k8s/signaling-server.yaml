@@ -28,9 +28,10 @@ spec:
         app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
-        #runAsNonRoot: true
+        runAsUser: 0
+        runAsGroup: 0
       nodeSelector:
-        cloud.google.com/gke-nodepool: core-pool
+        cloud.google.com/gke-nodepool: default-pool
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -42,7 +43,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: signaling
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-signaling-server:build-tag-required
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-signaling-server:build-tag-required
           ports:
             - containerPort: 9000
               name: ws
@@ -98,8 +99,10 @@ metadata:
     app: signaling-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/neg: '{"exposed_ports":{"9000":{"name":"signaling-server-alb-neg"}}}'
+    cloud.google.com/backend-config: '{"ports":{"9000":"signaling-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
+  type: NodePort
   selector:
     app: signaling-server
   ports:

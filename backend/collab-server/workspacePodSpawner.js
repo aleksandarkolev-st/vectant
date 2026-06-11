@@ -495,12 +495,10 @@ async function ensurePod(sessionId, userId, metadata = {}) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 1000,
-            runAsGroup: 1000,
             fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
+          serviceAccountName: 'workspace-runtime-sa',
           ...(workspaceScheduling.nodeSelector ? { nodeSelector: workspaceScheduling.nodeSelector } : {}),
           ...(workspaceScheduling.tolerations.length ? { tolerations: workspaceScheduling.tolerations } : {}),
           containers: [
@@ -508,8 +506,9 @@ async function ensurePod(sessionId, userId, metadata = {}) {
               name: 'worker',
               image: WORKER_IMAGE,
               securityContext: {
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ['ALL'] },
+                runAsUser: 0,
+                runAsGroup: 0,
+                allowPrivilegeEscalation: true,
               },
               command: ['/bin/bash', '-c'],
               args: [
@@ -565,8 +564,8 @@ exec worker`,
                 { name: 'WORKSPACE_DIR', value: workspaceDir },
               ],
               resources: {
-                requests: { cpu: '500m', memory: '1Gi' },
-                limits: { cpu: '2', memory: '4Gi' },
+                requests: { cpu: '2', memory: '4Gi' },
+                limits: { cpu: '6', memory: '12Gi' },
               },
               livenessProbe: {
                 exec: { command: ['pgrep', '-f', 'worker'] },
@@ -583,8 +582,9 @@ exec worker`,
               name: 'preview-proxy',
               image: PREVIEW_SIDECAR_IMAGE,
               securityContext: {
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ['ALL'] },
+                runAsUser: 0,
+                runAsGroup: 0,
+                allowPrivilegeEscalation: true,
               },
               command: ['node', '-e', previewSidecarScript()],
               env: [

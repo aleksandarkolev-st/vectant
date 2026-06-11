@@ -10,18 +10,15 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 data:
   # ── GCP ──────────────────────────────────────────────────────────────────────
-  GCP_PROJECT_ID: "overview-synti"
-  GCS_BUCKET_NAME: "synthi-cloud-storage"
+  GCP_PROJECT_ID: "vectant-proj"
+  GCS_BUCKET_NAME: "vectant-synthi-cloud-storage"
   GCS_WORKSPACE_PREFIX: "workspaces"
-  # Cloud SQL instance connection name (used by the Auth Proxy sidecar).
-  # Format: PROJECT_ID:REGION:INSTANCE_NAME
-  CLOUD_SQL_INSTANCE: "overview-synti:europe-west10:synthi-dev" 
   # ── Networking (cluster-internal URLs) ──────────────────────────────────────
   # These use Kubernetes DNS: <service>.<namespace>.svc.cluster.local
   COLLAB_SERVER_URL: "http://collab-server.synthi.svc.cluster.local:1234"
   YSWEET_URL: "http://y-sweet.synthi.svc.cluster.local:8080"
-  CODE_INTEL_URL: "https://synthi-ai-engine-767721372193.europe-west10.run.app"
-  BACKEND_URL: "https://synthi-ai-engine-767721372193.europe-west10.run.app"
+  CODE_INTEL_URL: "http://ai-engine.synthi.svc.cluster.local:8000"
+  BACKEND_URL: "http://ai-engine.synthi.svc.cluster.local:8000"
   SIGNALING_URL: "ws://signaling-server.synthi.svc.cluster.local:9000"
   REDIS_URL: "redis://redis.synthi.svc.cluster.local:6379"
   # Optional internal HTTP endpoint for the MCP browser-workflow bridge.
@@ -36,6 +33,7 @@ data:
   SYNTHI_PREVIEW_SCAN_PORTS: ""
   SYNTHI_TERMINAL_PORT_POOL: ""
   SYNTHI_TERMINAL_BACKEND: "k8s-exec"
+  SYNTHI_NO_JAIL: "1"
   # Do not inject PORT/NEXT_PORT/VITE_PORT in Kubernetes. Separate runtime pods
   # give each private/collab runtime its own network namespace, so :5173 in two
   # private sessions does not collide.
@@ -54,12 +52,13 @@ data:
   # ── Next.js public env (baked into client bundle at build time) ─────────────
   # These MUST be set at `next build` time, not just runtime.
   NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.vectant.dev/collab"
-  NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/ysweet"
+  NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/collab"
   NEXT_PUBLIC_COLLAB_PORT: "443"
   NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.vectant.dev/signal"
   NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.vectant.dev/gateway/ws"
   NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
   NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
+  NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
 
   # ── Feature flags ──────────────────────────────────────────────────────────
   GCS_SYNC_ON_FLUSH: "true"
@@ -71,7 +70,7 @@ data:
   SYNTHI_LOG_LEVEL: "info"
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
-  WORKER_IMAGE: "europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:f9e33bbe-runtimefix1"
+  WORKER_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-worker:build-tag-required"
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
   WORKSPACE_NODE_SELECTOR_VALUE: "workspace-pool"

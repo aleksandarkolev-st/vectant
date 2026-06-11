@@ -15,7 +15,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PROJECT_ID="overview-synti"
+PROJECT_ID="vectant-proj"
 K8S_NAMESPACE="synthi"
 
 echo "=== Synthi IDE — Workload Identity Setup ==="

@@ -6,7 +6,7 @@
 #  add secret values with:
 #
 #    echo -n 'your-value' | gcloud secrets versions add SECRET_NAME \
-#      --data-file=- --project=overview-synti
+#      --data-file=- --project=vectant-proj
 #
 #  The External Secrets Operator (k8s/external-secrets.yaml) syncs these
 #  into the K8s Secret "synthi-secrets" automatically.
@@ -17,7 +17,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PROJECT_ID="overview-synti"
+PROJECT_ID="vectant-proj"
 
 SECRETS=(
   synthi-database-url

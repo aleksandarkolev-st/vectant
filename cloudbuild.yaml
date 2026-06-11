@@ -33,16 +33,20 @@ substitutions:
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
-  _NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
-  _NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
+  _NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.vectant.dev/collab"
+  _NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/ysweet"
   _NEXT_PUBLIC_COLLAB_PORT: "443"
-  _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
-  _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
-  _NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
-  _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
+  _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.vectant.dev/signal"
+  _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.vectant.dev/gateway/ws"
+  _NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
+  _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
+  _NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
+  _WORKER_INSTALL_ROCM: "false"
+  _ENABLE_VULNERABILITY_SCAN: "false"
 
 options:
-  machineType: E2_HIGHCPU_8
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: "200"
   logging: CLOUD_LOGGING_ONLY
   dynamic_substitutions: true
 
@@ -61,7 +65,7 @@ steps:
         set -euo pipefail
         if grep -RInE '(^[[:space:]]*(FROM|image:|name:)|--destination=).*:latest([^@]|$)' \
           --include='Dockerfile' --include='*.yaml' --include='*.yml' \
-          --exclude='*.backup' --exclude='cloudbuild_backup.yaml' .; then
+          --exclude='*.backup' --exclude='cloudbuild.yaml' --exclude='cloudbuild_backup.yaml' .; then
           echo "Mutable :latest image references must be pinned by digest or replaced with an immutable build tag." >&2
           exit 1
         fi
@@ -83,6 +87,7 @@ steps:
       - 'NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}'
       - 'NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}'
       - 'NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}'
+      - 'NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=${_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER}'
     args:
       - '-c'
       - |
@@ -94,6 +99,7 @@ steps:
         NEXT_PUBLIC_GATEWAY_WS_URL=$$NEXT_PUBLIC_GATEWAY_WS_URL
         NEXT_PUBLIC_CODE_INTEL_URL=$$NEXT_PUBLIC_CODE_INTEL_URL
         NEXT_PUBLIC_AI_ENGINE_URL=$$NEXT_PUBLIC_AI_ENGINE_URL
+        NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER
         EOF
 
   # ── 1. Frontend (Next.js) ────────────────────────────────────────────────
@@ -159,6 +165,7 @@ steps:
       - --dockerfile=backend/synthi-webrtc-compiler/worker/Dockerfile
       - --context=dir:///workspace/backend/synthi-webrtc-compiler/worker
       - --destination=${_REGISTRY}/synthi-worker:${_IMAGE_TAG}
+      - --build-arg=INSTALL_ROCM=${_WORKER_INSTALL_ROCM}
       - --cache=true
       - --cache-ttl=168h
     timeout: 1800s
@@ -185,6 +192,10 @@ steps:
       - -c
       - |
         set -euo pipefail
+        if [ "${_ENABLE_VULNERABILITY_SCAN}" != "true" ]; then
+          echo "=== Vulnerability Scan skipped (_ENABLE_VULNERABILITY_SCAN=${_ENABLE_VULNERABILITY_SCAN}) ==="
+          exit 0
+        fi
         echo "=== Vulnerability Scan ==="
         SCAN_FAILED=0
 

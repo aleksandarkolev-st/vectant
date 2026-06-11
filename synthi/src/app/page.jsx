@@ -166,7 +166,7 @@ export default function Dashboard() {
           await fetchWorkspaces(session.user.email);
         }
         setRepoUrl("");
-        router.push(`/workspace/${slug}`);
+        router.push(`/${slug}`);
       } else {
         const errorMessage = await readResponseError(res, "Unknown error");
         setFeedback({
@@ -285,7 +285,7 @@ export default function Dashboard() {
         setAiPrompt("");
         setAiAttachments([]);
         setAiProjectType(null);
-        router.push(`/workspace/${slug}`);
+        router.push(`/${slug}`);
       } else {
         const errorMessage = await readResponseError(
           cloneRes,
@@ -762,7 +762,7 @@ export default function Dashboard() {
               {workspaces.map((ws) => (
                 <button
                   key={ws.slug}
-                  onClick={() => router.push(`/workspace/${ws.slug}`)}
+                  onClick={() => router.push(`/${ws.slug}`)}
                   className="synthi-card group text-left p-5 transition-all duration-200 cursor-pointer"
                   style={{
                     borderRadius: 12,
