@@ -7,7 +7,8 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Puzzle, Plus, Search, Download, Star, ArrowDownCircle, Loader2, ExternalLink, X, Check, AlertTriangle, Upload, FileArchive, Play, Bug } from 'lucide-react';
+import { Puzzle, Plus, Search, Download, Star, ArrowDownCircle, Loader2, ExternalLink, X, Check, AlertTriangle, Upload, FileArchive, Play, Bug, FileUp } from 'lucide-react';
+import { parseExtensionImportList, splitExtensionId } from '@/extensions/loader/ExtensionImportParser';
 
 // ─── Sample extension for quick testing ──────────────────────
 const SAMPLE_EXTENSION = {
@@ -85,6 +86,136 @@ function getPrimaryCommands(commands) {
   const preferred = safeCommands.filter(cmd => /run|start|test|launch/i.test(`${cmd.title} ${cmd.id}`));
   const source = preferred.length > 0 ? preferred : safeCommands;
   return source.slice(0, 4);
+}
+
+async function installOpenVsxExtension(marketplaceExt, onInstall) {
+  if (!onInstall) throw new Error('Extension installer is not ready');
+
+  const namespace = marketplaceExt.namespace || marketplaceExt.publisher;
+  const name = marketplaceExt.name || marketplaceExt.extension;
+  if (!namespace || !name) throw new Error('Missing Open VSX extension identifier');
+
+  const extId = `${namespace}.${name}`;
+
+  let detail = null;
+  const detailParams = new URLSearchParams({
+    action: 'detail',
+    namespace,
+    extension: name,
+  });
+  const detailRes = await fetch(`/api/extensions/search?${detailParams}`);
+  if (!detailRes.ok) {
+    const message = detailRes.status === 404
+      ? 'Not found on Open VSX'
+      : `Open VSX detail failed (${detailRes.status})`;
+    const error = new Error(message);
+    error.code = detailRes.status === 404 ? 'OPEN_VSX_NOT_FOUND' : 'OPEN_VSX_DETAIL_FAILED';
+    throw error;
+  }
+  detail = await detailRes.json();
+
+  let realManifest = null;
+  const manifestUrl = detail?.files?.manifest;
+  if (manifestUrl) {
+    try {
+      const proxyParams = new URLSearchParams({ action: 'proxy', url: manifestUrl });
+      const mRes = await fetch(`/api/extensions/search?${proxyParams}`);
+      if (mRes.ok) realManifest = await mRes.json();
+    } catch (e) {
+      console.warn(`[Marketplace] Could not fetch manifest for ${extId}:`, e);
+    }
+  }
+
+  const manifest = realManifest || {
+    name,
+    displayName: detail?.displayName || marketplaceExt.displayName || name,
+    description: detail?.description || marketplaceExt.description || '',
+    version: detail?.version || marketplaceExt.version,
+    publisher: namespace,
+    engines: { vscode: '^1.80.0' },
+    activationEvents: ['*'],
+    main: './extension.js',
+    contributes: {},
+  };
+
+  if (!manifest.publisher) manifest.publisher = namespace;
+  if (!manifest.version) manifest.version = detail?.version || marketplaceExt.version;
+  manifest.icon = marketplaceExt.files?.icon || detail?.files?.icon || manifest.icon || null;
+
+  let code = null;
+  try {
+    const dlParams = new URLSearchParams({
+      action: 'download-vsix',
+      namespace,
+      extension: name,
+      ...(manifest.version ? { version: manifest.version } : {}),
+    });
+    const vsixRes = await fetch(`/api/extensions/search?${dlParams}`);
+    if (vsixRes.ok) {
+      const vsixBuffer = await vsixRes.arrayBuffer();
+      const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
+      const extracted = await parseVSIX(vsixBuffer);
+      code = extracted.code;
+      if (extracted.manifest) {
+        if (extracted.manifest.contributes) manifest.contributes = extracted.manifest.contributes;
+        if (extracted.manifest.displayName) manifest.displayName = extracted.manifest.displayName;
+        if (extracted.manifest.description) manifest.description = extracted.manifest.description;
+        if (extracted.manifest.browser) manifest.browser = extracted.manifest.browser;
+        if (extracted.manifest.main && !manifest.main) manifest.main = extracted.manifest.main;
+      }
+      if (extracted.manifest?._grammars) manifest._grammars = extracted.manifest._grammars;
+      if (extracted.manifest?._langConfigs) manifest._langConfigs = extracted.manifest._langConfigs;
+      if (extracted.manifest?._nodeOnly) manifest._nodeOnly = extracted.manifest._nodeOnly;
+      if (extracted.manifest?._isWebBundle) manifest._isWebBundle = extracted.manifest._isWebBundle;
+      if (extracted.nodeCode) manifest._nodeCode = extracted.nodeCode;
+    }
+  } catch (e) {
+    console.warn(`[Marketplace] VSIX download/extract failed for ${extId}:`, e.message);
+  }
+
+  if (!code) {
+    const displayName = (manifest.displayName || manifest.name || '').replace(/'/g, "\\'");
+    code = `
+// ${displayName} v${manifest.version}
+// Installed from Open VSX Registry
+// VSIX code could not be extracted. Running as declarative-only extension.
+function activate(context) {
+  console.log('[${extId}] Extension activated (declarative contributions only)');
+  vscode.window.showInformationMessage('${displayName} loaded. Declarative contributions active.');
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+  }
+
+  return onInstall(extId, manifest, code, { source: 'marketplace' });
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  const results = [];
+  let nextIndex = 0;
+  const workerCount = Math.min(limit, items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }));
+
+  return results;
+}
+
+function createEmptyImportReport() {
+  return {
+    installed: [],
+    alreadyInstalled: [],
+    skipped: [],
+    failed: [],
+    needsVsix: [],
+    invalid: [],
+  };
 }
 
 // ─── State colors ────────────────────────────────────────────
@@ -387,8 +518,15 @@ export default function ExtensionSidebar({
   const [showInstall, setShowInstall] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(null);
+  const [importReport, setImportReport] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const [vsixTargetId, setVsixTargetId] = useState(null);
   const debounceRef = useRef(null);
   const abortRef = useRef(null);
+  const importInputRef = useRef(null);
+  const missingVsixInputRef = useRef(null);
 
   const activeCount = extensions.filter(e => e.state === 'active').length;
   const issueCount = extensions.filter(e => e.state === 'crashed' || e.state === 'quarantined').length;
@@ -453,117 +591,110 @@ export default function ExtensionSidebar({
 
   // ─── Install from marketplace ─────────────────────────
   const handleMarketplaceInstall = useCallback(async (marketplaceExt) => {
-    if (!onInstall) return;
-    
-    const extId = `${marketplaceExt.namespace}.${marketplaceExt.name}`;
-
-    // 1. Fetch extension detail from Open VSX to get download URLs
-    let detail;
-    try {
-      const detailParams = new URLSearchParams({
-        action: 'detail',
-        namespace: marketplaceExt.namespace,
-        extension: marketplaceExt.name,
-      });
-      const detailRes = await fetch(`/api/extensions/search?${detailParams}`);
-      if (detailRes.ok) detail = await detailRes.json();
-    } catch (e) {
-      console.warn(`[Marketplace] Could not fetch detail for ${extId}:`, e);
-    }
-
-    // 2. Fetch the REAL package.json from Open VSX (contains real contributes)
-    let realManifest = null;
-    const manifestUrl = detail?.files?.manifest;
-    if (manifestUrl) {
-      try {
-        const proxyParams = new URLSearchParams({ action: 'proxy', url: manifestUrl });
-        const mRes = await fetch(`/api/extensions/search?${proxyParams}`);
-        if (mRes.ok) realManifest = await mRes.json();
-      } catch (e) {
-        console.warn(`[Marketplace] Could not fetch manifest for ${extId}:`, e);
-      }
-    }
-
-    // Use the real manifest if we got it, otherwise build a basic one from search data
-    const manifest = realManifest || {
-      name: marketplaceExt.name,
-      displayName: marketplaceExt.displayName || marketplaceExt.name,
-      description: marketplaceExt.description || '',
-      version: marketplaceExt.version,
-      publisher: marketplaceExt.namespace,
-      engines: { vscode: '^1.80.0' },
-      activationEvents: ['*'],
-      main: './extension.js',
-      contributes: {},
-    };
-    // Ensure essential fields are present
-    if (!manifest.publisher) manifest.publisher = marketplaceExt.namespace;
-    if (!manifest.version) manifest.version = marketplaceExt.version;
-    // Preserve the icon URL from the marketplace data
-    manifest.icon = marketplaceExt.files?.icon || detail?.files?.icon || manifest.icon || null;
-
-    // 3. Try to download the VSIX and extract real extension code
-    let code = null;
-    try {
-      const dlParams = new URLSearchParams({
-        action: 'download-vsix',
-        namespace: marketplaceExt.namespace,
-        extension: marketplaceExt.name,
-        version: marketplaceExt.version,
-      });
-      const vsixRes = await fetch(`/api/extensions/search?${dlParams}`);
-      if (vsixRes.ok) {
-        const vsixBuffer = await vsixRes.arrayBuffer();
-        const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
-        const extracted = await parseVSIX(vsixBuffer);
-        code = extracted.code;
-        // The VSIX-extracted manifest has NLS %key% placeholders resolved.
-        // Prefer it over the raw API manifest for any fields it contains,
-        // especially contributes.views where view names would be unreadable.
-        if (extracted.manifest) {
-          // Merge NLS-resolved fields into manifest (overwrites %key% placeholders)
-          if (extracted.manifest.contributes) {
-            manifest.contributes = extracted.manifest.contributes;
-          }
-          if (extracted.manifest.displayName) manifest.displayName = extracted.manifest.displayName;
-          if (extracted.manifest.description) manifest.description = extracted.manifest.description;
-          // Copy browser/main fields so downstream code knows the entry type
-          if (extracted.manifest.browser) manifest.browser = extracted.manifest.browser;
-          if (extracted.manifest.main && !manifest.main) manifest.main = extracted.manifest.main;
-        }
-        // Carry over extracted metadata
-        if (extracted.manifest?._grammars) manifest._grammars = extracted.manifest._grammars;
-        if (extracted.manifest?._langConfigs) manifest._langConfigs = extracted.manifest._langConfigs;
-        if (extracted.manifest?._nodeOnly) manifest._nodeOnly = extracted.manifest._nodeOnly;
-        if (extracted.manifest?._isWebBundle) manifest._isWebBundle = extracted.manifest._isWebBundle;
-        // Carry the real Node.js bundle for the remote extension host
-        if (extracted.nodeCode) manifest._nodeCode = extracted.nodeCode;
-      }
-    } catch (e) {
-      console.warn(`[Marketplace] VSIX download/extract failed for ${extId}:`, e.message);
-    }
-
-    // 4. Fall back to stub code if VSIX extraction failed
-    // (many extensions need Node.js APIs that our web worker doesn't have)
-    if (!code) {
-      const displayName = (manifest.displayName || manifest.name || '').replace(/'/g, "\\'");
-      code = `
-// ${displayName} v${manifest.version}
-// Installed from Open VSX Registry
-// VSIX code could not be extracted — running as declarative-only extension.
-// Contribution points (sidebar views, languages, themes, snippets, etc.)
-// are still parsed from the real package.json and rendered in the IDE.
-function activate(context) {
-  console.log('[${extId}] Extension activated (declarative contributions only)');
-  vscode.window.showInformationMessage('${displayName} loaded — declarative contributions active.');
-}
-function deactivate() {}
-module.exports = { activate, deactivate };
-`;
-    }
-
-    await onInstall(extId, manifest, code, { source: 'marketplace' });
+    return installOpenVsxExtension(marketplaceExt, onInstall);
   }, [onInstall]);
+
+  const handleImportFile = useCallback(async (file) => {
+    if (!file || !onInstall) return;
+
+    setImporting(true);
+    setImportError(null);
+    setImportReport(null);
+
+    try {
+      const content = await file.text();
+      const parsed = parseExtensionImportList(content, { installedIds });
+      const report = createEmptyImportReport();
+      report.alreadyInstalled = parsed.alreadyInstalled;
+      report.invalid = parsed.invalid;
+
+      if (parsed.ids.length === 0) {
+        setImportReport(report);
+        setImportProgress(null);
+        return;
+      }
+
+      setImportProgress({ completed: 0, total: parsed.ids.length, current: null });
+
+      await runWithConcurrency(parsed.ids, 2, async (extensionId) => {
+        setImportProgress(prev => prev ? { ...prev, current: extensionId } : prev);
+        const parts = splitExtensionId(extensionId);
+        if (!parts) {
+          report.invalid.push(extensionId);
+        } else {
+          try {
+            await installOpenVsxExtension({ namespace: parts.namespace, name: parts.name }, onInstall);
+            report.installed.push(extensionId);
+          } catch (err) {
+            if (err.code === 'OPEN_VSX_NOT_FOUND') {
+              report.needsVsix.push(extensionId);
+            } else {
+              report.failed.push({ id: extensionId, reason: err.message || 'Install failed' });
+            }
+          }
+        }
+        setImportProgress(prev => prev ? { ...prev, completed: prev.completed + 1 } : prev);
+      });
+
+      setImportReport(report);
+    } catch (err) {
+      setImportError(err.message || 'Import failed');
+    } finally {
+      setImporting(false);
+      setImportProgress(null);
+    }
+  }, [installedIds, onInstall]);
+
+  const handleMissingVsixFile = useCallback(async (file) => {
+    if (!file || !vsixTargetId || !onInstall) return;
+    if (!file.name.endsWith('.vsix')) {
+      setImportError('File must be a .vsix file');
+      return;
+    }
+
+    setImporting(true);
+    setImportError(null);
+    try {
+      const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
+      const buffer = await file.arrayBuffer();
+      const vsixBase64 = arrayBufferToBase64(buffer);
+      const { manifest, code, nodeCode } = await parseVSIX(buffer);
+      if (nodeCode) manifest._nodeCode = nodeCode;
+      const extId = `${manifest.publisher || 'unknown'}.${manifest.name}`;
+      await onInstall(extId, manifest, code, { source: 'vsix', vsixBase64 });
+
+      setImportReport(prev => {
+        const report = prev || createEmptyImportReport();
+        return {
+          ...report,
+          installed: [...report.installed, extId],
+          needsVsix: report.needsVsix.filter(id => id !== vsixTargetId),
+        };
+      });
+      setVsixTargetId(null);
+    } catch (err) {
+      setImportReport(prev => {
+        const report = prev || createEmptyImportReport();
+        return {
+          ...report,
+          failed: [...report.failed, { id: vsixTargetId, reason: err.message || 'VSIX install failed' }],
+        };
+      });
+    } finally {
+      setImporting(false);
+    }
+  }, [onInstall, vsixTargetId]);
+
+  const skipMissingVsix = useCallback((extensionId) => {
+    setImportReport(prev => {
+      const report = prev || createEmptyImportReport();
+      return {
+        ...report,
+        skipped: [...report.skipped, extensionId],
+        needsVsix: report.needsVsix.filter(id => id !== extensionId),
+      };
+    });
+  }, []);
 
   // ─── Install sample ───────────────────────────────────
   const handleInstallSample = useCallback(async () => {
@@ -632,6 +763,37 @@ module.exports = { activate, deactivate };
         <Puzzle size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
         <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Extensions</span>
         <div className="ml-auto flex items-center gap-0.5">
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".txt,.json,.code-workspace"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleImportFile(file);
+              e.target.value = '';
+            }}
+          />
+          <input
+            ref={missingVsixInputRef}
+            type="file"
+            accept=".vsix"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleMissingVsixFile(file);
+              e.target.value = '';
+            }}
+          />
+          <button
+            onClick={() => importInputRef.current?.click()}
+            disabled={importing || !ready}
+            className="p-1.5 rounded-lg transition-all disabled:opacity-40"
+            style={{ color: 'var(--text-muted)' }}
+            title="Import extensions"
+          >
+            {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.5} /> : <FileUp className="w-3.5 h-3.5" strokeWidth={1.5} />}
+          </button>
           <button
             onClick={() => setShowInstall(!showInstall)}
             className="p-1.5 rounded-lg transition-all"
@@ -783,6 +945,121 @@ module.exports = { activate, deactivate };
               }}
             >
               {installError}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(importProgress || importReport || importError) && tab === 'installed' && (
+        <div className="border-b p-3 space-y-2" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {importing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: 'var(--accent-secondary)' }} />
+              ) : (
+                <FileArchive className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--accent-secondary)' }} />
+              )}
+              <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                Extension import
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                setImportReport(null);
+                setImportError(null);
+                setImportProgress(null);
+              }}
+              className="p-1 rounded transition-colors"
+              style={{ color: 'var(--text-dim)' }}
+              title="Clear import report"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+
+          {importProgress && (
+            <div>
+              <div className="flex items-center justify-between text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>
+                <span className="truncate">Installing {importProgress.current || 'extensions'}</span>
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>{importProgress.completed}/{importProgress.total}</span>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-editor)' }}>
+                <div
+                  className="h-full transition-all"
+                  style={{
+                    width: `${Math.round((importProgress.completed / Math.max(importProgress.total, 1)) * 100)}%`,
+                    background: 'var(--accent-secondary)',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {importError && (
+            <div className="text-[11px] rounded px-2 py-1.5" style={{ color: 'var(--accent-danger)', background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-danger) 26%, transparent)' }}>
+              {importError}
+            </div>
+          )}
+
+          {importReport && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-3 gap-1 text-[10px]">
+                <div className="rounded px-2 py-1" style={{ background: 'var(--bg-editor)', color: 'var(--text-muted)' }}>
+                  <span style={{ color: 'var(--accent-success)', fontVariantNumeric: 'tabular-nums' }}>{importReport.installed.length}</span> installed
+                </div>
+                <div className="rounded px-2 py-1" style={{ background: 'var(--bg-editor)', color: 'var(--text-muted)' }}>
+                  <span style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{importReport.alreadyInstalled.length}</span> existing
+                </div>
+                <div className="rounded px-2 py-1" style={{ background: 'var(--bg-editor)', color: 'var(--text-muted)' }}>
+                  <span style={{ color: importReport.failed.length ? 'var(--accent-danger)' : 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{importReport.failed.length}</span> failed
+                </div>
+              </div>
+
+              {importReport.needsVsix.length > 0 && (
+                <div className="rounded border p-2 space-y-1.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                  <div className="text-[10px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                    Needs VSIX
+                  </div>
+                  {importReport.needsVsix.map(id => (
+                    <div key={id} className="flex items-center gap-1.5 text-[10px]">
+                      <span className="flex-1 min-w-0 truncate" style={{ color: 'var(--text-muted)' }}>{id}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVsixTargetId(id);
+                          missingVsixInputRef.current?.click();
+                        }}
+                        disabled={importing}
+                        className="px-2 py-1 rounded transition-colors disabled:opacity-40"
+                        style={{ background: 'color-mix(in srgb, var(--accent-secondary) 14%, transparent)', color: 'var(--accent-secondary)' }}
+                      >
+                        Upload
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => skipMissingVsix(id)}
+                        disabled={importing}
+                        className="px-2 py-1 rounded transition-colors disabled:opacity-40"
+                        style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}
+                      >
+                        Skip
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(importReport.skipped.length > 0 || importReport.invalid.length > 0 || importReport.failed.length > 0) && (
+                <div className="space-y-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {importReport.skipped.length > 0 && <div>Skipped: {importReport.skipped.join(', ')}</div>}
+                  {importReport.invalid.length > 0 && <div>Invalid: {importReport.invalid.join(', ')}</div>}
+                  {importReport.failed.map(item => (
+                    <div key={`${item.id}:${item.reason}`} style={{ color: 'var(--accent-danger)' }}>
+                      {item.id}: {item.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
