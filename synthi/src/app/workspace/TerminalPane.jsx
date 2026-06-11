@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
+import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   TERMINAL_COLOR_KEYS,
@@ -497,6 +498,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       const { cols, rows } = term;
       const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+      const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
       const params = new URLSearchParams({
         sessionId: sid,
         workspace: workspaceSlug,
@@ -504,6 +506,15 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         cols: String(cols),
         rows: String(rows),
       });
+      if (runtimeIdentity.runtimeScope) {
+        params.set('runtimeScope', runtimeIdentity.runtimeScope);
+      }
+      if (runtimeIdentity.runtimeKind) {
+        params.set('runtimeKind', runtimeIdentity.runtimeKind);
+      }
+      if (runtimeIdentity.filesystemUserId) {
+        params.set('filesystemUserId', runtimeIdentity.filesystemUserId);
+      }
       // Friendly project name for the PTY prompt (~/<name> $). When the
       // workspace page hasn't loaded the name yet, the backend falls back
       // to the slug, so omitting this is safe.

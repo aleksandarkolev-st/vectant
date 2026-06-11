@@ -857,6 +857,8 @@ const streamGeminiWithTools = async ({
     conversationHistory = [],
     attachments = [],
     workspacePath = '',
+    runtimeScope = '',
+    filesystemUserId = null,
     userId = null,
     signal,
     maxRetries = 3,
@@ -1016,7 +1018,7 @@ const streamGeminiWithTools = async ({
                             const approvalId = generateApprovalId();
                             deferredCommands.push({ id: approvalId, command, args });
                             // Store for the approve-command endpoint to execute later
-                            deferredCommandsMap.set(approvalId, { command, workspacePath });
+                            deferredCommandsMap.set(approvalId, { command, workspacePath, userId, runtimeScope, filesystemUserId });
                             // Tell Gemini the command is deferred — don't retry
                             fnResponses.push({
                                 functionResponse: {
@@ -1049,7 +1051,7 @@ const streamGeminiWithTools = async ({
                         if (approved) {
                             // User approved — execute the command
                             await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
-                            const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                            const result = await executeTool(name, args, workspacePath, signal, { apiKey: key, userId, runtimeScope, filesystemUserId });
                             const evt = { tool: name, args, status: 'done' };
                             if (result?.sessionId) evt.sessionId = result.sessionId;
                             await writeEvent({ toolCall: evt });
@@ -1095,7 +1097,7 @@ const streamGeminiWithTools = async ({
                     } else {
                         // Non-command tools execute immediately (read_file, search, etc.)
                         await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
-                        const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                        const result = await executeTool(name, args, workspacePath, signal, { apiKey: key, userId, runtimeScope, filesystemUserId });
                         await writeEvent({ toolCall: { tool: name, args, status: 'done' } });
                         fnResponses.push({ functionResponse: { name, response: result } });
                     }
@@ -1785,6 +1787,8 @@ export async function POST(request) {
         provider: providerOverride = '',
         // Code intelligence integration
         workspacePath = '',
+        runtimeScope = '',
+        filesystemUserId = null,
         useCodeIntel = true, // Enable by default when workspacePath is provided
         maxContextTokens = 30000,
         conversationHistory = [],
@@ -1940,6 +1944,8 @@ export async function POST(request) {
                 conversationHistory,
                 attachments,
                 workspacePath,
+                runtimeScope,
+                filesystemUserId,
                 userId,
                 signal,
             });

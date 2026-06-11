@@ -53,8 +53,66 @@ spec:
             # ── Networking ──────────────────────────────────────────────────
             - name: COLLAB_PORT
               value: "1235"
-            - name: SYNTHI_APP_URL
-              value: "http://frontend:3000"
+            - name: SYNTHI_PUBLIC_APP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PUBLIC_APP_URL
+            - name: SYNTHI_APP_INTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_APP_INTERNAL_URL
+            - name: SYNTHI_PREVIEW_TARGET_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_TARGET_TEMPLATE
+            - name: WORKSPACE_PREVIEW_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_PREVIEW_PORTS
+            - name: SYNTHI_PREVIEW_SCAN_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SCAN_PORTS
+            - name: SYNTHI_TERMINAL_PORT_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_PORT_POOL
+            - name: SYNTHI_TERMINAL_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_BACKEND
+            - name: SYNTHI_TERMINAL_SCOPE_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_SCOPE_PORTS
+            - name: SYNTHI_PREVIEW_BIND_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_BIND_HOST
+            - name: WORKSPACE_DATA_PVC
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_PVC
+            - name: WORKSPACE_DATA_MOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_MOUNT
+            - name: WORKSPACE_REPOS_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_REPOS_PATH
             - name: CORS_ORIGIN
               valueFrom:
                 configMapKeyRef:

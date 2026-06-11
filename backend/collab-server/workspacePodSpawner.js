@@ -20,20 +20,21 @@
  *
  * Lifecycle:
  *   1. Frontend opens a WebSocket for workspace X, user Y.
- *   2. Collab server calls spawner.ensurePod(sessionId, userId).
- *   3. Spawner creates a Deployment "workspace-<sessionId>" if none exists.
+ *   2. Collab server calls spawner.ensurePod(runtimeScope, userId).
+ *   3. Spawner creates a Deployment "rt-<base32-hmac>" if none exists.
  *   4. Spawner uses the Watch API to wait until the pod reaches Running
  *      with a valid PodIP and all containers ready.
  *   5. Spawner returns { name, created, podIP, podName } to the caller.
- *   6. On every heartbeat from the frontend, spawner.touch(sessionId) updates
+ *   6. On every heartbeat from the frontend, spawner.touch(runtimeScope) updates
  *      the lastActive annotation.
  *   7. A periodic culler deletes Deployments whose lastActive > IDLE_TIMEOUT.
- *   8. On signaling disconnect, spawner.teardown(sessionId) deletes immediately.
+ *   8. On signaling disconnect, spawner.teardown(runtimeScope) deletes immediately.
  *   9. On SIGTERM, the spawner logs active sessions and optionally cleans up.
  */
 
 const k8s = require('@kubernetes/client-node');
 const config = require('./config');
+const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,14 @@ const WORKSPACE_NODE_SELECTOR_VALUE = (process.env.WORKSPACE_NODE_SELECTOR_VALUE
 const WORKSPACE_NODE_TAINT_KEY = (process.env.WORKSPACE_NODE_TAINT_KEY || 'workload').trim();
 const WORKSPACE_NODE_TAINT_VALUE = (process.env.WORKSPACE_NODE_TAINT_VALUE || 'workspace').trim();
 const WORKSPACE_NODE_TAINT_EFFECT = (process.env.WORKSPACE_NODE_TAINT_EFFECT || 'NoSchedule').trim();
+const WORKSPACE_DATA_PVC = (process.env.WORKSPACE_DATA_PVC || 'collab-data-pvc').trim();
+const WORKSPACE_DATA_MOUNT = (process.env.WORKSPACE_DATA_MOUNT || '/data').trim();
+const WORKSPACE_REPOS_PATH = (process.env.WORKSPACE_REPOS_PATH || `${WORKSPACE_DATA_MOUNT.replace(/\/+$/, '')}/repos`).trim();
+const WORKSPACE_PREVIEW_PORTS = parsePortList(
+  process.env.WORKSPACE_PREVIEW_PORTS ||
+  process.env.SYNTHI_PREVIEW_SCAN_PORTS ||
+  '',
+);
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -77,17 +86,32 @@ const activeSessions = new Set();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Sanitise a sessionId into a valid K8s name suffix (lowercase alphanum + dash). */
-function safeName(sessionId) {
-  return sessionId.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 48);
-}
-
 function deploymentName(sessionId) {
-  return `workspace-${safeName(sessionId)}`;
+  return runtimeResourceId(sessionId);
 }
 
 function serviceName(sessionId) {
-  return `ws-svc-${safeName(sessionId)}`;
+  return runtimeResourceId(sessionId);
+}
+
+function runtimeLabels(sessionId, userId) {
+  return {
+    app: 'workspace',
+    'synthi/runtime-id': runtimeResourceId(sessionId),
+    ...(userId ? { 'synthi/user-hash': metadataHash(userId) } : {}),
+    'app.kubernetes.io/part-of': 'synthi-ide',
+    'app.kubernetes.io/managed-by': 'workspace-spawner',
+  };
+}
+
+function runtimeAnnotations(sessionId, userId, metadata = {}) {
+  return {
+    'synthi/lastActive': String(Date.now()),
+    'synthi/runtimeScopeFull': sessionId,
+    ...(metadata.workspaceSlug ? { 'synthi/workspaceSlug': String(metadata.workspaceSlug) } : {}),
+    ...(metadata.runtimeKind ? { 'synthi/runtimeKind': dnsLabelValue(metadata.runtimeKind) } : {}),
+    ...(userId ? { 'synthi/userIdHash': metadataHash(userId) } : {}),
+  };
 }
 
 function buildWorkspaceScheduling() {
@@ -107,6 +131,27 @@ function buildWorkspaceScheduling() {
   return { nodeSelector, tolerations };
 }
 
+function parsePortList(value) {
+  const ports = new Set();
+  for (const rawPart of String(value || '').split(',')) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+      for (let port = Math.max(1, Math.min(start, end)); port <= Math.min(65535, Math.max(start, end)); port += 1) {
+        ports.add(port);
+      }
+      continue;
+    }
+    const port = Number(part);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
+  }
+  return [...ports].sort((a, b) => a - b);
+}
+
 // ── Watch API: Wait for pod readiness ─────────────────────────────────────
 
 /**
@@ -118,7 +163,7 @@ function buildWorkspaceScheduling() {
  */
 function waitForPodRunning(sessionId) {
   return new Promise((resolve, reject) => {
-    const labelSelector = `synthi/session=${safeName(sessionId)}`;
+    const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
     const watchPath = `/api/v1/namespaces/${NAMESPACE}/pods`;
     let resolved = false;
     let watchReq = null;
@@ -168,6 +213,32 @@ function waitForPodRunning(sessionId) {
   });
 }
 
+async function getReadyPodForSession(sessionId) {
+  const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
+  try {
+    const { body } = await coreApi.listNamespacedPod(
+      NAMESPACE,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector,
+    );
+    for (const pod of body.items || []) {
+      if (pod?.status?.phase !== 'Running' || !pod?.status?.podIP) continue;
+      const containerStatuses = pod.status.containerStatuses || [];
+      const allReady = containerStatuses.length > 0 &&
+        containerStatuses.every(c => c.ready);
+      if (allReady) {
+        return { podIP: pod.status.podIP, podName: pod.metadata.name };
+      }
+    }
+  } catch (err) {
+    console.warn(`[Spawner] Failed to list ready pod for ${runtimeResourceId(sessionId)}:`, err.message);
+  }
+  return { podIP: null, podName: null };
+}
+
 // ── Dynamic Service per workspace ─────────────────────────────────────────
 
 /**
@@ -176,26 +247,34 @@ function waitForPodRunning(sessionId) {
  */
 async function ensureService(sessionId) {
   const name = serviceName(sessionId);
+  const labels = runtimeLabels(sessionId, null);
   const service = {
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
       name,
       namespace: NAMESPACE,
-      labels: {
-        app: 'workspace',
-        'synthi/session': safeName(sessionId),
-        'app.kubernetes.io/managed-by': 'workspace-spawner',
+      labels,
+      annotations: {
+        'synthi/runtimeScopeFull': sessionId,
       },
     },
     spec: {
       type: 'ClusterIP',
+      clusterIP: 'None',
       selector: {
         app: 'workspace',
-        'synthi/session': safeName(sessionId),
+        'synthi/runtime-id': runtimeResourceId(sessionId),
       },
       ports: [
         { name: 'health', port: 8080, targetPort: 8080 },
+        ...WORKSPACE_PREVIEW_PORTS
+          .filter((port) => port !== 8080)
+          .map((port) => ({
+            name: `p-${port}`,
+            port,
+            targetPort: port,
+          })),
       ],
     },
   };
@@ -253,11 +332,11 @@ async function getActiveWorkspaceCount() {
  * Idempotent — if the Deployment already exists it is a no-op that just
  * bumps the lastActive annotation.
  *
- * @param {string} sessionId — Unique session identifier (workspace-slug + userId hash)
- * @param {string} userId    — Opaque user identifier for labelling
+ * @param {string} sessionId — Full runtime scope
+ * @param {string} userId    — Actor user identifier; stored only as HMAC metadata
  * @returns {Promise<{name: string, created: boolean, podIP: string|null, podName: string|null}>}
  */
-async function ensurePod(sessionId, userId) {
+async function ensurePod(sessionId, userId, metadata = {}) {
   // Local-dev bypass: no K8s available — the single docker-compose worker
   // registers as __legacy__ and the signaling server routes any session to it.
   if (process.env.SPAWNER_MODE === 'local') {
@@ -268,6 +347,8 @@ async function ensurePod(sessionId, userId) {
 
   const name = deploymentName(sessionId);
   const workspaceScheduling = buildWorkspaceScheduling();
+  const labels = runtimeLabels(sessionId, userId);
+  const annotations = runtimeAnnotations(sessionId, userId, metadata);
 
   // 1. Check if it already exists — fast path.
   try {
@@ -279,7 +360,9 @@ async function ensurePod(sessionId, userId) {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
-    return { name, created: false, podIP: null, podName: null };
+    const readyPod = await getReadyPodForSession(sessionId);
+    if (readyPod.podName) return { name, created: false, ...readyPod };
+    return { name, created: false, ...(await waitForPodRunning(sessionId)) };
   } catch (err) {
     if (err.response && err.response.statusCode === 404) {
       // Doesn't exist yet — fall through to creation.
@@ -301,34 +384,21 @@ async function ensurePod(sessionId, userId) {
     metadata: {
       name,
       namespace: NAMESPACE,
-      labels: {
-        app: 'workspace',
-        'synthi/session': safeName(sessionId),
-        'synthi/user': safeName(userId),
-        'app.kubernetes.io/part-of': 'synthi-ide',
-        'app.kubernetes.io/managed-by': 'workspace-spawner',
-      },
-      annotations: {
-        'synthi/lastActive': String(Date.now()),
-        'synthi/sessionId': sessionId,
-        'synthi/userId': userId,
-      },
+      labels,
+      annotations,
     },
     spec: {
       replicas: 1,
       selector: {
         matchLabels: {
           app: 'workspace',
-          'synthi/session': safeName(sessionId),
+          'synthi/runtime-id': runtimeResourceId(sessionId),
         },
       },
       template: {
         metadata: {
-          labels: {
-            app: 'workspace',
-            'synthi/session': safeName(sessionId),
-            'synthi/user': safeName(userId),
-          },
+          labels,
+          annotations,
         },
         spec: {
           terminationGracePeriodSeconds: 15,
@@ -356,7 +426,9 @@ exec worker`,
               ],
               env: [
                 { name: 'SESSION_ID', value: sessionId },
+                { name: 'RUNTIME_RESOURCE_ID', value: runtimeResourceId(sessionId) },
                 { name: 'USER_ID', value: userId },
+                { name: 'USER_ID_HASH', value: metadataHash(userId) },
                 {
                   name: 'SIGNALING_URL',
                   valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'SIGNALING_URL' } },
@@ -391,6 +463,9 @@ exec worker`,
                   name: 'SYNTHI_ISOLATION_MODEL',
                   valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'SYNTHI_ISOLATION_MODEL' } },
                 },
+                { name: 'WORKSPACE_ROOT', value: WORKSPACE_REPOS_PATH },
+                { name: 'REPOS_DIR', value: WORKSPACE_REPOS_PATH },
+                { name: 'SYNTHI_REPOS_PATH', value: WORKSPACE_REPOS_PATH },
               ],
               resources: {
                 requests: { cpu: '500m', memory: '1Gi' },
@@ -404,12 +479,14 @@ exec worker`,
               volumeMounts: [
                 { name: 'dshm', mountPath: '/dev/shm' },
                 { name: 'tmp', mountPath: '/tmp' },
+                ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', mountPath: WORKSPACE_DATA_MOUNT }] : []),
               ],
             },
           ],
           volumes: [
             { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
             { name: 'tmp', emptyDir: { sizeLimit: '2Gi' } },
+            ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', persistentVolumeClaim: { claimName: WORKSPACE_DATA_PVC } }] : []),
           ],
         },
       },
@@ -519,7 +596,7 @@ async function cullIdleWorkspaces() {
       const lastActive = Number(dep.metadata.annotations?.['synthi/lastActive'] || 0);
       if (now - lastActive > IDLE_TIMEOUT_MS) {
         const depName = dep.metadata.name;
-        const sid = dep.metadata.annotations?.['synthi/sessionId'] || '?';
+        const sid = dep.metadata.annotations?.['synthi/runtimeScopeFull'] || '?';
         console.log(`[Culler] Deleting idle workspace ${depName} (session=${sid}, idle=${Math.round((now - lastActive) / 1000)}s)`);
 
         // Delete the associated Service.
