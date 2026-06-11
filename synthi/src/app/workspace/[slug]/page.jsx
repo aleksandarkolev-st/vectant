@@ -10,6 +10,7 @@ import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
 import { resolveCollabHttpUrl } from '@/lib/collab-url';
+import { setContainerPorts } from '@/redux/portsSlice';
 import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
@@ -1214,6 +1215,11 @@ export default function EditorPage({ params }) {
                 if (filePath) {
                     dispatch(markFileSavedRemotely(filePath));
                 }
+            },
+            onContainerPorts: (ports) => {
+                // Live set of ports opened inside the workspace runtime container
+                // (terminal-launched servers) — feed the Ports panel.
+                dispatch(setContainerPorts(ports));
             },
             onCollabInvite: (msg) => {
                 // Forward collab-invite to collabSessionService so UI can

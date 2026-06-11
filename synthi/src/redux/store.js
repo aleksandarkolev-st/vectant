@@ -9,6 +9,7 @@ import layoutReducer from '@/components/docking-wm/state/layout-slice';
 import healingReducer, { initialHealingState } from './healingSlice';
 import prReducer from './prSlice';
 import compileManifestReducer from './compileManifestSlice';
+import portsReducer from './portsSlice';
 
 import { enableMapSet } from 'immer';
 
@@ -200,6 +201,7 @@ export const store = configureStore({
     healing: healingReducer,
     pr: prReducer,
     compileManifest: compileManifestReducer,
+    ports: portsReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>
