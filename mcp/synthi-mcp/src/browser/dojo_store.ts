@@ -3,37 +3,25 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import path from "node:path";
 import type { DojoSkill } from "./dojo.js";
 import { publishedToolNamesForSkill, publishedWorkflowBindingForSkill, type DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
+import type { DojoControlPlaneStore, DojoProofCapsuleRecord } from "../dojo/store/interfaces.js";
 
-export interface DojoProofCapsuleRecord {
-  capsule_id: string;
-  skill_id: string;
-  requested_action: string;
-  nonce?: string;
-  issued_at: string;
-  expires_at: string;
-  status: "issued" | "used" | "revoked";
-  first_used_at?: string;
-  last_validated_at?: string;
-  revoked_at?: string;
-  revoked_reason?: string;
-}
+export type {
+  DojoApprovalStore,
+  DojoAuditStore,
+  DojoCaseLawStore,
+  DojoControlPlaneStore,
+  DojoEvidenceStore,
+  DojoLicenseStore,
+  DojoProofCapsuleRecord,
+  DojoProofStore,
+  DojoSkillStore,
+  DojoSourceContractStore,
+  DojoStoreTransaction,
+  DojoStoreTransactionOptions,
+  DojoTransactionalStore,
+} from "../dojo/store/interfaces.js";
 
-export interface DojoSkillStore {
-  saveSkill(skill: DojoSkill): void;
-  getSkill(skillId: string): DojoSkill | null;
-  getSkillByWorkflowId(workflowId: string): DojoSkill | null;
-  getSkillByPublishedToolName(toolName: string): DojoSkill | null;
-  getPublishedWorkflowBindingByWorkflowId(workflowId: string): DojoPublishedWorkflowBinding | null;
-  getPublishedWorkflowBindingByToolName(toolName: string): DojoPublishedWorkflowBinding | null;
-  listSkills(): DojoSkill[];
-  saveProofRecord(record: DojoProofCapsuleRecord): void;
-  getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null;
-  listProofRecords(): DojoProofCapsuleRecord[];
-  revokeProofCapsule(capsuleId: string, reason: string, now?: string): DojoProofCapsuleRecord | null;
-  clear(): void;
-}
-
-export class InMemoryDojoSkillStore implements DojoSkillStore {
+export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
   private readonly skills = new Map<string, DojoSkill>();
   private readonly workflowIndex = new Map<string, string>();
   private readonly toolIndex = new Map<string, string>();
@@ -146,7 +134,7 @@ interface EncryptedDojoStoreEnvelope {
 
 const DOJO_STORE_FILE_MODE = 0o600;
 
-export class EncryptedFileDojoSkillStore implements DojoSkillStore {
+export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
   private readonly filePath: string;
   private readonly encryptionKey: Buffer;
   private readonly scopeId: string;
@@ -318,7 +306,7 @@ export class EncryptedFileDojoSkillStore implements DojoSkillStore {
   }
 }
 
-export function createDefaultDojoSkillStore(env: NodeJS.ProcessEnv = process.env): DojoSkillStore {
+export function createDefaultDojoSkillStore(env: NodeJS.ProcessEnv = process.env): DojoControlPlaneStore {
   const filePath = env["SYNTHI_DOJO_STORE_FILE"]?.trim();
   const key = env["SYNTHI_DOJO_STORE_KEY"]?.trim();
   if (!filePath && !key) return new InMemoryDojoSkillStore();

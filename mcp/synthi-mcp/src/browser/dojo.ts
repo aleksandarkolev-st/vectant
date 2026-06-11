@@ -14,8 +14,8 @@ import {
 import {
   createDefaultDojoSkillStore,
   InMemoryDojoSkillStore,
+  type DojoControlPlaneStore,
   type DojoProofCapsuleRecord,
-  type DojoSkillStore,
 } from "./dojo_store.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
@@ -678,7 +678,7 @@ export interface DojoProofValidation {
 }
 
 export class DojoSkillRegistry {
-  constructor(private store: DojoSkillStore = createDefaultDojoSkillStore()) {}
+  constructor(private store: DojoControlPlaneStore = createDefaultDojoSkillStore()) {}
 
   publish(skill: DojoSkill): DojoSkill {
     const clone = cloneJson(skill);
@@ -751,7 +751,7 @@ export class DojoSkillRegistry {
     return this.store.listProofRecords();
   }
 
-  useStoreForTests(store: DojoSkillStore = new InMemoryDojoSkillStore()): void {
+  useStoreForTests(store: DojoControlPlaneStore = new InMemoryDojoSkillStore()): void {
     this.store = store;
   }
 
