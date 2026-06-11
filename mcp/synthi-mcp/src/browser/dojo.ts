@@ -17,6 +17,7 @@ import {
   type DojoProofCapsuleRecord,
   type DojoSkillStore,
 } from "./dojo_store.js";
+import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
@@ -668,6 +669,7 @@ export interface DojoProofValidation {
   status: "allowed" | "blocked" | "approval_required";
   error?: string;
   blocked_by: string[];
+  error_codes: DojoProofErrorCode[];
   license: {
     skill_id: string;
     license_version: string;
@@ -1265,6 +1267,7 @@ export function validateDojoProofCapsule(
       status: "blocked",
       error: "dojo_proof_capsule_invalid",
       blocked_by: blockedBy,
+      error_codes: normalizeDojoProofErrorCodes(blockedBy),
       license: licenseSummary(license),
     };
   }
@@ -1275,6 +1278,7 @@ export function validateDojoProofCapsule(
       status: "approval_required",
       error: "dojo_action_requires_approval",
       blocked_by: gatedAction.constraints,
+      error_codes: ["approval_required"],
       license: licenseSummary(license),
     };
   }
@@ -1283,6 +1287,7 @@ export function validateDojoProofCapsule(
     ok: true,
     status: "allowed",
     blocked_by: [],
+    error_codes: [],
     license: licenseSummary(license),
   };
 }

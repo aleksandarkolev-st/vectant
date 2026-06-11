@@ -1,0 +1,122 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  dojoProofRefusalCategoryFor,
+  normalizeDojoProofErrorCode,
+} from "../../src/dojo/proof/errors.js";
+import {
+  buildDojoSkill,
+  dojoSkillRegistry,
+  issueDojoProofCapsule,
+  validateDojoProofCapsule,
+} from "../../src/browser/dojo.js";
+import { evaluateDojoLicenseKernel } from "../../src/browser/dojo_license_kernel.js";
+import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
+import { compileWorkflowContract } from "../../src/browser/workflow.js";
+import type { BrowserTraceEvent } from "../../src/browser/types.js";
+
+beforeEach(() => {
+  dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+  dojoSkillRegistry.resetForTests();
+});
+
+describe("Dojo proof error taxonomy", () => {
+  it("normalizes proof and license failure reasons to stable codes", () => {
+    expect(normalizeDojoProofErrorCode("proof_capsule_not_issued_by_registry")).toBe("proof_capsule_not_issued");
+    expect(normalizeDojoProofErrorCode("missing_evidence_claim:checkride_passed")).toBe("proof_evidence_claim_unverified");
+    expect(normalizeDojoProofErrorCode("missing_context_claim:workspace_verified")).toBe("proof_context_claim_unverified");
+    expect(normalizeDojoProofErrorCode("app_origin_mismatch")).toBe("origin_mismatch");
+    expect(normalizeDojoProofErrorCode("guardrail_not_active:guard_1")).toBe("guardrail_failed");
+    expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");
+  });
+
+  it("maps normalized codes to refusal categories", () => {
+    expect(dojoProofRefusalCategoryFor("proof_capsule_replay_detected")).toBe("proof_replay_or_revocation");
+    expect(dojoProofRefusalCategoryFor("proof_evidence_claim_unverified")).toBe("claim_verification_failed");
+    expect(dojoProofRefusalCategoryFor("action_not_licensed")).toBe("license_scope_failed");
+    expect(dojoProofRefusalCategoryFor("guardrail_failed")).toBe("approval_or_guardrail_required");
+  });
+
+  it("adds normalized error codes to capsule validation failures", () => {
+    const skill = buildDojoSkill(workflowContract(), {
+      workspace_id: "workspace-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    const tampered = { ...capsule, context_claims: { workspace_verified: false } };
+    const validation = validateDojoProofCapsule(skill, tampered, "run_workflow", "2026-06-11T00:01:00.000Z");
+
+    expect(validation.ok).toBe(false);
+    expect(validation.blocked_by).toEqual(expect.arrayContaining([
+      "proof_capsule_signature_invalid",
+      "missing_context_claim:workspace_verified",
+    ]));
+    expect(validation.error_codes).toEqual(expect.arrayContaining([
+      "proof_signature_invalid",
+      "proof_context_claim_unverified",
+    ]));
+  });
+
+  it("adds normalized error codes to license-kernel registry failures", () => {
+    const skill = buildDojoSkill(workflowContract(), {
+      workspace_id: "workspace-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    dojoSkillRegistry.publish(skill);
+    const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    const decision = evaluateDojoLicenseKernel({
+      skill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(decision.ok).toBe(false);
+    expect(decision.blocked_by).toContain("proof_capsule_not_issued_by_registry");
+    expect(decision.error_codes).toContain("proof_capsule_not_issued");
+    expect(decision.validation.error_codes).toContain("proof_capsule_not_issued");
+  });
+});
+
+function workflowContract() {
+  return compileWorkflowContract([
+    event({
+      event_id: "open",
+      action: "click",
+      detail: { element: { role: "button", name: "Open details", source_id: "details.open" } },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    }),
+  ]).contract;
+}
+
+function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
+  return {
+    event_id: "evt",
+    trace_id: "trace",
+    trace_version: 1,
+    event_seq: 1,
+    ts: 1,
+    tab_id: "tab",
+    origin: "https://app.example.test",
+    url: "https://app.example.test/settings",
+    kind: "human_action",
+    action: "click",
+    target: "button",
+    selectors: [],
+    locator_candidates: [],
+    confidence: 0.99,
+    ...overrides,
+  };
+}

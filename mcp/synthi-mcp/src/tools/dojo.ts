@@ -892,6 +892,7 @@ function dojoExplainBlockTool(args: unknown): ToolResponse {
         status: "blocked" as const,
         error: "dojo_proof_capsule_required",
         blocked_by: ["proof_capsule_missing"],
+        error_codes: ["proof_capsule_missing" as const],
         license: {
           skill_id: skill.skill.skill_id,
           license_version: skill.skill.permission_license.license_version,
@@ -1390,6 +1391,7 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
       proof_capsule_schema: skill.skill.proof_capsule_schema,
+      error_codes: ["proof_capsule_missing"],
     });
   }
   const decision = evaluateDojoLicenseKernel({
@@ -1429,6 +1431,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
       proof_capsule_schema: skill.skill.proof_capsule_schema,
+      error_codes: ["proof_capsule_missing"],
     });
   }
   const toolArgs = objectOpt(a["tool_args"]) ?? {};

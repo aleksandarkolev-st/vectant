@@ -6,12 +6,14 @@ import {
 } from "./dojo.js";
 import type { DojoSkillRegistry } from "./dojo.js";
 import type { DojoProofCapsuleRecord } from "./dojo_store.js";
+import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 
 export interface DojoLicenseKernelDecision {
   ok: boolean;
   status: "allowed" | "blocked" | "approval_required";
   validation: DojoProofValidation;
   blocked_by: string[];
+  error_codes: DojoProofErrorCode[];
   proof_record?: DojoProofCapsuleRecord | null;
   runtime_claims: {
     workspace_id: string;
@@ -76,6 +78,7 @@ export function evaluateDojoLicenseKernel(input: {
     : validation.status === "approval_required"
     ? "approval_required"
     : "allowed";
+  const errorCodes = normalizedLicenseKernelErrorCodes(blockedBy, status);
 
   return {
     ok: status === "allowed",
@@ -86,8 +89,10 @@ export function evaluateDojoLicenseKernel(input: {
       status,
       error: status === "allowed" ? undefined : validation.error ?? (status === "approval_required" ? "dojo_action_requires_approval" : "dojo_license_kernel_blocked"),
       blocked_by: blockedBy,
+      error_codes: errorCodes,
     },
     blocked_by: blockedBy,
+    error_codes: errorCodes,
     proof_record: record,
     runtime_claims: {
       workspace_id: input.skill.workspace_id,
@@ -96,6 +101,15 @@ export function evaluateDojoLicenseKernel(input: {
       dry_run: dryRun,
     },
   };
+}
+
+function normalizedLicenseKernelErrorCodes(
+  blockedBy: string[],
+  status: DojoLicenseKernelDecision["status"]
+): DojoProofErrorCode[] {
+  const codes = normalizeDojoProofErrorCodes(blockedBy);
+  if (status === "approval_required" && !codes.includes("approval_required")) codes.push("approval_required");
+  return codes;
 }
 
 export function markDojoProofExecution(input: {
