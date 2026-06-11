@@ -62,6 +62,14 @@ export interface BrowserRuntimeAttachment {
   workspace_url: string | null;
   adapter: string;
   attached_at: number;
+  expires_at?: number | null;
+  origin_allowlist?: string[];
+  egress_policy?: {
+    local_network_allowed: boolean;
+  };
+  redaction_policy?: {
+    screenshots: boolean;
+  };
 }
 
 export interface BrowserTeachQuestionAnswer {

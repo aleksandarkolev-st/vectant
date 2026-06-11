@@ -16,6 +16,10 @@ export interface HostedBrowserRuntimeConfig {
   adapter: "hosted-playwright-cdp" | "not-configured";
   required_env: string[];
   ignored_local_dev_env: string[];
+  origin_allowlist: string[];
+  session_ttl_ms: number | null;
+  local_network_allowed: boolean;
+  redact_screenshots: boolean;
   product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser";
 }
 
@@ -38,6 +42,12 @@ export type HostedBrowserAttachResult = {
   ok: false;
   error: "hosted_runtime_not_configured";
   runtime: HostedBrowserRuntimeConfig;
+} | {
+  ok: false;
+  error: "hosted_runtime_origin_not_allowed";
+  runtime: HostedBrowserRuntimeConfig;
+  workspace_origin: string | null;
+  allowed_origins: string[];
 };
 
 interface HostedBrowserRuntimeResolvedConfig extends HostedBrowserRuntimeConfig {
@@ -49,6 +59,10 @@ const WORKSPACE_ID_ENV = "SYNTHI_WORKSPACE_ID";
 const WORKSPACE_URL_ENV = "SYNTHI_WORKSPACE_URL";
 const HOSTED_WORKSPACE_URL_ENV = "SYNTHI_HOSTED_BROWSER_WORKSPACE_URL";
 const RUNTIME_ID_ENV = "SYNTHI_HOSTED_BROWSER_RUNTIME_ID";
+const ORIGIN_ALLOWLIST_ENV = "SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST";
+const SESSION_TTL_MS_ENV = "SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS";
+const ALLOW_LOCAL_NETWORK_ENV = "SYNTHI_HOSTED_BROWSER_ALLOW_LOCAL_NETWORK";
+const REDACT_SCREENSHOTS_ENV = "SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS";
 
 export function resolveHostedBrowserRuntime(
   input: HostedBrowserRuntimeInput = {},
@@ -67,6 +81,16 @@ export async function attachHostedBrowserRuntime(
   if (!config.cdpUrl) {
     return { ok: false, error: "hosted_runtime_not_configured", runtime: publicConfig(config) };
   }
+  const workspaceOrigin = originForUrl(config.workspace_url);
+  if (config.origin_allowlist.length > 0 && (!workspaceOrigin || !config.origin_allowlist.includes(workspaceOrigin))) {
+    return {
+      ok: false,
+      error: "hosted_runtime_origin_not_allowed",
+      runtime: publicConfig(config),
+      workspace_origin: workspaceOrigin,
+      allowed_origins: config.origin_allowlist,
+    };
+  }
 
   deps.setWorkflowOverlayEnabled?.(true);
   let allTabs = await deps.attach(config.cdpUrl);
@@ -83,6 +107,14 @@ export async function attachHostedBrowserRuntime(
     runtime_id: config.runtime_id,
     workspace_url: config.workspace_url,
     adapter: config.adapter,
+    expires_at: config.session_ttl_ms ? Date.now() + config.session_ttl_ms : null,
+    origin_allowlist: config.origin_allowlist,
+    egress_policy: {
+      local_network_allowed: config.local_network_allowed,
+    },
+    redaction_policy: {
+      screenshots: config.redact_screenshots,
+    },
   });
   allTabs = await deps.listTabs();
   const tabs = broker.registerTabs(allTabs);
@@ -106,6 +138,7 @@ function resolveHostedBrowserRuntimeInternal(
   const workspaceUrl = nonEmpty(input.workspace_url) ?? nonEmpty(env[WORKSPACE_URL_ENV]) ?? nonEmpty(env[HOSTED_WORKSPACE_URL_ENV]) ?? null;
   const runtimeId = nonEmpty(input.runtime_id) ?? nonEmpty(env[RUNTIME_ID_ENV]) ?? null;
   const ignoredLocalDevEnv = nonEmpty(env["SYNTHI_BROWSER_CDP_URL"]) ? ["SYNTHI_BROWSER_CDP_URL"] : [];
+  const originAllowlist = parseOriginAllowlist(env[ORIGIN_ALLOWLIST_ENV]);
   return {
     configured: Boolean(cdpUrl),
     cdpUrl: cdpUrl ?? null,
@@ -115,6 +148,10 @@ function resolveHostedBrowserRuntimeInternal(
     adapter: cdpUrl ? "hosted-playwright-cdp" : "not-configured",
     required_env: [HOSTED_CDP_ENV],
     ignored_local_dev_env: ignoredLocalDevEnv,
+    origin_allowlist: originAllowlist,
+    session_ttl_ms: parsePositiveInteger(env[SESSION_TTL_MS_ENV]),
+    local_network_allowed: parseBoolean(env[ALLOW_LOCAL_NETWORK_ENV]),
+    redact_screenshots: env[REDACT_SCREENSHOTS_ENV] === undefined ? true : parseBoolean(env[REDACT_SCREENSHOTS_ENV]),
     product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
   };
 }
@@ -126,4 +163,36 @@ function publicConfig(config: HostedBrowserRuntimeResolvedConfig): HostedBrowser
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+export function parseOriginAllowlist(value: unknown): string[] {
+  const raw = typeof value === "string" ? value : "";
+  const origins = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => originForUrl(item))
+    .filter((item): item is string => Boolean(item));
+  return [...new Set(origins)].sort();
+}
+
+function originForUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  const raw = nonEmpty(value);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseBoolean(value: unknown): boolean {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }

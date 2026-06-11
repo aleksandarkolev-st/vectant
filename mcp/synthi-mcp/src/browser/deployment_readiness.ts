@@ -73,6 +73,8 @@ export function browserWorkflowDeploymentReadiness(
   const checks: BrowserWorkflowDeploymentCheck[] = [];
 
   checks.push(checkHostedRuntime(hostedRuntime, env, production));
+  checks.push(checkHostedRuntimeOriginPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeSessionPolicy(hostedRuntime, production));
   checks.push(checkWorkspaceScope(workspaceId, production));
   checks.push(checkStorePair({
     id: "private_workflow_tool_store",
@@ -289,6 +291,48 @@ function checkHostedRuntime(
   };
 }
 
+function checkHostedRuntimeOriginPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"];
+  const workspaceOrigin = originForUrl(runtime.workspace_url);
+  const configured = runtime.origin_allowlist.length > 0 ? required : [];
+  if (workspaceOrigin && runtime.origin_allowlist.includes(workspaceOrigin)) {
+    return pass("hosted_browser_origin_policy", "Hosted runtime origin allowlist includes the workspace origin.", required, configured);
+  }
+  return {
+    id: "hosted_browser_origin_policy",
+    status: production ? "fail" : "warn",
+    message: runtime.origin_allowlist.length === 0
+      ? "Hosted runtime origin allowlist is missing; production sessions must be origin-scoped."
+      : `Hosted runtime origin allowlist does not include workspace origin ${workspaceOrigin ?? "unknown"}.`,
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeSessionPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"];
+  const configured = runtime.session_ttl_ms ? required : [];
+  const maxTtlMs = 60 * 60 * 1000;
+  if (runtime.session_ttl_ms && runtime.session_ttl_ms <= maxTtlMs) {
+    return pass("hosted_browser_session_policy", "Hosted runtime sessions use short-lived credentials.", required, configured);
+  }
+  return {
+    id: "hosted_browser_session_policy",
+    status: production ? "fail" : "warn",
+    message: runtime.session_ttl_ms
+      ? "Hosted runtime session TTL exceeds the one-hour production maximum."
+      : "Hosted runtime session TTL is missing; production credentials must be short-lived.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
 function checkWorkspaceScope(workspaceId: string | undefined, production: boolean): BrowserWorkflowDeploymentCheck {
   if (workspaceId) {
     return pass("workspace_scope", "Workspace scope is configured for runtime and store isolation.", ["SYNTHI_WORKSPACE_ID"], ["SYNTHI_WORKSPACE_ID"]);
@@ -415,4 +459,13 @@ function isLoopbackHost(host: string): boolean {
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function originForUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
 }

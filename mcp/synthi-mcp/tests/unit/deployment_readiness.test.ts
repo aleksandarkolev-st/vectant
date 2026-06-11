@@ -13,6 +13,8 @@ describe("browser workflow deployment readiness", () => {
       configured: true,
       workspace_id: "tenant-a:workspace-a",
       workspace_url: "https://app.example.test/workspace/acme",
+      origin_allowlist: ["https://app.example.test"],
+      session_ttl_ms: 900000,
     }));
     expect(readiness.dojo_enforcement).toEqual(expect.objectContaining({
       enforcement_mode: "production",
@@ -26,6 +28,8 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "dojo_durable_store", status: "pass" }),
       expect.objectContaining({ id: "dojo_external_signing", status: "pass" }),
       expect.objectContaining({ id: "dojo_evidence_ledger", status: "pass" }),
+      expect.objectContaining({ id: "hosted_browser_origin_policy", status: "pass" }),
+      expect.objectContaining({ id: "hosted_browser_session_policy", status: "pass" }),
     ]));
     expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret/);
     expect(JSON.stringify(readiness)).not.toMatch(/SYNTHI_BROWSER_CDP_URL/);
@@ -45,6 +49,8 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "private_workflow_tool_store", status: "fail" }),
       expect.objectContaining({ id: "auth_checkpoint_store", status: "fail" }),
       expect.objectContaining({ id: "local_cdp_env_absent", status: "fail" }),
+      expect.objectContaining({ id: "hosted_browser_origin_policy", status: "fail" }),
+      expect.objectContaining({ id: "hosted_browser_session_policy", status: "fail" }),
       expect.objectContaining({ id: "dojo_production_enforcement", status: "fail" }),
       expect.objectContaining({ id: "dojo_durable_store", status: "fail" }),
       expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
@@ -102,6 +108,8 @@ function productionReadyEnv(): NodeJS.ProcessEnv {
   return {
     SYNTHI_HOSTED_BROWSER_CDP_URL: "wss://runtime.example.test/devtools/browser/session-secret",
     SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: "https://app.example.test/workspace/acme",
+    SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://app.example.test",
+    SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS: "900000",
     SYNTHI_WORKSPACE_ID: "tenant-a:workspace-a",
     SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "/var/lib/synthi/private-tools.enc.json",
     SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "private-tool-secret",
