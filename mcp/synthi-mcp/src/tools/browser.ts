@@ -1602,6 +1602,8 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
+  const dojoGate = await browserWorkflowReplayDojoGate(args, replay.artifact.workflow_id);
+  if (dojoGate) return dojoGate;
   const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
     ? await authStorageStateForColdReplay(replay.artifact.workflow.contract)
     : { ok: true as const, storageState: undefined };
@@ -2112,6 +2114,35 @@ function dojoTenantContext(args: unknown, workflowId: string): DojoTenantContext
     request_id: stringOpt(a["request_id"]) ?? `req_${workflowId}`,
     correlation_id: stringOpt(a["correlation_id"]) ?? `corr_${workflowId}`,
   };
+}
+
+async function browserWorkflowReplayDojoGate(args: unknown, workflowId: string): Promise<ToolResponse | null> {
+  const binding = dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(workflowId);
+  const gate = createDojoExecutionPolicyGate({
+    resolvePublishedSkill: () => binding
+      ? {
+          status: "published",
+          skill_id: binding.skill_id,
+          workflow_id: binding.workflow_id,
+          tool_name: binding.tool_names[0],
+        }
+      : { status: "unpublished", workflow_id: workflowId },
+  });
+  const decision = await gate.evaluate({
+    tenant: dojoTenantContext(args, workflowId),
+    entrypoint: "browser_workflow",
+    workflow_id: workflowId,
+    requested_action: "run_workflow",
+  });
+  if (decision.ok) return null;
+  return errorResponse(binding ? "dojo_proof_capsule_required" : "dojo_execution_policy_blocked", {
+    workflow_id: workflowId,
+    requested_action: "run_workflow",
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
+    blocked_by: decision.blocked_by,
+    dojo_execution_policy: decision,
+  });
 }
 
 function privateWorkflowHostedRuntimeGate(
