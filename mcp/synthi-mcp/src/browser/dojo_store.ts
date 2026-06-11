@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DojoSkill } from "./dojo.js";
+import { publishedToolNamesForSkill, publishedWorkflowBindingForSkill, type DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 
 export interface DojoProofCapsuleRecord {
   capsule_id: string;
@@ -21,6 +22,9 @@ export interface DojoSkillStore {
   saveSkill(skill: DojoSkill): void;
   getSkill(skillId: string): DojoSkill | null;
   getSkillByWorkflowId(workflowId: string): DojoSkill | null;
+  getSkillByPublishedToolName(toolName: string): DojoSkill | null;
+  getPublishedWorkflowBindingByWorkflowId(workflowId: string): DojoPublishedWorkflowBinding | null;
+  getPublishedWorkflowBindingByToolName(toolName: string): DojoPublishedWorkflowBinding | null;
   listSkills(): DojoSkill[];
   saveProofRecord(record: DojoProofCapsuleRecord): void;
   getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null;
@@ -32,12 +36,17 @@ export interface DojoSkillStore {
 export class InMemoryDojoSkillStore implements DojoSkillStore {
   private readonly skills = new Map<string, DojoSkill>();
   private readonly workflowIndex = new Map<string, string>();
+  private readonly toolIndex = new Map<string, string>();
   private readonly proofRecords = new Map<string, DojoProofCapsuleRecord>();
 
   saveSkill(skill: DojoSkill): void {
     const clone = cloneJson(skill);
     this.skills.set(clone.skill_id, clone);
     this.workflowIndex.set(clone.workflow_id, clone.skill_id);
+    this.removeToolIndexesForSkill(clone.skill_id);
+    for (const toolName of publishedToolNamesForSkill(clone)) {
+      this.toolIndex.set(toolName, clone.skill_id);
+    }
   }
 
   getSkill(skillId: string): DojoSkill | null {
@@ -48,6 +57,21 @@ export class InMemoryDojoSkillStore implements DojoSkillStore {
   getSkillByWorkflowId(workflowId: string): DojoSkill | null {
     const skillId = this.workflowIndex.get(workflowId);
     return skillId ? this.getSkill(skillId) : null;
+  }
+
+  getSkillByPublishedToolName(toolName: string): DojoSkill | null {
+    const skillId = this.toolIndex.get(toolName);
+    return skillId ? this.getSkill(skillId) : null;
+  }
+
+  getPublishedWorkflowBindingByWorkflowId(workflowId: string): DojoPublishedWorkflowBinding | null {
+    const skill = this.getSkillByWorkflowId(workflowId);
+    return skill ? publishedWorkflowBindingForSkill(skill) : null;
+  }
+
+  getPublishedWorkflowBindingByToolName(toolName: string): DojoPublishedWorkflowBinding | null {
+    const skill = this.getSkillByPublishedToolName(toolName);
+    return skill ? publishedWorkflowBindingForSkill(skill) : null;
   }
 
   listSkills(): DojoSkill[] {
@@ -83,7 +107,14 @@ export class InMemoryDojoSkillStore implements DojoSkillStore {
   clear(): void {
     this.skills.clear();
     this.workflowIndex.clear();
+    this.toolIndex.clear();
     this.proofRecords.clear();
+  }
+
+  private removeToolIndexesForSkill(skillId: string): void {
+    for (const [toolName, indexedSkillId] of this.toolIndex.entries()) {
+      if (indexedSkillId === skillId) this.toolIndex.delete(toolName);
+    }
   }
 }
 
@@ -96,6 +127,7 @@ export interface EncryptedFileDojoSkillStoreOptions {
 interface PersistedDojoScope {
   skills: Record<string, DojoSkill>;
   workflow_index: Record<string, string>;
+  published_tool_index: Record<string, string>;
   proof_records: Record<string, DojoProofCapsuleRecord>;
 }
 
@@ -132,6 +164,10 @@ export class EncryptedFileDojoSkillStore implements DojoSkillStore {
       const clone = cloneJson(skill);
       scope.skills[clone.skill_id] = clone;
       scope.workflow_index[clone.workflow_id] = clone.skill_id;
+      removeToolIndexesForSkill(scope.published_tool_index, clone.skill_id);
+      for (const toolName of publishedToolNamesForSkill(clone)) {
+        scope.published_tool_index[toolName] = clone.skill_id;
+      }
     });
   }
 
@@ -145,6 +181,23 @@ export class EncryptedFileDojoSkillStore implements DojoSkillStore {
     const skillId = scope.workflow_index[workflowId];
     const skill = skillId ? scope.skills[skillId] : null;
     return skill ? cloneJson(skill) : null;
+  }
+
+  getSkillByPublishedToolName(toolName: string): DojoSkill | null {
+    const scope = this.scope();
+    const skillId = scope.published_tool_index[toolName];
+    const skill = skillId ? scope.skills[skillId] : null;
+    return skill ? cloneJson(skill) : null;
+  }
+
+  getPublishedWorkflowBindingByWorkflowId(workflowId: string): DojoPublishedWorkflowBinding | null {
+    const skill = this.getSkillByWorkflowId(workflowId);
+    return skill ? publishedWorkflowBindingForSkill(skill) : null;
+  }
+
+  getPublishedWorkflowBindingByToolName(toolName: string): DojoPublishedWorkflowBinding | null {
+    const skill = this.getSkillByPublishedToolName(toolName);
+    return skill ? publishedWorkflowBindingForSkill(skill) : null;
   }
 
   listSkills(): DojoSkill[] {
@@ -282,13 +335,14 @@ function emptyDocument(): EncryptedDojoStoreDocument {
 }
 
 function emptyScope(): PersistedDojoScope {
-  return { skills: {}, workflow_index: {}, proof_records: {} };
+  return { skills: {}, workflow_index: {}, published_tool_index: {}, proof_records: {} };
 }
 
 function cloneScope(scope: PersistedDojoScope): PersistedDojoScope {
   return {
     skills: Object.fromEntries(Object.entries(scope.skills ?? {}).map(([key, value]) => [key, cloneJson(value)])),
     workflow_index: { ...(scope.workflow_index ?? {}) },
+    published_tool_index: { ...(scope.published_tool_index ?? {}) },
     proof_records: Object.fromEntries(Object.entries(scope.proof_records ?? {}).map(([key, value]) => [key, cloneJson(value)])),
   };
 }
@@ -310,4 +364,10 @@ function normalizeScopeId(scopeId: string | undefined): string {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function removeToolIndexesForSkill(index: Record<string, string>, skillId: string): void {
+  for (const [toolName, indexedSkillId] of Object.entries(index)) {
+    if (indexedSkillId === skillId) delete index[toolName];
+  }
 }

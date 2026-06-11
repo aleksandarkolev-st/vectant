@@ -17,6 +17,7 @@ import {
   type DojoProofCapsuleRecord,
   type DojoSkillStore,
 } from "./dojo_store.js";
+import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -689,6 +690,18 @@ export class DojoSkillRegistry {
 
   getByWorkflowId(workflowId: string): DojoSkill | null {
     return this.store.getSkillByWorkflowId(workflowId);
+  }
+
+  getByPublishedToolName(toolName: string): DojoSkill | null {
+    return this.store.getSkillByPublishedToolName(toolName);
+  }
+
+  getPublishedWorkflowBindingByWorkflowId(workflowId: string): DojoPublishedWorkflowBinding | null {
+    return this.store.getPublishedWorkflowBindingByWorkflowId(workflowId);
+  }
+
+  getPublishedWorkflowBindingByToolName(toolName: string): DojoPublishedWorkflowBinding | null {
+    return this.store.getPublishedWorkflowBindingByToolName(toolName);
   }
 
   list(): DojoSkill[] {
