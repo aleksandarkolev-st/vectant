@@ -28,7 +28,7 @@ Phase 1 already gives each workspace an isolated **rootless Docker runtime conta
 When `ENABLE_CONTAINER_RUNTIME=1`:
 
 - The workspace's runtime container (`workspace-runtime-<slug>-<user>`, per `workspaceRuntimeContainer.js`) is **pre-warmed when the workspace opens**.
-- Each interactive terminal is a `docker exec -i -t -w /workspace <rtContainer> bash -l` PTY (Approach A — `node-pty` spawns the `docker exec`, reusing all existing terminal plumbing).
+- Each interactive terminal is a **dockerode TTY exec** running `bash -l` inside the runtime container (revised from the original "node-pty spawns docker exec": collab-server has no docker CLI and manages containers via the Docker socket already; `execInRuntime` already returns a PTY-shaped handle). Reuses the permissioned socket path with no new dependency on the shared collab-server image.
 - A per-workspace **port monitor** polls listening TCP ports inside the runtime container and surfaces them through the existing `/wsport` proxy and the Ports panel.
 
 When the flag is off, terminals spawn a host shell in collab-server exactly as today (zero behavior change — merge-dark).
@@ -46,16 +46,13 @@ Full env parity with what the collab-server terminal has today. Add to `vectant-
 
 The login shell (`bash -l`) sources these so the terminal env matches collab-server. Image-size growth is accepted (decision 3).
 
-### 2. Terminal routing — `terminalService.js` (`createPtyProcess`)
+### 2. Terminal routing — `workspaceRuntimeContainer.js` (new `execInteractiveShell`) + `terminalService.js` (WSS branch)
 
-Single branch keyed on container-runtime being enabled for the slug:
+- **New `execInteractiveShell(slug, userId, { cols, rows })`** on the runtime manager: a dockerode exec with `Cmd: ['/bin/bash','-l']`, `User: 'rootless'`, `Tty: true`, `AttachStdin/Stdout/Stderr: true`, `WorkingDir: '/workspace'`, `Env: ['TERM=xterm-256color', …friendly PS1]`. Returns the same `onData`/`onExit`/`write`/`kill` handle `execInRuntime` returns, **plus `resize(cols, rows)`** (calls `exec.resize({ h: rows, w: cols })`), and performs an initial `resize` after `start`.
+- **`terminalService.createTerminalWSS(deps)`** gains injected deps `{ enableContainerRuntime, workspaceRuntime, flushWorkspaceDocsToDisk }`. In the WSS connection handler, when `enableContainerRuntime && workspaceRuntime`: `ensureRuntimeContainer` → `waitForRuntimeReady` → `execInteractiveShell` and use that handle instead of `createPtyProcess`. The existing resize handler already calls `ptyProcess.resize(cols, rows)`, output forwarding/exit/close all consume the same handle shape unchanged.
+- **Off (or no slug):** unchanged `createPtyProcess` host-shell path.
 
-- **On:** ensure + wait for the runtime container (`ensureRuntimeContainer` + `waitForRuntimeReady`), then `pty.spawn('docker', ['exec','-i','-t','-w','/workspace', rtName, 'bash','-l'], {...})`. The spawned process IS the docker-exec; `node-pty`'s resize maps to the local PTY, which `docker exec -i -t` forwards to the in-container TTY (SIGWINCH). Output buffering, ring buffer, reattach, and headless orphan-cull are unchanged because the handle shape is identical.
-- **Off:** unchanged host-shell spawn.
-
-`resolveWorkspaceCwd` for the on-path resolves to the container's `/workspace` (the named-volume subpath the runtime container already mounts), so terminal cwd == program cwd == editor working tree.
-
-The docker-exec argv is injected/parameterized so it can be unit-tested without a real daemon.
+cwd is the container's `/workspace` (the named-volume subpath the runtime container already mounts), so terminal cwd == program cwd == editor working tree. `execInteractiveShell` is unit-tested against a fake dockerode (asserting Cmd/User/WorkingDir/Tty and that `resize` calls `exec.resize`).
 
 ### 3. Pre-warm lifecycle — `server.js` (+ tiny frontend hook)
 
@@ -102,7 +99,7 @@ server binds :PORT inside the runtime container
 ## Testing
 
 **Unit (node:test, no daemon):**
-- `createPtyProcess` container branch builds the exact `docker exec -i -t -w /workspace <rt> bash -l` argv (injected spawn); flag-off builds the host-shell argv.
+- `execInteractiveShell` builds the right dockerode exec (`/bin/bash -l`, `User: rootless`, `WorkingDir: /workspace`, `Tty: true`) and `resize()` calls `exec.resize({h,w})` (fake dockerode); flag-off WSS still uses `createPtyProcess`.
 - `containerPortMonitor` scan → diff → attribute with a fake exec returning sample `ss -ltn` output (add/remove/no-change cases; malformed output ignored).
 - Env-scrub (`HOST_ENV_DENYLIST`) on the terminal path remains enforced.
 
