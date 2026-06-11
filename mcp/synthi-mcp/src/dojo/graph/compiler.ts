@@ -127,6 +127,7 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
     evidence_policy: ["append_action_trace", "append_postcondition_evidence"],
     case_law_refs: skill.case_law.map((item) => item.case_id),
     expiry_triggers: skill.permission_license.expiry_policy.expires_on,
+    metadata: { rollback_policy: skill.rollback_policy },
   };
 }
 

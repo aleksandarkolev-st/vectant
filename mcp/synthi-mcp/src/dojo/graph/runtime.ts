@@ -1,5 +1,7 @@
 import { type DojoGraphNode, type DojoGraphMode, type DojoSkillGraph, validateDojoSkillGraph } from "./types.js";
 import { evaluateDojoGuardrailPredicate } from "./guardrail_runtime.js";
+import { evaluateDojoGraphAssertions, type DojoAssertionRuntimeResult } from "./assertion_runtime.js";
+import { decideDojoRollbackForAssertionFailure, noRollbackRequired, type DojoRollbackDecision } from "./rollback_runtime.js";
 
 export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped";
 export type DojoGraphRunStatus = "completed" | "blocked" | "failed";
@@ -9,6 +11,8 @@ export interface DojoGraphNodeRunResult {
   kind: DojoGraphNode["kind"];
   status: DojoGraphNodeRunStatus;
   blocked_by: string[];
+  assertion_results: DojoAssertionRuntimeResult[];
+  rollback_decision: DojoRollbackDecision;
 }
 
 export interface DojoGraphRunResult {
@@ -53,6 +57,8 @@ export class DojoSkillGraphRuntime {
         kind: node.kind,
         status: blockedBy.length > 0 ? "blocked" : "completed",
         blocked_by: blockedBy,
+        assertion_results: [],
+        rollback_decision: noRollbackRequired(),
       };
       nodeResults.push(result);
       if (blockedBy.length > 0) {
@@ -64,6 +70,34 @@ export class DojoSkillGraphRuntime {
           blocked_by: blockedBy,
         };
       }
+
+      const assertionResults = evaluateDojoGraphAssertions(node.assertions, inputs);
+      const assertionBlockedBy = assertionResults.flatMap((assertion) => assertion.blocked_by);
+      if (assertionBlockedBy.length > 0) {
+        const rollbackDecision = decideDojoRollbackForAssertionFailure(node);
+        const blockedWithRollback = [...assertionBlockedBy, ...rollbackDecision.blocked_by];
+        const assertionResult: DojoGraphNodeRunResult = {
+          node_id: node.node_id,
+          kind: node.kind,
+          status: "blocked",
+          blocked_by: blockedWithRollback,
+          assertion_results: assertionResults,
+          rollback_decision: rollbackDecision,
+        };
+        nodeResults[nodeResults.length - 1] = assertionResult;
+        return {
+          ok: false,
+          status: "blocked",
+          mode,
+          node_results: nodeResults,
+          blocked_by: blockedWithRollback,
+        };
+      }
+
+      nodeResults[nodeResults.length - 1] = {
+        ...result,
+        assertion_results: assertionResults,
+      };
     }
 
     return {
