@@ -15,6 +15,18 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       scenarioCount: 0,
       artifactCount: 0,
     },
+    governance: {
+      metrics: {
+        skillCount: 0,
+        activeLicenseCount: 0,
+        expiredLicenseCount: 0,
+        pendingApprovalCount: 0,
+        caseLawReviewCount: 0,
+      },
+      licenseHealth: [],
+      approvalQueue: [],
+      caseLawReviewQueue: [],
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -263,6 +275,95 @@ function normalizeRefusal(dojo, skill) {
   };
 }
 
+function normalizeLicenseHealthItem(item, fallbackSkill) {
+  return {
+    skillId: item.skill_id || item.skillId || fallbackSkill?.skillId || '',
+    skillName: item.skill_name || item.skillName || fallbackSkill?.title || '',
+    workspaceId: item.workspace_id || item.workspaceId || '',
+    licenseId: item.license_id || item.licenseId || fallbackSkill?.licenseId || '',
+    licenseVersion: item.license_version || item.licenseVersion || '',
+    status: item.status || fallbackSkill?.licenseStatus || 'draft',
+    entrustmentLevel: item.entrustment_level || item.entrustmentLevel || fallbackSkill?.entrustmentLevel || 'E0',
+    readinessLevel: Number(item.readiness_level ?? item.readinessLevel ?? fallbackSkill?.readinessLevel ?? 0),
+    autonomyLevel: item.autonomy_level || item.autonomyLevel || '',
+    expiresAt: item.expires_at || item.expiresAt || fallbackSkill?.licenseExpiresAt || '',
+    daysUntilExpiry: item.days_until_expiry ?? item.daysUntilExpiry ?? fallbackSkill?.daysUntilExpiry ?? null,
+    proofRequired: Boolean(item.proof_required ?? item.proofRequired ?? fallbackSkill?.proofRequired),
+    allowedActionCount: Number(item.allowed_action_count ?? item.allowedActionCount ?? fallbackSkill?.allowedActions?.length ?? 0),
+    gatedActionCount: Number(item.gated_action_count ?? item.gatedActionCount ?? fallbackSkill?.gatedActions?.length ?? 0),
+    blockedActionCount: Number(item.blocked_action_count ?? item.blockedActionCount ?? fallbackSkill?.blockedActions?.length ?? 0),
+    recertificationTriggers: compactStrings(item.recertification_triggers || item.recertificationTriggers),
+  };
+}
+
+function normalizeApprovalItem(item) {
+  return {
+    queueId: item.queue_id || item.queueId || `${item.skill_id || item.skillId || 'skill'}:${item.action || 'approval'}`,
+    skillId: item.skill_id || item.skillId || '',
+    workspaceId: item.workspace_id || item.workspaceId || '',
+    licenseId: item.license_id || item.licenseId || '',
+    action: item.action || '',
+    constraints: compactStrings(item.constraints),
+    reason: item.reason || '',
+    status: item.status || 'pending',
+    source: item.source || 'license_gated_action',
+  };
+}
+
+function normalizeCaseLawReviewItem(item) {
+  return {
+    caseId: item.case_id || item.caseId || item.id || '',
+    title: item.title || '',
+    skillId: item.skill_id || item.skillId || '',
+    workspaceId: item.workspace_id || item.workspaceId || '',
+    finding: item.finding || '',
+    impact: item.impact || '',
+    ruleCreated: item.rule_created || item.ruleCreated || '',
+    status: item.status || 'proposed',
+    evidenceRefs: compactStrings(item.evidence_refs || item.evidenceRefs),
+    bindingScope: item.binding_scope || item.bindingScope || '',
+    createdAt: item.created_at || item.createdAt || '',
+  };
+}
+
+function normalizeGovernanceState(state, skill, workspaceSlug) {
+  const raw = state.governanceService || state.governance_service || state.governance || {};
+  const rawMetrics = raw.metrics || {};
+  const approvalQueue = asArray(raw.approval_queue || raw.approvalQueue).map(normalizeApprovalItem).filter((item) => item.action || item.queueId);
+  const caseLawReviewQueue = asArray(raw.case_law_review_queue || raw.caseLawReviewQueue)
+    .map(normalizeCaseLawReviewItem)
+    .filter((item) => item.caseId || item.title);
+  const licenseHealth = asArray(raw.license_health || raw.licenseHealth)
+    .map((item) => normalizeLicenseHealthItem(item, skill))
+    .filter((item) => item.skillId || item.licenseId);
+  const fallbackLicenseHealth = licenseHealth.length || !skill
+    ? licenseHealth
+    : [normalizeLicenseHealthItem({
+      skill_id: skill.skillId,
+      skill_name: skill.title,
+      workspace_id: workspaceSlug,
+      license_id: skill.licenseId,
+      status: skill.licenseStatus,
+      entrustment_level: skill.entrustmentLevel,
+      readiness_level: skill.readinessLevel,
+      expires_at: skill.licenseExpiresAt,
+      days_until_expiry: skill.daysUntilExpiry,
+      proof_required: skill.proofRequired,
+    }, skill)];
+  return {
+    metrics: {
+      skillCount: Number(rawMetrics.skill_count ?? rawMetrics.skillCount ?? state.metrics?.skillCount ?? (skill ? 1 : 0)),
+      activeLicenseCount: Number(rawMetrics.active_license_count ?? rawMetrics.activeLicenseCount ?? fallbackLicenseHealth.filter((item) => ['active', 'expiring', 'licensed'].includes(item.status)).length),
+      expiredLicenseCount: Number(rawMetrics.expired_license_count ?? rawMetrics.expiredLicenseCount ?? fallbackLicenseHealth.filter((item) => ['expired', 'revoked'].includes(item.status)).length),
+      pendingApprovalCount: Number(rawMetrics.pending_approval_count ?? rawMetrics.pendingApprovalCount ?? raw.approvalCount ?? approvalQueue.length),
+      caseLawReviewCount: Number(rawMetrics.case_law_review_count ?? rawMetrics.caseLawReviewCount ?? caseLawReviewQueue.length),
+    },
+    licenseHealth: fallbackLicenseHealth,
+    approvalQueue,
+    caseLawReviewQueue,
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -271,6 +372,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   if (!dojo.skillId && !dojo.skill_id) {
     return {
       ...empty,
+      governance: normalizeGovernanceState(state, null, workspaceSlug),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -317,6 +419,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       scenarioCount: skill.scenarioCount,
       artifactCount: skill.artifactCount,
     },
+    governance: normalizeGovernanceState(state, skill, workspaceSlug),
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
