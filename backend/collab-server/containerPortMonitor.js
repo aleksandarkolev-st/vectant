@@ -65,35 +65,45 @@ function createContainerPortMonitor({
   if (typeof onPortsChanged !== 'function') throw new TypeError('onPortsChanged is required');
 
   const keyOf = (slug, userId) => `${slug} ${userId}`;
-  /** key -> last reported sorted port array */
+  /** key -> last reported (baseline-subtracted) sorted port array */
   const lastPorts = new Map();
+  /** key -> Set of infra ports present when the container was first seen */
+  const baseline = new Map();
   let timer = null;
 
   async function _scanOnce() {
     const active = listContainers() || [];
     const activeKeys = new Set(active.map((c) => keyOf(c.slug, c.userId)));
 
-    // Containers that went away → emit [] once, then forget.
-    for (const key of [...lastPorts.keys()]) {
+    // Containers that went away → emit [] once (if we'd reported any), then forget
+    // both the reported set and the baseline so a re-created container re-baselines.
+    for (const key of [...baseline.keys()]) {
       if (!activeKeys.has(key)) {
         const [slug, userId] = key.split(' ');
-        if (lastPorts.get(key).length) {
+        if ((lastPorts.get(key) || []).length) {
           try { onPortsChanged(slug, userId, []); } catch (_) {}
         }
         lastPorts.delete(key);
+        baseline.delete(key);
       }
     }
 
     for (const { slug, userId } of active) {
-      let ports = [];
+      let raw = [];
       try {
         const out = await runOnce(slug, userId, ['/bin/sh', '-lc', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null']);
-        ports = parseListeningPorts(out);
+        raw = parseListeningPorts(out);
       } catch (err) {
         // Container vanished mid-scan etc. — skip this round for this workspace.
         continue;
       }
       const key = keyOf(slug, userId);
+      // First time we see this container, snapshot everything currently listening
+      // as the infra baseline (rootless dockerd ~2376, ephemeral containerd port,
+      // etc.) so the Ports panel only shows ports the user opens AFTER startup.
+      if (!baseline.has(key)) baseline.set(key, new Set(raw));
+      const base = baseline.get(key);
+      const ports = raw.filter((p) => !base.has(p));
       const prev = lastPorts.get(key) || [];
       if (!sameSet(prev, ports)) {
         lastPorts.set(key, ports);
