@@ -83,6 +83,95 @@ function normalizeTimeline(dojo) {
     .filter((entry) => entry.label || entry.level);
 }
 
+function normalizeGraphNode(node) {
+  const guardrailRefs = compactStrings(
+    node.guardrail_refs || node.guardrailRefs || node.guardrails?.map?.((guardrail) => guardrail.guardrail_id || guardrail.id || guardrail),
+  );
+  const assertions = asArray(node.assertions).map((assertion) => {
+    if (typeof assertion === 'string') return assertion;
+    return assertion?.description || assertion?.assertion_id || assertion?.id || '';
+  }).filter(Boolean);
+  return {
+    id: node.node_id || node.nodeId || node.id || '',
+    kind: node.kind || 'Action',
+    label: node.label || node.action || node.node_id || 'Graph node',
+    risk: node.risk || (node.kind === 'Action' ? 'mutation' : 'safe'),
+    substrate: node.substrate || node.substrate_options?.[0] || node.substrateOptions?.[0] || '',
+    action: node.action || node.metadata?.action_kind || '',
+    inputs: compactStrings(node.inputs),
+    outputs: compactStrings(node.outputs),
+    guardrailRefs,
+    caseRefs: compactStrings(node.case_refs || node.caseRefs || node.case_law_refs || node.caseLawRefs),
+    proofRequired: Boolean(node.proof?.required || node.kind === 'Proof'),
+    proofClaims: compactStrings(node.proof?.required_claims || node.proof?.requiredClaims || node.metadata?.evidence_claims),
+    assertions,
+    evidencePolicy: compactStrings(node.evidence_policy || node.evidencePolicy),
+    expiryTriggers: compactStrings(node.expiry_triggers || node.expiryTriggers),
+    memory: node.memory || {},
+    metadata: node.metadata || {},
+  };
+}
+
+function normalizeGraphEdge(edge) {
+  return {
+    id: edge.edge_id || edge.edgeId || edge.id || `${edge.from_node_id || edge.from}-${edge.to_node_id || edge.to}`,
+    from: edge.from_node_id || edge.fromNodeId || edge.from || '',
+    to: edge.to_node_id || edge.toNodeId || edge.to || '',
+    condition: edge.condition || '',
+    confidence: Number(edge.confidence ?? 1),
+    observedVariants: compactStrings(edge.observed_variants || edge.observedVariants || edge.learned_from || edge.learnedFrom),
+  };
+}
+
+function fallbackGraphForSkill(skill) {
+  const actionLabel = skill.allowedActions?.[0] || skill.gatedActions?.[0] || 'Licensed action';
+  const nodes = [
+    { id: 'trigger', kind: 'Trigger', label: 'MCP skill call', risk: 'safe', inputs: [], outputs: ['permission'], guardrailRefs: [], caseRefs: [], proofRequired: false, proofClaims: [], assertions: [], evidencePolicy: [], expiryTriggers: [], memory: {}, metadata: {} },
+    { id: 'permission', kind: 'Permission', label: skill.entrustmentLevel || 'Permission check', risk: 'safe', inputs: ['trigger'], outputs: ['proof'], guardrailRefs: skill.blockedActions || [], caseRefs: skill.caseLawRefs || [], proofRequired: false, proofClaims: [], assertions: [], evidencePolicy: [], expiryTriggers: [], memory: {}, metadata: { license_status: skill.licenseStatus } },
+    { id: 'proof', kind: 'Proof', label: 'Validate proof capsule', risk: 'safe', inputs: ['permission'], outputs: ['action'], guardrailRefs: [], caseRefs: [], proofRequired: skill.proofRequired, proofClaims: skill.proofRequirements || [], assertions: [], evidencePolicy: [], expiryTriggers: [], memory: {}, metadata: {} },
+    { id: 'action', kind: 'Action', label: actionLabel, risk: 'mutation', inputs: ['proof'], outputs: ['assertion'], guardrailRefs: skill.blockedActions || [], caseRefs: skill.caseLawRefs || [], proofRequired: skill.proofRequired, proofClaims: skill.proofRequirements || [], assertions: ['Postcondition required'], evidencePolicy: [], expiryTriggers: [], memory: {}, metadata: { substrate: skill.publishedToolName || 'dojo_dispatcher' } },
+    { id: 'assertion', kind: 'Assertion', label: 'Verify postcondition', risk: 'safe', inputs: ['action'], outputs: ['expiry'], guardrailRefs: [], caseRefs: [], proofRequired: false, proofClaims: [], assertions: ['Observed result matches expected state'], evidencePolicy: [], expiryTriggers: [], memory: {}, metadata: {} },
+    { id: 'expiry', kind: 'Expiry', label: 'Recertification check', risk: 'safe', inputs: ['assertion'], outputs: [], guardrailRefs: [], caseRefs: [], proofRequired: false, proofClaims: [], assertions: [], evidencePolicy: [], expiryTriggers: compactStrings(skill.expiryPolicy), memory: {}, metadata: { expires_at: skill.licenseExpiresAt } },
+  ];
+  return {
+    graphId: `fallback_${skill.skillId}`,
+    schemaVersion: 'synthi.dojo.skillGraph.fallback.v1',
+    skillId: skill.skillId,
+    version: '',
+    mode: skill.licenseStatus === 'licensed' ? 'production' : 'practice',
+    nodes,
+    edges: [
+      { id: 'trigger-permission', from: 'trigger', to: 'permission', condition: 'call_received', confidence: 1, observedVariants: [] },
+      { id: 'permission-proof', from: 'permission', to: 'proof', condition: 'license_allowed', confidence: 1, observedVariants: [] },
+      { id: 'proof-action', from: 'proof', to: 'action', condition: 'proof_valid', confidence: 1, observedVariants: [] },
+      { id: 'action-assertion', from: 'action', to: 'assertion', condition: 'postcondition_required', confidence: 1, observedVariants: [] },
+      { id: 'assertion-expiry', from: 'assertion', to: 'expiry', condition: 'run_complete', confidence: 1, observedVariants: [] },
+    ],
+    validation: { ok: false, issues: [{ issue_id: 'graph_report_missing', severity: 'warning', message: 'No backend graph report was present; displaying a derived shell.' }] },
+    derived: true,
+  };
+}
+
+function normalizeSkillGraph(dojo, skill) {
+  const rawGraph = dojo.skillCortex || dojo.skill_cortex || dojo.skillGraph || dojo.skill_graph || dojo.graph || dojo.cortex;
+  if (!rawGraph || !Array.isArray(rawGraph.nodes)) return fallbackGraphForSkill(skill);
+  const nodes = rawGraph.nodes.map(normalizeGraphNode).filter((node) => node.id);
+  const edges = asArray(rawGraph.edges).map(normalizeGraphEdge).filter((edge) => edge.from && edge.to);
+  return {
+    graphId: rawGraph.graph_id || rawGraph.workflow_graph_id || rawGraph.graphId || '',
+    schemaVersion: rawGraph.schema_version || rawGraph.schemaVersion || '',
+    skillId: rawGraph.skill_id || rawGraph.skillId || skill.skillId,
+    version: rawGraph.graph_version || rawGraph.graphVersion || rawGraph.skill_version || rawGraph.skillVersion || '',
+    mode: rawGraph.mode || (skill.licenseStatus === 'licensed' ? 'production' : 'practice'),
+    nodes,
+    edges,
+    validation: rawGraph.validation || { ok: true, issues: [] },
+    entryNodeId: rawGraph.entry_node_id || rawGraph.entryNodeId || nodes[0]?.id || '',
+    exitNodeIds: compactStrings(rawGraph.exit_node_ids || rawGraph.exitNodeIds),
+    derived: false,
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -121,6 +210,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     publishedTools: normalizePublishedTools(dojo),
     entrustmentTimeline: normalizeTimeline(dojo),
   };
+  skill.graph = normalizeSkillGraph(dojo, skill);
 
   return {
     ...empty,
