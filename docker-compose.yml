@@ -141,6 +141,12 @@ services:
       # docker socket mount below so collab-server can manage those containers.
       ENABLE_CONTAINER_RUNTIME: "1"
       RUNTIME_IMAGE: "vectant-runtime:local"
+      # Workspace-prep (auto dependency install) and the local worker spawner
+      # default WORKER_IMAGE to `synthi-worker:local`, which doesn't exist in this
+      # dev stack — compose builds the worker as `synthi-ide-worker:latest`. Point
+      # them at the real local tag so prep doesn't try to pull from Docker Hub
+      # (which 404s: "pull access denied for synthi-worker").
+      WORKER_IMAGE: "synthi-ide-worker:latest"
       # collab-server runs as a container here, so the per-workspace runtime
       # container must reach repo files via the SHARED collab-data named volume
       # (a host-path bind would resolve on the host and be empty). Value is the
