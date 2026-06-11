@@ -25,6 +25,7 @@ import { usePanelRegistry } from '../state/panel-registry';
 import { TabBar } from './TabBar';
 import { PanelContentArea } from './PanelContainer';
 import { DropOverlay } from './DropOverlay';
+import { selectContributedContainers } from '@/redux/extensionSlice';
 import {
   selectSidebarAutoCollapseEnabled,
   toggleSidebarPanelPin,
@@ -90,6 +91,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
   const nodes = useSelector(selectNodes);
   const allTabs = useSelector(selectTabs);
   const registry = usePanelRegistry();
+  const contributedContainers = useSelector(selectContributedContainers) || [];
   const focusedGroupId = useSelector(selectFocusedTabGroupId);
   const dragSourceTabId = useSelector(selectDragSourceTabId);
 
@@ -103,8 +105,12 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
     if (!node || !node.tabs) return [];
     return node.tabs
       .map((tid) => allTabs[tid])
-      .filter((tab) => tab && registry.has(tab.panelType));
-  }, [node, allTabs, registry]);
+      .filter((tab) => {
+        if (!tab || !registry.has(tab.panelType)) return false;
+        if (tab.panelType !== IDE_PANEL.EXTENSION_VIEW) return true;
+        return contributedContainers.some((container) => container.id === tab.data?.containerId);
+      });
+  }, [node, allTabs, registry, contributedContainers]);
 
   const isEditorSurface = useMemo(
     () => tabs.length > 0 && tabs.every((tab) => tab?.panelType === 'editor'),

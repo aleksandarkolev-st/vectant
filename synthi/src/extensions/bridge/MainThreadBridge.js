@@ -340,7 +340,8 @@ export class MainThreadBridge {
    */
   getExtensionHostTarget(manifest) {
     // Browser extensions always run locally — unless too large for the worker
-    if (manifest.browser) {
+    // Hybrid browser+Node extensions use the server path.
+    if (manifest.browser && !manifest.main) {
       const info = this.extensions.get(manifest.__extensionId || `${manifest.publisher}.${manifest.name}`);
       const codeLen = info?.code?.length || 0;
       if (codeLen <= 500_000) return 'local';
@@ -392,8 +393,9 @@ export class MainThreadBridge {
 
       // Eligible: Node-only extensions, OR large-bundle extensions with main entry
       const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
+      const isHybridNode = info.manifest?.main && !!info.manifest?._nodeCode;
       const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
-      if (!isNodeOnly && !isTooLarge) continue;
+      if (!isNodeOnly && !isHybridNode && !isTooLarge) continue;
       toRehydrate.push(info);
     }
 
@@ -1133,12 +1135,13 @@ export class MainThreadBridge {
     // ── Route decision: local worker vs VS Code Server ──
     const hostTarget = this.getExtensionHostTarget(manifest);
     const isNodeOnly = manifest.main && !manifest.browser;
+    const isHybridNode = manifest.main && !!manifest._nodeCode;
     const isTooLargeForWorker = code && code.length > 500_000 && manifest.main;
 
     // Node-only extensions OR extensions with huge browser bundles:
     // store info — they'll be installed on the VS Code Server
     // via _rehydrateNodeOnlyExtensions when the server connects.
-    if (isNodeOnly || isTooLargeForWorker) {
+    if (isNodeOnly || isHybridNode || isTooLargeForWorker) {
       if (hostTarget === 'vscode-server') {
         // Server is ready — install immediately
         console.log(`[MainThreadBridge] ${extensionId}: installing on VS Code Server`);
@@ -1154,7 +1157,7 @@ export class MainThreadBridge {
         }
       }
       console.log(
-        `[MainThreadBridge] ${extensionId}: ${isNodeOnly ? 'Node-only' : `bundle too large (${code.length} chars)`}, ` +
+        `[MainThreadBridge] ${extensionId}: ${isNodeOnly ? 'Node-only' : isHybridNode ? 'hybrid Node bundle' : `bundle too large (${code.length} chars)`}, ` +
         'stored (waiting for VS Code Server)'
       );
       return;
@@ -1505,8 +1508,9 @@ export class MainThreadBridge {
         try {
           // Skip Node-only extensions and large-bundle extensions — they don't belong in the worker
           const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
+          const isHybridNode = info.manifest?.main && !!info.manifest?._nodeCode;
           const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
-          if (isNodeOnly || isTooLarge) continue;
+          if (isNodeOnly || isHybridNode || isTooLarge) continue;
 
           await this.workerProxy.loadExtension(id, info.code, info.manifest);
           if (info.isActive) {

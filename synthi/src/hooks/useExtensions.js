@@ -146,6 +146,62 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
+  const reconcileExplicitServerExtensions = useCallback(async (source = 'server-reconcile') => {
+    const bridge = systemRef.current?.bridge;
+    const proxy = bridge?.vscodeServerProxy;
+    if (!bridge || !proxy?.isReady?.()) return 0;
+
+    const [detailed, explicitInstalled] = await Promise.all([
+      proxy.listExtensionsDetailed().catch((err) => {
+        console.warn(`[useExtensions] ${source}: failed to list server extensions:`, err?.message || err);
+        return [];
+      }),
+      dbGetAll().catch((err) => {
+        console.warn(`[useExtensions] ${source}: failed to read persisted extensions:`, err?.message || err);
+        return [];
+      }),
+    ]);
+
+    const explicitInstallIds = new Set(
+      explicitInstalled
+        .filter((ext) => ext?.enabled !== false && typeof ext?.id === 'string')
+        .map((ext) => ext.id)
+    );
+    if (explicitInstallIds.size === 0) return 0;
+
+    const currentExtensions = store.getState()?.extensions?.extensions || {};
+    let reconciled = 0;
+    for (const { id: extId, manifest } of (detailed || [])) {
+      if (!manifest || !explicitInstallIds.has(extId)) continue;
+
+      stripUnresolvedNLS(manifest);
+
+      if (!currentExtensions[extId]) {
+        dispatch(registerExtRedux({ id: extId, manifest }));
+      }
+      if (manifest.contributes) {
+        dispatch(parseContributions({ extensionId: extId, contributes: manifest.contributes }));
+      }
+
+      bridge.vscodeServerExtensions.add(extId);
+      const info = bridge.extensions.get(extId);
+      if (info) {
+        info.isActive = true;
+        info.remote = true;
+        info.manifest = manifest;
+        info.failed = false;
+        info.failedReason = null;
+      }
+      dispatch(setExtensionState({ id: extId, extensionState: 'active', remote: true }));
+      reconciled++;
+    }
+
+    if (reconciled > 0) {
+      console.log(`[useExtensions] ${source}: reconciled ${reconciled} explicit server extension(s)`);
+    }
+    return reconciled;
+  }, [dispatch, store]);
+
   const reportDeviceCode = useCallback((deviceCode, source = 'unknown') => {
     if (!deviceCode) return;
 
@@ -710,10 +766,22 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         const proxy = systemRef.current?.bridge?.vscodeServerProxy;
         if (proxy) {
           const detailed = await proxy.listExtensionsDetailed();
+          const explicitInstalled = await dbGetAll().catch(() => []);
+          const explicitInstallIds = new Set(
+            explicitInstalled
+              .filter((ext) => ext?.enabled !== false && typeof ext?.id === 'string')
+              .map((ext) => ext.id)
+          );
           const currentExtensions = store.getState()?.extensions?.extensions || {};
           let hydrated = 0;
           for (const { id: extId, manifest } of (detailed || [])) {
             if (!manifest) continue;
+            if (!explicitInstallIds.has(extId)) {
+              // Marketplace installs can pull dependency extensions onto the
+              // server. Keep those available to the remote host, but do not
+              // promote them into Synthi's user-facing Installed list.
+              continue;
+            }
 
             // Best-effort NLS cleanup for any remaining %key% placeholders
             // (server-side resolution handles most, this catches stragglers)
@@ -828,8 +896,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       }
 
       const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
+      const isHybridNode = info.manifest?.main && !!info.manifest?._nodeCode;
       const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
-      if (!isNodeOnly && !isTooLarge) continue;
+      if (!isNodeOnly && !isHybridNode && !isTooLarge) continue;
 
       // Already installed on server. This can happen when the server event
       // arrives before IndexedDB restore registers the Redux row; reconcile
@@ -907,6 +976,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       attempts += 1;
       try {
         await _installPendingExtensionsOnServer();
+        await reconcileExplicitServerExtensions('pending-retry');
       } catch (err) {
         console.warn('[useExtensions] pending remote install retry failed:', err?.message || err);
       }
@@ -936,7 +1006,44 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [vscodeServerState, _installPendingExtensionsOnServer, dispatch, store]);
+  }, [vscodeServerState, _installPendingExtensionsOnServer, reconcileExplicitServerExtensions, dispatch, store]);
+
+  // Keep remote installs moving while the VS Code Server reconnects.
+  useEffect(() => {
+    const hasRemoteWork = extensions.some((ext) =>
+      ext?.remote && (ext.state === 'pending-remote' || ext.state === 'activating')
+    );
+    if (!hasRemoteWork) return;
+
+    let cancelled = false;
+    let timer = null;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 24;
+
+    const reconcileRemoteWork = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        await reconcileExplicitServerExtensions('remote-state-retry');
+        await _installPendingExtensionsOnServer();
+      } catch (err) {
+        console.warn('[useExtensions] remote state retry failed:', err?.message || err);
+      }
+
+      const stillPending = Object.values(store.getState()?.extensions?.extensions || {}).some((ext) =>
+        ext?.remote && (ext.state === 'pending-remote' || ext.state === 'activating')
+      );
+      if (!cancelled && stillPending && attempts < MAX_ATTEMPTS) {
+        timer = setTimeout(reconcileRemoteWork, 3000);
+      }
+    };
+
+    timer = setTimeout(reconcileRemoteWork, 750);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [extensions, _installPendingExtensionsOnServer, reconcileExplicitServerExtensions, store]);
 
   // ─── Workspace switch handling for VS Code Server ─────────────
   // This hook can stay mounted while slug changes. Ensure the remote
@@ -1026,11 +1133,14 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           // Also skip extensions whose browser bundle is too large for the web
           // worker — they'll hang during eval. Route to VS Code Server instead.
           const isNodeOnly = manifest.main && !manifest.browser;
+          const isHybridNode = manifest.main && !!ext.nodeCode;
           const isTooLargeForWorker = ext.code && ext.code.length > 500_000 && (ext.nodeCode || manifest.main);
 
-          if (isNodeOnly || isTooLargeForWorker) {
+          if (isNodeOnly || isHybridNode || isTooLargeForWorker) {
             if (isTooLargeForWorker && !isNodeOnly) {
               console.log(`[useExtensions] ${ext.id}: browser bundle too large (${ext.code.length} chars), routing to VS Code Server`);
+            } else if (isHybridNode && !isNodeOnly) {
+              console.log(`[useExtensions] ${ext.id}: hybrid Node bundle, routing to VS Code Server`);
             }
             // Stash nodeCode on a fresh object so parsed/frozen manifests are
             // never mutated during IndexedDB restore.
@@ -1117,6 +1227,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         console.log('[useExtensions] VS Code Server ready, triggering post-restore rehydration');
         try {
           await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
+          await reconcileExplicitServerExtensions('post-restore');
+          await _installPendingExtensionsOnServer();
         } catch (err) {
           console.warn('[useExtensions] Post-restore rehydration failed:', err.message);
         }
@@ -1144,6 +1256,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     _installPendingExtensionsOnServer,
     isRemoteHostNotReadyError,
     queueRemoteExtensionInstall,
+    reconcileExplicitServerExtensions,
   ]);
 
   // ─── Auto-init on mount ──────────────────────────────────────
@@ -1378,10 +1491,13 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     // Also skip extensions whose browser bundle is too large for the web
     // worker (>500KB) — they hang during eval.
     const isNodeOnly = parsed.main && !parsed.browser;
+    const isHybridNode = parsed.main && !!nodeCode;
     const isTooLargeForWorker = code && code.length > 500_000 && (nodeCode || parsed.main);
-    if (isNodeOnly || isTooLargeForWorker) {
+    if (isNodeOnly || isHybridNode || isTooLargeForWorker) {
       if (isTooLargeForWorker && !isNodeOnly) {
         console.log(`[useExtensions] ${id}: browser bundle too large (${code.length} chars), routing to VS Code Server`);
+      } else if (isHybridNode && !isNodeOnly) {
+        console.log(`[useExtensions] ${id}: hybrid Node bundle, routing to VS Code Server`);
       }
       // Store in bridge so _rehydrateNodeOnlyExtensions can find it
       system.bridge.extensions.set(id, {
