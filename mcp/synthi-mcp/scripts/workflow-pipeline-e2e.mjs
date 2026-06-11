@@ -606,7 +606,7 @@ async function runCase({ testCase, container, context, runner }) {
       }
     }
 
-    const publishBody = await clickWorkflowButton(idePage, /^Publish$/);
+    const publishBody = await clickWorkflowButton(idePage, /^(Publish|License)$/);
     const publishedToolName = publishBody.result?.tool_name;
     record(
       testCase.id,
@@ -1904,6 +1904,7 @@ async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, ca
       PLAYWRIGHT_CHROMIUM_EXECUTABLE: executablePath,
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
     },
+    shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = await collectProcess(proc, CFG.timeoutMs);
@@ -1953,9 +1954,11 @@ async function ensurePlaywrightTestRunner() {
   ].join("\n"));
   if (!existsSync(path.join(root, "node_modules", "@playwright", "test"))) {
     log("info", "installing temporary @playwright/test runner");
-    const install = spawn("npm", ["install", "--no-audit", "--no-fund", "--silent"], {
+    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+    const install = spawn(npmBin, ["install", "--no-audit", "--no-fund", "--silent"], {
       cwd: root,
       env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" },
+      shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     const output = await collectProcess(install, CFG.timeoutMs);

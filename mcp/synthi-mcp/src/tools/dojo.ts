@@ -482,6 +482,8 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
   }));
   return jsonResponse({
     ok: true,
+    tool_name: publishedTool.tool_name,
+    published_tool_name: publishedTool.ok ? publishedTool.tool_name : null,
     skill: skillListItem(skill),
     skill_card: skill.skill_card,
     skill_passport: skill.skill_passport,

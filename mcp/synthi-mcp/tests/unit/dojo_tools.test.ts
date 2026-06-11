@@ -191,6 +191,7 @@ describe("Agent Dojo MCP tools", () => {
       ok: true,
       tool_name: "synthi_app_open_details",
     }));
+    expect((publish?.structuredContent as { tool_name: string }).tool_name).toBe("synthi_app_open_details");
     expect((publish?.structuredContent as { repo_artifacts: Array<{ path: string }> }).repo_artifacts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: ".synthi/dojo/skills/open_details/license.json" }),
