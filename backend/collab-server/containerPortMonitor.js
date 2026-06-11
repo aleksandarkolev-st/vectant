@@ -98,10 +98,16 @@ function createContainerPortMonitor({
         continue;
       }
       const key = keyOf(slug, userId);
-      // First time we see this container, snapshot everything currently listening
-      // as the infra baseline (rootless dockerd ~2376, ephemeral containerd port,
-      // etc.) so the Ports panel only shows ports the user opens AFTER startup.
-      if (!baseline.has(key)) baseline.set(key, new Set(raw));
+      // Snapshot the infra baseline (rootless dockerd ~2376, ephemeral containerd
+      // port, etc.) so the Ports panel only shows ports the user opens AFTER
+      // startup. Capture it on the first scan where SOMETHING is listening — the
+      // rootless daemon takes ~15-25s to come up, so the very first scans see an
+      // empty set; baselining that empty set would wrongly report the daemon's own
+      // ports as user ports once it starts. While nothing listens yet, skip.
+      if (!baseline.has(key)) {
+        if (raw.length === 0) continue;
+        baseline.set(key, new Set(raw));
+      }
       const base = baseline.get(key);
       const ports = raw.filter((p) => !base.has(p));
       const prev = lastPorts.get(key) || [];

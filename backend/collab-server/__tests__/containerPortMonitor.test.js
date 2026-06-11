@@ -61,6 +61,27 @@ test('monitor subtracts the startup baseline (infra ports) and emits only user p
   ]);
 });
 
+test('monitor waits for the daemon (skips empty scans) before baselining infra ports', async () => {
+  const events = [];
+  let stdout = '';                                    // daemon not up yet → nothing listening
+  const monitor = createContainerPortMonitor({
+    listContainers: () => [{ slug: 'repo', userId: 'u1' }],
+    runOnce: async () => stdout,
+    onPortsChanged: (slug, userId, ports) => events.push([slug, userId, ports]),
+    intervalMs: 0,
+  });
+
+  await monitor._scanOnce();                           // empty → no baseline, no event
+  await monitor._scanOnce();                           // still empty → no event
+  stdout = PROC_BASELINE;                              // daemon up → infra ports appear
+  await monitor._scanOnce();                           // baseline captured here → no event
+  stdout = PROC_BASELINE + '\n' + PROC_TCP;            // user opens 3000
+  await monitor._scanOnce();                           // → [3000]
+
+  // The infra ports (2376/36395) were NEVER reported as user ports.
+  assert.deepEqual(events, [['repo', 'u1', [3000]]]);
+});
+
 test('monitor clears ports for a container that disappeared', async () => {
   const events = [];
   let containers = [{ slug: 'repo', userId: 'u1' }];
