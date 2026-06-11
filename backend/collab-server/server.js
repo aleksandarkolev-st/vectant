@@ -13,6 +13,7 @@ const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const proxyService = require('./proxyService');
 const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
 const { handleEnsureRuntime } = require('./ensureRuntime');
+const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -132,6 +133,22 @@ const containerPortProxy = ENABLE_CONTAINER_RUNTIME
         const spaceIdx = match.indexOf(' ');
         return runtimeContainerHost(match.slice(0, spaceIdx), match.slice(spaceIdx + 1));
       },
+    })
+  : null;
+
+// Phase 2b — detect ports opened by servers INSIDE the runtime container (e.g.
+// `npm run dev` from the in-app terminal) and push the live set to the frontend
+// Ports panel. Reads /proc/net/tcp[6] via runOnce; broadcasts over notifyWss.
+const containerPortMonitor = ENABLE_CONTAINER_RUNTIME
+  ? createContainerPortMonitor({
+      // Active runtime containers, keyed `${slug} ${userId}` in the manager.
+      listContainers: () => [...workspaceRuntime._sessions.keys()].map((k) => {
+        const i = k.indexOf(' ');
+        return { slug: k.slice(0, i), userId: k.slice(i + 1) };
+      }),
+      runOnce: (slug, userId, argv) => workspaceRuntime.runOnce(slug, userId, argv),
+      onPortsChanged: (slug, _userId, ports) => broadcastContainerPorts(slug, ports),
+      logger,
     })
   : null;
 
@@ -935,6 +952,21 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
   });
   // Also push via SSE so polling-free clients receive the event
   sseService.emitFileSaved(slug, filePath);
+}
+
+/**
+ * Broadcast the live set of forwardable ports detected inside a workspace's
+ * runtime container. The frontend Ports panel renders these at
+ * /wsport/<slug>/<port>/. Workspace-wide (no per-user scope filtering).
+ */
+function broadcastContainerPorts(slug, ports) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'container-ports', slug, ports: Array.isArray(ports) ? ports : [] });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
 }
 
 /**
@@ -4628,6 +4660,10 @@ process.on('uncaughtException', (err) => {
     // (excluding our own port) and push detected port-set changes into the
     // managed program sessions so their App/Ports surfaces light up live.
     proxyService.startScanner(PORT);
+    if (containerPortMonitor) {
+      containerPortMonitor.start();
+      logger.info('container_port_monitor_started', {});
+    }
     proxyService.onPortsChanged((ports) => {
       try {
         managedProgramRuntime.recomputeManagedPorts(ports);
