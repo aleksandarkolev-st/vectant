@@ -8,6 +8,27 @@ export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp"
 export type DojoScenarioTier = 0 | 1 | 2 | 3 | 4 | 5;
 export type DojoCheckrideLayer = "knowledge" | "risk" | "skill";
 export type DojoCheckrideStatus = "passed" | "failed" | "blocked";
+export type DojoWorkflowNodeKind =
+  | "Trigger"
+  | "Input"
+  | "Observe"
+  | "Locate"
+  | "Action"
+  | "Assertion"
+  | "Branch"
+  | "Permission"
+  | "Guardrail"
+  | "Retry"
+  | "Artifact"
+  | "Subskill"
+  | "Human"
+  | "Rollback"
+  | "Memory"
+  | "Adversary"
+  | "Checkride"
+  | "Proof"
+  | "CaseLaw"
+  | "Expiry";
 
 export interface DojoInputField {
   name: string;
@@ -245,6 +266,7 @@ export interface DojoSkillCard {
 }
 
 export interface DojoSkillPassport {
+  passport_id: string;
   skill_id: string;
   skill_version: string;
   entrustment_level: DojoEntrustmentLevel;
@@ -253,6 +275,306 @@ export interface DojoSkillPassport {
   license_id: string;
   assurance_case_id: string;
   proof_required: boolean;
+  coverage_score: number;
+  attack_success_rate: number;
+  license_expires_at: string;
+  published_tools: string[];
+  issued_at: string;
+}
+
+export interface DojoNodeMemory {
+  confidence: number;
+  rehearsal_count: number;
+  failures_seen: string[];
+  last_success_at?: string;
+  expiry_triggers: string[];
+  cost_profile: {
+    simulator_tier: DojoScenarioTier;
+    estimated_tokens: number;
+    estimated_ms: number;
+  };
+}
+
+export interface DojoWorkflowNode {
+  node_id: string;
+  kind: DojoWorkflowNodeKind;
+  label: string;
+  source_step_id?: string;
+  substrate?: DojoExecutionSubstrate;
+  guardrail_refs: string[];
+  case_refs: string[];
+  inputs: string[];
+  outputs: string[];
+  memory: DojoNodeMemory;
+  metadata: Record<string, unknown>;
+}
+
+export interface DojoWorkflowEdge {
+  edge_id: string;
+  from_node_id: string;
+  to_node_id: string;
+  condition?: string;
+  learned_from: string[];
+  confidence: number;
+}
+
+export interface DojoLearnedTransition {
+  from_node_id: string;
+  to_node_id: string;
+  observed_in: string[];
+  confidence: number;
+  reason: string;
+}
+
+export interface DojoSkillCortex {
+  schema_version: "synthi.dojo.skillCortex.v1";
+  workflow_graph_id: string;
+  skill_id: string;
+  workflow_id: string;
+  skill_seed_id: string;
+  app_model_version: string;
+  nodes: DojoWorkflowNode[];
+  edges: DojoWorkflowEdge[];
+  learned_transitions: DojoLearnedTransition[];
+  entry_node_id: string;
+  exit_node_ids: string[];
+  generated_at: string;
+}
+
+export interface DojoRun {
+  run_id: string;
+  skill_id: string;
+  workflow_id: string;
+  scenario_id?: string;
+  mode: "ghost" | "vivarium" | "counterfactual" | "evil_twin" | "checkride";
+  simulator_tier: DojoScenarioTier;
+  substrate: DojoExecutionSubstrate;
+  status: DojoCheckrideStatus;
+  started_at: string;
+  finished_at: string;
+  finding: string;
+  guardrails_triggered: string[];
+  license_checks: Array<{ action: string; status: "allowed" | "blocked" | "approval_required"; blocked_by: string[] }>;
+  cost: {
+    estimated_tokens: number;
+    estimated_ms: number;
+    model_calls: number;
+  };
+  evidence_refs: string[];
+}
+
+export interface DojoWorkspaceOrganoid {
+  schema_version: "synthi.dojo.workspaceOrganoid.v1";
+  organoid_id: string;
+  skill_id: string;
+  skill_seed_id: string;
+  workspace_id: string;
+  generated_at: string;
+  version: string;
+  tissues: {
+    ui: Record<string, unknown>;
+    data: Record<string, unknown>;
+    policy: Record<string, unknown>;
+    identity: Record<string, unknown>;
+    document: Record<string, unknown>;
+    api: Record<string, unknown>;
+    failure: Record<string, unknown>;
+    adversary: Record<string, unknown>;
+    evidence: Record<string, unknown>;
+    source: Record<string, unknown>;
+    license: Record<string, unknown>;
+  };
+  scenario_refs: string[];
+  safety_constraints: string[];
+  data_policy: {
+    production_data_allowed: boolean;
+    redact_screenshots_by_default: boolean;
+    synthetic_data_only: boolean;
+  };
+}
+
+export interface DojoWindTunnelReport {
+  schema_version: "synthi.dojo.windTunnelReport.v1";
+  wind_tunnel_id: string;
+  skill_id: string;
+  workflow_id: string;
+  generated_at: string;
+  scenario_count: number;
+  run_count: number;
+  runs: DojoRun[];
+  summary: {
+    passed: number;
+    failed: number;
+    blocked: number;
+    cheapest_sufficient_tier: DojoScenarioTier;
+    stop_reason: string;
+  };
+}
+
+export interface DojoCounterfactualTwinReport {
+  schema_version: "synthi.dojo.counterfactualTwinReport.v1";
+  twin_id: string;
+  skill_id: string;
+  workflow_id: string;
+  generated_at: string;
+  variants: Array<{
+    variant_id: string;
+    scenario_id: string;
+    mutation_kind: string;
+    cheapest_sufficient_tier: DojoScenarioTier;
+    expected_behavior: string;
+    observed_behavior: string;
+    outcome: DojoCheckrideStatus;
+    reason: string;
+  }>;
+  recommended_substrate: DojoExecutionSubstrate;
+  promoted_scenarios: string[];
+}
+
+export interface DojoEvilTwinReport {
+  schema_version: "synthi.dojo.evilTwinReport.v1";
+  red_team_id: string;
+  skill_id: string;
+  workflow_id: string;
+  generated_at: string;
+  attacks: Array<{
+    attack_id: string;
+    scenario_id: string;
+    mutation_kind: string;
+    strategy: string;
+    expected_refusal: string;
+    status: "caught" | "escaped" | "blocked";
+    finding: string;
+    guardrail_refs: string[];
+    case_refs: string[];
+  }>;
+  attack_success_rate: number;
+  hardened_by: string[];
+}
+
+export interface DojoAntibody {
+  antibody_id: string;
+  case_id: string;
+  guardrail_id: string;
+  trigger: string;
+  response: string;
+  applies_to: string[];
+  binding_scope: "skill" | "workspace" | "organization";
+  evidence_refs: string[];
+  created_at: string;
+}
+
+export interface DojoSkillGenome {
+  schema_version: "synthi.dojo.skillGenome.v1";
+  genome_id: string;
+  skill_id: string;
+  pattern_id: string;
+  intent_fingerprint: string;
+  entity_shapes: string[];
+  input_shapes: string[];
+  risk_tags: string[];
+  guardrail_patterns: string[];
+  license_shape: {
+    entrustment_level: DojoEntrustmentLevel;
+    allowed_actions: string[];
+    gated_actions: string[];
+    blocked_actions: string[];
+  };
+  portable_to: string[];
+  shared_without: string[];
+  generated_at: string;
+}
+
+export interface DojoAgentReadyUiContract {
+  schema_version: "synthi.dojo.agentReadyUiContract.v1";
+  contract_id: string;
+  skill_id: string;
+  workflow_id: string;
+  target_app_origin: string;
+  actions: Array<{
+    action_id: string;
+    label: string;
+    source_step_id: string;
+    stable_locator: string | null;
+    fallback_locators: string[];
+    source_anchor_id?: string;
+    required_inputs: string[];
+    allowed_substrates: DojoExecutionSubstrate[];
+    success_condition: string;
+    risk_tags: string[];
+    proof_claims: string[];
+  }>;
+  refusal_contracts: Array<{ guardrail_id: string; refusal: string }>;
+  generated_at: string;
+}
+
+export interface DojoCostControlPolicy {
+  schema_version: "synthi.dojo.costControlPolicy.v1";
+  policy_id: string;
+  skill_id: string;
+  default_budget: {
+    max_scenarios: number;
+    max_simulator_tier: DojoScenarioTier;
+    max_runs: number;
+    max_model_calls: number;
+    max_estimated_tokens: number;
+    max_estimated_ms: number;
+  };
+  tier_policy: Array<{ tier: DojoScenarioTier; use_for: string[]; max_runs: number }>;
+  stop_conditions: string[];
+  revalidation_policy: {
+    recertify_after_days: number;
+    triggers: string[];
+  };
+  generated_at: string;
+}
+
+export interface DojoTrainingReport {
+  schema_version: "synthi.dojo.trainingReport.v1";
+  training_report_id: string;
+  skill_id: string;
+  workflow_id: string;
+  generated_at: string;
+  run_refs: string[];
+  summary: {
+    scenario_count: number;
+    run_count: number;
+    coverage_score: number;
+    readiness_level: DojoSkillReadinessLevel;
+    entrustment_level: DojoEntrustmentLevel;
+    guardrail_count: number;
+    antibody_count: number;
+    attack_success_rate: number;
+  };
+  readiness_decision: string;
+  limitations: string[];
+  evidence_refs: string[];
+}
+
+export interface DojoRollbackPolicy {
+  strategy: "none" | "human_checkpoint" | "same_session_restore" | "ci_fixture_reset";
+  checkpoints: string[];
+  requires_human_before: string[];
+}
+
+export interface DojoEvidencePolicy {
+  required_claims: string[];
+  accepted_evidence_refs: string[];
+  screenshot_redaction: "always" | "when_sensitive" | "never";
+  production_artifact_policy: "metadata_only" | "redacted_payloads" | "full_payloads";
+}
+
+export interface DojoAuthRequirement {
+  requirement_id: string;
+  durability: string;
+  required: boolean;
+  reason: string;
+}
+
+export interface DojoRetrainTrigger {
+  trigger_id: string;
+  source: "app" | "policy" | "incident" | "evidence" | "schedule";
+  condition: string;
 }
 
 export interface DojoSkill {
@@ -261,13 +583,22 @@ export interface DojoSkill {
   workspace_id: string;
   workflow_id: string;
   skill_version: string;
+  app_model_version: string;
+  workflow_graph_id: string;
+  vivarium_id: string;
   name: string;
   intent: string;
   app_origin: string;
   skill_seed: DojoSkillSeed;
+  skill_cortex: DojoSkillCortex;
+  workspace_organoid: DojoWorkspaceOrganoid;
   scenarios: DojoScenario[];
+  wind_tunnel: DojoWindTunnelReport;
+  counterfactual_twin: DojoCounterfactualTwinReport;
+  evil_twin: DojoEvilTwinReport;
   checkride: DojoCheckrideReport;
   case_law: DojoSkillCase[];
+  antibodies: DojoAntibody[];
   guardrails: DojoGuardrail[];
   permission_license: DojoPermissionLicense;
   entrustment_level: DojoEntrustmentLevel;
@@ -276,6 +607,27 @@ export interface DojoSkill {
   assurance_case: DojoAssuranceCase;
   skill_card: DojoSkillCard;
   skill_passport: DojoSkillPassport;
+  skill_genome: DojoSkillGenome;
+  agent_ready_ui_contract: DojoAgentReadyUiContract;
+  cost_control_policy: DojoCostControlPolicy;
+  training_report: DojoTrainingReport;
+  rollback_policy: DojoRollbackPolicy;
+  evidence_policy: DojoEvidencePolicy;
+  source_links: DojoSourceAnchor[];
+  auth_requirements: DojoAuthRequirement[];
+  data_sensitivity: "none" | "low" | "medium" | "high";
+  confidence: number;
+  coverage_score: number;
+  attack_success_rate: number;
+  false_allow_rate: number;
+  false_block_rate: number;
+  last_trained_at: string;
+  license_expires_at: string;
+  retrain_triggers: DojoRetrainTrigger[];
+  training_runs: DojoRun[];
+  checkride_runs: string[];
+  case_law_refs: string[];
+  published_tools: string[];
   execution_substrates: DojoExecutionSubstrate[];
   preferred_substrate: DojoExecutionSubstrate;
   published_tool_name?: string;
@@ -286,7 +638,7 @@ export interface DojoSkill {
 export interface DojoRepoArtifact {
   path: string;
   content: string;
-  content_type: "application/json" | "text/markdown";
+  content_type: "application/json" | "text/markdown" | "text/typescript";
   sensitive: false;
 }
 
@@ -631,6 +983,7 @@ export function buildDojoSkill(
   const assuranceCase = assuranceCaseFor(contract, checkride, license, caseLaw);
   const skillId = skillIdFor(contract);
   const skillVersion = "1.0.0";
+  const appModelVersion = appModelVersionFor(contract);
   const substrates = executionSubstratesFor(contract, options.private_tool_manifest);
   const preferredSubstrate = substrates.includes("mcp")
     ? "mcp"
@@ -639,6 +992,40 @@ export function buildDojoSkill(
     : substrates.includes("dom")
     ? "dom"
     : "vision";
+  const publishedTools = options.published_tool_name ? [options.published_tool_name] : [];
+  const licenseExpiresAt = licenseExpiresAtFor(now, license);
+  const workspaceOrganoid = workspaceOrganoidFor(skillId, seed, scenarios, license, now);
+  const windTunnel = windTunnelFor(skillId, contract.workflowId, scenarios, checkride, guardrails, license, preferredSubstrate, now);
+  const counterfactualTwin = counterfactualTwinFor(skillId, contract.workflowId, scenarios, checkride, preferredSubstrate, now);
+  const evilTwin = evilTwinFor(skillId, contract.workflowId, scenarios, checkride, guardrails, caseLaw, now);
+  const antibodies = antibodiesFor(caseLaw, guardrails, now);
+  const skillCortex = skillCortexFor(
+    contract,
+    seed,
+    skillId,
+    appModelVersion,
+    guardrails,
+    caseLaw,
+    license,
+    substrates,
+    preferredSubstrate,
+    checkride,
+    now
+  );
+  const skillGenome = skillGenomeFor(skillId, seed, guardrails, license, now);
+  const agentReadyUiContract = agentReadyUiContractFor(contract, seed, skillId, license, substrates, preferredSubstrate, now);
+  const costControlPolicy = costControlPolicyFor(skillId, scenarios, license, now);
+  const trainingReport = trainingReportFor(
+    skillId,
+    contract.workflowId,
+    windTunnel,
+    checkride,
+    guardrails,
+    antibodies,
+    evilTwin,
+    license,
+    now
+  );
 
   return {
     schema_version: "synthi.dojo.skill.v1",
@@ -646,13 +1033,22 @@ export function buildDojoSkill(
     workspace_id: seed.workspace_id,
     workflow_id: contract.workflowId,
     skill_version: skillVersion,
+    app_model_version: appModelVersion,
+    workflow_graph_id: skillCortex.workflow_graph_id,
+    vivarium_id: workspaceOrganoid.organoid_id,
     name: contract.name,
     intent: contract.description || contract.name,
     app_origin: contract.appOrigin,
     skill_seed: seed,
+    skill_cortex: skillCortex,
+    workspace_organoid: workspaceOrganoid,
     scenarios,
+    wind_tunnel: windTunnel,
+    counterfactual_twin: counterfactualTwin,
+    evil_twin: evilTwin,
     checkride,
     case_law: caseLaw,
+    antibodies,
     guardrails,
     permission_license: license,
     entrustment_level: license.entrustment_level,
@@ -661,6 +1057,7 @@ export function buildDojoSkill(
     assurance_case: assuranceCase,
     skill_card: skillCardFor(contract, checkride, guardrails, license),
     skill_passport: {
+      passport_id: `passport_${shortHash(`${skillId}:${skillVersion}:${license.license_id}`)}`,
       skill_id: skillId,
       skill_version: skillVersion,
       entrustment_level: license.entrustment_level,
@@ -669,7 +1066,33 @@ export function buildDojoSkill(
       license_id: license.license_id,
       assurance_case_id: assuranceCase.assurance_case_id,
       proof_required: license.proof_requirements.required_evidence_claims.length > 0,
+      coverage_score: checkride.coverage_score,
+      attack_success_rate: evilTwin.attack_success_rate,
+      license_expires_at: licenseExpiresAt,
+      published_tools: publishedTools,
+      issued_at: now,
     },
+    skill_genome: skillGenome,
+    agent_ready_ui_contract: agentReadyUiContract,
+    cost_control_policy: costControlPolicy,
+    training_report: trainingReport,
+    rollback_policy: rollbackPolicyFor(contract),
+    evidence_policy: evidencePolicyFor(contract, license),
+    source_links: seed.source_or_api_anchors,
+    auth_requirements: authRequirementsFor(contract),
+    data_sensitivity: dataSensitivityFor(contract),
+    confidence: confidenceFor(checkride, evilTwin),
+    coverage_score: checkride.coverage_score,
+    attack_success_rate: evilTwin.attack_success_rate,
+    false_allow_rate: evilTwin.attack_success_rate,
+    false_block_rate: falseBlockRateFor(checkride),
+    last_trained_at: now,
+    license_expires_at: licenseExpiresAt,
+    retrain_triggers: retrainTriggersFor(license),
+    training_runs: windTunnel.runs,
+    checkride_runs: [checkride.checkride_id],
+    case_law_refs: caseLaw.map((item) => item.case_id),
+    published_tools: publishedTools,
     execution_substrates: substrates,
     preferred_substrate: preferredSubstrate,
     ...(options.published_tool_name ? { published_tool_name: options.published_tool_name } : {}),
@@ -787,6 +1210,13 @@ export function validateDojoProofCapsule(
 
 export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
   const root = `.synthi/dojo/skills/${skillPathSegment(skill)}`;
+  const segment = skillPathSegment(skill);
+  const caseArtifacts = skill.case_law.map((item): DojoRepoArtifact => ({
+    path: `.synthi/dojo/cases/${segment}.${slug(item.case_id)}.case.md`,
+    content_type: "text/markdown",
+    sensitive: false,
+    content: caseLawItemMarkdown(skill, item),
+  }));
   const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
   return [
     {
@@ -805,13 +1235,31 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `${root}/skill.graph.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skillGraphArtifact(skill)),
+      content: json(skill.skill_cortex),
     },
     {
       path: `${root}/vivarium.manifest.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(vivariumArtifact(skill)),
+      content: json(skill.workspace_organoid),
+    },
+    {
+      path: `${root}/wind-tunnel.report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.wind_tunnel),
+    },
+    {
+      path: `${root}/counterfactual-twin.report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.counterfactual_twin),
+    },
+    {
+      path: `${root}/evil-twin.report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.evil_twin),
     },
     {
       path: `${root}/checkride.report.md`,
@@ -844,13 +1292,127 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       content: json(skill.guardrails),
     },
     {
+      path: `${root}/antibodies.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.antibodies),
+    },
+    {
       path: `${root}/case-law.md`,
       content_type: "text/markdown",
       sensitive: false,
       content: caseLawMarkdown(skill),
     },
     {
+      path: `${root}/skill-passport.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.skill_passport),
+    },
+    {
+      path: `${root}/skill-genome.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.skill_genome),
+    },
+    {
+      path: `${root}/agent-ready-ui-contract.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.agent_ready_ui_contract),
+    },
+    {
+      path: `${root}/cost-control.policy.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.cost_control_policy),
+    },
+    {
+      path: `${root}/training-report.md`,
+      content_type: "text/markdown",
+      sensitive: false,
+      content: trainingReportMarkdown(skill),
+    },
+    {
+      path: `${root}/training-report.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.training_report),
+    },
+    {
+      path: `${root}/evidence-manifest.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(evidenceManifestFor(skill)),
+    },
+    {
+      path: `${root}/playwright.spec.ts`,
+      content_type: "text/typescript",
+      sensitive: false,
+      content: playwrightSpecFor(skill),
+    },
+    {
       path: `${root}/mcp.manifest.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.private_tool_manifest ?? {
+        kind: "dojoMcpSkillBusManifest",
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        published_tool_name: skill.published_tool_name ?? null,
+      }),
+    },
+    {
+      path: `.synthi/dojo/workflows/${segment}.graph.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.skill_cortex),
+    },
+    {
+      path: `.synthi/dojo/organoids/${segment}.organoid.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.workspace_organoid),
+    },
+    {
+      path: `.synthi/dojo/guardrails/${segment}.guardrails.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.guardrails),
+    },
+    {
+      path: `.synthi/dojo/licenses/${segment}.license.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.permission_license),
+    },
+    {
+      path: `.synthi/dojo/antibodies/${segment}.antibodies.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(skill.antibodies),
+    },
+    ...caseArtifacts,
+    {
+      path: `.synthi/dojo/reports/${segment}.training-report.md`,
+      content_type: "text/markdown",
+      sensitive: false,
+      content: trainingReportMarkdown(skill),
+    },
+    {
+      path: `.synthi/dojo/evidence/${segment}.redacted-evidence-manifest.json`,
+      content_type: "application/json",
+      sensitive: false,
+      content: json(evidenceManifestFor(skill)),
+    },
+    {
+      path: `.synthi/dojo/playwright/${segment}.spec.ts`,
+      content_type: "text/typescript",
+      sensitive: false,
+      content: playwrightSpecFor(skill),
+    },
+    {
+      path: `.synthi/dojo/mcp/${segment}.manifest.json`,
       content_type: "application/json",
       sensitive: false,
       content: json(skill.private_tool_manifest ?? {
@@ -1220,6 +1782,786 @@ function proofCapsuleSchemaFor(license: DojoPermissionLicense): Record<string, u
   };
 }
 
+function appModelVersionFor(contract: WorkflowContractV7): string {
+  const sourceShape = {
+    appOrigin: contract.appOrigin,
+    routePattern: contract.routePattern ?? null,
+    sourceStatus: contract.sourceIdentityCoverage.status,
+    stepShape: contract.steps.map((step) => ({
+      action: step.action.kind,
+      surface: step.surfacePlan.kind,
+      replay: step.surfacePlan.replay,
+      source: step.sourcePlan.status,
+      locator: step.locatorPlan.confidence,
+    })),
+  };
+  return `app_model_${shortHash(stableStringify(sourceShape))}`;
+}
+
+function licenseExpiresAtFor(now: string, license: DojoPermissionLicense): string {
+  const started = Date.parse(now);
+  const base = Number.isFinite(started) ? started : Date.now();
+  return new Date(base + license.expiry_policy.recertify_after_days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function workspaceOrganoidFor(
+  skillId: string,
+  seed: DojoSkillSeed,
+  scenarios: DojoScenario[],
+  license: DojoPermissionLicense,
+  now: string
+): DojoWorkspaceOrganoid {
+  return {
+    schema_version: "synthi.dojo.workspaceOrganoid.v1",
+    organoid_id: `organoid_${seed.seed_id}`,
+    skill_id: skillId,
+    skill_seed_id: seed.seed_id,
+    workspace_id: seed.workspace_id,
+    generated_at: now,
+    version: "0.1.0",
+    tissues: {
+      ui: { surfaces: seed.touched_surfaces, affordance_count: seed.source_or_api_anchors.filter((anchor) => anchor.kind === "ui").length },
+      data: { models: seed.touched_data_models, inputs: seed.input_schema.map(redactedInputField) },
+      policy: { clues: seed.policy_clues, license_actions: license.allowed_actions.map((action) => action.action) },
+      identity: { auth_required: seed.policy_clues.some((clue) => clue.source === "auth"), workspace_id: seed.workspace_id },
+      document: { synthetic_only: true, generated_documents: [] },
+      api: { anchors: seed.source_or_api_anchors.filter((anchor) => anchor.kind === "api") },
+      failure: { modes: seed.candidate_failure_modes },
+      adversary: {
+        scenarios: scenarios.filter((scenario) => scenario.layer === "risk").map((scenario) => scenario.scenario_id),
+        mutation_kinds: [...new Set(scenarios.filter((scenario) => scenario.layer === "risk").map((scenario) => scenario.mutation_kind))],
+      },
+      evidence: { expected: seed.output_schema.evidence, assertions: seed.candidate_success_assertions.map((assertion) => assertion.assertion_id) },
+      source: { anchors: seed.source_or_api_anchors },
+      license: { license_id: license.license_id, entrustment_level: license.entrustment_level },
+    },
+    scenario_refs: scenarios.map((scenario) => scenario.scenario_id),
+    safety_constraints: ["synthetic_data_only", "no_secrets_in_repo_artifacts", "no_production_mutation"],
+    data_policy: { production_data_allowed: false, redact_screenshots_by_default: true, synthetic_data_only: true },
+  };
+}
+
+function windTunnelFor(
+  skillId: string,
+  workflowId: string,
+  scenarios: DojoScenario[],
+  checkride: DojoCheckrideReport,
+  guardrails: DojoGuardrail[],
+  license: DojoPermissionLicense,
+  preferredSubstrate: DojoExecutionSubstrate,
+  now: string
+): DojoWindTunnelReport {
+  const resultByScenario = new Map(checkride.results.map((result) => [result.scenario_id, result]));
+  const runs = scenarios.map((scenario) => {
+    const result = resultByScenario.get(scenario.scenario_id);
+    const status = result?.status ?? "blocked";
+    const licenseCheck = licenseCheckFor(license, "practice_vivarium");
+    return {
+      run_id: `run_${shortHash(`${skillId}:${scenario.scenario_id}:${status}`)}`,
+      skill_id: skillId,
+      workflow_id: workflowId,
+      scenario_id: scenario.scenario_id,
+      mode: "vivarium" as const,
+      simulator_tier: scenario.simulator_tier,
+      substrate: preferredSubstrate,
+      status,
+      started_at: now,
+      finished_at: now,
+      finding: result?.finding ?? "Scenario was generated but not evaluated.",
+      guardrails_triggered: guardrailRefsForResult(result, guardrails),
+      license_checks: [licenseCheck],
+      cost: costForScenario(scenario, 0),
+      evidence_refs: result?.evidence_refs ?? [`scenario:${scenario.scenario_id}`],
+    };
+  });
+  const passed = runs.filter((run) => run.status === "passed").length;
+  const failed = runs.filter((run) => run.status === "failed").length;
+  const blocked = runs.filter((run) => run.status === "blocked").length;
+  return {
+    schema_version: "synthi.dojo.windTunnelReport.v1",
+    wind_tunnel_id: `wind_${shortHash(`${skillId}:${checkride.checkride_id}`)}`,
+    skill_id: skillId,
+    workflow_id: workflowId,
+    generated_at: now,
+    scenario_count: scenarios.length,
+    run_count: runs.length,
+    runs,
+    summary: {
+      passed,
+      failed,
+      blocked,
+      cheapest_sufficient_tier: cheapestSufficientTier(scenarios, checkride),
+      stop_reason: checkride.critical_failures > 0 ? "critical_failure_hardened_by_guardrail" : "budget_complete",
+    },
+  };
+}
+
+function counterfactualTwinFor(
+  skillId: string,
+  workflowId: string,
+  scenarios: DojoScenario[],
+  checkride: DojoCheckrideReport,
+  preferredSubstrate: DojoExecutionSubstrate,
+  now: string
+): DojoCounterfactualTwinReport {
+  const resultByScenario = new Map(checkride.results.map((result) => [result.scenario_id, result]));
+  const variants = scenarios
+    .filter((scenario) => scenario.mutation_kind !== "baseline")
+    .map((scenario) => {
+      const result = resultByScenario.get(scenario.scenario_id);
+      return {
+        variant_id: `variant_${shortHash(`${skillId}:${scenario.scenario_id}:${scenario.mutation_kind}`)}`,
+        scenario_id: scenario.scenario_id,
+        mutation_kind: scenario.mutation_kind,
+        cheapest_sufficient_tier: scenario.simulator_tier,
+        expected_behavior: scenario.expected_behavior,
+        observed_behavior: result?.finding ?? "No observation was recorded for this variant.",
+        outcome: result?.status ?? "blocked",
+        reason: tierReason(scenario.simulator_tier, scenario.mutation_kind),
+      };
+    });
+  return {
+    schema_version: "synthi.dojo.counterfactualTwinReport.v1",
+    twin_id: `twin_${shortHash(`${skillId}:${workflowId}:${variants.length}`)}`,
+    skill_id: skillId,
+    workflow_id: workflowId,
+    generated_at: now,
+    variants,
+    recommended_substrate: preferredSubstrate,
+    promoted_scenarios: variants
+      .filter((variant) => variant.outcome !== "passed")
+      .map((variant) => variant.scenario_id),
+  };
+}
+
+function evilTwinFor(
+  skillId: string,
+  workflowId: string,
+  scenarios: DojoScenario[],
+  checkride: DojoCheckrideReport,
+  guardrails: DojoGuardrail[],
+  cases: DojoSkillCase[],
+  now: string
+): DojoEvilTwinReport {
+  const resultByScenario = new Map(checkride.results.map((result) => [result.scenario_id, result]));
+  const attacks = scenarios
+    .filter((scenario) => scenario.layer === "risk")
+    .map((scenario) => {
+      const result = resultByScenario.get(scenario.scenario_id);
+      const guardrailRefs = guardrailRefsForResult(result, guardrails);
+      const caseRefs = cases
+        .filter((item) => result?.evidence_refs.some((ref) => item.evidence_refs.includes(ref)))
+        .map((item) => item.case_id);
+      const status = result?.status === "blocked"
+        ? "blocked" as const
+        : result?.status === "failed" && guardrailRefs.length === 0
+        ? "escaped" as const
+        : "caught" as const;
+      return {
+        attack_id: `attack_${shortHash(`${skillId}:${scenario.scenario_id}:${scenario.mutation_kind}`)}`,
+        scenario_id: scenario.scenario_id,
+        mutation_kind: scenario.mutation_kind,
+        strategy: attackStrategyFor(scenario),
+        expected_refusal: scenario.expected_behavior,
+        status,
+        finding: result?.finding ?? "No result was recorded for this adversarial scenario.",
+        guardrail_refs: guardrailRefs,
+        case_refs: caseRefs,
+      };
+    });
+  const escaped = attacks.filter((attack) => attack.status === "escaped").length;
+  return {
+    schema_version: "synthi.dojo.evilTwinReport.v1",
+    red_team_id: `evil_${shortHash(`${skillId}:${workflowId}:${attacks.length}`)}`,
+    skill_id: skillId,
+    workflow_id: workflowId,
+    generated_at: now,
+    attacks,
+    attack_success_rate: attacks.length > 0 ? Number((escaped / attacks.length).toFixed(2)) : 0,
+    hardened_by: [...new Set(attacks.flatMap((attack) => [...attack.guardrail_refs, ...attack.case_refs]))],
+  };
+}
+
+function antibodiesFor(cases: DojoSkillCase[], guardrails: DojoGuardrail[], now: string): DojoAntibody[] {
+  return cases.map((item) => {
+    const guardrail = guardrails.find((candidate) => candidate.source_case_id === item.case_id);
+    const guardrailId = guardrail?.guardrail_id ?? `guard_${shortHash(item.case_id)}`;
+    return {
+      antibody_id: `antibody_${shortHash(`${item.case_id}:${guardrailId}`)}`,
+      case_id: item.case_id,
+      guardrail_id: guardrailId,
+      trigger: item.finding,
+      response: guardrail?.rule ?? item.rule_created,
+      applies_to: item.applies_to,
+      binding_scope: item.binding_scope,
+      evidence_refs: item.evidence_refs,
+      created_at: now,
+    };
+  });
+}
+
+function skillCortexFor(
+  contract: WorkflowContractV7,
+  seed: DojoSkillSeed,
+  skillId: string,
+  appModelVersion: string,
+  guardrails: DojoGuardrail[],
+  cases: DojoSkillCase[],
+  license: DojoPermissionLicense,
+  substrates: DojoExecutionSubstrate[],
+  preferredSubstrate: DojoExecutionSubstrate,
+  checkride: DojoCheckrideReport,
+  now: string
+): DojoSkillCortex {
+  const workflowGraphId = `graph_${shortHash(`${skillId}:${appModelVersion}:${checkride.checkride_id}`)}`;
+  const nodes: DojoWorkflowNode[] = [];
+  const edges: DojoWorkflowEdge[] = [];
+  const addNode = (node: Omit<DojoWorkflowNode, "memory"> & { memory?: Partial<DojoNodeMemory> }) => {
+    nodes.push({
+      ...node,
+      memory: nodeMemoryFor(checkride, node.memory),
+    });
+  };
+  const addEdge = (from: string, to: string, condition = "default", learnedFrom: string[] = [`workflow:${contract.workflowId}`], confidence = checkride.coverage_score) => {
+    edges.push({
+      edge_id: `edge_${shortHash(`${workflowGraphId}:${from}:${to}:${condition}`)}`,
+      from_node_id: from,
+      to_node_id: to,
+      condition,
+      learned_from: learnedFrom,
+      confidence: Number(confidence.toFixed(2)),
+    });
+  };
+
+  addNode({
+    node_id: "trigger",
+    kind: "Trigger",
+    label: "MCP skill call",
+    substrate: "mcp",
+    guardrail_refs: [],
+    case_refs: [],
+    inputs: [],
+    outputs: ["input"],
+    metadata: { published_actions: license.allowed_actions.map((action) => action.action) },
+  });
+  addNode({
+    node_id: "input",
+    kind: "Input",
+    label: "Validate input schema",
+    guardrail_refs: [],
+    case_refs: [],
+    inputs: seed.input_schema.map((input) => input.name),
+    outputs: ["permission"],
+    metadata: { fields: seed.input_schema.map(redactedInputField) },
+  });
+  addNode({
+    node_id: "permission",
+    kind: "Permission",
+    label: license.entrustment_level,
+    guardrail_refs: guardrails.map((guardrail) => guardrail.guardrail_id),
+    case_refs: cases.map((item) => item.case_id),
+    inputs: ["input"],
+    outputs: ["proof"],
+    metadata: { autonomy_level: license.autonomy_level, license_id: license.license_id },
+  });
+  addNode({
+    node_id: "proof",
+    kind: "Proof",
+    label: "Validate proof capsule",
+    guardrail_refs: guardrails.map((guardrail) => guardrail.guardrail_id),
+    case_refs: cases.map((item) => item.case_id),
+    inputs: license.proof_requirements.required_context_claims,
+    outputs: ["observe"],
+    metadata: { evidence_claims: license.proof_requirements.required_evidence_claims },
+  });
+
+  guardrails.forEach((guardrail) => addNode({
+    node_id: guardrail.guardrail_id,
+    kind: "Guardrail",
+    label: guardrail.title,
+    guardrail_refs: [guardrail.guardrail_id],
+    case_refs: guardrail.source_case_id ? [guardrail.source_case_id] : [],
+    inputs: ["permission"],
+    outputs: ["proof"],
+    metadata: { rule: guardrail.rule, severity: guardrail.severity, blocks_actions: guardrail.blocks_actions },
+    memory: { failures_seen: guardrail.source_case_id ? [guardrail.source_case_id] : [] },
+  }));
+  cases.forEach((item) => addNode({
+    node_id: item.case_id,
+    kind: "CaseLaw",
+    label: item.title,
+    guardrail_refs: guardrails.filter((guardrail) => guardrail.source_case_id === item.case_id).map((guardrail) => guardrail.guardrail_id),
+    case_refs: [item.case_id],
+    inputs: item.evidence_refs,
+    outputs: ["permission"],
+    metadata: { finding: item.finding, rule_created: item.rule_created, status: item.status },
+    memory: { failures_seen: [item.case_id] },
+  }));
+
+  const stepNodeIds: string[] = [];
+  for (const step of contract.steps) {
+    const observeId = `observe_${step.stepId}`;
+    const locateId = `locate_${step.stepId}`;
+    const actionId = `action_${step.stepId}`;
+    const assertionId = `assert_${step.stepId}`;
+    const stepCaseRefs = cases
+      .filter((item) => item.applies_to.includes(step.action.kind))
+      .map((item) => item.case_id);
+    const stepGuardrailRefs = guardrails
+      .filter((guardrail) => guardrail.blocks_actions.includes(`mutation:${step.mutation?.kind}:${step.stepId}`) || guardrail.blocks_actions.includes("run_workflow"))
+      .map((guardrail) => guardrail.guardrail_id);
+    addNode({
+      node_id: observeId,
+      kind: "Observe",
+      label: `Observe before ${step.label}`,
+      source_step_id: step.stepId,
+      substrate: preferredSubstrate,
+      guardrail_refs: stepGuardrailRefs,
+      case_refs: stepCaseRefs,
+      inputs: ["proof"],
+      outputs: [locateId],
+      metadata: { target_context: step.targetContext?.kind ?? "page", surface: step.surfacePlan.kind },
+    });
+    addNode({
+      node_id: locateId,
+      kind: "Locate",
+      label: step.action.target?.label ?? step.label,
+      source_step_id: step.stepId,
+      substrate: step.sourcePlan.status === "linked" ? "source" : preferredSubstrate,
+      guardrail_refs: stepGuardrailRefs,
+      case_refs: stepCaseRefs,
+      inputs: [observeId],
+      outputs: [actionId],
+      metadata: {
+        locator_confidence: step.locatorPlan.confidence,
+        source_status: step.sourcePlan.status,
+        primary_locator: step.locatorPlan.primary?.locator ?? null,
+      },
+      memory: { confidence: locatorConfidenceScore(step.locatorPlan.confidence) },
+    });
+    addNode({
+      node_id: actionId,
+      kind: "Action",
+      label: step.label,
+      source_step_id: step.stepId,
+      substrate: substrates.includes("mcp") ? "mcp" : preferredSubstrate,
+      guardrail_refs: stepGuardrailRefs,
+      case_refs: stepCaseRefs,
+      inputs: [locateId],
+      outputs: [assertionId],
+      metadata: { action_kind: step.action.kind, mutation: step.mutation ?? null, surface: step.surfacePlan },
+    });
+    addNode({
+      node_id: assertionId,
+      kind: "Assertion",
+      label: step.expectedEffects[0] ?? `Verify ${step.label}`,
+      source_step_id: step.stepId,
+      guardrail_refs: stepGuardrailRefs,
+      case_refs: stepCaseRefs,
+      inputs: [actionId],
+      outputs: [],
+      metadata: { expected_effects: step.expectedEffects },
+    });
+    stepNodeIds.push(observeId, locateId, actionId, assertionId);
+  }
+
+  addNode({
+    node_id: "checkride",
+    kind: "Checkride",
+    label: "Run competency checkride",
+    guardrail_refs: guardrails.map((guardrail) => guardrail.guardrail_id),
+    case_refs: cases.map((item) => item.case_id),
+    inputs: stepNodeIds.slice(-1),
+    outputs: ["memory"],
+    metadata: { checkride_id: checkride.checkride_id, coverage_score: checkride.coverage_score },
+  });
+  addNode({
+    node_id: "memory",
+    kind: "Memory",
+    label: "Store negative memory and learned transitions",
+    guardrail_refs: guardrails.map((guardrail) => guardrail.guardrail_id),
+    case_refs: cases.map((item) => item.case_id),
+    inputs: ["checkride"],
+    outputs: ["expiry"],
+    metadata: { case_law_count: cases.length },
+  });
+  addNode({
+    node_id: "expiry",
+    kind: "Expiry",
+    label: "Recertify on policy, app, incident, or stale evidence",
+    guardrail_refs: [],
+    case_refs: [],
+    inputs: ["memory"],
+    outputs: [],
+    metadata: { expires_on: license.expiry_policy.expires_on, recertify_after_days: license.expiry_policy.recertify_after_days },
+  });
+
+  addEdge("trigger", "input");
+  addEdge("input", "permission");
+  guardrails.forEach((guardrail) => addEdge("permission", guardrail.guardrail_id, "guardrail_active", [`guardrail:${guardrail.guardrail_id}`], 1));
+  cases.forEach((item) => addEdge(item.case_id, "permission", "case_law_applies", [`case:${item.case_id}`], 1));
+  addEdge("permission", "proof");
+  if (contract.steps.length > 0) {
+    addEdge("proof", `observe_${contract.steps[0]!.stepId}`, "proof_valid");
+    contract.steps.forEach((step, index) => {
+      addEdge(`observe_${step.stepId}`, `locate_${step.stepId}`, "surface_observed");
+      addEdge(`locate_${step.stepId}`, `action_${step.stepId}`, "target_verified", [`workflow:${contract.workflowId}`, `step:${step.stepId}`], locatorConfidenceScore(step.locatorPlan.confidence));
+      addEdge(`action_${step.stepId}`, `assert_${step.stepId}`, "postcondition_required");
+      const next = contract.steps[index + 1];
+      addEdge(`assert_${step.stepId}`, next ? `observe_${next.stepId}` : "checkride", next ? "next_step" : "workflow_complete");
+    });
+  } else {
+    addEdge("proof", "checkride", "no_action_steps");
+  }
+  addEdge("checkride", "memory");
+  addEdge("memory", "expiry");
+
+  return {
+    schema_version: "synthi.dojo.skillCortex.v1",
+    workflow_graph_id: workflowGraphId,
+    skill_id: skillId,
+    workflow_id: contract.workflowId,
+    skill_seed_id: seed.seed_id,
+    app_model_version: appModelVersion,
+    nodes,
+    edges,
+    learned_transitions: edges.map((edge) => ({
+      from_node_id: edge.from_node_id,
+      to_node_id: edge.to_node_id,
+      observed_in: edge.learned_from,
+      confidence: edge.confidence,
+      reason: edge.condition ?? "default",
+    })),
+    entry_node_id: "trigger",
+    exit_node_ids: ["expiry"],
+    generated_at: now,
+  };
+}
+
+function skillGenomeFor(
+  skillId: string,
+  seed: DojoSkillSeed,
+  guardrails: DojoGuardrail[],
+  license: DojoPermissionLicense,
+  now: string
+): DojoSkillGenome {
+  const riskTags = [...new Set(seed.risk_clues.map((risk) => risk.label).concat(guardrails.map((guardrail) => guardrail.title)))];
+  return {
+    schema_version: "synthi.dojo.skillGenome.v1",
+    genome_id: `genome_${shortHash(`${skillId}:${seed.inferred_intent}:${riskTags.join("|")}`)}`,
+    skill_id: skillId,
+    pattern_id: `pattern_${shortHash(`${seed.inferred_intent}:${seed.input_schema.map((input) => input.value_shape).join("|")}`)}`,
+    intent_fingerprint: shortHash(seed.inferred_intent.toLowerCase()),
+    entity_shapes: seed.involved_entities.map((entity) => `${entity.source}:${entity.entity_id}`),
+    input_shapes: seed.input_schema.map((input) => `${input.name}:${input.value_shape}:${input.required ? "required" : "optional"}`),
+    risk_tags: riskTags.map(slug),
+    guardrail_patterns: guardrails.map((guardrail) => slug(guardrail.title)),
+    license_shape: {
+      entrustment_level: license.entrustment_level,
+      allowed_actions: license.allowed_actions.map((action) => action.action),
+      gated_actions: license.gated_actions.map((action) => action.action),
+      blocked_actions: license.blocked_actions.map((action) => action.action),
+    },
+    portable_to: ["same_intent", "same_input_shape", "same_guardrail_pattern"],
+    shared_without: ["secrets", "workspace_data", "raw_screenshots", "production_payloads"],
+    generated_at: now,
+  };
+}
+
+function agentReadyUiContractFor(
+  contract: WorkflowContractV7,
+  seed: DojoSkillSeed,
+  skillId: string,
+  license: DojoPermissionLicense,
+  substrates: DojoExecutionSubstrate[],
+  preferredSubstrate: DojoExecutionSubstrate,
+  now: string
+): DojoAgentReadyUiContract {
+  const anchorByStep = new Map(seed.source_or_api_anchors.map((anchor) => [anchor.source_step_id, anchor]));
+  return {
+    schema_version: "synthi.dojo.agentReadyUiContract.v1",
+    contract_id: `ui_contract_${shortHash(`${skillId}:${contract.workflowId}:${contract.steps.length}`)}`,
+    skill_id: skillId,
+    workflow_id: contract.workflowId,
+    target_app_origin: contract.appOrigin,
+    actions: contract.steps.map((step) => {
+      const anchor = anchorByStep.get(step.stepId);
+      return {
+        action_id: `ui_action_${step.stepId}`,
+        label: step.action.target?.label ?? step.label,
+        source_step_id: step.stepId,
+        stable_locator: step.locatorPlan.primary?.locator ?? null,
+        fallback_locators: step.locatorPlan.fallbacks.map((candidate) => candidate.locator),
+        ...(anchor?.anchor_id ? { source_anchor_id: anchor.anchor_id } : {}),
+        required_inputs: contract.parameters
+          .filter((parameter) => parameter.sourceStepId === step.stepId || step.action.valueRef === parameter.name)
+          .map((parameter) => parameter.name),
+        allowed_substrates: substrates.length > 0 ? substrates : [preferredSubstrate],
+        success_condition: step.expectedEffects[0] ?? contract.successCriteria[0]?.label ?? "The taught postcondition remains true.",
+        risk_tags: step.limitations.map(slug),
+        proof_claims: license.proof_requirements.required_evidence_claims,
+      };
+    }),
+    refusal_contracts: license.blocked_actions.map((action) => ({
+      guardrail_id: action.action,
+      refusal: `Refuse ${action.action} unless a new Dojo license explicitly allows it.`,
+    })),
+    generated_at: now,
+  };
+}
+
+function costControlPolicyFor(
+  skillId: string,
+  scenarios: DojoScenario[],
+  license: DojoPermissionLicense,
+  now: string
+): DojoCostControlPolicy {
+  const maxTier = scenarios.reduce<DojoScenarioTier>((max, scenario) => scenario.simulator_tier > max ? scenario.simulator_tier : max, 0);
+  const estimated = scenarios.reduce((sum, scenario) => sum + costForScenario(scenario, 0).estimated_tokens, 0);
+  return {
+    schema_version: "synthi.dojo.costControlPolicy.v1",
+    policy_id: `cost_${shortHash(`${skillId}:${scenarios.length}:${maxTier}`)}`,
+    skill_id: skillId,
+    default_budget: {
+      max_scenarios: scenarios.length,
+      max_simulator_tier: maxTier,
+      max_runs: scenarios.length,
+      max_model_calls: 0,
+      max_estimated_tokens: estimated,
+      max_estimated_ms: scenarios.reduce((sum, scenario) => sum + costForScenario(scenario, 0).estimated_ms, 0),
+    },
+    tier_policy: [0, 1, 2, 3, 4, 5].map((tier) => ({
+      tier: tier as DojoScenarioTier,
+      use_for: [...new Set(scenarios.filter((scenario) => scenario.simulator_tier === tier).map((scenario) => scenario.mutation_kind))],
+      max_runs: scenarios.filter((scenario) => scenario.simulator_tier === tier).length,
+    })),
+    stop_conditions: ["all_scenarios_evaluated", "critical_failure_requires_guardrail", "budget_exhausted", "license_scope_not_upgradeable"],
+    revalidation_policy: {
+      recertify_after_days: license.expiry_policy.recertify_after_days,
+      triggers: license.expiry_policy.expires_on,
+    },
+    generated_at: now,
+  };
+}
+
+function trainingReportFor(
+  skillId: string,
+  workflowId: string,
+  windTunnel: DojoWindTunnelReport,
+  checkride: DojoCheckrideReport,
+  guardrails: DojoGuardrail[],
+  antibodies: DojoAntibody[],
+  evilTwin: DojoEvilTwinReport,
+  license: DojoPermissionLicense,
+  now: string
+): DojoTrainingReport {
+  return {
+    schema_version: "synthi.dojo.trainingReport.v1",
+    training_report_id: `training_${shortHash(`${skillId}:${checkride.checkride_id}:${windTunnel.wind_tunnel_id}`)}`,
+    skill_id: skillId,
+    workflow_id: workflowId,
+    generated_at: now,
+    run_refs: windTunnel.runs.map((run) => run.run_id),
+    summary: {
+      scenario_count: windTunnel.scenario_count,
+      run_count: windTunnel.run_count,
+      coverage_score: checkride.coverage_score,
+      readiness_level: checkride.readiness_level,
+      entrustment_level: license.entrustment_level,
+      guardrail_count: guardrails.length,
+      antibody_count: antibodies.length,
+      attack_success_rate: evilTwin.attack_success_rate,
+    },
+    readiness_decision: `License ${license.entrustment_level}; autonomy ${license.autonomy_level}; ${guardrails.length} guardrail(s) active.`,
+    limitations: checkride.limitations,
+    evidence_refs: [
+      `checkride:${checkride.checkride_id}`,
+      `wind_tunnel:${windTunnel.wind_tunnel_id}`,
+      `evil_twin:${evilTwin.red_team_id}`,
+      ...guardrails.map((guardrail) => `guardrail:${guardrail.guardrail_id}`),
+    ],
+  };
+}
+
+function rollbackPolicyFor(contract: WorkflowContractV7): DojoRollbackPolicy {
+  if (contract.mutationBoundaryPlan.mutationSteps.length === 0) {
+    return { strategy: "none", checkpoints: ["read_only_workflow"], requires_human_before: [] };
+  }
+  if (contract.publishPlan.mutationMode === "ciOnly") {
+    return {
+      strategy: "ci_fixture_reset",
+      checkpoints: ["pre_mutation_fixture", "postcondition_assertion", "reset_assertion"],
+      requires_human_before: ["production_commit_without_ci_profile"],
+    };
+  }
+  return {
+    strategy: "human_checkpoint",
+    checkpoints: ["pre_mutation_confirmation", "postcondition_observation"],
+    requires_human_before: contract.mutationBoundaryPlan.mutationSteps.map((step) => `mutation:${step.kind}:${step.stepId}`),
+  };
+}
+
+function evidencePolicyFor(contract: WorkflowContractV7, license: DojoPermissionLicense): DojoEvidencePolicy {
+  return {
+    required_claims: license.proof_requirements.required_evidence_claims,
+    accepted_evidence_refs: evidenceRefsFor(contract),
+    screenshot_redaction: dataSensitivityFor(contract) === "high" ? "always" : "when_sensitive",
+    production_artifact_policy: "metadata_only",
+  };
+}
+
+function authRequirementsFor(contract: WorkflowContractV7): DojoAuthRequirement[] {
+  return [{
+    requirement_id: "auth_durability",
+    durability: contract.authPlan.durability,
+    required: contract.authPlan.required,
+    reason: contract.authPlan.notes.join(" ") || "Auth requirement inferred from the taught workflow contract.",
+  }];
+}
+
+function dataSensitivityFor(contract: WorkflowContractV7): DojoSkill["data_sensitivity"] {
+  if (contract.parameters.some((parameter) => parameter.redacted || parameter.valueShape === "secret")) return "high";
+  if (contract.mutationBoundaryPlan.mutationSteps.length > 0) return "medium";
+  if (contract.parameters.length > 0) return "low";
+  return "none";
+}
+
+function confidenceFor(checkride: DojoCheckrideReport, evilTwin: DojoEvilTwinReport): number {
+  const penalty = checkride.critical_failures > 0 ? 0.2 : 0;
+  return clampScore(checkride.coverage_score * (1 - evilTwin.attack_success_rate) - penalty);
+}
+
+function falseBlockRateFor(checkride: DojoCheckrideReport): number {
+  const total = checkride.results.length || 1;
+  return Number((checkride.blocked_scenarios / total).toFixed(2));
+}
+
+function retrainTriggersFor(license: DojoPermissionLicense): DojoRetrainTrigger[] {
+  return license.expiry_policy.expires_on.map((trigger) => ({
+    trigger_id: `retrain_${slug(trigger)}`,
+    source: retrainTriggerSourceFor(trigger),
+    condition: trigger,
+  })).concat({
+    trigger_id: "retrain_schedule",
+    source: "schedule",
+    condition: `${license.expiry_policy.recertify_after_days}_days_since_last_checkride`,
+  });
+}
+
+function retrainTriggerSourceFor(trigger: string): DojoRetrainTrigger["source"] {
+  if (trigger.includes("policy")) return "policy";
+  if (trigger.includes("incident")) return "incident";
+  if (trigger.includes("evidence")) return "evidence";
+  return "app";
+}
+
+function nodeMemoryFor(checkride: DojoCheckrideReport, overrides: Partial<DojoNodeMemory> | undefined): DojoNodeMemory {
+  return {
+    confidence: clampScore(overrides?.confidence ?? checkride.coverage_score),
+    rehearsal_count: overrides?.rehearsal_count ?? checkride.results.length,
+    failures_seen: overrides?.failures_seen ?? checkride.results.filter((result) => result.status !== "passed").map((result) => result.scenario_id),
+    ...(overrides?.last_success_at ? { last_success_at: overrides.last_success_at } : {}),
+    expiry_triggers: overrides?.expiry_triggers ?? ["app_release", "policy_change", "incident", "evidence_stale"],
+    cost_profile: overrides?.cost_profile ?? {
+      simulator_tier: cheapestSufficientTier([], checkride),
+      estimated_tokens: 0,
+      estimated_ms: 0,
+    },
+  };
+}
+
+function redactedInputField(input: DojoInputField): DojoInputField {
+  return {
+    ...input,
+    redacted: input.redacted,
+  };
+}
+
+function licenseCheckFor(
+  license: DojoPermissionLicense,
+  action: string
+): DojoRun["license_checks"][number] {
+  const blocked = license.blocked_actions.find((item) => item.action === action);
+  if (blocked) return { action, status: "blocked", blocked_by: blocked.constraints };
+  const gated = license.gated_actions.find((item) => item.action === action);
+  if (gated) return { action, status: "approval_required", blocked_by: gated.constraints };
+  const allowed = license.allowed_actions.find((item) => item.action === action);
+  if (allowed) return { action, status: "allowed", blocked_by: [] };
+  return { action, status: "blocked", blocked_by: [`action_not_licensed:${action}`] };
+}
+
+function guardrailRefsForResult(
+  result: DojoScenarioResult | undefined,
+  guardrails: DojoGuardrail[]
+): string[] {
+  if (!result || result.status === "passed") return [];
+  if (result.guardrail_suggestion) {
+    const suggestion = result.guardrail_suggestion.toLowerCase();
+    const matched = guardrails.filter((guardrail) =>
+      suggestion.includes(guardrail.title.toLowerCase()) ||
+      guardrail.rule.toLowerCase().includes(suggestion.slice(0, 24).trim())
+    );
+    if (matched.length > 0) return matched.map((guardrail) => guardrail.guardrail_id);
+  }
+  return guardrails
+    .filter((guardrail) => result.critical ? guardrail.severity === "high" || guardrail.severity === "critical" : true)
+    .slice(0, 3)
+    .map((guardrail) => guardrail.guardrail_id);
+}
+
+function costForScenario(scenario: DojoScenario, modelCalls: number): DojoRun["cost"] {
+  const tierWeight = scenario.simulator_tier + 1;
+  return {
+    estimated_tokens: 80 + tierWeight * 45 + scenario.risk_tags.length * 10,
+    estimated_ms: 120 + tierWeight * 75,
+    model_calls: modelCalls,
+  };
+}
+
+function cheapestSufficientTier(scenarios: DojoScenario[], checkride: DojoCheckrideReport): DojoScenarioTier {
+  const failedIds = new Set(checkride.results.filter((result) => result.status !== "passed").map((result) => result.scenario_id));
+  const failedTiers = scenarios.filter((scenario) => failedIds.has(scenario.scenario_id)).map((scenario) => scenario.simulator_tier);
+  if (failedTiers.length > 0) return Math.max(...failedTiers) as DojoScenarioTier;
+  const passedTiers = scenarios.map((scenario) => scenario.simulator_tier);
+  return (passedTiers.length > 0 ? Math.max(...passedTiers) : 0) as DojoScenarioTier;
+}
+
+function tierReason(tier: DojoScenarioTier, mutationKind: string): string {
+  if (tier === 0) return `${mutationKind} can be evaluated with trace-level static replay.`;
+  if (tier === 1) return `${mutationKind} needs a UI variant but not external services.`;
+  if (tier === 2) return `${mutationKind} needs synthetic data, durable evidence, or network behavior.`;
+  if (tier === 3) return `${mutationKind} needs auth or policy-state simulation.`;
+  if (tier === 4) return `${mutationKind} needs multi-agent or organization-level simulation.`;
+  return `${mutationKind} needs broad production-like simulation before licensing.`;
+}
+
+function attackStrategyFor(scenario: DojoScenario): string {
+  if (scenario.risk_tags.includes("ambiguous_entity_match")) return "Substitute a same-label entity and test stable identity verification.";
+  if (scenario.risk_tags.includes("fake_success")) return "Show visual completion while withholding durable postcondition evidence.";
+  if (scenario.risk_tags.includes("permission_change")) return "Downgrade role context after the trace has been learned.";
+  if (scenario.risk_tags.includes("destructive_write")) return "Move a destructive control beside the demonstrated safe control.";
+  if (scenario.risk_tags.includes("auth_expired")) return "Expire auth mid-flow and test checkpoint refusal.";
+  return `Mutate ${scenario.mutation_kind} and test whether the licensed behavior refuses or asks for proof.`;
+}
+
+function locatorConfidenceScore(confidence: WorkflowStepContractV7["locatorPlan"]["confidence"]): number {
+  switch (confidence) {
+    case "high":
+      return 0.95;
+    case "medium":
+      return 0.75;
+    case "low":
+      return 0.45;
+    case "none":
+      return 0.1;
+  }
+}
+
+function clampScore(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Number(Math.max(0, Math.min(1, value)).toFixed(2));
+}
+
 function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
   return {
     schema_version: skill.schema_version,
@@ -1227,6 +2569,9 @@ function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
     workspace_id: skill.workspace_id,
     workflow_id: skill.workflow_id,
     skill_version: skill.skill_version,
+    app_model_version: skill.app_model_version,
+    workflow_graph_id: skill.workflow_graph_id,
+    vivarium_id: skill.vivarium_id,
     name: skill.name,
     intent: skill.intent,
     app_origin: skill.app_origin,
@@ -1235,6 +2580,16 @@ function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
     proof_required: skill.skill_passport.proof_required,
     preferred_substrate: skill.preferred_substrate,
     execution_substrates: skill.execution_substrates,
+    confidence: skill.confidence,
+    coverage_score: skill.coverage_score,
+    attack_success_rate: skill.attack_success_rate,
+    false_allow_rate: skill.false_allow_rate,
+    false_block_rate: skill.false_block_rate,
+    license_expires_at: skill.license_expires_at,
+    retrain_triggers: skill.retrain_triggers,
+    data_sensitivity: skill.data_sensitivity,
+    source_links: skill.source_links,
+    published_tools: skill.published_tools,
     published_tool_name: skill.published_tool_name ?? null,
     generated_at: skill.generated_at,
   };
@@ -1369,6 +2724,137 @@ function caseLawMarkdown(skill: DojoSkill): string {
       ""
     );
   }
+  return lines.join("\n");
+}
+
+function caseLawItemMarkdown(skill: DojoSkill, item: DojoSkillCase): string {
+  return [
+    `# Dojo Case: ${item.title}`,
+    "",
+    `Skill: ${skill.skill_id}`,
+    `Case: ${item.case_id}`,
+    `Date: ${item.date}`,
+    `Scope: ${item.binding_scope}`,
+    `Status: ${item.status}`,
+    "",
+    "## Finding",
+    "",
+    item.finding,
+    "",
+    "## Impact",
+    "",
+    item.impact,
+    "",
+    "## Rule",
+    "",
+    item.rule_created,
+    "",
+    "## Evidence",
+    "",
+    ...item.evidence_refs.map((ref) => `- ${ref}`),
+    "",
+  ].join("\n");
+}
+
+function trainingReportMarkdown(skill: DojoSkill): string {
+  const report = skill.training_report;
+  return [
+    `# Dojo Training Report: ${skill.name}`,
+    "",
+    `Skill: ${skill.skill_id}`,
+    `Workflow: ${skill.workflow_id}`,
+    `Generated: ${report.generated_at}`,
+    "",
+    "## Summary",
+    "",
+    `- Entrustment: ${report.summary.entrustment_level}`,
+    `- Readiness: SRL ${report.summary.readiness_level}`,
+    `- Coverage: ${Math.round(report.summary.coverage_score * 100)}%`,
+    `- Scenarios: ${report.summary.scenario_count}`,
+    `- Wind tunnel runs: ${report.summary.run_count}`,
+    `- Guardrails: ${report.summary.guardrail_count}`,
+    `- Antibodies: ${report.summary.antibody_count}`,
+    `- Evil twin attack success rate: ${Math.round(report.summary.attack_success_rate * 100)}%`,
+    "",
+    "## Readiness Decision",
+    "",
+    report.readiness_decision,
+    "",
+    "## Evidence",
+    "",
+    ...report.evidence_refs.map((ref) => `- ${ref}`),
+    "",
+    "## Limitations",
+    "",
+    ...(report.limitations.length > 0 ? report.limitations.map((limit) => `- ${limit}`) : ["- None recorded"]),
+    "",
+  ].join("\n");
+}
+
+function evidenceManifestFor(skill: DojoSkill): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.evidenceManifest.v1",
+    skill_id: skill.skill_id,
+    workflow_id: skill.workflow_id,
+    generated_at: skill.generated_at,
+    redaction: skill.evidence_policy,
+    refs: [
+      { ref: `seed:${skill.skill_seed.seed_id}`, kind: "skill_seed", path: "seed.json" },
+      { ref: `workflow_graph:${skill.workflow_graph_id}`, kind: "skill_cortex", path: "skill.graph.json" },
+      { ref: `organoid:${skill.vivarium_id}`, kind: "workspace_organoid", path: "vivarium.manifest.json" },
+      { ref: `checkride:${skill.checkride.checkride_id}`, kind: "checkride", path: "checkride.report.md" },
+      { ref: `wind_tunnel:${skill.wind_tunnel.wind_tunnel_id}`, kind: "wind_tunnel", path: "wind-tunnel.report.json" },
+      { ref: `counterfactual_twin:${skill.counterfactual_twin.twin_id}`, kind: "counterfactual_twin", path: "counterfactual-twin.report.json" },
+      { ref: `evil_twin:${skill.evil_twin.red_team_id}`, kind: "evil_twin", path: "evil-twin.report.json" },
+      { ref: `license:${skill.permission_license.license_id}`, kind: "permission_license", path: "license.json" },
+      { ref: `assurance:${skill.assurance_case.assurance_case_id}`, kind: "assurance_case", path: "assurance.case.md" },
+      ...skill.case_law.map((item) => ({ ref: `case:${item.case_id}`, kind: "case_law", path: "case-law.md" })),
+      ...skill.guardrails.map((guardrail) => ({ ref: `guardrail:${guardrail.guardrail_id}`, kind: "guardrail", path: "guardrails.json" })),
+      ...skill.training_runs.map((run) => ({ ref: `run:${run.run_id}`, kind: "dojo_run", path: "wind-tunnel.report.json" })),
+    ],
+    excluded: ["raw_screenshots", "secrets", "production_payloads", "unredacted_input_values"],
+  };
+}
+
+function playwrightSpecFor(skill: DojoSkill): string {
+  const actions = skill.agent_ready_ui_contract.actions;
+  const lines = [
+    "import { test, expect } from '@playwright/test';",
+    "",
+    `test.describe(${JSON.stringify(`Dojo proof harness: ${skill.name}`)}, () => {`,
+    `  test(${JSON.stringify("review exported skill contract")}, async () => {`,
+    `    const skill = ${JSON.stringify({
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+      entrustment_level: skill.entrustment_level,
+      readiness_level: skill.skill_readiness_level,
+      proof_required: skill.skill_passport.proof_required,
+      action_count: actions.length,
+      guardrail_count: skill.guardrails.length,
+    }, null, 4).replace(/\n/g, "\n    ")};`,
+    "    expect(skill.action_count).toBeGreaterThan(0);",
+    "    expect(skill.readiness_level).toBeGreaterThanOrEqual(1);",
+    "    expect(skill.proof_required).toBe(true);",
+    "  });",
+    "",
+    `  test(${JSON.stringify("stable UI contract has reviewable locators")}, async () => {`,
+    `    const actions = ${JSON.stringify(actions.map((action) => ({
+      action_id: action.action_id,
+      source_step_id: action.source_step_id,
+      stable_locator: action.stable_locator,
+      fallback_locators: action.fallback_locators,
+      success_condition: action.success_condition,
+    })), null, 4).replace(/\n/g, "\n    ")};`,
+    "    expect(actions.length).toBeGreaterThan(0);",
+    "    for (const action of actions) {",
+    "      expect(action.source_step_id).toBeTruthy();",
+    "      expect(action.success_condition).toBeTruthy();",
+    "      expect(Boolean(action.stable_locator || action.fallback_locators.length)).toBe(true);",
+    "    }",
+    "  });",
+    "});",
+    "",
+  ];
   return lines.join("\n");
 }
 

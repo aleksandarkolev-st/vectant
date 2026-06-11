@@ -807,7 +807,7 @@ export function browserPrivateWorkflowTools(): Array<{ name: string; description
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
     const privateTool = privateWorkflowToolRegistry.get(toolName);
-    if (privateTool) return await browserRunPublishedPrivateTool(toolName, args);
+    if (privateTool) return browserDirectPrivateToolRequiresDojoProof(toolName, privateTool.workflow_id);
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
@@ -899,6 +899,10 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
   } catch (err) {
     return errorFromException("browser_tool_failed", err);
   }
+}
+
+export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(toolName: string, args: unknown): Promise<ToolResponse> {
+  return await browserRunPublishedPrivateTool(toolName, args);
 }
 
 function browserDeploymentReadinessTool(args: unknown): ToolResponse {
@@ -2014,6 +2018,22 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
   } finally {
     browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
   }
+}
+
+function browserDirectPrivateToolRequiresDojoProof(toolName: string, workflowId: string): ToolResponse {
+  return errorResponse("dojo_proof_capsule_required", {
+    tool_name: toolName,
+    workflow_id: workflowId,
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
+    requested_action: "run_workflow",
+    blocked_by: ["direct_private_workflow_tool_call"],
+    product_path: "agent_to_dojo_license_kernel_to_proof_validator_to_private_workflow_tool",
+    notes: [
+      "Private workflow tools are backing capabilities for Dojo skills.",
+      "Issue a proof-carrying skill capsule, then call synthi_dojo_run_with_proof_capsule with tool_args for this workflow.",
+    ],
+  });
 }
 
 function privateWorkflowHostedRuntimeGate(

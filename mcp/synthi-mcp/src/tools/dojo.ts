@@ -17,19 +17,33 @@ import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_man
 import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
-import { dispatchBrowserTool } from "./browser.js";
+import { dispatchBrowserPrivateWorkflowToolAfterDojoProof } from "./browser.js";
 import { dispatchSafetyTool } from "./safety.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 export const DOJO_TOOL_NAMES = [
   "synthi_dojo_list_competencies",
   "synthi_dojo_get_skill",
+  "synthi_dojo_get_skill_cortex",
+  "synthi_dojo_get_workspace_organoid",
+  "synthi_dojo_get_wind_tunnel_report",
+  "synthi_dojo_get_counterfactual_twin",
+  "synthi_dojo_get_evil_twin_report",
+  "synthi_dojo_get_training_report",
+  "synthi_dojo_get_skill_passport",
+  "synthi_dojo_get_skill_genome",
+  "synthi_dojo_get_antibodies",
+  "synthi_dojo_get_agent_ready_ui_contract",
+  "synthi_dojo_get_cost_policy",
   "synthi_dojo_get_skill_assurance_case",
   "synthi_dojo_get_entrustment_level",
   "synthi_dojo_get_license",
   "synthi_dojo_get_guardrails",
   "synthi_dojo_get_case_law",
   "synthi_dojo_explain_block",
+  "synthi_dojo_explain_failure",
+  "synthi_dojo_debug_counterfactual",
+  "synthi_dojo_run_ghost_mode",
   "synthi_dojo_request_permission_upgrade",
   "synthi_dojo_generate_vivarium_scenarios",
   "synthi_dojo_run_checkride",
@@ -58,6 +72,65 @@ export const DOJO_TOOLS = [
       },
       required: [],
     },
+  },
+  {
+    name: "synthi_dojo_get_skill_cortex",
+    description: "Return the source-aware Skill Cortex graph: typed workflow nodes, learned transitions, guardrail refs, node memory, and expiry nodes.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_workspace_organoid",
+    description: "Return the synthetic Workspace Organoid manifest used by Dojo to practice this skill without production data.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_wind_tunnel_report",
+    description: "Return the Workflow Wind Tunnel runs and scenario summary for a Dojo skill.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_counterfactual_twin",
+    description: "Return counterfactual twin variants, observed outcomes, and promoted scenarios for a Dojo skill.",
+    inputSchema: {
+      type: "object",
+      properties: { skill_id: { type: "string" }, workflow_id: { type: "string" }, scenario_id: { type: "string" }, mutation_kind: { type: "string" } },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_get_evil_twin_report",
+    description: "Return adversarial Evil Twin attacks, caught/escaped status, hardened guardrails, and attack success rate.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_training_report",
+    description: "Return the Dojo training report that ties wind-tunnel runs, checkride, evil twin, guardrails, antibodies, and readiness decision together.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_skill_passport",
+    description: "Return the compact Skill Passport for UI badges and agent preflight checks.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_skill_genome",
+    description: "Return the shareable Skill Genome pattern without raw screenshots, secrets, workspace data, or production payloads.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_antibodies",
+    description: "Return negative-memory antibodies derived from failed or blocked scenarios and their guardrail responses.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_agent_ready_ui_contract",
+    description: "Return the agent-ready UI contract: stable locators, source anchors, required inputs, proof claims, and refusal contracts.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+  },
+  {
+    name: "synthi_dojo_get_cost_policy",
+    description: "Return the Dojo cost-control policy for scenario budgets, tier use, stop conditions, and recertification triggers.",
+    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
   },
   {
     name: "synthi_dojo_get_skill_assurance_case",
@@ -129,6 +202,50 @@ export const DOJO_TOOLS = [
         workflow_id: { type: "string" },
         requested_action: { type: "string", default: "run_workflow" },
         proof_capsule: { type: "object" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_explain_failure",
+    description: "Explain a checkride, wind-tunnel, counterfactual, or evil-twin failure with scenario result, case law, guardrails, and next licensing steps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        scenario_id: { type: "string" },
+        case_id: { type: "string" },
+        guardrail_id: { type: "string" },
+        mutation_kind: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_debug_counterfactual",
+    description: "Debug a counterfactual twin variant and return the matching scenario, checkride result, relevant attacks, guardrails, and promoted remediation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        scenario_id: { type: "string" },
+        mutation_kind: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_dojo_run_ghost_mode",
+    description: "Run non-mutating ghost-mode analysis by comparing an observed human action with the agent's planned action under the skill license.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        observed_human_action: { type: "object" },
+        agent_planned_action: { type: "object" },
       },
       required: [],
     },
@@ -257,6 +374,28 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         return dojoListCompetenciesTool();
       case "synthi_dojo_get_skill":
         return dojoGetSkillTool(args);
+      case "synthi_dojo_get_skill_cortex":
+        return dojoGetSkillCortexTool(args);
+      case "synthi_dojo_get_workspace_organoid":
+        return dojoGetWorkspaceOrganoidTool(args);
+      case "synthi_dojo_get_wind_tunnel_report":
+        return dojoGetWindTunnelReportTool(args);
+      case "synthi_dojo_get_counterfactual_twin":
+        return dojoGetCounterfactualTwinTool(args);
+      case "synthi_dojo_get_evil_twin_report":
+        return dojoGetEvilTwinReportTool(args);
+      case "synthi_dojo_get_training_report":
+        return dojoGetTrainingReportTool(args);
+      case "synthi_dojo_get_skill_passport":
+        return dojoGetSkillPassportTool(args);
+      case "synthi_dojo_get_skill_genome":
+        return dojoGetSkillGenomeTool(args);
+      case "synthi_dojo_get_antibodies":
+        return dojoGetAntibodiesTool(args);
+      case "synthi_dojo_get_agent_ready_ui_contract":
+        return dojoGetAgentReadyUiContractTool(args);
+      case "synthi_dojo_get_cost_policy":
+        return dojoGetCostPolicyTool(args);
       case "synthi_dojo_get_skill_assurance_case":
         return dojoGetAssuranceCaseTool(args);
       case "synthi_dojo_get_entrustment_level":
@@ -269,6 +408,12 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         return dojoGetCaseLawTool(args);
       case "synthi_dojo_explain_block":
         return dojoExplainBlockTool(args);
+      case "synthi_dojo_explain_failure":
+        return dojoExplainFailureTool(args);
+      case "synthi_dojo_debug_counterfactual":
+        return dojoDebugCounterfactualTool(args);
+      case "synthi_dojo_run_ghost_mode":
+        return dojoRunGhostModeTool(args);
       case "synthi_dojo_request_permission_upgrade":
         return dojoPermissionUpgradeTool(args);
       case "synthi_dojo_generate_vivarium_scenarios":
@@ -307,6 +452,81 @@ function dojoGetSkillTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill: skill.skill });
+}
+
+function dojoGetSkillCortexTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_cortex: skill.skill.skill_cortex });
+}
+
+function dojoGetWorkspaceOrganoidTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, workspace_organoid: skill.skill.workspace_organoid });
+}
+
+function dojoGetWindTunnelReportTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, wind_tunnel: skill.skill.wind_tunnel });
+}
+
+function dojoGetCounterfactualTwinTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const filters = scenarioFilters(args);
+  const variants = filterByScenario(skill.skill.counterfactual_twin.variants, filters);
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    counterfactual_twin: {
+      ...skill.skill.counterfactual_twin,
+      variants,
+    },
+  });
+}
+
+function dojoGetEvilTwinReportTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, evil_twin: skill.skill.evil_twin });
+}
+
+function dojoGetTrainingReportTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, training_report: skill.skill.training_report });
+}
+
+function dojoGetSkillPassportTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_passport: skill.skill.skill_passport });
+}
+
+function dojoGetSkillGenomeTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_genome: skill.skill.skill_genome });
+}
+
+function dojoGetAntibodiesTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, antibodies: skill.skill.antibodies });
+}
+
+function dojoGetAgentReadyUiContractTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, agent_ready_ui_contract: skill.skill.agent_ready_ui_contract });
+}
+
+function dojoGetCostPolicyTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, cost_control_policy: skill.skill.cost_control_policy });
 }
 
 function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
@@ -374,34 +594,107 @@ function dojoExplainBlockTool(args: unknown): ToolResponse {
   });
 }
 
+function dojoExplainFailureTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const filters = scenarioFilters(args);
+  const guardrailId = stringOpt(obj(args)["guardrail_id"]);
+  const caseId = stringOpt(obj(args)["case_id"]);
+  const scenario = firstScenario(skill.skill, filters);
+  const result = scenario
+    ? skill.skill.checkride.results.find((item) => item.scenario_id === scenario.scenario_id) ?? null
+    : null;
+  const matchedCase = caseId
+    ? skill.skill.case_law.find((item) => item.case_id === caseId) ?? null
+    : result
+    ? skill.skill.case_law.find((item) => result.evidence_refs.some((ref) => item.evidence_refs.includes(ref))) ?? null
+    : null;
+  const matchedGuardrails = skill.skill.guardrails.filter((guardrail) => {
+    if (guardrailId) return guardrail.guardrail_id === guardrailId;
+    if (matchedCase?.case_id) return guardrail.source_case_id === matchedCase.case_id;
+    return result?.status !== "passed" && guardrail.blocks_actions.includes("run_workflow");
+  });
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    scenario,
+    result,
+    case_law: matchedCase,
+    guardrails: matchedGuardrails,
+    explanation: failureExplanation(skill.skill, scenario, result, matchedCase, matchedGuardrails),
+    next_steps: permissionUpgradeSteps(skill.skill, "run_workflow"),
+  });
+}
+
+function dojoDebugCounterfactualTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const filters = scenarioFilters(args);
+  const variants = filterByScenario(skill.skill.counterfactual_twin.variants, filters);
+  const scenarioIds = new Set(variants.map((variant) => variant.scenario_id));
+  const scenarios = skill.skill.scenarios.filter((scenario) => scenarioIds.has(scenario.scenario_id));
+  const results = skill.skill.checkride.results.filter((result) => scenarioIds.has(result.scenario_id));
+  const attacks = skill.skill.evil_twin.attacks.filter((attack) => scenarioIds.has(attack.scenario_id));
+  const guardrailRefs = new Set(attacks.flatMap((attack) => attack.guardrail_refs));
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    variants,
+    scenarios,
+    results,
+    attacks,
+    guardrails: skill.skill.guardrails.filter((guardrail) => guardrailRefs.has(guardrail.guardrail_id)),
+    promoted_scenarios: skill.skill.counterfactual_twin.promoted_scenarios.filter((scenarioId) => scenarioIds.has(scenarioId)),
+    cost_policy: skill.skill.cost_control_policy,
+  });
+}
+
+function dojoRunGhostModeTool(args: unknown): ToolResponse {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const observed = objectOpt(a["observed_human_action"]) ?? {};
+  const planned = objectOpt(a["agent_planned_action"]) ?? {};
+  const observedLabel = ghostActionLabel(observed);
+  const plannedLabel = ghostActionLabel(planned);
+  const actionMatches = observedLabel.length > 0 && plannedLabel.length > 0 && observedLabel === plannedLabel;
+  const guardrailsTriggered = actionMatches
+    ? []
+    : skill.skill.guardrails.filter((guardrail) => guardrail.blocks_actions.includes("run_workflow")).slice(0, 3);
+  const run = {
+    run_id: `ghost_${Date.now()}`,
+    skill_id: skill.skill.skill_id,
+    workflow_id: skill.skill.workflow_id,
+    mode: "ghost",
+    observed_human_action: observed,
+    agent_planned_action: planned,
+    status: actionMatches ? "matched" : "mismatch",
+    would_execute: false,
+    license_status: skill.skill.permission_license.allowed_actions.some((action) => action.action === "run_workflow") ? "licensed" : "blocked",
+    guardrails_triggered: guardrailsTriggered.map((guardrail) => guardrail.guardrail_id),
+    explanation: actionMatches
+      ? "Ghost mode matched the demonstrated action label and did not execute production mutations."
+      : "Ghost mode found a mismatch or incomplete planned action, so production execution remains blocked.",
+  };
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    ghost_run: run,
+    guardrails: guardrailsTriggered,
+  });
+}
+
 function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
   const a = obj(args);
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  const license = skill.skill.permission_license;
-  const required: string[] = [];
-  if (!license.allowed_actions.some((action) => action.action === requestedAction)) {
-    required.push("rerun_checkride_for_requested_action");
-  }
-  if (skill.skill.checkride.critical_failures > 0) {
-    required.push("resolve_critical_checkride_failures");
-  }
-  if (skill.skill.guardrails.length === 0) {
-    required.push("activate_guardrails");
-  }
-  if (!skill.skill.published_tool_name) {
-    required.push("publish_backing_private_workflow_tool");
-  }
-  if (skill.skill.execution_substrates.length === 1 && skill.skill.execution_substrates[0] === "vision") {
-    required.push("add_dom_source_or_mcp_substrate");
-  }
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
     current_entrustment_level: skill.skill.entrustment_level,
-    required_steps: required.length > 0 ? required : ["no_upgrade_required_for_current_license"],
+    required_steps: permissionUpgradeSteps(skill.skill, requestedAction),
   });
 }
 
@@ -606,7 +899,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
 
 async function dispatchBackingSkillTool(skill: DojoSkill, args: Record<string, unknown>): Promise<ToolResponse | null> {
   if (!skill.published_tool_name) return null;
-  return await dispatchBrowserTool(skill.published_tool_name, args);
+  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(skill.published_tool_name, args);
 }
 
 function publishBackingPrivateTool(
@@ -728,6 +1021,80 @@ function refusalFor(skill: DojoSkill, blockedBy: string[]): string {
     return `I will not run ${skill.name} yet. ${cited.finding} Rule: ${cited.rule_created}`;
   }
   return `I will not run ${skill.name} yet. Blocked by ${blockedBy.join(", ") || "license policy"}.`;
+}
+
+function permissionUpgradeSteps(skill: DojoSkill, requestedAction: string): string[] {
+  const license = skill.permission_license;
+  const required: string[] = [];
+  if (!license.allowed_actions.some((action) => action.action === requestedAction)) {
+    required.push("rerun_checkride_for_requested_action");
+  }
+  if (skill.checkride.critical_failures > 0) {
+    required.push("resolve_critical_checkride_failures");
+  }
+  if (skill.guardrails.length === 0) {
+    required.push("activate_guardrails");
+  }
+  if (!skill.published_tool_name) {
+    required.push("publish_backing_private_workflow_tool");
+  }
+  if (skill.execution_substrates.length === 1 && skill.execution_substrates[0] === "vision") {
+    required.push("add_dom_source_or_mcp_substrate");
+  }
+  if (skill.attack_success_rate > 0) {
+    required.push("harden_evil_twin_escaped_attacks");
+  }
+  return required.length > 0 ? required : ["no_upgrade_required_for_current_license"];
+}
+
+function scenarioFilters(args: unknown): { scenario_id?: string; mutation_kind?: string } {
+  const a = obj(args);
+  const scenarioId = stringOpt(a["scenario_id"]);
+  const mutationKind = stringOpt(a["mutation_kind"]);
+  return {
+    ...(scenarioId ? { scenario_id: scenarioId } : {}),
+    ...(mutationKind ? { mutation_kind: mutationKind } : {}),
+  };
+}
+
+function filterByScenario<T extends { scenario_id: string; mutation_kind?: string }>(
+  items: T[],
+  filters: { scenario_id?: string; mutation_kind?: string }
+): T[] {
+  return items.filter((item) => {
+    if (filters.scenario_id && item.scenario_id !== filters.scenario_id) return false;
+    if (filters.mutation_kind && item.mutation_kind !== filters.mutation_kind) return false;
+    return true;
+  });
+}
+
+function firstScenario(skill: DojoSkill, filters: { scenario_id?: string; mutation_kind?: string }): DojoSkill["scenarios"][number] | null {
+  return skill.scenarios.find((scenario) => {
+    if (filters.scenario_id && scenario.scenario_id !== filters.scenario_id) return false;
+    if (filters.mutation_kind && scenario.mutation_kind !== filters.mutation_kind) return false;
+    return true;
+  }) ?? null;
+}
+
+function failureExplanation(
+  skill: DojoSkill,
+  scenario: DojoSkill["scenarios"][number] | null,
+  result: DojoSkill["checkride"]["results"][number] | null,
+  caseLaw: DojoSkill["case_law"][number] | null,
+  guardrails: DojoSkill["guardrails"]
+): string {
+  if (!scenario) return `No matching scenario was found for ${skill.name}.`;
+  if (!result) return `${scenario.title} exists, but no checkride result was recorded. Re-run the checkride before licensing changes.`;
+  if (result.status === "passed") return `${scenario.title} passed. ${result.finding}`;
+  const rule = caseLaw?.rule_created ?? guardrails[0]?.rule ?? result.guardrail_suggestion ?? "Re-run the workflow in vivarium before production execution.";
+  return `${scenario.title} ${result.status}. ${result.finding} Dojo keeps the skill within ${skill.entrustment_level} until this rule is satisfied: ${rule}`;
+}
+
+function ghostActionLabel(action: Record<string, unknown>): string {
+  const direct = stringOpt(action["label"]) ?? stringOpt(action["name"]) ?? stringOpt(action["action"]);
+  if (direct) return direct.toLowerCase();
+  const target = objectOpt(action["target"]);
+  return (stringOpt(target?.["label"]) ?? stringOpt(target?.["name"]) ?? "").toLowerCase();
 }
 
 function proofCapsuleOpt(value: unknown): DojoProofCarryingSkillCapsule | null {
