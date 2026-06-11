@@ -959,7 +959,7 @@ function ReviewQueue({ items, blockers }) {
   );
 }
 
-function DojoSkillCredential({ dojo, traceReady, onAction }) {
+function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
   if (!dojo || !shouldShowDojoSkill({ dojo })) return null;
   const licensed = dojo.status === 'licensed' || dojo.published;
   const criticalFailures = Number(dojo.checkride?.criticalFailures || 0);
@@ -977,7 +977,17 @@ function DojoSkillCredential({ dojo, traceReady, onAction }) {
             {dojo.detail}
           </p>
         </div>
-        <StatusBadge label={dojo.entrustmentLevel || 'E0'} tone={tone} icon={ShieldCheck} />
+        <div className="flex shrink-0 items-center gap-2">
+          <a
+            className="rounded-md border px-2 py-1 text-[11px]"
+            href={`/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`}
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+            data-testid="agent-workflow-dojo-open"
+          >
+            Open Dojo
+          </a>
+          <StatusBadge label={dojo.entrustmentLevel || 'E0'} tone={tone} icon={ShieldCheck} />
+        </div>
       </div>
       <dl className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
         <div className="flex items-center justify-between gap-3">
@@ -1492,7 +1502,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
         </section>
 
         <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
-        <DojoSkillCredential dojo={model.dojo} traceReady={traceReady} onAction={emitWorkflowAction} />
+        <DojoSkillCredential dojo={model.dojo} traceReady={traceReady} onAction={emitWorkflowAction} workspaceSlug={workspaceSlug} />
         {shouldShowIsolationProfile(model) ? (
           <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
         ) : null}
