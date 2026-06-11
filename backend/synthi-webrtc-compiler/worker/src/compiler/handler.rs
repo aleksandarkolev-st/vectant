@@ -4389,15 +4389,15 @@ fn upsert_generated_split_source_baselines(
     meta: &mut serde_json::Value,
     result: &serde_json::Value,
 ) -> usize {
-    let Some(root) = meta.as_object_mut() else {
-        return 0;
-    };
     let manifest = result
         .get("_synthi_manifest")
         .filter(|value| !value.is_null())
         .cloned()
         .or_else(|| meta.get("compile_manifest").filter(|value| !value.is_null()).cloned())
         .unwrap_or(serde_json::Value::Null);
+    let Some(root) = meta.as_object_mut() else {
+        return 0;
+    };
     let mut count = 0;
     for role in ["shared", "core", "gui", "host_runner", "device"] {
         let Some(filename) = split_role_filename(result, &manifest, role) else {
