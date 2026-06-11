@@ -7,6 +7,8 @@
 //   NEXT_PUBLIC_SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL - optional explicit bridge URL.
 //   By default local development follows the current page host on port 9466 so
 //   a workspace opened at localhost does not try to post to 127.0.0.1.
+//   In production the browser uses the same-origin Next.js API proxy so the MCP
+//   bridge token and internal bridge host never need to be exposed to users.
 //   Optional header X-Synthi-Workflow-Token is supplied via localStorage or
 //   explicit options when the bridge is token-gated.
 
@@ -23,6 +25,9 @@ function browserDefaultBridgeUrl() {
   if (typeof window === 'undefined') return DEFAULT_SERVER_URL;
   const hostname = window.location?.hostname || 'localhost';
   const host = hostname === '0.0.0.0' ? 'localhost' : hostname;
+  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+    return `${window.location.origin}/api`;
+  }
   return `http://${host}:${DEFAULT_BRIDGE_PORT}`;
 }
 

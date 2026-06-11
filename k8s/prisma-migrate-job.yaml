@@ -1,8 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Synthi IDE — Prisma Migration Job (Cloud SQL)
+#  Synthi IDE — Prisma Migration Job
 # ─────────────────────────────────────────────────────────────────────────────
-#  Runs `npx prisma migrate deploy` against the Cloud SQL instance via
-#  the Cloud SQL Auth Proxy sidecar.
+#  Runs `npx prisma migrate deploy` against the configured DATABASE_URL.
 #
 #  Usage:
 #    IMAGE_TAG=<immutable build tag>
@@ -40,40 +39,12 @@ spec:
         app: prisma-migrate
     spec:
       securityContext:
-        #runAsNonRoot: true
+        runAsUser: 0
+        runAsGroup: 0
       restartPolicy: Never
       containers:
-        # ── Migration runner ────────────────────────────────────────────────
         - name: migrate
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-prisma-migrate:build-tag-required
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              echo "=== Waiting for Cloud SQL proxy ==="
-              RETRIES=0
-              until wget -qO- http://localhost:9091/readiness >/dev/null 2>&1; do
-                RETRIES=$((RETRIES + 1))
-                if [ "$RETRIES" -ge 30 ]; then
-                  echo "ERROR: Cloud SQL proxy not ready after 30s"
-                  exit 1
-                fi
-                echo "  Waiting for proxy... ($RETRIES/30)"
-                sleep 1
-              done
-              echo "=== Proxy ready ==="
-
-              echo "=== Running Prisma migrate deploy ==="
-              npx prisma migrate deploy
-              MIGRATE_EXIT=$?
-
-              echo "=== Migration finished (exit code: $MIGRATE_EXIT) ==="
-
-              # Signal the Cloud SQL proxy to shut down cleanly
-              echo "=== Shutting down Cloud SQL proxy ==="
-              wget -qO- --post-data="" http://localhost:9091/quitquitquit || true
-
-              exit $MIGRATE_EXIT
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-prisma-migrate:build-tag-required
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -87,28 +58,3 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
-
-        # ── Cloud SQL Auth Proxy sidecar ──────────────────────────────────
-        - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
-          args:
-            - "--port=5432"
-            - "--admin-port=9091"
-            - "--health-check"
-            - "--quitquitquit"
-            - "$(CLOUD_SQL_INSTANCE)"
-          env:
-            - name: CLOUD_SQL_INSTANCE
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: CLOUD_SQL_INSTANCE
-          securityContext:
-            #runAsNonRoot: true
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 200m
-              memory: 128Mi
