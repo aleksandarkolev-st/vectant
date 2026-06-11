@@ -22,6 +22,13 @@
 import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
 import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
+import {
+  buildDojoGovernanceReport,
+  buildDojoLifecycleReport,
+  buildDojoSourceAffordancePrPlan,
+  buildDojoUniverseDossier,
+  buildDojoUniverseMetrics,
+} from "../browser/dojo_universe.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import {
@@ -68,6 +75,17 @@ interface BrowserWorkflowBridgeState {
   latestProofDryRun?: Record<string, unknown>;
   latestBlockExplanation?: Record<string, unknown>;
   latestPermissionUpgrade?: Record<string, unknown>;
+  latestDojoUniverse?: Record<string, unknown>;
+  latestDojoLifecycle?: Record<string, unknown>;
+  latestDojoGovernance?: Record<string, unknown>;
+  latestDojoMetrics?: Record<string, unknown>;
+  latestDojoSourcePlan?: Record<string, unknown>;
+  latestDojoTimeMachine?: Record<string, unknown>;
+  latestDojoVivariumRun?: Record<string, unknown>;
+  latestDojoWindTunnel?: Record<string, unknown>;
+  latestDojoLicenseHealth?: Record<string, unknown>;
+  latestDojoCaseLawRecord?: Record<string, unknown>;
+  latestDojoLicenseRevocation?: Record<string, unknown>;
   history: BridgeHistoryEntry[];
 }
 
@@ -385,6 +403,40 @@ function resolvePreviewUrl(url: string | undefined, collabUrl: string): string |
   }
 }
 
+function clearDojoUniverseState(state: BrowserWorkflowBridgeState): void {
+  state.latestDojoUniverse = undefined;
+  state.latestDojoLifecycle = undefined;
+  state.latestDojoGovernance = undefined;
+  state.latestDojoMetrics = undefined;
+  state.latestDojoSourcePlan = undefined;
+  state.latestDojoTimeMachine = undefined;
+  state.latestDojoVivariumRun = undefined;
+  state.latestDojoWindTunnel = undefined;
+  state.latestDojoLicenseHealth = undefined;
+  state.latestDojoCaseLawRecord = undefined;
+  state.latestDojoLicenseRevocation = undefined;
+}
+
+function pushBridgeHistory(
+  state: BrowserWorkflowBridgeState,
+  startedAt: string,
+  label: string,
+  detail: string,
+  status: string,
+  statusLabel: string,
+  tone: BridgeHistoryEntry["tone"]
+): void {
+  state.history = [{
+    id: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${Date.now()}`,
+    label,
+    detail,
+    status,
+    statusLabel,
+    tone,
+    startedAt,
+  }, ...state.history].slice(0, MAX_HISTORY);
+}
+
 function updateBridgeState(
   state: BrowserWorkflowBridgeState,
   toolName: string,
@@ -406,6 +458,7 @@ function updateBridgeState(
     state.latestProofDryRun = undefined;
     state.latestBlockExplanation = undefined;
     state.latestPermissionUpgrade = undefined;
+    clearDojoUniverseState(state);
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_begin_teach") {
@@ -419,6 +472,7 @@ function updateBridgeState(
     state.latestProofDryRun = undefined;
     state.latestBlockExplanation = undefined;
     state.latestPermissionUpgrade = undefined;
+    clearDojoUniverseState(state);
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_observe") state.lastObserveAt = now;
@@ -546,6 +600,58 @@ function updateBridgeState(
       startedAt: now,
     };
     state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_get_universe_dossier") {
+    state.latestDojoUniverse = payload;
+    pushBridgeHistory(state, now, "Dojo universe", "Vivarium Cortex dossier", "passed", "Dossier", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_lifecycle") {
+    state.latestDojoLifecycle = payload;
+    const lifecycle = payload["lifecycle"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Dojo lifecycle", stringOpt(lifecycle?.["status"]) ?? "Lifecycle report", "passed", "Lifecycle", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_governance_report") {
+    state.latestDojoGovernance = payload;
+    pushBridgeHistory(state, now, "Dojo governance", "Policy gates and audit report", "passed", "Governed", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_metrics") {
+    state.latestDojoMetrics = payload;
+    pushBridgeHistory(state, now, "Dojo metrics", "Universe metrics refreshed", "passed", "Metrics", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_source_affordance_pr_plan") {
+    state.latestDojoSourcePlan = payload;
+    const plan = payload["source_affordance_pr_plan"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Agent-ready UI plan", `${Number(plan?.["patch_count"] ?? 0)} patches`, "passed", "Source", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_run_time_machine_debugger") {
+    state.latestDojoTimeMachine = payload;
+    pushBridgeHistory(state, now, "Dojo time machine", "Counterfactual branch replayed", "passed", "Debugged", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_run_vivarium_scenario") {
+    state.latestDojoVivariumRun = payload;
+    const run = payload["vivarium_run"] as Record<string, unknown> | undefined;
+    const scenario = run?.["scenario"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Vivarium scenario", stringOpt(scenario?.["mutation_kind"]) ?? "Synthetic run", "passed", "Practiced", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_run_wind_tunnel") {
+    state.latestDojoWindTunnel = payload;
+    const tunnel = payload["wind_tunnel_execution"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Workflow wind tunnel", `${Number(tunnel?.["run_count"] ?? 0)} runs`, "passed", "Practiced", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_license_health") {
+    state.latestDojoLicenseHealth = payload;
+    const health = payload["license_health"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "License health", stringOpt(health?.["status"]) ?? "Health report", "passed", "Health", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_record_case_law") {
+    state.latestDojoCaseLawRecord = payload;
+    const caseLaw = payload["case_law"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Case law recorded", stringOpt(caseLaw?.["title"]) ?? "Binding guardrail", "passed", "Case law", "warn");
+  }
+  if (ok && toolName === "synthi_dojo_revoke_license") {
+    state.latestDojoLicenseRevocation = payload;
+    state.latestDojoLicenseHealth = payload;
+    pushBridgeHistory(state, now, "Dojo license revoked", stringOpt(payload["reason"]) ?? "Recertification required", "blocked", "Revoked", "warn");
   }
   if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow" || toolName === "synthi_safety_run_ci_isolated_replay") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
@@ -984,6 +1090,14 @@ function dojoPanelStateFor(
     };
   }
 
+  const lifecycle = recordAt(bridgeState.latestDojoLifecycle, "lifecycle") ?? buildDojoLifecycleReport(skill) as unknown as Record<string, unknown>;
+  const governance = recordAt(bridgeState.latestDojoGovernance, "governance_report") ?? buildDojoGovernanceReport(skill) as unknown as Record<string, unknown>;
+  const metrics = recordAt(bridgeState.latestDojoMetrics, "metrics") ?? buildDojoUniverseMetrics([skill]) as unknown as Record<string, unknown>;
+  const sourcePlan = recordAt(bridgeState.latestDojoSourcePlan, "source_affordance_pr_plan")
+    ?? buildDojoSourceAffordancePrPlan(skill) as unknown as Record<string, unknown>;
+  const universe = recordAt(bridgeState.latestDojoUniverse, "universe_dossier")
+    ?? buildDojoUniverseDossier(skill, dojoSkillRegistry.list()) as unknown as Record<string, unknown>;
+
   return {
     status: published ? "licensed" : "draft",
     label: published ? skill.skill_card.status : "Checkride preview",
@@ -1005,6 +1119,16 @@ function dojoPanelStateFor(
     proofDryRun: proofRunPanelState(bridgeState.latestProofDryRun),
     blockExplanation: blockExplanationPanelState(bridgeState.latestBlockExplanation),
     permissionUpgrade: permissionUpgradePanelState(bridgeState.latestPermissionUpgrade),
+    universe: universePanelState(universe),
+    lifecycle: lifecyclePanelState(lifecycle),
+    governance: governancePanelState(governance),
+    metrics: metricsPanelState(metrics),
+    sourceAffordancePrPlan: sourceAffordancePanelState(sourcePlan),
+    timeMachine: timeMachinePanelState(bridgeState.latestDojoTimeMachine),
+    vivariumRun: vivariumRunPanelState(bridgeState.latestDojoVivariumRun),
+    windTunnel: windTunnelPanelState(bridgeState.latestDojoWindTunnel),
+    licenseHealth: licenseHealthPanelState(bridgeState.latestDojoLicenseHealth, lifecycle),
+    caseLawRecord: caseLawRecordPanelState(bridgeState.latestDojoCaseLawRecord),
     publishedToolName: skill.published_tool_name ?? null,
     checkride: {
       checkrideId: skill.checkride.checkride_id,
@@ -1068,6 +1192,126 @@ function permissionUpgradePanelState(payload: Record<string, unknown> | undefine
   };
 }
 
+function universePanelState(dossier: Record<string, unknown>): Record<string, unknown> {
+  const packages = dossier["package_readiness"] as Record<string, unknown> | undefined;
+  const enterprise = Array.isArray(packages?.["enterprise"]) ? packages?.["enterprise"] as Array<Record<string, unknown>> : [];
+  const personal = Array.isArray(packages?.["personal"]) ? packages?.["personal"] as Array<Record<string, unknown>> : [];
+  return {
+    status: stringOpt(recordAt(dossier, "lifecycle")?.["status"]) ?? "draft",
+    enterpriseReady: enterprise.filter((item) => item["status"] === "ready").length,
+    enterpriseTotal: enterprise.length,
+    personalReady: personal.filter((item) => item["status"] === "ready").length,
+    personalTotal: personal.length,
+  };
+}
+
+function lifecyclePanelState(lifecycle: Record<string, unknown>): Record<string, unknown> {
+  const recertification = recordAt(lifecycle, "recertification");
+  return {
+    status: stringOpt(lifecycle["status"]) ?? "draft",
+    daysUntilExpiry: numberOpt(lifecycle["days_until_expiry"]),
+    recertificationRequired: recertification?.["required"] === true,
+    gates: Array.isArray(lifecycle["release_gates"]) ? lifecycle["release_gates"] : [],
+  };
+}
+
+function governancePanelState(governance: Record<string, unknown>): Record<string, unknown> {
+  const audit = recordAt(governance, "audit_report");
+  return {
+    approvalCount: Array.isArray(governance["approval_queue"]) ? governance["approval_queue"].length : 0,
+    policyGateCount: Array.isArray(governance["policy_gates"]) ? governance["policy_gates"].length : 0,
+    evidenceClaims: Array.isArray(audit?.["evidence_claims"]) ? audit?.["evidence_claims"] : [],
+    blockedActions: Array.isArray(audit?.["blocked_actions"]) ? audit?.["blocked_actions"] : [],
+  };
+}
+
+function metricsPanelState(metrics: Record<string, unknown>): Record<string, unknown> {
+  const technical = recordAt(metrics, "technical");
+  const business = recordAt(metrics, "business");
+  const trust = recordAt(metrics, "trust");
+  return {
+    skillCount: numberOpt(metrics["skill_count"]) ?? 0,
+    coverage: numberOpt(technical?.["average_coverage_score"]) ?? 0,
+    attackSuccessRate: numberOpt(technical?.["average_attack_success_rate"]) ?? 0,
+    mcpBackedSkillCount: numberOpt(business?.["mcp_backed_skill_count"]) ?? 0,
+    proofRequiredPercent: numberOpt(trust?.["proof_required_percent"]) ?? 0,
+    staleLicenseCount: numberOpt(trust?.["stale_or_expired_license_count"]) ?? 0,
+  };
+}
+
+function sourceAffordancePanelState(plan: Record<string, unknown>): Record<string, unknown> {
+  return {
+    readiness: stringOpt(plan["readiness"]) ?? "not_ready",
+    patchCount: numberOpt(plan["patch_count"]) ?? 0,
+    generatedTests: Array.isArray(plan["generated_tests"]) ? plan["generated_tests"] : [],
+  };
+}
+
+function timeMachinePanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const report = recordAt(payload, "time_machine_debugger");
+  if (!report) return null;
+  const baseline = recordAt(report, "baseline");
+  const counterfactual = recordAt(report, "counterfactual");
+  return {
+    baselineStatus: stringOpt(baseline?.["status"]) ?? null,
+    mutationKind: stringOpt(baseline?.["mutation_kind"]) ?? null,
+    changedVariable: stringOpt(counterfactual?.["changed_variable"]) ?? null,
+    expectedStatusAfterChange: stringOpt(counterfactual?.["expected_status_after_change"]) ?? null,
+  };
+}
+
+function vivariumRunPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const run = recordAt(payload, "vivarium_run");
+  if (!run) return null;
+  const scenario = recordAt(run, "scenario");
+  const result = recordAt(run, "result");
+  return {
+    scenarioTitle: stringOpt(scenario?.["title"]) ?? null,
+    mutationKind: stringOpt(scenario?.["mutation_kind"]) ?? null,
+    status: stringOpt(result?.["status"]) ?? null,
+    syntheticDataOnly: recordAt(run, "materialized_fixture")?.["synthetic_data_only"] === true,
+  };
+}
+
+function windTunnelPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const tunnel = recordAt(payload, "wind_tunnel_execution");
+  if (!tunnel) return null;
+  return {
+    runCount: numberOpt(tunnel["run_count"]) ?? 0,
+    passCount: numberOpt(tunnel["pass_count"]) ?? 0,
+    failCount: numberOpt(tunnel["fail_count"]) ?? 0,
+    blockedCount: numberOpt(tunnel["blocked_count"]) ?? 0,
+    stopReason: stringOpt(tunnel["stop_reason"]) ?? null,
+  };
+}
+
+function licenseHealthPanelState(payload: Record<string, unknown> | undefined, lifecycle: Record<string, unknown>): Record<string, unknown> {
+  const health = recordAt(payload, "license_health") ?? payload;
+  const proofRecords = recordAt(health, "proof_records");
+  return {
+    status: stringOpt(health?.["status"]) ?? stringOpt(lifecycle["status"]) ?? "draft",
+    daysUntilExpiry: numberOpt(health?.["days_until_expiry"]) ?? numberOpt(lifecycle["days_until_expiry"]),
+    proofRecords: proofRecords ?? {},
+  };
+}
+
+function caseLawRecordPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const caseLaw = recordAt(payload, "case_law");
+  const guardrail = recordAt(payload, "guardrail");
+  if (!caseLaw && !guardrail) return null;
+  return {
+    title: stringOpt(caseLaw?.["title"]) ?? null,
+    status: stringOpt(caseLaw?.["status"]) ?? null,
+    guardrailTitle: stringOpt(guardrail?.["title"]) ?? null,
+  };
+}
+
+function recordAt(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const child = (value as Record<string, unknown>)[key];
+  return child && typeof child === "object" && !Array.isArray(child) ? child as Record<string, unknown> : undefined;
+}
+
 function objectArgs(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -1078,4 +1322,8 @@ function stringOpt(value: unknown): string | undefined {
 
 function boolPayload(value: unknown): boolean {
   return value === true;
+}
+
+function numberOpt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

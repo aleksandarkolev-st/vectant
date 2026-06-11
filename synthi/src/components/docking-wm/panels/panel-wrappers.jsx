@@ -506,6 +506,69 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
             requested_action: 'run_workflow',
           });
           break;
+        case WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_LIFECYCLE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_LIFECYCLE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_GOVERNANCE_REPORT:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_GOVERNANCE_REPORT, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_METRICS:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_METRICS, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_SOURCE_AFFORDANCE_PR_PLAN:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_SOURCE_AFFORDANCE_PR_PLAN, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_TIME_MACHINE_DEBUGGER:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_TIME_MACHINE_DEBUGGER, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            question: 'What changes if the active failure variable is removed?',
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_WIND_TUNNEL:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_WIND_TUNNEL, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            max_scenarios: 6,
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_LICENSE_HEALTH:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_LICENSE_HEALTH, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RECORD_CASE_LAW:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RECORD_CASE_LAW, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            title: 'Operator Review Required',
+            finding: workflowState?.dojo?.blockExplanation?.refusal || 'An operator marked this skill branch for review.',
+            impact: 'Production execution could exceed the currently reviewed license boundary.',
+            rule: 'Require human review and recertification before expanding this skill license.',
+            applies_to: ['workflow_execution'],
+          });
+          break;
+        case WORKFLOW_ACTIONS.REVOKE_LICENSE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.REVOKE_LICENSE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            reason: 'operator_requested_recertification',
+          });
+          break;
         case WORKFLOW_ACTIONS.PREFIX_VALIDATE:
           await callWorkflowTool(WORKFLOW_ACTIONS.PREFIX_VALIDATE, {
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
