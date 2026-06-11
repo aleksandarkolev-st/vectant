@@ -40,6 +40,15 @@ export default function DojoShell({
 
   const selectedSkill = summary.selectedSkill;
   const metrics = summary.metrics || createEmptyDojoSummary(workspaceSlug).metrics;
+  const baseHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
+  const selectedSkillHref = selectedSkill?.skillId ? encodeURIComponent(selectedSkill.skillId) : '';
+  const navItems = [
+    ['Skills', baseHref],
+    ['Passport', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref],
+    ['Cortex', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref],
+    ['Practice', `${baseHref}/practice`],
+    ['Governance', `${baseHref}/governance`],
+  ];
   const scopeRows = useMemo(() => {
     if (!selectedSkill) return [];
     return [
@@ -133,16 +142,16 @@ export default function DojoShell({
         )}
 
         <nav className="flex flex-wrap gap-2 border-t pt-4" style={{ borderColor: 'var(--border-subtle)' }} aria-label="Dojo sections">
-          {['Skills', 'Passport', 'Cortex', 'Practice', 'Governance'].map((label) => (
-            <button
+          {navItems.map(([label, href]) => (
+            <a
               key={label}
-              type="button"
+              href={href}
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs"
               style={panelStyle}
             >
               {label}
               <ExternalLink size={13} aria-hidden="true" />
-            </button>
+            </a>
           ))}
         </nav>
       </div>
