@@ -55,18 +55,88 @@ export interface DojoGovernanceCaseLawReviewItem {
   created_at?: string;
 }
 
+export interface DojoGovernanceSkillRegistryItem {
+  skill_id: string;
+  title: string;
+  workspace_id: string;
+  status: string;
+  license_status: DojoGovernanceLicenseStatus;
+  entrustment_level: DojoEntrustmentLevel;
+  readiness_level: DojoSkillReadinessLevel;
+  owner: string;
+  published_tool_name: string;
+  updated_at: string;
+}
+
+export interface DojoGovernancePolicyGateItem {
+  gate_id: string;
+  name: string;
+  status: "active" | "warning" | "blocked";
+  severity: "low" | "medium" | "high" | "critical";
+  owner: string;
+  scope: string;
+  blocks: string[];
+  evidence_refs: string[];
+  next_step: string;
+}
+
+export interface DojoGovernanceRecertificationQueueItem {
+  queue_id: string;
+  skill_id: string;
+  skill_name: string;
+  reason: string;
+  due_at: string;
+  status: "queued" | "due" | "overdue";
+  priority: "low" | "medium" | "high";
+  evidence_refs: string[];
+}
+
+export interface DojoGovernanceAuditExportItem {
+  export_id: string;
+  title: string;
+  status: "available" | "missing";
+  generated_at: string;
+  format: "json" | "zip";
+  record_count: number;
+  digest: string;
+}
+
+export interface DojoGovernanceComplianceArtifact {
+  artifact_id: string;
+  title: string;
+  status: "available" | "missing";
+  digest: string;
+  evidence_refs: string[];
+}
+
+export interface DojoGovernanceComplianceEvidencePack {
+  pack_id: string;
+  generated_at: string;
+  artifacts: DojoGovernanceComplianceArtifact[];
+  missing_artifacts: string[];
+  retention_class: "standard" | "regulated" | "legal_hold";
+}
+
 export interface DojoGovernanceServiceView {
   schema_version: "synthi.dojo.governanceService.v1";
   generated_at: string;
   license_health: DojoGovernanceLicenseHealth[];
   approval_queue: DojoGovernanceApprovalQueueItem[];
   case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
+  skill_registry: DojoGovernanceSkillRegistryItem[];
+  policy_gates: DojoGovernancePolicyGateItem[];
+  recertification_queue: DojoGovernanceRecertificationQueueItem[];
+  audit_exports: DojoGovernanceAuditExportItem[];
+  compliance_evidence_pack: DojoGovernanceComplianceEvidencePack;
   metrics: {
     skill_count: number;
     active_license_count: number;
     expired_license_count: number;
     pending_approval_count: number;
     case_law_review_count: number;
+    policy_gate_count: number;
+    recertification_count: number;
+    compliance_artifact_count: number;
   };
 }
 
@@ -88,6 +158,28 @@ export function buildDojoGovernanceServiceView(input: {
     skills: input.skills,
     case_law_records: input.case_law_records ?? [],
   });
+  const skillRegistry = queryDojoSkillRegistry({
+    skills: input.skills,
+    health: licenseHealth,
+    now,
+  });
+  const policyGates = queryDojoPolicyGates({ skills: input.skills });
+  const recertificationQueue = queryDojoRecertificationQueue({
+    skills: input.skills,
+    health: licenseHealth,
+    now,
+  });
+  const auditExports = queryDojoAuditExports({
+    skills: input.skills,
+    case_law_review_queue: caseLawReviewQueue,
+    generated_at: now,
+  });
+  const complianceEvidencePack = buildDojoComplianceEvidencePack({
+    skills: input.skills,
+    case_law_review_queue: caseLawReviewQueue,
+    audit_exports: auditExports,
+    generated_at: now,
+  });
 
   return {
     schema_version: "synthi.dojo.governanceService.v1",
@@ -95,12 +187,20 @@ export function buildDojoGovernanceServiceView(input: {
     license_health: licenseHealth,
     approval_queue: approvalQueue,
     case_law_review_queue: caseLawReviewQueue,
+    skill_registry: skillRegistry,
+    policy_gates: policyGates,
+    recertification_queue: recertificationQueue,
+    audit_exports: auditExports,
+    compliance_evidence_pack: complianceEvidencePack,
     metrics: {
       skill_count: input.skills.length,
       active_license_count: licenseHealth.filter((item) => item.status === "active" || item.status === "expiring").length,
       expired_license_count: licenseHealth.filter((item) => item.status === "expired" || item.status === "revoked").length,
       pending_approval_count: approvalQueue.filter((item) => item.status === "pending").length,
       case_law_review_count: caseLawReviewQueue.length,
+      policy_gate_count: policyGates.length,
+      recertification_count: recertificationQueue.length,
+      compliance_artifact_count: complianceEvidencePack.artifacts.length,
     },
   };
 }
@@ -188,6 +288,204 @@ export function queryDojoCaseLawReviewQueue(input: {
     .sort((left, right) => left.workspace_id.localeCompare(right.workspace_id) || left.case_id.localeCompare(right.case_id));
 }
 
+export function queryDojoSkillRegistry(input: {
+  skills: DojoSkill[];
+  health: DojoGovernanceLicenseHealth[];
+  now?: string;
+}): DojoGovernanceSkillRegistryItem[] {
+  const healthBySkill = new Map(input.health.map((item) => [item.skill_id, item]));
+  return input.skills
+    .map((skill) => {
+      const health = healthBySkill.get(skill.skill_id);
+      return {
+        skill_id: skill.skill_id,
+        title: skill.name,
+        workspace_id: skill.workspace_id,
+        status: skill.entrustment_level === "EX" ? "revoked" : "published",
+        license_status: health?.status ?? "active",
+        entrustment_level: skill.entrustment_level,
+        readiness_level: skill.skill_readiness_level,
+        owner: stringField(skill, "owner_id") || stringField(skill, "created_by") || "",
+        published_tool_name: stringField(skill, "published_tool_name") || stringField(skill, "publishedToolName") || "",
+        updated_at: stringField(skill, "updated_at") || stringField(skill, "created_at") || input.now || "",
+      };
+    })
+    .sort((left, right) => left.workspace_id.localeCompare(right.workspace_id) || left.skill_id.localeCompare(right.skill_id));
+}
+
+export function queryDojoPolicyGates(input: { skills: DojoSkill[] }): DojoGovernancePolicyGateItem[] {
+  return input.skills
+    .flatMap((skill) => {
+      const gates: DojoGovernancePolicyGateItem[] = [];
+      if (skill.skill_passport.proof_required) {
+        gates.push({
+          gate_id: `proof_${skill.skill_id}`,
+          name: "Proof capsule required",
+          status: "active",
+          severity: "high",
+          owner: "proof_license",
+          scope: `skill:${skill.skill_id}`,
+          blocks: [...skill.permission_license.gated_actions.map((action) => action.action)],
+          evidence_refs: stringArrayField(skill.skill_passport, "evidence_refs"),
+          next_step: "Issue and validate an unused proof capsule through the Dojo skill bus.",
+        });
+      }
+      for (const action of skill.permission_license.gated_actions) {
+        gates.push({
+          gate_id: `approval_${skill.skill_id}_${action.action}`,
+          name: `Approval required for ${action.action}`,
+          status: "active",
+          severity: "medium",
+          owner: "governance",
+          scope: `license:${skill.permission_license.license_id}`,
+          blocks: [action.action],
+          evidence_refs: [],
+          next_step: "Collect required approval evidence before production execution.",
+        });
+      }
+      for (const action of skill.permission_license.blocked_actions) {
+        gates.push({
+          gate_id: `blocked_${skill.skill_id}_${action.action}`,
+          name: `Blocked action ${action.action}`,
+          status: "blocked",
+          severity: "critical",
+          owner: "license_kernel",
+          scope: `license:${skill.permission_license.license_id}`,
+          blocks: [action.action],
+          evidence_refs: [],
+          next_step: "Create a reviewed license draft and rerun checkride before enabling this action.",
+        });
+      }
+      for (const record of skill.case_law.filter((item) => item.status === "binding")) {
+        gates.push({
+          gate_id: `case_${record.case_id}`,
+          name: record.title,
+          status: "active",
+          severity: "high",
+          owner: "case_law",
+          scope: `${record.binding_scope}:${skill.workspace_id}`,
+          blocks: [...record.applies_to],
+          evidence_refs: [...record.evidence_refs],
+          next_step: record.rule_created,
+        });
+      }
+      return gates;
+    })
+    .sort((left, right) => left.scope.localeCompare(right.scope) || left.gate_id.localeCompare(right.gate_id));
+}
+
+export function queryDojoRecertificationQueue(input: {
+  skills: DojoSkill[];
+  health: DojoGovernanceLicenseHealth[];
+  now?: string;
+}): DojoGovernanceRecertificationQueueItem[] {
+  const healthBySkill = new Map(input.health.map((item) => [item.skill_id, item]));
+  return input.skills
+    .flatMap((skill) => {
+      const health = healthBySkill.get(skill.skill_id);
+      const triggers = new Set([
+        ...(health?.status === "expired" ? ["license_expired"] : []),
+        ...(health?.status === "expiring" ? ["license_expiring"] : []),
+        ...skill.retrain_triggers.map((trigger) => trigger.condition),
+      ]);
+      return [...triggers].map((reason) => {
+        const overdue = health?.status === "expired";
+        const due = health?.status === "expiring" || reason === "license_expiring";
+        const status: DojoGovernanceRecertificationQueueItem["status"] = overdue ? "overdue" : due ? "due" : "queued";
+        const priority: DojoGovernanceRecertificationQueueItem["priority"] = overdue ? "high" : due ? "medium" : "low";
+        return {
+          queue_id: `recert_${skill.skill_id}_${slugFor(reason)}`,
+          skill_id: skill.skill_id,
+          skill_name: skill.name,
+          reason,
+          due_at: health?.expires_at ?? skill.license_expires_at ?? "",
+          status,
+          priority,
+          evidence_refs: stringArrayField(skill.skill_passport, "evidence_refs"),
+        };
+      });
+    })
+    .sort((left, right) => prioritySort(left.priority) - prioritySort(right.priority) || left.skill_id.localeCompare(right.skill_id));
+}
+
+export function queryDojoAuditExports(input: {
+  skills: DojoSkill[];
+  case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
+  generated_at: string;
+}): DojoGovernanceAuditExportItem[] {
+  const skillCount = input.skills.length;
+  const proposedCaseCount = input.case_law_review_queue.length;
+  return [
+    {
+      export_id: "skill_assurance_case",
+      title: "Skill Assurance Case",
+      status: skillCount > 0 ? "available" : "missing",
+      generated_at: input.generated_at,
+      format: "json",
+      record_count: skillCount,
+      digest: digestFor(["skill_assurance_case", skillCount, input.generated_at]),
+    },
+    {
+      export_id: "license_history",
+      title: "License History",
+      status: skillCount > 0 ? "available" : "missing",
+      generated_at: input.generated_at,
+      format: "json",
+      record_count: skillCount,
+      digest: digestFor(["license_history", ...input.skills.map((skill) => skill.permission_license.license_id)]),
+    },
+    {
+      export_id: "case_law_registry",
+      title: "Case Law Registry",
+      status: proposedCaseCount > 0 ? "available" : "missing",
+      generated_at: input.generated_at,
+      format: "json",
+      record_count: proposedCaseCount,
+      digest: digestFor(["case_law_registry", ...input.case_law_review_queue.map((item) => item.case_id)]),
+    },
+  ];
+}
+
+export function buildDojoComplianceEvidencePack(input: {
+  skills: DojoSkill[];
+  case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
+  audit_exports: DojoGovernanceAuditExportItem[];
+  generated_at: string;
+}): DojoGovernanceComplianceEvidencePack {
+  const artifacts: DojoGovernanceComplianceArtifact[] = [
+    {
+      artifact_id: "skill_assurance_case",
+      title: "Skill Assurance Case",
+      status: input.skills.length > 0 ? "available" : "missing",
+      digest: digestFor(["compliance", "skill_assurance_case", input.skills.length]),
+      evidence_refs: input.skills.flatMap((skill) => stringArrayField(skill.skill_passport, "evidence_refs")),
+    },
+    {
+      artifact_id: "license_and_proof_audit",
+      title: "License and Proof Audit",
+      status: input.audit_exports.some((item) => item.export_id === "license_history" && item.status === "available")
+        ? "available"
+        : "missing",
+      digest: digestFor(["compliance", "license_and_proof_audit", ...input.skills.map((skill) => skill.permission_license.license_id)]),
+      evidence_refs: [],
+    },
+    {
+      artifact_id: "case_law_registry",
+      title: "Case Law Registry",
+      status: input.case_law_review_queue.length > 0 ? "available" : "missing",
+      digest: digestFor(["compliance", "case_law_registry", ...input.case_law_review_queue.map((item) => item.case_id)]),
+      evidence_refs: input.case_law_review_queue.flatMap((item) => item.evidence_refs),
+    },
+  ];
+  return {
+    pack_id: `governance_pack_${digestFor([input.generated_at, artifacts.map((item) => item.artifact_id).join(":")]).slice(0, 12)}`,
+    generated_at: input.generated_at,
+    artifacts,
+    missing_artifacts: artifacts.filter((item) => item.status === "missing").map((item) => item.artifact_id),
+    retention_class: artifacts.some((item) => item.status === "available") ? "standard" : "regulated",
+  };
+}
+
 function licenseStatusFor(skill: DojoSkill, daysUntilExpiry: number | null, warningDays: number): DojoGovernanceLicenseStatus {
   if (skill.entrustment_level === "EX" || skill.permission_license.autonomy_level === "blocked") return "revoked";
   if (daysUntilExpiry !== null && daysUntilExpiry < 0) return "expired";
@@ -212,6 +510,43 @@ function sortStatus(status: DojoGovernanceLicenseStatus): number {
     case "active":
       return 3;
   }
+}
+
+function prioritySort(priority: DojoGovernanceRecertificationQueueItem["priority"]): number {
+  switch (priority) {
+    case "high":
+      return 0;
+    case "medium":
+      return 1;
+    case "low":
+      return 2;
+  }
+}
+
+function slugFor(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "trigger";
+}
+
+function stringField(source: unknown, key: string): string {
+  if (!source || typeof source !== "object") return "";
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+function stringArrayField(source: unknown, key: string): string[] {
+  if (!source || typeof source !== "object") return [];
+  const value = (source as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function digestFor(parts: unknown[]): string {
+  let hash = 0x811c9dc5;
+  const input = JSON.stringify(parts);
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function caseLawItemFromSkillCase(skill: DojoSkill, record: DojoSkillCase): DojoGovernanceCaseLawReviewItem {

@@ -3,9 +3,14 @@ import type { DojoSkill } from "../../src/browser/dojo.js";
 import type { DojoCaseLawRecord } from "../../src/dojo/case_law/registry.js";
 import {
   buildDojoGovernanceServiceView,
+  buildDojoComplianceEvidencePack,
   queryDojoApprovalQueue,
+  queryDojoAuditExports,
   queryDojoCaseLawReviewQueue,
   queryDojoLicenseHealth,
+  queryDojoPolicyGates,
+  queryDojoRecertificationQueue,
+  queryDojoSkillRegistry,
 } from "../../src/dojo/governance/service.js";
 
 describe("Dojo governance service", () => {
@@ -129,8 +134,113 @@ describe("Dojo governance service", () => {
         expired_license_count: 1,
         pending_approval_count: 1,
         case_law_review_count: 1,
+        policy_gate_count: 3,
+        recertification_count: 3,
+        compliance_artifact_count: 3,
       },
     }));
+    expect(view.skill_registry).toHaveLength(2);
+    expect(view.policy_gates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ gate_id: "proof_skill-active", name: "Proof capsule required" }),
+      expect.objectContaining({ gate_id: "approval_skill-active_submit_invoice" }),
+    ]));
+    expect(view.recertification_queue).toEqual(expect.arrayContaining([
+      expect.objectContaining({ skill_id: "skill-expired", status: "overdue", priority: "high" }),
+    ]));
+    expect(view.audit_exports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ export_id: "skill_assurance_case", status: "available" }),
+    ]));
+    expect(view.compliance_evidence_pack).toEqual(expect.objectContaining({
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ artifact_id: "skill_assurance_case", status: "available" }),
+        expect.objectContaining({ artifact_id: "license_and_proof_audit", status: "available" }),
+        expect.objectContaining({ artifact_id: "case_law_registry", status: "available" }),
+      ]),
+    }));
+  });
+
+  it("builds skill registry and policy gates from licenses and binding case law", () => {
+    const skill = skillFixture({
+      skillId: "skill-a",
+      ownerId: "owner-a",
+      publishedToolName: "synthi_app_skill_a",
+      gatedActions: [{ action: "submit_invoice", constraints: ["manager_approval"] }],
+      blockedActions: [{ action: "delete_invoice", constraints: ["never_delete"] }],
+      caseLaw: [{
+        case_id: "case-binding",
+        title: "Stable client ID",
+        date: "2026-06-11T00:00:00.000Z",
+        source_skill_id: "skill-a",
+        source_run_id: "run-a",
+        finding: "Duplicate display name.",
+        impact: "Wrong entity mutation.",
+        rule_created: "Require stable client ID.",
+        applies_to: ["submit_invoice"],
+        binding_scope: "workspace",
+        status: "binding",
+        evidence_refs: ["evidence-binding"],
+      }],
+    });
+    const health = queryDojoLicenseHealth({ skills: [skill], now: "2026-06-11T00:00:00.000Z" });
+
+    expect(queryDojoSkillRegistry({
+      skills: [skill],
+      health,
+      now: "2026-06-11T00:00:00.000Z",
+    })).toEqual([
+      expect.objectContaining({
+        skill_id: "skill-a",
+        owner: "owner-a",
+        published_tool_name: "synthi_app_skill_a",
+        license_status: "active",
+      }),
+    ]);
+    expect(queryDojoPolicyGates({ skills: [skill] })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ gate_id: "approval_skill-a_submit_invoice", severity: "medium" }),
+      expect.objectContaining({ gate_id: "blocked_skill-a_delete_invoice", status: "blocked", severity: "critical" }),
+      expect.objectContaining({ gate_id: "case_case-binding", owner: "case_law", evidence_refs: ["evidence-binding"] }),
+      expect.objectContaining({ gate_id: "proof_skill-a", severity: "high" }),
+    ]));
+  });
+
+  it("builds recertification, audit export, and compliance pack views", () => {
+    const expiring = skillFixture({ skillId: "skill-expiring", expiresAt: "2026-06-15T00:00:00.000Z" });
+    const health = queryDojoLicenseHealth({
+      skills: [expiring],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const recertificationQueue = queryDojoRecertificationQueue({
+      skills: [expiring],
+      health,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const auditExports = queryDojoAuditExports({
+      skills: [expiring],
+      case_law_review_queue: [],
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const pack = buildDojoComplianceEvidencePack({
+      skills: [expiring],
+      case_law_review_queue: [],
+      audit_exports: auditExports,
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(recertificationQueue).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: "license_expiring", status: "due", priority: "medium" }),
+      expect.objectContaining({ reason: "recertify_after_30_days", status: "due", priority: "medium" }),
+    ]));
+    expect(auditExports).toEqual([
+      expect.objectContaining({ export_id: "skill_assurance_case", status: "available", record_count: 1 }),
+      expect.objectContaining({ export_id: "license_history", status: "available", record_count: 1 }),
+      expect.objectContaining({ export_id: "case_law_registry", status: "missing", record_count: 0 }),
+    ]);
+    expect(pack.pack_id).toMatch(/^governance_pack_/);
+    expect(pack.missing_artifacts).toEqual(["case_law_registry"]);
+    expect(pack.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ artifact_id: "license_and_proof_audit", status: "available" }),
+      expect.objectContaining({ artifact_id: "case_law_registry", status: "missing" }),
+    ]));
   });
 });
 
@@ -141,13 +251,19 @@ function skillFixture(input: {
   autonomyLevel?: DojoSkill["permission_license"]["autonomy_level"];
   gatedActions?: Array<{ action: string; constraints: string[] }>;
   approvalRequirements?: string[];
+  blockedActions?: Array<{ action: string; constraints: string[] }>;
   caseLaw?: DojoSkill["case_law"];
+  ownerId?: string;
+  publishedToolName?: string;
 }): DojoSkill {
   const expiresAt = input.expiresAt ?? "2026-07-11T00:00:00.000Z";
   return {
     skill_id: input.skillId,
     name: `Skill ${input.skillId}`,
     workspace_id: "workspace-a",
+    owner_id: input.ownerId ?? "",
+    published_tool_name: input.publishedToolName ?? "",
+    updated_at: "2026-06-11T00:00:00.000Z",
     license_expires_at: expiresAt,
     entrustment_level: input.entrustmentLevel ?? "E3",
     skill_readiness_level: 7,
@@ -156,6 +272,7 @@ function skillFixture(input: {
     skill_passport: {
       proof_required: true,
       license_expires_at: expiresAt,
+      evidence_refs: ["evidence-passport"],
     },
     permission_license: {
       license_id: `license-${input.skillId}`,
@@ -163,7 +280,7 @@ function skillFixture(input: {
       autonomy_level: input.autonomyLevel ?? "submit_limited",
       allowed_actions: [{ action: "run_workflow", constraints: ["proof_capsule_valid"] }],
       gated_actions: input.gatedActions ?? [],
-      blocked_actions: [],
+      blocked_actions: input.blockedActions ?? [],
       approval_requirements: input.approvalRequirements ?? [],
       expiry_policy: {
         expires_on: ["app_release_drift"],
