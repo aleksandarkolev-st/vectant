@@ -65,6 +65,65 @@ describe("Dojo evidence claim verifier", () => {
     ]);
   });
 
+  it("fails claims when the verification timestamp is malformed", () => {
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["workspace_verified"],
+      records: [evidenceRecord("record-a", ["workspace_verified"], "2026-06-11T00:00:00.000Z")],
+      checked_at: "not-a-date",
+      max_age_ms: 60 * 1000,
+    })).toEqual([
+      {
+        claim_id: "workspace_verified",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-a"],
+        checked_at: "not-a-date",
+        blocked_by: ["evidence_claim_checked_at_invalid:workspace_verified"],
+      },
+    ]);
+  });
+
+  it("fails claims backed only by records with malformed timestamps", () => {
+    const malformedRecord = {
+      ...evidenceRecord("record-malformed", ["workspace_verified"], "2026-06-11T00:00:00.000Z"),
+      created_at: "not-a-date",
+    };
+
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["workspace_verified"],
+      records: [malformedRecord],
+      checked_at: "2026-06-11T00:05:00.000Z",
+      max_age_ms: 60 * 1000,
+    })).toEqual([
+      {
+        claim_id: "workspace_verified",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-malformed"],
+        checked_at: "2026-06-11T00:05:00.000Z",
+        blocked_by: ["evidence_record_timestamp_invalid:workspace_verified"],
+      },
+    ]);
+  });
+
+  it("fails claims backed only by records created after the verification time", () => {
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["workspace_verified"],
+      records: [evidenceRecord("record-future", ["workspace_verified"], "2026-06-11T00:10:00.000Z")],
+      checked_at: "2026-06-11T00:05:00.000Z",
+      max_age_ms: 60 * 1000,
+    })).toEqual([
+      {
+        claim_id: "workspace_verified",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-future"],
+        checked_at: "2026-06-11T00:05:00.000Z",
+        blocked_by: ["evidence_record_created_after_check:workspace_verified"],
+      },
+    ]);
+  });
+
   it("fails claims backed only by records outside the requested evidence scope", () => {
     expect(resolveDojoEvidenceClaims({
       claim_ids: ["workspace_verified"],

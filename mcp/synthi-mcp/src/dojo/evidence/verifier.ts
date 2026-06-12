@@ -80,15 +80,51 @@ function resolveClaim(input: {
     };
   }
 
+  const checkedAtMs = parseTimestamp(input.checked_at);
+  if (checkedAtMs === undefined) {
+    return {
+      claim_id: input.claim_id,
+      ok: false,
+      status: "failed",
+      evidence_record_ids: scopedRecords.map((record) => record.record_id),
+      checked_at: input.checked_at,
+      blocked_by: [`evidence_claim_checked_at_invalid:${input.claim_id}`],
+    };
+  }
+
+  const timestampedRecords = scopedRecords.filter((record) => parseTimestamp(record.created_at) !== undefined);
+  if (timestampedRecords.length === 0) {
+    return {
+      claim_id: input.claim_id,
+      ok: false,
+      status: "failed",
+      evidence_record_ids: scopedRecords.map((record) => record.record_id),
+      checked_at: input.checked_at,
+      blocked_by: [`evidence_record_timestamp_invalid:${input.claim_id}`],
+    };
+  }
+
+  const timeConsistentRecords = timestampedRecords.filter((record) => parseTimestamp(record.created_at)! <= checkedAtMs);
+  if (timeConsistentRecords.length === 0) {
+    return {
+      claim_id: input.claim_id,
+      ok: false,
+      status: "failed",
+      evidence_record_ids: timestampedRecords.map((record) => record.record_id),
+      checked_at: input.checked_at,
+      blocked_by: [`evidence_record_created_after_check:${input.claim_id}`],
+    };
+  }
+
   const freshRecords = input.max_age_ms === undefined
-    ? scopedRecords
-    : scopedRecords.filter((record) => evidenceAgeMs(record, input.checked_at) <= input.max_age_ms!);
+    ? timeConsistentRecords
+    : timeConsistentRecords.filter((record) => evidenceAgeMs(record, checkedAtMs) <= input.max_age_ms!);
   if (freshRecords.length === 0) {
     return {
       claim_id: input.claim_id,
       ok: false,
       status: "stale",
-      evidence_record_ids: scopedRecords.map((record) => record.record_id),
+      evidence_record_ids: timeConsistentRecords.map((record) => record.record_id),
       checked_at: input.checked_at,
       blocked_by: [`evidence_claim_stale:${input.claim_id}`],
     };
@@ -104,8 +140,13 @@ function resolveClaim(input: {
   };
 }
 
-function evidenceAgeMs(record: DojoEvidenceLedgerRecord, checkedAt: string): number {
-  return Date.parse(checkedAt) - Date.parse(record.created_at);
+function evidenceAgeMs(record: DojoEvidenceLedgerRecord, checkedAtMs: number): number {
+  return checkedAtMs - parseTimestamp(record.created_at)!;
+}
+
+function parseTimestamp(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function evidenceScopeFromInput(input: DojoEvidenceClaimVerifierInput): DojoEvidenceClaimScope {
