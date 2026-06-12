@@ -69,6 +69,25 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   assert.equal(sourcePatchBundle.ok, true, "source patch bundle should be generated without errors");
   assert.equal(sourcePatchBundle.modified_files.length, 1, "source patch bundle should include one modified fixture file");
   assert.equal(sourcePatchBundle.generated_tests.length, 1, "source patch bundle should include one generated contract test");
+  const planSlug = slugForId(sourcePatchPlan.plan_id);
+  const codeOwnerRules = codeOwnerRulesForGeneratedBundle(sourcePatchBundle, [process.env.SYNTHI_DOJO_SELF_CHECK_CODE_OWNER || "@dojo-self-check-review"]);
+  const generatedPrMetadata = modules.buildDojoGeneratedPrMetadata({
+    plan: sourcePatchPlan,
+    skill_id: `${sourcePatchPlan.plan_id}_skill`,
+    license_id: `${sourcePatchPlan.plan_id}_license`,
+    code_owner_rules: codeOwnerRules,
+    artifact_refs: [
+      { kind: "patch_plan", path: `.synthi/dojo/source/${planSlug}.affordance-pr-plan.json` },
+      { kind: "contract_test", path: sourcePatchBundle.generated_tests[0].path },
+    ],
+  });
+  const generatedPrBranchPlan = modules.buildDojoGeneratedPrBranchPlan({
+    metadata: generatedPrMetadata,
+    patch_bundle: sourcePatchBundle,
+    base_ref: process.env.SYNTHI_DOJO_AFFORDANCE_PR_BASE_REF || "main",
+  });
+  assert.equal(generatedPrBranchPlan.ready_to_apply, true, "generated PR branch plan should be ready for the controlled fixture");
+  assert.equal(generatedPrBranchPlan.file_writes.length, 2, "generated PR branch plan should include source and contract test writes");
 
   const sourcePath = path.join(fixtureDir, sourcePatchBundle.modified_files[0].path);
   const testPath = path.join(fixtureDir, sourcePatchBundle.generated_tests[0].path);
@@ -114,6 +133,8 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     wrong_target_contract: wrongTargetContract,
     after_contract: afterContract,
     source_patch_bundle: summarizeSourcePatchBundle(sourcePatchBundle),
+    generated_pr_metadata: summarizeGeneratedPrMetadata(generatedPrMetadata),
+    generated_pr_branch_plan: summarizeGeneratedPrBranchPlan(generatedPrBranchPlan),
     source_patch_write_result: summarizeSourcePatchWriteResult(patchWriteResult),
     before_vitest: summarizeVitestRun(beforeRun),
     wrong_target_vitest: summarizeVitestRun(wrongTargetRun),
@@ -152,6 +173,13 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     patch_write_file_count: Array.isArray(report?.source_patch_write_result?.written_files)
       ? report.source_patch_write_result.written_files.length
       : 0,
+    generated_pr_branch_plan_ready: report?.generated_pr_branch_plan?.ready_to_apply === true,
+    generated_pr_branch_plan_file_count: Array.isArray(report?.generated_pr_branch_plan?.file_writes)
+      ? report.generated_pr_branch_plan.file_writes.length
+      : 0,
+    generated_pr_review_gate_count: Array.isArray(report?.generated_pr_metadata?.review_requirements)
+      ? report.generated_pr_metadata.review_requirements.length
+      : 0,
     operation_ids: Array.isArray(report?.operation_ids) ? report.operation_ids : report?.operation_id ? [report.operation_id] : [],
     generated_test_path: report?.generated_test_path ?? null,
     patched_source_path: report?.patched_source_path ?? null,
@@ -181,10 +209,12 @@ async function writeAffordanceCodemodArtifacts({ outDir, report }) {
 async function importBuiltSourceModules() {
   const affordancePlanModule = path.join(MCP_ROOT, "dist", "dojo", "source", "affordance_pr_plan.js");
   const codemodModule = path.join(MCP_ROOT, "dist", "dojo", "source", "codemod.js");
+  const prGeneratorModule = path.join(MCP_ROOT, "dist", "dojo", "source", "pr_generator.js");
   try {
-    const [plan, codemod, patchWriter] = await Promise.all([
+    const [plan, codemod, prGenerator, patchWriter] = await Promise.all([
       import(pathToFileURL(affordancePlanModule).href),
       import(pathToFileURL(codemodModule).href),
+      import(pathToFileURL(prGeneratorModule).href),
       import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_writer.js")).href),
     ]);
     return {
@@ -193,6 +223,8 @@ async function importBuiltSourceModules() {
       applyReactAffordanceCodemodPlan: codemod.applyReactAffordanceCodemodPlan,
       evaluateReactAffordanceContract: codemod.evaluateReactAffordanceContract,
       generateReactAffordanceVitestContractTest: codemod.generateReactAffordanceVitestContractTest,
+      buildDojoGeneratedPrMetadata: prGenerator.buildDojoGeneratedPrMetadata,
+      buildDojoGeneratedPrBranchPlan: prGenerator.buildDojoGeneratedPrBranchPlan,
       buildDojoGeneratedSourcePatchBundle: (await import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_bundle.js")).href)).buildDojoGeneratedSourcePatchBundle,
       writeDojoGeneratedSourcePatchBundle: patchWriter.writeDojoGeneratedSourcePatchBundle,
     };
@@ -282,6 +314,68 @@ function summarizeSourcePatchWriteResult(result) {
       bytes: file.bytes,
       written: file.written,
     })),
+  };
+}
+
+function slugForId(value) {
+  return String(value || "dojo-plan")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "dojo-plan";
+}
+
+function codeOwnerRulesForGeneratedBundle(bundle, owners) {
+  const paths = [
+    ...bundle.modified_files.map((file) => file.path),
+    ...bundle.generated_tests.map((file) => file.path),
+  ].filter(Boolean);
+  const prefixes = Array.from(new Set(paths.map((filePath) => pathPrefixForGeneratedFile(filePath))));
+  return prefixes.map((path_prefix) => ({ path_prefix, owners }));
+}
+
+function pathPrefixForGeneratedFile(filePath) {
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  const directory = normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/") + 1) : "";
+  if (directory.includes("/__tests__/")) {
+    return directory.slice(0, directory.indexOf("/__tests__/") + 1);
+  }
+  return directory || normalized;
+}
+
+function summarizeGeneratedPrMetadata(metadata) {
+  return {
+    schema_version: metadata.schema_version,
+    plan_id: metadata.plan_id,
+    branch_name: metadata.branch_name,
+    review_requirements: metadata.review_requirements.map((requirement) => ({
+      gate: requirement.gate,
+      owners: requirement.owners,
+      paths: requirement.paths,
+      operation_ids: requirement.operation_ids,
+    })),
+    artifact_refs: metadata.artifact_refs,
+    promotion_blockers: metadata.promotion_blockers,
+  };
+}
+
+function summarizeGeneratedPrBranchPlan(plan) {
+  return {
+    schema_version: plan.schema_version,
+    plan_id: plan.plan_id,
+    branch_name: plan.branch_name,
+    base_ref: plan.base_ref ?? null,
+    checkout_strategy: plan.checkout_strategy,
+    ready_to_apply: plan.ready_to_apply,
+    file_writes: plan.file_writes.map((file) => ({
+      kind: file.kind,
+      path: file.path,
+      sha256: file.sha256,
+      bytes: file.bytes,
+      operation_ids: file.operation_ids,
+    })),
+    required_tests: plan.required_tests,
+    promotion_blockers: plan.promotion_blockers,
   };
 }
 
