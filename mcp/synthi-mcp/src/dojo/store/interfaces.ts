@@ -52,6 +52,10 @@ export interface DojoPermissionUpgradeRequestRecord {
   evidence_refs: string[];
   requested_at: string;
   requested_by: DojoAuditActor;
+  reviewed_at?: string;
+  reviewed_by?: DojoAuditActor;
+  review_reason?: string;
+  decision_evidence_refs?: string[];
   request_context: {
     request_id: string;
     correlation_id: string;

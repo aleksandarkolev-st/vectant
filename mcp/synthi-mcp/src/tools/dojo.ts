@@ -30,7 +30,7 @@ import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_viva
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
-import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
+import { buildDojoGovernanceServiceView, revokeDojoSkillLicense } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import {
   contextKeyForDojoGuardrailPredicate,
@@ -1400,71 +1400,25 @@ function dojoGetLicenseHealthTool(args: unknown): ToolResponse {
 function dojoRevokeLicenseTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  const now = new Date().toISOString();
+  const a = obj(args);
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const reason = stringOpt(obj(args)["reason"]) ?? "operator_revoked";
-  const blocked = new Map<string, string[]>();
-  for (const action of [
-    ...skill.skill.permission_license.blocked_actions,
-    ...skill.skill.permission_license.allowed_actions,
-    ...skill.skill.permission_license.gated_actions,
-  ]) {
-    blocked.set(action.action, [...new Set([...(blocked.get(action.action) ?? []), ...action.constraints, `revoked:${reason}`])]);
-  }
-  const revoked = cloneJson(skill.skill);
-  revoked.entrustment_level = "EX";
-  revoked.skill_readiness_level = Math.min(revoked.skill_readiness_level, 5) as DojoSkill["skill_readiness_level"];
-  revoked.permission_license = {
-    ...revoked.permission_license,
-    license_version: bumpVersion(revoked.permission_license.license_version),
-    entrustment_level: "EX",
-    autonomy_level: "blocked",
-    allowed_actions: [],
-    gated_actions: [],
-    blocked_actions: [...blocked.entries()].map(([action, constraints]) => ({ action, constraints })),
-    approval_requirements: [],
-    issued_at: now,
-  };
-  revoked.skill_card = {
-    ...revoked.skill_card,
-    status: "Blocked pending recertification",
-    can_do_alone: [],
-    will_ask_before: [],
-    will_not_do: revoked.permission_license.blocked_actions.map((action) => action.action),
-    proof_badge: "License revoked; proof capsules rejected",
-  };
-  revoked.skill_passport = {
-    ...revoked.skill_passport,
-    entrustment_level: "EX",
-    readiness_level: revoked.skill_readiness_level,
-    license_id: revoked.permission_license.license_id,
-    proof_required: true,
-    issued_at: now,
-  };
-  revoked.training_report = {
-    ...revoked.training_report,
-    summary: {
-      ...revoked.training_report.summary,
-      readiness_level: revoked.skill_readiness_level,
-      entrustment_level: "EX",
+  const revocation = revokeDojoSkillLicense({
+    skill: skill.skill,
+    reason,
+    revoked_at: now,
+    revoked_by: {
+      actor_id: stringOpt(a["actor_id"]) ?? "operator",
+      actor_type: actorTypeOpt(a["actor_type"]),
     },
-    readiness_decision: `License revoked: ${reason}. Recertification required before production execution.`,
-    limitations: [...new Set([...revoked.training_report.limitations, `revoked:${reason}`])],
-  };
-  revoked.retrain_triggers = [
-    ...revoked.retrain_triggers,
-    {
-      trigger_id: `retrain_${hashId(`${revoked.skill_id}:revoked:${now}:${reason}`)}`,
-      source: "incident",
-      condition: `license_revoked:${reason}`,
-    },
-  ];
-  revoked.license_expires_at = now;
-  revoked.last_trained_at = now;
-  const saved = dojoSkillRegistry.publish(revoked);
+    evidence_refs: stringArrayOpt(a["evidence_refs"]),
+  });
+  const saved = dojoSkillRegistry.publish(revocation.skill);
   return jsonResponse({
     ok: true,
     skill_id: saved.skill_id,
     reason,
+    revocation,
     license: saved.permission_license,
     lifecycle: buildDojoLifecycleReport(saved),
     governance_report: buildDojoGovernanceReport(saved),

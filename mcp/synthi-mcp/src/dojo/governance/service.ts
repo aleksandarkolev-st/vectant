@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   DojoEntrustmentLevel,
   DojoPermissionLicense,
@@ -5,11 +6,44 @@ import type {
   DojoSkillCase,
   DojoSkillReadinessLevel,
 } from "../../browser/dojo.js";
-import type { DojoPermissionUpgradeRequestRecord } from "../store/interfaces.js";
+import type { DojoAuditActor, DojoAuditEventType, DojoPermissionUpgradeRequestRecord } from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
 
 export type DojoGovernanceLicenseStatus = "active" | "expiring" | "expired" | "revoked";
 export type DojoGovernanceApprovalStatus = "pending" | "approved" | "denied";
+export type DojoGovernanceActionStatus = "applied" | "rejected";
+export type DojoPermissionUpgradeDecision = "approved" | "denied";
+
+export interface DojoGovernanceActionAuditSummary {
+  event_type: DojoAuditEventType;
+  actor: DojoAuditActor;
+  occurred_at: string;
+  workspace_id: string;
+  skill_id: string;
+  license_id?: string;
+  request_id?: string;
+  reason?: string;
+  evidence_refs: string[];
+}
+
+export interface DojoPermissionUpgradeDecisionResult {
+  ok: boolean;
+  status: DojoGovernanceActionStatus;
+  request: DojoPermissionUpgradeRequestRecord;
+  audit_event?: DojoGovernanceActionAuditSummary;
+  error?: "permission_upgrade_request_not_pending";
+  blocked_by: string[];
+}
+
+export interface DojoSkillLicenseRevocationResult {
+  ok: true;
+  status: "applied";
+  skill: DojoSkill;
+  previous_license_version: string;
+  revoked_license_version: string;
+  blocked_actions: string[];
+  audit_event?: DojoGovernanceActionAuditSummary;
+}
 
 export interface DojoGovernanceLicenseHealth {
   skill_id: string;
@@ -141,6 +175,156 @@ export interface DojoGovernanceServiceView {
     policy_gate_count: number;
     recertification_count: number;
     compliance_artifact_count: number;
+  };
+}
+
+export function decideDojoPermissionUpgradeRequest(input: {
+  request: DojoPermissionUpgradeRequestRecord;
+  decision: DojoPermissionUpgradeDecision;
+  decided_by: DojoAuditActor;
+  decided_at?: string;
+  reason?: string;
+  evidence_refs?: string[];
+}): DojoPermissionUpgradeDecisionResult {
+  const request = cloneJson(input.request);
+  const decidedAt = input.decided_at ?? new Date().toISOString();
+  const decisionEvidenceRefs = uniqueStrings(input.evidence_refs ?? []);
+  if (request.status !== "pending") {
+    return {
+      ok: false,
+      status: "rejected",
+      request,
+      error: "permission_upgrade_request_not_pending",
+      blocked_by: [`request_status:${request.status}`],
+    };
+  }
+
+  request.status = input.decision;
+  request.reviewed_at = decidedAt;
+  request.reviewed_by = cloneJson(input.decided_by);
+  const reason = normalizedReason(input.reason, "");
+  if (reason) request.review_reason = reason;
+  if (decisionEvidenceRefs.length > 0) {
+    request.decision_evidence_refs = decisionEvidenceRefs;
+    request.evidence_refs = uniqueStrings([...request.evidence_refs, ...decisionEvidenceRefs]);
+  }
+
+  return {
+    ok: true,
+    status: "applied",
+    request,
+    audit_event: {
+      event_type: input.decision === "approved" ? "approval_granted" : "approval_denied",
+      actor: cloneJson(input.decided_by),
+      occurred_at: decidedAt,
+      workspace_id: request.workspace_id,
+      skill_id: request.skill_id,
+      license_id: request.license_id,
+      request_id: request.request_id,
+      reason,
+      evidence_refs: decisionEvidenceRefs,
+    },
+    blocked_by: [],
+  };
+}
+
+export function revokeDojoSkillLicense(input: {
+  skill: DojoSkill;
+  reason?: string;
+  revoked_at?: string;
+  revoked_by?: DojoAuditActor;
+  evidence_refs?: string[];
+}): DojoSkillLicenseRevocationResult {
+  const revokedAt = input.revoked_at ?? new Date().toISOString();
+  const reason = normalizedReason(input.reason, "operator_revoked");
+  const evidenceRefs = uniqueStrings(input.evidence_refs ?? []);
+  const skill = cloneJson(input.skill);
+  const previousLicenseVersion = skill.permission_license.license_version;
+  const blockedByAction = new Map<string, string[]>();
+
+  for (const action of [
+    ...skill.permission_license.blocked_actions,
+    ...skill.permission_license.allowed_actions,
+    ...skill.permission_license.gated_actions,
+  ]) {
+    blockedByAction.set(action.action, uniqueStrings([
+      ...(blockedByAction.get(action.action) ?? []),
+      ...action.constraints,
+      `revoked:${reason}`,
+    ]));
+  }
+
+  skill.entrustment_level = "EX";
+  skill.skill_readiness_level = Math.min(skill.skill_readiness_level, 5) as DojoSkill["skill_readiness_level"];
+  skill.permission_license = {
+    ...skill.permission_license,
+    license_version: bumpVersion(skill.permission_license.license_version),
+    entrustment_level: "EX",
+    autonomy_level: "blocked",
+    allowed_actions: [],
+    gated_actions: [],
+    blocked_actions: [...blockedByAction.entries()]
+      .map(([action, constraints]) => ({ action, constraints }))
+      .sort((left, right) => left.action.localeCompare(right.action)),
+    approval_requirements: [],
+    issued_at: revokedAt,
+  };
+  skill.skill_card = {
+    ...skill.skill_card,
+    status: "Blocked pending recertification",
+    can_do_alone: [],
+    will_ask_before: [],
+    will_not_do: skill.permission_license.blocked_actions.map((action) => action.action),
+    proof_badge: "License revoked; proof capsules rejected",
+  };
+  skill.skill_passport = {
+    ...skill.skill_passport,
+    entrustment_level: "EX",
+    readiness_level: skill.skill_readiness_level,
+    license_id: skill.permission_license.license_id,
+    proof_required: true,
+    license_expires_at: revokedAt,
+    issued_at: revokedAt,
+  };
+  skill.training_report = {
+    ...skill.training_report,
+    summary: {
+      ...skill.training_report.summary,
+      readiness_level: skill.skill_readiness_level,
+      entrustment_level: "EX",
+    },
+    readiness_decision: `License revoked: ${reason}. Recertification required before production execution.`,
+    limitations: uniqueStrings([...skill.training_report.limitations, `revoked:${reason}`]),
+    evidence_refs: uniqueStrings([...skill.training_report.evidence_refs, ...evidenceRefs]),
+  };
+  skill.retrain_triggers = [
+    ...skill.retrain_triggers,
+    {
+      trigger_id: `retrain_${hashStableId(`${skill.skill_id}:revoked:${previousLicenseVersion}:${revokedAt}:${reason}`)}`,
+      source: "incident",
+      condition: `license_revoked:${reason}`,
+    },
+  ];
+  skill.license_expires_at = revokedAt;
+  skill.last_trained_at = revokedAt;
+
+  return {
+    ok: true,
+    status: "applied",
+    skill,
+    previous_license_version: previousLicenseVersion,
+    revoked_license_version: skill.permission_license.license_version,
+    blocked_actions: skill.permission_license.blocked_actions.map((action) => action.action),
+    audit_event: input.revoked_by ? {
+      event_type: "license_revoked",
+      actor: cloneJson(input.revoked_by),
+      occurred_at: revokedAt,
+      workspace_id: skill.workspace_id,
+      skill_id: skill.skill_id,
+      license_id: skill.permission_license.license_id,
+      reason,
+      evidence_refs: evidenceRefs,
+    } : undefined,
   };
 }
 
@@ -571,6 +755,34 @@ function stringArrayField(source: unknown, key: string): string[] {
   if (!source || typeof source !== "object") return [];
   const value = (source as Record<string, unknown>)[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function normalizedReason(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : fallback;
+}
+
+function bumpVersion(version: string): string {
+  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
+  const majorCandidate = parts[0] ?? Number.NaN;
+  const minorCandidate = parts[1] ?? Number.NaN;
+  const patchCandidate = parts[2] ?? Number.NaN;
+  const major = Number.isFinite(majorCandidate) ? majorCandidate : 1;
+  const minor = Number.isFinite(minorCandidate) ? minorCandidate : 0;
+  const patch = Number.isFinite(patchCandidate) ? patchCandidate : 0;
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+function hashStableId(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 12);
 }
 
 function digestFor(parts: unknown[]): string {

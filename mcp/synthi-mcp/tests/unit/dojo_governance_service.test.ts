@@ -5,6 +5,7 @@ import type { DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/in
 import {
   buildDojoGovernanceServiceView,
   buildDojoComplianceEvidencePack,
+  decideDojoPermissionUpgradeRequest,
   queryDojoApprovalQueue,
   queryDojoAuditExports,
   queryDojoCaseLawReviewQueue,
@@ -12,6 +13,7 @@ import {
   queryDojoPolicyGates,
   queryDojoRecertificationQueue,
   queryDojoSkillRegistry,
+  revokeDojoSkillLicense,
 } from "../../src/dojo/governance/service.js";
 
 describe("Dojo governance service", () => {
@@ -53,6 +55,141 @@ describe("Dojo governance service", () => {
       status: "revoked",
       autonomy_level: "blocked",
     }));
+  });
+
+  it("records permission upgrade approval and denial decisions with review evidence", () => {
+    const skill = skillFixture({ skillId: "skill-review" });
+    const request = permissionUpgradeRequestFixture(skill);
+    const approved = decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:02:00.000Z",
+      reason: "Checkride evidence reviewed.",
+      evidence_refs: ["evidence-review"],
+    });
+    const denied = decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "denied",
+      decided_by: { actor_id: "reviewer-b", actor_type: "human" },
+      decided_at: "2026-06-11T00:03:00.000Z",
+      reason: "Risk scenario still failing.",
+      evidence_refs: ["evidence-denial"],
+    });
+
+    expect(approved).toEqual(expect.objectContaining({
+      ok: true,
+      status: "applied",
+      blocked_by: [],
+      audit_event: expect.objectContaining({
+        event_type: "approval_granted",
+        actor: { actor_id: "reviewer-a", actor_type: "human" },
+        evidence_refs: ["evidence-review"],
+      }),
+      request: expect.objectContaining({
+        status: "approved",
+        reviewed_at: "2026-06-11T00:02:00.000Z",
+        reviewed_by: { actor_id: "reviewer-a", actor_type: "human" },
+        review_reason: "Checkride evidence reviewed.",
+        decision_evidence_refs: ["evidence-review"],
+        evidence_refs: [`skill:${skill.skill_id}`, "evidence-review"],
+      }),
+    }));
+    expect(denied).toEqual(expect.objectContaining({
+      ok: true,
+      audit_event: expect.objectContaining({ event_type: "approval_denied" }),
+      request: expect.objectContaining({
+        status: "denied",
+        reviewed_by: { actor_id: "reviewer-b", actor_type: "human" },
+        decision_evidence_refs: ["evidence-denial"],
+      }),
+    }));
+  });
+
+  it("rejects permission upgrade decisions when the request is no longer pending", () => {
+    const request = permissionUpgradeRequestFixture(skillFixture({ skillId: "skill-final" }));
+    request.status = "approved";
+
+    const result = decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "denied",
+      decided_by: { actor_id: "reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:04:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "rejected",
+      error: "permission_upgrade_request_not_pending",
+      blocked_by: ["request_status:approved"],
+      request: expect.objectContaining({ status: "approved" }),
+    }));
+  });
+
+  it("revokes licenses by deriving blocked scope from existing license actions", () => {
+    const skill = skillFixture({
+      skillId: "skill-revoke",
+      gatedActions: [{ action: "submit_invoice", constraints: ["manager_approval"] }],
+      blockedActions: [{ action: "delete_invoice", constraints: ["never_delete"] }],
+      approvalRequirements: ["security_review"],
+    });
+
+    const result = revokeDojoSkillLicense({
+      skill,
+      reason: "operator_escalation",
+      revoked_at: "2026-06-11T00:05:00.000Z",
+      revoked_by: { actor_id: "operator-a", actor_type: "human" },
+      evidence_refs: ["evidence-revocation"],
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: "applied",
+      previous_license_version: "1.0.0",
+      revoked_license_version: "1.0.1",
+      blocked_actions: ["delete_invoice", "run_workflow", "submit_invoice"],
+      audit_event: expect.objectContaining({
+        event_type: "license_revoked",
+        actor: { actor_id: "operator-a", actor_type: "human" },
+        evidence_refs: ["evidence-revocation"],
+      }),
+    }));
+    expect(result.skill).toEqual(expect.objectContaining({
+      entrustment_level: "EX",
+      skill_readiness_level: 5,
+      license_expires_at: "2026-06-11T00:05:00.000Z",
+      last_trained_at: "2026-06-11T00:05:00.000Z",
+      permission_license: expect.objectContaining({
+        license_version: "1.0.1",
+        autonomy_level: "blocked",
+        allowed_actions: [],
+        gated_actions: [],
+        approval_requirements: [],
+        blocked_actions: [
+          { action: "delete_invoice", constraints: ["never_delete", "revoked:operator_escalation"] },
+          { action: "run_workflow", constraints: ["proof_capsule_valid", "revoked:operator_escalation"] },
+          { action: "submit_invoice", constraints: ["manager_approval", "revoked:operator_escalation"] },
+        ],
+      }),
+      skill_card: expect.objectContaining({
+        can_do_alone: [],
+        will_ask_before: [],
+        will_not_do: ["delete_invoice", "run_workflow", "submit_invoice"],
+      }),
+      skill_passport: expect.objectContaining({
+        entrustment_level: "EX",
+        readiness_level: 5,
+        license_expires_at: "2026-06-11T00:05:00.000Z",
+      }),
+      training_report: expect.objectContaining({
+        readiness_decision: "License revoked: operator_escalation. Recertification required before production execution.",
+        limitations: ["baseline_limit", "revoked:operator_escalation"],
+        evidence_refs: ["evidence-training", "evidence-revocation"],
+      }),
+    }));
+    expect(result.skill.retrain_triggers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "incident", condition: "license_revoked:operator_escalation" }),
+    ]));
   });
 
   it("builds approval queue items from gated actions and explicit requirements", () => {
@@ -280,14 +417,29 @@ function skillFixture(input: {
     skill_readiness_level: 7,
     retrain_triggers: [{ trigger_id: "trigger-a", source: "schedule", condition: "recertify_after_30_days" }],
     case_law: input.caseLaw ?? [],
+    skill_card: {
+      title: `Skill ${input.skillId}`,
+      status: "Licensed",
+      can_do_alone: ["run_workflow"],
+      will_ask_before: (input.gatedActions ?? []).map((action) => action.action),
+      will_not_do: (input.blockedActions ?? []).map((action) => action.action),
+      practiced: "Practice complete",
+      found_and_fixed: "No critical issues",
+      proof_badge: "Proof required",
+    },
     skill_passport: {
       proof_required: true,
+      entrustment_level: input.entrustmentLevel ?? "E3",
+      readiness_level: 7,
+      license_id: `license-${input.skillId}`,
       license_expires_at: expiresAt,
+      issued_at: "2026-06-11T00:00:00.000Z",
       evidence_refs: ["evidence-passport"],
     },
     permission_license: {
       license_id: `license-${input.skillId}`,
       license_version: "1.0.0",
+      entrustment_level: input.entrustmentLevel ?? "E3",
       autonomy_level: input.autonomyLevel ?? "submit_limited",
       allowed_actions: [{ action: "run_workflow", constraints: ["proof_capsule_valid"] }],
       gated_actions: input.gatedActions ?? [],
@@ -298,6 +450,16 @@ function skillFixture(input: {
         recertify_after_days: 30,
       },
     },
+    training_report: {
+      summary: {
+        readiness_level: 7,
+        entrustment_level: input.entrustmentLevel ?? "E3",
+      },
+      readiness_decision: "Ready for limited production.",
+      limitations: ["baseline_limit"],
+      evidence_refs: ["evidence-training"],
+    },
+    last_trained_at: "2026-06-11T00:00:00.000Z",
   } as unknown as DojoSkill;
 }
 
