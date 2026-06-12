@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
-import { DojoSkillGraphRuntime, type DojoGraphRunResult } from "../graph/runtime.js";
+import type { DojoGraphRunResult } from "../graph/runtime.js";
 import type { DojoSkillGraph } from "../graph/types.js";
-import { materializeDojoSyntheticFixture, type DojoMaterializedFixture } from "../vivarium/fixture_materializer.js";
+import type { DojoMaterializedFixture } from "../vivarium/fixture_materializer.js";
 import {
   buildDojoScenarioOracleEvidenceRecordInput,
-  evaluateDojoScenarioOracle,
   type DojoScenarioOracleEvaluation,
   type DojoScenarioOracleEvidenceContext,
 } from "../vivarium/oracle.js";
+import { DojoVivariumRunner, type DojoScenarioRunResult } from "../vivarium/runner.js";
 import type { DojoScenarioDefinition } from "../vivarium/scenario_dsl.js";
 import type { DojoEvidenceRecordInput } from "../evidence/types.js";
 
@@ -22,6 +22,7 @@ export interface DojoExecutableCheckrideScenarioResult {
   graph_run: DojoGraphRunResult;
   fixture: DojoMaterializedFixture;
   oracle: DojoScenarioOracleEvaluation;
+  scenario_run: DojoScenarioRunResult;
   evidence_record?: DojoEvidenceRecordInput;
 }
 
@@ -65,27 +66,30 @@ export async function runDojoExecutableCheckride(
   input: DojoExecutableCheckrideInput
 ): Promise<DojoExecutableCheckrideReport> {
   const now = input.now ?? new Date().toISOString();
-  const runtime = new DojoSkillGraphRuntime();
+  const vivarium = new DojoVivariumRunner();
   const results: DojoExecutableCheckrideScenarioResult[] = [];
 
   for (const scenario of input.scenarios) {
-    const fixture = materializeDojoSyntheticFixture(scenario);
+    const runId = `${input.evidence_context?.run_id_prefix ?? "checkride"}_${scenario.scenario_id}`;
+    const materialized = vivarium.materialize({
+      skill_id: input.graph.skill_id,
+      scenario,
+      now,
+    });
     const scenarioInputs = {
       ...(input.base_inputs ?? {}),
       ...(input.scenario_inputs?.[scenario.scenario_id] ?? {}),
     };
-    const graphRun = await runtime.execute({
+    const scenarioRun = await vivarium.run({
+      materialized,
       graph: input.graph,
-      mode: "checkride",
+      run_id: runId,
       inputs: scenarioInputs,
-    });
-    const oracle = evaluateDojoScenarioOracle({
-      definition: scenario,
-      fixture,
-      graph_result: graphRun,
       observed_evidence: input.observed_evidence_by_scenario?.[scenario.scenario_id] ?? ["graph_run_result", "oracle_result"],
+      now,
     });
-    const runId = `${input.evidence_context?.run_id_prefix ?? "checkride"}_${scenario.scenario_id}`;
+    const graphRun = scenarioRun.graph_result;
+    const oracle = scenarioRun.oracle_result;
     const evidenceRecord = input.evidence_context
       ? buildDojoScenarioOracleEvidenceRecordInput(oracle, {
           ...input.evidence_context,
@@ -102,8 +106,9 @@ export async function runDojoExecutableCheckride(
       finding: oracle.finding,
       blocked_by: oracle.blocked_by,
       graph_run: graphRun,
-      fixture,
+      fixture: materialized.fixture,
       oracle,
+      scenario_run: scenarioRun,
       ...(evidenceRecord ? { evidence_record: evidenceRecord } : {}),
     });
   }
