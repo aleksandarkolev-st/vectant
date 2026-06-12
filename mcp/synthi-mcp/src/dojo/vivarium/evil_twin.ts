@@ -41,6 +41,18 @@ export interface DojoEvilTwinRuntimeReport {
   hardened_by: string[];
 }
 
+export interface DojoEvilTwinHardeningReport {
+  schema_version: "synthi.dojo.evilTwinHardeningReport.v1";
+  graph_id: string;
+  before: DojoEvilTwinRuntimeReport;
+  after: DojoEvilTwinRuntimeReport;
+  applied_guardrails: Array<{
+    guardrail_id: string;
+    predicate: string;
+    source_suggestion: string;
+  }>;
+}
+
 export async function runDojoEvilTwin(input: {
   graph: DojoSkillGraph;
   scenarios: DojoScenarioDefinition[];
@@ -141,6 +153,29 @@ export function extractDojoEvilTwinAssumptions(
   return assumptions;
 }
 
+export async function hardenDojoEvilTwinAttacks(input: {
+  graph: DojoSkillGraph;
+  scenarios: DojoScenarioDefinition[];
+  runner?: DojoVivariumRunner;
+  max_attacks?: number;
+  now?: string;
+}): Promise<DojoEvilTwinHardeningReport> {
+  const before = await runDojoEvilTwin(input);
+  const hardening = hardeningGuardrailsFor(before.hardened_by);
+  const hardenedGraph = applyHardeningGuardrails(input.graph, hardening);
+  const after = await runDojoEvilTwin({
+    ...input,
+    graph: hardenedGraph,
+  });
+  return {
+    schema_version: "synthi.dojo.evilTwinHardeningReport.v1",
+    graph_id: input.graph.graph_id,
+    before,
+    after,
+    applied_guardrails: hardening,
+  };
+}
+
 function attackRunForScenario(
   assumption: DojoEvilTwinAssumption,
   scenarioRun: DojoScenarioRunResult
@@ -168,6 +203,66 @@ function hardeningSuggestionsFor(scenarioRun: DojoScenarioRunResult): string[] {
     if (reason.includes("partial_write")) return "require_api_atomicity_assertion";
     return `harden:${reason}`;
   });
+}
+
+function hardeningGuardrailsFor(suggestions: string[]): Array<{
+  guardrail_id: string;
+  predicate: string;
+  source_suggestion: string;
+}> {
+  const guardrails = new Map<string, { guardrail_id: string; predicate: string; source_suggestion: string }>();
+  for (const suggestion of suggestions) {
+    if (suggestion === "require_stable_entity_identity_guardrail") {
+      guardrails.set("guard_stable_entity_identity", {
+        guardrail_id: "guard_stable_entity_identity",
+        predicate: "duplicate_display_name_count <= 1",
+        source_suggestion: suggestion,
+      });
+    }
+    if (suggestion === "require_durable_state_assertion") {
+      guardrails.set("guard_no_fake_success", {
+        guardrail_id: "guard_no_fake_success",
+        predicate: "fake_success == false",
+        source_suggestion: suggestion,
+      });
+    }
+    if (suggestion === "require_api_atomicity_assertion") {
+      guardrails.set("guard_no_partial_write", {
+        guardrail_id: "guard_no_partial_write",
+        predicate: "partial_write == false",
+        source_suggestion: suggestion,
+      });
+    }
+  }
+  return [...guardrails.values()];
+}
+
+function applyHardeningGuardrails(
+  graph: DojoSkillGraph,
+  guardrails: Array<{ guardrail_id: string; predicate: string; source_suggestion: string }>
+): DojoSkillGraph {
+  if (guardrails.length === 0) return graph;
+  return {
+    ...graph,
+    graph_version: `${graph.graph_version}+evil-twin-hardening`,
+    nodes: graph.nodes.map((node) => {
+      if (node.kind !== "Action") return node;
+      const existingIds = new Set(node.guardrails.map((guardrail) => guardrail.guardrail_id));
+      return {
+        ...node,
+        guardrails: [
+          ...node.guardrails,
+          ...guardrails
+            .filter((guardrail) => !existingIds.has(guardrail.guardrail_id))
+            .map((guardrail) => ({
+              guardrail_id: guardrail.guardrail_id,
+              predicate: guardrail.predicate,
+              severity: "block" as const,
+            })),
+        ],
+      };
+    }),
+  };
 }
 
 function hasScenario(scenarios: DojoScenarioDefinition[], mutationKind: string): boolean {
