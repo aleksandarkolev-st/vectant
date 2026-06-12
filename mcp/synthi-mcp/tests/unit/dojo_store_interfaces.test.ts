@@ -163,6 +163,13 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   expect(skillStore.getSkill(skill.skill_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(skillStore.getSkillByWorkflowId(skill.workflow_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(proofStore.getProofRecord(capsule.capsule_id)).toEqual(expect.objectContaining({ status: "issued" }));
+  expect(proofStore.markProofCapsuleValidated(capsule.capsule_id, "2026-06-11T00:01:00.000Z")).toEqual(
+    expect.objectContaining({
+      capsule_id: capsule.capsule_id,
+      status: "issued",
+      last_validated_at: "2026-06-11T00:01:00.000Z",
+    })
+  );
   expect(proofStore.listProofRecords()).toHaveLength(1);
   expect(approvalStore.listPermissionUpgradeRequests({ skill_id: skill.skill_id })).toEqual([
     expect.objectContaining({

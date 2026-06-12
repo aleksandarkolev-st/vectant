@@ -80,6 +80,7 @@ describeWithPostgres("PostgresDojoAuditStore", () => {
     });
 
     await proofStore.saveProofRecord(proofRecord("capsule_a", skillId));
+    await proofStore.markProofCapsuleValidated("capsule_a", "2026-06-11T00:01:00.000Z");
     await proofStore.markProofCapsuleUsed("capsule_a", "run_1", "2026-06-11T00:02:00.000Z");
     await proofStore.markProofCapsuleUsed("capsule_a", "run_2", "2026-06-11T00:03:00.000Z");
     await proofStore.saveProofRecord(proofRecord("capsule_b", skillId));
@@ -88,12 +89,20 @@ describeWithPostgres("PostgresDojoAuditStore", () => {
     const events = await auditStore.listAuditEvents({ correlation_id: "corr_proof" });
     expect(events.map((event) => event.event_type)).toEqual([
       "proof_issued",
+      "proof_validated",
       "proof_used",
       "proof_rejected",
       "proof_issued",
       "proof_revoked",
     ]);
     expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actor: auditActor,
+        event_type: "proof_validated",
+        entity_kind: "proof_capsule",
+        entity_id: "capsule_a",
+        details: expect.objectContaining({ validated_at: "2026-06-11T00:01:00.000Z" }),
+      }),
       expect.objectContaining({
         actor: auditActor,
         entity_kind: "proof_capsule",

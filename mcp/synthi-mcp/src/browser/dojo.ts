@@ -802,6 +802,11 @@ export class DojoSkillRegistry {
     return cloneJson(result);
   }
 
+  markProofCapsuleValidated(capsuleId: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
+    const record = this.store.markProofCapsuleValidated(capsuleId, now);
+    return record ? cloneJson(record) : null;
+  }
+
   markProofCapsuleUsed(capsuleId: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
     return this.consumeProofCapsule(capsuleId, { now }).record;
   }

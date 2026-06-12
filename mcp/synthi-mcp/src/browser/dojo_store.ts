@@ -96,6 +96,17 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return [...this.proofRecords.values()].map(cloneJson);
   }
 
+  markProofCapsuleValidated(capsuleId: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
+    const record = this.proofRecords.get(capsuleId);
+    if (!record) return null;
+    const validated = {
+      ...record,
+      last_validated_at: now,
+    };
+    this.proofRecords.set(capsuleId, cloneJson(validated));
+    return cloneJson(validated);
+  }
+
   markProofCapsuleUsed(capsuleId: string, _runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
     const record = this.proofRecords.get(capsuleId);
     if (!record) return proofConsumeBlocked(null, "missing", "proof_capsule_not_issued_by_registry");
@@ -263,6 +274,20 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
 
   listProofRecords(): DojoProofCapsuleRecord[] {
     return Object.values(this.scope().proof_records).map(cloneJson);
+  }
+
+  markProofCapsuleValidated(capsuleId: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
+    let validated: DojoProofCapsuleRecord | null = null;
+    this.updateScope((scope) => {
+      const record = scope.proof_records[capsuleId];
+      if (!record) return;
+      validated = {
+        ...record,
+        last_validated_at: now,
+      };
+      scope.proof_records[capsuleId] = cloneJson(validated);
+    });
+    return validated ? cloneJson(validated) : null;
   }
 
   markProofCapsuleUsed(capsuleId: string, _runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {

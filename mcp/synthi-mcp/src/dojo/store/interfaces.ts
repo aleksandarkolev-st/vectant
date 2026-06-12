@@ -113,6 +113,7 @@ export interface DojoProofStore {
   saveProofRecord(record: DojoProofCapsuleRecord): void;
   getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null;
   listProofRecords(): DojoProofCapsuleRecord[];
+  markProofCapsuleValidated(capsuleId: string, now?: string): DojoProofCapsuleRecord | null;
   markProofCapsuleUsed(capsuleId: string, runId: string, now?: string): DojoProofConsumeResult;
   revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null;
 }

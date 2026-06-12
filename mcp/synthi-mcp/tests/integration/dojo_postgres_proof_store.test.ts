@@ -59,6 +59,14 @@ describeWithPostgres("PostgresDojoProofStore", () => {
       expect.objectContaining({ capsule_id: "capsule_a" }),
     ]);
 
+    const validated = await store.markProofCapsuleValidated("capsule_a", "2026-06-11T00:04:00.000Z");
+    expect(validated).toEqual(expect.objectContaining({
+      capsule_id: "capsule_a",
+      status: "issued",
+      last_validated_at: "2026-06-11T00:04:00.000Z",
+    }));
+    expect(await store.markProofCapsuleValidated("capsule_missing", "2026-06-11T00:04:30.000Z")).toBeNull();
+
     const revoked = await store.revokeProofCapsule("capsule_a", "unit_test_revoked", "2026-06-11T00:05:00.000Z");
     expect(revoked).toEqual(expect.objectContaining({
       capsule_id: "capsule_a",

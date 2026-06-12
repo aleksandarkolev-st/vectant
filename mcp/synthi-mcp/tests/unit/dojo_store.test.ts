@@ -92,6 +92,13 @@ describe("EncryptedFileDojoSkillStore", () => {
     expect(reopened.listProofRecords()).toEqual([
       expect.objectContaining({ capsule_id: capsule.capsule_id, status: "issued" }),
     ]);
+    expect(reopened.markProofCapsuleValidated(capsule.capsule_id, "2026-06-11T00:00:30.000Z")).toEqual(
+      expect.objectContaining({
+        capsule_id: capsule.capsule_id,
+        status: "issued",
+        last_validated_at: "2026-06-11T00:00:30.000Z",
+      })
+    );
     const consumed = reopened.markProofCapsuleUsed(
       capsule.capsule_id,
       "run-encrypted-store",

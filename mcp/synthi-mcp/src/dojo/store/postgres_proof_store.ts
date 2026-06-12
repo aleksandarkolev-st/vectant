@@ -196,6 +196,30 @@ export class PostgresDojoProofStore {
     return revoked;
   }
 
+  async markProofCapsuleValidated(
+    capsuleId: string,
+    now: string = new Date().toISOString()
+  ): Promise<DojoProofCapsuleRecord | null> {
+    const result = await this.queryable.query<ProofRecordRow>(
+      `UPDATE dojo_proof_records
+      SET last_validated_at = $4::timestamptz,
+        updated_at = now()
+      WHERE tenant_id = $1 AND workspace_id = $2 AND capsule_id = $3
+      RETURNING tenant_id, workspace_id, capsule_id, skill_id, license_id, requested_action, nonce, proof_json,
+        issued_at, expires_at, status, first_used_at, last_validated_at, revoked_at, revoked_reason`,
+      [this.tenantId, this.workspaceId, capsuleId, now]
+    );
+    const validated = rowToProofRecord(result.rows[0]);
+    if (validated) {
+      await this.appendProofAudit("proof_validated", validated, {
+        requested_action: validated.requested_action,
+        proof_status: validated.status,
+        validated_at: now,
+      });
+    }
+    return validated;
+  }
+
   async markProofCapsuleUsed(
     capsuleId: string,
     runId: string,
@@ -256,7 +280,7 @@ export class PostgresDojoProofStore {
   }
 
   private async appendProofAudit(
-    eventType: "proof_issued" | "proof_used" | "proof_rejected" | "proof_revoked",
+    eventType: "proof_issued" | "proof_validated" | "proof_used" | "proof_rejected" | "proof_revoked",
     record: DojoProofCapsuleRecord,
     details: Record<string, unknown>
   ): Promise<void> {
