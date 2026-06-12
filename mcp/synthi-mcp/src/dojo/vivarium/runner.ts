@@ -1,5 +1,6 @@
 import { DojoSkillGraphRuntime, type DojoGraphEvidenceEvent, type DojoGraphRunResult } from "../graph/runtime.js";
 import type { DojoSkillGraph } from "../graph/types.js";
+import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { type DojoMaterializedFixture, materializeDojoSyntheticFixture } from "./fixture_materializer.js";
 import { evaluateDojoScenarioOracle, type DojoScenarioOracleEvaluation, type DojoScenarioOracleStatus } from "./oracle.js";
 import type { DojoScenarioBudget, DojoScenarioDefinition } from "./scenario_dsl.js";
@@ -8,6 +9,7 @@ export interface DojoMaterializedScenario {
   schema_version: "synthi.dojo.materializedScenario.v1";
   materialized_id: string;
   skill_id: string;
+  tenant_context?: DojoTenantContext;
   definition: DojoScenarioDefinition;
   fixture: DojoMaterializedFixture;
   materialized_at: string;
@@ -19,6 +21,7 @@ export interface DojoScenarioRunResult {
   scenario_id: string;
   mutation_kind: string;
   materialized_id: string;
+  tenant_context?: DojoTenantContext;
   fixture_materialization_hash: string;
   status: DojoScenarioOracleStatus;
   expectation_met: boolean;
@@ -35,6 +38,7 @@ export interface DojoFixtureResetResult {
   schema_version: "synthi.dojo.fixtureResetResult.v1";
   ok: boolean;
   materialized_id: string;
+  tenant_context?: DojoTenantContext;
   scenario_id: string;
   fixture_id: string;
   reset_profile_id: string;
@@ -47,6 +51,7 @@ export class DojoVivariumRunner {
   materialize(input: {
     skill_id: string;
     scenario: DojoScenarioDefinition;
+    tenant?: DojoTenantContext;
     seed?: string;
     now?: string;
   }): DojoMaterializedScenario {
@@ -55,6 +60,7 @@ export class DojoVivariumRunner {
       schema_version: "synthi.dojo.materializedScenario.v1",
       materialized_id: `materialized_${input.scenario.scenario_id}_${fixture.materialization_hash.slice(0, 12)}`,
       skill_id: input.skill_id,
+      ...(input.tenant ? { tenant_context: cloneTenantContext(input.tenant) } : {}),
       definition: input.scenario,
       fixture,
       materialized_at: input.now ?? new Date().toISOString(),
@@ -64,6 +70,7 @@ export class DojoVivariumRunner {
   async run(input: {
     materialized: DojoMaterializedScenario;
     graph: DojoSkillGraph;
+    tenant?: DojoTenantContext;
     runtime?: DojoSkillGraphRuntime;
     run_id?: string;
     budget?: DojoScenarioBudget;
@@ -78,6 +85,7 @@ export class DojoVivariumRunner {
 
     const runtime = input.runtime ?? new DojoSkillGraphRuntime();
     const runId = input.run_id ?? `scenario_run_${input.materialized.definition.scenario_id}_${Date.now().toString(36)}`;
+    const tenantContext = input.tenant ?? input.materialized.tenant_context;
     const graphEvents: DojoGraphEvidenceEvent[] = [];
     const startedAt = input.now ?? new Date().toISOString();
     const graphResult = await runtime.execute({
@@ -107,6 +115,7 @@ export class DojoVivariumRunner {
       scenario_id: input.materialized.definition.scenario_id,
       mutation_kind: input.materialized.definition.mutation_kind,
       materialized_id: input.materialized.materialized_id,
+      ...(tenantContext ? { tenant_context: cloneTenantContext(tenantContext) } : {}),
       fixture_materialization_hash: input.materialized.fixture.materialization_hash,
       status: oracleResult.status,
       expectation_met: oracleResult.expectation_met,
@@ -129,6 +138,7 @@ export class DojoVivariumRunner {
       schema_version: "synthi.dojo.fixtureResetResult.v1",
       ok,
       materialized_id: input.materialized.materialized_id,
+      ...(input.materialized.tenant_context ? { tenant_context: cloneTenantContext(input.materialized.tenant_context) } : {}),
       scenario_id: input.materialized.definition.scenario_id,
       fixture_id: input.materialized.fixture.fixture_id,
       reset_profile_id: input.materialized.fixture.reset_evidence.reset_profile_id,
@@ -137,6 +147,13 @@ export class DojoVivariumRunner {
       blocked_by: ok ? [] : ["fixture_reset_not_deterministic"],
     };
   }
+}
+
+function cloneTenantContext(tenant: DojoTenantContext): DojoTenantContext {
+  return {
+    ...tenant,
+    roles: [...tenant.roles],
+  };
 }
 
 function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown> {

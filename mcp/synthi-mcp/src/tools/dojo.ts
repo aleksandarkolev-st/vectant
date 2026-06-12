@@ -342,6 +342,14 @@ export const DOJO_TOOLS = [
         workflow_id: { type: "string" },
         scenario_id: { type: "string" },
         mutation_kind: { type: "string" },
+        tenant_id: { type: "string" },
+        organization_id: { type: "string" },
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -471,6 +479,14 @@ export const DOJO_TOOLS = [
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
         max_scenarios: { type: "number" },
+        tenant_id: { type: "string" },
+        organization_id: { type: "string" },
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -1433,6 +1449,11 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
   const scenarioRun = await runDojoVivariumScenario(skill.skill, {
     scenario_id: stringOpt(a["scenario_id"]),
     mutation_kind: stringOpt(a["mutation_kind"]),
+    now: stringOpt(a["now"]),
+    tenant_context: dojoTenantContextFromArgs({
+      ...a,
+      workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
+    }),
   });
   const updated = persistDojoRuns(skill.skill, [scenarioRun.run]);
   return jsonResponse({
@@ -1447,8 +1468,14 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
 async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
+  const a = obj(args);
   const tunnel = await runDojoWindTunnel(skill.skill, {
-    max_scenarios: numberOpt(obj(args)["max_scenarios"]),
+    max_scenarios: numberOpt(a["max_scenarios"]),
+    now: stringOpt(a["now"]),
+    tenant_context: dojoTenantContextFromArgs({
+      ...a,
+      workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
+    }),
   });
   const updated = persistDojoRuns(skill.skill, tunnel.runs.map((run) => run.run), tunnel);
   return jsonResponse({

@@ -2,12 +2,14 @@ import type { DojoRun, DojoScenario, DojoScenarioResult, DojoSkill } from "./doj
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { DojoVivariumRunner, type DojoScenarioRunResult } from "../dojo/vivarium/runner.js";
 import { toDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
+import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
 
 export interface DojoVivariumScenarioRun {
   schema_version: "synthi.dojo.vivariumScenarioRun.v1";
   ok: boolean;
   skill_id: string;
   workflow_id: string;
+  tenant_context?: DojoTenantContext;
   scenario: DojoScenario;
   materialized_fixture: {
     simulator_tier: number;
@@ -27,6 +29,7 @@ export interface DojoWindTunnelExecution {
   ok: boolean;
   skill_id: string;
   workflow_id: string;
+  tenant_context?: DojoTenantContext;
   run_count: number;
   pass_count: number;
   fail_count: number;
@@ -37,13 +40,13 @@ export interface DojoWindTunnelExecution {
 
 export async function runDojoVivariumScenario(
   skill: DojoSkill,
-  input: { scenario_id?: string; mutation_kind?: string; now?: string } = {}
+  input: { scenario_id?: string; mutation_kind?: string; now?: string; tenant_context?: DojoTenantContext } = {}
 ): Promise<DojoVivariumScenarioRun> {
   const scenario = selectScenario(skill, input);
   if (!scenario) throw new Error("dojo_scenario_not_found");
 
   const now = input.now ?? new Date().toISOString();
-  const scenarioRun = await executeMaterializedScenario(skill, scenario, now);
+  const scenarioRun = await executeMaterializedScenario(skill, scenario, now, input.tenant_context);
   const result = scenarioResultForRun(scenario, scenarioRun);
   const guardrails = guardrailsForResult(skill, result);
   const evidenceRefs = [
@@ -83,6 +86,7 @@ export async function runDojoVivariumScenario(
     ok: result.status === "passed",
     skill_id: skill.skill_id,
     workflow_id: skill.workflow_id,
+    ...(input.tenant_context ? { tenant_context: cloneTenantContext(input.tenant_context) } : {}),
     scenario,
     materialized_fixture: materializedFixtureFor(skill, scenario, scenarioRun),
     result,
@@ -94,18 +98,23 @@ export async function runDojoVivariumScenario(
 
 export async function runDojoWindTunnel(
   skill: DojoSkill,
-  input: { max_scenarios?: number; now?: string } = {}
+  input: { max_scenarios?: number; now?: string; tenant_context?: DojoTenantContext } = {}
 ): Promise<DojoWindTunnelExecution> {
   const max = Math.max(1, Math.min(skill.scenarios.length, Number(input.max_scenarios ?? skill.scenarios.length)));
   const runs: DojoVivariumScenarioRun[] = [];
   for (const scenario of skill.scenarios.slice(0, max)) {
-    runs.push(await runDojoVivariumScenario(skill, { scenario_id: scenario.scenario_id, now: input.now }));
+    runs.push(await runDojoVivariumScenario(skill, {
+      scenario_id: scenario.scenario_id,
+      now: input.now,
+      tenant_context: input.tenant_context,
+    }));
   }
   return {
     schema_version: "synthi.dojo.windTunnelExecution.v1",
     ok: runs.every((run) => run.result.status === "passed" || run.result.status === "blocked"),
     skill_id: skill.skill_id,
     workflow_id: skill.workflow_id,
+    ...(input.tenant_context ? { tenant_context: cloneTenantContext(input.tenant_context) } : {}),
     run_count: runs.length,
     pass_count: runs.filter((run) => run.result.status === "passed").length,
     fail_count: runs.filter((run) => run.result.status === "failed").length,
@@ -118,7 +127,8 @@ export async function runDojoWindTunnel(
 async function executeMaterializedScenario(
   skill: DojoSkill,
   scenario: DojoScenario,
-  now: string
+  now: string,
+  tenantContext?: DojoTenantContext
 ): Promise<DojoScenarioRunResult> {
   const definition = toDojoScenarioDefinition(scenario, {
     target_graph_node_ids: ["action"],
@@ -128,6 +138,7 @@ async function executeMaterializedScenario(
   const materialized = runner.materialize({
     skill_id: skill.skill_id,
     scenario: definition,
+    ...(tenantContext ? { tenant: tenantContext } : {}),
     seed: scenario.scenario_id,
     now,
   });
@@ -138,11 +149,19 @@ async function executeMaterializedScenario(
   return await runner.run({
     materialized,
     graph: compiled.graph,
+    ...(tenantContext ? { tenant: tenantContext } : {}),
     run_id: `vivarium_${Date.now().toString(36)}_${scenario.scenario_id.slice(-12)}`,
     inputs: graphInputsForScenario(skill),
     observed_evidence: observedEvidenceHintsForScenario(scenario),
     now,
   });
+}
+
+function cloneTenantContext(tenant: DojoTenantContext): DojoTenantContext {
+  return {
+    ...tenant,
+    roles: [...tenant.roles],
+  };
 }
 
 function selectScenario(skill: DojoSkill, input: { scenario_id?: string; mutation_kind?: string }): DojoScenario | null {

@@ -15,6 +15,7 @@ describe("Dojo Vivarium runner", () => {
     const materialized = runner.materialize({
       skill_id: "skill-a",
       scenario: definition,
+      tenant: tenantContext(),
       seed: "baseline-seed",
       now: "2026-06-11T00:00:00.000Z",
     });
@@ -22,14 +23,25 @@ describe("Dojo Vivarium runner", () => {
     const result = await runner.run({
       materialized,
       graph: graphFixture(),
+      tenant: tenantContext(),
       run_id: "scenario-run-baseline",
       now: "2026-06-11T00:00:01.000Z",
     });
 
     expect(materialized.fixture.synthetic_data_only).toBe(true);
+    expect(materialized.tenant_context).toEqual(expect.objectContaining({
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      request_id: "vivarium-runtime-test",
+    }));
     expect(result).toEqual(expect.objectContaining({
       schema_version: "synthi.dojo.scenarioRunResult.v1",
       run_id: "scenario-run-baseline",
+      tenant_context: expect.objectContaining({
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        correlation_id: "vivarium-runtime-test-correlation",
+      }),
       status: "passed",
       expectation_met: true,
       observed_evidence: expect.arrayContaining(["graph_run_result", "graph_node_evidence", "oracle_result"]),
@@ -109,18 +121,36 @@ describe("Dojo Vivarium runner", () => {
         mutation_kind: "duplicate_entity",
         risk_tags: ["ambiguous_entity_match"],
       })),
+      tenant: tenantContext(),
       seed: "duplicate-reset-seed",
     });
 
     expect(runner.reset({ materialized })).toEqual(expect.objectContaining({
       ok: true,
       materialized_id: materialized.materialized_id,
+      tenant_context: expect.objectContaining({
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+      }),
       scenario_id: materialized.definition.scenario_id,
       materialization_hash: materialized.fixture.materialization_hash,
       blocked_by: [],
     }));
   });
 });
+
+function tenantContext() {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "runner-test",
+    actor_type: "agent" as const,
+    roles: ["dojo:test"],
+    request_id: "vivarium-runtime-test",
+    correlation_id: "vivarium-runtime-test-correlation",
+  };
+}
 
 function graphFixture(): DojoSkillGraph {
   return {

@@ -902,6 +902,13 @@ describe("Agent Dojo MCP tools", () => {
     const scenarioRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
       skill_id: published.skill.skill_id,
       mutation_kind: "duplicate_entity",
+      tenant_id: "tenant-vivarium",
+      organization_id: "org-vivarium",
+      workspace_id: "workspace-a",
+      actor_id: "vivarium-tester",
+      actor_type: "agent",
+      request_id: "vivarium-tool-test",
+      correlation_id: "vivarium-tool-test-correlation",
     });
     expect(scenarioRun?.structuredContent).toEqual(expect.objectContaining({
       implementation_status: "executable",
@@ -909,6 +916,11 @@ describe("Agent Dojo MCP tools", () => {
       simulation_backing: "materialized_synthetic_fixture",
       vivarium_run: expect.objectContaining({
         schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        tenant_context: expect.objectContaining({
+          tenant_id: "tenant-vivarium",
+          workspace_id: "workspace-a",
+          request_id: "vivarium-tool-test",
+        }),
         materialized_fixture: expect.objectContaining({ synthetic_data_only: true }),
       }),
       license_health: expect.objectContaining({ schema_version: "synthi.dojo.licenseHealth.v1" }),
@@ -916,11 +928,30 @@ describe("Agent Dojo MCP tools", () => {
     const windTunnel = await dispatchDojoTool("synthi_dojo_run_wind_tunnel", {
       skill_id: published.skill.skill_id,
       max_scenarios: 3,
+      tenant_id: "tenant-vivarium",
+      organization_id: "org-vivarium",
+      workspace_id: "workspace-a",
+      actor_id: "vivarium-tester",
+      actor_type: "agent",
+      request_id: "wind-tool-test",
+      correlation_id: "wind-tool-test-correlation",
     });
     expect(windTunnel?.structuredContent).toEqual(expect.objectContaining({
       wind_tunnel_execution: expect.objectContaining({
         schema_version: "synthi.dojo.windTunnelExecution.v1",
+        tenant_context: expect.objectContaining({
+          tenant_id: "tenant-vivarium",
+          workspace_id: "workspace-a",
+          request_id: "wind-tool-test",
+        }),
         run_count: 3,
+        runs: expect.arrayContaining([
+          expect.objectContaining({
+            tenant_context: expect.objectContaining({
+              correlation_id: "wind-tool-test-correlation",
+            }),
+          }),
+        ]),
       }),
     }));
     const health = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: published.skill.skill_id });
