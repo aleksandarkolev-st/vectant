@@ -82,8 +82,14 @@ export interface DojoGraphEvidenceEvent {
   status: DojoGraphNodeRunStatus;
   blocked_by: string[];
   evidence_policy: string[];
+  guardrail_ids: string[];
+  proof_required: boolean;
+  proof_claims: string[];
+  case_law_refs: string[];
   assertion_ids: string[];
   substrate_status?: DojoSubstrateExecutionResult["status"];
+  substrate?: DojoSubstrateExecutionResult["substrate"];
+  substrate_evidence_refs: string[];
   created_at: string;
 }
 
@@ -362,8 +368,14 @@ async function emitGraphNodeEvidence(
     status: result.status,
     blocked_by: result.blocked_by,
     evidence_policy: [...node.evidence_policy],
+    guardrail_ids: node.guardrails.map((guardrail) => guardrail.guardrail_id),
+    proof_required: node.proof?.required === true,
+    proof_claims: [...(node.proof?.required_claims ?? [])],
+    case_law_refs: [...node.case_law_refs],
     assertion_ids: result.assertion_results.map((assertion) => assertion.assertion_id),
     ...(result.substrate_result ? { substrate_status: result.substrate_result.status } : {}),
+    ...(result.substrate_result?.substrate ? { substrate: result.substrate_result.substrate } : {}),
+    substrate_evidence_refs: [...(result.substrate_result?.evidence_refs ?? [])],
     created_at: new Date().toISOString(),
   });
   return typeof emittedRef === "string" && emittedRef.trim() ? emittedRef : fallbackRef;
