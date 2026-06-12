@@ -64,7 +64,11 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_run_ghost_mode: reportWithRuntimeEvidence("Returns non-mutating Ghost Mode comparison data with structured shadow evidence and entrustment impact."),
   synthi_dojo_request_permission_upgrade: controlPlaneWrite(
     "Records a permission-upgrade request in the configured Dojo store and exposes it through the governance approval queue.",
-    ["enterprise_approval_decision_workflow_not_complete"]
+    ["license_promotion_still_requires_checkride_and_evidence_policy"]
+  ),
+  synthi_dojo_review_permission_upgrade: controlPlaneWrite(
+    "Records approval or denial review state for a stored permission-upgrade request without promoting the production license by itself.",
+    ["license_promotion_still_requires_checkride_and_evidence_policy"]
   ),
   synthi_dojo_generate_vivarium_scenarios: deterministic("Generates scenario catalog data from a Skill Seed."),
   synthi_dojo_run_vivarium_scenario: syntheticRuntime("Materializes a synthetic fixture, runs the Skill Graph in checkride mode, and evaluates the oracle from observed evidence."),

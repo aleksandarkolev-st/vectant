@@ -406,6 +406,7 @@ function filterPermissionUpgradeRequests(
     ? Math.floor(filter.limit)
     : undefined;
   const filtered = records
+    .filter((record) => !filter.request_id || record.request_id === filter.request_id)
     .filter((record) => !filter.skill_id || record.skill_id === filter.skill_id)
     .filter((record) => !filter.workflow_id || record.workflow_id === filter.workflow_id)
     .filter((record) => !filter.requested_action || record.requested_action === filter.requested_action)

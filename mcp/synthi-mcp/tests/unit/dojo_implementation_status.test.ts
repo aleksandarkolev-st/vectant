@@ -67,7 +67,15 @@ describe("Dojo implementation status registry", () => {
         implementation_status: "executable",
         runtime_enforced: false,
         evidence_backing: "caller_context",
-        maturity_blockers: expect.arrayContaining(["enterprise_approval_decision_workflow_not_complete"]),
+        maturity_blockers: expect.arrayContaining(["license_promotion_still_requires_checkride_and_evidence_policy"]),
+      })
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_review_permission_upgrade")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: false,
+        evidence_backing: "caller_context",
+        maturity_blockers: expect.arrayContaining(["license_promotion_still_requires_checkride_and_evidence_policy"]),
       })
     );
   });

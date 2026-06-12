@@ -257,6 +257,7 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_get_agent_ready_ui_contract" }),
         expect.objectContaining({ name: "synthi_dojo_explain_failure" }),
         expect.objectContaining({ name: "synthi_dojo_publish_skill" }),
+        expect.objectContaining({ name: "synthi_dojo_review_permission_upgrade" }),
         expect.objectContaining({ name: "synthi_dojo_get_license_health" }),
         expect.objectContaining({ name: "synthi_dojo_record_case_law" }),
         expect.objectContaining({ name: "synthi_dojo_revoke_license" }),
@@ -595,6 +596,48 @@ describe("Agent Dojo MCP tools", () => {
             source: "permission_upgrade_request",
           }),
         ]),
+      }),
+    }));
+    const reviewedUpgrade = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      request_id: "upgrade-test-request",
+      decision: "approved",
+      reviewer_actor_id: "reviewer-b",
+      reviewer_actor_type: "human",
+      reason: "Unit test reviewed evidence.",
+      evidence_refs: ["evidence:unit-review"],
+      decided_at: "2026-06-11T00:04:00.000Z",
+    });
+    expect(reviewedUpgrade?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      request_id: "upgrade-test-request",
+      decision: "approved",
+      permission_upgrade_request: expect.objectContaining({
+        status: "approved",
+        reviewed_at: "2026-06-11T00:04:00.000Z",
+        reviewed_by: { actor_id: "reviewer-b", actor_type: "human" },
+        review_reason: "Unit test reviewed evidence.",
+        decision_evidence_refs: ["evidence:unit-review"],
+        evidence_refs: expect.arrayContaining(["evidence:unit-review"]),
+      }),
+      review: expect.objectContaining({
+        ok: true,
+        audit_event: expect.objectContaining({ event_type: "approval_granted" }),
+      }),
+      governance_service: expect.objectContaining({
+        approval_queue: [],
+      }),
+    }));
+    const reviewedAgain = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      request_id: "upgrade-test-request",
+      decision: "denied",
+      reviewer_actor_id: "reviewer-c",
+    });
+    expect(reviewedAgain?.isError).toBe(true);
+    expect(reviewedAgain?.structuredContent).toEqual(expect.objectContaining({
+      error: "permission_upgrade_request_not_pending",
+      review: expect.objectContaining({
+        ok: false,
+        blocked_by: ["request_status:approved"],
       }),
     }));
     const scenarioRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {

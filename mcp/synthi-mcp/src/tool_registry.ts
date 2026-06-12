@@ -85,6 +85,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_dojo_run_time_machine_debugger",
   "synthi_dojo_run_ghost_mode",
   "synthi_dojo_request_permission_upgrade",
+  "synthi_dojo_review_permission_upgrade",
   "synthi_dojo_generate_vivarium_scenarios",
   "synthi_dojo_run_vivarium_scenario",
   "synthi_dojo_run_wind_tunnel",

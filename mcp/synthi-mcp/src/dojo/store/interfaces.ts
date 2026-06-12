@@ -63,6 +63,7 @@ export interface DojoPermissionUpgradeRequestRecord {
 }
 
 export interface DojoPermissionUpgradeRequestFilter {
+  request_id?: string;
   skill_id?: string;
   workflow_id?: string;
   requested_action?: string;

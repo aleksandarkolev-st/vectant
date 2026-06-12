@@ -30,7 +30,11 @@ import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_viva
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
-import { buildDojoGovernanceServiceView, revokeDojoSkillLicense } from "../dojo/governance/service.js";
+import {
+  buildDojoGovernanceServiceView,
+  decideDojoPermissionUpgradeRequest,
+  revokeDojoSkillLicense,
+} from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import {
   contextKeyForDojoGuardrailPredicate,
@@ -82,6 +86,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_run_time_machine_debugger",
   "synthi_dojo_run_ghost_mode",
   "synthi_dojo_request_permission_upgrade",
+  "synthi_dojo_review_permission_upgrade",
   "synthi_dojo_generate_vivarium_scenarios",
   "synthi_dojo_run_vivarium_scenario",
   "synthi_dojo_run_wind_tunnel",
@@ -384,6 +389,24 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_review_permission_upgrade",
+    description:
+      "Approve or deny a stored Dojo permission-upgrade request with reviewer metadata and evidence references. This records governance review state; it does not promote the production license by itself.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        request_id: { type: "string" },
+        decision: { type: "string", enum: ["approved", "denied"] },
+        reviewer_actor_id: { type: "string" },
+        reviewer_actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        reason: { type: "string" },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        decided_at: { type: "string" },
+      },
+      required: ["request_id", "decision"],
+    },
+  },
+  {
     name: "synthi_dojo_generate_vivarium_scenarios",
     description:
       "Extract a Skill Seed from the current or saved workflow contract and generate a task-specific synthetic Workspace Organoid scenario set.",
@@ -669,6 +692,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_request_permission_upgrade":
         response = dojoPermissionUpgradeTool(args);
+        break;
+      case "synthi_dojo_review_permission_upgrade":
+        response = dojoReviewPermissionUpgradeTool(args);
         break;
       case "synthi_dojo_generate_vivarium_scenarios":
         response = dojoGenerateVivariumScenariosTool(args);
@@ -1156,6 +1182,51 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
       permission_upgrade_requests: [storedRequest],
       now,
     }).approval_queue.filter((item) => item.request_id === storedRequest.request_id),
+  });
+}
+
+function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const requestId = stringOpt(a["request_id"]);
+  if (!requestId) return errorResponse("dojo_permission_upgrade_request_id_required");
+  const decision = permissionUpgradeDecisionOpt(a["decision"]);
+  if (!decision) return errorResponse("dojo_permission_upgrade_decision_required", {
+    allowed_decisions: ["approved", "denied"],
+  });
+  const storedRequest = dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestId, limit: 1 })[0];
+  if (!storedRequest) return errorResponse("dojo_permission_upgrade_request_not_found", { request_id: requestId });
+
+  const review = decideDojoPermissionUpgradeRequest({
+    request: storedRequest,
+    decision,
+    decided_by: {
+      actor_id: stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]) ?? "anonymous-reviewer",
+      actor_type: actorTypeOpt(a["reviewer_actor_type"] ?? a["actor_type"]),
+    },
+    decided_at: stringOpt(a["decided_at"]) ?? stringOpt(a["now"]),
+    reason: stringOpt(a["reason"]),
+    evidence_refs: stringArrayOpt(a["evidence_refs"]),
+  });
+  if (!review.ok) {
+    return errorResponse(review.error ?? "dojo_permission_upgrade_review_rejected", {
+      request_id: requestId,
+      review,
+    });
+  }
+
+  const updatedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(review.request);
+  const skill = dojoSkillRegistry.get(updatedRequest.skill_id);
+  return jsonResponse({
+    ok: true,
+    request_id: requestId,
+    decision,
+    permission_upgrade_request: updatedRequest,
+    review,
+    governance_service: buildDojoGovernanceServiceView({
+      skills: skill ? [skill] : [],
+      permission_upgrade_requests: [updatedRequest],
+      now: updatedRequest.reviewed_at,
+    }),
   });
 }
 
@@ -1995,6 +2066,10 @@ function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {
 
 function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {
   return value === "human" || value === "service" ? value : "agent";
+}
+
+function permissionUpgradeDecisionOpt(value: unknown): "approved" | "denied" | undefined {
+  return value === "approved" || value === "denied" ? value : undefined;
 }
 
 function persistDojoRuns(

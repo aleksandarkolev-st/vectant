@@ -106,6 +106,13 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
       status: "pending",
     }),
   ]);
+  expect(approvalStore.listPermissionUpgradeRequests({ request_id: "upgrade-unit-test" })).toEqual([
+    expect.objectContaining({
+      skill_id: skill.skill_id,
+      requested_action: "commit_mutation",
+    }),
+  ]);
+  expect(approvalStore.listPermissionUpgradeRequests({ request_id: "missing-upgrade" })).toEqual([]);
   expect(approvalStore.listPermissionUpgradeRequests({ status: "approved" })).toEqual([]);
   expect(store.clear).toEqual(expect.any(Function));
   expect(store.withTransaction).toBeUndefined();
