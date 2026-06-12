@@ -29,6 +29,8 @@ import {
 } from "../dojo/evidence/export.js";
 import {
   DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY,
+  DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
   DOJO_PROOF_SIGNING_KEY_ENV,
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
@@ -39,6 +41,7 @@ import {
   canonicalDojoProofPayload,
   createEd25519DojoProofSigner,
   createEd25519DojoProofVerifier,
+  createExternalCommandDojoProofSigner,
   createLocalHmacDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   parseDojoProofSignatureEnvelope,
@@ -3189,7 +3192,7 @@ function dojoProofSigningKey(): string {
 }
 
 function dojoProofKeyId(): string {
-  if (dojoProofSigningProvider() === "ed25519-local") {
+  if (dojoProofSigningProvider() === "ed25519-local" || dojoProofSigningProvider() === "external-command") {
     const keyId = process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV]?.trim();
     if (!keyId) throw new Error("dojo_proof_signing_key_id_required");
     return keyId;
@@ -3204,6 +3207,15 @@ function dojoProofSigner(): DojoProofSigner {
     return createEd25519DojoProofSigner({
       key_id: dojoProofKeyId(),
       private_key_pem: privateKeyPem,
+    });
+  }
+  if (dojoProofSigningProvider() === "external-command") {
+    const command = process.env[DOJO_PROOF_SIGNING_COMMAND_ENV]?.trim();
+    if (!command) throw new Error("dojo_external_proof_signing_command_required");
+    return createExternalCommandDojoProofSigner({
+      key_id: dojoProofKeyId(),
+      command,
+      args: dojoProofSigningCommandArgs(),
     });
   }
   return createLocalHmacDojoProofSigner({
@@ -3229,6 +3241,21 @@ function dojoProofVerifierForCapsule(capsule: DojoProofCarryingSkillCapsule): Do
 
 function dojoProofSigningProvider(): string {
   return process.env[DOJO_PROOF_SIGNING_PROVIDER_ENV]?.trim() || "hmac-local";
+}
+
+function dojoProofSigningCommandArgs(): string[] {
+  const raw = process.env[DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV]?.trim();
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("dojo_external_proof_signing_command_args_invalid");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+    throw new Error("dojo_external_proof_signing_command_args_invalid");
+  }
+  return parsed;
 }
 
 function workflowWorkspaceId(contract: WorkflowContractV7): string {

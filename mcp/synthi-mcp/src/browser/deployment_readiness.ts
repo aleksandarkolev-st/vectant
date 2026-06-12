@@ -6,6 +6,8 @@ import {
   configuredDojoStoreEnv,
   DOJO_EVIDENCE_LEDGER_STORE_ENV,
   DOJO_PRODUCTION_ENFORCEMENT_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
   DOJO_PROOF_SIGNING_KEY_ENV,
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
@@ -215,6 +217,8 @@ function checkDojoExternalSigning(
     DOJO_PROOF_SIGNING_KEY_ENV,
     DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
     DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+    DOJO_PROOF_SIGNING_COMMAND_ENV,
+    DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
   ];
   const configured = [
     ...(config.require_external_signing ? [DOJO_REQUIRE_EXTERNAL_SIGNING_ENV] : []),
@@ -222,12 +226,23 @@ function checkDojoExternalSigning(
   ];
   const provider = nonEmpty(env[DOJO_PROOF_SIGNING_PROVIDER_ENV]);
   const keyId = nonEmpty(env[DOJO_PROOF_SIGNING_KEY_ID_ENV]);
-  const hasExternalSigner = provider && keyId && !isDojoDefaultLocalProofSigningKey(env);
+  const command = nonEmpty(env[DOJO_PROOF_SIGNING_COMMAND_ENV]);
+  const publicKey = nonEmpty(env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]);
+  const hasExternalCommandSigner = provider === "external-command"
+    && keyId
+    && command
+    && publicKey;
+  const hasExternalSigner = provider
+    && provider !== "hmac-local"
+    && provider !== "ed25519-local"
+    && provider !== "external-command"
+    && keyId
+    && !isDojoDefaultLocalProofSigningKey(env);
   const hasEd25519Signer = provider === "ed25519-local"
     && keyId
     && nonEmpty(env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV])
-    && nonEmpty(env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]);
-  if (config.require_external_signing && (hasExternalSigner || hasEd25519Signer)) {
+    && publicKey;
+  if (config.require_external_signing && (hasExternalCommandSigner || hasExternalSigner || hasEd25519Signer)) {
     return pass("dojo_external_signing", "Dojo proof signing is configured without the default local signing key.", required, configured);
   }
   return {

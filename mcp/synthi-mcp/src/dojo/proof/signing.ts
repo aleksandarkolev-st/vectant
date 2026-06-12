@@ -6,6 +6,7 @@ import {
   verify as nodeVerify,
   type KeyObject,
 } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY } from "../config/enforcement.js";
 
 export type DojoProofSigningAlgorithm = "hmac-sha256" | "ed25519";
@@ -33,6 +34,20 @@ export interface Ed25519DojoProofKeyPair {
   key_id: string;
   public_key_pem: string;
   private_key_pem: string;
+}
+
+export interface ExternalCommandDojoProofSignerRequest {
+  schema_version: "synthi.dojo.externalSignerRequest.v1";
+  algorithm: "ed25519";
+  key_id: string;
+  payload: string;
+}
+
+export interface ExternalCommandDojoProofSignerResponse {
+  schema_version: "synthi.dojo.externalSignerResponse.v1";
+  algorithm: "ed25519";
+  key_id: string;
+  signature: string;
 }
 
 export function canonicalDojoProofPayload(value: unknown): string {
@@ -112,6 +127,54 @@ export function createEd25519DojoProofVerifier(input: {
   };
 }
 
+export function createExternalCommandDojoProofSigner(input: {
+  key_id: string;
+  command: string;
+  args?: string[];
+  timeout_ms?: number;
+  env?: NodeJS.ProcessEnv;
+}): DojoProofSigner {
+  const command = input.command.trim();
+  if (!command) throw new Error("dojo_external_proof_signing_command_required");
+  const args = input.args ?? [];
+  if (!args.every((arg) => typeof arg === "string")) throw new Error("dojo_external_proof_signing_args_invalid");
+  return {
+    algorithm: "ed25519",
+    key_id: input.key_id,
+    local_development_only: false,
+    sign(payload: string): DojoProofSignatureEnvelope {
+      const request: ExternalCommandDojoProofSignerRequest = {
+        schema_version: "synthi.dojo.externalSignerRequest.v1",
+        algorithm: "ed25519",
+        key_id: input.key_id,
+        payload,
+      };
+      const result = spawnSync(command, args, {
+        input: JSON.stringify(request),
+        encoding: "utf8",
+        env: input.env ?? process.env,
+        timeout: input.timeout_ms ?? 5000,
+        windowsHide: true,
+      });
+      if (result.error) throw new Error(`dojo_external_proof_signer_failed:${result.error.message}`);
+      if (result.status !== 0) {
+        const stderr = String(result.stderr ?? "").trim();
+        throw new Error(`dojo_external_proof_signer_failed:${stderr || `exit_${result.status ?? "unknown"}`}`);
+      }
+      const response = parseExternalCommandSignerResponse(String(result.stdout ?? ""));
+      if (response.key_id !== input.key_id) throw new Error("dojo_external_proof_signer_key_mismatch");
+      const signature = response.signature.startsWith("ed25519:")
+        ? response.signature
+        : `ed25519:${response.signature}`;
+      return {
+        algorithm: "ed25519",
+        key_id: input.key_id,
+        signature,
+      };
+    },
+  };
+}
+
 export function encodeDojoProofSignatureEnvelope(envelope: DojoProofSignatureEnvelope): string {
   if (envelope.algorithm === "hmac-sha256") return envelope.signature;
   const signatureValue = envelope.signature.startsWith(`${envelope.algorithm}:`)
@@ -158,6 +221,33 @@ export function assertProductionDojoProofSigner(signer: DojoProofSigner): void {
   if (signer.local_development_only || signer.algorithm === "hmac-sha256") {
     throw new Error("dojo_proof_signer_not_production_ready");
   }
+}
+
+function parseExternalCommandSignerResponse(raw: string): ExternalCommandDojoProofSignerResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("dojo_external_proof_signer_response_invalid");
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("dojo_external_proof_signer_response_invalid");
+  const response = parsed as Partial<ExternalCommandDojoProofSignerResponse>;
+  if (response.schema_version !== "synthi.dojo.externalSignerResponse.v1") {
+    throw new Error("dojo_external_proof_signer_response_schema_invalid");
+  }
+  if (response.algorithm !== "ed25519") throw new Error("dojo_external_proof_signer_algorithm_invalid");
+  if (typeof response.key_id !== "string" || !response.key_id.trim()) {
+    throw new Error("dojo_external_proof_signer_key_id_invalid");
+  }
+  if (typeof response.signature !== "string" || !response.signature.trim()) {
+    throw new Error("dojo_external_proof_signer_signature_invalid");
+  }
+  return {
+    schema_version: response.schema_version,
+    algorithm: response.algorithm,
+    key_id: response.key_id,
+    signature: response.signature,
+  };
 }
 
 function sha256Hex(value: string): string {

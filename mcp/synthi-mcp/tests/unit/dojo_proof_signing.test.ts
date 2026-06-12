@@ -3,6 +3,7 @@ import {
   assertProductionDojoProofSigner,
   createEd25519DojoProofSigner,
   createEd25519DojoProofVerifier,
+  createExternalCommandDojoProofSigner,
   createLocalHmacDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   generateEd25519DojoProofKeyPair,
@@ -58,6 +59,51 @@ describe("Dojo proof signing", () => {
     expect(verifier.verify(payload(), signer.sign(payload()))).toBe(false);
   });
 
+  it("signs through an external command signer and verifies with the public key", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("external-ed-key-a");
+    const signer = createExternalCommandDojoProofSigner({
+      key_id: keyPair.key_id,
+      command: process.execPath,
+      args: ["-e", externalSignerCommandSource()],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: keyPair.private_key_pem,
+      },
+    });
+    const verifier = createEd25519DojoProofVerifier({
+      key_id: keyPair.key_id,
+      public_key_pem: keyPair.public_key_pem,
+    });
+    const signature = signer.sign(payload());
+
+    expect(signer.local_development_only).toBe(false);
+    expect(signature).toEqual(expect.objectContaining({
+      algorithm: "ed25519",
+      key_id: keyPair.key_id,
+      signature: expect.stringMatching(/^ed25519:/),
+    }));
+    expect(verifier.verify(payload(), signature)).toBe(true);
+  });
+
+  it("fails closed when an external command signer exits or returns the wrong key", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("external-ed-key-a");
+    expect(() => createExternalCommandDojoProofSigner({
+      key_id: keyPair.key_id,
+      command: process.execPath,
+      args: ["-e", "process.stderr.write('kms unavailable'); process.exit(2);"],
+    }).sign(payload())).toThrow("dojo_external_proof_signer_failed:kms unavailable");
+
+    expect(() => createExternalCommandDojoProofSigner({
+      key_id: keyPair.key_id,
+      command: process.execPath,
+      args: ["-e", externalSignerCommandSource({ wrong_key_id: "external-ed-key-b" })],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: keyPair.private_key_pem,
+      },
+    }).sign(payload())).toThrow("dojo_external_proof_signer_key_mismatch");
+  });
+
   it("encodes and parses signature envelopes without breaking legacy HMAC signatures", () => {
     const hmacSigner = createLocalHmacDojoProofSigner({ key: "unit-test-key", key_id: "hmac-key-a" });
     const hmacSignature = hmacSigner.sign(payload());
@@ -106,4 +152,24 @@ function payload(): string {
     evidence_record_ids: ["evidence-a"],
     ledger_checkpoint_hash: "a".repeat(64),
   });
+}
+
+function externalSignerCommandSource(input: { wrong_key_id?: string } = {}): string {
+  return `
+    const { sign } = require("node:crypto");
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      const request = JSON.parse(body);
+      if (request.schema_version !== "synthi.dojo.externalSignerRequest.v1") process.exit(8);
+      const signature = sign(null, Buffer.from(request.payload, "utf8"), process.env.DOJO_TEST_PRIVATE_KEY_PEM).toString("base64url");
+      process.stdout.write(JSON.stringify({
+        schema_version: "synthi.dojo.externalSignerResponse.v1",
+        algorithm: "ed25519",
+        key_id: ${JSON.stringify(input.wrong_key_id)} || request.key_id,
+        signature
+      }));
+    });
+  `;
 }

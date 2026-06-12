@@ -157,6 +157,51 @@ describe("browser workflow deployment readiness", () => {
     expect(JSON.stringify(readiness)).not.toMatch(/BEGIN PRIVATE KEY|BEGIN PUBLIC KEY|redacted/);
   });
 
+  it("passes production readiness with external command proof signing and public verifier material", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "external-command",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "external-ed-key-a",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY: undefined,
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND: "/usr/local/bin/dojo-proof-signer",
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS: "[\"--tenant\",\"tenant-a\"]",
+      SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: "-----BEGIN PUBLIC KEY-----\nredacted\n-----END PUBLIC KEY-----",
+      SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM: undefined,
+    });
+
+    expect(readiness.ok).toBe(true);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_external_signing",
+        status: "pass",
+        configured_env: expect.arrayContaining([
+          "SYNTHI_DOJO_PROOF_SIGNING_PROVIDER",
+          "SYNTHI_DOJO_PROOF_SIGNING_KEY_ID",
+          "SYNTHI_DOJO_PROOF_SIGNING_COMMAND",
+          "SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS",
+          "SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM",
+        ]),
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/dojo-proof-signer|BEGIN PUBLIC KEY|redacted/);
+  });
+
+  it("fails production readiness for incomplete external command proof signing", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "external-command",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "external-ed-key-a",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY: undefined,
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND: "/usr/local/bin/dojo-proof-signer",
+      SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: undefined,
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
+    ]));
+  });
+
   it("fails production readiness for incomplete Ed25519 proof signing material", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),

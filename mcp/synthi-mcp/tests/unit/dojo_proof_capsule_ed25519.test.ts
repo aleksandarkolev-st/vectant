@@ -7,6 +7,8 @@ import {
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import {
+  DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
@@ -19,6 +21,8 @@ const ENV_KEYS = [
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
 ] as const;
 
 const savedEnv = new Map<string, string | undefined>();
@@ -99,6 +103,24 @@ describe("Dojo Ed25519 proof capsules", () => {
       })
     );
   });
+
+  it("issues and validates Ed25519 proof capsules through an external command signer", () => {
+    const keyPair = configureExternalCommandProofSigning();
+    const skill = skillFixture();
+
+    const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(capsule.key_id).toBe(keyPair.key_id);
+    expect(capsule.signature_algorithm).toBe("ed25519");
+    expect(capsule.signature).toMatch(/^ed25519:external-ed-key-a:/);
+    expect(validateDojoProofCapsule(skill, capsule, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
+      expect.objectContaining({ ok: true, status: "allowed" })
+    );
+  });
 });
 
 function configureEd25519ProofSigning() {
@@ -107,6 +129,17 @@ function configureEd25519ProofSigning() {
   process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV] = keyPair.key_id;
   process.env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV] = keyPair.private_key_pem;
   process.env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV] = keyPair.public_key_pem;
+  return keyPair;
+}
+
+function configureExternalCommandProofSigning() {
+  const keyPair = generateEd25519DojoProofKeyPair("external-ed-key-a");
+  process.env[DOJO_PROOF_SIGNING_PROVIDER_ENV] = "external-command";
+  process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV] = keyPair.key_id;
+  process.env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV] = keyPair.public_key_pem;
+  process.env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV] = keyPair.private_key_pem;
+  process.env[DOJO_PROOF_SIGNING_COMMAND_ENV] = process.execPath;
+  process.env[DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV] = JSON.stringify(["-e", externalSignerCommandSource()]);
   return keyPair;
 }
 
@@ -144,4 +177,23 @@ function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
     confidence: 0.99,
     ...overrides,
   };
+}
+
+function externalSignerCommandSource(): string {
+  return `
+    const { sign } = require("node:crypto");
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      const request = JSON.parse(body);
+      const signature = sign(null, Buffer.from(request.payload, "utf8"), process.env.${DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV}).toString("base64url");
+      process.stdout.write(JSON.stringify({
+        schema_version: "synthi.dojo.externalSignerResponse.v1",
+        algorithm: "ed25519",
+        key_id: request.key_id,
+        signature
+      }));
+    });
+  `;
 }
