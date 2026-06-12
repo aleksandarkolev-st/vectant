@@ -87,6 +87,12 @@ export function verifyDojoRedactionManifest(input: {
   };
 }
 
+export function dojoRedactionDigestHex(digest: string): string {
+  const normalized = digest.startsWith("sha256:") ? digest.slice("sha256:".length) : digest;
+  if (!/^[a-f0-9]{64}$/i.test(normalized)) throw new Error("dojo_redaction_sha256_digest_invalid");
+  return normalized.toLowerCase();
+}
+
 function redactValue(value: unknown, counts: RedactionCounts, keyHint = ""): unknown {
   if (SENSITIVE_KEY_PATTERN.test(keyHint)) {
     increment(counts, "sensitive_key");
