@@ -2463,6 +2463,7 @@ const server = http.createServer(async (req, res) => {
             seen.set(uid, {
               id: uid,
               name: ws._userName || userDisplayNameCache.get(uid)?.name || 'Anonymous',
+              email: ws._userEmail || null,
               color: ws._userColor || '#888',
               image: ws._userImage || userDisplayNameCache.get(uid)?.avatar || null,
               lastActive: Date.now(),
@@ -4243,8 +4244,9 @@ notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._userEmail = params.get('email') ? decodeURIComponent(params.get('email')).trim().toLowerCase() : null;
   ws._sessionId = params.get('sessionId') || null;
-  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId, hasEmail: !!ws._userEmail });
   // Flush any offline events for this user as a burst of queued:true
   // messages so the UI can surface them as popups.
   if (ws._userId) {

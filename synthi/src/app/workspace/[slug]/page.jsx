@@ -1321,9 +1321,13 @@ export default function EditorPage({ params }) {
                     svc._emit('collab-invite', msg);
                 });
             },
-        }, { userId: authUserId, sessionId: activeSessionId });
+        }, {
+            userId: authUserId,
+            sessionId: activeSessionId,
+            userEmail: authSession?.user?.email || null,
+        });
         return teardown;
-    }, [slug, dispatch, authUserId, activeSessionId]);
+    }, [slug, dispatch, authUserId, authSession?.user?.email, activeSessionId]);
 
     // ── SSE connection — event-driven push from backend ──────────────────
     // Establishes a single EventSource per workspace for server-pushed

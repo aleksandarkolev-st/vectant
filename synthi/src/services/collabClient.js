@@ -1117,12 +1117,13 @@ class CollabClient {
     const normalizedScope =
       typeof scope === 'string'
         ? { userId: scope, sessionId: null }
-        : { userId: scope?.userId || null, sessionId: scope?.sessionId || null };
+        : { userId: scope?.userId || null, sessionId: scope?.sessionId || null, userEmail: scope?.userEmail || null };
 
     const base = this.serverUrl.replace(/\/$/, '');
     let url = `${base}/notifications?slug=${encodeURIComponent(slug)}`;
     if (normalizedScope.userId) url += `&userId=${encodeURIComponent(normalizedScope.userId)}`;
     if (normalizedScope.sessionId) url += `&sessionId=${encodeURIComponent(normalizedScope.sessionId)}`;
+    if (normalizedScope.userEmail) url += `&email=${encodeURIComponent(normalizedScope.userEmail)}`;
 
     let ws;
     let reconnectTimer = null;
