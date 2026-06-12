@@ -159,6 +159,19 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_kind: "proof_artifact",
   },
   {
+    id: "dojo_affordance_codemod_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:affordance-codemod:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:affordance-codemod:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
+    evidence_schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+    default_report_path: "tmp/dojo-affordance-codemod-self-check/dojo-affordance-codemod-self-check.json",
+    default_evidence_path: "tmp/dojo-affordance-codemod-self-check/dojo-affordance-codemod-self-check.evidence.json",
+  },
+  {
     id: "frontend_lint",
     tier: "T0",
     working_directory: "synthi",
@@ -331,6 +344,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   "mcp_integration_tests",
   "dojo_self_check",
   "dojo_mcp_host_conformance_self_check",
+  "dojo_affordance_codemod_self_check",
   "docker_integration",
   "dojo_full_visual_proof",
   "dojo_ghost_mode_visual_proof",
@@ -553,6 +567,7 @@ export async function runSelfCheck({ outDir }) {
   assert.equal(manifest.tiers.length, 9);
   assert(manifest.minimal_pr_gate_ids.length > 0);
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
+  assert(manifest.milestone_gate_ids.includes("dojo_affordance_codemod_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
   assert(manifest.release_gate_ids.includes("security_abuse_suite"));

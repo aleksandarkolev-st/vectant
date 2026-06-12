@@ -19,6 +19,7 @@ const PACKAGE_SCRIPTS = {
     "test:integration": "vitest run tests/integration",
     "proof:dojo:self-check": "node scripts/dojo-proof-self-check.mjs",
     "proof:dojo:mcp-host-conformance:self-check": "node scripts/dojo-mcp-host-conformance.mjs --self-check",
+    "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
@@ -67,6 +68,15 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.policy.every_pr_requires).toEqual(["T0", "T1"]);
     expect(manifest.gates).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "dojo_self_check", tier: "T2", script_exists: true }),
+      expect.objectContaining({
+        id: "dojo_affordance_codemod_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:affordance-codemod:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        report_schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
+        evidence_schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+      }),
       expect.objectContaining({
         id: "dojo_full_visual_proof",
         tier: "T4",
