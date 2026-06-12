@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Landmark } from 'lucide-react';
-import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
+import {
+  createEmptyDojoSummary,
+  getDojoWorkspaceSummary,
+  reviewDojoPermissionUpgrade,
+  revokeDojoLicense,
+} from '@/services/dojoClient';
 import ApprovalQueue from './ApprovalQueue';
 import AuditExportPanel from './AuditExportPanel';
 import ComplianceEvidencePack from './ComplianceEvidencePack';
@@ -25,6 +30,7 @@ export default function GovernanceDashboard({
   onApproveApproval,
   onDenyApproval,
   onRevokeLicense,
+  enableBridgeActions = true,
 }) {
   const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
   const [loading, setLoading] = useState(autoLoad && !initialSummary);
@@ -52,6 +58,13 @@ export default function GovernanceDashboard({
 
   const governance = summary.governance || createEmptyDojoSummary(workspaceSlug).governance;
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
+  const supportsPermissionUpgradeReview = (item) => Boolean(item?.requestId && item?.source === 'permission_upgrade_request');
+  const approveApprovalHandler = onApproveApproval
+    ?? (enableBridgeActions ? (item) => reviewDojoPermissionUpgrade({ item, decision: 'approved', workspaceSlug }) : undefined);
+  const denyApprovalHandler = onDenyApproval
+    ?? (enableBridgeActions ? (item) => reviewDojoPermissionUpgrade({ item, decision: 'denied', workspaceSlug }) : undefined);
+  const revokeLicenseHandler = onRevokeLicense
+    ?? (enableBridgeActions ? (item) => revokeDojoLicense({ item, workspaceSlug }) : undefined);
 
   const invokeGovernanceAction = async ({ busyKey, successLabel, item, handler }) => {
     if (!handler) return;
@@ -120,27 +133,29 @@ export default function GovernanceDashboard({
           <LicenseHealthBoard
             items={governance.licenseHealth}
             busyLicenseId={actionState.busyKey.startsWith('license:') ? actionState.busyKey.slice('license:'.length) : ''}
-            onRevoke={onRevokeLicense ? (item) => invokeGovernanceAction({
+            onRevoke={revokeLicenseHandler ? (item) => invokeGovernanceAction({
               busyKey: `license:${item.licenseId}`,
               successLabel: `License revoked: ${item.skillName || item.skillId}`,
               item,
-              handler: onRevokeLicense,
+              handler: revokeLicenseHandler,
             }) : undefined}
           />
           <ApprovalQueue
             items={governance.approvalQueue}
             busyQueueId={actionState.busyKey.startsWith('approval:') ? actionState.busyKey.slice('approval:'.length) : ''}
-            onApprove={onApproveApproval ? (item) => invokeGovernanceAction({
+            canApprove={onApproveApproval ? undefined : supportsPermissionUpgradeReview}
+            canDeny={onDenyApproval ? undefined : supportsPermissionUpgradeReview}
+            onApprove={approveApprovalHandler ? (item) => invokeGovernanceAction({
               busyKey: `approval:${item.queueId}`,
               successLabel: `Approval approved: ${item.action || item.queueId}`,
               item,
-              handler: onApproveApproval,
+              handler: approveApprovalHandler,
             }) : undefined}
-            onDeny={onDenyApproval ? (item) => invokeGovernanceAction({
+            onDeny={denyApprovalHandler ? (item) => invokeGovernanceAction({
               busyKey: `approval:${item.queueId}`,
               successLabel: `Approval denied: ${item.action || item.queueId}`,
               item,
-              handler: onDenyApproval,
+              handler: denyApprovalHandler,
             }) : undefined}
           />
         </section>

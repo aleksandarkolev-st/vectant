@@ -1,6 +1,7 @@
 'use client';
 
-import { getAgentWorkflowState } from './agentWorkflowClient';
+import { callAgentWorkflowTool, getAgentWorkflowState } from './agentWorkflowClient';
+import { getCurrentUser } from './userIdentity';
 
 export function createEmptyDojoSummary(workspaceSlug = '') {
   return {
@@ -421,6 +422,7 @@ function normalizeLicenseHealthItem(item, fallbackSkill) {
 function normalizeApprovalItem(item) {
   return {
     queueId: item.queue_id || item.queueId || `${item.skill_id || item.skillId || 'skill'}:${item.action || 'approval'}`,
+    requestId: item.request_id || item.requestId || '',
     skillId: item.skill_id || item.skillId || '',
     workspaceId: item.workspace_id || item.workspaceId || '',
     licenseId: item.license_id || item.licenseId || '',
@@ -429,6 +431,8 @@ function normalizeApprovalItem(item) {
     reason: item.reason || '',
     status: item.status || 'pending',
     source: item.source || 'license_gated_action',
+    requestedAt: item.requested_at || item.requestedAt || '',
+    evidenceRefs: compactStrings(item.evidence_refs || item.evidenceRefs),
   };
 }
 
@@ -1221,4 +1225,104 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
 export async function getDojoWorkspaceSummary({ workspaceSlug = '', signal, url, token } = {}) {
   const state = await getAgentWorkflowState({ signal, url, token });
   return normalizeDojoWorkspaceSummary(state, workspaceSlug);
+}
+
+function bridgeToolActionError(body, fallbackCode) {
+  const result = body?.result || {};
+  const code = result.error || body?.error || fallbackCode;
+  const detail = result.detail || result.message || body?.detail || body?.message || '';
+  return new Error(detail ? `${code}: ${detail}` : code);
+}
+
+function assertBridgeToolActionOk(body, fallbackCode) {
+  if (!body?.ok || body?.is_error || body?.result?.error) {
+    throw bridgeToolActionError(body, fallbackCode);
+  }
+}
+
+function summaryFromToolBody(body, workspaceSlug) {
+  return normalizeDojoWorkspaceSummary(body?.state || {}, workspaceSlug);
+}
+
+function resolveGovernanceActor({ actorId, actorType = 'human' } = {}) {
+  const currentUser = getCurrentUser();
+  return {
+    actorId: actorId || currentUser?.id || '',
+    actorType,
+  };
+}
+
+export async function reviewDojoPermissionUpgrade({
+  item,
+  decision,
+  workspaceSlug = '',
+  reason = '',
+  evidenceRefs = [],
+  reviewerActorId,
+  reviewerActorType = 'human',
+  signal,
+  url,
+  token,
+} = {}) {
+  const requestId = item?.requestId || item?.request_id || '';
+  if (!requestId) throw new Error('dojo_permission_upgrade_request_id_required');
+  if (decision !== 'approved' && decision !== 'denied') throw new Error('dojo_permission_upgrade_decision_required');
+  const reviewer = resolveGovernanceActor({ actorId: reviewerActorId, actorType: reviewerActorType });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_review_permission_upgrade',
+    arguments: {
+      request_id: requestId,
+      decision,
+      reviewer_actor_id: reviewer.actorId,
+      reviewer_actor_type: reviewer.actorType,
+      ...(reason ? { reason } : {}),
+      evidence_refs: compactStrings(evidenceRefs),
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_permission_upgrade_review_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromToolBody(body, workspaceSlug),
+    message: `Permission ${decision}: ${item?.action || requestId}`,
+  };
+}
+
+export async function revokeDojoLicense({
+  item,
+  workspaceSlug = '',
+  reason = '',
+  evidenceRefs = [],
+  actorId,
+  actorType = 'human',
+  signal,
+  url,
+  token,
+} = {}) {
+  const skillId = item?.skillId || item?.skill_id || '';
+  if (!skillId) throw new Error('dojo_license_skill_id_required');
+  const actor = resolveGovernanceActor({ actorId, actorType });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_revoke_license',
+    arguments: {
+      skill_id: skillId,
+      ...(reason ? { reason } : {}),
+      actor_id: actor.actorId,
+      actor_type: actor.actorType,
+      evidence_refs: compactStrings(evidenceRefs),
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_license_revoke_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromToolBody(body, workspaceSlug),
+    message: `License revoked: ${item?.skillName || item?.skillId || skillId}`,
+  };
 }

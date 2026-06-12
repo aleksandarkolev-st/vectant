@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import GovernanceDashboard from '../GovernanceDashboard';
 import { createEmptyDojoSummary, normalizeDojoWorkspaceSummary } from '@/services/dojoClient';
+import { USER_ID_KEY } from '@/services/userIdentity';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,7 +26,7 @@ function renderDashboard(props = {}) {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<GovernanceDashboard autoLoad={false} {...props} />);
+    root.render(<GovernanceDashboard autoLoad={false} enableBridgeActions={false} {...props} />);
   });
   return container;
 }
@@ -277,6 +278,99 @@ describe('GovernanceDashboard', () => {
       licenseId: 'license-001',
     }));
     expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('license revoked in test');
+  });
+
+  it('uses bridge-backed default actions for permission upgrade review and license revocation', async () => {
+    const originalFetch = global.fetch;
+    const summary = buildGovernanceSummary();
+    summary.governance.approvalQueue = [{
+      ...summary.governance.approvalQueue[0],
+      queueId: 'permission-upgrade-001',
+      requestId: 'upgrade-001',
+      source: 'permission_upgrade_request',
+    }];
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        is_error: false,
+        result: { ok: true },
+        state: {
+          runtime: { status: 'ready' },
+          dojo: {
+            skillId: 'skill-save-invoice',
+            label: 'Save invoice',
+            status: 'licensed',
+          },
+          governanceService: {
+            metrics: { pending_approval_count: 1 },
+            approval_queue: [
+              {
+                queue_id: 'permission-upgrade-001',
+                request_id: 'upgrade-001',
+                skill_id: 'skill-save-invoice',
+                license_id: 'license-001',
+                action: 'send_invoice',
+                status: 'pending',
+                source: 'permission_upgrade_request',
+              },
+            ],
+            license_health: [
+              {
+                skill_id: 'skill-save-invoice',
+                skill_name: 'Save invoice',
+                license_id: 'license-001',
+                status: 'active',
+              },
+            ],
+          },
+        },
+      }),
+    }));
+
+    try {
+      localStorage.setItem(USER_ID_KEY, 'governance-operator');
+      const view = renderDashboard({
+        workspaceSlug: 'workspace-a',
+        initialSummary: summary,
+        enableBridgeActions: true,
+      });
+
+      await act(async () => {
+        view.querySelector('[data-testid="approval-permission-upgrade-001-approve"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const approveCall = global.fetch.mock.calls.at(-1);
+      expect(approveCall?.[0]).toContain('/browser-workflows/tool');
+      expect(JSON.parse(approveCall?.[1]?.body || '{}')).toEqual({
+        tool: 'synthi_dojo_review_permission_upgrade',
+        arguments: {
+          request_id: 'upgrade-001',
+          decision: 'approved',
+          reviewer_actor_id: 'governance-operator',
+          reviewer_actor_type: 'human',
+          evidence_refs: [],
+        },
+      });
+      expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Permission approved: send_invoice');
+
+      await act(async () => {
+        view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const revokeCall = global.fetch.mock.calls.at(-1);
+      expect(JSON.parse(revokeCall?.[1]?.body || '{}')).toEqual({
+        tool: 'synthi_dojo_revoke_license',
+        arguments: {
+          skill_id: 'skill-save-invoice',
+          actor_id: 'governance-operator',
+          actor_type: 'human',
+          evidence_refs: [],
+        },
+      });
+      expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('License revoked: Save invoice');
+    } finally {
+      localStorage.removeItem(USER_ID_KEY);
+      global.fetch = originalFetch;
+    }
   });
 
   it('loads governance summary through the provided client', async () => {
