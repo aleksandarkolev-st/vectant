@@ -163,6 +163,60 @@ describe("Dojo public proof capsule verifier", () => {
       blocked_by: ["proof_capsule_ledger_checkpoint_invalid"],
     }));
   });
+
+  it("blocks signed capsules with non-forward proof timestamp windows", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-invalid-window");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const verifier = createEd25519DojoProofVerifier({
+      key_id: keyPair.key_id,
+      public_key_pem: keyPair.public_key_pem,
+    });
+    const unsigned = {
+      ...ed25519CapsuleWithoutSignature(keyPair.key_id),
+      issued_at: "2026-06-11T00:15:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    };
+    const capsule = signPublicCapsule(unsigned, signer);
+
+    expect(verifyDojoProofCapsulePublic({
+      capsule,
+      verifier,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      signature_verified: true,
+      blocked_by: ["proof_capsule_expires_at_not_after_issued_at"],
+    }));
+  });
+
+  it("blocks public verification when the verifier timestamp is malformed", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-invalid-checked-at");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const verifier = createEd25519DojoProofVerifier({
+      key_id: keyPair.key_id,
+      public_key_pem: keyPair.public_key_pem,
+    });
+    const unsigned = ed25519CapsuleWithoutSignature(keyPair.key_id);
+    const capsule = signPublicCapsule(unsigned, signer);
+
+    expect(verifyDojoProofCapsulePublic({
+      capsule,
+      verifier,
+      now: "not-a-date",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      signature_verified: true,
+      blocked_by: ["proof_validation_time_invalid"],
+    }));
+  });
 });
 
 function skillFixture() {
@@ -203,6 +257,16 @@ function ed25519CapsuleWithoutSignature(keyId: string): Omit<DojoPublicProofCaps
     issued_at: "2026-06-11T00:00:00.000Z",
     expires_at: "2026-06-11T00:15:00.000Z",
     signature_algorithm: "ed25519",
+  };
+}
+
+function signPublicCapsule(
+  unsigned: Omit<DojoPublicProofCapsule, "signature">,
+  signer: ReturnType<typeof createEd25519DojoProofSigner>
+): DojoPublicProofCapsule {
+  return {
+    ...unsigned,
+    signature: encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(unsigned))),
   };
 }
 

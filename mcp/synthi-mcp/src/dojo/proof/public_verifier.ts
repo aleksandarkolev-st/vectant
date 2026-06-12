@@ -70,10 +70,16 @@ export function verifyDojoProofCapsulePublic(input: {
   }
   if (capsule.signature_algorithm !== input.verifier.algorithm) blockedBy.push("proof_capsule_signature_algorithm_mismatch");
   if (capsule.key_id !== input.verifier.key_id) blockedBy.push("proof_capsule_key_mismatch");
-  if (!validTimestamp(capsule.issued_at)) blockedBy.push("proof_capsule_issued_at_invalid");
-  if (!validTimestamp(capsule.expires_at)) {
-    blockedBy.push("proof_capsule_expires_at_invalid");
-  } else if (Date.parse(capsule.expires_at) <= Date.parse(checkedAt)) {
+  const issuedAtMs = parseTimestamp(capsule.issued_at);
+  const expiresAtMs = parseTimestamp(capsule.expires_at);
+  const checkedAtMs = parseTimestamp(checkedAt);
+  if (issuedAtMs === undefined) blockedBy.push("proof_capsule_issued_at_invalid");
+  if (expiresAtMs === undefined) blockedBy.push("proof_capsule_expires_at_invalid");
+  if (checkedAtMs === undefined) blockedBy.push("proof_validation_time_invalid");
+  if (issuedAtMs !== undefined && expiresAtMs !== undefined && expiresAtMs <= issuedAtMs) {
+    blockedBy.push("proof_capsule_expires_at_not_after_issued_at");
+  }
+  if (expiresAtMs !== undefined && checkedAtMs !== undefined && expiresAtMs <= checkedAtMs) {
     blockedBy.push("proof_capsule_expired");
   }
 
@@ -106,8 +112,9 @@ function verifySignature(capsule: DojoPublicProofCapsule, verifier: DojoProofVer
   }
 }
 
-function validTimestamp(value: string): boolean {
-  return Number.isFinite(Date.parse(value));
+function parseTimestamp(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isSha256Hex(value: string): boolean {
