@@ -99,7 +99,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
     expect(validateDojoApiBackedToolInvocation({
       tool,
       args: {
-        proof_capsule: { capsule_id: "capsule-a" },
+        proof_capsule: proofCapsuleFixture(),
         request: { amount: 42 },
         idempotency_key: "idem-a",
       },
@@ -110,8 +110,37 @@ describe("Dojo API-backed MCP tool compiler", () => {
         action: "run_workflow",
       },
     })).toEqual({ ok: true, blocked_by: [] });
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: { ...proofCapsuleFixture(), requested_action: "delete_invoice" },
+        request: { amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: {
+        skill_id: "dojo_save_invoice",
+        license_id: "license_save_invoice",
+        license_version: "1.0.0",
+        action: "run_workflow",
+      },
+    })).toEqual({
+      ok: false,
+      blocked_by: ["api_tool_proof_action_mismatch"],
+    });
   });
 });
+
+function proofCapsuleFixture() {
+  return {
+    capsule_id: "capsule-a",
+    nonce: "nonce-a",
+    skill_id: "dojo_save_invoice",
+    license_id: "license_save_invoice",
+    license_version: "1.0.0",
+    requested_action: "run_workflow",
+  };
+}
 
 function approvedMutationCandidate() {
   return {

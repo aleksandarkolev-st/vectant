@@ -90,8 +90,44 @@ export function validateDojoApiBackedToolInvocation(input: {
   license_context: { skill_id: string; license_id: string; license_version: string; action: string };
 }): DojoApiToolInvocationValidation {
   const blockedBy: string[] = [];
-  if (!input.args["proof_capsule"] || typeof input.args["proof_capsule"] !== "object") {
+  const proofCapsule = objectRecord(input.args["proof_capsule"]);
+  if (!proofCapsule) {
     blockedBy.push("api_tool_proof_capsule_required");
+  } else {
+    requireMatchingProofField(proofCapsule, "capsule_id", undefined, "api_tool_proof_capsule_id_required", blockedBy);
+    requireMatchingProofField(proofCapsule, "nonce", undefined, "api_tool_proof_nonce_required", blockedBy);
+    requireMatchingProofField(
+      proofCapsule,
+      "skill_id",
+      input.tool.skill_id,
+      "api_tool_proof_skill_required",
+      blockedBy,
+      "api_tool_proof_skill_mismatch"
+    );
+    requireMatchingProofField(
+      proofCapsule,
+      "license_id",
+      input.tool.license_id,
+      "api_tool_proof_license_required",
+      blockedBy,
+      "api_tool_proof_license_mismatch"
+    );
+    requireMatchingProofField(
+      proofCapsule,
+      "license_version",
+      input.tool.license_version,
+      "api_tool_proof_license_version_required",
+      blockedBy,
+      "api_tool_proof_license_version_mismatch"
+    );
+    requireMatchingProofField(
+      proofCapsule,
+      "requested_action",
+      input.tool.action,
+      "api_tool_proof_action_required",
+      blockedBy,
+      "api_tool_proof_action_mismatch"
+    );
   }
   if (input.tool.enforcement.idempotency_required && typeof input.args["idempotency_key"] !== "string") {
     blockedBy.push("api_tool_idempotency_key_required");
@@ -143,6 +179,29 @@ function slug(value: string): string {
 
 function digestObject(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function requireMatchingProofField(
+  proofCapsule: Record<string, unknown>,
+  fieldName: string,
+  expectedValue: string | undefined,
+  missingCode: string,
+  blockedBy: string[],
+  mismatchCode?: string
+): void {
+  const value = proofCapsule[fieldName];
+  if (typeof value !== "string" || value.length === 0) {
+    blockedBy.push(missingCode);
+    return;
+  }
+  if (expectedValue !== undefined && value !== expectedValue) {
+    blockedBy.push(mismatchCode ?? missingCode);
+  }
 }
 
 function canonicalJson(value: unknown): string {

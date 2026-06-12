@@ -88,7 +88,7 @@ describe("Dojo substrate executor", () => {
         client_id_verified: true,
         compiled_api_tool: tool,
         api_tool_args: {
-          proof_capsule: { capsule_id: "capsule-a" },
+          proof_capsule: proofCapsuleFixture(),
           request: { amount: 42 },
           idempotency_key: "idem-a",
         },
@@ -122,7 +122,7 @@ describe("Dojo substrate executor", () => {
         client_id_verified: true,
         compiled_api_tool: tool,
         api_tool_args: {
-          proof_capsule: { capsule_id: "capsule-a" },
+          proof_capsule: proofCapsuleFixture(),
           request: { amount: 42 },
           idempotency_key: "idem-a",
         },
@@ -140,6 +140,34 @@ describe("Dojo substrate executor", () => {
       ok: false,
       status: "blocked",
       blocked_by: ["api_tool_license_mismatch"],
+    }));
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: { ...proofCapsuleFixture(), requested_action: "delete_invoice" },
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_proof_action_mismatch"],
     }));
   });
 });
@@ -219,4 +247,15 @@ function compiledApiTool() {
   });
   if (!compiled.tool) throw new Error("compiled_api_tool_fixture_failed");
   return compiled.tool;
+}
+
+function proofCapsuleFixture() {
+  return {
+    capsule_id: "capsule-a",
+    nonce: "nonce-a",
+    skill_id: "skill-a",
+    license_id: "license-a",
+    license_version: "1.0.0",
+    requested_action: "run_workflow",
+  };
 }
