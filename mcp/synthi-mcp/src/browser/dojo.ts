@@ -3160,6 +3160,18 @@ function evidenceClaimsForProofIssue(
   },
   checkedAt: string
 ): { claims: DojoEvidenceClaim[]; recordIds: string[]; ledgerCheckpointHash?: string } {
+  if (input.ledger_checkpoint_hash && !isSha256Hex(input.ledger_checkpoint_hash)) {
+    throw new DojoProofEvidenceClaimError([
+      {
+        claim_id: "ledger_checkpoint_format",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: input.evidence_ledger_records?.map((record) => record.record_id) ?? [],
+        checked_at: checkedAt,
+        blocked_by: ["evidence_ledger_checkpoint_invalid"],
+      },
+    ]);
+  }
   const records = input.evidence_ledger_records ?? [];
   const strictEvidence = input.require_verified_evidence === true || records.length > 0;
   if (!strictEvidence) {
@@ -3218,6 +3230,10 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
     if (record && ids.has(record.record_id)) return record.ledger_head_hash;
   }
   return undefined;
+}
+
+function isSha256Hex(value: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(value);
 }
 
 function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">, signer: DojoProofSigner = dojoProofSigner()): string {
