@@ -64,6 +64,40 @@ describe("Dojo case-law refusal explanation", () => {
       smallest_allowed_next_step: "Provide the missing proof, approval, or runtime condition before run_workflow.",
     }));
   });
+
+  it("does not cite unrelated case law for non-guardrail proof blocks", () => {
+    const record = createDojoCaseLawFromFailure({
+      source_skill_id: "skill-a",
+      source_run_id: "run-a",
+      scenario_id: "scenario-a",
+      mutation_kind: "duplicate_entity",
+      finding: "Duplicate display name caused unsafe selection.",
+      impact: "Wrong record may be mutated.",
+      rule_created: "Require stable ID before mutation.",
+      applies_to: ["run_workflow"],
+      binding_scope: { kind: "workspace", id: "workspace-a" },
+      evidence_refs: ["evidence:oracle-a"],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const graph = {
+      ...graphFixture(),
+      nodes: graphFixture().nodes.map((node) => node.kind === "Action"
+        ? { ...node, case_law_refs: [record.case_id] }
+        : node
+      ),
+    };
+
+    expect(explainDojoRuntimeRefusal({
+      graph,
+      blocked_action: "run_workflow",
+      blocked_by: ["proof_capsule_missing"],
+      case_law: [record],
+    })).toEqual(expect.objectContaining({
+      rule: "Resolve block reason: proof_capsule_missing",
+      case_law_citations: [],
+      evidence_refs: [],
+    }));
+  });
 });
 
 function graphFixture(): DojoSkillGraph {

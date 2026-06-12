@@ -28,12 +28,11 @@ export function explainDojoRuntimeRefusal(input: {
   const matchingActionNodes = input.graph.nodes.filter((node) =>
     node.kind === "Action" && (!node.action || node.action === input.blocked_action)
   );
-  const matchingCaseIds = new Set(
-    matchingActionNodes
-      .filter((node) =>
-        guardrailRefs.length === 0 || node.guardrails.some((guardrail) => guardrailRefs.includes(guardrail.guardrail_id))
-      )
-      .flatMap((node) => node.case_law_refs)
+  const matchingCaseIds = new Set(guardrailRefs.length > 0
+    ? matchingActionNodes
+        .filter((node) => node.guardrails.some((guardrail) => guardrailRefs.includes(guardrail.guardrail_id)))
+        .flatMap((node) => node.case_law_refs)
+    : []
   );
   const citations = input.case_law
     .filter((record) => matchingCaseIds.has(record.case_id))
