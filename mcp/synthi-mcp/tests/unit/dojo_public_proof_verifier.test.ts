@@ -132,6 +132,45 @@ describe("Dojo public proof capsule verifier", () => {
     }));
   });
 
+  it("blocks signed capsules whose required evidence claims have no evidence refs", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-missing-evidence-refs");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const verifier = createEd25519DojoProofVerifier({
+      key_id: keyPair.key_id,
+      public_key_pem: keyPair.public_key_pem,
+    });
+    const unsigned = {
+      ...ed25519CapsuleWithoutSignature(keyPair.key_id),
+      evidence_claims: [{ claim: "checkride_passed", satisfied: true, evidence_refs: [] }],
+    };
+    const capsule = signPublicCapsule(unsigned, signer);
+
+    expect(verifyDojoProofCapsulePublic({
+      capsule,
+      verifier,
+      expected: {
+        issuer: "unit-test-issuer",
+        key_id: keyPair.key_id,
+        skill_id: "skill-a",
+        skill_version: "1.0.0",
+        license_version: "license-v1",
+        requested_action: "run_workflow",
+        ledger_checkpoint_hash: "c".repeat(64),
+        required_evidence_claims: ["checkride_passed"],
+      },
+      require_ledger_checkpoint: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      signature_verified: true,
+      blocked_by: ["proof_capsule_evidence_claim_refs_missing:checkride_passed"],
+    }));
+  });
+
   it("blocks signed capsules with malformed ledger checkpoint hashes", () => {
     const keyPair = generateEd25519DojoProofKeyPair("ed-key-malformed-checkpoint");
     const signer = createEd25519DojoProofSigner({

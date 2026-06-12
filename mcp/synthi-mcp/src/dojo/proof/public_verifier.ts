@@ -16,11 +16,19 @@ export interface DojoPublicProofCapsule {
   key_id: string;
   nonce: string;
   ledger_checkpoint_hash?: string;
+  evidence_claims?: DojoPublicProofEvidenceClaim[];
+  evidence_record_ids?: string[];
   issued_at: string;
   expires_at: string;
   signature_algorithm: DojoProofSigningAlgorithm;
   signature: string;
   [key: string]: unknown;
+}
+
+export interface DojoPublicProofEvidenceClaim {
+  claim: string;
+  satisfied: boolean;
+  evidence_refs?: string[];
 }
 
 export interface DojoPublicProofVerification {
@@ -44,6 +52,7 @@ export function verifyDojoProofCapsulePublic(input: {
     license_version?: string;
     requested_action?: string;
     ledger_checkpoint_hash?: string;
+    required_evidence_claims?: string[];
   };
   require_ledger_checkpoint?: boolean;
   now?: string;
@@ -67,6 +76,27 @@ export function verifyDojoProofCapsulePublic(input: {
   if (input.require_ledger_checkpoint && !capsule.ledger_checkpoint_hash) blockedBy.push("proof_capsule_ledger_checkpoint_missing");
   if (capsule.ledger_checkpoint_hash && !isSha256Hex(capsule.ledger_checkpoint_hash)) {
     blockedBy.push("proof_capsule_ledger_checkpoint_invalid");
+  }
+  const requiredEvidenceClaims = input.expected?.required_evidence_claims ?? [];
+  if (requiredEvidenceClaims.length > 0) {
+    const evidenceClaims = parsePublicEvidenceClaims(capsule.evidence_claims);
+    if (!evidenceClaims) {
+      blockedBy.push("proof_capsule_evidence_claims_invalid");
+    } else {
+      const satisfiedClaims = new Map(
+        evidenceClaims
+          .filter((claim) => claim.satisfied)
+          .map((claim) => [claim.claim, claim])
+      );
+      for (const claim of requiredEvidenceClaims) {
+        const evidenceClaim = satisfiedClaims.get(claim);
+        if (!evidenceClaim) {
+          blockedBy.push(`proof_capsule_evidence_claim_missing:${claim}`);
+        } else if (!hasEvidenceRefs(evidenceClaim)) {
+          blockedBy.push(`proof_capsule_evidence_claim_refs_missing:${claim}`);
+        }
+      }
+    }
   }
   if (capsule.signature_algorithm !== input.verifier.algorithm) blockedBy.push("proof_capsule_signature_algorithm_mismatch");
   if (capsule.key_id !== input.verifier.key_id) blockedBy.push("proof_capsule_key_mismatch");
@@ -119,4 +149,29 @@ function parseTimestamp(value: string): number | undefined {
 
 function isSha256Hex(value: string): boolean {
   return /^[a-f0-9]{64}$/i.test(value);
+}
+
+function parsePublicEvidenceClaims(value: unknown): DojoPublicProofEvidenceClaim[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const claims: DojoPublicProofEvidenceClaim[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return undefined;
+    const record = item as Record<string, unknown>;
+    if (typeof record.claim !== "string" || !record.claim.trim()) return undefined;
+    if (typeof record.satisfied !== "boolean") return undefined;
+    if (record.evidence_refs !== undefined) {
+      if (!Array.isArray(record.evidence_refs)) return undefined;
+      if (!record.evidence_refs.every((ref) => typeof ref === "string")) return undefined;
+    }
+    claims.push({
+      claim: record.claim,
+      satisfied: record.satisfied,
+      evidence_refs: record.evidence_refs as string[] | undefined,
+    });
+  }
+  return claims;
+}
+
+function hasEvidenceRefs(claim: DojoPublicProofEvidenceClaim): boolean {
+  return claim.evidence_refs?.some((ref) => ref.trim().length > 0) === true;
 }
