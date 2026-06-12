@@ -42,32 +42,39 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   await mkdir(path.dirname(sourcePath), { recursive: true });
   await mkdir(path.dirname(testPath), { recursive: true });
 
-  const operation = modules.stableLocatorPatchOperation({
+  const stableOperation = modules.stableLocatorPatchOperation({
     file_path: "src/InvoiceForm.jsx",
     target_component: "InvoiceForm",
     affordance_id: "invoice.save",
   });
+  const proofOperation = modules.proofHookPatchOperation({
+    file_path: "src/InvoiceForm.jsx",
+    target_component: "InvoiceForm",
+    affordance_id: "invoice.save",
+    hook_name: "assertDojoProof",
+  });
+  const operations = [stableOperation, proofOperation];
   const generatedTest = modules.generateReactAffordanceVitestContractTest({
     source_file_path: "src/InvoiceForm.jsx",
     test_file_path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
     component_name: "InvoiceForm",
-    operations: [operation],
+    operations,
   });
 
   await writeFile(sourcePath, invoiceFormSource());
   await writeFile(testPath, generatedTest.source);
   await writeFile(vitestConfigPath, fixtureVitestConfigSource());
 
-  const beforeContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), [operation]);
+  const beforeContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), operations);
   assert.equal(beforeContract.ok, false, "generated affordance contract should fail before patch");
   const beforeRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(beforeRun.ok, false, "generated Vitest contract should fail before codemod patch");
 
-  const patched = modules.applyReactAffordanceCodemodPlan(await readFile(sourcePath, "utf8"), [operation]);
+  const patched = modules.applyReactAffordanceCodemodPlan(await readFile(sourcePath, "utf8"), operations);
   assert.equal(patched.changed, true, "codemod should patch the fixture once");
   await writeFile(sourcePath, patched.source);
 
-  const afterContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), [operation]);
+  const afterContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), operations);
   assert.equal(afterContract.ok, true, "generated affordance contract should pass after patch");
   const afterRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(afterRun.ok, true, "generated Vitest contract should pass after codemod patch");
@@ -75,7 +82,7 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const report = {
     schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
     generated_at: new Date().toISOString(),
-    operation_id: operation.operation_id,
+    operation_ids: operations.map((operation) => operation.operation_id),
     generated_test_path: testPath,
     patched_source_path: sourcePath,
     fixture_vitest_config_path: vitestConfigPath,
@@ -100,7 +107,7 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     report_bytes: Buffer.byteLength(body),
     before_failed: report?.before_contract?.ok === false && report?.before_vitest?.ok === false,
     after_passed: report?.after_contract?.ok === true && report?.after_vitest?.ok === true,
-    operation_id: report?.operation_id ?? null,
+    operation_ids: Array.isArray(report?.operation_ids) ? report.operation_ids : report?.operation_id ? [report.operation_id] : [],
     generated_test_path: report?.generated_test_path ?? null,
     patched_source_path: report?.patched_source_path ?? null,
   };
@@ -135,6 +142,7 @@ async function importBuiltSourceModules() {
     ]);
     return {
       stableLocatorPatchOperation: plan.stableLocatorPatchOperation,
+      proofHookPatchOperation: plan.proofHookPatchOperation,
       applyReactAffordanceCodemodPlan: codemod.applyReactAffordanceCodemodPlan,
       evaluateReactAffordanceContract: codemod.evaluateReactAffordanceContract,
       generateReactAffordanceVitestContractTest: codemod.generateReactAffordanceVitestContractTest,
@@ -196,7 +204,11 @@ function tail(value) {
 }
 
 function invoiceFormSource() {
-  return `export function InvoiceForm({ onSave }) {
+  return `function assertDojoProof(affordanceId) {
+  return affordanceId;
+}
+
+export function InvoiceForm({ onSave }) {
   return (
     <form>
       <label>

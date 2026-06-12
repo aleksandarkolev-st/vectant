@@ -5,7 +5,7 @@ import { buildAffordanceCodemodEvidenceManifest } from "../../scripts/dojo-affor
 describe("Dojo affordance codemod self-check script", () => {
   it("builds digest evidence for before-fail and after-pass reports", () => {
     const report = {
-      operation_id: "patch_stable_locator_invoice_save",
+      operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
       generated_test_path: "/tmp/fixture/src/__tests__/InvoiceForm.dojo-affordance.test.ts",
       patched_source_path: "/tmp/fixture/src/InvoiceForm.jsx",
       before_contract: { ok: false },
@@ -26,8 +26,24 @@ describe("Dojo affordance codemod self-check script", () => {
       report_bytes: Buffer.byteLength(serialized),
       before_failed: true,
       after_passed: true,
-      operation_id: "patch_stable_locator_invoice_save",
+      operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
     }));
     expect(evidence.report_sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("keeps evidence compatibility for older single-operation reports", () => {
+    const evidence = buildAffordanceCodemodEvidenceManifest({
+      report: {
+        operation_id: "patch_stable_locator_invoice_save",
+        before_contract: { ok: false },
+        after_contract: { ok: true },
+        before_vitest: { ok: false },
+        after_vitest: { ok: true },
+      },
+      reportPath: "/tmp/report.json",
+      serialized: "{}",
+    });
+
+    expect(evidence.operation_ids).toEqual(["patch_stable_locator_invoice_save"]);
   });
 });

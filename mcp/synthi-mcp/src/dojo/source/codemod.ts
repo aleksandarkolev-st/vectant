@@ -50,6 +50,9 @@ export function applyReactAffordanceOperation(
   source: string,
   operation: DojoAffordancePatchOperation
 ): DojoReactCodemodResult {
+  if (operation.kind === "proof_hook") {
+    return applyReactProofHookOperation(source, operation);
+  }
   if (operation.kind !== "stable_locator") {
     throw new Error(`dojo_react_codemod_operation_unsupported:${operation.kind}`);
   }
@@ -81,12 +84,12 @@ export function evaluateReactAffordanceContract(
   operations: DojoAffordancePatchOperation[]
 ): DojoReactAffordanceContractResult {
   parseReactSourceOrThrow(source);
-  const required = operations.filter((operation) => operation.kind === "stable_locator");
+  const required = operations.filter((operation) => operation.kind === "stable_locator" || operation.kind === "proof_hook");
   const missing = required
-    .filter((operation) => !source.includes(operation.after))
+    .filter((operation) => !source.includes(contractExpectationForOperation(operation)))
     .map((operation) => ({
       operation_id: operation.operation_id,
-      expected: operation.after,
+      expected: contractExpectationForOperation(operation),
     }));
   return {
     ok: missing.length === 0,
@@ -101,15 +104,15 @@ export function generateReactAffordanceVitestContractTest(input: {
   component_name: string;
   operations: DojoAffordancePatchOperation[];
 }): DojoGeneratedReactAffordanceTest {
-  const required = input.operations.filter((operation) => operation.kind === "stable_locator");
+  const required = input.operations.filter((operation) => operation.kind === "stable_locator" || operation.kind === "proof_hook");
   if (required.length === 0) {
-    throw new Error("dojo_react_affordance_contract_test_requires_stable_locator");
+    throw new Error("dojo_react_affordance_contract_test_requires_contract_operation");
   }
   const relativeSourcePath = relativePathForGeneratedTest(input.test_file_path, input.source_file_path);
   const expectations = required.map((operation) => ({
     operation_id: operation.operation_id,
     affordance_id: operation.affordance_id,
-    expected: operation.after,
+    expected: contractExpectationForOperation(operation),
   }));
   const source = `import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -167,6 +170,67 @@ function findTargetElement(sourceFile: ts.SourceFile, targetComponent: string): 
   return target;
 }
 
+function applyReactProofHookOperation(source: string, operation: DojoAffordancePatchOperation): DojoReactCodemodResult {
+  const hookName = operation.after;
+  if (!source.includes(hookName)) {
+    throw new Error("dojo_react_codemod_proof_hook_not_in_scope");
+  }
+  const sourceFile = parseReactSourceOrThrow(source);
+  const target = findTargetElement(sourceFile, operation.target_component);
+  if (!target) throw new Error("dojo_react_codemod_target_not_found");
+  const expectedCall = proofHookCallExpression(operation);
+  if (target.getText(sourceFile).includes(expectedCall)) {
+    return {
+      changed: false,
+      source,
+      applied_operations: [],
+      skipped_operations: [operation.operation_id],
+    };
+  }
+  const onClick = findJsxAttribute(target, "onClick");
+  const replacement = onClick
+    ? proofHookWrappedOnClick(sourceFile, onClick, operation)
+    : `onClick={() => { ${expectedCall}; }}`;
+  const nextSource = onClick
+    ? `${source.slice(0, onClick.getStart(sourceFile))}${replacement}${source.slice(onClick.end)}`
+    : `${source.slice(0, target.end - (ts.isJsxSelfClosingElement(target) ? 2 : 1))} ${replacement}${source.slice(target.end - (ts.isJsxSelfClosingElement(target) ? 2 : 1))}`;
+  parseReactSourceOrThrow(nextSource);
+  return {
+    changed: true,
+    source: nextSource,
+    applied_operations: [operation.operation_id],
+    skipped_operations: [],
+  };
+}
+
+function proofHookWrappedOnClick(
+  sourceFile: ts.SourceFile,
+  onClick: ts.JsxAttribute,
+  operation: DojoAffordancePatchOperation
+): string {
+  const initializer = onClick.initializer;
+  if (!initializer || !ts.isJsxExpression(initializer) || !initializer.expression) {
+    throw new Error("dojo_react_codemod_onclick_expression_required");
+  }
+  const expression = initializer.expression;
+  const expressionText = expression.getText(sourceFile);
+  const expectedCall = proofHookCallExpression(operation);
+  if (ts.isIdentifier(expression) || ts.isPropertyAccessExpression(expression) || ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+    return `onClick={(event) => { ${expectedCall}; return (${expressionText})(event); }}`;
+  }
+  if (ts.isCallExpression(expression)) {
+    return `onClick={(event) => { ${expectedCall}; return ${expressionText}; }}`;
+  }
+  return `onClick={(event) => { ${expectedCall}; return (${expressionText}); }}`;
+}
+
+function findJsxAttribute(node: ts.JsxOpeningLikeElement, name: string): ts.JsxAttribute | null {
+  for (const property of node.attributes.properties) {
+    if (ts.isJsxAttribute(property) && property.name.getText() === name) return property;
+  }
+  return null;
+}
+
 function isNamedComponent(node: ts.Node, targetComponent: string): boolean {
   if (ts.isFunctionDeclaration(node) && node.name?.text === targetComponent) return true;
   if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === targetComponent) return true;
@@ -185,6 +249,15 @@ function hasJsxAttribute(node: ts.JsxOpeningLikeElement, name: string, value: st
     if (!ts.isJsxAttribute(property) || property.name.getText() !== name) return false;
     return property.initializer?.getText().replace(/^"|"$/g, "") === value;
   });
+}
+
+function contractExpectationForOperation(operation: DojoAffordancePatchOperation): string {
+  if (operation.kind === "proof_hook") return proofHookCallExpression(operation);
+  return operation.after;
+}
+
+function proofHookCallExpression(operation: DojoAffordancePatchOperation): string {
+  return `${operation.after}(${JSON.stringify(operation.affordance_id)})`;
 }
 
 function parseJsxAttribute(value: string): { name: string; value: string } {
