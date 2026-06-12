@@ -416,6 +416,10 @@ describe("browser workflow bridge", () => {
           skillPassport: { proof_required?: boolean };
         };
         history: Array<{ label: string; statusLabel: string }>;
+        governanceService: {
+          schema_version?: string;
+          skill_registry?: Array<{ skill_id?: string }>;
+        };
       };
     };
     expect(body.ok).toBe(true);
@@ -435,6 +439,37 @@ describe("browser workflow bridge", () => {
         statusLabel: "Licensed",
       }),
     ]);
+    expect(body.state.governanceService).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.governanceService.v1",
+      skill_registry: expect.arrayContaining([expect.objectContaining({ skill_id: "dojo_save_settings" })]),
+    }));
+
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "tab-a",
+      url: "https://app.example.test/settings",
+    });
+    const rawToolCall = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: body.result.private_tool.tool_name,
+        arguments: { run_mode: "prefixOnly", email: "agent@example.test" },
+      }),
+    });
+    expect(rawToolCall.status).toBe(200);
+    const rawToolBody = await rawToolCall.json() as {
+      ok: boolean;
+      result?: { error?: string; required_tool?: string; tool_name?: string };
+    };
+    expect(rawToolBody.ok).toBe(false);
+    expect(rawToolBody.result).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      tool_name: body.result.private_tool.tool_name,
+    }));
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it("lets the workflow bridge fetch a published private tool manifest", async () => {
@@ -509,15 +544,16 @@ describe("browser workflow bridge", () => {
     expect(call.status).toBe(200);
     const callBody = await call.json() as {
       ok: boolean;
-      result?: { error?: string; required_tool?: string; tool_name?: string };
+      result?: { private_tool?: { tool_name?: string; run_mode?: string } };
     };
-    expect(callBody.ok).toBe(false);
+    expect(callBody.ok).toBe(true);
     expect(callBody.result).toEqual(expect.objectContaining({
-      error: "dojo_proof_capsule_required",
-      required_tool: "synthi_dojo_run_with_proof_capsule",
-      tool_name: toolName,
+      private_tool: expect.objectContaining({
+        tool_name: toolName,
+        run_mode: "prefixOnly",
+      }),
     }));
-    expect(replay).not.toHaveBeenCalled();
+    expect(replay).toHaveBeenCalled();
   });
 
   it("returns unknown tool errors with the current state snapshot", async () => {

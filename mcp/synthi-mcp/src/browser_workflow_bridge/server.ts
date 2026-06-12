@@ -29,6 +29,7 @@ import {
   buildDojoUniverseDossier,
   buildDojoUniverseMetrics,
 } from "../browser/dojo_universe.js";
+import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import {
@@ -708,6 +709,7 @@ export function buildBrowserWorkflowPanelState(
   const sourceCoverage = workflow.contract.sourceIdentityCoverage;
   const publish = workflow.contract.publishPlan;
   const recordingIssues = browserBroker.recordingIssueSnapshot();
+  const dojoState = dojoPanelStateFor(workflow.contract, workspaceId, bridgeState);
 
   return {
     workspaceLabel: workspaceId ?? "Current workspace",
@@ -799,7 +801,8 @@ export function buildBrowserWorkflowPanelState(
       workflowId: workflow.contract.workflowId,
       publishReadiness: publish.readiness,
     },
-    dojo: dojoPanelStateFor(workflow.contract, workspaceId, bridgeState),
+    dojo: dojoState,
+    governanceService: dojoState.governanceService ?? null,
     steps: workflow.contract.steps.map(panelStepForContract),
     unresolvedSteps: workflow.contract.steps
       .filter((step) => step.limitations.some((limitation) => REVIEW_LIMITATIONS.has(limitation)))
@@ -1092,6 +1095,10 @@ function dojoPanelStateFor(
 
   const lifecycle = recordAt(bridgeState.latestDojoLifecycle, "lifecycle") ?? buildDojoLifecycleReport(skill) as unknown as Record<string, unknown>;
   const governance = recordAt(bridgeState.latestDojoGovernance, "governance_report") ?? buildDojoGovernanceReport(skill) as unknown as Record<string, unknown>;
+  const governanceService = recordAt(bridgeState.latestDojoGovernance, "governance_service")
+    ?? buildDojoGovernanceServiceView({
+      skills: dojoSkillRegistry.list(),
+    }) as unknown as Record<string, unknown>;
   const metrics = recordAt(bridgeState.latestDojoMetrics, "metrics") ?? buildDojoUniverseMetrics([skill]) as unknown as Record<string, unknown>;
   const sourcePlan = recordAt(bridgeState.latestDojoSourcePlan, "source_affordance_pr_plan")
     ?? buildDojoSourceAffordancePrPlan(skill) as unknown as Record<string, unknown>;
@@ -1122,6 +1129,7 @@ function dojoPanelStateFor(
     universe: universePanelState(universe),
     lifecycle: lifecyclePanelState(lifecycle),
     governance: governancePanelState(governance),
+    governanceService,
     metrics: metricsPanelState(metrics),
     sourceAffordancePrPlan: sourceAffordancePanelState(sourcePlan),
     timeMachine: timeMachinePanelState(bridgeState.latestDojoTimeMachine),

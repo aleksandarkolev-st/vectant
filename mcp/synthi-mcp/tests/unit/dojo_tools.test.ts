@@ -452,6 +452,22 @@ describe("Agent Dojo MCP tools", () => {
         skill_count: 1,
         competencies: expect.arrayContaining([expect.objectContaining({ skill_id: published.skill.skill_id })]),
       }),
+      governance_service: expect.objectContaining({
+        schema_version: "synthi.dojo.governanceService.v1",
+        skill_registry: expect.arrayContaining([expect.objectContaining({ skill_id: published.skill.skill_id })]),
+        compliance_evidence_pack: expect.objectContaining({
+          artifacts: expect.any(Array),
+        }),
+      }),
+    }));
+    const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", { skill_id: published.skill.skill_id });
+    expect(governance?.structuredContent).toEqual(expect.objectContaining({
+      governance_report: expect.objectContaining({ schema_version: "synthi.dojo.governanceReport.v1" }),
+      governance_service: expect.objectContaining({
+        schema_version: "synthi.dojo.governanceService.v1",
+        policy_gates: expect.any(Array),
+        recertification_queue: expect.any(Array),
+      }),
     }));
     const timeMachine = await dispatchDojoTool("synthi_dojo_run_time_machine_debugger", {
       skill_id: published.skill.skill_id,

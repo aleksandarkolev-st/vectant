@@ -29,6 +29,7 @@ import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/do
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
+import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
@@ -841,7 +842,15 @@ function dojoGetLifecycleTool(args: unknown): ToolResponse {
 function dojoGetGovernanceReportTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, governance_report: buildDojoGovernanceReport(skill.skill) });
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    governance_report: buildDojoGovernanceReport(skill.skill),
+    governance_service: buildDojoGovernanceServiceView({
+      skills: dojoSkillRegistry.list(),
+      now: new Date().toISOString(),
+    }),
+  });
 }
 
 function dojoGetMetricsTool(args: unknown): ToolResponse {
@@ -861,9 +870,14 @@ function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
 }
 
 function dojoGetRegistryTool(): ToolResponse {
+  const skills = dojoSkillRegistry.list();
   return jsonResponse({
     ok: true,
-    registry: buildDojoOrganizationRegistry(dojoSkillRegistry.list()),
+    registry: buildDojoOrganizationRegistry(skills),
+    governance_service: buildDojoGovernanceServiceView({
+      skills,
+      now: new Date().toISOString(),
+    }),
   });
 }
 
