@@ -83,6 +83,29 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         generatedToolCount: 0,
       },
     },
+    evidence: {
+      ledger: {
+        ledgerId: '',
+        headHash: '',
+        records: [],
+        storageModel: {},
+        retentionPolicy: {},
+      },
+      redactedExport: {
+        manifestId: '',
+        artifacts: [],
+        excluded: [],
+        redactionCount: 0,
+      },
+      claims: [],
+      metrics: {
+        recordCount: 0,
+        redactedCount: 0,
+        metadataOnlyCount: 0,
+        claimCount: 0,
+        exportArtifactCount: 0,
+      },
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -795,6 +818,117 @@ function normalizeSourceState(state, dojo, skill) {
   };
 }
 
+function normalizeEvidenceLedgerRecord(record, index = 0) {
+  const recordId = record?.record_id || record?.recordId || record?.id || `evidence-${index + 1}`;
+  return {
+    recordId,
+    kind: record?.kind || record?.artifact_type || record?.artifactType || 'artifact',
+    ref: record?.ref || record?.artifact_uri || record?.artifactUri || record?.source_ref || record?.sourceRef || '',
+    redaction: record?.redaction || (record?.redaction_manifest_sha256 || record?.redactionManifestSha256 ? 'redacted' : 'metadata_only'),
+    hash: record?.hash || record?.record_hash || record?.recordHash || record?.artifact_sha256 || record?.artifactSha256 || '',
+    previousHash: record?.previous_hash || record?.previousHash || '',
+    ledgerHeadHash: record?.ledger_head_hash || record?.ledgerHeadHash || '',
+    redactionManifestSha256: record?.redaction_manifest_sha256 || record?.redactionManifestSha256 || '',
+    claimIds: compactStrings(record?.claim_ids || record?.claimIds),
+    retentionClass: record?.retention_class || record?.retentionClass || '',
+    legalHold: Boolean(record?.legal_hold ?? record?.legalHold),
+    createdAt: record?.created_at || record?.createdAt || '',
+  };
+}
+
+function normalizeEvidenceLedger(state, dojo) {
+  const raw = dojo.evidenceLedger
+    || dojo.evidence_ledger
+    || dojo.universe?.evidence_ledger
+    || dojo.universe?.evidenceLedger
+    || state.evidenceLedger
+    || state.evidence_ledger
+    || state.universe?.evidence_ledger
+    || state.universe?.evidenceLedger
+    || {};
+  const records = asArray(raw.records || raw.evidence_records || raw.evidenceRecords)
+    .map(normalizeEvidenceLedgerRecord)
+    .filter((record) => record.recordId || record.ref);
+  return {
+    ledgerId: raw.ledger_id || raw.ledgerId || '',
+    headHash: raw.head_hash || raw.headHash || raw.ledger_head_hash || raw.ledgerHeadHash || records.at(-1)?.hash || '',
+    records,
+    storageModel: raw.storage_model || raw.storageModel || {},
+    retentionPolicy: raw.retention_policy || raw.retentionPolicy || {},
+  };
+}
+
+function normalizeRedactedExportArtifact(artifact, index = 0) {
+  return {
+    artifactId: artifact?.artifact_id || artifact?.artifactId || artifact?.id || `artifact-${index + 1}`,
+    kind: artifact?.artifact_kind || artifact?.artifactKind || artifact?.kind || '',
+    uri: artifact?.artifact_uri || artifact?.artifactUri || artifact?.uri || '',
+    redactionId: artifact?.redaction_id || artifact?.redactionId || '',
+    redactionCount: Number(artifact?.redaction_count ?? artifact?.redactionCount ?? 0),
+    redactionManifestSha256: artifact?.redaction_manifest_sha256 || artifact?.redactionManifestSha256 || '',
+    rulesApplied: compactStrings(artifact?.rules_applied || artifact?.rulesApplied),
+    sourceRefs: compactStrings(artifact?.source_refs || artifact?.sourceRefs),
+  };
+}
+
+function normalizeRedactedEvidenceExport(state, dojo) {
+  const raw = dojo.redactedEvidenceExportManifest
+    || dojo.redacted_evidence_export_manifest
+    || dojo.redactedEvidence
+    || dojo.redacted_evidence
+    || state.redactedEvidenceExportManifest
+    || state.redacted_evidence_export_manifest
+    || state.redactedEvidence
+    || state.redacted_evidence
+    || {};
+  const artifacts = asArray(raw.artifacts || raw.redacted_artifacts || raw.redactedArtifacts)
+    .map(normalizeRedactedExportArtifact)
+    .filter((artifact) => artifact.artifactId || artifact.uri);
+  return {
+    manifestId: raw.manifest_id || raw.manifestId || raw.export_id || raw.exportId || '',
+    artifacts,
+    excluded: compactStrings(raw.excluded || raw.excluded_artifacts || raw.excludedArtifacts),
+    redactionCount: Number(raw.redaction_count ?? raw.redactionCount ?? artifacts.reduce((sum, artifact) => sum + artifact.redactionCount, 0)),
+  };
+}
+
+function normalizeEvidenceClaim(item) {
+  if (typeof item === 'string') return { claim: item, status: 'unknown', evidenceRefs: [] };
+  return {
+    claim: item?.claim || item?.claim_id || item?.claimId || item?.id || '',
+    status: item?.status || (item?.satisfied ? 'satisfied' : 'unknown'),
+    evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs || item?.evidence_record_ids || item?.evidenceRecordIds),
+  };
+}
+
+function normalizeEvidenceState(state, dojo, skill) {
+  const ledger = normalizeEvidenceLedger(state, dojo);
+  const redactedExport = normalizeRedactedEvidenceExport(state, dojo);
+  const governanceClaims = state.governance?.audit_report?.evidence_claims
+    || state.governance?.auditReport?.evidenceClaims
+    || dojo.governance?.evidenceClaims
+    || dojo.governance?.evidence_claims
+    || [];
+  const claims = asArray(
+    dojo.evidenceClaims
+      || dojo.evidence_claims
+      || skill?.proofCapsule?.evidenceClaims
+      || governanceClaims,
+  ).map(normalizeEvidenceClaim).filter((claim) => claim.claim);
+  return {
+    ledger,
+    redactedExport,
+    claims,
+    metrics: {
+      recordCount: ledger.records.length,
+      redactedCount: ledger.records.filter((record) => record.redaction === 'redacted').length,
+      metadataOnlyCount: ledger.records.filter((record) => record.redaction === 'metadata_only').length,
+      claimCount: claims.length,
+      exportArtifactCount: redactedExport.artifacts.length,
+    },
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -807,6 +941,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       practice: normalizePracticeState(state, dojo, null),
       debug: normalizeDebugState(dojo),
       source: normalizeSourceState(state, dojo, null),
+      evidence: normalizeEvidenceState(state, dojo, null),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -843,6 +978,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   skill.practice = normalizePracticeState(state, dojo, skill);
   skill.debug = normalizeDebugState(dojo);
   skill.source = normalizeSourceState(state, dojo, skill);
+  skill.evidence = normalizeEvidenceState(state, dojo, skill);
 
   return {
     ...empty,
@@ -860,6 +996,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     practice: skill.practice,
     debug: skill.debug,
     source: skill.source,
+    evidence: skill.evidence,
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }

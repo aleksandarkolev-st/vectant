@@ -49,6 +49,7 @@ export default function DojoShell({
     ['Practice', `${baseHref}/practice`],
     ['Source/API', `${baseHref}/source`],
     ['Debugger', `${baseHref}/debug/time-machine`],
+    ['Evidence', `${baseHref}/evidence`],
     ['Governance', `${baseHref}/governance`],
   ];
   const scopeRows = useMemo(() => {
