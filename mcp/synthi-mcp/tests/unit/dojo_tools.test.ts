@@ -525,6 +525,18 @@ describe("Agent Dojo MCP tools", () => {
       source_affordance_pr_plan: expect.objectContaining({
         patch_count: expect.any(Number),
         files: expect.any(Array),
+        typed_patch_plan: expect.objectContaining({
+          schema_version: "synthi.dojo.affordancePrPlan.v1",
+          operations: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "stable_locator",
+              target_match: expect.objectContaining({ role: "action" }),
+            }),
+          ]),
+          required_tests: expect.arrayContaining([
+            "npm --prefix mcp/synthi-mcp run proof:dojo:affordance-codemod:self-check",
+          ]),
+        }),
       }),
     }));
     const registry = await dispatchDojoTool("synthi_dojo_get_registry", {});

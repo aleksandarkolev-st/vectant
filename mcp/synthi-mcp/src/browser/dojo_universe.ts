@@ -6,6 +6,13 @@ import type {
   DojoSkill,
   DojoSkillReadinessLevel,
 } from "./dojo.js";
+import {
+  proofHookPatchOperation,
+  stableLocatorPatchOperation,
+  validateDojoAffordancePrPlan,
+  type DojoAffordancePatchOperation,
+  type DojoAffordancePrPlan,
+} from "../dojo/source/affordance_pr_plan.js";
 
 export interface DojoLifecycleReport {
   schema_version: "synthi.dojo.lifecycleReport.v1";
@@ -126,6 +133,7 @@ export interface DojoSourceAffordancePrPlan {
       review_required: boolean;
     }>;
   }>;
+  typed_patch_plan: DojoAffordancePrPlan;
   generated_tests: Array<{ path: string; purpose: string }>;
   review_checklist: string[];
 }
@@ -489,11 +497,14 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
 
 export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAffordancePrPlan {
   const files = new Map<string, DojoSourceAffordancePrPlan["files"][number]>();
+  const typedOperations: DojoAffordancePatchOperation[] = [];
   for (const action of skill.agent_ready_ui_contract.actions) {
     const anchor = action.source_anchor_id
       ? skill.source_links.find((item) => item.anchor_id === action.source_anchor_id)
       : skill.source_links.find((item) => item.source_step_id === action.source_step_id);
     const filePath = anchor?.file_path ?? "UNMAPPED_SOURCE_AFFORDANCES.md";
+    const targetComponent = inferReactComponentName(filePath, action.label);
+    const targetMatch = { role: "action" as const, text: action.label };
     const row = files.get(filePath) ?? { file_path: filePath, ...(anchor?.anchor_id ? { source_anchor_id: anchor.anchor_id } : {}), patches: [] };
     row.patches.push({
       patch_id: `patch_${hash(`${skill.skill_id}:${action.action_id}:${filePath}`)}`,
@@ -505,9 +516,42 @@ export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAff
       proof_hook: `data-synthi-proof-required="${action.proof_claims.length > 0 ? "true" : "false"}"`,
       review_required: action.allowed_substrates.includes("vision") || !action.stable_locator,
     });
+    typedOperations.push(stableLocatorPatchOperation({
+      file_path: filePath,
+      target_component: targetComponent,
+      target_match: targetMatch,
+      affordance_id: action.action_id,
+      locator_attribute: "data-agent-action",
+    }));
+    if (action.proof_claims.length > 0) {
+      typedOperations.push(proofHookPatchOperation({
+        file_path: filePath,
+        target_component: targetComponent,
+        target_match: targetMatch,
+        affordance_id: action.action_id,
+        hook_name: "assertDojoProof",
+      }));
+    }
     files.set(filePath, row);
   }
   const patchCount = [...files.values()].reduce((sum, file) => sum + file.patches.length, 0);
+  const typedPatchPlan: DojoAffordancePrPlan = {
+    schema_version: "synthi.dojo.affordancePrPlan.v1",
+    plan_id: `typed_source_pr_${hash(`${skill.skill_id}:${typedOperations.map((operation) => operation.operation_id).join(":")}`)}`,
+    app_origin: skill.app_origin,
+    app_version: skill.app_model_version,
+    operations: typedOperations,
+    required_tests: [
+      `npm test -- ${slug(skill.name)}.dojo-affordance`,
+      "npm --prefix mcp/synthi-mcp run proof:dojo:affordance-codemod:self-check",
+    ],
+    review_gates: [
+      "code_owner",
+      "security_for_risky_action",
+      "dojo_checkride_after_source_patch",
+    ],
+  };
+  const typedPatchPlanValidation = validateDojoAffordancePrPlan(typedPatchPlan);
   return {
     schema_version: "synthi.dojo.sourceAffordancePrPlan.v1",
     plan_id: `source_pr_${hash(`${skill.skill_id}:${patchCount}:${skill.source_links.length}`)}`,
@@ -516,6 +560,12 @@ export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAff
     readiness: patchCount === 0 ? "not_applicable" : skill.source_links.length > 0 ? "ready_for_review" : "source_mapping_needed",
     patch_count: patchCount,
     files: [...files.values()].sort((a, b) => a.file_path.localeCompare(b.file_path)),
+    typed_patch_plan: {
+      ...typedPatchPlan,
+      review_gates: typedPatchPlanValidation.ok
+        ? typedPatchPlan.review_gates
+        : [...typedPatchPlan.review_gates, ...typedPatchPlanValidation.issues.map((issue) => `fix_${issue.issue_id}`)],
+    },
     generated_tests: [
       { path: `.synthi/dojo/playwright/${slug(skill.name)}.spec.ts`, purpose: "Verify agent-visible affordances remain reachable." },
       { path: `.synthi/dojo/reports/${slug(skill.name)}.training-report.md`, purpose: "Review post-affordance checkride evidence." },
@@ -685,6 +735,19 @@ function avg(values: number[]): number {
 function ratio(numerator: number, denominator: number): number {
   if (denominator <= 0) return 0;
   return Number((numerator / denominator).toFixed(2));
+}
+
+function inferReactComponentName(filePath: string, actionLabel: string): string {
+  const fileName = filePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
+  return pascalCase(fileName) || pascalCase(actionLabel) || "AgentReadyAffordance";
+}
+
+function pascalCase(value: string): string {
+  return value
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join("");
 }
 
 function slug(value: string): string {
