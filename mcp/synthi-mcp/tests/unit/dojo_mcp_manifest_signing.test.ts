@@ -5,6 +5,7 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import {
   buildDojoMcpSkillManifest,
+  dojoMcpManifestRequiresProof,
   validateDojoMcpSkillManifest,
   type DojoMcpSkillManifestV1,
 } from "../../src/dojo/mcp/manifest_signing.js";
@@ -36,7 +37,9 @@ describe("Dojo MCP skill manifest signing", () => {
       backing_private_tool_manifest_digest: expect.stringMatching(/^sha256:/),
     }));
     expect(first.license.allowed_actions).toContain("observe");
+    expect(first.proof.required).toBe(true);
     expect(first.proof.required_context_claims).toContain("workspace_verified");
+    expect(dojoMcpManifestRequiresProof(first)).toBe(true);
     expect(validateDojoMcpSkillManifest(first, {
       env,
       expected_skill_id: skill.skill_id,
@@ -46,6 +49,22 @@ describe("Dojo MCP skill manifest signing", () => {
       blocked_by: [],
       manifest_digest: first.manifest_digest,
     }));
+  });
+
+  it("derives proof-required from license constraints even if passport metadata is stale", () => {
+    const skill = skillFixture();
+    const stalePassportSkill = {
+      ...skill,
+      skill_passport: {
+        ...skill.skill_passport,
+        proof_required: false,
+      },
+    };
+    const manifest = buildDojoMcpSkillManifest(stalePassportSkill, { env: manifestEnv() });
+
+    expect(manifest.proof.required).toBe(true);
+    expect(dojoMcpManifestRequiresProof(manifest)).toBe(true);
+    expect(manifest.proof.required_evidence_claims).toEqual(skill.permission_license.proof_requirements.required_evidence_claims);
   });
 
   it("rejects tampered manifest fields and wrong signing keys", () => {

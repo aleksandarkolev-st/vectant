@@ -66,6 +66,7 @@ export function buildDojoMcpSkillManifest(
 ): DojoMcpSkillManifestV1 {
   const env = options.env ?? process.env;
   const issuedAt = options.now ?? skill.generated_at;
+  const proofRequired = dojoSkillRequiresMcpProof(skill);
   const privateManifestDigest = skill.private_tool_manifest
     ? digestObject(skill.private_tool_manifest)
     : null;
@@ -106,7 +107,7 @@ export function buildDojoMcpSkillManifest(
       blocked_actions: skill.permission_license.blocked_actions.map((action) => action.action),
     },
     proof: {
-      required: skill.skill_passport.proof_required,
+      required: proofRequired,
       required_context_claims: [...skill.permission_license.proof_requirements.required_context_claims],
       required_evidence_claims: [...skill.permission_license.proof_requirements.required_evidence_claims],
       required_guardrails: [...skill.permission_license.proof_requirements.required_guardrails],
@@ -130,6 +131,14 @@ export function buildDojoMcpSkillManifest(
     manifest_digest: manifestDigest,
     signature: signManifestDigest(manifestDigest, env),
   };
+}
+
+export function dojoMcpManifestRequiresProof(manifest: DojoMcpSkillManifestV1): boolean {
+  return manifest.proof.required
+    || manifest.proof.required_context_claims.length > 0
+    || manifest.proof.required_evidence_claims.length > 0
+    || manifest.proof.required_guardrails.length > 0
+    || manifest.license.gated_actions.length > 0;
 }
 
 export function validateDojoMcpSkillManifest(
@@ -201,6 +210,15 @@ function privateToolSchemaPayload(manifest: PrivateWorkflowToolManifestV7): Reco
     mutation: manifest.mutation,
     auth: manifest.auth,
   };
+}
+
+function dojoSkillRequiresMcpProof(skill: DojoSkill): boolean {
+  return skill.skill_passport.proof_required
+    || skill.permission_license.proof_requirements.required_context_claims.length > 0
+    || skill.permission_license.proof_requirements.required_evidence_claims.length > 0
+    || skill.permission_license.proof_requirements.required_guardrails.length > 0
+    || skill.permission_license.gated_actions.length > 0
+    || skill.permission_license.approval_requirements.length > 0;
 }
 
 function digestObject(value: unknown): string {

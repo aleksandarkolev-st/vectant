@@ -69,6 +69,21 @@ describe("Dojo MCP skill bus", () => {
     }));
   });
 
+  it("blocks ambiguous tool names instead of resolving by list order", async () => {
+    const first = skillFixture("workspace-a", "Open details");
+    const second = skillFixture("workspace-a", "Save invoice");
+    const bus = createInProcessDojoMcpSkillBus({ listSkills: () => [first, second], env: manifestEnv() });
+
+    await expect(bus.resolveTool({
+      tenant: tenant("workspace-a"),
+      tool_name: first.published_tool_name!,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["dojo_mcp_tool_ambiguous"],
+    }));
+  });
+
   it("dispatches only after proof validation and keeps dry runs side-effect free", async () => {
     const skill = skillFixture("workspace-a", "Open details");
     const proof = issueDojoProofCapsule(skill, "run_workflow", {
@@ -133,6 +148,78 @@ describe("Dojo MCP skill bus", () => {
     }));
     expect(executions).toEqual([skill.published_tool_name]);
   });
+
+  it("requires proof from full manifest constraints even when passport metadata is stale", async () => {
+    const baseSkill = skillFixture("workspace-a", "Open details");
+    const skill = {
+      ...baseSkill,
+      skill_passport: {
+        ...baseSkill.skill_passport,
+        proof_required: false,
+      },
+    };
+    const bus = createInProcessDojoMcpSkillBus({ listSkills: () => [skill], env: manifestEnv() });
+
+    await expect(bus.listCompetencies({ tenant: tenant("workspace-a") })).resolves.toEqual([
+      expect.objectContaining({
+        skill_id: skill.skill_id,
+        proof_required: true,
+        mcp_skill_manifest: expect.objectContaining({
+          proof: expect.objectContaining({ required: true }),
+        }),
+      }),
+    ]);
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      args: {},
+      dry_run: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["dojo_proof_capsule_required"],
+    }));
+  });
+
+  it("blocks proofs that are not bound to the resolved skill manifest before execution", async () => {
+    const skillA = skillFixture("workspace-a", "Open details");
+    const skillB = reidentifiedSkill(skillFixture("workspace-a", "Save invoice"), "save_invoice");
+    const proofForA = issueDojoProofCapsule(skillA, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_claims: [
+        { claim: "checkride_passed", satisfied: true },
+        { claim: "success_assertions_defined", satisfied: true },
+        { claim: "guardrails_active", satisfied: true },
+      ],
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const validations: string[] = [];
+    const executions: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skillA, skillB],
+      env: manifestEnv(),
+      validateProof: ({ proof_capsule }): DojoSkillBusProofValidation => {
+        validations.push(proof_capsule.capsule_id);
+        return { ok: true, status: "allowed", blocked_by: [] };
+      },
+      executeTool: ({ tool_name }) => {
+        executions.push(tool_name);
+        return { ok: true };
+      },
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skillB.published_tool_name!,
+      args: {},
+      proof_capsule: proofForA,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: expect.arrayContaining(["dojo_mcp_proof_skill_mismatch"]),
+    }));
+    expect(validations).toEqual([]);
+    expect(executions).toEqual([]);
+  });
 });
 
 function skillFixture(workspaceId: string, label: string): DojoSkill {
@@ -153,6 +240,61 @@ function skillFixture(workspaceId: string, label: string): DojoSkill {
     private_tool_manifest: manifest,
     published_tool_name: manifest.tool_name,
   });
+}
+
+function reidentifiedSkill(skill: DojoSkill, suffix: string): DojoSkill {
+  const skillId = `${skill.skill_id}_${suffix}`;
+  const workflowId = `${skill.workflow_id}_${suffix}`;
+  const licenseId = `${skill.permission_license.license_id}_${suffix}`;
+  const toolName = `${skill.published_tool_name ?? skill.private_tool_manifest?.tool_name ?? "synthi_app_skill"}_${suffix}`;
+  return {
+    ...skill,
+    skill_id: skillId,
+    workflow_id: workflowId,
+    workflow_graph_id: `${skill.workflow_graph_id}_${suffix}`,
+    vivarium_id: `${skill.vivarium_id}_${suffix}`,
+    skill_cortex: {
+      ...skill.skill_cortex,
+      skill_id: skillId,
+      workflow_id: workflowId,
+      workflow_graph_id: `${skill.skill_cortex.workflow_graph_id}_${suffix}`,
+    },
+    checkride: {
+      ...skill.checkride,
+      skill_id: skillId,
+      workflow_id: workflowId,
+    },
+    permission_license: {
+      ...skill.permission_license,
+      skill_id: skillId,
+      license_id: licenseId,
+    },
+    assurance_case: {
+      ...skill.assurance_case,
+      skill_id: skillId,
+    },
+    skill_passport: {
+      ...skill.skill_passport,
+      skill_id: skillId,
+      license_id: licenseId,
+      passport_id: `${skill.skill_passport.passport_id}_${suffix}`,
+    },
+    training_report: {
+      ...skill.training_report,
+      skill_id: skillId,
+      workflow_id: workflowId,
+    },
+    published_tools: [toolName],
+    published_tool_name: toolName,
+    ...(skill.private_tool_manifest
+      ? {
+        private_tool_manifest: {
+          ...skill.private_tool_manifest,
+          tool_name: toolName,
+        },
+      }
+      : {}),
+  };
 }
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

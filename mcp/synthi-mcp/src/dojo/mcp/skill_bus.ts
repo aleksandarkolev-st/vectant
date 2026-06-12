@@ -2,6 +2,7 @@ import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/doj
 import type { DojoTenantContext } from "./execution_policy_gate.js";
 import {
   buildDojoMcpSkillManifest,
+  dojoMcpManifestRequiresProof,
   validateDojoMcpSkillManifest,
   type DojoMcpSkillManifestV1,
   type DojoMcpSkillManifestValidation,
@@ -131,7 +132,14 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     const toolName = input.tool_name.trim();
     if (!toolName) return blockedResolution("not_found", ["dojo_mcp_tool_name_required"]);
     const skills = await this.listSkills();
-    const skill = skills.find((item) => item.published_tool_name === toolName || item.private_tool_manifest?.tool_name === toolName);
+    const matches = skills.filter((item) => item.published_tool_name === toolName || item.private_tool_manifest?.tool_name === toolName);
+    if (matches.length > 1) {
+      return blockedResolution("blocked", ["dojo_mcp_tool_ambiguous"], {
+        tool_name: toolName,
+        tool_version: input.tool_version,
+      });
+    }
+    const skill = matches[0];
     if (!skill) return blockedResolution("not_found", ["dojo_mcp_tool_not_found"], { tool_name: toolName });
     if (!this.isVisibleSkill(skill, input.tenant)) {
       return blockedResolution("blocked", ["dojo_mcp_tool_not_authorized"], {
@@ -211,7 +219,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       };
     }
 
-    const proofRequired = resolution.mcp_skill_manifest.proof.required || resolution.mcp_skill_manifest.proof.required_context_claims.length > 0;
+    const proofRequired = dojoMcpManifestRequiresProof(resolution.mcp_skill_manifest);
     if (proofRequired && !input.proof_capsule) {
       return blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]);
     }
@@ -220,6 +228,17 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     }
 
     let validation: DojoSkillBusProofValidation | undefined;
+    if (input.proof_capsule) {
+      const bindingBlockedBy = validateProofCapsuleBinding(
+        input.proof_capsule,
+        resolution.mcp_skill_manifest,
+        input.requested_action ?? "run_workflow"
+      );
+      if (bindingBlockedBy.length > 0) {
+        return blockedDispatch(input, resolution, bindingBlockedBy);
+      }
+    }
+
     if (input.proof_capsule && this.validateProof) {
       validation = await this.validateProof({
         tenant: input.tenant,
@@ -288,6 +307,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
 }
 
 function competencySummary(skill: DojoSkill, env: NodeJS.ProcessEnv): DojoCompetencySummary {
+  const manifest = buildDojoMcpSkillManifest(skill, { env });
   return {
     skill_id: skill.skill_id,
     workflow_id: skill.workflow_id,
@@ -298,10 +318,10 @@ function competencySummary(skill: DojoSkill, env: NodeJS.ProcessEnv): DojoCompet
     tool_version: skill.skill_version,
     entrustment_level: skill.entrustment_level,
     skill_readiness_level: skill.skill_readiness_level,
-    proof_required: skill.skill_passport.proof_required,
+    proof_required: dojoMcpManifestRequiresProof(manifest),
     preferred_substrate: skill.preferred_substrate,
     execution_substrates: [...skill.execution_substrates],
-    mcp_skill_manifest: buildDojoMcpSkillManifest(skill, { env }),
+    mcp_skill_manifest: manifest,
   };
 }
 
@@ -340,6 +360,30 @@ function blockedDispatch(
     resolution: summarizeResolution(resolution),
     validation,
   };
+}
+
+function validateProofCapsuleBinding(
+  proofCapsule: DojoProofCarryingSkillCapsule,
+  manifest: DojoMcpSkillManifestV1,
+  requestedAction: string
+): string[] {
+  const blockedBy: string[] = [];
+  if (proofCapsule.skill_id !== manifest.skill.skill_id) {
+    blockedBy.push("dojo_mcp_proof_skill_mismatch");
+  }
+  if (proofCapsule.skill_version !== manifest.skill.skill_version) {
+    blockedBy.push("dojo_mcp_proof_skill_version_mismatch");
+  }
+  if (proofCapsule.license_version !== manifest.license.license_version) {
+    blockedBy.push("dojo_mcp_proof_license_version_mismatch");
+  }
+  if (proofCapsule.requested_action !== requestedAction) {
+    blockedBy.push("dojo_mcp_proof_action_mismatch");
+  }
+  if (!manifest.substrate_policy.allowed_substrates.includes(proofCapsule.substrate_claim)) {
+    blockedBy.push("dojo_mcp_proof_substrate_not_allowed");
+  }
+  return blockedBy;
 }
 
 function summarizeResolution(resolution: DojoToolResolution): DojoToolResolution {
