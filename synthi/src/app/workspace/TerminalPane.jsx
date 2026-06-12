@@ -182,6 +182,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     mountedRef.current = true;
     let disposed = false;
 
+    if (isGuest && !canTerminal) {
+      cleanup();
+      setState('closed');
+      return () => { disposed = true; };
+    }
+    setState('connecting');
+
     const init = async () => {
       // Dynamic import to avoid SSR issues
       const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
@@ -705,7 +712,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug, fixedSessionId, shellType]); // Re-connect if terminal tab, workspace, or shell type changes
+  }, [sessionKey, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {
@@ -743,6 +750,31 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────
+  if (isGuest && !canTerminal) {
+    return (
+      <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
+        <div className="h-full w-full flex items-center justify-center px-6">
+          <div
+            className="max-w-sm rounded-lg border px-4 py-3 text-center"
+            style={{
+              background: 'color-mix(in srgb, var(--accent-warning) 7%, var(--bg-elevated))',
+              borderColor: 'color-mix(in srgb, var(--accent-warning) 28%, var(--border-medium))',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <EyeOff className="w-5 h-5 mx-auto mb-2" style={{ color: 'var(--accent-warning)' }} />
+            <div className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+              Terminal access is off
+            </div>
+            <div className="text-[11px] leading-relaxed">
+              Ask the host to grant terminal permission for this session.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
@@ -781,24 +813,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       )}
 
       {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
-
-      {/* Session: View-only terminal overlay for guests without canTerminal */}
-      {isGuest && !canTerminal && state === 'connected' && (
-        <div
-          className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 z-10"
-          style={{
-            background: 'color-mix(in srgb, var(--accent-warning) 8%, transparent)',
-            borderTop: '1px solid color-mix(in srgb, var(--accent-warning) 24%, transparent)',
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <EyeOff className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} />
-            <span className="text-xs font-medium" style={{ color: 'var(--accent-warning)' }}>
-              Terminal is view-only — Ask the host for terminal access
-            </span>
-          </div>
-        </div>
-      )}
 
       {/* Connection status — viewport-centred floating panel (portal to body) */}
       {(state === 'error' || state === 'closed') && (
@@ -1211,7 +1225,7 @@ function ConnectionStatusPanel({ state, onReconnect }) {
         maxWidth: 'calc(100vw - 16px)',
         background: 'var(--bg-elevated, #18181b)',
         borderColor: 'var(--border-medium, #3f3f46)',
-        zIndex: 2147483646,
+        zIndex: 120,
       }}
     >
       <div
