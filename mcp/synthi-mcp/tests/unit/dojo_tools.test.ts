@@ -334,6 +334,21 @@ describe("Agent Dojo MCP tools", () => {
       error: "dojo_proof_capsule_required",
       required_tool: "synthi_dojo_run_with_proof_capsule",
     }));
+    const explainBlock = await dispatchDojoTool("synthi_dojo_explain_block", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_workflow",
+    });
+    expect(explainBlock?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      refusal: expect.stringContaining("I will not run"),
+      refusal_explanation: expect.objectContaining({
+        schema_version: "synthi.dojo.runtimeRefusalExplanation.v1",
+        blocked_action: "run_workflow",
+        blocked_by: expect.arrayContaining(["proof_capsule_missing"]),
+        case_law_citations: [],
+        smallest_allowed_next_step: "Provide the missing proof, approval, or runtime condition before run_workflow.",
+      }),
+    }));
 
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: published.skill.skill_id,

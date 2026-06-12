@@ -27,6 +27,9 @@ import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_man
 import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
 import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/dojo_license_kernel.js";
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
+import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
+import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
+import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
@@ -926,6 +929,7 @@ function dojoExplainBlockTool(args: unknown): ToolResponse {
     requested_action: requestedAction,
     validation,
     refusal: validation.ok ? null : refusalFor(skill.skill, validation.blocked_by),
+    refusal_explanation: validation.ok ? null : refusalExplanationFor(skill.skill, requestedAction, validation.blocked_by),
     relevant_case_law: skill.skill.case_law.slice(0, 3),
   });
 }
@@ -1679,6 +1683,42 @@ function refusalFor(skill: DojoSkill, blockedBy: string[]): string {
     return `I will not run ${skill.name} yet. ${cited.finding} Rule: ${cited.rule_created}`;
   }
   return `I will not run ${skill.name} yet. Blocked by ${blockedBy.join(", ") || "license policy"}.`;
+}
+
+function refusalExplanationFor(skill: DojoSkill, requestedAction: string, blockedBy: string[]) {
+  return explainDojoRuntimeRefusal({
+    graph: compileDojoSkillGraphForSkill(skill).graph,
+    blocked_action: requestedAction,
+    blocked_by: blockedBy,
+    case_law: caseLawRecordsForSkill(skill),
+  });
+}
+
+function caseLawRecordsForSkill(skill: DojoSkill): DojoCaseLawRecord[] {
+  return skill.case_law.map((item) => ({
+    schema_version: "synthi.dojo.caseLaw.v1",
+    case_id: item.case_id,
+    title: item.title,
+    finding: item.finding,
+    impact: item.impact,
+    rule_created: item.rule_created,
+    applies_to: [...item.applies_to],
+    binding_scope: {
+      kind: item.binding_scope,
+      id: bindingScopeIdForSkillCase(skill, item.binding_scope),
+    },
+    status: item.status === "binding" ? "approved" : item.status,
+    evidence_refs: [...item.evidence_refs],
+    appeal_status: "none",
+    created_at: item.date,
+    updated_at: item.date,
+  }));
+}
+
+function bindingScopeIdForSkillCase(skill: DojoSkill, bindingScope: DojoSkill["case_law"][number]["binding_scope"]): string {
+  if (bindingScope === "skill") return skill.skill_id;
+  if (bindingScope === "workspace") return skill.workspace_id;
+  return `organization:${skill.workspace_id}`;
 }
 
 function permissionUpgradeSteps(skill: DojoSkill, requestedAction: string): string[] {
