@@ -104,6 +104,18 @@ function classifyScenarioOutcome(
   graphResult: DojoGraphRunResult,
   observedEvidence: string[]
 ): { status: DojoScenarioOracleStatus; finding: string; blocked_by: string[] } {
+  const missingGraphRunEvidence = missingRequiredEvidence(["graph_run_result"], observedEvidence);
+  if (missingGraphRunEvidence.length > 0) {
+    return missingEvidenceFailure(missingGraphRunEvidence, "Scenario result cannot be trusted without graph run evidence.");
+  }
+
+  if (graphResult.node_results.length > 0 && !observedEvidence.includes("graph_node_evidence")) {
+    return missingEvidenceFailure(
+      ["graph_node_evidence"],
+      "Scenario result cannot be trusted without node-level graph evidence."
+    );
+  }
+
   if (graphResult.status === "blocked") {
     const needsHuman = graphResult.blocked_by.some((reason) => reason.includes("human_review_required"));
     return {
@@ -157,6 +169,14 @@ function classifyScenarioOutcome(
   }
 
   if (graphResult.status === "completed" && graphResult.node_results.every((node) => node.status === "completed")) {
+    const missingScenarioEvidence = missingRequiredEvidenceForScenario(definition, observedEvidence);
+    if (missingScenarioEvidence.length > 0) {
+      return missingEvidenceFailure(
+        missingScenarioEvidence,
+        "Graph execution completed, but the scenario oracle is missing required observed evidence."
+      );
+    }
+
     return {
       status: "passed",
       finding: "Graph execution completed and required scenario evidence was present.",
@@ -168,6 +188,29 @@ function classifyScenarioOutcome(
     status: "failed",
     finding: "Scenario ended in an unclassified non-passing state.",
     blocked_by: ["oracle_unclassified_non_passing_state"],
+  };
+}
+
+function missingRequiredEvidence(requiredEvidence: string[], observedEvidence: string[]): string[] {
+  const observed = new Set(observedEvidence);
+  return [...new Set(requiredEvidence)].filter((evidenceId) => !observed.has(evidenceId)).sort();
+}
+
+function missingRequiredEvidenceForScenario(
+  definition: DojoScenarioDefinition,
+  observedEvidence: string[]
+): string[] {
+  return missingRequiredEvidence(definition.oracle.observed_evidence_required, observedEvidence);
+}
+
+function missingEvidenceFailure(
+  missingEvidence: string[],
+  finding: string
+): { status: DojoScenarioOracleStatus; finding: string; blocked_by: string[] } {
+  return {
+    status: "failed",
+    finding,
+    blocked_by: missingEvidence.map((evidenceId) => `oracle_required_evidence_missing:${evidenceId}`),
   };
 }
 

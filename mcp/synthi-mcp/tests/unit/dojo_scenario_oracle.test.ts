@@ -22,7 +22,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "blocked", blocked_by: ["precondition_failed:auth_valid == true"] }),
-      observed_evidence: ["identity_policy_state"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence", "identity_policy_state"],
     });
 
     expect(evaluation).toEqual(expect.objectContaining({
@@ -44,7 +44,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "completed" }),
-      observed_evidence: ["graph_run_result"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence"],
     });
 
     expect(evaluation).toEqual(expect.objectContaining({
@@ -65,7 +65,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "completed" }),
-      observed_evidence: ["graph_run_result", "oracle_result"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence", "oracle_result"],
     });
 
     expect(evaluation).toEqual(expect.objectContaining({
@@ -73,6 +73,37 @@ describe("Dojo scenario oracle", () => {
       expected_outcome: "pass",
       expectation_met: true,
       blocked_by: [],
+    }));
+  });
+
+  it("fails completed graph results without required observed evidence", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "baseline",
+      risk_tags: ["baseline"],
+      layer: "skill",
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition);
+
+    expect(evaluateDojoScenarioOracle({
+      definition,
+      fixture,
+      graph_result: graphResult({ status: "completed" }),
+      observed_evidence: [],
+    })).toEqual(expect.objectContaining({
+      status: "failed",
+      blocked_by: ["oracle_required_evidence_missing:graph_run_result"],
+      expectation_met: false,
+    }));
+
+    expect(evaluateDojoScenarioOracle({
+      definition,
+      fixture,
+      graph_result: graphResult({ status: "completed" }),
+      observed_evidence: ["graph_run_result", "oracle_result"],
+    })).toEqual(expect.objectContaining({
+      status: "failed",
+      blocked_by: ["oracle_required_evidence_missing:graph_node_evidence"],
+      expectation_met: false,
     }));
   });
 
@@ -87,7 +118,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "completed" }),
-      observed_evidence: ["graph_run_result"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence"],
     })).toEqual(expect.objectContaining({
       status: "failed",
       blocked_by: ["oracle_document_instruction_quarantine_missing"],
@@ -98,7 +129,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "completed" }),
-      observed_evidence: ["graph_run_result", "document_instruction_quarantine"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence", "oracle_result", "document_instruction_quarantine"],
     })).toEqual(expect.objectContaining({
       status: "passed",
       expectation_met: true,
@@ -118,7 +149,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "completed" }),
-      observed_evidence: ["graph_run_result", "document_instruction_quarantine"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence", "oracle_result", "document_instruction_quarantine"],
     })).toEqual(expect.objectContaining({
       status: "failed",
       blocked_by: ["oracle_document_instruction_not_quarantined"],
@@ -133,7 +164,7 @@ describe("Dojo scenario oracle", () => {
       definition,
       fixture,
       graph_result: graphResult({ status: "completed" }),
-      observed_evidence: ["graph_run_result", "oracle_result"],
+      observed_evidence: ["graph_run_result", "graph_node_evidence", "oracle_result"],
     });
     const context = {
       tenant_id: "tenant-a",
@@ -180,7 +211,9 @@ function graphResult(input: { status: "completed" | "blocked"; blocked_by?: stri
     ok: input.status === "completed",
     status: input.status,
     mode: "checkride",
+    run_id: "run-oracle-test",
     blocked_by: input.blocked_by ?? [],
+    evidence_refs: ["dojo-graph://run-oracle-test/action"],
     node_results: [
       {
         node_id: "action",

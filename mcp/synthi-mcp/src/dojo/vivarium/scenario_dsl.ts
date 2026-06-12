@@ -261,7 +261,7 @@ function expectedOutcomeFor(scenario: DojoScenario): DojoScenarioExpectedOutcome
 }
 
 function observedEvidenceFor(scenario: DojoScenario): string[] {
-  const evidence = ["graph_run_result", "oracle_result"];
+  const evidence = ["graph_run_result", "graph_node_evidence", "oracle_result"];
   if (scenario.risk_tags.includes("evidence_required")) evidence.push("durable_state_evidence");
   if (scenario.mutation_kind === "auth_expiry" || scenario.mutation_kind === "permission_change") evidence.push("identity_policy_state");
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity") evidence.push("stable_entity_identity");
