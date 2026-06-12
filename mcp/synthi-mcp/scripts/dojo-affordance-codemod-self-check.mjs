@@ -63,7 +63,8 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     operations,
   });
 
-  await writeFile(sourcePath, invoiceFormSource());
+  const originalSource = invoiceFormSource();
+  await writeFile(sourcePath, originalSource);
   await writeFile(testPath, generatedTest.source);
   await writeFile(vitestConfigPath, fixtureVitestConfigSource());
 
@@ -72,6 +73,13 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const beforeRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(beforeRun.ok, false, "generated Vitest contract should fail before codemod patch");
 
+  await writeFile(sourcePath, wrongTargetInvoiceFormSource());
+  const wrongTargetContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), operations);
+  assert.equal(wrongTargetContract.ok, false, "generated affordance contract should fail when affordances are on the wrong target");
+  const wrongTargetRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
+  assert.equal(wrongTargetRun.ok, false, "generated Vitest contract should fail when affordances are on the wrong target");
+
+  await writeFile(sourcePath, originalSource);
   const patched = modules.applyReactAffordanceCodemodPlan(await readFile(sourcePath, "utf8"), operations);
   assert.equal(patched.changed, true, "codemod should patch the fixture once");
   await writeFile(sourcePath, patched.source);
@@ -89,8 +97,10 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     patched_source_path: sourcePath,
     fixture_vitest_config_path: vitestConfigPath,
     before_contract: beforeContract,
+    wrong_target_contract: wrongTargetContract,
     after_contract: afterContract,
     before_vitest: summarizeVitestRun(beforeRun),
+    wrong_target_vitest: summarizeVitestRun(wrongTargetRun),
     after_vitest: summarizeVitestRun(afterRun),
     applied_operations: patched.applied_operations,
     skipped_operations: patched.skipped_operations,
@@ -113,6 +123,7 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     report_sha256: sha256(body),
     report_bytes: Buffer.byteLength(body),
     before_failed: report?.before_contract?.ok === false && report?.before_vitest?.ok === false,
+    target_aware_contract: report?.wrong_target_contract?.ok === false && report?.wrong_target_vitest?.ok === false,
     after_passed: report?.after_contract?.ok === true && report?.after_vitest?.ok === true,
     operation_ids: Array.isArray(report?.operation_ids) ? report.operation_ids : report?.operation_id ? [report.operation_id] : [],
     generated_test_path: report?.generated_test_path ?? null,
@@ -224,6 +235,26 @@ export function InvoiceForm({ onSave }) {
         <input name="client" />
       </label>
       <button type="button" onClick={() => undefined}>Preview invoice</button>
+      <button type="button" onClick={onSave}>Save invoice</button>
+    </form>
+  );
+}
+`;
+}
+
+function wrongTargetInvoiceFormSource() {
+  return `function assertDojoProof(affordanceId) {
+  return affordanceId;
+}
+
+export function InvoiceForm({ onSave }) {
+  return (
+    <form>
+      <label>
+        Client
+        <input name="client" />
+      </label>
+      <button type="button" data-agent-action="invoice.save" onClick={(event) => { assertDojoProof("invoice.save"); return (() => undefined)(event); }}>Preview invoice</button>
       <button type="button" onClick={onSave}>Save invoice</button>
     </form>
   );

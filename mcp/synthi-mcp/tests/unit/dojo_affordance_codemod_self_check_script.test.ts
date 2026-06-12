@@ -9,8 +9,10 @@ describe("Dojo affordance codemod self-check script", () => {
       generated_test_path: "/tmp/fixture/src/__tests__/InvoiceForm.dojo-affordance.test.ts",
       patched_source_path: "/tmp/fixture/src/InvoiceForm.jsx",
       before_contract: { ok: false },
+      wrong_target_contract: { ok: false },
       after_contract: { ok: true },
       before_vitest: { ok: false },
+      wrong_target_vitest: { ok: false },
       after_vitest: { ok: true },
       target_matchers: [
         {
@@ -32,6 +34,7 @@ describe("Dojo affordance codemod self-check script", () => {
       report_path: "/tmp/dojo-affordance-codemod-self-check.json",
       report_bytes: Buffer.byteLength(serialized),
       before_failed: true,
+      target_aware_contract: true,
       after_passed: true,
       operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
       target_matchers: [
@@ -50,8 +53,10 @@ describe("Dojo affordance codemod self-check script", () => {
       report: {
         operation_id: "patch_stable_locator_invoice_save",
         before_contract: { ok: false },
+        wrong_target_contract: { ok: false },
         after_contract: { ok: true },
         before_vitest: { ok: false },
+        wrong_target_vitest: { ok: false },
         after_vitest: { ok: true },
       },
       reportPath: "/tmp/report.json",
