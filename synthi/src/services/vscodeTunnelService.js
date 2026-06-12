@@ -13,6 +13,7 @@
 
 const SW_PATH = '/vscode-tunnel-sw.js';
 const CHANNEL_NAME = 'vscode-tunnel';
+const SW_ACTIVATION_TIMEOUT_MS = 5000;
 
 class VSCodeTunnelService {
   constructor() {
@@ -50,19 +51,31 @@ class VSCodeTunnelService {
       const sw = reg.active || reg.installing || reg.waiting;
       if (sw && sw.state !== 'activated') {
         await new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            sw.removeEventListener('statechange', check);
+            console.warn('[VSCodeTunnel] SW activation wait timed out at state:', sw.state);
+            resolve();
+          }, SW_ACTIVATION_TIMEOUT_MS);
           const check = () => {
             if (sw.state === 'activated') {
+              clearTimeout(timer);
               sw.removeEventListener('statechange', check);
               resolve();
             }
           };
           sw.addEventListener('statechange', check);
-          if (sw.state === 'activated') resolve();
+          if (sw.state === 'activated') {
+            clearTimeout(timer);
+            resolve();
+          }
         });
       }
       console.log('[VSCodeTunnel] SW is active');
 
       // Set up BroadcastChannel to receive proxy requests from SW
+      if (this._channel) {
+        try { this._channel.close(); } catch (_) {}
+      }
       this._channel = new BroadcastChannel(CHANNEL_NAME);
       this._channel.addEventListener('message', (event) => {
         console.log('[VSCodeTunnel] BroadcastChannel message:', event.data?.type, event.data?.id);
@@ -167,7 +180,7 @@ class VSCodeTunnelService {
       if (ct.includes('text/html') && result.body) {
         try {
           const html = atob(result.body);
-          if (!html.includes('__synthiWsShim') && html.includes('<head')) {
+          if (html.includes('<head')) {
             let injections = '<script>' + VSCodeTunnelService._wsShimCode() + '</script>';
 
             // Sidebar-only mode: inject CSS + JS to hide everything except
@@ -180,7 +193,7 @@ class VSCodeTunnelService {
             result.body = btoa(injected);
             console.log('[VSCodeTunnel] Injected WS shim into HTML response');
           } else {
-            console.log('[VSCodeTunnel] HTML response - shim already present or no <head> found');
+            console.log('[VSCodeTunnel] HTML response - no <head> found');
           }
         } catch (injectErr) {
           console.warn('[VSCodeTunnel] WS shim injection failed:', injectErr);
@@ -283,6 +296,7 @@ class VSCodeTunnelService {
     this.onerror=null;
     this.onclose=null;
     this._lsn={};
+    this._sendChain=Promise.resolve();
 
     var parsed;
     try{parsed=new URL(url)}catch(e){parsed={pathname:'/',search:''}}
@@ -341,19 +355,68 @@ class VSCodeTunnelService {
 
   TunnelWS.CONNECTING=0;TunnelWS.OPEN=1;TunnelWS.CLOSING=2;TunnelWS.CLOSED=3;
 
+  function bytesToBase64(u8){
+    var parts=[],chunkSize=0x8000;
+    for(var i=0;i<u8.length;i+=chunkSize){
+      parts.push(String.fromCharCode.apply(null,u8.subarray(i,i+chunkSize)));
+    }
+    return btoa(parts.join(''));
+  }
+
+  TunnelWS.prototype._emitError=function(){
+    var ee=new Event('error');
+    if(this.onerror)this.onerror(ee);
+    this._fire('error',ee);
+  };
+
+  TunnelWS.prototype._queueSend=function(task){
+    var self=this;
+    this._sendChain=this._sendChain.then(function(){
+      if(self.readyState!==1)return;
+      return task();
+    }).catch(function(){
+      self._emitError();
+    });
+  };
+
   TunnelWS.prototype.send=function(data){
     if(this.readyState!==1)throw new DOMException('WebSocket not open','InvalidStateError');
-    var isBin=false,payload;
-    if(typeof data==='string'){payload=data}
-    else{isBin=true;var u8=new Uint8Array(data instanceof ArrayBuffer?data:data.buffer);
-      var s='';for(var i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);payload=btoa(s);}
-    window.parent.postMessage({type:'synthi-ws-send',tunnelId:this._tid,data:payload,binary:isBin},'*');
+    var self=this;
+    if(typeof data==='string'){
+      this._queueSend(function(){
+        window.parent.postMessage({type:'synthi-ws-send',tunnelId:self._tid,data:data,binary:false},'*');
+      });
+    }
+    else if(typeof Blob!=='undefined'&&data instanceof Blob){
+      this._queueSend(function(){
+        return data.arrayBuffer().then(function(buf){
+          if(self.readyState!==1)return;
+          window.parent.postMessage({type:'synthi-ws-send',tunnelId:self._tid,data:bytesToBase64(new Uint8Array(buf)),binary:true},'*');
+        });
+      });
+    }
+    else{
+      var u8;
+      if(data instanceof ArrayBuffer){
+        u8=new Uint8Array(data);
+      }else if(ArrayBuffer.isView(data)){
+        u8=new Uint8Array(data.buffer,data.byteOffset,data.byteLength);
+      }else{
+        throw new TypeError('Unsupported WebSocket payload');
+      }
+      this._queueSend(function(){
+        window.parent.postMessage({type:'synthi-ws-send',tunnelId:self._tid,data:bytesToBase64(u8),binary:true},'*');
+      });
+    }
   };
 
   TunnelWS.prototype.close=function(code){
     if(this.readyState>=2)return;
     this.readyState=2;
-    window.parent.postMessage({type:'synthi-ws-close',tunnelId:this._tid,code:code||1000},'*');
+    var self=this;
+    this._sendChain.then(function(){
+      window.parent.postMessage({type:'synthi-ws-close',tunnelId:self._tid,code:code||1000},'*');
+    });
   };
 
   TunnelWS.prototype.addEventListener=function(t,fn){

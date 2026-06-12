@@ -35,6 +35,7 @@
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
+const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,9 @@ const WORKSPACE_REPOS_PATH = (process.env.WORKSPACE_REPOS_PATH || `${WORKSPACE_D
 const PREVIEW_SIDECAR_PORT = parseSinglePort(process.env.SYNTHI_PREVIEW_SIDECAR_PORT, 18080);
 const PREVIEW_SIDECAR_PREFIX = normalizePreviewPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');
 const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node:20-alpine').trim();
+const WORKFLOW_BRIDGE_IMAGE = (process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE || '').trim();
+const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT, 9466);
+const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -153,6 +157,145 @@ function workspaceDirForMetadata(metadata = {}) {
   return fsUser
     ? `${WORKSPACE_REPOS_PATH.replace(/\/+$/, '')}/${slug}/${fsUser}`
     : `${WORKSPACE_REPOS_PATH.replace(/\/+$/, '')}/${slug}`;
+}
+
+function runtimeWorkflowStoreDir(sessionId, metadata = {}) {
+  return `${workspaceDirForMetadata(metadata).replace(/\/+$/, '')}/.synthi/workflows/${safePathSegment(runtimeResourceId(sessionId))}`;
+}
+
+function runtimeWorkspaceUrl(metadata = {}) {
+  const appUrl = (process.env.SYNTHI_APP_INTERNAL_URL || 'http://frontend.synthi.svc.cluster.local:3000').replace(/\/+$/, '');
+  const slug = String(metadata.workspaceSlug || '').trim();
+  return slug ? `${appUrl}/workspace/${encodeURIComponent(slug)}` : appUrl;
+}
+
+function workflowBridgeContainers(sessionId, metadata = {}) {
+  if (!WORKFLOW_BRIDGE_IMAGE) return [];
+
+  const storeDir = runtimeWorkflowStoreDir(sessionId, metadata);
+  const workspaceUrl = runtimeWorkspaceUrl(metadata);
+  const runtimeId = runtimeResourceId(sessionId);
+  const workspaceId = String(metadata.workspaceSlug || runtimeId);
+  const workspaceDataMount = WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', mountPath: WORKSPACE_DATA_MOUNT }] : [];
+
+  return [
+    {
+      name: 'workflow-bridge',
+      image: WORKFLOW_BRIDGE_IMAGE,
+      securityContext: {
+        runAsUser: 0,
+        runAsGroup: 0,
+        allowPrivilegeEscalation: true,
+      },
+      command: ['node', 'dist/browser_workflow_bridge/standalone.js'],
+      env: [
+        { name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST', value: '0.0.0.0' },
+        { name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT', value: String(WORKFLOW_BRIDGE_PORT) },
+        {
+          name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN',
+          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN' } },
+        },
+        { name: 'SYNTHI_HOSTED_BROWSER_CDP_URL', value: `http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}` },
+        { name: 'SYNTHI_WORKSPACE_ID', value: workspaceId },
+        { name: 'SYNTHI_WORKSPACE_URL', value: workspaceUrl },
+        { name: 'SYNTHI_HOSTED_BROWSER_WORKSPACE_URL', value: workspaceUrl },
+        { name: 'SYNTHI_HOSTED_BROWSER_RUNTIME_ID', value: runtimeId },
+        { name: 'SYNTHI_WORKFLOW_RUNTIME_SCOPE', value: sessionId },
+        { name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE', value: sessionId },
+        { name: 'SYNTHI_AUTH_CHECKPOINT_SCOPE', value: sessionId },
+        {
+          name: 'SYNTHI_COLLAB_SERVER_URL',
+          valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
+        },
+        {
+          name: 'COLLAB_SERVER_URL',
+          valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
+        },
+        { name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE', value: `${storeDir}/private-tools.enc.json` },
+        {
+          name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY',
+          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY' } },
+        },
+        { name: 'SYNTHI_AUTH_CHECKPOINT_STORE_FILE', value: `${storeDir}/auth-checkpoints.enc.json` },
+        {
+          name: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY',
+          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY' } },
+        },
+        { name: 'SYNTHI_VISION_BACKEND', value: 'agent_side' },
+      ],
+      ports: [
+        { name: 'workflow', containerPort: WORKFLOW_BRIDGE_PORT },
+      ],
+      resources: {
+        requests: { cpu: '100m', memory: '256Mi' },
+        limits: { cpu: '1', memory: '1Gi' },
+      },
+      readinessProbe: {
+        httpGet: { path: '/healthz', port: WORKFLOW_BRIDGE_PORT },
+        initialDelaySeconds: 2,
+        periodSeconds: 5,
+      },
+      livenessProbe: {
+        httpGet: { path: '/healthz', port: WORKFLOW_BRIDGE_PORT },
+        initialDelaySeconds: 10,
+        periodSeconds: 15,
+      },
+      volumeMounts: workspaceDataMount,
+    },
+    {
+      name: 'hosted-browser',
+      image: WORKFLOW_BRIDGE_IMAGE,
+      securityContext: {
+        runAsUser: 0,
+        runAsGroup: 0,
+        allowPrivilegeEscalation: true,
+      },
+      command: ['/bin/bash', '-lc'],
+      args: [
+        [
+          'set -euo pipefail',
+          'BROWSER="$(node -e "const { chromium } = require(\'playwright-core\'); process.stdout.write(chromium.executablePath())")"',
+          'exec "$BROWSER" --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile about:blank',
+        ].join('\n'),
+      ],
+      env: [
+        { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
+      ],
+      ports: [
+        { name: 'cdp', containerPort: HOSTED_BROWSER_CDP_PORT },
+      ],
+      resources: {
+        requests: { cpu: '200m', memory: '512Mi' },
+        limits: { cpu: '2', memory: '2Gi' },
+      },
+      readinessProbe: {
+        exec: {
+          command: [
+            'node',
+            '-e',
+            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+          ],
+        },
+        initialDelaySeconds: 3,
+        periodSeconds: 5,
+      },
+      livenessProbe: {
+        exec: {
+          command: [
+            'node',
+            '-e',
+            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+          ],
+        },
+        initialDelaySeconds: 15,
+        periodSeconds: 20,
+      },
+      volumeMounts: [
+        { name: 'dshm', mountPath: '/dev/shm' },
+        { name: 'tmp', mountPath: '/tmp' },
+      ],
+    },
+  ];
 }
 
 function previewSidecarScript() {
@@ -317,6 +460,57 @@ async function getReadyPodForSession(sessionId) {
   return { podIP: null, podName: null };
 }
 
+async function getPodSnapshotForSession(sessionId) {
+  const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
+  try {
+    const { body } = await coreApi.listNamespacedPod(
+      NAMESPACE,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector,
+    );
+    const pods = Array.isArray(body?.items) ? body.items : [];
+    if (!pods.length) {
+      return {
+        pod_running: false,
+        pod_ready: false,
+        pod_name: null,
+        pod_ip: null,
+        pod_phase: 'missing',
+        container_ready_count: 0,
+        container_count: 0,
+      };
+    }
+
+    const pod = pods.find(p => p?.status?.phase === 'Running') || pods[0];
+    const statuses = pod?.status?.containerStatuses || [];
+    const readyCount = statuses.filter(c => c.ready).length;
+    const allReady = statuses.length > 0 && readyCount === statuses.length;
+    return {
+      pod_running: pod?.status?.phase === 'Running',
+      pod_ready: allReady,
+      pod_name: pod?.metadata?.name || null,
+      pod_ip: pod?.status?.podIP || null,
+      pod_phase: pod?.status?.phase || 'unknown',
+      container_ready_count: readyCount,
+      container_count: statuses.length,
+    };
+  } catch (err) {
+    console.warn(`[Spawner] Failed to get pod snapshot for ${runtimeResourceId(sessionId)}:`, err.message);
+    return {
+      pod_running: false,
+      pod_ready: false,
+      pod_name: null,
+      pod_ip: null,
+      pod_phase: 'unknown',
+      container_ready_count: 0,
+      container_count: 0,
+    };
+  }
+}
+
 // ── Dynamic Service per workspace ─────────────────────────────────────────
 
 /**
@@ -346,6 +540,7 @@ async function ensureService(sessionId) {
       },
       ports: [
         { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
+        ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
       ],
     },
   };
@@ -443,6 +638,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
+    await ensureService(sessionId);
     try {
       const readyPod = await getReadyPodForSession(sessionId);
       if (readyPod.podName) return { name, created: false, ...readyPod };
@@ -495,7 +691,6 @@ async function ensurePod(sessionId, userId, metadata = {}) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
-            fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
           serviceAccountName: 'workspace-runtime-sa',
@@ -609,6 +804,7 @@ exec worker`,
                 periodSeconds: 10,
               },
             },
+            ...workflowBridgeContainers(sessionId, { ...metadata, filesystemUserId }),
           ],
           volumes: [
             { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
@@ -675,6 +871,91 @@ async function touch(sessionId) {
       console.error(`[Spawner] touch() failed for ${name}:`, err.message);
     }
   }
+}
+
+/**
+ * Reconcile Kubernetes state into the common lifecycle endpoint.
+ */
+async function lifecycleSnapshot(sessionId) {
+  if (process.env.SPAWNER_MODE === 'local') {
+    return {
+      ...lifecycle.snapshot(sessionId),
+      pod_running: false,
+      pod_ready: false,
+      spawner_tracked: activeSessions.has(sessionId),
+      k8s_deployment: false,
+    };
+  }
+
+  const name = deploymentName(sessionId);
+  const advisory = lifecycle.snapshot(sessionId);
+  let deploymentExists = false;
+
+  try {
+    await appsApi.readNamespacedDeployment(name, NAMESPACE);
+    deploymentExists = true;
+  } catch (err) {
+    if (err.response?.statusCode !== 404) {
+      throw err;
+    }
+  }
+
+  if (!deploymentExists) {
+    if (advisory.state !== 'unknown' && advisory.state !== 'terminated') {
+      lifecycle.markTerminated(sessionId, 'deployment_missing');
+    }
+    return {
+      ...lifecycle.snapshot(sessionId),
+      pod_running: false,
+      pod_ready: false,
+      spawner_tracked: activeSessions.has(sessionId),
+      k8s_deployment: false,
+      deployment_name: name,
+    };
+  }
+
+  const pod = await getPodSnapshotForSession(sessionId);
+  if (pod.pod_ready) {
+    const current = lifecycle.snapshot(sessionId).state;
+    if (current !== 'running' && current !== 'migrating') {
+      lifecycle.markReady(sessionId);
+    }
+  } else if (pod.pod_phase === 'Failed') {
+    lifecycle.markCrashed(sessionId, 'pod_failed');
+  } else {
+    lifecycle.markWarming(sessionId, {
+      stage: pod.pod_running ? 'containers_starting' : 'pod_scheduled',
+      stage_progress_pct: pod.pod_running ? 70 : 40,
+      estimated_ready_at: Date.now() + 30_000,
+    });
+  }
+
+  return {
+    ...lifecycle.snapshot(sessionId),
+    ...pod,
+    spawner_tracked: activeSessions.has(sessionId),
+    k8s_deployment: true,
+    deployment_name: name,
+  };
+}
+
+/**
+ * Pre-warm a Kubernetes runtime without blocking the HTTP request.
+ */
+async function warm(sessionId, userId, metadata = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  lifecycle.markWarming(sessionId, {
+    stage: 'warm_triggered',
+    stage_progress_pct: 5,
+    estimated_ready_at: Date.now() + 60_000,
+  });
+  ensurePod(sessionId, userId, metadata).then(() => {
+    lifecycle.markReady(sessionId);
+  }).catch((err) => {
+    console.error(`[Spawner] warm ensurePod failed for ${sessionId}:`, err.message);
+    lifecycle.markCrashed(sessionId, `warm_failed: ${err.message}`);
+  });
+  return lifecycle.snapshot(sessionId);
 }
 
 /**
@@ -845,6 +1126,8 @@ async function handleSessionEnded(req, res) {
 
 module.exports = {
   ensurePod,
+  warm,
+  lifecycleSnapshot,
   touch,
   teardown,
   cullIdleWorkspaces,

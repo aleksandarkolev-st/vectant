@@ -48,6 +48,7 @@ model WorkspaceMembership {
   // Workspace authorization role: 'owner' | 'admin' | 'member'. Backfill sets the
   // earliest membership per workspace to 'owner' (Workspace has no creatorId). (Plan 1a R1-9)
   role        String    @default("member")
+  invitedByEmail String?
   createdAt   DateTime  @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)

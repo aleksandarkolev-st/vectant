@@ -14,7 +14,7 @@ Options:
   --zone ZONE          GKE cluster zone/location. Default: europe-west10-a
   --registry REGISTRY  Artifact Registry repo. Default: <region>-docker.pkg.dev/<project>/synthi
   --tag TAG            Immutable image tag. Default: prod-<UTC timestamp>-<git sha>
-  --branch BRANCH      Branch to push when --push is used. Default: cloud-deploy
+  --branch BRANCH      Branch to push when --push is used. Default: main
   --push               Push HEAD to origin/<branch> before submitting Cloud Build
   --allow-dirty        Allow deploying a dirty local checkout
   --scan               Enable Cloud Build vulnerability scan gate
@@ -37,7 +37,7 @@ GKE_CLUSTER="synthi-beta-cluster"
 GKE_ZONE="europe-west10-a"
 REGISTRY=""
 IMAGE_TAG=""
-DEPLOY_BRANCH="cloud-deploy"
+DEPLOY_BRANCH="main"
 PUSH_FIRST="false"
 ALLOW_DIRTY="false"
 ENABLE_VULNERABILITY_SCAN="false"

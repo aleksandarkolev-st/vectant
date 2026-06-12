@@ -13,7 +13,17 @@ import { WebsocketProvider } from 'y-websocket';
 
 // ── State ───────────────────────────────────────────────────────────────────
 const docs = new Map(); // key → Entry { doc, provider, ytext, applyingLocal }
-let serverUrl = 'ws://localhost:1234';
+function defaultCollabWsUrl() {
+  try {
+    const origin = self.location?.origin || new URL(self.location?.href || '').origin;
+    if (origin && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
+      return origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:') + '/collab';
+    }
+  } catch (_) { /* fall through to local dev default */ }
+  return 'ws://localhost:1234';
+}
+
+let serverUrl = defaultCollabWsUrl();
 
 // Tunables for the WebsocketProvider.
 //   MAX_BACKOFF_MS — cap for the provider's internal reconnect delay.  The
@@ -155,19 +165,19 @@ function ensureDocInternal(key, params) {
 
   // ── Y.Text observer — only forward REMOTE deltas to the main thread ──
   // Coalesce bursts of remote deltas (e.g. when an LLM streams many small
-  // inserts) onto a single microtask flush.  When only one delta arrives we
-  // forward it incrementally; when multiple arrive in the same task we send
-  // an empty delta and rely on the main thread's full-text fallback, since
-  // later deltas' offsets no longer reference the initial model state.
+  // inserts) onto a single microtask flush.  We keep every delta in order so
+  // Monaco can apply them incrementally, avoiding full-model replacements
+  // while multiple collaborators are typing.
   let pendingDeltas = null;
   let flushScheduled = false;
   const flushPending = () => {
     flushScheduled = false;
     if (!pendingDeltas || pendingDeltas.length === 0) return;
     const fullText = ytext.toString();
-    const delta = pendingDeltas.length === 1 ? pendingDeltas[0] : [];
+    const deltas = pendingDeltas;
+    const delta = deltas.length === 1 ? deltas[0] : [];
     pendingDeltas = null;
-    post({ type: 'remote-delta', key, delta, fullText, length: fullText.length });
+    post({ type: 'remote-delta', key, delta, deltas, fullText, length: fullText.length });
   };
   ytext.observe((event) => {
     if (entry.applyingLocal) return; // local edits already came FROM main thread

@@ -56,6 +56,14 @@ ARG NEXT_PUBLIC_AI_ENGINE_URL=
 ARG NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=
 ARG NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS=
 
+RUN if [ -z "$NEXT_PUBLIC_COLLAB_SERVER_URL" ] || \
+        [ -z "$NEXT_PUBLIC_COMPILE_SIGNAL_URL" ] || \
+        [ -z "$NEXT_PUBLIC_GATEWAY_WS_URL" ]; then \
+        echo "Missing required NEXT_PUBLIC_* build args for production frontend build." >&2; \
+        echo "Set NEXT_PUBLIC_COLLAB_SERVER_URL, NEXT_PUBLIC_COMPILE_SIGNAL_URL, and NEXT_PUBLIC_GATEWAY_WS_URL." >&2; \
+        exit 1; \
+    fi
+
 RUN rm -f .env.production.local && \
         : > .env.production.local && \
         for entry in \

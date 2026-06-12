@@ -46,6 +46,31 @@ const TERMINAL_SERVER_URL = process.env.NEXT_PUBLIC_TERMINAL_URL
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
+const LOCAL_PREVIEW_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
+
+function parseTerminalUrl(rawUri) {
+  if (!rawUri || typeof rawUri !== 'string') return null;
+  try {
+    return new URL(rawUri);
+  } catch (_) {
+    try {
+      return new URL(`http://${rawUri}`);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+function buildRuntimePreviewUrl(rawUri, runtimeScope) {
+  if (!runtimeScope || typeof window === 'undefined') return null;
+  const parsed = parseTerminalUrl(rawUri);
+  if (!parsed || !parsed.port) return null;
+  const host = parsed.hostname;
+  if (!LOCAL_PREVIEW_HOSTS.has(host)) return null;
+
+  const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
+  return `${window.location.origin}/collab/runtime/${encodeURIComponent(runtimeScope)}/port/${encodeURIComponent(parsed.port)}${path}${parsed.search}${parsed.hash}`;
+}
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
 // The `useTheme()` hook provides `terminalTheme` generated from the active
@@ -87,6 +112,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
   const currentSessionIdRef = useRef(null);
+  const inputDataDisposableRef = useRef(null);
+  const inputBinaryDisposableRef = useRef(null);
   const inputBufferRef = useRef('');
   const initializedRef = useRef(false);
   // ─── Ctrl+Z undo stack ───────────────────────────────────────────────
@@ -150,6 +177,17 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   }, [terminalTheme, colorOverrides]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
+  const disposeInputHandlers = useCallback(() => {
+    if (inputDataDisposableRef.current) {
+      try { inputDataDisposableRef.current.dispose(); } catch (_) {}
+      inputDataDisposableRef.current = null;
+    }
+    if (inputBinaryDisposableRef.current) {
+      try { inputBinaryDisposableRef.current.dispose(); } catch (_) {}
+      inputBinaryDisposableRef.current = null;
+    }
+  }, []);
+
   const cleanup = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -159,6 +197,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { wsRef.current.close(1000); } catch (_) {}
       wsRef.current = null;
     }
+    disposeInputHandlers();
     const terminalInstance = terminalRef.current;
     terminalRef.current = null;
     if (terminalInstance?.dispose) {
@@ -167,7 +206,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { terminalInstance.term.dispose(); } catch (_) {}
     }
     sessionIdRef.current = null;
-  }, []);
+    currentSessionIdRef.current = null;
+  }, [disposeInputHandlers]);
 
   // ─── Send resize to server ───────────────────────────────────────────
   const sendResize = useCallback((cols, rows) => {
@@ -181,6 +221,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   useEffect(() => {
     mountedRef.current = true;
     let disposed = false;
+
+    if (isGuest && !canTerminal) {
+      cleanup();
+      setState('closed');
+      return () => { disposed = true; };
+    }
+    setState('connecting');
 
     const init = async () => {
       // Dynamic import to avoid SSR issues
@@ -221,7 +268,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       });
 
       const fitAddon = new FitAddon();
-      const linksAddon = new WebLinksAddon();
+      const linksAddon = new WebLinksAddon((_event, uri) => {
+        try {
+          const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+          const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+          const previewUrl = buildRuntimePreviewUrl(uri, runtimeIdentity.runtimeScope);
+          window.open(previewUrl || uri, '_blank', 'noopener,noreferrer');
+        } catch (_) {
+          try { window.open(uri, '_blank', 'noopener,noreferrer'); } catch {}
+        }
+      });
       term.loadAddon(fitAddon);
       term.loadAddon(linksAddon);
       term.open(containerRef.current);
@@ -492,8 +548,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     function connectWS(term, fitAddon) {
       if (disposed) return;
 
-      // Use the fixed session ID (from AI terminal) or generate a new one
-      const sid = fixedSessionId || (sessionKey + '-' + Date.now().toString(36));
+      // Reconnect to the same PTY session. A new PTY behind an old xterm
+      // buffer makes typed text appear duplicated or inserted in odd places.
+      const sid = fixedSessionId || currentSessionIdRef.current || (sessionKey + '-' + Date.now().toString(36));
+      currentSessionIdRef.current = sid;
       sessionIdRef.current = sid;
 
       const { cols, rows } = term;
@@ -544,7 +602,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // Send user input to backend and forward to WebRTC path.
       // Also provide a local-echo fallback when no backend is connected so
       // the user sees their keystrokes while offline/disconnected.
-      term.onData((data) => {
+      disposeInputHandlers();
+      inputDataDisposableRef.current = term.onData((data) => {
         if (isResizingRef.current) return;
 
         // ── Session permission gate ──────────────────────────────────
@@ -664,11 +723,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       };
 
       // Also forward binary (paste, etc.)
-      term.onBinary((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
+      inputBinaryDisposableRef.current = term.onBinary((data) => {
+        const wsLocal = wsRef.current;
+        if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {
           const buffer = new Uint8Array(data.length);
           for (let i = 0; i < data.length; i++) buffer[i] = data.charCodeAt(i);
-          ws.send(buffer);
+          wsLocal.send(buffer);
         }
       });
     }
@@ -699,13 +759,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { wsRef.current.close(1000); } catch (_) {}
         wsRef.current = null;
       }
+      disposeInputHandlers();
       const terminalInstance = terminalRef.current;
       terminalRef.current = null;
       if (terminalInstance?.dispose) {
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug, fixedSessionId, shellType]); // Re-connect if terminal tab, workspace, or shell type changes
+  }, [sessionKey, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {
@@ -743,6 +804,31 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────
+  if (isGuest && !canTerminal) {
+    return (
+      <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
+        <div className="h-full w-full flex items-center justify-center px-6">
+          <div
+            className="max-w-sm rounded-lg border px-4 py-3 text-center"
+            style={{
+              background: 'color-mix(in srgb, var(--accent-warning) 7%, var(--bg-elevated))',
+              borderColor: 'color-mix(in srgb, var(--accent-warning) 28%, var(--border-medium))',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <EyeOff className="w-5 h-5 mx-auto mb-2" style={{ color: 'var(--accent-warning)' }} />
+            <div className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+              Terminal access is off
+            </div>
+            <div className="text-[11px] leading-relaxed">
+              Ask the host to grant terminal permission for this session.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
@@ -781,24 +867,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       )}
 
       {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
-
-      {/* Session: View-only terminal overlay for guests without canTerminal */}
-      {isGuest && !canTerminal && state === 'connected' && (
-        <div
-          className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 z-10"
-          style={{
-            background: 'color-mix(in srgb, var(--accent-warning) 8%, transparent)',
-            borderTop: '1px solid color-mix(in srgb, var(--accent-warning) 24%, transparent)',
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <EyeOff className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} />
-            <span className="text-xs font-medium" style={{ color: 'var(--accent-warning)' }}>
-              Terminal is view-only — Ask the host for terminal access
-            </span>
-          </div>
-        </div>
-      )}
 
       {/* Connection status — viewport-centred floating panel (portal to body) */}
       {(state === 'error' || state === 'closed') && (
@@ -1211,7 +1279,7 @@ function ConnectionStatusPanel({ state, onReconnect }) {
         maxWidth: 'calc(100vw - 16px)',
         background: 'var(--bg-elevated, #18181b)',
         borderColor: 'var(--border-medium, #3f3f46)',
-        zIndex: 2147483646,
+        zIndex: 120,
       }}
     >
       <div

@@ -4,6 +4,7 @@ import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
 import collabSessionService from '@/services/collabSessionService';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 /**
  * Parse an error response body and extract a human-readable message.
@@ -107,7 +108,7 @@ function buildTreeFromFlatMeta(flatFiles) {
 // Centralized collab-server URL — the single source of truth for file data.
 // All file reads/writes go through the collab-server to prevent dual-source
 // inconsistencies between GCS and disk.
-const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+const COLLAB_SERVER_URL = resolveCollabHttpUrl();
 
 export class ApiClient {
     constructor() {

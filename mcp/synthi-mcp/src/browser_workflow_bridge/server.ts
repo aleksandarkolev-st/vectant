@@ -79,7 +79,16 @@ const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Synthi-Workflow-Token",
+  "Access-Control-Allow-Headers": [
+    "Content-Type",
+    "X-Synthi-Workflow-Token",
+    "X-Synthi-Runtime-Scope",
+    "X-Synthi-Workspace-Slug",
+    "X-Synthi-Runtime-Kind",
+    "X-Synthi-Filesystem-User-Id",
+    "X-Synthi-Actor-User-Id",
+    "X-Synthi-Collab-Session-Id",
+  ].join(", "),
   "Access-Control-Max-Age": "600",
 };
 
@@ -273,6 +282,10 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
   const slug = workspaceSlugFromArgs(args);
   if (!slug) return { ok: true };
   const collab = resolveCollabServerUrl();
+  const runtimeScope =
+    stringOpt(args["runtime_scope"]) ??
+    stringOpt(args["runtimeScope"]) ??
+    stringOpt(process.env["SYNTHI_WORKFLOW_RUNTIME_SCOPE"]);
   if (!collab) {
     return {
       ok: false,
@@ -286,14 +299,17 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
   try {
-    const response = await fetch(`${collab.url}/ports?workspace=${encodeURIComponent(slug)}`, {
+    const portsUrl = new URL("ports", `${collab.url}/`);
+    portsUrl.searchParams.set("workspace", slug);
+    if (runtimeScope) portsUrl.searchParams.set("runtimeScope", runtimeScope);
+    const response = await fetch(portsUrl.href, {
       signal: controller.signal,
     });
     if (!response.ok) {
       return {
         ok: false,
         error: "preview_discovery_failed",
-        detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source, status: response.status },
+        detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source, status: response.status },
       };
     }
     const payload = await response.json() as Record<string, unknown>;
@@ -302,7 +318,7 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
     return {
       ok: false,
       error: "preview_not_found",
-      detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source },
+      detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
     };
   } catch (err) {
     return {
@@ -310,6 +326,7 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
       error: "preview_discovery_failed",
       detail: {
         workspace: slug,
+        runtimeScope,
         collab_url: collab.url,
         collab_url_source: collab.source,
         message: err instanceof Error ? err.message : String(err),

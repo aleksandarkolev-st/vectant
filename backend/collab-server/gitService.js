@@ -28,7 +28,7 @@ const BINARY_EXTENSIONS = new Set([
 const VENDOR_DIRS = new Set(['node_modules','vendor','third_party','external','.yarn','.pnpm']);
 const GENERATED_DIRS = new Set(['dist','build','out','coverage','.next','.nuxt','target']);
 // Directories to ALWAYS skip when listing files (never descend)
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.synthi', '.code_intel', '__pycache__', '.next', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache', '.turbo', '.cache', '.parcel-cache']);
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.synthi', '.synthi-backups', '.code_intel', '.code_intel_backups', '__pycache__', '.next', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache', '.turbo', '.cache', '.parcel-cache']);
 
 function isBinaryExtension(ext) {
     return BINARY_EXTENSIONS.has(String(ext || '').toLowerCase());
@@ -494,7 +494,7 @@ class GitService {
     }
 
     _filterStatus(status) {
-        const AI_INDEX_PREFIXES = ['.synthi/', '.code_intel/', '.code_intel_backups/'];
+        const AI_INDEX_PREFIXES = ['.synthi/', '.synthi-backups/', '.code_intel/', '.code_intel_backups/'];
         const isAIPath = (filePath) => AI_INDEX_PREFIXES.some(p => filePath.startsWith(p));
         const filterFiles = (arr) => (arr || []).filter(f => !isAIPath(typeof f === 'string' ? f : f.path || ''));
 

@@ -24,6 +24,10 @@ data:
   # Optional internal HTTP endpoint for the MCP browser-workflow bridge.
   # Browser clients call the same-origin Next.js proxy at /api/browser-workflows/*.
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL: ""
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{bridgePort}"
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT: "9466"
+  SYNTHI_HOSTED_BROWSER_CDP_PORT: "9222"
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-browser-workflow-bridge:build-tag-required"
   # Optional runtime-scoped preview proxy target. Production previews route to
   # a pod-local preview sidecar so user apps may bind localhost-only ports.
   SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"

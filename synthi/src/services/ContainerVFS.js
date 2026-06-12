@@ -17,12 +17,13 @@
 
 import collabClient from './collabClient';
 import { gitClient } from './gitClient';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+const COLLAB_SERVER_URL = resolveCollabHttpUrl();
 const FLUSH_DEBOUNCE_MS = 100; // Debounce disk flushes
 const VALIDATION_INTERVAL_MS = 5000; // How often to validate client matches server
 

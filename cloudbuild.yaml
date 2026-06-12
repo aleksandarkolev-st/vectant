@@ -71,7 +71,7 @@ steps:
         fi
 
   # ───────────────────────────────────────────────────────────────────────────
-  # BUILD — All 6 services in parallel via Kaniko (layer-cached)
+  # BUILD — Service images in parallel via Kaniko (layer-cached)
   # ───────────────────────────────────────────────────────────────────────────
 
   # ── 0. Prepare Next.js environment ───────────────────────────────────────
@@ -112,6 +112,14 @@ steps:
       # so the frontend image builds from the repo root (matches docker-compose).
       - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
+      - --build-arg=NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}
+      - --build-arg=NEXT_PUBLIC_YSWEET_URL=${_NEXT_PUBLIC_YSWEET_URL}
+      - --build-arg=NEXT_PUBLIC_COLLAB_PORT=${_NEXT_PUBLIC_COLLAB_PORT}
+      - --build-arg=NEXT_PUBLIC_COMPILE_SIGNAL_URL=${_NEXT_PUBLIC_COMPILE_SIGNAL_URL}
+      - --build-arg=NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}
+      - --build-arg=NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}
+      - --build-arg=NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}
+      - --build-arg=NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=${_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER}
       - --cache=true
       - --cache-ttl=168h
 
@@ -183,6 +191,17 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
+  # ── 8. Browser Workflow Bridge + Hosted Browser Runtime ────────────────
+  - id: build-browser-workflow-bridge
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+    args:
+      - --dockerfile=mcp/synthi-mcp/Dockerfile.workflow-bridge
+      - --context=dir:///workspace/mcp/synthi-mcp
+      - --destination=${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}
+      - --cache=true
+      - --cache-ttl=168h
+
   # ═══════════════════════════════════════════════════════════════════════════
   # SCAN — Vulnerability scan on representative images
   # ═══════════════════════════════════════════════════════════════════════════
@@ -208,7 +227,8 @@ steps:
           "${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}" \
           "${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}" \
           "${_REGISTRY}/synthi-worker:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}"
+          "${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}"
         do
           echo ""
           echo "Scanning: $${IMAGE}"
@@ -245,6 +265,7 @@ steps:
       - build-signaling
       - build-worker
       - build-prisma-migrate
+      - build-browser-workflow-bridge
 
   # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
@@ -266,6 +287,7 @@ steps:
       - build-ai-gateway
       - build-signaling
       - build-worker
+      - build-browser-workflow-bridge
 
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
@@ -279,6 +301,7 @@ steps:
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
+        echo "=== Region: ${_REGION} ==="
 
         # Render Kustomize once with the immutable image tag before applying.
         # Applying raw k8s/ directly would briefly roll Deployments to the

@@ -44,7 +44,12 @@ const VERBOSE_LOGS = process.env.SYNTHI_VSCODE_VERBOSE === '1';
 
 /** Debug log helper — only writes when verbose logging is enabled */
 function debugLog(msg) {
-  if (VERBOSE_LOGS) debugLog(msg);
+  if (!VERBOSE_LOGS) return;
+  try {
+    process.stderr.write(String(msg));
+  } catch (_) {
+    // Logging must never affect extension-host control flow.
+  }
 }
 
 /** Where to store the VS Code Server binary and data */
@@ -73,6 +78,7 @@ const VSCODE_SERVER_VERSION = process.env.SYNTHI_VSCODE_SERVER_VERSION || 'stabl
 /** Port range for dynamically allocated server instances */
 const PORT_RANGE_START = parseInt(process.env.SYNTHI_VSCODE_PORT_START || '18000', 10);
 const PORT_RANGE_END = parseInt(process.env.SYNTHI_VSCODE_PORT_END || '18999', 10);
+const SERVER_BIND_HOST = process.env.SYNTHI_VSCODE_BIND_HOST || '127.0.0.1';
 
 /** Maximum time to wait for server to become ready (ms) */
 const SERVER_READY_TIMEOUT = 30000;
@@ -382,7 +388,8 @@ function createMessageId() {
 /** @type {{data: string, resolve?: Function}[]} */
 const _writeQueue = [];
 let _writing = false;
-const WRITE_PACE_MS = 12;  // delay between queued writes (controls DC throughput)
+const WRITE_PACE_MS = 20;  // delay between queued writes (controls DC throughput)
+const STREAM_CHUNK_CHARS = 12000;
 
 function send(obj) {
   try {
@@ -450,7 +457,7 @@ async function sendResponseStreamed(id, result) {
   send({ id, type: 'response', stream: 'start', meta, generation: GENERATION });
 
   // Body chunks — 48KB each (~64KB after JSON wrapping)
-  const CHUNK = 48000;
+  const CHUNK = STREAM_CHUNK_CHARS;
   const total = Math.ceil(body.length / CHUNK);
   for (let i = 0; i < body.length; i += CHUNK) {
     const chunk = body.slice(i, i + CHUNK);
@@ -483,7 +490,7 @@ async function sendResponseStreamed(id, result) {
 async function _sendWsEventStreamed(tunnelId, payload, isBinary) {
   sendEvent('ws:data:start', tunnelId, payload.length, isBinary);
 
-  const CHUNK = 48000;
+  const CHUNK = STREAM_CHUNK_CHARS;
   const total = Math.ceil(payload.length / CHUNK);
   for (let i = 0; i < payload.length; i += CHUNK) {
     const chunk = payload.slice(i, i + CHUNK);
@@ -1750,6 +1757,8 @@ function findServerBinary() {
   // 2. Managed install
   const managedBin = path.join(VSCODE_SERVER_DIR, 'bin', SERVER_BIN_NAME);
   if (fs.existsSync(managedBin)) return managedBin;
+  const standaloneBin = findManagedStandaloneCodeServerBinary();
+  if (standaloneBin) return standaloneBin;
 
   // 3. System PATH — try `code-server`
   try {
@@ -1768,6 +1777,22 @@ function findServerBinary() {
     }
   }
 
+  return null;
+}
+
+function findManagedStandaloneCodeServerBinary() {
+  const installLibDir = path.join(VSCODE_SERVER_DIR, 'install', 'lib');
+  if (!fs.existsSync(installLibDir)) return null;
+  try {
+    const candidates = fs.readdirSync(installLibDir)
+      .filter(name => name.startsWith('code-server-'))
+      .sort()
+      .reverse();
+    for (const name of candidates) {
+      const bin = path.join(installLibDir, name, 'bin', SERVER_BIN_NAME);
+      if (fs.existsSync(bin)) return bin;
+    }
+  } catch (_) {}
   return null;
 }
 
@@ -1808,13 +1833,15 @@ async function ensureServerBinary() {
  */
 function installCodeServerUnix(binDir) {
   return new Promise((resolve, reject) => {
-    const installScript = spawn('sh', ['-c',
-      `curl -fsSL https://code-server.dev/install.sh | sh -s -- --prefix="${path.join(VSCODE_SERVER_DIR, 'install')}" --method=standalone`
+    const installDir = path.join(VSCODE_SERVER_DIR, 'install');
+    const runInstall = () => spawn('sh', ['-c',
+      `curl -fsSL https://code-server.dev/install.sh | sh -s -- --prefix="${installDir}" --method=standalone`
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
     });
 
+    const installScript = runInstall();
     let stdout = '';
     let stderr = '';
     installScript.stdout.on('data', (d) => { stdout += d; });
@@ -1822,15 +1849,20 @@ function installCodeServerUnix(binDir) {
 
     installScript.on('close', (code) => {
       if (code !== 0) {
+        try {
+          fs.rmSync(installDir, { recursive: true, force: true });
+        } catch (_) {}
         return reject(new Error(`code-server install failed (exit ${code}): ${stderr}`));
       }
       // Find the installed binary
-      const installed = path.join(VSCODE_SERVER_DIR, 'install', 'bin', 'code-server');
-      if (fs.existsSync(installed)) {
+      const installed = path.join(installDir, 'bin', 'code-server');
+      const standalone = findManagedStandaloneCodeServerBinary();
+      const resolved = fs.existsSync(installed) ? installed : standalone;
+      if (resolved && fs.existsSync(resolved)) {
         // Symlink into our bin directory
         const link = path.join(binDir, 'code-server');
         try { fs.unlinkSync(link); } catch (_) {}
-        fs.symlinkSync(installed, link);
+        fs.symlinkSync(resolved, link);
         resolve(link);
       } else {
         reject(new Error('code-server binary not found after install'));
@@ -2127,6 +2159,7 @@ function _patchBootstrapFork(rootCandidates, bridgePort, preloadPath) {
     `// Uses process.argv guard (not env var — env var set after this runs).`,
     `(function() {`,
     `  if (!process.argv.includes('--type=extensionHost')) return;`,
+    `  const debugLog = (msg) => { if (process.env.SYNTHI_VSCODE_VERBOSE === '1') { try { process.stderr.write(String(msg)); } catch (_) {} } };`,
     `  process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
     `  process.env.SYNTHI_EXTENSION_HOST_CONFIRMED = process.env.SYNTHI_EXTENSION_HOST_CONFIRMED || "true";`,
     `  const __synthiPreloadPath = "${escapedPreloadPath}";`,
@@ -2251,7 +2284,7 @@ async function startServer(slug, options = {}) {
     // Build server arguments
     const args = [
       '--port', String(port),
-      '--host', '127.0.0.1',
+      '--host', SERVER_BIND_HOST,
       '--auth', 'none',           // We handle auth at the WebRTC layer
       '--disable-telemetry',
       '--disable-update-check',
@@ -2261,7 +2294,7 @@ async function startServer(slug, options = {}) {
 
     // If the binary is code-server (coder/code-server), add its specific flags
     if (binary.includes('code-server')) {
-      args.push('--bind-addr', `127.0.0.1:${port}`);
+      args.push('--bind-addr', `${SERVER_BIND_HOST}:${port}`);
       // Remove redundant --port and --host for code-server
       const portIdx = args.indexOf('--port');
       if (portIdx >= 0) args.splice(portIdx, 2);
@@ -5543,6 +5576,31 @@ function wsConnect(tunnelId, urlPath) {
       // to prevent overloading the DataChannel's SCTP buffer.
       let frameBuf = Buffer.alloc(0);
       let processingFrames = false;
+      let fragmentedFrame = null;
+
+      const emitWsPayload = async (opcode, payload) => {
+        if (opcode === 0x01) {
+          const textPayload = payload.toString('utf8');
+          if (textPayload.length > 100000) {
+            socket.pause();
+            await _sendWsEventStreamed(tunnelId, textPayload, false);
+            await new Promise(r => setTimeout(r, 30));
+            socket.resume();
+          } else {
+            sendEvent('ws:data', tunnelId, textPayload);
+          }
+        } else if (opcode === 0x02) {
+          const binaryPayload = payload.toString('base64');
+          if (binaryPayload.length > 100000) {
+            socket.pause();
+            await _sendWsEventStreamed(tunnelId, binaryPayload, true);
+            await new Promise(r => setTimeout(r, 30));
+            socket.resume();
+          } else {
+            sendEvent('ws:data', tunnelId, binaryPayload, 'binary');
+          }
+        }
+      };
 
       const processFrames = async () => {
         if (processingFrames) return;
@@ -5553,29 +5611,26 @@ function wsConnect(tunnelId, urlPath) {
           if (!result) break;
           frameBuf = result.rest;
 
-          if (result.opcode === 0x01) {
-            // Text frame — stream if large
-            const payload = result.payload.toString('utf8');
-            if (payload.length > 100000) {
-              // Pause the socket while we pace-write a large frame
-              socket.pause();
-              await _sendWsEventStreamed(tunnelId, payload, false);
-              // Cooldown: let the Rust worker / browser drain before next frame
-              await new Promise(r => setTimeout(r, 30));
-              socket.resume();
-            } else {
-              sendEvent('ws:data', tunnelId, payload);
+          if (result.opcode === 0x00) {
+            if (!fragmentedFrame) {
+              debugLog(`[ws-tunnel] Ignoring unexpected continuation frame on tunnel ${tunnelId}\n`);
+              continue;
             }
-          } else if (result.opcode === 0x02) {
-            // Binary frame — base64 encode, stream if large
-            const payload = result.payload.toString('base64');
-            if (payload.length > 100000) {
-              socket.pause();
-              await _sendWsEventStreamed(tunnelId, payload, true);
-              await new Promise(r => setTimeout(r, 30));
-              socket.resume();
+            fragmentedFrame.chunks.push(result.payload);
+            if (result.fin) {
+              const completePayload = Buffer.concat(fragmentedFrame.chunks);
+              const completeOpcode = fragmentedFrame.opcode;
+              fragmentedFrame = null;
+              await emitWsPayload(completeOpcode, completePayload);
+            }
+          } else if (result.opcode === 0x01 || result.opcode === 0x02) {
+            if (result.fin) {
+              await emitWsPayload(result.opcode, result.payload);
             } else {
-              sendEvent('ws:data', tunnelId, payload, 'binary');
+              fragmentedFrame = {
+                opcode: result.opcode,
+                chunks: [result.payload],
+              };
             }
           } else if (result.opcode === 0x08) {
             // Close frame
@@ -5659,12 +5714,13 @@ function wsClose(tunnelId, code) {
 
 /**
  * Parse a single WebSocket frame from a buffer.
- * @returns {{ opcode, payload: Buffer, rest: Buffer } | null}
+ * @returns {{ fin: boolean, opcode: number, payload: Buffer, rest: Buffer } | null}
  */
 function parseWsFrame(buf) {
   if (buf.length < 2) return null;
 
   const firstByte = buf[0];
+  const fin = !!(firstByte & 0x80);
   const opcode = firstByte & 0x0F;
   const secondByte = buf[1];
   const masked = !!(secondByte & 0x80);
@@ -5697,7 +5753,7 @@ function parseWsFrame(buf) {
     payload = buf.slice(offset, offset + payloadLen);
   }
 
-  return { opcode, payload, rest: buf.slice(totalLen) };
+  return { fin, opcode, payload, rest: buf.slice(totalLen) };
 }
 
 /**
@@ -6392,4 +6448,4 @@ rl.on('close', async () => {
 // installExtension, etc.) via stdin immediately.  The browser-side
 // VSCodeServerProxy.waitForReady() listens for this event.
 debugLog('[vscode-server-manager] VS Code Server Manager started\n');
-sendEvent('workerReady'); 
+sendEvent('workerReady');

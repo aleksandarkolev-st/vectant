@@ -123,7 +123,7 @@ spec:
     - Ingress
 
 ---
-# ── Workspace pods: allow health checks from collab-server only ───────────
+# ── Workspace pods: allow runtime-scoped preview and workflow bridge traffic ─
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -142,6 +142,15 @@ spec:
               app: collab-server
       ports:
         - port: 8080
+          protocol: TCP
+        - port: 18080
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 9466
           protocol: TCP
   policyTypes:
     - Ingress

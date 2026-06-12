@@ -1337,7 +1337,7 @@ const server = http.createServer(async (req, res) => {
       try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     }
     try {
-      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger');
+      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger', parsed);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {
@@ -2863,6 +2863,7 @@ const server = http.createServer(async (req, res) => {
             seen.set(uid, {
               id: uid,
               name: ws._userName || userDisplayNameCache.get(uid)?.name || 'Anonymous',
+              email: ws._userEmail || null,
               color: ws._userColor || '#888',
               image: ws._userImage || userDisplayNameCache.get(uid)?.avatar || null,
               lastActive: Date.now(),
@@ -2933,8 +2934,9 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        // Auto-create session if needed
-        let session = sessionManager.getSessionByHost(hostId);
+        // Auto-create session if needed. Existing sessions must be read
+        // through the host-only view so inviteToken is available for links.
+        let session = sessionManager.getHostSessionForReconnect(hostId, slug);
         if (!session) {
           session = sessionManager.createSession({
             hostId,
@@ -3226,6 +3228,7 @@ const server = http.createServer(async (req, res) => {
     const RATE_BUDGETS = {
       create: 20,
       'validate-token': 60,
+      host: 120,
       knock: 30,
       admit: 60,
       deny: 60,
@@ -3242,7 +3245,17 @@ const server = http.createServer(async (req, res) => {
     // sessionId parameter must look like the format emitted by SessionManager
     // (hex, 2*SESSION_ID_LEN chars).  Reject malformed IDs before they reach
     // any manager call — defence-in-depth against injection via URL paths.
-    if (sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
+    const sessionIdActions = new Set([
+      'admit',
+      'deny',
+      'permissions',
+      'kick',
+      'leave',
+      'terminate',
+      'info',
+      'regenerate-token',
+    ]);
+    if (sessionIdActions.has(action) && sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_session_id_format' }));
       return;
@@ -3274,11 +3287,13 @@ const server = http.createServer(async (req, res) => {
             } catch (e) {
               console.warn(`[Collab] Could not ensure host repo for session: ${e.message}`);
             }
+            const existing = sessionManager.getHostSessionForReconnect(hostId, slug);
             const session = sessionManager.createSession({
               hostId, hostName: hostName || hostId, hostAvatar: hostAvatar || '',
               slug, worktreePath: hostRepoPath || '', defaultPerms,
             });
             result = {
+              reused: Boolean(existing && existing.id === session.id),
               sessionId: session.id,
               inviteToken: session.inviteToken,
               worktreePath: session.worktreePath,
@@ -3289,6 +3304,34 @@ const server = http.createServer(async (req, res) => {
                 inviteToken: session.inviteToken,
                 roomCode: session.roomCode,
                 slug,
+              }),
+            };
+            break;
+          }
+
+          case 'host': {
+            // GET /session/host/:hostId?slug=<workspace>
+            const hostId = sessionIdParam ? decodeURIComponent(sessionIdParam) : '';
+            const slug = urlObj.searchParams.get('slug') || '';
+            if (!hostId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'hostId is required' }));
+              return;
+            }
+            const session = sessionManager.getHostSessionForReconnect(hostId, slug || null);
+            if (!session) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            result = {
+              ...session,
+              sessionId: session.id,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug: session.slug,
               }),
             };
             break;
@@ -4611,8 +4654,9 @@ notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._userEmail = params.get('email') ? decodeURIComponent(params.get('email')).trim().toLowerCase() : null;
   ws._sessionId = params.get('sessionId') || null;
-  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId, hasEmail: !!ws._userEmail });
   // Flush any offline events for this user as a burst of queued:true
   // messages so the UI can surface them as popups.
   if (ws._userId) {
@@ -4627,10 +4671,58 @@ notifyWss.on('connection', (ws, req) => {
 // ── Session-events WS connection handler ────────────────────────────
 sessionWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  ws._socketId = `session-ws-${crypto.randomBytes(8).toString('hex')}`;
   ws._sessionId = params.get('sessionId') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._role = params.get('role') || null;
+
+  function identify(payload = {}) {
+    const nextSessionId = payload.sessionId || ws._sessionId;
+    const nextUserId = payload.userId || ws._userId;
+    const nextRole = payload.role || ws._role;
+    if (nextSessionId) ws._sessionId = String(nextSessionId);
+    if (nextUserId) ws._userId = String(nextUserId);
+    if (nextRole) ws._role = String(nextRole);
+
+    const session = ws._sessionId ? sessionManager.getSession(ws._sessionId) : null;
+    if (!session || !ws._userId) return;
+
+    if (session.hostId === ws._userId && (ws._role === 'hosting' || ws._role === 'host')) {
+      try { sessionManager.registerHostSocket(ws._sessionId, ws._socketId); } catch (_) {}
+      return;
+    }
+
+    const isGuestLike = ws._role === 'guest' || ws._role === 'knocking';
+    if (isGuestLike) {
+      if (guestDisconnectTimers.has(ws._userId)) {
+        clearTimeout(guestDisconnectTimers.get(ws._userId));
+        guestDisconnectTimers.delete(ws._userId);
+      }
+      try { sessionManager.updateGuestSocket(ws._sessionId, ws._userId, ws); } catch (_) {}
+    }
+  }
+
+  identify();
+
   logger.info('session_ws_connected', { sessionId: ws._sessionId, userId: ws._userId });
+  ws.on('message', (raw) => {
+    try {
+      const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      const msg = JSON.parse(text);
+      if (msg?.type === 'identify') {
+        identify(msg);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'identified', sessionId: ws._sessionId, userId: ws._userId, role: ws._role }));
+        }
+      }
+    } catch (_) {
+      // Session event WS only accepts JSON control frames from clients.
+    }
+  });
   ws.on('close', () => {
+    if (ws._role === 'hosting' || ws._role === 'host') {
+      try { sessionManager.handleDisconnect(ws._socketId); } catch (_) {}
+    }
     logger.info('session_ws_disconnected', { sessionId: ws._sessionId, userId: ws._userId });
   });
 });

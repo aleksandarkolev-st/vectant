@@ -186,7 +186,7 @@ export class CompilerClient {
         const response = await fetch(`${getCollabHttpBaseUrl()}/api/spawner/ensure`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            credentials: 'omit',
+            credentials: 'same-origin',
             body: JSON.stringify({
                 session_id: sessionId,
                 user_id: runtimeIdentity?.actorUserId || this._getCompilerUserId() || sessionId,
@@ -216,7 +216,7 @@ export class CompilerClient {
             await fetch(`${getCollabHttpBaseUrl()}/api/spawner/touch`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                credentials: 'omit',
+                credentials: 'same-origin',
                 keepalive: true,
                 body: JSON.stringify({ session_id: sessionId }),
             });

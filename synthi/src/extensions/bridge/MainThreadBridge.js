@@ -304,6 +304,33 @@ export class MainThreadBridge {
   }
 
   /**
+   * Install a stored extension candidate on the VS Code Server using the
+   * original install source when available.
+   *
+   * @param {ExtensionInfo & {installSource?: string, vsixBase64?: string}} info
+   * @returns {Promise<{success: boolean, extensionId: string, uiBridged?: boolean, error?: string}>}
+   */
+  async _installOnVSCodeServerFromInfo(info) {
+    if (!info?.id) {
+      throw new Error('Missing extension info for VS Code Server install');
+    }
+
+    if (info.vsixBase64) {
+      return this.installExtensionOnServer(info.id, info.vsixBase64);
+    }
+
+    if (info.installSource === 'vsix') {
+      throw new Error('Local VSIX bytes are unavailable; reinstall the .vsix file to upload it to the server.');
+    }
+
+    if (info.installSource === 'manual') {
+      throw new Error('Manual code installs cannot run on the VS Code Server without a VSIX package.');
+    }
+
+    return this.installMarketplaceExtensionOnServer(info.id);
+  }
+
+  /**
    * Determine how a Node-only extension should be handled.
    * Returns 'vscode-server' if the VS Code Server is available,
    * or 'pending' if it's not connected yet.
@@ -313,7 +340,8 @@ export class MainThreadBridge {
    */
   getExtensionHostTarget(manifest) {
     // Browser extensions always run locally — unless too large for the worker
-    if (manifest.browser) {
+    // Hybrid browser+Node extensions use the server path.
+    if (manifest.browser && !manifest.main) {
       const info = this.extensions.get(manifest.__extensionId || `${manifest.publisher}.${manifest.name}`);
       const codeLen = info?.code?.length || 0;
       if (codeLen <= 500_000) return 'local';
@@ -353,12 +381,21 @@ export class MainThreadBridge {
     for (const [id, info] of this.extensions) {
       if (info.remote) continue; // already on remote
       if (info.isActive) continue; // already active locally
-      if (this.vscodeServerExtensions.has(id)) continue; // already on VS Code Server
+      if (this.vscodeServerExtensions.has(id)) {
+        // The server can announce/install an extension before Redux has
+        // restored the matching frontend row. Do not leave that row stuck in
+        // pending-remote; reconcile the bridge state and notify the UI.
+        info.isActive = true;
+        info.remote = true;
+        this.onExtensionStateChanged?.(id, 'active');
+        continue;
+      }
 
       // Eligible: Node-only extensions, OR large-bundle extensions with main entry
       const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
+      const isHybridNode = info.manifest?.main && !!info.manifest?._nodeCode;
       const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
-      if (!isNodeOnly && !isTooLarge) continue;
+      if (!isNodeOnly && !isHybridNode && !isTooLarge) continue;
       toRehydrate.push(info);
     }
 
@@ -380,21 +417,23 @@ export class MainThreadBridge {
     for (const info of toRehydrate) {
       try {
         this.onExtensionStateChanged?.(info.id, 'activating');
-        const result = await this.installMarketplaceExtensionOnServer(info.id);
+        const result = await this._installOnVSCodeServerFromInfo(info);
         if (result.success) {
           info.isActive = true;
+          info.remote = true;
           this.onExtensionStateChanged?.(info.id, 'active');
           console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server`);
           // Emit synthetic webview events so the sidebar shows content
           // immediately while the preload bridge connects
           this._emitSyntheticWebviewEvents(info.id, info.manifest);
         } else {
-          this.onExtensionStateChanged?.(info.id, 'pending-remote');
-          console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install returned unsuccessful`);
+          const reason = result.error || 'VS Code Server install returned unsuccessful';
+          this.onExtensionStateChanged?.(info.id, 'crashed', reason);
+          console.warn(`[MainThreadBridge] ${info.id}: ${reason}`);
         }
       } catch (err) {
         console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install failed:`, err.message);
-        this.onExtensionStateChanged?.(info.id, 'pending-remote');
+        this.onExtensionStateChanged?.(info.id, 'crashed', err.message);
       }
     }
   }
@@ -1096,12 +1135,13 @@ export class MainThreadBridge {
     // ── Route decision: local worker vs VS Code Server ──
     const hostTarget = this.getExtensionHostTarget(manifest);
     const isNodeOnly = manifest.main && !manifest.browser;
+    const isHybridNode = manifest.main && !!manifest._nodeCode;
     const isTooLargeForWorker = code && code.length > 500_000 && manifest.main;
 
     // Node-only extensions OR extensions with huge browser bundles:
     // store info — they'll be installed on the VS Code Server
     // via _rehydrateNodeOnlyExtensions when the server connects.
-    if (isNodeOnly || isTooLargeForWorker) {
+    if (isNodeOnly || isHybridNode || isTooLargeForWorker) {
       if (hostTarget === 'vscode-server') {
         // Server is ready — install immediately
         console.log(`[MainThreadBridge] ${extensionId}: installing on VS Code Server`);
@@ -1117,7 +1157,7 @@ export class MainThreadBridge {
         }
       }
       console.log(
-        `[MainThreadBridge] ${extensionId}: ${isNodeOnly ? 'Node-only' : `bundle too large (${code.length} chars)`}, ` +
+        `[MainThreadBridge] ${extensionId}: ${isNodeOnly ? 'Node-only' : isHybridNode ? 'hybrid Node bundle' : `bundle too large (${code.length} chars)`}, ` +
         'stored (waiting for VS Code Server)'
       );
       return;
@@ -1468,8 +1508,9 @@ export class MainThreadBridge {
         try {
           // Skip Node-only extensions and large-bundle extensions — they don't belong in the worker
           const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
+          const isHybridNode = info.manifest?.main && !!info.manifest?._nodeCode;
           const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
-          if (isNodeOnly || isTooLarge) continue;
+          if (isNodeOnly || isHybridNode || isTooLarge) continue;
 
           await this.workerProxy.loadExtension(id, info.code, info.manifest);
           if (info.isActive) {
