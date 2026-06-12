@@ -244,6 +244,14 @@ async function main() {
   assert.equal(universe.universe_dossier.schema_version, "synthi.dojo.universeDossier.v1", "universe dossier schema should match");
   const sourcePlan = structured(await dispatchDojoTool("synthi_dojo_get_source_affordance_pr_plan", { skill_id: publish.skill.skill_id }));
   assert(sourcePlan.source_affordance_pr_plan.patch_count >= 1, "source affordance plan should include reviewable patches");
+  const typedPatchPlan = sourcePlan.source_affordance_pr_plan.typed_patch_plan;
+  assert.equal(typedPatchPlan.schema_version, "synthi.dojo.affordancePrPlan.v1", "source affordance plan should include a typed patch plan");
+  assert(typedPatchPlan.operations.length >= sourcePlan.source_affordance_pr_plan.patch_count, "typed patch plan should cover each legacy source-affordance patch");
+  assert(typedPatchPlan.operations.every((operation) => operation.target_match?.role), "typed patch operations should include target match criteria");
+  assert(
+    typedPatchPlan.required_tests.includes("npm --prefix mcp/synthi-mcp run proof:dojo:affordance-codemod:self-check"),
+    "typed patch plan should require the affordance codemod proof self-check"
+  );
   const licenseHealth = structured(await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: publish.skill.skill_id }));
   assert.equal(licenseHealth.license_health.schema_version, "synthi.dojo.licenseHealth.v1", "license health schema should match");
   log("ok", "queried universe, source affordance, and license health reports");
@@ -275,6 +283,8 @@ async function main() {
     vivarium_run_id: vivariumRun.vivarium_run.run.run_id,
     wind_tunnel_run_count: windTunnel.wind_tunnel_execution.run_count,
     source_affordance_patch_count: sourcePlan.source_affordance_pr_plan.patch_count,
+    source_affordance_typed_operation_count: typedPatchPlan.operations.length,
+    source_affordance_typed_target_match_count: typedPatchPlan.operations.filter((operation) => operation.target_match?.role).length,
     license_health_status: licenseHealth.license_health.status,
     generated_playwright_spec: path.relative(RUN_ROOT, generatedSpec).replace(/\\/g, "/"),
     executed_playwright_spec: path.relative(RUN_ROOT, executableSpec).replace(/\\/g, "/"),
