@@ -26,6 +26,7 @@ import {
   type DojoRedactedEvidenceExportManifest,
 } from "../dojo/evidence/export.js";
 import {
+  canonicalDojoProofPayload,
   createLocalHmacDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   parseDojoProofSignatureEnvelope,
@@ -3127,13 +3128,13 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
 }
 
 function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">): string {
-  return encodeDojoProofSignatureEnvelope(dojoProofSigner().sign(stableStringify(capsule)));
+  return encodeDojoProofSignatureEnvelope(dojoProofSigner().sign(canonicalDojoProofPayload(capsule)));
 }
 
 function verifyCapsuleSignature(capsule: DojoProofCarryingSkillCapsule): boolean {
   try {
     return dojoProofSigner().verify(
-      stableStringify(unsignedCapsule(capsule)),
+      canonicalDojoProofPayload(unsignedCapsule(capsule)),
       parseDojoProofSignatureEnvelope({
         algorithm: capsule.signature_algorithm,
         key_id: capsule.key_id,

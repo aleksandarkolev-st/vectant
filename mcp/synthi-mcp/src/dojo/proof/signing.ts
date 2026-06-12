@@ -35,6 +35,13 @@ export interface Ed25519DojoProofKeyPair {
   private_key_pem: string;
 }
 
+export function canonicalDojoProofPayload(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalDojoProofPayload).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalDojoProofPayload(record[key])}`).join(",")}}`;
+}
+
 export function createLocalHmacDojoProofSigner(input: {
   key?: string;
   key_id?: string;
