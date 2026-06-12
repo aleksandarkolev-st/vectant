@@ -371,6 +371,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
+      tenant_id: "tenant-a",
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [evidenceRecord],
@@ -390,6 +391,19 @@ describe("Agent Dojo MCP tools", () => {
           satisfied: true,
           evidence_refs: ["evidence:evidence-production-proof-001"],
         })),
+      }),
+      proof_record: expect.objectContaining({
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        skill_id: skillId,
+        license_id: storedSkill?.permission_license.license_id,
+        license_version: storedSkill?.permission_license.license_version,
+        key_id: expect.any(String),
+        signature_algorithm: expect.any(String),
+        substrate_claim: storedSkill?.preferred_substrate,
+        evidence_record_ids: ["evidence-production-proof-001"],
+        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+        status: "issued",
       }),
     }));
   });
@@ -476,6 +490,8 @@ describe("Agent Dojo MCP tools", () => {
       tool_name: "synthi_app_open_details",
     }));
     expect((publish?.structuredContent as { tool_name: string }).tool_name).toBe("synthi_app_open_details");
+    const publishedSkill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(publishedSkill).toBeTruthy();
     const publishedManifest = (publish?.structuredContent as {
       mcp_skill_manifest: DojoMcpSkillManifestV1;
     }).mcp_skill_manifest;
@@ -581,7 +597,12 @@ describe("Agent Dojo MCP tools", () => {
       skill_bus: expect.objectContaining({ dry_run: true }),
     }));
     expect(dojoSkillRegistry.getProofRecord((prefixCapsule as { capsule_id: string }).capsule_id)).toEqual(
-      expect.objectContaining({ status: "issued" })
+      expect.objectContaining({
+        workspace_id: publishedSkill?.workspace_id,
+        license_id: publishedSkill?.permission_license.license_id,
+        license_version: publishedSkill?.permission_license.license_version,
+        status: "issued",
+      })
     );
     const prefixRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: published.skill.skill_id,

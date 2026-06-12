@@ -14,6 +14,7 @@ describeWithPostgres("PostgresDojoProofStore", () => {
   let tenantId: string;
   let workspaceId: string;
   let skillId: string;
+  let licenseId: string;
 
   beforeAll(async () => {
     if (!postgresUrl) throw new Error("SYNTHI_DOJO_POSTGRES_TEST_URL required");
@@ -25,7 +26,9 @@ describeWithPostgres("PostgresDojoProofStore", () => {
     tenantId = `tenant_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     workspaceId = "workspace_a";
     skillId = "skill_a";
+    licenseId = "license_a";
     await seedSkill(pool, tenantId, workspaceId, skillId);
+    await seedLicense(pool, tenantId, workspaceId, skillId, licenseId);
   });
 
   afterAll(async () => {
@@ -39,7 +42,16 @@ describeWithPostgres("PostgresDojoProofStore", () => {
     await store.saveProofRecord(record);
 
     expect(await store.getProofRecord("capsule_a")).toEqual(expect.objectContaining({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
       capsule_id: "capsule_a",
+      license_id: licenseId,
+      license_version: "license_v1",
+      key_id: "key_capsule_a",
+      signature_algorithm: "ed25519",
+      substrate_claim: "mcp",
+      evidence_record_ids: ["evidence_capsule_a"],
+      ledger_checkpoint_hash: "ledger_capsule_a",
       status: "issued",
       nonce: "nonce_capsule_a",
     }));
@@ -93,6 +105,7 @@ describeWithPostgres("PostgresDojoProofStore", () => {
   it("prevents cross-tenant proof reads", async () => {
     const otherTenantId = `${tenantId}_other`;
     await seedSkill(pool, otherTenantId, workspaceId, skillId);
+    await seedLicense(pool, otherTenantId, workspaceId, skillId, licenseId);
     const tenantStore = new PostgresDojoProofStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
     const otherStore = new PostgresDojoProofStore({ tenant_id: otherTenantId, workspace_id: workspaceId, queryable: pool });
 
@@ -102,6 +115,20 @@ describeWithPostgres("PostgresDojoProofStore", () => {
       capsule_id: "capsule_isolated",
     }));
     expect(await otherStore.getProofRecord("capsule_isolated")).toBeNull();
+  });
+
+  it("rejects proof records with mismatched explicit scope", async () => {
+    const store = new PostgresDojoProofStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+
+    await expect(store.saveProofRecord({
+      ...proofRecord("capsule_wrong_tenant", skillId),
+      tenant_id: `${tenantId}_other`,
+    })).rejects.toThrow("dojo_postgres_proof_tenant_mismatch");
+
+    await expect(store.saveProofRecord({
+      ...proofRecord("capsule_wrong_workspace", skillId),
+      workspace_id: `${workspaceId}_other`,
+    })).rejects.toThrow("dojo_postgres_proof_workspace_mismatch");
   });
 });
 
@@ -126,12 +153,50 @@ async function seedSkill(pool: Pool, tenantId: string, workspaceId: string, skil
   );
 }
 
+async function seedLicense(
+  pool: Pool,
+  tenantId: string,
+  workspaceId: string,
+  skillId: string,
+  licenseId: string
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO dojo_licenses (
+      tenant_id,
+      workspace_id,
+      license_id,
+      skill_id,
+      license_version,
+      status,
+      entrustment_level,
+      readiness_level,
+      license_json
+    ) VALUES ($1, $2, $3, $4, $5, 'active', 'E3', 7, $6::jsonb)
+    ON CONFLICT (tenant_id, license_id) DO NOTHING`,
+    [
+      tenantId,
+      workspaceId,
+      licenseId,
+      skillId,
+      "license_v1",
+      JSON.stringify({ license_id: licenseId, skill_id: skillId, license_version: "license_v1" }),
+    ]
+  );
+}
+
 function proofRecord(capsuleId: string, skillId: string): DojoProofCapsuleRecord {
   return {
     capsule_id: capsuleId,
     skill_id: skillId,
+    license_id: "license_a",
+    license_version: "license_v1",
     requested_action: "run_workflow",
     nonce: `nonce_${capsuleId}`,
+    key_id: `key_${capsuleId}`,
+    signature_algorithm: "ed25519",
+    substrate_claim: "mcp",
+    evidence_record_ids: [`evidence_${capsuleId}`],
+    ledger_checkpoint_hash: `ledger_${capsuleId}`,
     issued_at: "2026-06-11T00:00:00.000Z",
     expires_at: "2026-06-11T00:15:00.000Z",
     status: "issued",

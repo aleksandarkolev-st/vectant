@@ -23,10 +23,19 @@ export interface DojoTransactionalStore {
 }
 
 export interface DojoProofCapsuleRecord {
+  tenant_id?: string;
+  workspace_id?: string;
   capsule_id: string;
   skill_id: string;
+  license_id?: string;
+  license_version?: string;
   requested_action: string;
   nonce?: string;
+  key_id?: string;
+  signature_algorithm?: string;
+  substrate_claim?: string;
+  evidence_record_ids?: string[];
+  ledger_checkpoint_hash?: string;
   issued_at: string;
   expires_at: string;
   status: "issued" | "used" | "revoked";

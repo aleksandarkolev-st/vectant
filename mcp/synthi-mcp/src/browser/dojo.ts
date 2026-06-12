@@ -767,12 +767,22 @@ export class DojoSkillRegistry {
       .map(cloneJson);
   }
 
-  recordProofCapsule(capsule: DojoProofCarryingSkillCapsule): DojoProofCapsuleRecord {
+  recordProofCapsule(capsule: DojoProofCarryingSkillCapsule, options: { tenant_id?: string } = {}): DojoProofCapsuleRecord {
+    const skill = this.get(capsule.skill_id);
     const record: DojoProofCapsuleRecord = {
+      ...(options.tenant_id ? { tenant_id: options.tenant_id } : {}),
+      ...(skill?.workspace_id ? { workspace_id: skill.workspace_id } : {}),
       capsule_id: capsule.capsule_id,
       skill_id: capsule.skill_id,
+      ...(skill?.permission_license.license_id ? { license_id: skill.permission_license.license_id } : {}),
+      license_version: capsule.license_version,
       requested_action: capsule.requested_action,
       nonce: capsule.nonce,
+      key_id: capsule.key_id,
+      signature_algorithm: capsule.signature_algorithm,
+      substrate_claim: capsule.substrate_claim,
+      evidence_record_ids: [...capsule.evidence_record_ids],
+      ...(capsule.ledger_checkpoint_hash ? { ledger_checkpoint_hash: capsule.ledger_checkpoint_hash } : {}),
       issued_at: capsule.issued_at,
       expires_at: capsule.expires_at,
       status: "issued",

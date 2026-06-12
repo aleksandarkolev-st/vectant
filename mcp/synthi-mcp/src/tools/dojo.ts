@@ -1951,7 +1951,7 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
     }
     throw err;
   }
-  const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule);
+  const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, { tenant_id: stringOpt(a["tenant_id"]) });
   const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));
   return jsonResponse({
     ok: validation.ok,
