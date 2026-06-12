@@ -98,6 +98,15 @@ function redactValue(value: unknown, counts: RedactionCounts, keyHint = ""): unk
     increment(counts, "sensitive_key");
     return "[REDACTED]";
   }
+  if (isBinaryValue(value)) {
+    increment(counts, "binary_artifact");
+    const bytes = binaryBytes(value);
+    return {
+      redacted_binary: true,
+      byte_length: bytes.byteLength,
+      sha256: sha256Bytes(bytes),
+    };
+  }
   if (typeof value === "string") return redactString(value, counts);
   if (Array.isArray(value)) return value.map((item) => redactValue(item, counts, keyHint));
   if (!value || typeof value !== "object") return value;
@@ -150,6 +159,13 @@ function canonicalJson(value: unknown): string {
 }
 
 function sortValue(value: unknown): unknown {
+  if (isBinaryValue(value)) {
+    const bytes = binaryBytes(value);
+    return {
+      binary_sha256: sha256Bytes(bytes),
+      byte_length: bytes.byteLength,
+    };
+  }
   if (Array.isArray(value)) return value.map(sortValue);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
@@ -163,6 +179,19 @@ function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+function sha256Bytes(value: Buffer): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function isBinaryValue(value: unknown): value is ArrayBuffer | ArrayBufferView {
+  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+}
+
+function binaryBytes(value: ArrayBuffer | ArrayBufferView): Buffer {
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 }

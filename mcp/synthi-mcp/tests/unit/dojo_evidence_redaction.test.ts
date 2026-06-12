@@ -108,4 +108,23 @@ describe("Dojo evidence redaction", () => {
       blocked_by: ["redaction_manifest_digest_mismatch"],
     });
   });
+
+  it("replaces binary screenshot evidence with a digest placeholder", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "screenshot",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]),
+    });
+
+    expect(result.redacted_content).toEqual({
+      redacted_binary: true,
+      byte_length: 12,
+      sha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(result.redacted_content)).not.toContain("137,80,78,71");
+    expect(result.manifest.rules_applied).toEqual([
+      { rule_id: "binary_artifact", count: 1 },
+    ]);
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
 });
