@@ -103,6 +103,60 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("blocks an explicitly expired node before proof or substrate execution", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      expiry_state: { expired_node_ids: ["action_submit"] },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["node_expired:action_submit"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["node_expired:action_submit"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks a node when one of its expiry triggers is active", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      expiry_state: { expired_triggers: ["source_drift"] },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["expiry_trigger_active:source_drift"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["expiry_trigger_active:source_drift"],
+        }),
+      ]),
+    }));
+  });
+
   it("selects a matching branch path and skips unchosen branch-only nodes", async () => {
     const runtime = new DojoSkillGraphRuntime();
 

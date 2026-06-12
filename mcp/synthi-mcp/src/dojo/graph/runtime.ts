@@ -53,10 +53,17 @@ export type DojoGraphProofValidator = (input: {
   inputs: Record<string, unknown>;
 }) => DojoGraphProofValidationResult | Promise<DojoGraphProofValidationResult>;
 
+export interface DojoGraphExpiryState {
+  expired_skill?: boolean;
+  expired_node_ids?: string[];
+  expired_triggers?: string[];
+}
+
 export interface DojoSkillGraphRuntimeInput {
   graph: DojoSkillGraph;
   mode?: DojoGraphMode;
   inputs?: Record<string, unknown>;
+  expiry_state?: DojoGraphExpiryState;
   proof_capsule?: unknown;
   proof_validator?: DojoGraphProofValidator;
   allow_self_attested_proof?: boolean;
@@ -101,7 +108,7 @@ export class DojoSkillGraphRuntime {
         continue;
       }
 
-      const blockedBy = blockedByForNode(node, mode, inputs);
+      const blockedBy = blockedByForNode(node, mode, inputs, input.expiry_state);
       const proofBlockedBy = blockedBy.length === 0
         ? await proofBlockedByForNode(node, mode, graph, input, inputs)
         : [];
@@ -218,7 +225,15 @@ export class DojoSkillGraphRuntime {
   }
 }
 
-function blockedByForNode(node: DojoGraphNode, mode: DojoGraphMode, inputs: Record<string, unknown>): string[] {
+function blockedByForNode(
+  node: DojoGraphNode,
+  mode: DojoGraphMode,
+  inputs: Record<string, unknown>,
+  expiryState?: DojoGraphExpiryState
+): string[] {
+  const expiryBlockedBy = expiryBlockedByForNode(node, expiryState);
+  if (expiryBlockedBy.length > 0) return expiryBlockedBy;
+
   const blockedBy = node.preconditions
     .filter((condition) => !evaluateStaticCondition(condition, inputs))
     .map((condition) => `precondition_failed:${condition}`);
@@ -230,6 +245,18 @@ function blockedByForNode(node: DojoGraphNode, mode: DojoGraphMode, inputs: Reco
     }
   }
   return blockedBy;
+}
+
+function expiryBlockedByForNode(node: DojoGraphNode, expiryState?: DojoGraphExpiryState): string[] {
+  if (!expiryState) return [];
+  if (expiryState.expired_skill === true) return ["skill_expired"];
+
+  const expiredNodeIds = new Set(expiryState.expired_node_ids ?? []);
+  if (expiredNodeIds.has(node.node_id)) return [`node_expired:${node.node_id}`];
+
+  const expiredTriggers = new Set(expiryState.expired_triggers ?? []);
+  const activeTrigger = node.expiry_triggers.find((trigger) => expiredTriggers.has(trigger));
+  return activeTrigger ? [`expiry_trigger_active:${activeTrigger}`] : [];
 }
 
 type DojoBranchDecision =
