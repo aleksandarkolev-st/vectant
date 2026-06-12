@@ -73,6 +73,29 @@ describe("Dojo Skill Graph IR", () => {
     ]));
   });
 
+  it("validates executable node preconditions and rejects malformed precondition predicates", () => {
+    const richPreconditionGraph = minimalGraph();
+    richPreconditionGraph.nodes = richPreconditionGraph.nodes.map((node) =>
+      node.node_id === "action_submit"
+        ? { ...node, preconditions: ["workspace_verified == true", "amount <= 500"] }
+        : node
+    );
+    expect(validateDojoSkillGraph(richPreconditionGraph)).toEqual({ ok: true, issues: [] });
+
+    const malformedPreconditionGraph = minimalGraph();
+    malformedPreconditionGraph.nodes = malformedPreconditionGraph.nodes.map((node) =>
+      node.node_id === "action_submit"
+        ? { ...node, preconditions: ["amount >== 500"] }
+        : node
+    );
+    expect(validateDojoSkillGraph(malformedPreconditionGraph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "node_precondition_parseable_required",
+        node_id: "action_submit",
+      }),
+    ]));
+  });
+
   it("rejects edges that reference missing nodes or invalid confidence", () => {
     const graph = minimalGraph();
     graph.edges.push({
