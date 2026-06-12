@@ -58,7 +58,13 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     return "proof_capsule_invalid";
   }
   if (reason.startsWith("missing_context_claim:") || reason === "runtime_workspace_not_verified") return "proof_context_claim_unverified";
-  if (reason.startsWith("missing_evidence_claim:") || reason === "proof_evidence_claim_unverified") return "proof_evidence_claim_unverified";
+  if (
+    reason.startsWith("missing_evidence_claim:") ||
+    reason.startsWith("evidence_claim_refs_missing:") ||
+    reason === "proof_evidence_claim_unverified"
+  ) {
+    return "proof_evidence_claim_unverified";
+  }
   if (reason === "license_expired" || reason === "license_expiry_invalid") return "license_expired";
   if (reason === "license_revoked") return "license_revoked";
   if (reason.startsWith("blocked_action:") || reason.startsWith("action_not_licensed:")) return "action_not_licensed";

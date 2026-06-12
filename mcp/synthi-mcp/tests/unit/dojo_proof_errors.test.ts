@@ -23,6 +23,7 @@ describe("Dojo proof error taxonomy", () => {
   it("normalizes proof and license failure reasons to stable codes", () => {
     expect(normalizeDojoProofErrorCode("proof_capsule_not_issued_by_registry")).toBe("proof_capsule_not_issued");
     expect(normalizeDojoProofErrorCode("missing_evidence_claim:checkride_passed")).toBe("proof_evidence_claim_unverified");
+    expect(normalizeDojoProofErrorCode("evidence_claim_refs_missing:checkride_passed")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("missing_context_claim:workspace_verified")).toBe("proof_context_claim_unverified");
     expect(normalizeDojoProofErrorCode("app_origin_mismatch")).toBe("origin_mismatch");
     expect(normalizeDojoProofErrorCode("guardrail_not_active:guard_1")).toBe("guardrail_failed");

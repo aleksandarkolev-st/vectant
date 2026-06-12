@@ -1365,13 +1365,16 @@ export function validateDojoProofCapsule(
   for (const claim of license.proof_requirements.required_context_claims) {
     if (capsule.context_claims[claim] !== true) blockedBy.push(`missing_context_claim:${claim}`);
   }
-  const satisfiedEvidence = new Set(
-    capsule.evidence_claims
+  const satisfiedEvidenceClaims = capsule.evidence_claims
       .filter((claim) => claim.satisfied)
-      .map((claim) => claim.claim)
-  );
+  const satisfiedEvidence = new Map(satisfiedEvidenceClaims.map((claim) => [claim.claim, claim]));
   for (const claim of license.proof_requirements.required_evidence_claims) {
-    if (!satisfiedEvidence.has(claim)) blockedBy.push(`missing_evidence_claim:${claim}`);
+    const evidenceClaim = satisfiedEvidence.get(claim);
+    if (!evidenceClaim) {
+      blockedBy.push(`missing_evidence_claim:${claim}`);
+    } else if (!evidenceClaim.evidence_refs || evidenceClaim.evidence_refs.length === 0) {
+      blockedBy.push(`evidence_claim_refs_missing:${claim}`);
+    }
   }
   for (const guardrail of license.proof_requirements.required_guardrails) {
     if (!capsule.guardrails_active.includes(guardrail)) blockedBy.push(`guardrail_not_active:${guardrail}`);

@@ -198,6 +198,31 @@ describe("Dojo proof issuance evidence claims", () => {
     );
   });
 
+  it("blocks signed proof capsules whose satisfied evidence claims have no evidence references", () => {
+    const skill = skillFixture();
+    const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
+    expect(requiredClaims.length).toBeGreaterThan(0);
+    const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_claims: requiredClaims.map((claim) => ({
+        claim,
+        satisfied: true,
+        evidence_refs: [],
+      })),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(validateDojoProofCapsule(skill, capsule, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
+      expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: expect.arrayContaining(requiredClaims.map((claim) => `evidence_claim_refs_missing:${claim}`)),
+        error_codes: ["proof_evidence_claim_unverified"],
+      })
+    );
+  });
+
   it("blocks proof issuance with malformed or non-forward timestamp windows", () => {
     const skill = skillFixture();
 
