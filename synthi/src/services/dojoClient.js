@@ -55,6 +55,34 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       timeMachine: null,
       ghostRun: null,
     },
+    source: {
+      uiContract: {
+        contractId: '',
+        targetOrigin: '',
+        actions: [],
+        refusalContracts: [],
+      },
+      sourcePrPlan: {
+        planId: '',
+        readiness: 'not_ready',
+        patchCount: 0,
+        files: [],
+        generatedTests: [],
+        reviewChecklist: [],
+      },
+      apiCandidates: [],
+      generatedTools: [],
+      substrateNodes: [],
+      metrics: {
+        uiActionCount: 0,
+        sourceMappedActionCount: 0,
+        patchCount: 0,
+        reviewRequiredPatchCount: 0,
+        apiCandidateCount: 0,
+        approvedApiCandidateCount: 0,
+        generatedToolCount: 0,
+      },
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -578,6 +606,195 @@ function normalizeDebugState(dojo) {
   };
 }
 
+function normalizeUiContractAction(action, index = 0) {
+  return {
+    actionId: action?.action_id || action?.actionId || action?.id || `ui-action-${index + 1}`,
+    label: action?.label || action?.name || action?.action || `Action ${index + 1}`,
+    sourceStepId: action?.source_step_id || action?.sourceStepId || '',
+    sourceAnchorId: action?.source_anchor_id || action?.sourceAnchorId || '',
+    stableLocator: action?.stable_locator || action?.stableLocator || '',
+    fallbackLocators: compactStrings(action?.fallback_locators || action?.fallbackLocators),
+    requiredInputs: compactStrings(action?.required_inputs || action?.requiredInputs),
+    allowedSubstrates: compactStrings(action?.allowed_substrates || action?.allowedSubstrates),
+    successCondition: action?.success_condition || action?.successCondition || '',
+    riskTags: compactStrings(action?.risk_tags || action?.riskTags),
+    proofClaims: compactStrings(action?.proof_claims || action?.proofClaims),
+  };
+}
+
+function normalizeUiContract(dojo, state = {}) {
+  const source = dojo.source || dojo.source_state || state.source || state.source_state || {};
+  const raw = dojo.agentReadyUiContract
+    || dojo.agent_ready_ui_contract
+    || dojo.uiContract
+    || dojo.ui_contract
+    || source.agentReadyUiContract
+    || source.agent_ready_ui_contract
+    || state.agentReadyUiContract
+    || state.agent_ready_ui_contract
+    || {};
+  const actions = asArray(raw.actions).map(normalizeUiContractAction).filter((action) => action.actionId || action.label);
+  return {
+    contractId: raw.contract_id || raw.contractId || '',
+    targetOrigin: raw.target_app_origin || raw.targetAppOrigin || raw.app_origin || raw.appOrigin || '',
+    actions,
+    refusalContracts: asArray(raw.refusal_contracts || raw.refusalContracts).map((item) => ({
+      guardrailId: item?.guardrail_id || item?.guardrailId || item?.id || '',
+      refusal: item?.refusal || item?.message || '',
+    })).filter((item) => item.guardrailId || item.refusal),
+  };
+}
+
+function normalizeSourcePatch(patch, index = 0) {
+  return {
+    patchId: patch?.patch_id || patch?.patchId || patch?.id || `patch-${index + 1}`,
+    actionId: patch?.action_id || patch?.actionId || '',
+    intent: patch?.intent || '',
+    suggestedAttribute: patch?.suggested_attribute || patch?.suggestedAttribute || '',
+    riskAnnotation: patch?.risk_annotation || patch?.riskAnnotation || '',
+    successHook: patch?.success_hook || patch?.successHook || '',
+    proofHook: patch?.proof_hook || patch?.proofHook || '',
+    reviewRequired: Boolean(patch?.review_required ?? patch?.reviewRequired),
+  };
+}
+
+function normalizeSourcePrPlan(dojo, state = {}) {
+  const source = dojo.source || dojo.source_state || state.source || state.source_state || {};
+  const raw = dojo.sourceAffordancePrPlan
+    || dojo.source_affordance_pr_plan
+    || source.sourceAffordancePrPlan
+    || source.source_affordance_pr_plan
+    || state.sourceAffordancePrPlan
+    || state.source_affordance_pr_plan
+    || {};
+  const files = asArray(raw.files).map((file, fileIndex) => ({
+    filePath: file?.file_path || file?.filePath || file?.path || `source-file-${fileIndex + 1}`,
+    sourceAnchorId: file?.source_anchor_id || file?.sourceAnchorId || '',
+    patches: asArray(file?.patches).map(normalizeSourcePatch).filter((patch) => patch.patchId || patch.intent),
+  })).filter((file) => file.filePath || file.patches.length);
+  return {
+    planId: raw.plan_id || raw.planId || '',
+    readiness: raw.readiness || 'not_ready',
+    patchCount: Number(raw.patch_count ?? raw.patchCount ?? files.reduce((sum, file) => sum + file.patches.length, 0)),
+    files,
+    generatedTests: asArray(raw.generated_tests || raw.generatedTests).map((item) => ({
+      path: item?.path || item?.file_path || item?.filePath || '',
+      purpose: item?.purpose || item?.description || '',
+    })).filter((item) => item.path || item.purpose),
+    reviewChecklist: compactStrings(raw.review_checklist || raw.reviewChecklist),
+  };
+}
+
+function normalizeApiIssue(issue) {
+  return {
+    issueId: issue?.issue_id || issue?.issueId || issue?.id || '',
+    severity: issue?.severity || 'error',
+    message: issue?.message || issue?.description || '',
+  };
+}
+
+function normalizeApiCandidate(candidate, index = 0) {
+  const review = candidate?.review || candidate?.candidate_review || candidate?.candidateReview || {};
+  const issues = asArray(candidate?.issues || review.issues).map(normalizeApiIssue).filter((issue) => issue.issueId || issue.message);
+  return {
+    candidateId: candidate?.candidate_id || candidate?.candidateId || candidate?.id || `api-candidate-${index + 1}`,
+    method: candidate?.method || '',
+    path: candidate?.path || candidate?.url || '',
+    mutationClass: candidate?.mutation_class || candidate?.mutationClass || '',
+    authScope: candidate?.auth_scope || candidate?.authScope || '',
+    idempotencyKeyLocation: candidate?.idempotency_key_location || candidate?.idempotencyKeyLocation || '',
+    rollbackStrategy: candidate?.rollback_strategy || candidate?.rollbackStrategy || '',
+    postcondition: candidate?.postcondition || '',
+    reviewStatus: candidate?.review_status || candidate?.reviewStatus || 'candidate',
+    okToPromote: Boolean(review.ok_to_promote ?? review.okToPromote),
+    inferredFrom: compactStrings(candidate?.inferred_from || candidate?.inferredFrom),
+    proofClaimMapping: candidate?.proof_claim_mapping || candidate?.proofClaimMapping || {},
+    issues,
+  };
+}
+
+function normalizeGeneratedTool(tool, index = 0) {
+  return {
+    toolName: tool?.tool_name || tool?.toolName || tool?.name || `generated-tool-${index + 1}`,
+    toolVersion: tool?.tool_version || tool?.toolVersion || tool?.version || '',
+    candidateId: tool?.candidate_id || tool?.candidateId || '',
+    status: tool?.status || tool?.review_status || tool?.reviewStatus || 'draft',
+    proofRequired: Boolean(tool?.proof_required ?? tool?.proofRequired),
+    schemaDigest: tool?.schema_digest || tool?.schemaDigest || tool?.manifest_digest || tool?.manifestDigest || '',
+    blockedBy: compactStrings(tool?.blocked_by || tool?.blockedBy || tool?.issues),
+  };
+}
+
+function normalizeSubstrateNodes(skill, sourceState) {
+  const graphNodes = asArray(skill?.graph?.nodes)
+    .filter((node) => node.kind === 'Action' || node.kind === 'Locate' || node.substrate || node.metadata?.substrate)
+    .map((node) => ({
+      nodeId: node.id,
+      label: node.label,
+      kind: node.kind,
+      substrate: node.substrate || node.metadata?.substrate || 'runtime',
+      sourceAnchorId: node.metadata?.source_anchor_id || node.metadata?.sourceAnchorId || '',
+      apiCandidateId: node.metadata?.api_candidate_id || node.metadata?.apiCandidateId || '',
+      proofRequired: Boolean(node.proofRequired),
+    }));
+  if (graphNodes.length) return graphNodes;
+  return sourceState.uiContract.actions.map((action) => ({
+    nodeId: action.sourceStepId || action.actionId,
+    label: action.label,
+    kind: 'Action',
+    substrate: action.allowedSubstrates.join(', ') || 'ui',
+    sourceAnchorId: action.sourceAnchorId,
+    apiCandidateId: '',
+    proofRequired: action.proofClaims.length > 0,
+  }));
+}
+
+function normalizeSourceState(state, dojo, skill) {
+  const source = dojo.source || dojo.source_state || state.source || state.source_state || {};
+  const uiContract = normalizeUiContract(dojo, state);
+  const sourcePrPlan = normalizeSourcePrPlan(dojo, state);
+  const apiCandidates = asArray(
+    dojo.apiCandidates
+      || dojo.api_candidates
+      || source.apiCandidates
+      || source.api_candidates
+      || state.apiCandidates
+      || state.api_candidates,
+  ).map(normalizeApiCandidate).filter((candidate) => candidate.candidateId || candidate.path);
+  const generatedTools = asArray(
+    dojo.generatedTools
+      || dojo.generated_tools
+      || dojo.apiTools
+      || dojo.api_tools
+      || source.generatedTools
+      || source.generated_tools
+      || state.generatedTools
+      || state.generated_tools,
+  ).map(normalizeGeneratedTool).filter((tool) => tool.toolName);
+  const partialSourceState = { uiContract, sourcePrPlan, apiCandidates, generatedTools };
+  const substrateNodes = normalizeSubstrateNodes(skill, partialSourceState);
+  const reviewRequiredPatchCount = sourcePrPlan.files.reduce(
+    (sum, file) => sum + file.patches.filter((patch) => patch.reviewRequired).length,
+    0,
+  );
+  return {
+    uiContract,
+    sourcePrPlan,
+    apiCandidates,
+    generatedTools,
+    substrateNodes,
+    metrics: {
+      uiActionCount: uiContract.actions.length,
+      sourceMappedActionCount: uiContract.actions.filter((action) => action.sourceAnchorId || action.stableLocator).length,
+      patchCount: sourcePrPlan.patchCount,
+      reviewRequiredPatchCount,
+      apiCandidateCount: apiCandidates.length,
+      approvedApiCandidateCount: apiCandidates.filter((candidate) => candidate.reviewStatus === 'approved' || candidate.okToPromote).length,
+      generatedToolCount: generatedTools.length,
+    },
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -589,6 +806,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       governance: normalizeGovernanceState(state, null, workspaceSlug),
       practice: normalizePracticeState(state, dojo, null),
       debug: normalizeDebugState(dojo),
+      source: normalizeSourceState(state, dojo, null),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -624,6 +842,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   skill.refusal = normalizeRefusal(dojo, skill);
   skill.practice = normalizePracticeState(state, dojo, skill);
   skill.debug = normalizeDebugState(dojo);
+  skill.source = normalizeSourceState(state, dojo, skill);
 
   return {
     ...empty,
@@ -640,6 +859,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     governance: normalizeGovernanceState(state, skill, workspaceSlug),
     practice: skill.practice,
     debug: skill.debug,
+    source: skill.source,
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
