@@ -83,7 +83,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_generate_vivarium_scenarios` | `deterministic_projection` |
 | `synthi_dojo_run_vivarium_scenario` | `executable` |
 | `synthi_dojo_run_wind_tunnel` | `executable` |
-| `synthi_dojo_run_checkride` | `deterministic_projection` |
+| `synthi_dojo_run_checkride` | `executable` |
 | `synthi_dojo_publish_skill` | `executable` |
 | `synthi_dojo_recertify_skill` | `deterministic_projection` |
 | `synthi_dojo_get_license_health` | `executable` |
@@ -105,7 +105,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `vivarium_scenarios` | `deterministic_projection` |
 | `vivarium_run` | `executable` |
 | `wind_tunnel` | `executable` |
-| `checkride` | `deterministic_projection` |
+| `checkride` | `executable` |
 | `case_law` | `report_only` |
 | `guardrails` | `deterministic_projection` |
 | `permission_license` | `executable` |

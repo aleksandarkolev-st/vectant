@@ -296,6 +296,49 @@ describe("Agent Dojo MCP tools", () => {
     }));
     expect((scenarios?.structuredContent as { organoid: { scenarios: unknown[] } }).organoid.scenarios).toHaveLength(20);
 
+    const checkrideRun = await dispatchDojoTool("synthi_dojo_run_checkride", {
+      workspace_id: "workspace-a",
+      tenant_id: "tenant-a",
+      actor_id: "checkride-tester",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    expect(checkrideRun?.isError).toBeUndefined();
+    expect(checkrideRun?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "executable",
+      runtime_enforced: true,
+      simulation_backing: "materialized_synthetic_fixture",
+      checkride: expect.objectContaining({ schema_version: "synthi.dojo.checkrideReport.v1" }),
+      executable_checkride: expect.objectContaining({
+        schema_version: "synthi.dojo.executableCheckrideReport.v1",
+        scenario_count: 20,
+        graph_id: expect.stringContaining("graph_dojo_open_details"),
+        evidence_refs: expect.arrayContaining([expect.stringMatching(/^evidence:evidence_oracle_/)]),
+        results: expect.arrayContaining([
+          expect.objectContaining({
+            scenario_run: expect.objectContaining({ schema_version: "synthi.dojo.scenarioRunResult.v1" }),
+            oracle: expect.objectContaining({ schema_version: "synthi.dojo.scenarioOracleResult.v1" }),
+            evidence_record: expect.objectContaining({
+              kind: "scenario",
+              tenant_id: "tenant-a",
+              workspace_id: "workspace-a",
+            }),
+          }),
+        ]),
+      }),
+      graph_runtime: expect.objectContaining({
+        graph_mode: "checkride",
+        validation: { ok: true, issues: [] },
+        executable_node_kinds: expect.arrayContaining(["Trigger", "Action", "Assertion"]),
+      }),
+      scenario_definitions: expect.arrayContaining([
+        expect.objectContaining({ schema_version: "synthi.dojo.scenarioDefinition.v1" }),
+      ]),
+      scenario_definition_validation: expect.arrayContaining([
+        expect.objectContaining({ validation: expect.objectContaining({ ok: true }) }),
+      ]),
+      runtime_guardrails: expect.any(Array),
+    }));
+
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
     expect(publish?.isError).toBeUndefined();
     const published = publish?.structuredContent as {

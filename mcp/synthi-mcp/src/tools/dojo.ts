@@ -29,9 +29,11 @@ import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/do
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
+import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
 import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
+import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
 import type { DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
@@ -420,7 +422,7 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_run_checkride",
     description:
-      "Run the Dojo static checkride for the current or saved workflow: knowledge, risk, and skill scenario evaluation with entrustment recommendation.",
+      "Run the Dojo checkride for the current or saved workflow, including compatibility scoring plus executable graph/Vivarium/oracle evidence.",
     inputSchema: {
       type: "object",
       properties: {
@@ -674,7 +676,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoRunWindTunnelTool(args);
         break;
       case "synthi_dojo_run_checkride":
-        response = dojoRunCheckrideTool(args);
+        response = await dojoRunCheckrideTool(args);
         break;
       case "synthi_dojo_publish_skill":
         response = dojoPublishSkillTool(args);
@@ -1224,17 +1226,46 @@ async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoRunCheckrideTool(args: unknown): ToolResponse {
+async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
   const artifact = requiredWorkflowArtifact(args);
   if (!artifact.ok) return artifact.error;
+  const a = obj(args);
   const contract = artifact.artifact.workflow.contract;
-  const workspaceId = stringOpt(obj(args)["workspace_id"]);
-  const seed = extractDojoSkillSeed(contract, { workspace_id: workspaceId });
+  const workspaceId = stringOpt(a["workspace_id"]);
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const seed = extractDojoSkillSeed(contract, { workspace_id: workspaceId, now });
   const scenarios = generateDojoVivariumScenarios(seed);
-  const checkride = runDojoCheckride(seed, scenarios, contract);
+  const checkride = runDojoCheckride(seed, scenarios, contract, { now });
   const previewSkill = buildDojoSkill(contract, {
     workspace_id: workspaceId,
+    now,
     private_tool_manifest: generatePrivateWorkflowToolManifest(contract),
+  });
+  const runtimeSkill = withExecutableCheckrideGuardrails(previewSkill);
+  const compiledGraph = compileDojoSkillGraphForSkill(runtimeSkill, {
+    mode: "checkride",
+    created_at: now,
+  });
+  const scenarioDefinitions = toDojoScenarioDefinitions(scenarios, {
+    target_graph_node_ids: ["action"],
+  });
+  const scenarioDefinitionValidation = scenarioDefinitions.map((scenario) => ({
+    scenario_id: scenario.scenario_id,
+    validation: validateDojoScenarioDefinition(scenario),
+  }));
+  const executableCheckride = await runDojoExecutableCheckride({
+    graph: compiledGraph.graph,
+    scenarios: scenarioDefinitions,
+    base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
+    evidence_context: {
+      tenant_id: stringOpt(a["tenant_id"]) ?? "local-tenant",
+      workspace_id: workspaceId ?? runtimeSkill.workspace_id,
+      skill_id: runtimeSkill.skill_id,
+      created_at: now,
+      created_by: stringOpt(a["actor_id"]) ?? "synthi_dojo_run_checkride",
+      run_id_prefix: `checkride_${hashId(`${runtimeSkill.skill_id}:${now}`)}`,
+    },
+    now,
   });
   return jsonResponse({
     ok: true,
@@ -1242,12 +1273,87 @@ function dojoRunCheckrideTool(args: unknown): ToolResponse {
     skill_seed: seed,
     scenarios,
     checkride,
+    executable_checkride: executableCheckride,
+    graph_runtime: {
+      graph_id: compiledGraph.graph.graph_id,
+      graph_mode: compiledGraph.graph.mode,
+      validation: compiledGraph.validation,
+      node_count: compiledGraph.graph.nodes.length,
+      executable_node_kinds: [...new Set(compiledGraph.graph.nodes.map((node) => node.kind))],
+    },
+    scenario_definitions: scenarioDefinitions,
+    scenario_definition_validation: scenarioDefinitionValidation,
+    runtime_guardrails: runtimeSkill.guardrails,
     case_law: previewSkill.case_law,
     guardrails: previewSkill.guardrails,
     license_preview: previewSkill.permission_license,
     skill_card: previewSkill.skill_card,
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(previewSkill)),
   });
+}
+
+function withExecutableCheckrideGuardrails(skill: DojoSkill): DojoSkill {
+  const updated = cloneJson(skill);
+  updated.guardrails = updated.guardrails.map((guardrail) => ({
+    ...guardrail,
+    rule: executableCheckrideGuardrailPredicate(guardrail.rule, guardrail.title),
+  }));
+  return updated;
+}
+
+function executableCheckrideGuardrailPredicate(rule: string, title = ""): string {
+  const trimmed = rule.trim();
+  if (isParseableGuardrailPredicate(trimmed)) return trimmed;
+
+  const normalized = `${title} ${trimmed}`.toLowerCase();
+  if (normalized.includes("stable") && (normalized.includes("entity") || normalized.includes("identifier") || normalized.includes(" id"))) {
+    return "client_id_verified == true";
+  }
+  if (normalized.includes("source") && (normalized.includes("anchor") || normalized.includes("affordance") || normalized.includes("backed"))) {
+    return "source_anchor_current == true";
+  }
+  if (normalized.includes("durable") || normalized.includes("success assertion") || normalized.includes("postcondition")) {
+    return "durable_state_evidence == true";
+  }
+  if (normalized.includes("approval") || normalized.includes("review")) {
+    return "human_review_ready == true";
+  }
+  return `guardrail_${hashId(trimmed || title)} == true`;
+}
+
+function isParseableGuardrailPredicate(predicate: string): boolean {
+  return Boolean(
+    predicate.match(/^([a-zA-Z0-9_.-]+)\s+in\s+(\[.*\])$/)
+      || predicate.match(/^([a-zA-Z0-9_.-]+)\s*(==|!=|<=|>=|<|>)\s*(.+)$/)
+      || predicate.match(/^[a-zA-Z0-9_.-]+$/)
+  );
+}
+
+function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
+  const assertionResults = Object.fromEntries(
+    skill.skill_seed.candidate_success_assertions.map((assertion) => [assertion.assertion_id, true])
+  );
+  const inputs: Record<string, unknown> = {
+    assertion_results: assertionResults,
+    workspace_verified: true,
+    proof_capsule_valid: true,
+    entrustment_level: skill.permission_license.entrustment_level,
+    client_id_verified: true,
+    source_anchor_current: true,
+    durable_state_evidence: true,
+    human_review_ready: true,
+  };
+  for (const claim of [
+    ...skill.permission_license.proof_requirements.required_context_claims,
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+  ]) {
+    inputs[claim] = true;
+  }
+  for (const guardrail of skill.guardrails) {
+    const match = guardrail.rule.match(/^([a-zA-Z0-9_.-]+)\s*(?:==\s*true)?$/);
+    if (match?.[1]) inputs[match[1]] = true;
+  }
+  return inputs;
 }
 
 function dojoPublishSkillTool(args: unknown): ToolResponse {
