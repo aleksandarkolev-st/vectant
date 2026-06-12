@@ -112,7 +112,6 @@ function compiledApiToolApproved(
 }
 
 function apiCandidateApproved(node: DojoGraphNode, inputs: Record<string, unknown>): boolean {
-  if (inputs["approved_api_candidate"] === true) return true;
   const candidateId = node.metadata?.["api_candidate_id"];
   const approvedCandidates = inputs["approved_api_candidates"];
   return typeof candidateId === "string"

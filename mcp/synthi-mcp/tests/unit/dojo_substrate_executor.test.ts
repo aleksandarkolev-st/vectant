@@ -98,6 +98,29 @@ describe("Dojo substrate executor", () => {
     }));
   });
 
+  it("rejects self-attested API candidate approval that is not bound to a reviewed candidate", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        approved_api_candidate: true,
+        license_allowed_substrates: ["api"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_candidate_not_approved"],
+    }));
+  });
+
   it("executes API substrate only when a compiled API tool invocation passes proof and license preflight", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const tool = compiledApiTool();
